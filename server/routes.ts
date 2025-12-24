@@ -1,1 +1,1 @@
-export { registerRoutes, registerModularRoutes } from "./routes/index";
+export { registerRoutes } from "./routes/index";
