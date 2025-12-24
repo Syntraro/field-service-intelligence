@@ -14,26 +14,7 @@ import type { User } from "@shared/schema";
 
 const router = Router();
 
-/**
- * Minimal auth gate for this router.
- * Note: Your app may also enforce auth/tenant higher up in server/routes/index.ts.
- * Keeping this here makes this router safe if it is ever mounted without those guards.
- */
-function isAuthenticated(req: Request, res: Response, next: NextFunction) {
-  const user = (req as any).user as User | undefined;
-  if (!user) return res.status(401).json({ error: "Unauthorized" });
-  next();
-}
 
-function getCompanyIdOrThrow(req: Request): string {
-  const user = (req as any).user as User | undefined;
-  const companyId = (req as any).companyId || user?.companyId;
-  if (!companyId) {
-    // Tenant middleware should normally set this; treat missing as a wiring/security issue.
-    throw new Error("Tenant context missing (companyId)");
-  }
-  return companyId;
-}
 
 /**
  * ----------------------------
@@ -41,9 +22,9 @@ function getCompanyIdOrThrow(req: Request): string {
  * ----------------------------
  */
 
-router.get("/", isAuthenticated, async (req: Request, res: Response) => {
+router.get("/", async (req: Request, res: Response) => {
   try {
-    const companyId = getCompanyIdOrThrow(req);
+    const companyId = req.companyId;
 
     const status = req.query.status ? String(req.query.status) : undefined;
     const technicianId = req.query.technicianId ? String(req.query.technicianId) : undefined;
@@ -62,9 +43,9 @@ router.get("/", isAuthenticated, async (req: Request, res: Response) => {
   }
 });
 
-router.get("/:id", isAuthenticated, async (req: Request, res: Response) => {
+router.get("/:id", async (req: Request, res: Response) => {
   try {
-    const companyId = getCompanyIdOrThrow(req);
+    const companyId = req.companyId;
 
     const job = await storage.getJob(companyId, req.params.id);
     if (!job) return res.status(404).json({ error: "Job not found" });
@@ -78,9 +59,9 @@ router.get("/:id", isAuthenticated, async (req: Request, res: Response) => {
   }
 });
 
-router.post("/", isAuthenticated, async (req: Request, res: Response) => {
+router.post("/", async (req: Request, res: Response) => {
   try {
-    const companyId = getCompanyIdOrThrow(req);
+    const companyId = req.companyId;
 
     const parsed = insertJobSchema.parse(req.body);
     const job = await storage.createJob(companyId, parsed);
@@ -94,9 +75,9 @@ router.post("/", isAuthenticated, async (req: Request, res: Response) => {
   }
 });
 
-router.patch("/:id", isAuthenticated, async (req: Request, res: Response) => {
+router.patch("/:id", async (req: Request, res: Response) => {
   try {
-    const companyId = getCompanyIdOrThrow(req);
+    const companyId = req.companyId;
 
     const parsed = updateJobSchema.parse(req.body);
     const updated = await storage.updateJob(companyId, req.params.id, parsed);
@@ -112,9 +93,9 @@ router.patch("/:id", isAuthenticated, async (req: Request, res: Response) => {
   }
 });
 
-router.delete("/:id", isAuthenticated, async (req: Request, res: Response) => {
+router.delete("/:id", async (req: Request, res: Response) => {
   try {
-    const companyId = getCompanyIdOrThrow(req);
+    const companyId = req.companyId;
 
     const deleted = await storage.deleteJob(companyId, req.params.id);
     if (!deleted) return res.status(404).json({ error: "Job not found" });
@@ -136,9 +117,9 @@ const statusUpdateSchema = z.object({
   status: jobStatusEnum,
 });
 
-router.post("/:id/status", isAuthenticated, async (req: Request, res: Response) => {
+router.post("/:id/status", async (req: Request, res: Response) => {
   try {
-    const companyId = getCompanyIdOrThrow(req);
+    const companyId = req.companyId;
 
     const { status } = statusUpdateSchema.parse(req.body);
 
@@ -166,9 +147,9 @@ router.post("/:id/status", isAuthenticated, async (req: Request, res: Response) 
  * ----------------------------
  */
 
-router.get("/:jobId/parts", isAuthenticated, async (req, res) => {
+router.get("/:jobId/parts", async (req, res) => {
   try {
-    const companyId = getCompanyIdOrThrow(req);
+    const companyId = req.companyId;
 
     const job = await storage.getJob(companyId, req.params.jobId);
     if (!job) return res.status(404).json({ error: "Job not found" });
@@ -181,9 +162,9 @@ router.get("/:jobId/parts", isAuthenticated, async (req, res) => {
   }
 });
 
-router.post("/:jobId/parts", isAuthenticated, async (req, res) => {
+router.post("/:jobId/parts", async (req, res) => {
   try {
-    const companyId = getCompanyIdOrThrow(req);
+    const companyId = req.companyId;
 
     const job = await storage.getJob(companyId, req.params.jobId);
     if (!job) return res.status(404).json({ error: "Job not found" });
@@ -204,9 +185,9 @@ router.post("/:jobId/parts", isAuthenticated, async (req, res) => {
   }
 });
 
-router.put("/:jobId/parts/:id", isAuthenticated, async (req, res) => {
+router.put("/:jobId/parts/:id", async (req, res) => {
   try {
-    const companyId = getCompanyIdOrThrow(req);
+    const companyId = req.companyId;
 
     const job = await storage.getJob(companyId, req.params.jobId);
     if (!job) return res.status(404).json({ error: "Job not found" });
@@ -221,9 +202,9 @@ router.put("/:jobId/parts/:id", isAuthenticated, async (req, res) => {
   }
 });
 
-router.delete("/:jobId/parts/:id", isAuthenticated, async (req, res) => {
+router.delete("/:jobId/parts/:id", async (req, res) => {
   try {
-    const companyId = getCompanyIdOrThrow(req);
+    const companyId = req.companyId;
 
     const job = await storage.getJob(companyId, req.params.jobId);
     if (!job) return res.status(404).json({ error: "Job not found" });
@@ -238,9 +219,9 @@ router.delete("/:jobId/parts/:id", isAuthenticated, async (req, res) => {
   }
 });
 
-router.patch("/:jobId/parts/reorder", isAuthenticated, async (req, res) => {
+router.patch("/:jobId/parts/reorder", async (req, res) => {
   try {
-    const companyId = getCompanyIdOrThrow(req);
+    const companyId = req.companyId;
 
     const job = await storage.getJob(companyId, req.params.jobId);
     if (!job) return res.status(404).json({ error: "Job not found" });
@@ -264,9 +245,9 @@ router.patch("/:jobId/parts/reorder", isAuthenticated, async (req, res) => {
  * ----------------------------
  */
 
-router.get("/:jobId/equipment", isAuthenticated, async (req, res) => {
+router.get("/:jobId/equipment", async (req, res) => {
   try {
-    const companyId = getCompanyIdOrThrow(req);
+    const companyId = req.companyId;
 
     const job = await storage.getJob(companyId, req.params.jobId);
     if (!job) return res.status(404).json({ error: "Job not found" });
@@ -279,9 +260,9 @@ router.get("/:jobId/equipment", isAuthenticated, async (req, res) => {
   }
 });
 
-router.post("/:jobId/equipment", isAuthenticated, async (req, res) => {
+router.post("/:jobId/equipment", async (req, res) => {
   try {
-    const companyId = getCompanyIdOrThrow(req);
+    const companyId = req.companyId;
 
     const job = await storage.getJob(companyId, req.params.jobId);
     if (!job) return res.status(404).json({ error: "Job not found" });
@@ -309,9 +290,9 @@ router.post("/:jobId/equipment", isAuthenticated, async (req, res) => {
   }
 });
 
-router.put("/:jobId/equipment/:jobEquipmentId", isAuthenticated, async (req, res) => {
+router.put("/:jobId/equipment/:jobEquipmentId", async (req, res) => {
   try {
-    const companyId = getCompanyIdOrThrow(req);
+    const companyId = req.companyId;
 
     const job = await storage.getJob(companyId, req.params.jobId);
     if (!job) return res.status(404).json({ error: "Job not found" });
@@ -327,9 +308,9 @@ router.put("/:jobId/equipment/:jobEquipmentId", isAuthenticated, async (req, res
   }
 });
 
-router.delete("/:jobId/equipment/:jobEquipmentId", isAuthenticated, async (req, res) => {
+router.delete("/:jobId/equipment/:jobEquipmentId", async (req, res) => {
   try {
-    const companyId = getCompanyIdOrThrow(req);
+    const companyId = req.companyId;
 
     const job = await storage.getJob(companyId, req.params.jobId);
     if (!job) return res.status(404).json({ error: "Job not found" });
@@ -350,9 +331,9 @@ router.delete("/:jobId/equipment/:jobEquipmentId", isAuthenticated, async (req, 
  * ----------------------------
  */
 
-router.post("/recurring/series", isAuthenticated, async (req: Request, res: Response) => {
+router.post("/recurring/series", async (req: Request, res: Response) => {
   try {
-    const companyId = getCompanyIdOrThrow(req);
+    const companyId = req.companyId;
     const parsed = insertRecurringJobSeriesSchema.parse(req.body);
     const created = await storage.createRecurringJobSeries(companyId, parsed);
     res.status(201).json(created);
@@ -365,9 +346,9 @@ router.post("/recurring/series", isAuthenticated, async (req: Request, res: Resp
   }
 });
 
-router.post("/recurring/phases", isAuthenticated, async (req: Request, res: Response) => {
+router.post("/recurring/phases", async (req: Request, res: Response) => {
   try {
-    const companyId = getCompanyIdOrThrow(req);
+    const companyId = req.companyId;
     const parsed = insertRecurringJobPhaseSchema.parse(req.body);
     const created = await storage.createRecurringJobPhase(companyId, parsed);
     res.status(201).json(created);
@@ -385,9 +366,9 @@ router.post("/recurring/phases", isAuthenticated, async (req: Request, res: Resp
  * Utility: reconcile Job ↔ Invoice links
  * ----------------------------
  */
-router.post("/:id/reconcile-invoice-links", isAuthenticated, async (req: Request, res: Response) => {
+router.post("/:id/reconcile-invoice-links", async (req: Request, res: Response) => {
   try {
-    const companyId = getCompanyIdOrThrow(req);
+    const companyId = req.companyId;
     const { id: jobId } = req.params;
 
     const result = await storage.reconcileJobInvoiceLinks(companyId, jobId);

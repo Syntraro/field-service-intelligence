@@ -161,7 +161,7 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   if (err.code === 'EBADCSRFTOKEN') {
     return res.status(403).json({ 
       error: "Invalid CSRF token",
-      code: "CSRF_ERROR"
+      code: "EBADCSRFTOKEN"
     });
   }
 

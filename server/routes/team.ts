@@ -1,18 +1,11 @@
-import { Router, Request, Response, NextFunction } from "express";
+import { Router, Request, Response } from "express";
 import { storage } from "../storage/index";
 
 const router = Router();
 
-function isAuthenticated(req: Request, res: Response, next: NextFunction) {
-  if (req.isAuthenticated()) {
-    return next();
-  }
-  res.status(401).json({ error: "Not authenticated" });
-}
-
-router.get("/", isAuthenticated, async (req, res) => {
+router.get("/", async (req, res) => {
   try {
-    const members = await storage.getTeamMembers(req.user!.companyId);
+    const members = await storage.getTeamMembers(req.companyId);
     const sanitized = members.map(m => ({
       ...m,
       password: undefined,
@@ -24,20 +17,20 @@ router.get("/", isAuthenticated, async (req, res) => {
   }
 });
 
-router.get("/:userId", isAuthenticated, async (req, res) => {
+router.get("/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    const member = await storage.getTeamMember(req.user!.companyId, userId);
+    const member = await storage.getTeamMember(req.companyId, userId);
     if (!member) {
       return res.status(404).json({ error: "Team member not found" });
     }
-    
+
     const [profile, workingHours, permissionOverrides] = await Promise.all([
       storage.getTechnicianProfile(userId),
       storage.getWorkingHours(userId),
       storage.getUserPermissionOverrides(userId),
     ]);
-    
+
     res.json({
       ...member,
       password: undefined,
@@ -51,12 +44,12 @@ router.get("/:userId", isAuthenticated, async (req, res) => {
   }
 });
 
-router.patch("/:userId", isAuthenticated, async (req, res) => {
+router.patch("/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
     const { firstName, lastName, fullName, phone, roleId, status, useCustomSchedule } = req.body;
-    
-    const updated = await storage.updateTeamMember(req.user!.companyId, userId, {
+
+    const updated = await storage.updateTeamMember(req.companyId, userId, {
       firstName,
       lastName,
       fullName,
@@ -65,11 +58,11 @@ router.patch("/:userId", isAuthenticated, async (req, res) => {
       status,
       useCustomSchedule,
     });
-    
+
     if (!updated) {
       return res.status(404).json({ error: "Team member not found" });
     }
-    
+
     res.json({ ...updated, password: undefined });
   } catch (error) {
     console.error('Update team member error:', error);
@@ -77,19 +70,19 @@ router.patch("/:userId", isAuthenticated, async (req, res) => {
   }
 });
 
-router.post("/:userId/deactivate", isAuthenticated, async (req, res) => {
+router.post("/:userId/deactivate", async (req, res) => {
   try {
     const { userId } = req.params;
-    
+
     if (userId === req.user!.id) {
       return res.status(400).json({ error: "Cannot deactivate your own account" });
     }
-    
-    const updated = await storage.deactivateTeamMember(req.user!.companyId, userId);
+
+    const updated = await storage.deactivateTeamMember(req.companyId, userId);
     if (!updated) {
       return res.status(404).json({ error: "Team member not found" });
     }
-    
+
     res.json({ ...updated, password: undefined });
   } catch (error) {
     console.error('Deactivate team member error:', error);
@@ -97,23 +90,23 @@ router.post("/:userId/deactivate", isAuthenticated, async (req, res) => {
   }
 });
 
-router.post("/:userId/activate", isAuthenticated, async (req, res) => {
+router.post("/:userId/activate", async (req, res) => {
   try {
     const { userId } = req.params;
-    
-    const member = await storage.getTeamMember(req.user!.companyId, userId);
+
+    const member = await storage.getTeamMember(req.companyId, userId);
     if (!member) {
       return res.status(404).json({ error: "Team member not found" });
     }
-    
-    const updated = await storage.updateTeamMember(req.user!.companyId, userId, {
+
+    const updated = await storage.updateTeamMember(req.companyId, userId, {
       status: 'active'
     });
-    
+
     if (!updated) {
       return res.status(404).json({ error: "Team member not found" });
     }
-    
+
     res.json({ ...updated, password: undefined });
   } catch (error) {
     console.error('Activate team member error:', error);
@@ -121,17 +114,17 @@ router.post("/:userId/activate", isAuthenticated, async (req, res) => {
   }
 });
 
-router.put("/:userId/profile", isAuthenticated, async (req, res) => {
+router.put("/:userId/profile", async (req, res) => {
   try {
     const { userId } = req.params;
-    
-    const member = await storage.getTeamMember(req.user!.companyId, userId);
+
+    const member = await storage.getTeamMember(req.companyId, userId);
     if (!member) {
       return res.status(404).json({ error: "Team member not found" });
     }
-    
+
     const { laborCostPerHour, billableRatePerHour, color, phone, note } = req.body;
-    
+
     const profile = await storage.upsertTechnicianProfile(userId, {
       laborCostPerHour,
       billableRatePerHour,
@@ -139,7 +132,7 @@ router.put("/:userId/profile", isAuthenticated, async (req, res) => {
       phone,
       note,
     });
-    
+
     res.json(profile);
   } catch (error) {
     console.error('Update technician profile error:', error);
@@ -147,20 +140,20 @@ router.put("/:userId/profile", isAuthenticated, async (req, res) => {
   }
 });
 
-router.put("/:userId/working-hours", isAuthenticated, async (req, res) => {
+router.put("/:userId/working-hours", async (req, res) => {
   try {
     const { userId } = req.params;
-    
-    const member = await storage.getTeamMember(req.user!.companyId, userId);
+
+    const member = await storage.getTeamMember(req.companyId, userId);
     if (!member) {
       return res.status(404).json({ error: "Team member not found" });
     }
-    
+
     const { hours } = req.body;
     if (!Array.isArray(hours)) {
       return res.status(400).json({ error: "hours must be an array" });
     }
-    
+
     const workingHours = await storage.setWorkingHours(userId, hours);
     res.json(workingHours);
   } catch (error) {
@@ -169,20 +162,20 @@ router.put("/:userId/working-hours", isAuthenticated, async (req, res) => {
   }
 });
 
-router.put("/:userId/permissions", isAuthenticated, async (req, res) => {
+router.put("/:userId/permissions", async (req, res) => {
   try {
     const { userId } = req.params;
-    
-    const member = await storage.getTeamMember(req.user!.companyId, userId);
+
+    const member = await storage.getTeamMember(req.companyId, userId);
     if (!member) {
       return res.status(404).json({ error: "Team member not found" });
     }
-    
+
     const { overrides } = req.body;
     if (!Array.isArray(overrides)) {
       return res.status(400).json({ error: "overrides must be an array" });
     }
-    
+
     await storage.setUserPermissionOverrides(userId, overrides);
     const updated = await storage.getUserPermissionOverrides(userId);
     res.json(updated);
@@ -192,15 +185,15 @@ router.put("/:userId/permissions", isAuthenticated, async (req, res) => {
   }
 });
 
-router.get("/:userId/effective-permissions", isAuthenticated, async (req, res) => {
+router.get("/:userId/effective-permissions", async (req, res) => {
   try {
     const { userId } = req.params;
-    
-    const member = await storage.getTeamMember(req.user!.companyId, userId);
+
+    const member = await storage.getTeamMember(req.companyId, userId);
     if (!member) {
       return res.status(404).json({ error: "Team member not found" });
     }
-    
+
     const { getUserEffectivePermissions } = await import("../permissions");
     const permissionSet = await getUserEffectivePermissions(userId);
     res.json(Array.from(permissionSet));
