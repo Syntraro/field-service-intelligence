@@ -219,8 +219,18 @@ export class JobRepository extends BaseRepository {
   /**
    * Create job part
    */
-  async createJobPart(jobId: string, partData: InsertJobPart): Promise<JobPart> {
+  /**
+   * Create job part
+   */
+  async createJobPart(companyId: string, jobId: string, partData: InsertJobPart): Promise<JobPart> {
+    this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
+
+    // Ensure the job belongs to this company (prevents cross-tenant writes via jobId)
+    const job = await this.getJob(companyId, jobId);
+    if (!job) {
+      throw this.notFoundError("Job");
+    }
 
     const rows = await db
       .insert(jobParts)
@@ -233,8 +243,33 @@ export class JobRepository extends BaseRepository {
   /**
    * Update job part
    */
-  async updateJobPart(partId: string, patch: Partial<InsertJobPart>): Promise<JobPart | null> {
+  /**
+   * Update job part
+   */
+  async updateJobPart(companyId: string, partId: string, patch: Partial<InsertJobPart>): Promise<JobPart | null> {
+    this.assertCompanyId(companyId);
     this.validateUUID(partId, "partId");
+
+    // Tenant ownership check:
+    // - If jobParts has companyId, filter directly
+    // - Otherwise, join through jobs (jobParts -> jobs) and verify jobs.companyId
+    const jpCompanyCol = (jobParts as any).companyId;
+    const ownership = jpCompanyCol
+      ? await db
+          .select({ id: jobParts.id })
+          .from(jobParts)
+          .where(and(eq(jobParts.id, partId), eq(jpCompanyCol, companyId)))
+          .limit(1)
+      : await db
+          .select({ id: jobParts.id })
+          .from(jobParts)
+          .innerJoin(jobs, eq(jobParts.jobId, jobs.id))
+          .where(and(eq(jobParts.id, partId), eq(jobs.companyId, companyId)))
+          .limit(1);
+
+    if (!ownership[0]) {
+      return null;
+    }
 
     const rows = await db
       .update(jobParts)
@@ -248,8 +283,30 @@ export class JobRepository extends BaseRepository {
   /**
    * Delete job part (soft delete)
    */
-  async deleteJobPart(partId: string): Promise<boolean> {
+  /**
+   * Delete job part (soft delete)
+   */
+  async deleteJobPart(companyId: string, partId: string): Promise<boolean> {
+    this.assertCompanyId(companyId);
     this.validateUUID(partId, "partId");
+
+    const jpCompanyCol = (jobParts as any).companyId;
+    const ownership = jpCompanyCol
+      ? await db
+          .select({ id: jobParts.id })
+          .from(jobParts)
+          .where(and(eq(jobParts.id, partId), eq(jpCompanyCol, companyId)))
+          .limit(1)
+      : await db
+          .select({ id: jobParts.id })
+          .from(jobParts)
+          .innerJoin(jobs, eq(jobParts.jobId, jobs.id))
+          .where(and(eq(jobParts.id, partId), eq(jobs.companyId, companyId)))
+          .limit(1);
+
+    if (!ownership[0]) {
+      return false;
+    }
 
     const rows = await db
       .update(jobParts)
@@ -295,55 +352,126 @@ export class JobRepository extends BaseRepository {
   /**
    * Create job equipment link
    */
-  async createJobEquipment(jobId: string, data: { jobId: string; equipmentId: string; notes?: string | null }) {
+  /**
+   * Create job equipment link
+   */
+  async createJobEquipment(
+    companyId: string,
+    jobId: string,
+    data: { equipmentId: string; notes?: string | null }
+  ) {
+    this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
     this.validateUUID(data.equipmentId, "equipmentId");
 
+    const job = await this.getJob(companyId, jobId);
+    if (!job) {
+      throw this.notFoundError("Job");
+    }
+
     const rows = await db
       .insert(jobEquipment)
-      .values(data)
+      .values({ ...data, jobId })
       .returning();
+
     return rows[0];
   }
 
   /**
    * Update job equipment
    */
-  async updateJobEquipment(jobEquipmentId: string, patch: { notes?: string | null }) {
+  /**
+   * Update job equipment
+   */
+  async updateJobEquipment(companyId: string, jobEquipmentId: string, patch: any) {
+    this.assertCompanyId(companyId);
     this.validateUUID(jobEquipmentId, "jobEquipmentId");
+
+    const jeCompanyCol = (jobEquipment as any).companyId;
+    const ownership = jeCompanyCol
+      ? await db
+          .select({ id: jobEquipment.id })
+          .from(jobEquipment)
+          .where(and(eq(jobEquipment.id, jobEquipmentId), eq(jeCompanyCol, companyId)))
+          .limit(1)
+      : await db
+          .select({ id: jobEquipment.id })
+          .from(jobEquipment)
+          .innerJoin(jobs, eq(jobEquipment.jobId, jobs.id))
+          .where(and(eq(jobEquipment.id, jobEquipmentId), eq(jobs.companyId, companyId)))
+          .limit(1);
+
+    if (!ownership[0]) {
+      return null;
+    }
 
     const rows = await db
       .update(jobEquipment)
       .set({ ...patch, updatedAt: new Date() })
       .where(eq(jobEquipment.id, jobEquipmentId))
       .returning();
+
     return rows[0] ?? null;
   }
 
   /**
    * Delete job equipment link
    */
-  async deleteJobEquipment(jobEquipmentId: string): Promise<boolean> {
+  /**
+   * Delete job equipment link
+   */
+  async deleteJobEquipment(companyId: string, jobEquipmentId: string): Promise<boolean> {
+    this.assertCompanyId(companyId);
     this.validateUUID(jobEquipmentId, "jobEquipmentId");
+
+    const jeCompanyCol = (jobEquipment as any).companyId;
+    const ownership = jeCompanyCol
+      ? await db
+          .select({ id: jobEquipment.id })
+          .from(jobEquipment)
+          .where(and(eq(jobEquipment.id, jobEquipmentId), eq(jeCompanyCol, companyId)))
+          .limit(1)
+      : await db
+          .select({ id: jobEquipment.id })
+          .from(jobEquipment)
+          .innerJoin(jobs, eq(jobEquipment.jobId, jobs.id))
+          .where(and(eq(jobEquipment.id, jobEquipmentId), eq(jobs.companyId, companyId)))
+          .limit(1);
+
+    if (!ownership[0]) {
+      return false;
+    }
 
     const result = await db
       .delete(jobEquipment)
       .where(eq(jobEquipment.id, jobEquipmentId))
       .returning();
+
     return result.length > 0;
   }
 
   /**
    * Get location equipment item
    */
-  async getLocationEquipmentItem(equipmentId: string) {
+  /**
+   * Get location equipment item
+   */
+  async getLocationEquipmentItem(companyId: string, equipmentId: string) {
+    this.assertCompanyId(companyId);
     this.validateUUID(equipmentId, "equipmentId");
+
+    const companyCol = (locationEquipment as any).companyId;
+
+    const whereCond = companyCol
+      ? and(eq(locationEquipment.id, equipmentId), eq(companyCol, companyId))
+      : eq(locationEquipment.id, equipmentId);
 
     const rows = await db
       .select()
       .from(locationEquipment)
-      .where(eq(locationEquipment.id, equipmentId))
+      .where(whereCond as any)
       .limit(1);
+
     return rows[0] ?? null;
   }
 

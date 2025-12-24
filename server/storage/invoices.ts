@@ -78,11 +78,14 @@ export class InvoiceRepository extends BaseRepository {
       .returning();
 
     // Recalculate invoice totals
-    await this.recalculateInvoiceTotals(invoiceId);
+    await this.recalculateInvoiceTotals(companyId, invoiceId);
 
     return rows[0];
   }
 
+  /**
+   * Delete invoice line
+   */
   /**
    * Delete invoice line
    */
@@ -95,22 +98,45 @@ export class InvoiceRepository extends BaseRepository {
 
     const result = await db
       .delete(invoiceLines)
-      .where(eq(invoiceLines.id, lineId))
+      .where(and(eq(invoiceLines.id, lineId), eq(invoiceLines.invoiceId, invoiceId)))
       .returning();
 
-    // Recalculate invoice totals
-    await this.recalculateInvoiceTotals(invoiceId);
-
-    return { success: result.length > 0 };
-  }
-
+    // Recalculate invoice totals (tenant-scoped update)
+    await this.recalculateInvoiceTotals(companyId, invoi
   /**
    * Recalculate invoice totals from line items
    */
-  private async recalculateInvoiceTotals(invoiceId: string): Promise<void> {
+  private async recalculateInvoiceTotals(companyId: string, invoiceId: string): Promise<void> {
     const lines = await db
       .select()
       .from(invoiceLines)
+      .where(eq(invoiceLines.invoiceId, invoiceId));
+
+    let subtotal = 0;
+    let taxTotal = 0;
+
+    for (const line of lines) {
+      const lineSubtotal = parseFloat(line.lineSubtotal || "0");
+      const taxRate = parseFloat(line.taxRate || "0");
+      const lineTax = lineSubtotal * taxRate;
+
+      subtotal += lineSubtotal;
+      taxTotal += lineTax;
+    }
+
+    const total = subtotal + taxTotal;
+
+    await db
+      .update(invoices)
+      .set({
+        subtotal: subtotal.toFixed(2),
+        taxTotal: taxTotal.toFixed(2),
+        total: total.toFixed(2),
+        updatedAt: new Date(),
+      })
+      .where(and(eq(invoices.id, invoiceId), eq(invoices.companyId, companyId)));
+  }
+ines)
       .where(eq(invoiceLines.invoiceId, invoiceId));
 
     let subtotal = 0;
