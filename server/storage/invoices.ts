@@ -86,9 +86,6 @@ export class InvoiceRepository extends BaseRepository {
   /**
    * Delete invoice line
    */
-  /**
-   * Delete invoice line
-   */
   async deleteInvoiceLine(companyId: string, invoiceId: string, lineId: string) {
     // Verify invoice belongs to company
     const invoice = await this.getInvoice(companyId, invoiceId);
@@ -102,7 +99,11 @@ export class InvoiceRepository extends BaseRepository {
       .returning();
 
     // Recalculate invoice totals (tenant-scoped update)
-    await this.recalculateInvoiceTotals(companyId, invoi
+    await this.recalculateInvoiceTotals(companyId, invoiceId);
+
+    return result[0] ?? null;
+  }
+
   /**
    * Recalculate invoice totals from line items
    */
@@ -135,33 +136,6 @@ export class InvoiceRepository extends BaseRepository {
         updatedAt: new Date(),
       })
       .where(and(eq(invoices.id, invoiceId), eq(invoices.companyId, companyId)));
-  }
-ines)
-      .where(eq(invoiceLines.invoiceId, invoiceId));
-
-    let subtotal = 0;
-    let taxTotal = 0;
-
-    for (const line of lines) {
-      const lineSubtotal = parseFloat(line.lineSubtotal || "0");
-      const taxRate = parseFloat(line.taxRate || "0");
-      const lineTax = lineSubtotal * taxRate;
-
-      subtotal += lineSubtotal;
-      taxTotal += lineTax;
-    }
-
-    const total = subtotal + taxTotal;
-
-    await db
-      .update(invoices)
-      .set({
-        subtotal: subtotal.toFixed(2),
-        taxTotal: taxTotal.toFixed(2),
-        total: total.toFixed(2),
-        updatedAt: new Date(),
-      })
-      .where(eq(invoices.id, invoiceId));
   }
 
   /**
