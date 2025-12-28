@@ -86,3 +86,140 @@ export const invoiceLineItemSchema = z.object({
 });
 
 export type InvoiceLineItemInput = z.infer<typeof invoiceLineItemSchema>;
+import {
+  pgEnum,
+  pgTable,
+  uuid,
+  text,
+  timestamp,
+  boolean,
+  index,
+} from "drizzle-orm/pg-core";
+
+/* =========================================================
+   TASKS
+   ========================================================= */
+
+import {
+  pgEnum,
+  pgTable,
+  uuid,
+  text,
+  timestamp,
+  boolean,
+  index,
+} from "drizzle-orm/pg-core";
+
+/* =========================================================
+   TASK ENUMS
+   ========================================================= */
+
+export const taskTypeEnum = pgEnum("task_type", [
+  "GENERAL",
+  "SUPPLIER_VISIT",
+]);
+
+export const taskStatusEnum = pgEnum("task_status", [
+  "OPEN",
+  "CLOSED",
+]);
+
+/* =========================================================
+   TASKS
+   ========================================================= */
+
+export const tasks = pgTable(
+  "tasks",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+
+    companyId: uuid("company_id").notNull(),
+    createdByUserId: uuid("created_by_user_id").notNull(),
+    assignedToUserId: uuid("assigned_to_user_id"),
+
+    type: taskTypeEnum("type").notNull(),
+
+    title: text("title").notNull(),
+    notes: text("notes"),
+
+    status: taskStatusEnum("status")
+      .notNull()
+      .default("OPEN"),
+
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    closedByUserId: uuid("closed_by_user_id"),
+
+    scheduledStartAt: timestamp("scheduled_start_at", { withTimezone: true }),
+    scheduledEndAt: timestamp("scheduled_end_at", { withTimezone: true }),
+    allDay: boolean("all_day").notNull().default(false),
+
+    checkedInAt: timestamp("checked_in_at", { withTimezone: true }),
+    checkedOutAt: timestamp("checked_out_at", { withTimezone: true }),
+
+    jobId: uuid("job_id"),
+
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => ({
+    companyStatusIdx: index("tasks_company_status_idx").on(
+      t.companyId,
+      t.status
+    ),
+    companyAssignedIdx: index("tasks_company_assigned_idx").on(
+      t.companyId,
+      t.assignedToUserId
+    ),
+    companyTypeIdx: index("tasks_company_type_idx").on(
+      t.companyId,
+      t.type
+    ),
+  })
+);
+
+/* =========================================================
+   SUPPLIERS
+   ========================================================= */
+
+export const suppliers = pgTable("suppliers", {
+  id: uuid("id").defaultRandom().primaryKey(),
+
+  companyId: uuid("company_id").notNull(),
+  name: text("name").notNull(),
+
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+/* =========================================================
+   SUPPLIER VISIT DETAILS (1:1 WITH TASK)
+   ========================================================= */
+
+export const supplierVisitDetails = pgTable("supplier_visit_details", {
+  taskId: uuid("task_id").primaryKey(),
+
+  supplierId: uuid("supplier_id"),
+  supplierNameOther: text("supplier_name_other"),
+  poNumber: text("po_number"),
+
+  reconciledAt: timestamp("reconciled_at", { withTimezone: true }),
+  reconciledByUserId: uuid("reconciled_by_user_id"),
+
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});

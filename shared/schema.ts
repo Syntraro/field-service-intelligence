@@ -1470,6 +1470,120 @@ export type JobTemplateWithLines = z.infer<typeof jobTemplateWithLinesSchema>;
 export const applyJobTemplateSchema = z.object({
   templateId: z.string().min(1, "Template ID is required"),
 });
+// ============================================================================
+// TASKS (General + Supplier Visit)
+// - Status is only OPEN / CLOSED
+// - Assignment is optional (unassigned tasks allowed)
+// - Actual time tracking is checkIn/checkOut timestamps
+// - Supplier visits can be created without selecting supplier, then reconciled later
+// ============================================================================
+
+export const taskTypeEnum = ["GENERAL", "SUPPLIER_VISIT"] as const;
+export type TaskType = typeof taskTypeEnum[number];
+
+export const taskStatusEnum = ["OPEN", "CLOSED"] as const;
+export type TaskStatus = typeof taskStatusEnum[number];
+
+export const tasks = pgTable("tasks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+
+  // Optional assignment (can be unassigned until later)
+  assignedToUserId: varchar("assigned_to_user_id").references(() => users.id, { onDelete: "set null" }),
+
+  type: text("type").notNull(), // GENERAL | SUPPLIER_VISIT
+  title: text("title").notNull(),
+  notes: text("notes"),
+
+  status: text("status").notNull().default("OPEN"), // OPEN | CLOSED
+
+  // Close metadata
+  closedAt: timestamp("closed_at"),
+  closedByUserId: varchar("closed_by_user_id").references(() => users.id, { onDelete: "set null" }),
+
+  // Optional calendar planning (not coupled to calendar module yet)
+  scheduledStartAt: timestamp("scheduled_start_at"),
+  scheduledEndAt: timestamp("scheduled_end_at"),
+  allDay: boolean("all_day").notNull().default(false),
+
+  // Actual time tracking (source of truth)
+  checkedInAt: timestamp("checked_in_at"),
+  checkedOutAt: timestamp("checked_out_at"),
+
+  // Optional attribution to a Job (does NOT create billing or calendar coupling)
+  jobId: varchar("job_id").references(() => jobs.id, { onDelete: "set null" }),
+
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+});
+
+export const insertTaskSchema = createInsertSchema(tasks).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  type: z.enum(taskTypeEnum),
+  status: z.enum(taskStatusEnum).default("OPEN"),
+});
+
+export type InsertTask = z.infer<typeof insertTaskSchema>;
+export type Task = typeof tasks.$inferSelect;
+
+// ============================================================================
+// SUPPLIERS (minimal v1)
+// ============================================================================
+
+export const suppliers = pgTable("suppliers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+});
+
+export const insertSupplierSchema = createInsertSchema(suppliers).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertSupplier = z.infer<typeof insertSupplierSchema>;
+export type Supplier = typeof suppliers.$inferSelect;
+
+// ============================================================================
+// SUPPLIER VISIT DETAILS (1:1 extension of a Task where type=SUPPLIER_VISIT)
+// - Supplier can be null initially; office can reconcile later
+// ============================================================================
+
+export const supplierVisitDetails = pgTable("supplier_visit_details", {
+  // 1:1 with tasks; taskId is the PK
+  taskId: varchar("task_id").primaryKey().references(() => tasks.id, { onDelete: "cascade" }),
+
+  supplierId: varchar("supplier_id").references(() => suppliers.id, { onDelete: "set null" }),
+  supplierNameOther: text("supplier_name_other"), // tech may type supplier name if not in system yet
+  poNumber: text("po_number"),
+
+  reconciledAt: timestamp("reconciled_at"),
+  reconciledByUserId: varchar("reconciled_by_user_id").references(() => users.id, { onDelete: "set null" }),
+
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+});
+
+export const insertSupplierVisitDetailsSchema = createInsertSchema(supplierVisitDetails).omit({
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  // supplierId OR supplierNameOther can be present; validation can be enforced at route/service layer
+  supplierId: z.string().nullable().optional(),
+  supplierNameOther: z.string().nullable().optional(),
+  poNumber: z.string().nullable().optional(),
+});
+
+export type InsertSupplierVisitDetails = z.infer<typeof insertSupplierVisitDetailsSchema>;
+export type SupplierVisitDetails = typeof supplierVisitDetails.$inferSelect;
 
 // ============================================================================
 // SESSION TABLE (used by express-session / passport store)

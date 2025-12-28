@@ -1,0 +1,137 @@
+✅ REPLIT AGENT PROMPT — TASKS MODULE IMPLEMENTED (CANONICAL, DO NOT REFRACTOR)
+
+We completed the backend implementation for a new Tasks module. This message is documentation/context only. Do not refactor, “improve,” or auto-complete beyond what is listed.
+
+What we added / changed (canonical)
+1) Database schema (Drizzle) — shared/schema.ts
+
+We appended new tables and schemas without modifying existing tables:
+
+New enums (as const arrays):
+
+taskTypeEnum: ["GENERAL", "SUPPLIER_VISIT"]
+
+taskStatusEnum: ["OPEN", "CLOSED"]
+
+New tables:
+
+tasks
+
+status is only OPEN / CLOSED
+
+assignment is optional (assignedToUserId nullable)
+
+scheduling fields are optional (scheduledStartAt, scheduledEndAt, allDay) but not wired to Calendar yet
+
+actual time tracking is via checkedInAt / checkedOutAt
+
+optional attribution jobId (nullable) — does not drive billing or calendar
+
+suppliers
+
+minimal v1 (name only, tenant-scoped by companyId)
+
+supplier_visit_details
+
+1:1 extension for supplier visit tasks
+
+can be created with no supplier selected
+
+supports later office reconciliation: supplierId, supplierNameOther, poNumber, reconciledAt, reconciledByUserId
+
+New insert schemas + types:
+
+insertTaskSchema, InsertTask, Task
+
+insertSupplierSchema, InsertSupplier, Supplier
+
+insertSupplierVisitDetailsSchema, InsertSupplierVisitDetails, SupplierVisitDetails
+
+Placement note:
+These were added immediately before the SESSION TABLE block at the bottom of shared/schema.ts.
+
+2) Service layer — server/services/tasks.service.ts
+
+Implemented full workflow functions (no calendar coupling):
+
+createTask(input)
+
+if type === "SUPPLIER_VISIT", creates supplier_visit_details row (supplier can be null)
+
+listTasks(filters)
+
+supports filters: companyId, status, unassigned, assignedToUserId, type, jobId, fromDate, toDate
+
+assignTask(taskId, assignedToUserId | null) (assign/reassign/unassign)
+
+checkInTask(taskId) (sets checkedInAt if missing)
+
+checkOutTask(taskId) (requires checkedInAt first; sets checkedOutAt)
+
+closeTask(taskId, userId) (sets status CLOSED + closedAt/closedBy)
+
+updateTask(taskId, input) (admin-safe edits: title/notes/schedule/jobId)
+
+updateSupplierVisit(taskId, input) (office reconciliation; optional reconcile flag)
+
+Important: Drizzle table imports come from ../../shared/schema.ts (not server/schema).
+
+3) Routes — server/routes/tasks.routes.ts
+
+Registered endpoints under /api/tasks:
+
+POST /api/tasks (create)
+
+GET /api/tasks (list with query filters)
+
+POST /api/tasks/:id/assign
+
+POST /api/tasks/:id/check-in
+
+POST /api/tasks/:id/check-out
+
+POST /api/tasks/:id/close
+
+PATCH /api/tasks/:id (admin update)
+
+PATCH /api/tasks/:id/supplier-visit (reconcile supplier visit details)
+
+4) Route registration — server/routes/index.ts
+
+Tasks routes are registered in the centralized router system (do not modify server/routes.ts re-export pattern).
+
+Current design intent (do not change)
+
+Tasks are standalone backend for now.
+
+No direct Calendar integration yet.
+
+No automatic billing or invoice/job syncing.
+
+jobId is optional attribution only.
+
+Supplier Visits can be created without a supplier and later reconciled by office staff.
+
+DO NOT DO
+
+Do not wire Tasks into Calendar.
+
+Do not add invoice/billing logic.
+
+Do not refactor schema placement or rename tables/fields.
+
+Do not generate frontend UI for Tasks unless explicitly requested.
+
+Do not change status model (must remain OPEN/CLOSED only).
+
+Next phase (manual, not automatic)
+
+We will later decide:
+
+whether Tasks project into Calendar as read-only events
+
+whether to introduce a time_entries table or keep timestamps on tasks
+
+how to associate supplier visits to jobs in reporting
+
+For now, preserve implementation exactly as canonical.

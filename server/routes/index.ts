@@ -25,7 +25,6 @@ import { impersonationMiddleware, trackActivity } from "../impersonationMiddlewa
 import { storage } from "../storage/index";
 import tasksRoutes from "./tasks.routes";
 
-
 /**
  * Register all API routes in a single place.
  * This is the authoritative route map for the backend.
