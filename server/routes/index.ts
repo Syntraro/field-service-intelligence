@@ -17,6 +17,7 @@ import companySettingsRouter from "./companySettings";
 import maintenanceRouter from "./maintenance";
 import subscriptionsRouter from "./subscriptions";
 import impersonationRouter from "./impersonation";
+import authRouter from "./auth";
 
 import { requireAuth } from "../auth/requireAuth";
 import { ensureTenantContext, rateLimitPerTenant } from "../auth/tenantIsolation";
@@ -28,7 +29,15 @@ import { storage } from "../storage/index";
  * This is the authoritative route map for the backend.
  */
 export function registerRoutes(app: Express): Server {
-  // Order matters:
+  // ========================================
+  // CRITICAL: Auth routes MUST come FIRST
+  // ========================================
+  app.use("/api/auth", authRouter);
+
+  // ========================================
+  // GLOBAL MIDDLEWARE (after auth routes)
+  // ========================================
+
   // 1) Auth guard (API only)
   app.use(requireAuth);
 
@@ -42,7 +51,10 @@ export function registerRoutes(app: Express): Server {
   app.use(impersonationMiddleware(storage as any));
   app.use(trackActivity);
 
-  // Mount routers
+  // ========================================
+  // PROTECTED ROUTES (after middleware)
+  // ========================================
+
   app.use("/api/jobs", jobsRouter);
   app.use("/api/invoices", invoicesRouter);
   app.use("/api/team", teamRouter);

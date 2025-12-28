@@ -41,8 +41,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const loginMutation = useMutation({
     mutationFn: async ({ email, password }: { email: string; password: string }) => {
-      const response = await apiRequest("POST", "/api/auth/login", { email, username: email, password });
-      return await response.json() as User;
+      // Fixed: Use correct apiRequest signature (url, options)
+      return await apiRequest<User>("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
     },
     onSuccess: (userData) => {
       setUser(userData);
@@ -52,8 +56,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signupMutation = useMutation({
     mutationFn: async ({ email, password }: { email: string; password: string }) => {
-      const response = await apiRequest("POST", "/api/auth/signup", { email, username: email, password });
-      return await response.json() as User;
+      // Fixed: Use correct apiRequest signature (url, options)
+      return await apiRequest<User>("/api/auth/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
     },
     onSuccess: (userData) => {
       setUser(userData);
@@ -63,7 +71,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logoutMutation = useMutation({
     mutationFn: async () => {
-      await apiRequest("POST", "/api/auth/logout");
+      // Fixed: Use correct apiRequest signature (url, options)
+      await apiRequest("/api/auth/logout", {
+        method: "POST",
+      });
     },
     onMutate: () => {
       setUser(null);

@@ -10,6 +10,7 @@ import path from "path";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import passport from "passport";
+import "./auth";  // Register passport strategies
 
 /**
  * Production security defaults.
@@ -82,7 +83,7 @@ app.use(
     }),
     secret: sessionSecret ?? "dev-secret",
     resave: false,
-    saveUninitialized: false,
+    saveUninitialized: true, // ← Create session even before login for CSRF
     cookie: {
       httpOnly: true,
       secure: IS_PROD,
@@ -102,6 +103,12 @@ const csrfProtection = csrf({
   cookie: false // Use session storage instead of cookies
 });
 
+// CSRF token endpoint - MUST come before the conditional CSRF middleware
+// This endpoint needs csrfProtection to run so it can generate the token
+app.get('/api/csrf-token', csrfProtection, (req, res) => {
+  res.json({ csrfToken: (req as any).csrfToken() });
+});
+
 // Apply CSRF to state-changing requests
 app.use('/api', (req, res, next) => {
   // Skip CSRF for:
@@ -109,25 +116,19 @@ app.use('/api', (req, res, next) => {
   // 2. Public endpoints
   const safeMethods = ['GET', 'HEAD', 'OPTIONS'];
   const publicEndpoints = [
-    '/api/auth/login',
-    '/api/auth/logout',
-    '/api/invitations/accept',
-    '/api/health',
-    '/api/csrf-token'
+    '/auth/login',
+    '/auth/logout',
+    '/invitations/accept',
+    '/health',
   ];
 
   if (safeMethods.includes(req.method) || 
-      publicEndpoints.some(endpoint => req.path.startsWith(endpoint))) {
+      publicEndpoints.some(endpoint => req.path === endpoint)) {
     return next();
   }
 
   // Apply CSRF protection to all other API requests
   return csrfProtection(req, res, next);
-});
-
-// CSRF token endpoint (must be before requireAuth)
-app.get('/api/csrf-token', (req, res) => {
-  res.json({ csrfToken: (req as any).csrfToken() });
 });
 
 // Log requests
