@@ -1,0 +1,108 @@
+🛑 REPLIT AGENT INSTRUCTION — CONTEXT ONLY (DO NOT IMPLEMENT)
+
+Important: The following is architectural context only.
+Do NOT attempt to fix, complete, refactor, or remove anything described below.
+
+Backend Tasks Module – In-Progress Scaffolding (Intentional)
+
+We have begun Phase 1: backend architectural scaffolding for a new module called Tasks.
+This work is intentionally incomplete and expected to cause runtime/server errors at this stage.
+
+This is NOT a bug.
+
+What was intentionally added
+
+The following backend components were created for structure definition only:
+
+Database schema
+
+tasks
+
+supplier_visit_details
+
+suppliers
+
+Enums:
+
+task_type → GENERAL | SUPPLIER_VISIT
+
+task_status → OPEN | CLOSED
+
+Backend code
+
+tasks.service.ts (service layer, partial)
+
+tasks.routes.ts (routes, partial)
+
+/api/tasks registered in server/routes/index.ts
+
+These files exist only to define domain boundaries and intent.
+
+Why the server may crash right now (expected behavior)
+
+The server is currently unstable because:
+
+Migrations may not yet be applied
+
+Auth / permission guards are not wired
+
+GET/list endpoints are not implemented
+
+Validation is partial
+
+Tasks are not yet integrated with Jobs, Invoices, or Calendar (by design)
+
+This instability is expected and acceptable during this phase.
+
+DO NOT do the following
+
+The Replit Agent must not:
+
+Remove or comment out Tasks routes
+
+Attempt to auto-complete missing logic
+
+Infer or implement Calendar / Job / Invoice coupling
+
+Generate frontend code for Tasks
+
+Refactor the Tasks schema or services
+
+“Fix” crashes by deleting references
+
+Any of the above would introduce architectural debt.
+
+Current development phase
+
+Phase 1 – Backend Scaffolding & Domain Definition
+
+Goals of this phase:
+
+Define data models
+
+Define lifecycle actions (create, check-in, check-out, close)
+
+Keep Tasks fully decoupled from Calendar / Jobs / Invoices
+
+Allow controlled integration later
+
+The backend is not expected to be production-stable yet.
+
+Upcoming phases (for awareness only)
+
+Add guarded GET/list endpoints
+
+Add role-based permissions
+
+Apply migrations in a controlled order
+
+Evaluate Calendar + Job linkage after hardening
+
+These steps will be handled manually.
+
+Final instruction
+
+Treat the Tasks module as intentional, in-progress scaffolding.
+Preserve all added files and references exactly as they are.
+
+No automated fixes or completions should be attempted.

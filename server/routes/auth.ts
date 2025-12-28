@@ -8,15 +8,26 @@ const router = Router();
  * POST /api/auth/login
  * Authenticate user with email and password
  */
-router.post("/login", passport.authenticate("local"), (req: Request, res: Response) => {
-  // If we get here, authentication succeeded
-  // req.user is set by passport
-  res.json({
-    id: req.user!.id,
-    email: req.user!.email,
-    role: req.user!.role,
-    companyId: req.user!.companyId,
-  });
+router.post("/login", (req: Request, res: Response, next) => {
+  passport.authenticate("local", (err: any, user: any, info: any) => {
+    if (err) {
+      return res.status(500).json({ error: "Authentication error" });
+    }
+    if (!user) {
+      return res.status(401).json({ error: info?.message || "Invalid email or password" });
+    }
+    req.logIn(user, (loginErr) => {
+      if (loginErr) {
+        return res.status(500).json({ error: "Login error" });
+      }
+      res.json({
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        companyId: user.companyId,
+      });
+    });
+  })(req, res, next);
 });
 
 /**
