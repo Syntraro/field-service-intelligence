@@ -23,7 +23,8 @@ import { requireAuth } from "../auth/requireAuth";
 import { ensureTenantContext, rateLimitPerTenant } from "../auth/tenantIsolation";
 import { impersonationMiddleware, trackActivity } from "../impersonationMiddleware";
 import { storage } from "../storage/index";
-import tasksRoutes from "./tasks.routes";
+// TODO: Re-enable when tasks schema is implemented
+// import tasksRoutes from "./tasks.routes";
 
 
 /**
@@ -73,7 +74,9 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/maintenance", maintenanceRouter);
   app.use("/api/subscriptions", subscriptionsRouter);
   app.use("/api/impersonation", impersonationRouter);
-  app.use("/api/tasks", tasksRoutes);
+  // TODO: Re-enable when tasks schema is implemented
+  // app.use("/api/tasks", tasksRoutes);
+
   // Create and return HTTP server
   const httpServer = createServer(app);
   return httpServer;
