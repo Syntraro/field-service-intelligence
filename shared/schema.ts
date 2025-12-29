@@ -190,6 +190,8 @@ export const clients = pgTable("clients", {
   qboParentCustomerId: text("qbo_parent_customer_id"), // QBO parent Customer.Id (mirrors QBO ParentRef)
   qboSyncToken: text("qbo_sync_token"), // QBO Sub-Customer.SyncToken
   qboLastSyncedAt: timestamp("qbo_last_synced_at"),
+  // Optimistic locking
+  version: integer("version").notNull().default(0), // Incremented on every update
   // Metadata
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
@@ -275,8 +277,8 @@ export const maintenanceRecords = pgTable("maintenance_records", {
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   clientId: varchar("client_id").notNull().references(() => clients.id, { onDelete: "cascade" }),
-  dueDate: text("due_date").notNull(),
-  completedAt: text("completed_at"),
+  dueDate: date("due_date").notNull(), // FIXED: Changed from text() to date()
+  completedAt: timestamp("completed_at"), // FIXED: Changed from text() to timestamp()
 });
 
 export const insertMaintenanceRecordSchema = createInsertSchema(maintenanceRecords).omit({
@@ -298,7 +300,7 @@ export const calendarAssignments = pgTable("calendar_assignments", {
   year: integer("year").notNull(),
   month: integer("month").notNull(),
   day: integer("day"),
-  scheduledDate: text("scheduled_date").notNull(),
+  scheduledDate: date("scheduled_date").notNull(), // FIXED: Changed from text() to date()
   scheduledHour: integer("scheduled_hour"),
   scheduledStartMinutes: integer("scheduled_start_minutes"), // Time of day in minutes (0-1439), e.g., 540 = 9:00 AM
   durationMinutes: integer("duration_minutes").default(60), // Duration in minutes (15-minute increments), default 60
@@ -334,7 +336,7 @@ export const updateCalendarAssignmentSchema = z.object({
   year: z.number().int().optional(),
   month: z.number().int().min(1).max(12).optional(),
   day: z.number().int().min(1).max(31).nullable().optional(),
-  scheduledDate: z.string().nullable().optional(),
+  scheduledDate: z.date().nullable().optional(), // FIXED: Changed from z.string() to z.date()
   scheduledHour: z.number().int().min(0).max(23).nullable().optional(),
   scheduledStartMinutes: z.number().int().min(0).max(1439).nullable().optional(), // 0-1439 (minutes in a day)
   durationMinutes: z.number().int().min(15).max(720).nullable().optional(), // 15 min to 12 hours
@@ -682,6 +684,8 @@ export const invoices = pgTable("invoices", {
   // Status
   dirty: boolean("dirty").notNull().default(false), // True if edited after last sync
   isActive: boolean("is_active").notNull().default(true), // Soft delete / void
+  // Optimistic locking
+  version: integer("version").notNull().default(0), // Incremented on every update
   // Metadata
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
@@ -959,6 +963,8 @@ export const jobs = pgTable("jobs", {
   calendarAssignmentId: varchar("calendar_assignment_id").references(() => calendarAssignments.id, { onDelete: "set null" }),
   // Soft deletion / state
   isActive: boolean("is_active").notNull().default(true),
+  // Optimistic locking
+  version: integer("version").notNull().default(0), // Incremented on every update
   // Metadata
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),

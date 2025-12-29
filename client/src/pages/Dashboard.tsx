@@ -135,9 +135,11 @@ export default function Dashboard() {
     }
   };
 
-  const { data: dbClients = [], isLoading } = useQuery<DBClient[]>({
+  const { data: clientsResponse, isLoading } = useQuery<{ data: DBClient[], pagination: any }>({
     queryKey: ["/api/clients"],
   });
+
+  const dbClients = clientsResponse?.data || [];
 
   const { data: recentlyCompleted = [] } = useQuery<MaintenanceItem[]>({
     queryKey: ["/api/maintenance/recently-completed"],

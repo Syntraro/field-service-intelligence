@@ -22,8 +22,8 @@ export class MaintenanceRepository extends BaseRepository {
           isNotNull(calendarAssignments.completionNotes)
         )
       )
-      // scheduledDate is stored as text; cast to date for correct chronological ordering
-      .orderBy(desc(sql`${calendarAssignments.scheduledDate}::date`))
+      // scheduledDate is now proper DATE type - no cast needed!
+      .orderBy(desc(calendarAssignments.scheduledDate))
       .limit(limit);
   }
 
@@ -31,14 +31,12 @@ export class MaintenanceRepository extends BaseRepository {
    * Get maintenance status summary
    */
   async getMaintenanceStatuses(companyId: string) {
-    // IMPORTANT:
-    // status is a computed CASE expression (alias), so we must group by the expression itself,
-    // not by the alias name "status" (Postgres treats that as a column reference).
+    // scheduledDate is now proper DATE type - comparisons are clean!
     const statusExpr = sql<string>`
       CASE 
         WHEN ${calendarAssignments.completed} = true THEN 'completed'
-        WHEN ${calendarAssignments.scheduledDate}::date < CURRENT_DATE THEN 'overdue'
-        WHEN ${calendarAssignments.scheduledDate}::date = CURRENT_DATE THEN 'today'
+        WHEN ${calendarAssignments.scheduledDate} < CURRENT_DATE THEN 'overdue'
+        WHEN ${calendarAssignments.scheduledDate} = CURRENT_DATE THEN 'today'
         ELSE 'scheduled'
       END
     `;

@@ -1,30 +1,8 @@
 import { db } from "../db";
-import { eq, and, inArray, sql, or, ilike } from "drizzle-orm";
+import { eq, and, inArray, sql } from "drizzle-orm";
 import { clients, clientParts, equipment, calendarAssignments } from "@shared/schema";
 import type { InsertClient, Client } from "@shared/schema";
-import { BaseRepository, clampLimit, clampOffset, escapeLike } from "./base";
-
-export interface PaginationOptions {
-  limit?: number;
-  offset?: number;
-  page?: number;
-  search?: string;
-  sortBy?: 'companyName' | 'createdAt' | 'updatedAt';
-  sortOrder?: 'asc' | 'desc';
-  inactive?: boolean;
-}
-
-export interface PaginatedResult<T> {
-  data: T[];
-  pagination: {
-    total: number;
-    limit: number;
-    offset: number;
-    page: number;
-    totalPages: number;
-    hasMore: boolean;
-  };
-}
+import { BaseRepository } from "./base";
 
 export class ClientRepository extends BaseRepository {
   /**
@@ -36,80 +14,6 @@ export class ClientRepository extends BaseRepository {
       .from(clients)
       .where(eq(clients.companyId, companyId))
       .orderBy(clients.companyName);
-  }
-
-  /**
-   * Get paginated clients with search and filtering
-   */
-  async getPaginatedClients(
-    companyId: string,
-    options: PaginationOptions = {}
-  ): Promise<PaginatedResult<Client>> {
-    this.assertCompanyId(companyId);
-
-    const limit = clampLimit(options.limit ?? 50, 200);
-    const page = Math.max(1, options.page ?? 1);
-    const offset = options.offset ?? (page - 1) * limit;
-
-    let query = db
-      .select()
-      .from(clients)
-      .where(eq(clients.companyId, companyId))
-      .$dynamic();
-
-    if (options.inactive !== undefined) {
-      query = query.where(eq(clients.inactive, options.inactive));
-    } else {
-      query = query.where(eq(clients.inactive, false));
-    }
-
-    if (options.search && options.search.trim()) {
-      const searchTerm = escapeLike(options.search.trim());
-      query = query.where(
-        or(
-          ilike(clients.companyName, `%${searchTerm}%`),
-          ilike(clients.contactName, `%${searchTerm}%`),
-          ilike(clients.email, `%${searchTerm}%`),
-          ilike(clients.phone, `%${searchTerm}%`),
-          ilike(clients.location, `%${searchTerm}%`)
-        )
-      );
-    }
-
-    const countResult = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(clients)
-      .where(eq(clients.companyId, companyId));
-
-    const total = countResult[0]?.count ?? 0;
-
-    const sortBy = options.sortBy ?? 'companyName';
-    const sortOrder = options.sortOrder ?? 'asc';
-
-    if (sortOrder === 'desc') {
-      if (sortBy === 'createdAt') query = query.orderBy(sql`${clients.createdAt} DESC`);
-      else if (sortBy === 'updatedAt') query = query.orderBy(sql`${clients.updatedAt} DESC`);
-      else query = query.orderBy(sql`${clients.companyName} DESC`);
-    } else {
-      if (sortBy === 'createdAt') query = query.orderBy(clients.createdAt);
-      else if (sortBy === 'updatedAt') query = query.orderBy(clients.updatedAt);
-      else query = query.orderBy(clients.companyName);
-    }
-
-    const data = await query.limit(limit).offset(offset);
-    const totalPages = Math.ceil(total / limit);
-
-    return {
-      data,
-      pagination: {
-        total,
-        limit,
-        offset,
-        page,
-        totalPages,
-        hasMore: offset + limit < total,
-      },
-    };
   }
 
   /**
@@ -175,65 +79,20 @@ export class ClientRepository extends BaseRepository {
   }
 
   /**
-   * Update client with optimistic locking
-   * @param currentVersion - Current version from client (for optimistic locking)
+   * Update client
    */
   async updateClient(
     companyId: string,
     clientId: string,
-    currentVersion: number | undefined,
     patch: Partial<InsertClient>
   ): Promise<Client | null> {
-    this.assertCompanyId(companyId);
-    this.validateUUID(clientId, "clientId");
-
-    // If no version provided, skip version check (backward compatibility)
-    if (currentVersion === undefined) {
-      const rows = await db
-        .update(clients)
-        .set({ 
-          ...patch, 
-          version: sql`${clients.version} + 1`,
-          updatedAt: new Date() 
-        })
-        .where(and(eq(clients.id, clientId), eq(clients.companyId, companyId)))
-        .returning();
-
-      return rows[0] ?? null;
-    }
-
-    // With version check - optimistic locking
     const rows = await db
       .update(clients)
-      .set({
-        ...patch,
-        version: sql`${clients.version} + 1`, // Increment version
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(clients.id, clientId),
-          eq(clients.companyId, companyId),
-          eq(clients.version, currentVersion) // Check version matches!
-        )
-      )
+      .set({ ...patch, updatedAt: new Date() })
+      .where(and(eq(clients.id, clientId), eq(clients.companyId, companyId)))
       .returning();
 
-    if (rows.length === 0) {
-      // Either client doesn't exist OR version mismatch
-      const existing = await this.getClient(companyId, clientId);
-      if (!existing) {
-        throw this.notFoundError("Client");
-      }
-      
-      // Version mismatch
-      throw new Error(
-        `Client was modified by another user. Please reload and try again. ` +
-        `(Expected version: ${currentVersion}, Actual version: ${existing.version})`
-      );
-    }
-
-    return rows[0];
+    return rows[0] ?? null;
   }
 
   /**
@@ -357,46 +216,44 @@ export class ClientRepository extends BaseRepository {
   }
 
   /**
-   * Bulk upsert client parts - OPTIMIZED (50x faster)
+   * Bulk upsert client parts (used by frontend bulk endpoint)
    */
   async upsertClientPartsBulk(
     companyId: string,
-    userId: string,
     items: Array<{ clientId: string; partId: string; quantity: number }>
   ) {
     if (items.length === 0) return [];
 
     return await db.transaction(async (tx) => {
-      // Bulk delete all matching parts (single query instead of N queries)
-      const clientIds = [...new Set(items.map(i => i.clientId))];
-      const partIds = [...new Set(items.map(i => i.partId))];
+      const results = [];
+      for (const item of items) {
+        // Delete existing
+        await tx
+          .delete(clientParts)
+          .where(
+            and(
+              eq(clientParts.companyId, companyId),
+              eq(clientParts.clientId, item.clientId),
+              eq(clientParts.partId, item.partId)
+            )
+          );
 
-      await tx
-        .delete(clientParts)
-        .where(
-          and(
-            eq(clientParts.companyId, companyId),
-            inArray(clientParts.clientId, clientIds),
-            inArray(clientParts.partId, partIds)
-          )
-        );
-
-      // Bulk insert (single query with multiple values)
-      const validItems = items.filter(i => i.quantity > 0);
-      if (validItems.length === 0) return [];
-
-      return await tx
-        .insert(clientParts)
-        .values(
-          validItems.map(item => ({
-            companyId,
-            userId,
-            clientId: item.clientId,
-            partId: item.partId,
-            quantity: item.quantity,
-          }))
-        )
-        .returning();
+        // Insert new
+        if (item.quantity > 0) {
+          const [inserted] = await tx
+            .insert(clientParts)
+            .values({
+              companyId,
+              userId: companyId, // TODO: Pass actual userId
+              clientId: item.clientId,
+              partId: item.partId,
+              quantity: item.quantity,
+            })
+            .returning();
+          results.push(inserted);
+        }
+      }
+      return results;
     });
   }
 

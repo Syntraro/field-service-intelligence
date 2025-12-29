@@ -79,16 +79,33 @@ router.patch("/:id", async (req: Request, res: Response) => {
   try {
     const companyId = req.companyId;
 
-    const parsed = updateJobSchema.parse(req.body);
-    const updated = await storage.updateJob(companyId, req.params.id, parsed);
-    if (!updated) return res.status(404).json({ error: "Job not found" });
+    // Extract version from body before validation
+    const { version, ...data } = req.body;
+    const parsed = updateJobSchema.parse(data);
+    
+    // Pass version to storage (can be undefined)
+    const updated = await storage.updateJob(companyId, req.params.id, version, parsed);
+    
+    if (!updated) {
+      return res.status(404).json({ error: "Job not found" });
+    }
 
     res.json(updated);
   } catch (error: any) {
     console.error("Update job error:", error);
+    
+    // Check for version mismatch
+    if (error.message?.includes('modified by another user')) {
+      return res.status(409).json({ 
+        error: error.message,
+        code: 'VERSION_MISMATCH'
+      });
+    }
+    
     if (error?.name === "ZodError") {
       return res.status(400).json({ error: "Invalid request", details: error.errors });
     }
+    
     res.status(500).json({ error: error.message || "Failed to update job" });
   }
 });
@@ -128,7 +145,8 @@ router.post("/:id/status", async (req: Request, res: Response) => {
 
     assertJobStatusTransition(existing.status as JobStatus, status as JobStatus);
 
-    const updated = await storage.updateJob(companyId, req.params.id, { status });
+    // Use undefined for version to maintain backward compatibility
+    const updated = await storage.updateJob(companyId, req.params.id, undefined, { status });
     if (!updated) return res.status(404).json({ error: "Job not found" });
 
     res.json(updated);

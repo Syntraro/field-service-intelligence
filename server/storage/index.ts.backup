@@ -23,7 +23,6 @@ import { templateRepository } from "./templates";
 import { maintenanceRepository } from "./maintenance";
 import { subscriptionRepository } from "./subscriptions";
 import { companyRepository } from "./company";
-import type { PaginationOptions, PaginatedResult } from "./clients";
 
 /**
  * Storage interface for dependency injection
@@ -40,7 +39,6 @@ export interface IStorage {
 
   // Client operations
   getAllClients: typeof clientRepository.getAllClients;
-  getPaginatedClients: typeof clientRepository.getPaginatedClients;
   getClient: typeof clientRepository.getClient;
   createClient: typeof clientRepository.createClient;
   createClientWithParts: typeof clientRepository.createClientWithParts;
@@ -150,7 +148,6 @@ export const storage: IStorage = {
 
   // Client operations
   getAllClients: clientRepository.getAllClients.bind(clientRepository),
-  getPaginatedClients: clientRepository.getPaginatedClients.bind(clientRepository),
   getClient: clientRepository.getClient.bind(clientRepository),
   createClient: clientRepository.createClient.bind(clientRepository),
   createClientWithParts: clientRepository.createClientWithParts.bind(clientRepository),

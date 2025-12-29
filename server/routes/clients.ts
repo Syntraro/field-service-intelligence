@@ -1,6 +1,9 @@
 import { Router } from "express";
 import type { Request, Response, NextFunction } from "express";
 import { storage } from "../storage/index";
+import { insertClientSchema } from "@shared/schema";
+import { z } from "zod";
+import type { Client } from "@shared/schema";
 
 const router = Router();
 
@@ -47,21 +50,46 @@ function buildFutureDueIndex(assignments: any[]): Map<string, string> {
 // ROUTES
 // ========================================
 
-// GET /api/clients - List all clients
+// GET /api/clients - List all clients with pagination
 router.get("/", async (req, res) => {
   try {
     const companyId = req.companyId;
-    const clients = await storage.getAllClients(companyId);
+    
+    // Parse pagination params from query
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 50;
+    const search = req.query.search as string;
+    const sortBy = req.query.sortBy as 'companyName' | 'createdAt' | 'updatedAt' | undefined;
+    const sortOrder = req.query.sortOrder as 'asc' | 'desc' | undefined;
+    const inactive = req.query.inactive === 'true' ? true : req.query.inactive === 'false' ? false : undefined;
+    
+    // Get paginated clients
+    const result = await storage.getPaginatedClients(companyId, {
+      page,
+      limit,
+      search,
+      sortBy,
+      sortOrder,
+      inactive,
+    });
+    
+    // Get calendar assignments for nextDue calculation
     const assignments = await storage.getAllCalendarAssignments(companyId);
     const futureDueByClientId = buildFutureDueIndex(assignments);
 
-    const clientsWithDue = clients.map((c: any) => ({
+    // Add nextDue to each client
+    const clientsWithDue = result.data.map((c: any) => ({
       ...c,
       nextDue: deriveNextDueForClient(c, futureDueByClientId),
     }));
 
-    res.json(clientsWithDue);
+    // Return paginated response
+    res.json({
+      data: clientsWithDue,
+      pagination: result.pagination,
+    });
   } catch (error) {
+    console.error('Error fetching clients:', error);
     res.status(500).json({ error: "Failed to fetch clients" });
   }
 });
@@ -282,18 +310,19 @@ router.get("/:id/report", async (req, res) => {
   }
 });
 
-// PUT /api/clients/:id - Update client
+// PUT /api/clients/:id - Update client with optimistic locking
 router.put("/:id", async (req, res) => {
   try {
-    const validated = insertClientSchema.partial().parse(req.body);
+    const { version, ...data } = req.body;
+    const validated = insertClientSchema.partial().parse(data);
     const companyId = req.companyId;
     const clientId = req.params.id;
 
     // Check if selectedMonths is being updated
     const isUpdatingPmMonths = validated.selectedMonths !== undefined;
 
-    // Update the client
-    const client = await storage.updateClient(companyId, clientId, validated);
+    // Update the client with version check
+    const client = await storage.updateClient(companyId, clientId, version, validated);
     if (!client) {
       return res.status(404).json({ error: "Client not found" });
     }
@@ -312,25 +341,42 @@ router.put("/:id", async (req, res) => {
       ...client,
       _cleanupInfo: cleanupResult
     });
-  } catch (error) {
+  } catch (error: any) {
+    // Check for version mismatch
+    if (error.message?.includes('modified by another user')) {
+      return res.status(409).json({ 
+        error: error.message,
+        code: 'VERSION_MISMATCH'
+      });
+    }
+    
     res.status(400).json({ error: "Invalid client data" });
   }
 });
 
-// PATCH /api/clients/:id - Partial update
+// PATCH /api/clients/:id - Partial update with optimistic locking
 router.patch("/:id", async (req, res) => {
   try {
-    const validated = insertClientSchema.partial().parse(req.body);
+    const { version, ...data } = req.body;
+    const validated = insertClientSchema.partial().parse(data);
     const companyId = req.companyId;
     const clientId = req.params.id;
 
-    const client = await storage.updateClient(companyId, clientId, validated);
+    const client = await storage.updateClient(companyId, clientId, version, validated);
     if (!client) {
       return res.status(404).json({ error: "Client not found" });
     }
 
     res.json(client);
-  } catch (error) {
+  } catch (error: any) {
+    // Check for version mismatch
+    if (error.message?.includes('modified by another user')) {
+      return res.status(409).json({ 
+        error: error.message,
+        code: 'VERSION_MISMATCH'
+      });
+    }
+    
     res.status(400).json({ error: "Invalid client data" });
   }
 });

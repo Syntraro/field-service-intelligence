@@ -111,10 +111,12 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     }
   }, [open]);
 
-  const { data: clients = [] } = useQuery<Client[]>({
+  const { data: clientsResponse } = useQuery<{ data: Client[], pagination: any }>({
     queryKey: ["/api/clients"],
     enabled: open,
   });
+
+  const clients = clientsResponse?.data || [];
 
   const { data: technicians = [] } = useQuery<User[]>({
     queryKey: ["/api/technicians"],

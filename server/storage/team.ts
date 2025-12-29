@@ -7,6 +7,7 @@ import {
   userPermissionOverrides 
 } from "@shared/schema";
 import { BaseRepository } from "./base";
+import { cache, CacheKeys, CacheTTL } from "../services/cache";
 
 export class TeamRepository extends BaseRepository {
   /**
@@ -165,23 +166,36 @@ export class TeamRepository extends BaseRepository {
   }
 
   /**
-   * Get user permission overrides
+   * Get user permission overrides (with caching)
    */
   async getUserPermissionOverrides(userId: string) {
-    return await db
+    // Try cache first (permissions checked on every request!)
+    const cacheKey = CacheKeys.userPermissions(userId);
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    // Cache miss - query database
+    const result = await db
       .select()
       .from(userPermissionOverrides)
       .where(eq(userPermissionOverrides.userId, userId));
+
+    // Cache for 5 minutes
+    cache.set(cacheKey, result, CacheTTL.MEDIUM);
+
+    return result;
   }
 
   /**
-   * Set user permission overrides (replace all)
+   * Set user permission overrides (replace all) - invalidates cache
    */
   async setUserPermissionOverrides(
     userId: string,
     overrides: Array<{ permissionId: string; override: "grant" | "revoke" }>
   ) {
-    return await db.transaction(async (tx) => {
+    const result = await db.transaction(async (tx) => {
       // Delete existing
       await tx
         .delete(userPermissionOverrides)
@@ -203,6 +217,11 @@ export class TeamRepository extends BaseRepository {
         .from(userPermissionOverrides)
         .where(eq(userPermissionOverrides.userId, userId));
     });
+
+    // CRITICAL: Invalidate cache after update
+    cache.delete(CacheKeys.userPermissions(userId));
+
+    return result;
   }
 
   /**

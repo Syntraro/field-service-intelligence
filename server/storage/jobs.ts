@@ -139,27 +139,69 @@ export class JobRepository extends BaseRepository {
   }
 
   /**
-   * Update job
+   * Update job with optimistic locking
+   * @param currentVersion - Current version from client (for optimistic locking)
    */
   async updateJob(
     companyId: string,
     jobId: string,
+    currentVersion: number | undefined,
     patch: Partial<InsertJob>
   ): Promise<Job | null> {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
+    // If no version provided, skip version check (backward compatibility)
+    if (currentVersion === undefined) {
+      const rows = await db
+        .update(jobs)
+        .set({ 
+          ...patch, 
+          version: sql`${jobs.version} + 1`,
+          updatedAt: new Date() 
+        })
+        .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+        .returning();
+
+      return rows[0] ?? null;
+    }
+
+    // With version check - optimistic locking
     const rows = await db
       .update(jobs)
-      .set({ ...patch, updatedAt: new Date() })
-      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+      .set({
+        ...patch,
+        version: sql`${jobs.version} + 1`, // Increment version
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(jobs.id, jobId),
+          eq(jobs.companyId, companyId),
+          eq(jobs.version, currentVersion) // Check version matches!
+        )
+      )
       .returning();
 
-    return rows[0] ?? null;
+    if (rows.length === 0) {
+      // Either job doesn't exist OR version mismatch
+      const existing = await this.getJob(companyId, jobId);
+      if (!existing) {
+        throw this.notFoundError("Job");
+      }
+      
+      // Version mismatch
+      throw new Error(
+        `Job was modified by another user. Please reload and try again. ` +
+        `(Expected version: ${currentVersion}, Actual version: ${existing.version})`
+      );
+    }
+
+    return rows[0];
   }
 
   /**
-   * Update job status
+   * Update job status (increments version)
    */
   async updateJobStatus(
     companyId: string,
@@ -169,7 +211,11 @@ export class JobRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
-    const updates: any = { status, updatedAt: new Date() };
+    const updates: any = { 
+      status, 
+      version: sql`${jobs.version} + 1`, // Increment version
+      updatedAt: new Date() 
+    };
 
     // Set timestamps based on status
     if (status === "in_progress" || status === "on_site") {

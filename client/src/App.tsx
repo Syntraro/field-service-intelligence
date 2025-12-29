@@ -239,10 +239,12 @@ function AppContent() {
     item.year < currentYear || (item.year === currentYear && item.month < currentMonth)
   ).length;
   
-  const { data: allClients = [] } = useQuery<any[]>({
+  const { data: clientsResponse } = useQuery<{ data: any[], pagination: any }>({
     queryKey: ["/api/clients"],
     enabled: Boolean(user?.id),
   });
+
+  const allClients = clientsResponse?.data || [];
 
   const isAuthPage = ['/login', '/signup', '/request-reset', '/reset-password'].includes(location);
   const isTechnicianPage = location === '/technician' || location === '/daily-parts';

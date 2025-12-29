@@ -47,4 +47,39 @@ router.post("/:id/refresh-from-job", async (req: Request, res: Response) => {
   res.json(result);
 });
 
+/**
+ * PATCH /api/invoices/:id - Update invoice with optimistic locking
+ */
+router.patch("/:id", async (req: Request, res: Response) => {
+  try {
+    const companyId = req.companyId;
+    const { version, ...patch } = req.body;
+
+    // Version is optional for backward compatibility
+    const updated = await storage.updateInvoice(
+      companyId,
+      req.params.id,
+      version, // Can be undefined
+      patch
+    );
+
+    if (!updated) {
+      return res.status(404).json({ error: "Invoice not found" });
+    }
+
+    res.json(updated);
+  } catch (error: any) {
+    // Check for version mismatch error
+    if (error.message?.includes('modified by another user')) {
+      return res.status(409).json({ 
+        error: error.message,
+        code: 'VERSION_MISMATCH'
+      });
+    }
+    
+    console.error("Update invoice error:", error);
+    res.status(500).json({ error: error.message || "Failed to update invoice" });
+  }
+});
+
 export default router;

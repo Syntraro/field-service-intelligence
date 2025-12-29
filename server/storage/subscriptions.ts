@@ -2,12 +2,21 @@ import { db } from "../db";
 import { eq, and, sql } from "drizzle-orm";
 import { clients, companies, subscriptionPlans } from "@shared/schema";
 import { BaseRepository } from "./base";
+import { cache, CacheKeys, CacheTTL } from "../services/cache";
 
 export class SubscriptionRepository extends BaseRepository {
   /**
-   * Get subscription usage info for a company
+   * Get subscription usage info for a company (with caching)
    */
   async getSubscriptionUsage(companyId: string) {
+    // Try cache first (cache for 1 minute - balance freshness vs performance)
+    const cacheKey = CacheKeys.subscription(companyId);
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    // Cache miss - query database
     // Get company info
     const company = await db
       .select()
@@ -61,7 +70,7 @@ export class SubscriptionRepository extends BaseRepository {
         ? Math.round((locations / plan.locationLimit) * 100)
         : 0;
 
-    return {
+    const result = {
       plan: plan
         ? {
             name: plan.name,
@@ -77,6 +86,11 @@ export class SubscriptionRepository extends BaseRepository {
       trialEndsAt: company[0].trialEndsAt?.toISOString() || null,
       subscriptionStatus: company[0].subscriptionStatus || null,
     };
+
+    // Cache for 1 minute (subscription data checked frequently)
+    cache.set(cacheKey, result, CacheTTL.SHORT);
+
+    return result;
   }
 
   /**
