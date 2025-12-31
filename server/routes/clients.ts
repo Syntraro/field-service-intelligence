@@ -154,8 +154,6 @@ router.post("/full-create", async (req, res) => {
       return res.status(400).json({ error: "Company name is required" });
     }
 
-    const totalLocations = 1 + (additionalLocations?.length || 0);
-
     // Check subscription limits
     const limitCheck = await storage.canAddLocation(companyId);
     if (!limitCheck.allowed) {
@@ -166,22 +164,6 @@ router.post("/full-create", async (req, res) => {
         subscriptionLimitReached: true,
       });
     }
-
-    // Create customer company (parent)
-    const customerCompanyData = {
-      name: company.name.trim(),
-      legalName: company.legalName?.trim() || null,
-      phone: company.phone?.trim() || null,
-      email: company.email?.trim() || null,
-      billingAddressStreet: company.billingAddress?.street?.trim() || null,
-      billingAddressCity: company.billingAddress?.city?.trim() || null,
-      billingAddressState: company.billingAddress?.stateOrProvince?.trim() || null,
-      billingAddressPostalCode: company.billingAddress?.postalCode?.trim() || null,
-      billingAddressCountry: company.billingAddress?.country?.trim() || "Canada",
-      isActive: true,
-    };
-
-    const customerCompany = await storage.createCustomerCompany(companyId!, customerCompanyData);
 
     // Helper to calculate next due date
     const calculateNextDue = (selectedMonths: number[]): string => {
@@ -205,12 +187,12 @@ router.post("/full-create", async (req, res) => {
       return new Date(currentYear, next, 15).toISOString();
     };
 
-    // Create primary location (client)
+    // Create primary location (client) - this becomes the parent (parentCompanyId = null)
     const primaryLocationName = primaryLocation?.name?.trim() || company.name.trim();
     const primarySelectedMonths = primaryLocation?.selectedMonths || [];
 
     const primaryClientData = {
-      parentCompanyId: customerCompany.id,
+      parentCompanyId: null, // Parent client has null parentCompanyId
       companyName: company.name.trim(),
       location: primaryLocationName,
       address: primaryLocation?.serviceAddress?.street?.trim() || null,
@@ -218,8 +200,8 @@ router.post("/full-create", async (req, res) => {
       province: primaryLocation?.serviceAddress?.stateOrProvince?.trim() || null,
       postalCode: primaryLocation?.serviceAddress?.postalCode?.trim() || null,
       contactName: primaryLocation?.contactName?.trim() || null,
-      email: primaryLocation?.contactEmail?.trim() || null,
-      phone: primaryLocation?.contactPhone?.trim() || null,
+      email: primaryLocation?.contactEmail?.trim() || company.email?.trim() || null,
+      phone: primaryLocation?.contactPhone?.trim() || company.phone?.trim() || null,
       roofLadderCode: null,
       notes: primaryLocation?.notes?.trim() || null,
       selectedMonths: primarySelectedMonths,
@@ -231,14 +213,14 @@ router.post("/full-create", async (req, res) => {
 
     const primaryClient = await storage.createClient(companyId!, userId, primaryClientData);
 
-    // Create additional locations
+    // Create additional locations linked to the primary client
     const createdLocations = [primaryClient];
     for (const loc of additionalLocations) {
       if (!loc.name?.trim()) continue;
 
       const locSelectedMonths = loc.selectedMonths || [];
       const locData = {
-        parentCompanyId: customerCompany.id,
+        parentCompanyId: primaryClient.id, // Link to primary client
         companyName: company.name.trim(),
         location: loc.name.trim(),
         address: loc.serviceAddress?.street?.trim() || null,
@@ -262,7 +244,6 @@ router.post("/full-create", async (req, res) => {
     }
 
     res.json({
-      customerCompany,
       client: primaryClient,
       locations: createdLocations,
     });

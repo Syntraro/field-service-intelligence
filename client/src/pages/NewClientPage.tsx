@@ -1,14 +1,12 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useLocation, Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowLeft, Building2, MapPin, Calendar, Plus, X, Loader2 } from "lucide-react";
+import { ArrowLeft, Plus, X, Loader2 } from "lucide-react";
 import { useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -89,30 +87,6 @@ export default function NewClientPage() {
     }
   }, [copyBillingToService, billingStreet, billingCity, billingProvince, billingPostalCode]);
 
-  const calculateNextDueDate = (selectedMonths: number[]): string => {
-    if (selectedMonths.length === 0) return new Date('9999-12-31').toISOString();
-
-    const today = new Date();
-    const currentMonth = today.getMonth();
-    const currentYear = today.getFullYear();
-    const currentDay = today.getDate();
-
-    const sortedMonths = [...selectedMonths].sort((a, b) => a - b);
-
-    if (sortedMonths.includes(currentMonth) && currentDay < 15) {
-      return new Date(currentYear, currentMonth, 15).toISOString();
-    }
-
-    let nextMonth = sortedMonths.find(m => m > currentMonth);
-
-    if (nextMonth === undefined) {
-      nextMonth = sortedMonths[0];
-      return new Date(currentYear + 1, nextMonth, 15).toISOString();
-    }
-
-    return new Date(currentYear, nextMonth, 15).toISOString();
-  };
-
   const createClientMutation = useMutation({
     mutationFn: async (isQuickCreate: boolean) => {
       const payload = {
@@ -130,7 +104,6 @@ export default function NewClientPage() {
         },
         primaryLocation: {
           name: primaryLocation.name.trim() || companyName.trim(),
-          siteCode: undefined,
           serviceAddress: {
             street: primaryLocation.address.trim() || undefined,
             city: primaryLocation.city.trim() || undefined,
@@ -163,16 +136,13 @@ export default function NewClientPage() {
         })),
       };
 
-      return await apiRequest<{ customerCompany: any; client: any; locations: any[] }>("/api/clients/full-create", {
+      return await apiRequest<{ client: any; locations: any[] }>("/api/clients/full-create", {
         method: "POST",
         body: JSON.stringify(payload),
       });
     },
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/customer-companies"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/reports/parts"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/reports/schedule"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       toast({
         title: "Client created",
@@ -192,401 +162,449 @@ export default function NewClientPage() {
 
   const handleSubmit = (isQuickCreate: boolean) => {
     setError(null);
-
     if (!companyName.trim()) {
       setError("Company name is required.");
       return;
     }
-
     createClientMutation.mutate(isQuickCreate);
   };
 
   const addLocation = () => {
     const newId = `loc-${Date.now()}`;
-    setAdditionalLocations([...additionalLocations, createEmptyLocation(newId)]);
+    setAdditionalLocations(prev => [...prev, createEmptyLocation(newId)]);
   };
 
   const removeLocation = (id: string) => {
-    setAdditionalLocations(additionalLocations.filter(loc => loc.id !== id));
+    setAdditionalLocations(prev => prev.filter(loc => loc.id !== id));
   };
 
-  const updateLocation = (id: string, updates: Partial<LocationForm>) => {
-    if (id === "primary") {
-      setPrimaryLocation(prev => ({ ...prev, ...updates }));
-    } else {
-      setAdditionalLocations(prev => prev.map(loc =>
-        loc.id === id ? { ...loc, ...updates } : loc
-      ));
-    }
-  };
+  const updatePrimaryLocation = useCallback((field: keyof LocationForm, value: any) => {
+    setPrimaryLocation(prev => ({ ...prev, [field]: value }));
+  }, []);
 
-  const toggleMonth = (locationId: string, month: number) => {
-    if (locationId === "primary") {
-      setPrimaryLocation(prev => ({
-        ...prev,
-        selectedMonths: prev.selectedMonths.includes(month)
-          ? prev.selectedMonths.filter(m => m !== month)
-          : [...prev.selectedMonths, month],
-      }));
-    } else {
-      setAdditionalLocations(prev => prev.map(loc =>
-        loc.id === locationId
-          ? {
-            ...loc,
-            selectedMonths: loc.selectedMonths.includes(month)
-              ? loc.selectedMonths.filter(m => m !== month)
-              : [...loc.selectedMonths, month],
-          }
-          : loc
-      ));
-    }
-  };
+  const updateAdditionalLocation = useCallback((id: string, field: keyof LocationForm, value: any) => {
+    setAdditionalLocations(prev => prev.map(loc =>
+      loc.id === id ? { ...loc, [field]: value } : loc
+    ));
+  }, []);
 
-  const LocationFields = ({ location, isPrimary }: { location: LocationForm; isPrimary: boolean }) => (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="space-y-2">
-          <Label htmlFor={`${location.id}-name`}>Location Name {isPrimary && "(defaults to company name if empty)"}</Label>
-          <Input
-            id={`${location.id}-name`}
-            data-testid={`input-location-name-${location.id}`}
-            value={location.name}
-            onChange={(e) => updateLocation(location.id, { name: e.target.value })}
-            placeholder={isPrimary ? companyName || "Main Location" : "Branch Name"}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor={`${location.id}-contact-name`}>Contact Name</Label>
-          <Input
-            id={`${location.id}-contact-name`}
-            data-testid={`input-contact-name-${location.id}`}
-            value={location.contactName}
-            onChange={(e) => updateLocation(location.id, { contactName: e.target.value })}
-            placeholder="John Smith"
-          />
-        </div>
-      </div>
+  const togglePrimaryMonth = useCallback((month: number) => {
+    setPrimaryLocation(prev => ({
+      ...prev,
+      selectedMonths: prev.selectedMonths.includes(month)
+        ? prev.selectedMonths.filter(m => m !== month)
+        : [...prev.selectedMonths, month],
+    }));
+  }, []);
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="space-y-2">
-          <Label htmlFor={`${location.id}-phone`}>Phone</Label>
-          <Input
-            id={`${location.id}-phone`}
-            data-testid={`input-phone-${location.id}`}
-            value={location.contactPhone}
-            onChange={(e) => updateLocation(location.id, { contactPhone: e.target.value })}
-            placeholder="(555) 123-4567"
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor={`${location.id}-email`}>Email</Label>
-          <Input
-            id={`${location.id}-email`}
-            data-testid={`input-email-${location.id}`}
-            type="email"
-            value={location.contactEmail}
-            onChange={(e) => updateLocation(location.id, { contactEmail: e.target.value })}
-            placeholder="contact@example.com"
-          />
-        </div>
-      </div>
-
-      <Separator />
-
-      <div className="space-y-2">
-        <Label>Service Address</Label>
-        <Input
-          data-testid={`input-address-${location.id}`}
-          value={location.address}
-          onChange={(e) => updateLocation(location.id, { address: e.target.value })}
-          placeholder="123 Main Street"
-        />
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="space-y-2">
-          <Label>City</Label>
-          <Input
-            data-testid={`input-city-${location.id}`}
-            value={location.city}
-            onChange={(e) => updateLocation(location.id, { city: e.target.value })}
-            placeholder="Toronto"
-          />
-        </div>
-        <div className="space-y-2">
-          <Label>Province</Label>
-          <Input
-            data-testid={`input-province-${location.id}`}
-            value={location.province}
-            onChange={(e) => updateLocation(location.id, { province: e.target.value })}
-            placeholder="ON"
-          />
-        </div>
-        <div className="space-y-2 col-span-2">
-          <Label>Postal Code</Label>
-          <Input
-            data-testid={`input-postal-${location.id}`}
-            value={location.postalCode}
-            onChange={(e) => updateLocation(location.id, { postalCode: e.target.value })}
-            placeholder="M5V 1A1"
-          />
-        </div>
-      </div>
-
-      <Separator />
-
-      <div className="space-y-3">
-        <Label>Maintenance Schedule</Label>
-        <p className="text-xs text-muted-foreground">Select which months require preventive maintenance visits.</p>
-        <div className="flex flex-wrap gap-2">
-          {MONTHS.map((month) => (
-            <Button
-              key={month.value}
-              type="button"
-              variant={location.selectedMonths.includes(month.value) ? "default" : "outline"}
-              size="sm"
-              data-testid={`btn-month-${month.label}-${location.id}`}
-              onClick={() => toggleMonth(location.id, month.value)}
-            >
-              {month.label}
-            </Button>
-          ))}
-        </div>
-      </div>
-
-      <div className="flex items-center gap-3">
-        <Switch
-          id={`${location.id}-bill-with-parent`}
-          data-testid={`switch-bill-parent-${location.id}`}
-          checked={location.billWithParent}
-          onCheckedChange={(checked) => updateLocation(location.id, { billWithParent: checked })}
-        />
-        <Label htmlFor={`${location.id}-bill-with-parent`} className="text-sm">
-          Bill invoices to parent company
-        </Label>
-      </div>
-
-      <div className="space-y-2">
-        <Label htmlFor={`${location.id}-notes`}>Notes</Label>
-        <Textarea
-          id={`${location.id}-notes`}
-          data-testid={`input-notes-${location.id}`}
-          value={location.notes}
-          onChange={(e) => updateLocation(location.id, { notes: e.target.value })}
-          placeholder="Special instructions, access codes, etc."
-          rows={2}
-        />
-      </div>
-    </div>
-  );
+  const toggleAdditionalMonth = useCallback((id: string, month: number) => {
+    setAdditionalLocations(prev => prev.map(loc =>
+      loc.id === id
+        ? {
+          ...loc,
+          selectedMonths: loc.selectedMonths.includes(month)
+            ? loc.selectedMonths.filter(m => m !== month)
+            : [...loc.selectedMonths, month],
+        }
+        : loc
+    ));
+  }, []);
 
   return (
-    <div className="container max-w-4xl mx-auto py-6 px-4">
-      <div className="flex items-center gap-4 mb-6">
-        <Button variant="ghost" size="icon" asChild>
-          <Link href="/" data-testid="link-back">
+    <div className="p-4 max-w-6xl mx-auto">
+      <div className="flex items-center gap-2 mb-4">
+        <Button variant="ghost" size="icon" asChild data-testid="button-back">
+          <Link href="/">
             <ArrowLeft className="h-4 w-4" />
           </Link>
         </Button>
-        <h1 className="text-2xl font-semibold">New Client</h1>
+        <h1 className="text-xl font-semibold">New Client</h1>
       </div>
 
       {error && (
-        <div className="bg-destructive/10 text-destructive text-sm p-3 rounded-md mb-6">
+        <div className="bg-destructive/10 text-destructive px-3 py-2 rounded-md mb-4 text-sm" data-testid="error-message">
           {error}
         </div>
       )}
 
-      <div className="space-y-6">
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <Building2 className="h-5 w-5 text-muted-foreground" />
-              <CardTitle>Company Information</CardTitle>
-            </div>
-            <CardDescription>
-              The parent company that owns one or more service locations. Maps to a QuickBooks Customer.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="company-name">Company Name *</Label>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Left Column - Company Info */}
+        <div className="space-y-4">
+          <div className="border rounded-md p-3">
+            <h2 className="font-medium mb-3">Company Information</h2>
+            <div className="space-y-3">
+              <div>
+                <Label htmlFor="company-name" className="text-sm">Company Name *</Label>
                 <Input
                   id="company-name"
                   data-testid="input-company-name"
                   value={companyName}
                   onChange={(e) => setCompanyName(e.target.value)}
-                  placeholder="ABC Holdings Inc"
+                  placeholder="ACME Corporation"
                 />
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="legal-name">Legal Name</Label>
-                <Input
-                  id="legal-name"
-                  data-testid="input-legal-name"
-                  value={legalName}
-                  onChange={(e) => setLegalName(e.target.value)}
-                  placeholder="Official legal name if different"
-                />
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Label htmlFor="legal-name" className="text-sm">Legal Name</Label>
+                  <Input
+                    id="legal-name"
+                    data-testid="input-legal-name"
+                    value={legalName}
+                    onChange={(e) => setLegalName(e.target.value)}
+                    placeholder="ACME Corp Inc."
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="company-phone" className="text-sm">Phone</Label>
+                  <Input
+                    id="company-phone"
+                    data-testid="input-company-phone"
+                    value={companyPhone}
+                    onChange={(e) => setCompanyPhone(e.target.value)}
+                    placeholder="(555) 123-4567"
+                  />
+                </div>
               </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="company-phone">Phone</Label>
-                <Input
-                  id="company-phone"
-                  data-testid="input-company-phone"
-                  value={companyPhone}
-                  onChange={(e) => setCompanyPhone(e.target.value)}
-                  placeholder="(555) 123-4567"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="company-email">Email</Label>
+              <div>
+                <Label htmlFor="company-email" className="text-sm">Email</Label>
                 <Input
                   id="company-email"
                   data-testid="input-company-email"
                   type="email"
                   value={companyEmail}
                   onChange={(e) => setCompanyEmail(e.target.value)}
-                  placeholder="billing@company.com"
+                  placeholder="info@company.com"
                 />
               </div>
             </div>
+          </div>
 
-            <Separator />
-
-            <div className="space-y-2">
-              <Label>Billing Address</Label>
-              <Input
-                data-testid="input-billing-street"
-                value={billingStreet}
-                onChange={(e) => setBillingStreet(e.target.value)}
-                placeholder="123 Main Street"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="space-y-2">
-                <Label>City</Label>
+          <div className="border rounded-md p-3">
+            <h2 className="font-medium mb-3">Billing Address</h2>
+            <div className="space-y-3">
+              <div>
+                <Label htmlFor="billing-street" className="text-sm">Street Address</Label>
                 <Input
-                  data-testid="input-billing-city"
-                  value={billingCity}
-                  onChange={(e) => setBillingCity(e.target.value)}
-                  placeholder="Toronto"
+                  id="billing-street"
+                  data-testid="input-billing-street"
+                  value={billingStreet}
+                  onChange={(e) => setBillingStreet(e.target.value)}
+                  placeholder="123 Main St"
                 />
               </div>
-              <div className="space-y-2">
-                <Label>Province</Label>
-                <Input
-                  data-testid="input-billing-province"
-                  value={billingProvince}
-                  onChange={(e) => setBillingProvince(e.target.value)}
-                  placeholder="ON"
-                />
-              </div>
-              <div className="space-y-2 col-span-2">
-                <Label>Postal Code</Label>
-                <Input
-                  data-testid="input-billing-postal"
-                  value={billingPostalCode}
-                  onChange={(e) => setBillingPostalCode(e.target.value)}
-                  placeholder="M5V 1A1"
-                />
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <Label htmlFor="billing-city" className="text-sm">City</Label>
+                  <Input
+                    id="billing-city"
+                    data-testid="input-billing-city"
+                    value={billingCity}
+                    onChange={(e) => setBillingCity(e.target.value)}
+                    placeholder="Toronto"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="billing-province" className="text-sm">Province</Label>
+                  <Input
+                    id="billing-province"
+                    data-testid="input-billing-province"
+                    value={billingProvince}
+                    onChange={(e) => setBillingProvince(e.target.value)}
+                    placeholder="ON"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="billing-postal" className="text-sm">Postal Code</Label>
+                  <Input
+                    id="billing-postal"
+                    data-testid="input-billing-postal"
+                    value={billingPostalCode}
+                    onChange={(e) => setBillingPostalCode(e.target.value)}
+                    placeholder="M5V 1A1"
+                  />
+                </div>
               </div>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
 
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <MapPin className="h-5 w-5 text-muted-foreground" />
-              <CardTitle>Primary Location</CardTitle>
+        {/* Right Column - Primary Location */}
+        <div className="space-y-4">
+          <div className="border rounded-md p-3">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="font-medium">Primary Location</h2>
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="copy-billing"
+                  checked={copyBillingToService}
+                  onCheckedChange={setCopyBillingToService}
+                />
+                <Label htmlFor="copy-billing" className="text-xs text-muted-foreground">Same as billing</Label>
+              </div>
             </div>
-            <CardDescription>
-              The main service location. Maps to a QuickBooks Sub-Customer.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center gap-2 mb-4">
-              <Checkbox
-                id="copy-billing"
-                data-testid="checkbox-copy-billing"
-                checked={copyBillingToService}
-                onCheckedChange={(checked) => setCopyBillingToService(checked === true)}
-              />
-              <Label htmlFor="copy-billing" className="text-sm">
-                Same as billing address
-              </Label>
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Label htmlFor="primary-name" className="text-sm">Location Name</Label>
+                  <Input
+                    id="primary-name"
+                    data-testid="input-primary-location-name"
+                    value={primaryLocation.name}
+                    onChange={(e) => updatePrimaryLocation("name", e.target.value)}
+                    placeholder={companyName || "Main Location"}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="primary-contact" className="text-sm">Contact Name</Label>
+                  <Input
+                    id="primary-contact"
+                    data-testid="input-primary-contact-name"
+                    value={primaryLocation.contactName}
+                    onChange={(e) => updatePrimaryLocation("contactName", e.target.value)}
+                    placeholder="John Smith"
+                  />
+                </div>
+              </div>
+              <div>
+                <Label htmlFor="primary-address" className="text-sm">Service Address</Label>
+                <Input
+                  id="primary-address"
+                  data-testid="input-primary-address"
+                  value={primaryLocation.address}
+                  onChange={(e) => updatePrimaryLocation("address", e.target.value)}
+                  placeholder="456 Service Rd"
+                />
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <Label htmlFor="primary-city" className="text-sm">City</Label>
+                  <Input
+                    id="primary-city"
+                    data-testid="input-primary-city"
+                    value={primaryLocation.city}
+                    onChange={(e) => updatePrimaryLocation("city", e.target.value)}
+                    placeholder="Toronto"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="primary-province" className="text-sm">Province</Label>
+                  <Input
+                    id="primary-province"
+                    data-testid="input-primary-province"
+                    value={primaryLocation.province}
+                    onChange={(e) => updatePrimaryLocation("province", e.target.value)}
+                    placeholder="ON"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="primary-postal" className="text-sm">Postal Code</Label>
+                  <Input
+                    id="primary-postal"
+                    data-testid="input-primary-postal"
+                    value={primaryLocation.postalCode}
+                    onChange={(e) => updatePrimaryLocation("postalCode", e.target.value)}
+                    placeholder="M5V 1A1"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <Label htmlFor="primary-phone" className="text-sm">Phone</Label>
+                  <Input
+                    id="primary-phone"
+                    data-testid="input-primary-phone"
+                    value={primaryLocation.contactPhone}
+                    onChange={(e) => updatePrimaryLocation("contactPhone", e.target.value)}
+                    placeholder="(555) 123-4567"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="primary-email" className="text-sm">Email</Label>
+                  <Input
+                    id="primary-email"
+                    data-testid="input-primary-email"
+                    value={primaryLocation.contactEmail}
+                    onChange={(e) => updatePrimaryLocation("contactEmail", e.target.value)}
+                    placeholder="contact@location.com"
+                  />
+                </div>
+              </div>
             </div>
-            <LocationFields location={primaryLocation} isPrimary />
-          </CardContent>
-        </Card>
+          </div>
 
-        {additionalLocations.length > 0 && (
+          <div className="border rounded-md p-3">
+            <h2 className="font-medium mb-3">Maintenance Schedule</h2>
+            <p className="text-xs text-muted-foreground mb-2">Select PM months for primary location</p>
+            <div className="flex flex-wrap gap-1">
+              {MONTHS.map((month) => (
+                <Button
+                  key={month.value}
+                  type="button"
+                  variant={primaryLocation.selectedMonths.includes(month.value) ? "default" : "outline"}
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  onClick={() => togglePrimaryMonth(month.value)}
+                  data-testid={`button-month-${month.label.toLowerCase()}`}
+                >
+                  {month.label}
+                </Button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Additional Locations - Full Width */}
+      {additionalLocations.length > 0 && (
+        <div className="mt-4 border rounded-md p-3">
+          <h2 className="font-medium mb-3">Additional Locations</h2>
           <div className="space-y-4">
             {additionalLocations.map((loc, index) => (
-              <Card key={loc.id}>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <MapPin className="h-5 w-5 text-muted-foreground" />
-                      <CardTitle className="text-lg">Additional Location {index + 1}</CardTitle>
+              <div key={loc.id} className="border rounded-md p-3 relative">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute top-2 right-2 h-6 w-6"
+                  onClick={() => removeLocation(loc.id)}
+                  data-testid={`button-remove-location-${index}`}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 pr-8">
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <Label className="text-sm">Location Name *</Label>
+                        <Input
+                          value={loc.name}
+                          onChange={(e) => updateAdditionalLocation(loc.id, "name", e.target.value)}
+                          placeholder="Branch Name"
+                          data-testid={`input-additional-name-${index}`}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-sm">Contact Name</Label>
+                        <Input
+                          value={loc.contactName}
+                          onChange={(e) => updateAdditionalLocation(loc.id, "contactName", e.target.value)}
+                          placeholder="John Smith"
+                          data-testid={`input-additional-contact-${index}`}
+                        />
+                      </div>
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      data-testid={`btn-remove-location-${loc.id}`}
-                      onClick={() => removeLocation(loc.id)}
-                    >
-                      <X className="h-4 w-4" />
-                    </Button>
+                    <div>
+                      <Label className="text-sm">Address</Label>
+                      <Input
+                        value={loc.address}
+                        onChange={(e) => updateAdditionalLocation(loc.id, "address", e.target.value)}
+                        placeholder="789 Branch St"
+                        data-testid={`input-additional-address-${index}`}
+                      />
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div>
+                        <Label className="text-sm">City</Label>
+                        <Input
+                          value={loc.city}
+                          onChange={(e) => updateAdditionalLocation(loc.id, "city", e.target.value)}
+                          placeholder="City"
+                          data-testid={`input-additional-city-${index}`}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-sm">Province</Label>
+                        <Input
+                          value={loc.province}
+                          onChange={(e) => updateAdditionalLocation(loc.id, "province", e.target.value)}
+                          placeholder="ON"
+                          data-testid={`input-additional-province-${index}`}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-sm">Postal Code</Label>
+                        <Input
+                          value={loc.postalCode}
+                          onChange={(e) => updateAdditionalLocation(loc.id, "postalCode", e.target.value)}
+                          placeholder="M5V 1A1"
+                          data-testid={`input-additional-postal-${index}`}
+                        />
+                      </div>
+                    </div>
                   </div>
-                </CardHeader>
-                <CardContent>
-                  <LocationFields location={loc} isPrimary={false} />
-                </CardContent>
-              </Card>
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <Label className="text-sm">Phone</Label>
+                        <Input
+                          value={loc.contactPhone}
+                          onChange={(e) => updateAdditionalLocation(loc.id, "contactPhone", e.target.value)}
+                          placeholder="(555) 123-4567"
+                          data-testid={`input-additional-phone-${index}`}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-sm">Email</Label>
+                        <Input
+                          value={loc.contactEmail}
+                          onChange={(e) => updateAdditionalLocation(loc.id, "contactEmail", e.target.value)}
+                          placeholder="contact@branch.com"
+                          data-testid={`input-additional-email-${index}`}
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <Label className="text-sm">PM Months</Label>
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {MONTHS.map((month) => (
+                          <Button
+                            key={month.value}
+                            type="button"
+                            variant={loc.selectedMonths.includes(month.value) ? "default" : "outline"}
+                            size="sm"
+                            className="h-6 px-2 text-xs"
+                            onClick={() => toggleAdditionalMonth(loc.id, month.value)}
+                            data-testid={`button-additional-month-${index}-${month.label.toLowerCase()}`}
+                          >
+                            {month.label}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
             ))}
           </div>
-        )}
+        </div>
+      )}
 
+      <div className="mt-4 flex items-center justify-between">
         <Button
           type="button"
           variant="outline"
-          className="w-full"
-          data-testid="btn-add-location"
+          size="sm"
           onClick={addLocation}
+          data-testid="button-add-location"
         >
-          <Plus className="h-4 w-4 mr-2" />
-          Add Another Location
+          <Plus className="h-4 w-4 mr-1" />
+          Add Location
         </Button>
-
-        <div className="flex flex-col sm:flex-row gap-3 pt-4">
+        <div className="flex gap-2">
           <Button
+            type="button"
             variant="outline"
-            className="flex-1"
-            data-testid="btn-quick-save"
-            disabled={!companyName.trim() || createClientMutation.isPending}
-            onClick={() => handleSubmit(true)}
+            onClick={() => setLocation("/")}
+            data-testid="button-cancel"
           >
-            {createClientMutation.isPending ? (
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-            ) : null}
-            Quick Save
+            Cancel
           </Button>
           <Button
-            className="flex-1"
-            data-testid="btn-save-client"
-            disabled={!companyName.trim() || createClientMutation.isPending}
+            type="button"
             onClick={() => handleSubmit(false)}
+            disabled={createClientMutation.isPending}
+            data-testid="button-save-client"
           >
-            {createClientMutation.isPending ? (
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-            ) : null}
+            {createClientMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
             Save Client
           </Button>
         </div>
