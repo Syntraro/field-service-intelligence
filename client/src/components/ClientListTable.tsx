@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "wouter";
-import { Pencil, Trash2, Download, Upload, RotateCcw } from "lucide-react";
+import { useLocation } from "wouter";
+import { Download, Upload, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Checkbox } from "@/components/ui/checkbox";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table,
   TableBody,
@@ -16,25 +16,35 @@ import {
 import { apiRequest } from "@/lib/queryClient";
 import type { Client } from "@shared/schema";
 
-// Month names for display
 const MONTH_NAMES = [
   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
 ];
 
+interface CompanyGroup {
+  companyName: string;
+  primaryClientId: string;
+  location: string;
+  address: string;
+  maintenanceMonths: string;
+  locationCount: number;
+  inactive: boolean;
+}
+
 export default function ClientListTable() {
+  const [, setLocation] = useLocation();
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
-  const [selectedClients, setSelectedClients] = useState<Set<string>>(new Set());
+  const [activeTab, setActiveTab] = useState<"active" | "inactive">("active");
 
-  // Fetch paginated clients with search
   const { data, isLoading } = useQuery({
-    queryKey: ["/api/clients", page, search],
+    queryKey: ["/api/clients", page, search, activeTab],
     queryFn: async () => {
       const params = new URLSearchParams({
         page: page.toString(),
-        limit: "50",
-        ...(search && { search })
+        limit: "200",
+        ...(search && { search }),
+        inactive: activeTab === "inactive" ? "true" : "false"
       });
       return await apiRequest(`/api/clients?${params}`);
     },
@@ -44,36 +54,55 @@ export default function ClientListTable() {
   const totalCount = data?.pagination?.total || 0;
   const totalPages = data?.pagination?.totalPages || 1;
 
-  // Format maintenance months
   const formatMonths = (selectedMonths: number[] | null) => {
     if (!selectedMonths || selectedMonths.length === 0) return "—";
     return selectedMonths.map(m => MONTH_NAMES[m]).join(", ");
   };
 
-  // Toggle client selection
-  const toggleClient = (clientId: string) => {
-    const newSelected = new Set(selectedClients);
-    if (newSelected.has(clientId)) {
-      newSelected.delete(clientId);
-    } else {
-      newSelected.add(clientId);
-    }
-    setSelectedClients(newSelected);
-  };
+  const companyGroups = useMemo(() => {
+    const groupMap = new Map<string, Client[]>();
+    
+    clients.forEach(client => {
+      const key = client.companyName;
+      if (!groupMap.has(key)) {
+        groupMap.set(key, []);
+      }
+      groupMap.get(key)!.push(client);
+    });
 
-  // Toggle all clients
-  const toggleAll = () => {
-    if (selectedClients.size === clients.length) {
-      setSelectedClients(new Set());
-    } else {
-      setSelectedClients(new Set(clients.map(c => c.id)));
-    }
-  };
+    const groups: CompanyGroup[] = [];
+    groupMap.forEach((locations, companyName) => {
+      const hasMultiple = locations.length > 1;
+      const primary = locations[0];
+      
+      groups.push({
+        companyName,
+        primaryClientId: primary.id,
+        location: hasMultiple ? "Multiple" : (primary.location || "—"),
+        address: hasMultiple ? "Multiple" : (primary.address || "—"),
+        maintenanceMonths: hasMultiple 
+          ? "Multiple" 
+          : formatMonths(primary.selectedMonths),
+        locationCount: locations.length,
+        inactive: primary.inactive || false,
+      });
+    });
 
-  // Handle search
+    return groups.sort((a, b) => a.companyName.localeCompare(b.companyName));
+  }, [clients]);
+
   const handleSearch = (value: string) => {
     setSearch(value);
-    setPage(1); // Reset to first page on search
+    setPage(1);
+  };
+
+  const handleRowClick = (clientId: string) => {
+    setLocation(`/clients/${clientId}`);
+  };
+
+  const handleTabChange = (tab: string) => {
+    setActiveTab(tab as "active" | "inactive");
+    setPage(1);
   };
 
   if (isLoading) {
@@ -85,173 +114,151 @@ export default function ClientListTable() {
   }
 
   return (
-    <div className="flex-1 space-y-4 p-8 pt-6">
-      {/* Header */}
+    <div className="flex-1 space-y-3 p-4 pt-3">
       <div className="flex items-center justify-between">
-        <h2 className="text-3xl font-bold tracking-tight">All Clients</h2>
+        <h2 className="text-2xl font-bold tracking-tight" data-testid="text-page-title">All Clients</h2>
         
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm">
+          <Button variant="outline" size="sm" data-testid="button-import-clients">
             <Upload className="h-4 w-4 mr-2" />
-            Import Clients
+            Import
           </Button>
-          <Button variant="outline" size="sm">
+          <Button variant="outline" size="sm" data-testid="button-backup-clients">
             <Download className="h-4 w-4 mr-2" />
-            Backup Client List
+            Backup
           </Button>
-          <Button variant="outline" size="sm">
+          <Button variant="outline" size="sm" data-testid="button-restore-backup">
             <RotateCcw className="h-4 w-4 mr-2" />
-            Restore Backup
+            Restore
           </Button>
         </div>
       </div>
 
-      {/* Search */}
-      <div className="flex items-center gap-4">
-        <div className="relative flex-1 max-w-sm">
-          <Input
-            placeholder="Search clients..."
-            value={search}
-            onChange={(e) => handleSearch(e.target.value)}
-          />
-        </div>
-        
-        {selectedClients.size > 0 && (
-          <div className="text-sm text-muted-foreground">
-            {selectedClients.size} selected
-          </div>
-        )}
-      </div>
-
-      {/* Table */}
-      <div className="rounded-md border">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead className="w-12">
-                <Checkbox
-                  checked={clients.length > 0 && selectedClients.size === clients.length}
-                  onCheckedChange={toggleAll}
-                />
-              </TableHead>
-              <TableHead>Company</TableHead>
-              <TableHead>Location</TableHead>
-              <TableHead>Address</TableHead>
-              <TableHead>Maintenance Months</TableHead>
-              <TableHead>Next Due</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {clients.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
-                  No clients found
-                </TableCell>
-              </TableRow>
-            ) : (
-              clients.map((client) => (
-                <TableRow key={client.id} className="hover:bg-muted/50">
-                  <TableCell>
-                    <Checkbox
-                      checked={selectedClients.has(client.id)}
-                      onCheckedChange={() => toggleClient(client.id)}
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <Link href={`/clients/${client.id}`}>
-                      <span className="font-medium hover:underline cursor-pointer">
-                        {client.companyName}
-                      </span>
-                    </Link>
-                  </TableCell>
-                  <TableCell>
-                    {client.location || "—"}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {client.address || "—"}
-                  </TableCell>
-                  <TableCell className="text-sm">
-                    {formatMonths(client.selectedMonths)}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    —
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex items-center justify-end gap-2">
-                      <Link href={`/clients/${client.id}`}>
-                        <Button variant="ghost" size="sm">
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                      </Link>
-                      <Button variant="ghost" size="sm">
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </div>
-
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between">
-          <div className="text-sm text-muted-foreground">
-            Showing {((page - 1) * 50) + 1} to {Math.min(page * 50, totalCount)} of {totalCount} clients
-          </div>
+      <Tabs value={activeTab} onValueChange={handleTabChange}>
+        <div className="flex items-center justify-between gap-4">
+          <TabsList data-testid="tabs-client-status">
+            <TabsTrigger value="active" data-testid="tab-active">Active</TabsTrigger>
+            <TabsTrigger value="inactive" data-testid="tab-inactive">Inactive</TabsTrigger>
+          </TabsList>
           
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPage(p => Math.max(1, p - 1))}
-              disabled={page === 1}
-            >
-              Previous
-            </Button>
-            
-            <div className="flex items-center gap-1">
-              {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-                const pageNum = i + 1;
-                return (
-                  <Button
-                    key={pageNum}
-                    variant={page === pageNum ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setPage(pageNum)}
-                  >
-                    {pageNum}
-                  </Button>
-                );
-              })}
-              {totalPages > 5 && (
-                <>
-                  <span className="px-2">...</span>
-                  <Button
-                    variant={page === totalPages ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setPage(totalPages)}
-                  >
-                    {totalPages}
-                  </Button>
-                </>
-              )}
-            </div>
-            
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-              disabled={page === totalPages}
-            >
-              Next
-            </Button>
+          <div className="relative flex-1 max-w-sm">
+            <Input
+              placeholder="Search clients..."
+              value={search}
+              onChange={(e) => handleSearch(e.target.value)}
+              data-testid="input-search-clients"
+            />
           </div>
         </div>
-      )}
+
+        <TabsContent value={activeTab} className="mt-3">
+          <div className="rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="py-2">Company</TableHead>
+                  <TableHead className="py-2">Location</TableHead>
+                  <TableHead className="py-2">Address</TableHead>
+                  <TableHead className="py-2">Maintenance Months</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {companyGroups.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center text-muted-foreground py-6">
+                      No {activeTab} clients found
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  companyGroups.map((group) => (
+                    <TableRow 
+                      key={group.primaryClientId} 
+                      className="cursor-pointer hover:bg-muted/50 transition-colors"
+                      onClick={() => handleRowClick(group.primaryClientId)}
+                      data-testid={`row-client-${group.primaryClientId}`}
+                    >
+                      <TableCell className="py-2 font-medium">
+                        {group.companyName}
+                      </TableCell>
+                      <TableCell className="py-2 text-muted-foreground">
+                        {group.location}
+                      </TableCell>
+                      <TableCell className="py-2 text-muted-foreground">
+                        {group.address}
+                      </TableCell>
+                      <TableCell className="py-2 text-sm">
+                        {group.maintenanceMonths}
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between mt-3">
+              <div className="text-sm text-muted-foreground">
+                Showing {companyGroups.length} companies ({totalCount} locations)
+              </div>
+              
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                  disabled={page === 1}
+                  data-testid="button-prev-page"
+                >
+                  Previous
+                </Button>
+                
+                <div className="flex items-center gap-1">
+                  {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                    const pageNum = i + 1;
+                    return (
+                      <Button
+                        key={pageNum}
+                        variant={page === pageNum ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setPage(pageNum)}
+                        data-testid={`button-page-${pageNum}`}
+                      >
+                        {pageNum}
+                      </Button>
+                    );
+                  })}
+                  {totalPages > 5 && (
+                    <>
+                      <span className="px-2">...</span>
+                      <Button
+                        variant={page === totalPages ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setPage(totalPages)}
+                        data-testid={`button-page-${totalPages}`}
+                      >
+                        {totalPages}
+                      </Button>
+                    </>
+                  )}
+                </div>
+                
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                  disabled={page === totalPages}
+                  data-testid="button-next-page"
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
+
+export type { Client };
