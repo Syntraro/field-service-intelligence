@@ -24,7 +24,7 @@ export const companies = pgTable("companies", {
   stripeSubscriptionId: text("stripe_subscription_id"),
   // Tax settings
   taxName: text("tax_name").notNull().default("HST"), // Default tax name (e.g., HST, GST, PST, VAT)
-  defaultTaxRate: text("default_tax_rate").notNull().default("13"), // Default tax rate as percentage (e.g., "13" for 13%)
+  defaultTaxRate: numeric("default_tax_rate", { precision: 5, scale: 2 }).notNull().default("13.00"), // Default tax rate as percentage (e.g., 13.00 for 13%)
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
@@ -193,7 +193,7 @@ export const clients = pgTable("clients", {
   // Optimistic locking
   version: integer("version").notNull().default(0), // Incremented on every update
   // Metadata
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const insertClientSchema = createInsertSchema(clients).omit({
@@ -225,9 +225,9 @@ export const parts = pgTable("parts", {
   sku: text("sku"), // belt/filter code or internal item code
   description: text("description"),
   // Pricing fields (for products and services)
-  cost: text("cost"), // Cost price in dollars (stored as text to preserve decimals)
-  markupPercent: text("markup_percent"), // Optional markup percentage for auto-calculating unitPrice
-  unitPrice: text("unit_price"), // Selling price in dollars
+  cost: numeric("cost", { precision: 12, scale: 2 }), // Cost price in dollars
+  markupPercent: numeric("markup_percent", { precision: 5, scale: 2 }), // Optional markup percentage for auto-calculating unitPrice
+  unitPrice: numeric("unit_price", { precision: 12, scale: 2 }), // Selling price in dollars
   // Tax fields
   isTaxable: boolean("is_taxable").default(true),
   taxExempt: boolean("tax_exempt").default(false), // Legacy field - use isTaxable for new items
@@ -240,7 +240,7 @@ export const parts = pgTable("parts", {
   qboItemId: text("qbo_item_id"), // QBO Item id if/when synced
   qboSyncToken: text("qbo_sync_token"), // QBO sync token if needed
   // Metadata
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
 });
 
@@ -362,7 +362,7 @@ export const equipment = pgTable("equipment", {
   serialNumber: text("serial_number"),
   location: text("location"),
   notes: text("notes"),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const insertEquipmentSchema = createInsertSchema(equipment).omit({
@@ -652,12 +652,12 @@ export const invoices = pgTable("invoices", {
   issueDate: date("issue_date").notNull(),
   dueDate: date("due_date"),
   currency: text("currency").notNull().default("CAD"), // e.g., "CAD", "USD"
-  // Totals (stored as text to preserve decimal precision)
-  subtotal: text("subtotal").notNull().default("0"),
-  taxTotal: text("tax_total").notNull().default("0"),
-  total: text("total").notNull().default("0"),
-  amountPaid: text("amount_paid").notNull().default("0"), // Sum of all payments
-  balance: text("balance").notNull().default("0"), // total - amountPaid
+  // Totals (NUMERIC for proper decimal math)
+  subtotal: numeric("subtotal", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  taxTotal: numeric("tax_total", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  total: numeric("total", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  amountPaid: numeric("amount_paid", { precision: 12, scale: 2 }).notNull().default("0.00"), // Sum of all payments
+  balance: numeric("balance", { precision: 12, scale: 2 }).notNull().default("0.00"), // total - amountPaid
   // Job reference (if created from a job)
   jobId: varchar("job_id"), // Will be linked after jobs table is defined
   // Tracking
@@ -756,10 +756,12 @@ export const invoiceLines = pgTable("invoice_lines", {
   date: date("date"), // Optional date for the line item
   technicianId: varchar("technician_id"), // Optional technician reference
   quantity: text("quantity").notNull().default("1"), // Stored as text for decimal precision
-  unitCost: text("unit_cost"), // Cost per unit (for profit margin calc)
-  unitPrice: text("unit_price").notNull().default("0"), // Stored as text for decimal precision
-  taxRate: text("tax_rate").notNull().default("0"), // Tax rate as decimal (e.g., "0.13" for 13%)
-  lineSubtotal: text("line_subtotal").notNull().default("0"), // quantity * unitPrice
+  unitCost: numeric("unit_cost", { precision: 12, scale: 2 }), // Cost per unit (for profit margin calc)
+  unitPrice: numeric("unit_price", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  taxRate: numeric("tax_rate", { precision: 5, scale: 4 }).notNull().default("0.0000"), // Tax rate as decimal (e.g., 0.1300 for 13%)
+  lineSubtotal: numeric("line_subtotal", { precision: 12, scale: 2 }).notNull().default("0.00"), // quantity * unitPrice
+  taxAmount: numeric("tax_amount", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  lineTotal: numeric("line_total", { precision: 12, scale: 2 }).notNull().default("0.00"), // lineSubtotal + taxAmount
   taxCode: text("tax_code"), // Tax code name/identifier
   // Job reference (if converted from job)
   jobLineItemId: varchar("job_line_item_id"), // Reference to original job part
@@ -807,7 +809,7 @@ export type InvoiceLine = typeof invoiceLines.$inferSelect;
 export const payments = pgTable("payments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: "cascade" }),
-  amount: text("amount").notNull(), // Stored as text for decimal precision
+  amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
   method: text("method").notNull().default("other"), // cash, credit, debit, e-transfer, cheque, other
   reference: text("reference"), // Transaction ID, cheque number, etc.
   receivedAt: timestamp("received_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -1175,8 +1177,8 @@ export const jobParts = pgTable("job_parts", {
   equipmentId: varchar("equipment_id").references(() => locationEquipment.id, { onDelete: "set null" }), // Optional link to equipment
   description: text("description").notNull(),
   quantity: text("quantity").notNull(), // Stored as text for decimal precision
-  unitCost: text("unit_cost"), // Cost per unit (for profit margin calc)
-  unitPrice: text("unit_price"), // Stored as text for decimal precision
+  unitCost: numeric("unit_cost", { precision: 12, scale: 2 }), // Cost per unit (for profit margin calc)
+  unitPrice: numeric("unit_price", { precision: 12, scale: 2 }), // Price per unit
   source: text("source").notNull().default("manual"), // pm_template, added_by_tech, quoted, manual
   equipmentLabel: text("equipment_label"), // Legacy: Copied from PM template or added by tech
   sortOrder: integer("sort_order").notNull().default(0), // For ordering line items in Parts & Billing
@@ -1322,8 +1324,8 @@ export type UserPermissionOverride = typeof userPermissionOverrides.$inferSelect
 // Technician Profiles - cost and billing information for technicians
 export const technicianProfiles = pgTable("technician_profiles", {
   userId: varchar("user_id").primaryKey().references(() => users.id, { onDelete: "cascade" }),
-  laborCostPerHour: text("labor_cost_per_hour"), // Stored as text for decimal precision
-  billableRatePerHour: text("billable_rate_per_hour"), // Optional
+  laborCostPerHour: numeric("labor_cost_per_hour", { precision: 8, scale: 2 }), // Cost per hour
+  billableRatePerHour: numeric("billable_rate_per_hour", { precision: 8, scale: 2 }), // Billable rate per hour
   color: text("color"), // Calendar color for this technician
   phone: text("phone"),
   note: text("note"),
@@ -1423,7 +1425,7 @@ export const jobTemplateLineItems = pgTable("job_template_line_items", {
   productId: varchar("product_id").notNull().references(() => parts.id, { onDelete: "cascade" }),
   descriptionOverride: text("description_override"),
   quantity: text("quantity").notNull().default("1"), // Stored as text for decimal precision
-  unitPriceOverride: text("unit_price_override"), // If null, use product.unitPrice
+  unitPriceOverride: numeric("unit_price_override", { precision: 12, scale: 2 }), // If null, use product.unitPrice
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });

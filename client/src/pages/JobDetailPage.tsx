@@ -94,7 +94,10 @@ function JobDescriptionCard({ jobId, description, onDescriptionChange }: {
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      await apiRequest("PATCH", `/api/jobs/${jobId}`, { description: editValue });
+      await apiRequest(`/api/jobs/${jobId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ description: editValue })
+      });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
       setIsEditing(false);
       toast({ title: "Saved", description: "Job description updated." });
@@ -417,9 +420,12 @@ function AssignTechnicianDialog({
 
   const assignMutation = useMutation({
     mutationFn: async () => {
-      return apiRequest("PATCH", `/api/jobs/${jobId}`, {
-        assignedTechnicianIds: selectedIds,
-        primaryTechnicianId: primaryId || (selectedIds.length > 0 ? selectedIds[0] : null),
+      return apiRequest(`/api/jobs/${jobId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          assignedTechnicianIds: selectedIds,
+          primaryTechnicianId: primaryId || (selectedIds.length > 0 ? selectedIds[0] : null),
+        })
       });
     },
     onSuccess: () => {
@@ -561,7 +567,10 @@ export default function JobDetailPage() {
 
   const updateStatusMutation = useMutation({
     mutationFn: async (status: string) => {
-      return apiRequest("PATCH", `/api/jobs/${jobId}/status`, { status });
+      return apiRequest(`/api/jobs/${jobId}/status`, {
+        method: "PATCH",
+        body: JSON.stringify({ status })
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
@@ -582,7 +591,9 @@ export default function JobDetailPage() {
 
   const deleteJobMutation = useMutation({
     mutationFn: async () => {
-      return apiRequest("DELETE", `/api/jobs/${jobId}`);
+      return apiRequest(`/api/jobs/${jobId}`, {
+        method: "DELETE"
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
@@ -603,12 +614,15 @@ export default function JobDetailPage() {
 
   const createInvoiceMutation = useMutation({
     mutationFn: async (markJobCompleted: boolean = false) => {
-      const response = await apiRequest("POST", `/api/invoices/from-job/${jobId}`, {
-        includeLineItems: true,
-        includeNotes: true,
-        markJobCompleted,
+      const response = await apiRequest(`/api/invoices/from-job/${jobId}`, {
+        method: "POST",
+        body: JSON.stringify({
+          includeLineItems: true,
+          includeNotes: true,
+          markJobCompleted,
+        })
       });
-      return response.json();
+      return response;
     },
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
@@ -831,7 +845,9 @@ export default function JobDetailPage() {
                       <span className="mt-1 h-2 w-2 rounded-full bg-primary shrink-0" />
                       <div>
                         <div className="font-medium">Job created</div>
-                        <div className="text-muted-foreground">{format(new Date(job.createdAt), "MMMM do, yyyy")}</div>
+                        <div className="text-muted-foreground">
+                          {job.createdAt ? format(new Date(job.createdAt), "MMMM do, yyyy") : "N/A"}
+                        </div>
                       </div>
                     </li>
                     {job.scheduledStart && (

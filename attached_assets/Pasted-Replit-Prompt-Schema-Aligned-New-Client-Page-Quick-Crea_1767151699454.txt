@@ -1,0 +1,240 @@
+Replit Prompt (Schema-Aligned): New Client Page + Quick Create from Job/Invoice
+
+You are working in an existing HVAC dispatching app (React/TypeScript frontend + Express backend + Drizzle schema as provided).
+
+IMPORTANT: Use the existing DB schema field names
+
+From schema.ts:
+
+clients table fields (relevant):
+
+id, companyId, userId
+
+parentCompanyId (parent/child relationship)
+
+companyName (required for quick-create)
+
+location (location nickname/label)
+
+address, city, province, postalCode
+
+contactName, email, phone, notes
+
+billWithParent (boolean)
+
+inactive (boolean)
+
+QBO fields: qboCustomerId, qboParentCustomerId, qboSyncToken, qboLastSyncedAt
+
+selectedMonths exists but DO NOT rely on it for new maintenance UI (see below)
+
+location_pm_plans table fields (relevant):
+
+locationId (FK to a location/client record)
+
+hasPm (boolean)
+
+month flags: pmJan … pmDec (booleans)
+
+notes, isActive
+
+A) New Client should be a Dedicated Page
+1) Navigation / Route
+
+Replace the current “New Client” modal flow with a dedicated page:
+
+Route: /clients/new (or follow existing routing conventions)
+
+Keep styling consistent with existing app (don’t redesign the whole UI theme).
+
+After save: navigate to /clients/:id (preferred), or back to list with selection.
+
+2) Model: Parent Company + Locations using clients
+
+Implement the model like this (minimal schema changes):
+
+Primary location = the parent record
+
+Parent record: parentCompanyId = null
+
+This parent record also contains the primary location fields (location, address, etc.)
+
+Additional locations = child records
+
+Child location records: parentCompanyId = parent.id
+
+Child records share the same companyName (copy it from parent)
+
+This fits your current schema and avoids inventing new tables.
+
+B) New Client Page Layout & Behavior
+Section 1: Company Information (stored on the parent record)
+
+Fields:
+
+companyName (required on this full page)
+
+contactName, email, phone, notes
+
+billWithParent (checkbox/toggle) — applies for billing behavior (keep existing semantics)
+
+QBO fields are NOT required to fill now, but must remain editable in future.
+
+Section 2: Primary Location (stored on the same parent record)
+
+Fields:
+
+location (optional “Location name” / nickname)
+
+address, city, province, postalCode (require at least address + city on full page create)
+
+Optional extra fields if present in UI already: keep consistent
+
+Section 3: Maintenance for Primary Location (stored in location_pm_plans)
+
+Maintenance toggle: map to location_pm_plans.hasPm
+
+If maintenance enabled:
+
+show month multi-select (Jan–Dec)
+
+persist into pmJan...pmDec booleans
+
+Ensure a location_pm_plans row exists for this location:
+
+upsert by locationId
+
+set isActive = true when hasPm is true
+
+Section 4: Additional Locations (children)
+
+“Add Location” button
+
+Each additional location creates a child record in clients with:
+
+parentCompanyId = parent.id
+
+companyName = parent.companyName
+
+location, address, city, province, postalCode, contact fields optional
+
+Each location also has its own Maintenance section, stored in location_pm_plans keyed by that child record’s id.
+
+Save Rules
+
+The full page create should:
+
+create parent client record (primary location)
+
+create child location records (optional)
+
+upsert location_pm_plans for each created location (parent + children)
+
+C) Quick-Create Client from New Job + New Invoice
+1) Client selector must allow “Create new”
+
+In the New Job and New Invoice flows where the user selects a client:
+
+Allow selecting existing clients
+
+Also allow typing a name and selecting an option:
+
+Create "<typed name>"
+
+2) Quick-create must require ONLY companyName
+
+When quick-creating:
+
+Create a single parent record in clients:
+
+companyName = typed value (required)
+
+parentCompanyId = null
+
+all location/contact/address fields can be null/empty
+
+Do not force address/email/phone.
+
+Do NOT create additional locations during quick-create.
+
+3) “Incomplete details” tracking (add a field)
+
+Add a new boolean column to clients:
+
+needsDetails (or isIncomplete) default true/false as appropriate
+
+Behavior:
+
+Quick-create sets needsDetails = true
+
+Saving from the full client page (when required info is provided) sets needsDetails = false
+
+(Implement via Drizzle migration + update schema.)
+
+4) Reminder after job/invoice creation (only if quick-create happened)
+
+If a job/invoice was created with a client where needsDetails = true:
+
+Show toast/banner:
+
+“Job created. Remember to complete client details on the Client page.”
+
+Provide a button/link:
+
+“Open Client” → /clients/:clientId
+
+D) API Requirements
+
+Add or adjust endpoints following existing code style:
+
+Client creation
+
+POST /api/clients (full create: parent + children + maintenance payload)
+
+POST /api/clients/quick-create (or reuse POST /api/clients with a flag mode=quick)
+
+quick: only companyName required
+
+Locations
+
+If locations are created as clients children, you may not need a separate “locations table” endpoint, but you DO need:
+
+GET /api/clients/:id/locations (returns children where parentCompanyId = :id)
+
+Maintenance plans
+
+PUT /api/locations/:locationId/pm-plan (upsert into location_pm_plans)
+
+or handle via the full create payload
+
+E) Acceptance Criteria
+
+Clicking “New Client” opens /clients/new page (no modal).
+
+Full create supports:
+
+company fields on parent
+
+primary location on parent
+
+multiple child locations
+
+maintenance months per location saved to location_pm_plans
+
+New Job and New Invoice client selector supports quick-create:
+
+only requires companyName
+
+does not block job/invoice save with missing address/email
+
+Reminder toast appears after job/invoice creation if client needsDetails=true, with link to client page.
+
+No existing routes break; app builds and runs.
+
+Deliverables:
+
+List exact files changed
+
+Summary of implemented behavior
+
+Any migrations required and how to run them

@@ -1,27 +1,119 @@
 import { db } from "../db";
 import { eq, and, sql } from "drizzle-orm";
-import { invoices, invoiceLines } from "@shared/schema";
+import { invoices, invoiceLines, clients } from "@shared/schema";
 import { BaseRepository, parseDecimal } from "./base";
 
 export class InvoiceRepository extends BaseRepository {
   /**
-   * Get all invoices for a company
+   * Get all invoices for a company with client data
    */
   async getInvoices(companyId: string) {
     return await db
-      .select()
+      .select({
+        // All invoice fields
+        id: invoices.id,
+        companyId: invoices.companyId,
+        locationId: invoices.locationId,
+        customerCompanyId: invoices.customerCompanyId,
+        invoiceNumber: invoices.invoiceNumber,
+        status: invoices.status,
+        issueDate: invoices.issueDate,
+        dueDate: invoices.dueDate,
+        currency: invoices.currency,
+        subtotal: invoices.subtotal,
+        taxTotal: invoices.taxTotal,
+        total: invoices.total,
+        amountPaid: invoices.amountPaid,
+        balance: invoices.balance,
+        jobId: invoices.jobId,
+        sentAt: invoices.sentAt,
+        viewedAt: invoices.viewedAt,
+        notesInternal: invoices.notesInternal,
+        notesCustomer: invoices.notesCustomer,
+        workDescription: invoices.workDescription,
+        clientMessage: invoices.clientMessage,
+        showQuantity: invoices.showQuantity,
+        showUnitPrice: invoices.showUnitPrice,
+        showLineTotals: invoices.showLineTotals,
+        showLineItems: invoices.showLineItems,
+        showBalance: invoices.showBalance,
+        qboInvoiceId: invoices.qboInvoiceId,
+        qboSyncToken: invoices.qboSyncToken,
+        qboLastSyncedAt: invoices.qboLastSyncedAt,
+        qboDocNumber: invoices.qboDocNumber,
+        dirty: invoices.dirty,
+        isActive: invoices.isActive,
+        version: invoices.version,
+        createdAt: invoices.createdAt,
+        updatedAt: invoices.updatedAt,
+        // Add client data
+        client: {
+          id: clients.id,
+          companyName: clients.companyName,
+          location: clients.location,
+        }
+      })
       .from(invoices)
+      .leftJoin(clients, eq(invoices.locationId, clients.id))
       .where(and(eq(invoices.companyId, companyId), eq(invoices.isActive, true)))
       .orderBy(invoices.createdAt);
   }
 
   /**
-   * Get single invoice
+   * Get single invoice with client data
    */
   async getInvoice(companyId: string, invoiceId: string) {
     const rows = await db
-      .select()
+      .select({
+        // All invoice fields
+        id: invoices.id,
+        companyId: invoices.companyId,
+        locationId: invoices.locationId,
+        customerCompanyId: invoices.customerCompanyId,
+        invoiceNumber: invoices.invoiceNumber,
+        status: invoices.status,
+        issueDate: invoices.issueDate,
+        dueDate: invoices.dueDate,
+        currency: invoices.currency,
+        subtotal: invoices.subtotal,
+        taxTotal: invoices.taxTotal,
+        total: invoices.total,
+        amountPaid: invoices.amountPaid,
+        balance: invoices.balance,
+        jobId: invoices.jobId,
+        sentAt: invoices.sentAt,
+        viewedAt: invoices.viewedAt,
+        notesInternal: invoices.notesInternal,
+        notesCustomer: invoices.notesCustomer,
+        workDescription: invoices.workDescription,
+        clientMessage: invoices.clientMessage,
+        showQuantity: invoices.showQuantity,
+        showUnitPrice: invoices.showUnitPrice,
+        showLineTotals: invoices.showLineTotals,
+        showLineItems: invoices.showLineItems,
+        showBalance: invoices.showBalance,
+        qboInvoiceId: invoices.qboInvoiceId,
+        qboSyncToken: invoices.qboSyncToken,
+        qboLastSyncedAt: invoices.qboLastSyncedAt,
+        qboDocNumber: invoices.qboDocNumber,
+        dirty: invoices.dirty,
+        isActive: invoices.isActive,
+        version: invoices.version,
+        createdAt: invoices.createdAt,
+        updatedAt: invoices.updatedAt,
+        // Add client data
+        client: {
+          id: clients.id,
+          companyName: clients.companyName,
+          location: clients.location,
+          address: clients.address,
+          city: clients.city,
+          province: clients.province,
+          postalCode: clients.postalCode,
+        }
+      })
       .from(invoices)
+      .leftJoin(clients, eq(invoices.locationId, clients.id))
       .where(and(eq(invoices.id, invoiceId), eq(invoices.companyId, companyId)))
       .limit(1);
 
@@ -36,7 +128,7 @@ export class InvoiceRepository extends BaseRepository {
       .select({
         status: invoices.status,
         count: sql<number>`count(*)`,
-        totalAmount: sql<string>`sum(CAST(${invoices.total} AS DECIMAL))`,
+        totalAmount: sql<number>`COALESCE(sum(${invoices.total}), 0)`,
       })
       .from(invoices)
       .where(and(eq(invoices.companyId, companyId), eq(invoices.isActive, true)))
@@ -180,68 +272,52 @@ export class InvoiceRepository extends BaseRepository {
    * Recalculate invoice totals from line items
    */
   private async recalculateInvoiceTotals(companyId: string, invoiceId: string): Promise<void> {
-    const lines = await db
-      .select()
+    const rows = await db
+      .select({
+        subtotal: sql<number>`COALESCE(SUM(${invoiceLines.lineSubtotal}), 0)`,
+        taxTotal: sql<number>`COALESCE(SUM(${invoiceLines.lineSubtotal} * ${invoiceLines.taxRate}), 0)`,
+        total: sql<number>`COALESCE(SUM(${invoiceLines.lineSubtotal} * (1 + ${invoiceLines.taxRate})), 0)`,
+      })
       .from(invoiceLines)
       .where(eq(invoiceLines.invoiceId, invoiceId));
 
-    let subtotal = 0;
-    let taxTotal = 0;
-
-    for (const line of lines) {
-      const lineSubtotal = parseFloat(line.lineSubtotal || "0");
-      const taxRate = parseFloat(line.taxRate || "0");
-      const lineTax = lineSubtotal * taxRate;
-
-      subtotal += lineSubtotal;
-      taxTotal += lineTax;
-    }
-
-    const total = subtotal + taxTotal;
+    const totals = rows[0] ?? { subtotal: 0, taxTotal: 0, total: 0 };
 
     await db
       .update(invoices)
       .set({
-        subtotal: subtotal.toFixed(2),
-        taxTotal: taxTotal.toFixed(2),
-        total: total.toFixed(2),
+        subtotal: totals.subtotal,
+        taxTotal: totals.taxTotal,
+        total: totals.total,
         updatedAt: new Date(),
       })
-      .where(and(eq(invoices.id, invoiceId), eq(invoices.companyId, companyId)));
+      .where(and(eq(invoices.companyId, companyId), eq(invoices.id, invoiceId)));
   }
 
   /**
    * Recalculate invoice totals within a transaction
    */
   private async recalculateInvoiceTotalsInTx(tx: any, companyId: string, invoiceId: string): Promise<void> {
-    const lines = await tx
-      .select()
+    const rows = await tx
+      .select({
+        subtotal: sql<number>`COALESCE(SUM(${invoiceLines.lineSubtotal}), 0)`,
+        taxTotal: sql<number>`COALESCE(SUM(${invoiceLines.lineSubtotal} * ${invoiceLines.taxRate}), 0)`,
+        total: sql<number>`COALESCE(SUM(${invoiceLines.lineSubtotal} * (1 + ${invoiceLines.taxRate})), 0)`,
+      })
       .from(invoiceLines)
       .where(eq(invoiceLines.invoiceId, invoiceId));
 
-    let subtotal = 0;
-    let taxTotal = 0;
-
-    for (const line of lines) {
-      const lineSubtotal = parseFloat(line.lineSubtotal || "0");
-      const taxRate = parseFloat(line.taxRate || "0");
-      const lineTax = lineSubtotal * taxRate;
-
-      subtotal += lineSubtotal;
-      taxTotal += lineTax;
-    }
-
-    const total = subtotal + taxTotal;
+    const totals = rows[0] ?? { subtotal: 0, taxTotal: 0, total: 0 };
 
     await tx
       .update(invoices)
       .set({
-        subtotal: subtotal.toFixed(2),
-        taxTotal: taxTotal.toFixed(2),
-        total: total.toFixed(2),
+        subtotal: totals.subtotal,
+        taxTotal: totals.taxTotal,
+        total: totals.total,
         updatedAt: new Date(),
       })
-      .where(and(eq(invoices.id, invoiceId), eq(invoices.companyId, companyId)));
+      .where(and(eq(invoices.companyId, companyId), eq(invoices.id, invoiceId)));
   }
 
   /**
@@ -282,23 +358,23 @@ export class InvoiceRepository extends BaseRepository {
       // Step 3: Insert fresh invoice lines from job parts
       let linesCreated = 0;
       if (parts.length > 0) {
-        const newLines = parts.map((part, index) => ({
-          invoiceId,
-          lineNumber: index + 1,
-          description: part.description,
-          quantity: part.quantity?.toString() || "1",
-          unitPrice: part.unitPrice || "0.00",
-          lineSubtotal: (
-            parseFloat(part.quantity?.toString() || "1") * 
-            parseFloat(part.unitPrice || "0")
-          ).toFixed(2),
-          taxRate: "0.00",
-          taxAmount: "0.00",
-          lineTotal: (
-            parseFloat(part.quantity?.toString() || "1") * 
-            parseFloat(part.unitPrice || "0")
-          ).toFixed(2),
-        }));
+        const newLines = parts.map((part, index) => {
+          const qty = parseFloat(part.quantity?.toString() || "1");
+          const price = part.unitPrice || 0;  // Already NUMERIC!
+          const lineSubtotal = qty * price;
+          
+          return {
+            invoiceId,
+            lineNumber: index + 1,
+            description: part.description,
+            quantity: part.quantity?.toString() || "1",
+            unitPrice: price,
+            lineSubtotal: lineSubtotal,
+            taxRate: 0,
+            taxAmount: 0,
+            lineTotal: lineSubtotal,
+          };
+        });
 
         await tx.insert(invoiceLines).values(newLines);
         linesCreated = newLines.length;

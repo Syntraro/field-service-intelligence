@@ -19,6 +19,10 @@ import subscriptionsRouter from "./subscriptions";
 import impersonationRouter from "./impersonation";
 import authRouter from "./auth";
 
+// ✅ NEW (long-term client/company detail fix)
+import customerCompaniesRouter from "./customer-companies";
+import clientNotesRouter from "./client-notes";
+
 import { requireAuth } from "../auth/requireAuth";
 import { ensureTenantContext, rateLimitPerTenant } from "../auth/tenantIsolation";
 import { impersonationMiddleware, trackActivity } from "../impersonationMiddleware";
@@ -73,6 +77,14 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/subscriptions", subscriptionsRouter);
   app.use("/api/impersonation", impersonationRouter);
   app.use("/api/tasks", tasksRoutes);
+
+  // ✅ NEW ROUTES (company rollups + notes API)
+  // Company/Client (parent) endpoints: /api/customer-companies/:id/overview, /locations, etc.
+  app.use("/api/customer-companies", customerCompaniesRouter);
+
+  // Notes endpoints (supports /api/client-notes and/or /api/clients/:id/notes depending on router implementation)
+  // Mount at /api so it can expose multiple paths cleanly.
+  app.use("/api", clientNotesRouter);
 
   // Create and return HTTP server
   const httpServer = createServer(app);

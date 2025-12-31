@@ -199,7 +199,7 @@ function Router() {
           <DailyParts />
         </ProtectedRoute>
       </Route>
-      <Route path="/clients/:id">
+      <Route path="/clients/:clientId">
         <ProtectedRoute requireAdmin>
           <ClientDetailPage />
         </ProtectedRoute>

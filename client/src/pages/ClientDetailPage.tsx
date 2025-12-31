@@ -7,8 +7,31 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
-import { ArrowLeft, Building2, MapPin, Phone, Mail, Plus, Star, Pencil, Trash2, Briefcase, FileText, ChevronRight, Settings } from "lucide-react";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import {
+  ArrowLeft,
+  Building2,
+  MapPin,
+  Phone,
+  Mail,
+  Plus,
+  Star,
+  Pencil,
+  Trash2,
+  Briefcase,
+  FileText,
+  ChevronRight,
+  Settings,
+} from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import EditClientDialog from "@/components/EditClientDialog";
 import { useToast } from "@/hooks/use-toast";
@@ -18,11 +41,23 @@ import type { Client, CustomerCompany, ClientNote, Job, Invoice } from "@shared/
 
 type OverviewTab = "activeWork" | "jobs" | "invoices";
 
+type CompanyOverview = {
+  company: CustomerCompany;
+  locations: Client[];
+  jobs: Job[];
+  invoices: Invoice[];
+  stats?: {
+    totalLocations: number;
+    openJobs: number;
+    openInvoices: number;
+  };
+};
+
 export default function ClientDetailPage() {
-  const { id } = useParams<{ id: string }>();
+  const { clientId } = useParams<{ clientId: string }>();
   const [, setLocation] = useLocation();
   const { toast } = useToast();
-  
+
   const [overviewTab, setOverviewTab] = useState<OverviewTab>("activeWork");
   const [jobDialogOpen, setJobDialogOpen] = useState(false);
   const [preselectedLocationId, setPreselectedLocationId] = useState<string | undefined>();
@@ -33,64 +68,100 @@ export default function ClientDetailPage() {
   const [deleteNoteId, setDeleteNoteId] = useState<string | null>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
 
-  const { data: client, isLoading: clientLoading, error: clientError } = useQuery<Client>({
-    queryKey: ["/api/clients", id],
-    enabled: Boolean(id),
+  const {
+    data: client,
+    isLoading: clientLoading,
+    error: clientError,
+  } = useQuery<Client>({
+    queryKey: ["/api/clients", clientId],
+    queryFn: async () => {
+      const res = await fetch(`/api/clients/${clientId}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch client");
+      return res.json();
+    },
+    enabled: Boolean(clientId),
   });
 
   const { data: parentCompany } = useQuery<CustomerCompany>({
     queryKey: [`/api/customer-companies/${client?.parentCompanyId}`],
-    enabled: Boolean(client?.parentCompanyId),
-  });
-
-  const { data: locations = [] } = useQuery<Client[]>({
-    queryKey: ["/api/customer-companies", client?.parentCompanyId, "locations"],
-    enabled: Boolean(client?.parentCompanyId),
-  });
-
-  const { data: jobs = [] } = useQuery<Job[]>({
-    queryKey: ["/api/jobs"],
-    enabled: Boolean(client),
-  });
-
-  const { data: notes = [] } = useQuery<ClientNote[]>({
-    queryKey: ["/api/client-notes", id],
-    enabled: Boolean(id),
-  });
-
-  const { data: invoices = [] } = useQuery<Invoice[]>({
-    queryKey: ["/api/invoices", { locationId: id }],
     queryFn: async () => {
-      const res = await fetch(`/api/invoices?locationId=${id}`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch invoices");
+      const res = await fetch(`/api/customer-companies/${client?.parentCompanyId}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch parent company");
       return res.json();
     },
-    enabled: Boolean(id),
+    enabled: Boolean(client?.parentCompanyId),
   });
 
-  const companyJobs = jobs.filter(job => {
-    if (!locations.length) return job.locationId === id;
-    return locations.some(loc => loc.id === job.locationId);
+  /**
+   * ✅ LONG-TERM FIX:
+   * Replace separate /locations, /jobs?clientId, /invoices?clientId with ONE canonical call:
+   *   GET /api/customer-companies/:parentCompanyId/overview
+   *
+   * Backend should roll up jobs+invoices via locationIds (schema-correct).
+   */
+  const { data: overview } = useQuery<CompanyOverview>({
+    queryKey: ["/api/customer-companies", client?.parentCompanyId, "overview"],
+    queryFn: async () => {
+      const res = await fetch(`/api/customer-companies/${client?.parentCompanyId}/overview`, {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed to fetch company overview");
+      return res.json();
+    },
+    enabled: Boolean(client?.parentCompanyId),
   });
 
-  const overdueJobs = companyJobs.filter(j => {
+  // Keep your existing variable names so the UI doesn’t change.
+  const locations: Client[] = overview?.locations ?? [];
+  const jobs: Job[] = overview?.jobs ?? [];
+  const invoices: Invoice[] = overview?.invoices ?? [];
+
+  const { data: notes = [] } = useQuery<ClientNote[]>({
+    queryKey: ["/api/client-notes", clientId],
+    queryFn: async () => {
+      const res = await fetch(`/api/client-notes?clientId=${clientId}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch notes");
+      return res.json();
+    },
+    enabled: Boolean(clientId),
+  });
+
+  /**
+   * ✅ IMPORTANT FIX:
+   * Jobs do NOT have job.clientId in your schema model.
+   * Rollups must match on job.locationId.
+   */
+  const companyJobs = jobs.filter((job) => {
+    // If overview returned locations, only include jobs that belong to those locations
+    if (locations.length) return locations.some((loc) => loc.id === job.locationId);
+
+    // If locations didn’t load for any reason, treat the current "clientId" as a location id
+    return job.locationId === clientId;
+  });
+
+  const overdueJobs = companyJobs.filter((j) => {
     if (!j.scheduledStart) return false;
     const isPastDue = new Date(j.scheduledStart) < new Date();
     const isOpenStatus = j.status !== "completed" && j.status !== "invoiced" && j.status !== "cancelled";
     return isPastDue && isOpenStatus;
   });
-  const overdueJobIds = new Set(overdueJobs.map(j => j.id));
-  const activeJobs = companyJobs.filter(j => 
-    (j.status === "in_progress" || j.status === "scheduled") && !overdueJobIds.has(j.id)
+
+  const overdueJobIds = new Set(overdueJobs.map((j) => j.id));
+  const activeJobs = companyJobs.filter(
+    (j) => (j.status === "in_progress" || j.status === "scheduled") && !overdueJobIds.has(j.id)
   );
 
   const createNoteMutation = useMutation({
     mutationFn: async (noteText: string) => {
-      const res = await apiRequest("POST", `/api/client-notes`, { clientId: id, noteText });
+      const res = await apiRequest(`/api/client-notes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientId, noteText }),
+      });
       return await res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/client-notes", id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/client-notes", clientId] });
       setNewNoteContent("");
       setIsAddingNote(false);
       toast({ title: "Note added", description: "The note has been added successfully." });
@@ -102,11 +173,15 @@ export default function ClientDetailPage() {
 
   const updateNoteMutation = useMutation({
     mutationFn: async ({ noteId, noteText }: { noteId: string; noteText: string }) => {
-      const res = await apiRequest("PATCH", `/api/client-notes/${noteId}`, { noteText });
+      const res = await apiRequest(`/api/client-notes/${noteId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ noteText }),
+      });
       return await res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/client-notes", id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/client-notes", clientId] });
       setEditingNoteId(null);
       setEditNoteContent("");
       toast({ title: "Note updated" });
@@ -118,10 +193,10 @@ export default function ClientDetailPage() {
 
   const deleteNoteMutation = useMutation({
     mutationFn: async (noteId: string) => {
-      await apiRequest("DELETE", `/api/client-notes/${noteId}`);
+      await apiRequest(`/api/client-notes/${noteId}`, { method: "DELETE" });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/client-notes", id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/client-notes", clientId] });
       setDeleteNoteId(null);
       toast({ title: "Note deleted" });
     },
@@ -131,12 +206,12 @@ export default function ClientDetailPage() {
   });
 
   const handleCreateJob = (locationId?: string) => {
-    setPreselectedLocationId(locationId || id);
+    setPreselectedLocationId(locationId || clientId);
     setJobDialogOpen(true);
   };
 
   const handleGoToLocation = (targetLocationId: string) => {
-    setLocation(`/clients/${id}/locations/${targetLocationId}`);
+    setLocation(`/clients/${clientId}/locations/${targetLocationId}`);
   };
 
   if (clientLoading) {
@@ -160,7 +235,9 @@ export default function ClientDetailPage() {
       <div className="p-6">
         <div className="text-center py-12">
           <h2 className="text-lg font-semibold text-destructive">Client not found</h2>
-          <p className="text-muted-foreground mt-2">The client you're looking for doesn't exist or you don't have access.</p>
+          <p className="text-muted-foreground mt-2">
+            The client you're looking for doesn't exist or you don't have access.
+          </p>
           <Button variant="outline" className="mt-4" onClick={() => setLocation("/?tab=clients")}>
             <ArrowLeft className="mr-2 h-4 w-4" />
             Back to Client List
@@ -200,7 +277,9 @@ export default function ClientDetailPage() {
       {/* Header */}
       <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold" data-testid="text-client-name">{companyName}</h1>
+          <h1 className="text-2xl font-semibold" data-testid="text-client-name">
+            {companyName}
+          </h1>
           <p className="mt-1 text-sm text-muted-foreground flex items-center gap-2 flex-wrap">
             <span>{clientType}</span>
             <span>•</span>
@@ -208,7 +287,9 @@ export default function ClientDetailPage() {
               {isActive ? "Active" : "Inactive"}
             </Badge>
             <span>•</span>
-            <span>Bill Parent: <span className="font-medium">{billParent ? "Yes" : "No"}</span></span>
+            <span>
+              Bill Parent: <span className="font-medium">{billParent ? "Yes" : "No"}</span>
+            </span>
           </p>
         </div>
 
@@ -221,7 +302,7 @@ export default function ClientDetailPage() {
             <Briefcase className="h-4 w-4 mr-2" />
             Create Job
           </Button>
-          <Link href={`/invoices/new?clientId=${id}`}>
+          <Link href={`/invoices/new?clientId=${clientId}`}>
             <Button variant="outline" data-testid="button-create-invoice">
               <FileText className="h-4 w-4 mr-2" />
               Create Invoice
@@ -245,8 +326,8 @@ export default function ClientDetailPage() {
                   <button
                     type="button"
                     className="flex w-full items-center justify-between px-4 py-3 text-left hover-elevate"
-                    onClick={() => handleGoToLocation(id!)}
-                    data-testid={`row-location-${id}`}
+                    onClick={() => handleGoToLocation(clientId!)}
+                    data-testid={`row-location-${clientId}`}
                   >
                     <div>
                       <div className="flex items-center gap-2 text-sm font-medium">
@@ -270,9 +351,13 @@ export default function ClientDetailPage() {
                     >
                       <div>
                         <div className="flex items-center gap-2 text-sm font-medium">
-                          {loc.id === id && <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />}
+                          {loc.id === clientId && <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />}
                           <span>{loc.location || loc.companyName}</span>
-                          {loc.inactive && <Badge variant="secondary" className="text-xs">Inactive</Badge>}
+                          {loc.inactive && (
+                            <Badge variant="secondary" className="text-xs">
+                              Inactive
+                            </Badge>
+                          )}
                         </div>
                         <div className="text-xs text-muted-foreground mt-0.5">
                           {loc.city}, {loc.province} {loc.postalCode}
@@ -325,10 +410,12 @@ export default function ClientDetailPage() {
                       <>
                         {overdueJobs.length > 0 && (
                           <div className="space-y-2">
-                            <h4 className="text-xs font-medium text-destructive uppercase">Overdue ({overdueJobs.length})</h4>
+                            <h4 className="text-xs font-medium text-destructive uppercase">
+                              Overdue ({overdueJobs.length})
+                            </h4>
                             {overdueJobs.map((job) => (
-                              <div 
-                                key={job.id} 
+                              <div
+                                key={job.id}
                                 className="flex items-center justify-between p-3 border rounded-lg hover-elevate cursor-pointer"
                                 onClick={() => setLocation(`/jobs/${job.id}`)}
                                 data-testid={`row-job-${job.id}`}
@@ -338,7 +425,7 @@ export default function ClientDetailPage() {
                                     #{job.jobNumber} • {job.summary}
                                   </p>
                                   <p className="text-xs text-muted-foreground">
-                                    {locations.find(l => l.id === job.locationId)?.location || "Location"}
+                                    {locations.find((l) => l.id === job.locationId)?.location || "Location"}
                                   </p>
                                 </div>
                                 <Badge variant="destructive">Overdue</Badge>
@@ -348,10 +435,12 @@ export default function ClientDetailPage() {
                         )}
                         {activeJobs.length > 0 && (
                           <div className="space-y-2">
-                            <h4 className="text-xs font-medium text-muted-foreground uppercase">Active ({activeJobs.length})</h4>
+                            <h4 className="text-xs font-medium text-muted-foreground uppercase">
+                              Active ({activeJobs.length})
+                            </h4>
                             {activeJobs.map((job) => (
-                              <div 
-                                key={job.id} 
+                              <div
+                                key={job.id}
                                 className="flex items-center justify-between p-3 border rounded-lg hover-elevate cursor-pointer"
                                 onClick={() => setLocation(`/jobs/${job.id}`)}
                                 data-testid={`row-job-${job.id}`}
@@ -361,7 +450,7 @@ export default function ClientDetailPage() {
                                     #{job.jobNumber} • {job.summary}
                                   </p>
                                   <p className="text-xs text-muted-foreground">
-                                    {locations.find(l => l.id === job.locationId)?.location || "Location"}
+                                    {locations.find((l) => l.id === job.locationId)?.location || "Location"}
                                   </p>
                                 </div>
                                 <Badge variant={job.status === "in_progress" ? "default" : "secondary"}>
@@ -378,12 +467,10 @@ export default function ClientDetailPage() {
 
                 {overviewTab === "jobs" && (
                   <div className="space-y-2">
-                    <p className="text-sm text-muted-foreground">
-                      Total jobs: {companyJobs.length}
-                    </p>
+                    <p className="text-sm text-muted-foreground">Total jobs: {companyJobs.length}</p>
                     {companyJobs.slice(0, 5).map((job) => (
-                      <div 
-                        key={job.id} 
+                      <div
+                        key={job.id}
                         className="flex items-center justify-between p-3 border rounded-lg hover-elevate cursor-pointer"
                         onClick={() => setLocation(`/jobs/${job.id}`)}
                         data-testid={`row-job-${job.id}`}
@@ -393,15 +480,20 @@ export default function ClientDetailPage() {
                             #{job.jobNumber} • {job.summary}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            {locations.find(l => l.id === job.locationId)?.location || "Location"}
+                            {locations.find((l) => l.id === job.locationId)?.location || "Location"}
                           </p>
                         </div>
-                        <Badge variant={
-                          job.status === "completed" ? "default" :
-                          job.status === "in_progress" ? "default" :
-                          job.status === "scheduled" ? "secondary" :
-                          "outline"
-                        }>
+                        <Badge
+                          variant={
+                            job.status === "completed"
+                              ? "default"
+                              : job.status === "in_progress"
+                              ? "default"
+                              : job.status === "scheduled"
+                              ? "secondary"
+                              : "outline"
+                          }
+                        >
                           {job.status}
                         </Badge>
                       </div>
@@ -412,14 +504,14 @@ export default function ClientDetailPage() {
                   </div>
                 )}
 
-                {overviewTab === "invoices" && (
-                  invoices.length === 0 ? (
+                {overviewTab === "invoices" &&
+                  (invoices.length === 0 ? (
                     <p className="text-sm text-muted-foreground">No invoices yet.</p>
                   ) : (
                     <div className="space-y-2">
                       {invoices.slice(0, 5).map((inv) => (
-                        <div 
-                          key={inv.id} 
+                        <div
+                          key={inv.id}
                           className="flex items-center justify-between p-3 border rounded-lg hover-elevate cursor-pointer"
                           onClick={() => setLocation(`/invoices/${inv.id}`)}
                           data-testid={`row-invoice-${inv.id}`}
@@ -429,20 +521,28 @@ export default function ClientDetailPage() {
                               {inv.invoiceNumber || `INV-${inv.id.slice(0, 6).toUpperCase()}`}
                             </p>
                             <p className="text-xs text-muted-foreground">
-                              {format(new Date(inv.issueDate), "MMM d, yyyy")} • Due: {inv.dueDate ? format(new Date(inv.dueDate), "MMM d, yyyy") : "—"}
+                              {inv.issueDate ? format(new Date(inv.issueDate), "MMM d, yyyy") : "—"} • Due:{" "}
+                              {inv.dueDate ? format(new Date(inv.dueDate), "MMM d, yyyy") : "—"}
                             </p>
                           </div>
                           <div className="text-right">
-                            <Badge variant={
-                              inv.status === "paid" ? "default" :
-                              inv.status === "sent" ? "secondary" :
-                              inv.status === "draft" ? "outline" :
-                              "destructive"
-                            }>
+                            <Badge
+                              variant={
+                                inv.status === "paid"
+                                  ? "default"
+                                  : inv.status === "sent"
+                                  ? "secondary"
+                                  : inv.status === "draft"
+                                  ? "outline"
+                                  : "destructive"
+                              }
+                            >
                               {inv.status}
                             </Badge>
                             <p className="text-xs text-muted-foreground mt-1">
-                              ${parseFloat(inv.total).toFixed(2)}
+                              {new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(
+                                Number(inv.total ?? 0)
+                              )}
                             </p>
                           </div>
                         </div>
@@ -451,8 +551,7 @@ export default function ClientDetailPage() {
                         <p className="text-xs text-muted-foreground">+ {invoices.length - 5} more invoices</p>
                       )}
                     </div>
-                  )
-                )}
+                  ))}
               </div>
             </CardContent>
           </Card>
@@ -531,7 +630,10 @@ export default function ClientDetailPage() {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => { setIsAddingNote(false); setNewNoteContent(""); }}
+                      onClick={() => {
+                        setIsAddingNote(false);
+                        setNewNoteContent("");
+                      }}
                       data-testid="button-cancel-note"
                     >
                       Cancel
@@ -547,11 +649,7 @@ export default function ClientDetailPage() {
               )}
 
               {notes.map((note) => (
-                <div
-                  key={note.id}
-                  className="p-2 border rounded-lg text-sm"
-                  data-testid={`card-note-${note.id}`}
-                >
+                <div key={note.id} className="p-2 border rounded-lg text-sm" data-testid={`card-note-${note.id}`}>
                   {editingNoteId === note.id ? (
                     <div className="space-y-2">
                       <Textarea
@@ -563,7 +661,9 @@ export default function ClientDetailPage() {
                       <div className="flex gap-2">
                         <Button
                           size="sm"
-                          onClick={() => updateNoteMutation.mutate({ noteId: note.id, noteText: editNoteContent.trim() })}
+                          onClick={() =>
+                            updateNoteMutation.mutate({ noteId: note.id, noteText: editNoteContent.trim() })
+                          }
                           disabled={!editNoteContent.trim() || updateNoteMutation.isPending}
                         >
                           Save
@@ -571,7 +671,10 @@ export default function ClientDetailPage() {
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => { setEditingNoteId(null); setEditNoteContent(""); }}
+                          onClick={() => {
+                            setEditingNoteId(null);
+                            setEditNoteContent("");
+                          }}
                         >
                           Cancel
                         </Button>
@@ -588,10 +691,13 @@ export default function ClientDetailPage() {
                   ) : (
                     <div
                       className="cursor-pointer"
-                      onClick={() => { setEditingNoteId(note.id); setEditNoteContent(note.noteText); }}
+                      onClick={() => {
+                        setEditingNoteId(note.id);
+                        setEditNoteContent(note.noteText);
+                      }}
                     >
                       <p className="text-xs text-muted-foreground mb-1">
-                        {format(new Date(note.createdAt), "MMM dd, yyyy")}
+                        {note.createdAt ? format(new Date(note.createdAt), "MMM dd, yyyy") : "—"}
                       </p>
                       <p className="whitespace-pre-wrap">{note.noteText}</p>
                     </div>
@@ -604,11 +710,7 @@ export default function ClientDetailPage() {
       </div>
 
       {/* Dialogs */}
-      <QuickAddJobDialog
-        open={jobDialogOpen}
-        onOpenChange={setJobDialogOpen}
-        preselectedLocationId={preselectedLocationId}
-      />
+      <QuickAddJobDialog open={jobDialogOpen} onOpenChange={setJobDialogOpen} preselectedLocationId={preselectedLocationId} />
 
       <AlertDialog open={!!deleteNoteId} onOpenChange={(open) => !open && setDeleteNoteId(null)}>
         <AlertDialogContent>
@@ -636,8 +738,9 @@ export default function ClientDetailPage() {
           open={editDialogOpen}
           onOpenChange={setEditDialogOpen}
           onSaved={() => {
-            queryClient.invalidateQueries({ queryKey: ["/api/clients", id] });
+            queryClient.invalidateQueries({ queryKey: ["/api/clients", clientId] });
             queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", client.parentCompanyId, "locations"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", client.parentCompanyId, "overview"] });
             setEditDialogOpen(false);
           }}
         />

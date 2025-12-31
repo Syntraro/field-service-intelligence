@@ -37,7 +37,9 @@ const strictLoginLimiter = rateLimit({
   keyGenerator: (req) => {
     // Rate limit by email if provided, otherwise by IP
     const email = req.body?.email?.toLowerCase();
-    return email ? `email:${email}` : `ip:${req.ip}`;
+    if (email) return `email:${email}`;
+    // Return just the IP without prefix for proper IPv6 handling
+    return req.ip || 'unknown';
   },
   handler: (req, res) => {
     const email = req.body?.email;
@@ -108,7 +110,6 @@ router.get("/me", (req: Request, res: Response) => {
   if (!req.user) {
     return res.status(401).json({ error: "Not authenticated" });
   }
-
   res.json({
     id: req.user.id,
     email: req.user.email,

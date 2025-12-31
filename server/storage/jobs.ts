@@ -7,7 +7,8 @@ import {
   jobEquipment, 
   locationEquipment,
   recurringJobSeries,
-  companyCounters 
+  companyCounters,
+  clients // Add clients for JOIN
 } from "@shared/schema";
 import type { InsertJob, Job, InsertJobPart, JobPart } from "@shared/schema";
 import { BaseRepository } from "./base";
@@ -55,12 +56,46 @@ export class JobRepository extends BaseRepository {
   /**
    * Get jobs with optional filters
    */
-  async getJobs(companyId: string, filters?: JobFilters): Promise<Job[]> {
+  async getJobs(companyId: string, filters?: JobFilters) {
     this.assertCompanyId(companyId);
 
     let query = db
-      .select()
+      .select({
+        // All job fields
+        id: jobs.id,
+        companyId: jobs.companyId,
+        locationId: jobs.locationId,
+        jobNumber: jobs.jobNumber,
+        primaryTechnicianId: jobs.primaryTechnicianId,
+        assignedTechnicianIds: jobs.assignedTechnicianIds,
+        status: jobs.status,
+        priority: jobs.priority,
+        jobType: jobs.jobType,
+        summary: jobs.summary,
+        description: jobs.description,
+        accessInstructions: jobs.accessInstructions,
+        scheduledStart: jobs.scheduledStart,
+        scheduledEnd: jobs.scheduledEnd,
+        actualStart: jobs.actualStart,
+        actualEnd: jobs.actualEnd,
+        invoiceId: jobs.invoiceId,
+        qboInvoiceId: jobs.qboInvoiceId,
+        billingNotes: jobs.billingNotes,
+        recurringSeriesId: jobs.recurringSeriesId,
+        calendarAssignmentId: jobs.calendarAssignmentId,
+        isActive: jobs.isActive,
+        version: jobs.version,
+        createdAt: jobs.createdAt,
+        updatedAt: jobs.updatedAt,
+        // Add location data
+        location: {
+          id: clients.id,
+          companyName: clients.companyName,
+          location: clients.location,
+        }
+      })
       .from(jobs)
+      .leftJoin(clients, eq(jobs.locationId, clients.id))
       .where(eq(jobs.companyId, companyId))
       .$dynamic();
 
@@ -103,15 +138,53 @@ export class JobRepository extends BaseRepository {
   }
 
   /**
-   * Get single job
+   * Get single job with location data
    */
-  async getJob(companyId: string, jobId: string): Promise<Job | null> {
+  async getJob(companyId: string, jobId: string) {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
     const rows = await db
-      .select()
+      .select({
+        // All job fields
+        id: jobs.id,
+        companyId: jobs.companyId,
+        locationId: jobs.locationId,
+        jobNumber: jobs.jobNumber,
+        primaryTechnicianId: jobs.primaryTechnicianId,
+        assignedTechnicianIds: jobs.assignedTechnicianIds,
+        status: jobs.status,
+        priority: jobs.priority,
+        jobType: jobs.jobType,
+        summary: jobs.summary,
+        description: jobs.description,
+        accessInstructions: jobs.accessInstructions,
+        scheduledStart: jobs.scheduledStart,
+        scheduledEnd: jobs.scheduledEnd,
+        actualStart: jobs.actualStart,
+        actualEnd: jobs.actualEnd,
+        invoiceId: jobs.invoiceId,
+        qboInvoiceId: jobs.qboInvoiceId,
+        billingNotes: jobs.billingNotes,
+        recurringSeriesId: jobs.recurringSeriesId,
+        calendarAssignmentId: jobs.calendarAssignmentId,
+        isActive: jobs.isActive,
+        version: jobs.version,
+        createdAt: jobs.createdAt,
+        updatedAt: jobs.updatedAt,
+        // Add location data
+        location: {
+          id: clients.id,
+          companyName: clients.companyName,
+          location: clients.location,
+          address: clients.address,
+          city: clients.city,
+          province: clients.province,
+          postalCode: clients.postalCode,
+        }
+      })
       .from(jobs)
+      .leftJoin(clients, eq(jobs.locationId, clients.id))
       .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
       .limit(1);
 
