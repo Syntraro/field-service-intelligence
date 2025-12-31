@@ -458,12 +458,22 @@ router.get("/:id/overview", async (req, res) => {
 
       if (parentCompany) {
         company = parentCompany;
-        // Get all sibling locations
-        locations = await db
+        // Get all sibling locations - include both:
+        // 1. Siblings with same parentCompanyId (newly linked children)
+        // 2. Siblings with same companyName (legacy children and parent)
+        const allLocationsWithSameName = await db
           .select()
           .from(clients)
-          .where(and(eq(clients.companyId, tenantCompanyId!), eq(clients.parentCompanyId, client.parentCompanyId)))
+          .where(and(
+            eq(clients.companyId, tenantCompanyId!),
+            eq(clients.companyName, client.companyName)
+          ))
           .orderBy(desc(clients.createdAt)) as Client[];
+        
+        // Put the current client first, then other locations
+        const currentClient = allLocationsWithSameName.find(loc => loc.id === client.id);
+        const otherLocations = allLocationsWithSameName.filter(loc => loc.id !== client.id);
+        locations = currentClient ? [currentClient, ...otherLocations] : allLocationsWithSameName;
 
         const locationIds = locations.map((l) => l.id).filter(Boolean);
         if (locationIds.length > 0) {
