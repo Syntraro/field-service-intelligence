@@ -187,12 +187,12 @@ router.post("/full-create", async (req, res) => {
       return new Date(currentYear, next, 15).toISOString();
     };
 
-    // Create primary location (client) - this becomes the parent (parentCompanyId = null)
+    // Create primary location (client)
     const primaryLocationName = primaryLocation?.name?.trim() || company.name.trim();
     const primarySelectedMonths = primaryLocation?.selectedMonths || [];
 
     const primaryClientData = {
-      parentCompanyId: null, // Parent client has null parentCompanyId
+      parentCompanyId: null, // No customer company - leave null
       companyName: company.name.trim(),
       location: primaryLocationName,
       address: primaryLocation?.serviceAddress?.street?.trim() || null,
@@ -213,15 +213,15 @@ router.post("/full-create", async (req, res) => {
 
     const primaryClient = await storage.createClient(companyId!, userId, primaryClientData);
 
-    // Create additional locations linked to the primary client
+    // Create additional locations (all share same companyName, parentCompanyId stays null)
     const createdLocations = [primaryClient];
     for (const loc of additionalLocations) {
       if (!loc.name?.trim()) continue;
 
       const locSelectedMonths = loc.selectedMonths || [];
       const locData = {
-        parentCompanyId: primaryClient.id, // Link to primary client
-        companyName: company.name.trim(),
+        parentCompanyId: null, // No customer company - leave null
+        companyName: company.name.trim(), // Same company name links them together
         location: loc.name.trim(),
         address: loc.serviceAddress?.street?.trim() || null,
         city: loc.serviceAddress?.city?.trim() || null,

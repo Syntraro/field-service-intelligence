@@ -211,7 +211,7 @@ export default function NewClientPage() {
   }, []);
 
   return (
-    <div className="p-4 max-w-6xl mx-auto">
+    <div className="px-2 py-3 max-w-6xl mx-auto">
       <div className="flex items-center gap-2 mb-4">
         <Button variant="ghost" size="icon" asChild data-testid="button-back">
           <Link href="/">
