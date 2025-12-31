@@ -1,0 +1,129 @@
+You are working in the existing HVAC dispatching app. The Client area has two screens:
+
+Company (Client) Detail page
+
+Header shows the Company Name (e.g., “TEST COMPANY 333”)
+
+A card currently labeled “Properties” lists child locations/properties
+
+Clicking a property goes to the location detail page
+
+Location (Property) Detail page
+
+Header shows the Location Name (e.g., “Location name goes here”)
+
+Has right-side cards: Preventive Maintenance Schedule, Equipment, PM Parts, Notes, Billing Settings
+
+“Edit Location” currently edits only that location (this is correct)
+
+What we need to implement
+A) Rename “Properties” Card Label
+
+On the Company Detail page, rename the card title from:
+
+Properties
+to:
+
+Properties / Locations
+
+Keep the layout the same, just update the label text.
+
+B) Add “+ Add Property/Location” Button Inside the Card Header
+
+On the Company Detail page, in the Properties / Locations card header:
+
+Add a button aligned to the right side:
+
+Label: + Add Property/Location (or + Add Location if space is tight)
+
+This button should open a lightweight modal/dialog to create a new location/property under the company.
+
+This creation must work even after the user clicks Edit (the issue today is there’s no way to add a new location/property once created).
+
+Modal Fields (Minimum viable)
+
+Location Name (nickname) (optional)
+
+Address (optional but recommended)
+
+City (optional)
+
+Province (optional)
+
+Postal Code (optional)
+
+Contact Name / Phone / Email (optional)
+
+(Optional) “Set as Primary” toggle if your data model supports it; otherwise skip
+
+Only require what the DB currently requires (preferably nothing required besides being linked to the parent).
+
+C) Correct Data Model Behavior: Create a Child Location Record
+
+When user adds a new Property/Location from the Company page, create a child location record:
+
+parentCompanyId = <companyClientId> (the company/parent record currently being viewed)
+
+companyName = <parent.companyName> (copy for consistency/searching)
+
+Use the provided location fields (location, address, city, etc.)
+
+This must add a new row to the list in the Properties / Locations card immediately after save (optimistic UI or refetch).
+
+D) Make Company “Edit” Button Clearly Company-Scoped
+
+On the Company Detail page, the top “Edit” button should:
+
+Edit the company-level fields (companyName/contact/billing settings/active/inactive/billWithParent, etc.)
+
+It should NOT be the only way to manage properties/locations.
+
+The new “+ Add Property/Location” button is the correct way to add new properties.
+
+On the Location Detail page, keep the “Edit Location” button as-is.
+
+E) Backend / API Requirements
+
+Implement the minimal backend support needed:
+
+Option 1 (preferred): Dedicated endpoint
+
+POST /api/clients/:companyId/locations
+
+Creates a new child location (client record) with parentCompanyId=companyId
+
+Option 2: Use existing create client endpoint
+
+POST /api/clients
+
+With payload including parentCompanyId
+
+Either is fine, but make sure authorization checks and companyId scoping stay consistent with existing patterns.
+
+Also ensure:
+
+GET /api/clients/:companyId/locations returns all children locations for the card list.
+
+F) Acceptance Criteria
+
+Company detail page card title shows “Properties / Locations”.
+
+A “+ Add Property/Location” button appears inside that card header on the right.
+
+Clicking it opens a modal to create a location/property under the current company.
+
+Saving creates a child record linked via parentCompanyId.
+
+After save, the new property appears in the list and can be clicked to open the Location detail page.
+
+Existing “Edit Location” continues to edit only that location.
+
+No existing flows break.
+
+Deliverables:
+
+List the exact files changed
+
+Summarize UI changes + endpoints added/used
+
+If you want to make it even cleaner in the UI, you can rename the top “Edit” button on the company page to “Edit Company” (optional), but don’t redesign the header layout.

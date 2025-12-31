@@ -7,6 +7,16 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   ArrowLeft,
   Building2,
@@ -67,6 +77,17 @@ export default function ClientDetailPage() {
   const [editNoteContent, setEditNoteContent] = useState("");
   const [deleteNoteId, setDeleteNoteId] = useState<string | null>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [addLocationDialogOpen, setAddLocationDialogOpen] = useState(false);
+  const [newLocationForm, setNewLocationForm] = useState({
+    location: "",
+    address: "",
+    city: "",
+    province: "",
+    postalCode: "",
+    contactName: "",
+    phone: "",
+    email: "",
+  });
 
   const {
     data: client,
@@ -194,6 +215,43 @@ export default function ClientDetailPage() {
     },
   });
 
+  const createLocationMutation = useMutation({
+    mutationFn: async (locationData: typeof newLocationForm) => {
+      return await apiRequest(`/api/clients/${clientId}/locations`, {
+        method: "POST",
+        body: JSON.stringify(locationData),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/clients", clientId, "overview"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+      setAddLocationDialogOpen(false);
+      setNewLocationForm({
+        location: "",
+        address: "",
+        city: "",
+        province: "",
+        postalCode: "",
+        contactName: "",
+        phone: "",
+        email: "",
+      });
+      toast({ title: "Location added", description: "The new property/location has been created." });
+    },
+    onError: (error: Error) => {
+      // Show server error message if available
+      const errorMessage = error.message || "Failed to add location.";
+      toast({ 
+        title: "Error", 
+        description: errorMessage.includes("SUBSCRIPTION_LIMIT") 
+          ? "You've reached your location limit. Please upgrade your plan to add more locations."
+          : errorMessage,
+        variant: "destructive" 
+      });
+      // Keep dialog open so user can see the error and retry
+    },
+  });
+
   const handleCreateJob = (locationId?: string) => {
     setPreselectedLocationId(locationId || clientId);
     setJobDialogOpen(true);
@@ -285,7 +343,7 @@ export default function ClientDetailPage() {
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={() => setEditDialogOpen(true)} data-testid="button-edit-client">
             <Pencil className="h-4 w-4 mr-2" />
-            Edit
+            Edit Company
           </Button>
           <Button onClick={() => handleCreateJob()} data-testid="button-create-job">
             <Briefcase className="h-4 w-4 mr-2" />
@@ -304,10 +362,19 @@ export default function ClientDetailPage() {
       <div className="grid gap-6 lg:grid-cols-[2fr,1fr]">
         {/* LEFT COLUMN: Properties + Overview */}
         <div className="space-y-4">
-          {/* Properties */}
+          {/* Properties / Locations */}
           <Card>
             <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
-              <CardTitle className="text-sm font-semibold">Properties</CardTitle>
+              <CardTitle className="text-sm font-semibold">Properties / Locations</CardTitle>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setAddLocationDialogOpen(true)}
+                data-testid="button-add-location"
+              >
+                <Plus className="h-4 w-4 mr-1" />
+                Add Location
+              </Button>
             </CardHeader>
             <CardContent className="p-0">
               <div className="divide-y">
@@ -734,6 +801,111 @@ export default function ClientDetailPage() {
           }}
         />
       )}
+
+      {/* Add Location Dialog */}
+      <Dialog open={addLocationDialogOpen} onOpenChange={setAddLocationDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add Property / Location</DialogTitle>
+            <DialogDescription>
+              Add a new property or location under {companyName}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="location-name">Location Name</Label>
+              <Input
+                id="location-name"
+                placeholder="e.g., Downtown Office, Warehouse #2"
+                value={newLocationForm.location}
+                onChange={(e) => setNewLocationForm((prev) => ({ ...prev, location: e.target.value }))}
+                data-testid="input-location-name"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="location-address">Address</Label>
+              <Input
+                id="location-address"
+                placeholder="Street address"
+                value={newLocationForm.address}
+                onChange={(e) => setNewLocationForm((prev) => ({ ...prev, address: e.target.value }))}
+                data-testid="input-location-address"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="location-city">City</Label>
+                <Input
+                  id="location-city"
+                  value={newLocationForm.city}
+                  onChange={(e) => setNewLocationForm((prev) => ({ ...prev, city: e.target.value }))}
+                  data-testid="input-location-city"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="location-province">Province</Label>
+                <Input
+                  id="location-province"
+                  value={newLocationForm.province}
+                  onChange={(e) => setNewLocationForm((prev) => ({ ...prev, province: e.target.value }))}
+                  data-testid="input-location-province"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="location-postal">Postal Code</Label>
+              <Input
+                id="location-postal"
+                value={newLocationForm.postalCode}
+                onChange={(e) => setNewLocationForm((prev) => ({ ...prev, postalCode: e.target.value }))}
+                data-testid="input-location-postal"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="location-contact">Contact Name</Label>
+              <Input
+                id="location-contact"
+                value={newLocationForm.contactName}
+                onChange={(e) => setNewLocationForm((prev) => ({ ...prev, contactName: e.target.value }))}
+                data-testid="input-location-contact"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="location-phone">Phone</Label>
+                <Input
+                  id="location-phone"
+                  value={newLocationForm.phone}
+                  onChange={(e) => setNewLocationForm((prev) => ({ ...prev, phone: e.target.value }))}
+                  data-testid="input-location-phone"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="location-email">Email</Label>
+                <Input
+                  id="location-email"
+                  type="email"
+                  value={newLocationForm.email}
+                  onChange={(e) => setNewLocationForm((prev) => ({ ...prev, email: e.target.value }))}
+                  data-testid="input-location-email"
+                />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddLocationDialogOpen(false)} data-testid="button-cancel-location">
+              Cancel
+            </Button>
+            <Button
+              onClick={() => createLocationMutation.mutate(newLocationForm)}
+              disabled={createLocationMutation.isPending}
+              data-testid="button-save-location"
+            >
+              {createLocationMutation.isPending ? "Saving..." : "Save Location"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

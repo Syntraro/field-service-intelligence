@@ -5,7 +5,7 @@ import { insertClientSchema, clients, jobs, invoices, customerCompanies } from "
 import { z } from "zod";
 import type { Client } from "@shared/schema";
 import { db } from "../db";
-import { eq, and, desc, inArray } from "drizzle-orm";
+import { eq, and, desc, inArray, isNotNull } from "drizzle-orm";
 
 const router = Router();
 
@@ -483,18 +483,23 @@ router.get("/:id/overview", async (req, res) => {
     } else {
       // This IS the parent record (parentCompanyId is null)
       // Treat this client as both the "company" and a location
-      // Also check for any child locations that reference this client's id
+      // Find all locations with the same companyName (this is how locations are linked)
       company = { id: client.id, name: client.companyName, companyId: tenantCompanyId };
 
-      // Get child locations where parentCompanyId = this client's id
-      const childLocations = await db
+      // Get all locations with the same companyName (linked by shared name)
+      const allLocationsWithSameName = await db
         .select()
         .from(clients)
-        .where(and(eq(clients.companyId, tenantCompanyId!), eq(clients.parentCompanyId, client.id)))
+        .where(and(
+          eq(clients.companyId, tenantCompanyId!),
+          eq(clients.companyName, client.companyName)
+        ))
         .orderBy(desc(clients.createdAt)) as Client[];
 
-      // Include the parent client itself as a location + any children
-      locations = [client, ...childLocations];
+      // Put the current client first, then other locations
+      const currentClient = allLocationsWithSameName.find(loc => loc.id === client.id);
+      const otherLocations = allLocationsWithSameName.filter(loc => loc.id !== client.id);
+      locations = currentClient ? [currentClient, ...otherLocations] : allLocationsWithSameName;
 
       const locationIds = locations.map((l) => l.id).filter(Boolean);
       if (locationIds.length > 0) {
@@ -528,6 +533,101 @@ router.get("/:id/overview", async (req, res) => {
   } catch (error) {
     console.error("Failed to fetch client overview:", error);
     res.status(500).json({ error: "Failed to fetch client overview" });
+  }
+});
+
+// POST /api/clients/:companyId/locations - Create a child location under a parent client
+router.post("/:companyId/locations", async (req, res) => {
+  try {
+    const tenantCompanyId = req.companyId;
+    const userId = (req.user as any)?.id;
+    const parentClientId = req.params.companyId;
+
+    // Check subscription limits
+    const limitCheck = await storage.canAddLocation(tenantCompanyId);
+    if (!limitCheck.allowed) {
+      return res.status(403).json({
+        error: limitCheck.reason,
+        code: 'SUBSCRIPTION_LIMIT',
+        currentCount: limitCheck.currentCount,
+        limit: limitCheck.limit
+      });
+    }
+
+    // Fetch the parent client to get companyName
+    const parentClient = await storage.getClient(tenantCompanyId, parentClientId);
+    if (!parentClient) {
+      return res.status(404).json({ error: "Parent client not found" });
+    }
+
+    const { location, address, city, province, postalCode, contactName, phone, email } = req.body;
+
+    // Find or create a customer_companies record for this company
+    // This is the parent entity that child locations reference
+    let customerCompanyId: string;
+
+    // Check if any existing location for this company already has a customer company
+    const [existingWithCustomerCompany] = await db
+      .select({ parentCompanyId: clients.parentCompanyId })
+      .from(clients)
+      .where(and(
+        eq(clients.companyId, tenantCompanyId!),
+        eq(clients.companyName, parentClient.companyName),
+        isNotNull(clients.parentCompanyId)
+      ))
+      .limit(1);
+
+    if (existingWithCustomerCompany?.parentCompanyId) {
+      // Use existing customer company
+      customerCompanyId = existingWithCustomerCompany.parentCompanyId;
+    } else {
+      // Create a new customer company based on the parent client
+      const [newCustomerCompany] = await db
+        .insert(customerCompanies)
+        .values({
+          companyId: tenantCompanyId!,
+          name: parentClient.companyName,
+          phone: parentClient.phone,
+          email: parentClient.email,
+          billingStreet: parentClient.address,
+          billingCity: parentClient.city,
+          billingProvince: parentClient.province,
+          billingPostalCode: parentClient.postalCode,
+          isActive: true,
+        })
+        .returning();
+      
+      customerCompanyId = newCustomerCompany.id;
+    }
+
+    // Create child location linked to the customer company
+    // Parent client keeps parentCompanyId = null, children link via customer_companies
+    const childLocationData = {
+      parentCompanyId: customerCompanyId, // Link to customer company
+      companyName: parentClient.companyName, // Same company name
+      location: location?.trim() || `${parentClient.companyName} - Location`,
+      address: address?.trim() || null,
+      city: city?.trim() || null,
+      province: province?.trim() || null,
+      postalCode: postalCode?.trim() || null,
+      contactName: contactName?.trim() || null,
+      phone: phone?.trim() || null,
+      email: email?.trim() || null,
+      roofLadderCode: null,
+      notes: null,
+      selectedMonths: [],
+      inactive: false,
+      nextDue: null,
+      billWithParent: true,
+      needsDetails: false,
+    };
+
+    const newLocation = await storage.createClient(tenantCompanyId!, userId, childLocationData);
+
+    res.json(newLocation);
+  } catch (error) {
+    console.error("Failed to create child location:", error);
+    res.status(500).json({ error: "Failed to create location" });
   }
 });
 
