@@ -28,31 +28,27 @@ interface CompanyGroup {
   address: string;
   maintenanceMonths: string;
   locationCount: number;
-  inactive: boolean;
+  hasActiveLocation: boolean;
+  allInactive: boolean;
 }
 
 export default function ClientListTable() {
   const [, setLocation] = useLocation();
   const [search, setSearch] = useState("");
-  const [page, setPage] = useState(1);
   const [activeTab, setActiveTab] = useState<"active" | "inactive">("active");
 
   const { data, isLoading } = useQuery({
-    queryKey: ["/api/clients", page, search, activeTab],
+    queryKey: ["/api/clients", search],
     queryFn: async () => {
       const params = new URLSearchParams({
-        page: page.toString(),
-        limit: "200",
-        ...(search && { search }),
-        inactive: activeTab === "inactive" ? "true" : "false"
+        limit: "500",
+        ...(search && { search })
       });
       return await apiRequest(`/api/clients?${params}`);
     },
   });
 
   const clients = (data?.data || []) as Client[];
-  const totalCount = data?.pagination?.total || 0;
-  const totalPages = data?.pagination?.totalPages || 1;
 
   const formatMonths = (selectedMonths: number[] | null) => {
     if (!selectedMonths || selectedMonths.length === 0) return "—";
@@ -73,7 +69,9 @@ export default function ClientListTable() {
     const groups: CompanyGroup[] = [];
     groupMap.forEach((locations, companyName) => {
       const hasMultiple = locations.length > 1;
-      const primary = locations[0];
+      const primary = locations.find(l => !l.parentCompanyId) || locations[0];
+      const hasActiveLocation = locations.some(l => !l.inactive);
+      const allInactive = locations.every(l => l.inactive);
       
       groups.push({
         companyName,
@@ -84,16 +82,24 @@ export default function ClientListTable() {
           ? "Multiple" 
           : formatMonths(primary.selectedMonths),
         locationCount: locations.length,
-        inactive: primary.inactive || false,
+        hasActiveLocation,
+        allInactive,
       });
     });
 
     return groups.sort((a, b) => a.companyName.localeCompare(b.companyName));
   }, [clients]);
 
+  const filteredGroups = useMemo(() => {
+    if (activeTab === "active") {
+      return companyGroups.filter(g => g.hasActiveLocation);
+    } else {
+      return companyGroups.filter(g => g.allInactive);
+    }
+  }, [companyGroups, activeTab]);
+
   const handleSearch = (value: string) => {
     setSearch(value);
-    setPage(1);
   };
 
   const handleRowClick = (clientId: string) => {
@@ -102,7 +108,6 @@ export default function ClientListTable() {
 
   const handleTabChange = (tab: string) => {
     setActiveTab(tab as "active" | "inactive");
-    setPage(1);
   };
 
   if (isLoading) {
@@ -137,8 +142,12 @@ export default function ClientListTable() {
       <Tabs value={activeTab} onValueChange={handleTabChange}>
         <div className="flex items-center justify-between gap-4">
           <TabsList data-testid="tabs-client-status">
-            <TabsTrigger value="active" data-testid="tab-active">Active</TabsTrigger>
-            <TabsTrigger value="inactive" data-testid="tab-inactive">Inactive</TabsTrigger>
+            <TabsTrigger value="active" data-testid="tab-active">
+              Active ({companyGroups.filter(g => g.hasActiveLocation).length})
+            </TabsTrigger>
+            <TabsTrigger value="inactive" data-testid="tab-inactive">
+              Inactive ({companyGroups.filter(g => g.allInactive).length})
+            </TabsTrigger>
           </TabsList>
           
           <div className="relative flex-1 max-w-sm">
@@ -163,14 +172,14 @@ export default function ClientListTable() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {companyGroups.length === 0 ? (
+                {filteredGroups.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={4} className="text-center text-muted-foreground py-6">
                       No {activeTab} clients found
                     </TableCell>
                   </TableRow>
                 ) : (
-                  companyGroups.map((group) => (
+                  filteredGroups.map((group) => (
                     <TableRow 
                       key={group.primaryClientId} 
                       className="cursor-pointer hover:bg-muted/50 transition-colors"
@@ -196,65 +205,9 @@ export default function ClientListTable() {
             </Table>
           </div>
 
-          {totalPages > 1 && (
-            <div className="flex items-center justify-between mt-3">
-              <div className="text-sm text-muted-foreground">
-                Showing {companyGroups.length} companies ({totalCount} locations)
-              </div>
-              
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setPage(p => Math.max(1, p - 1))}
-                  disabled={page === 1}
-                  data-testid="button-prev-page"
-                >
-                  Previous
-                </Button>
-                
-                <div className="flex items-center gap-1">
-                  {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-                    const pageNum = i + 1;
-                    return (
-                      <Button
-                        key={pageNum}
-                        variant={page === pageNum ? "default" : "outline"}
-                        size="sm"
-                        onClick={() => setPage(pageNum)}
-                        data-testid={`button-page-${pageNum}`}
-                      >
-                        {pageNum}
-                      </Button>
-                    );
-                  })}
-                  {totalPages > 5 && (
-                    <>
-                      <span className="px-2">...</span>
-                      <Button
-                        variant={page === totalPages ? "default" : "outline"}
-                        size="sm"
-                        onClick={() => setPage(totalPages)}
-                        data-testid={`button-page-${totalPages}`}
-                      >
-                        {totalPages}
-                      </Button>
-                    </>
-                  )}
-                </div>
-                
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-                  disabled={page === totalPages}
-                  data-testid="button-next-page"
-                >
-                  Next
-                </Button>
-              </div>
-            </div>
-          )}
+          <div className="text-sm text-muted-foreground mt-3">
+            Showing {filteredGroups.length} companies
+          </div>
         </TabsContent>
       </Tabs>
     </div>

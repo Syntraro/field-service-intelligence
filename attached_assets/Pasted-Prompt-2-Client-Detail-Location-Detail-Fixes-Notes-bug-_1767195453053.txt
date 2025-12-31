@@ -1,0 +1,143 @@
+Prompt 2: Client Detail + Location Detail Fixes (Notes bug, Compact location rows, Edit dialog prefill, Delete + Primary)
+
+You are working in our HVAC dispatching app. Fix issues on Client Detail and Location Detail pages only. Keep existing UI layout and styling—minimal changes, focused fixes.
+
+A) Client Detail Page
+1) Notes Bug (critical)
+
+Current behavior:
+
+Clicking “Add Note” shows “failed to add note”
+
+When leaving/refreshing, the note appears and sometimes duplicated
+
+Fix:
+
+Ensure the note request returns success properly
+
+Prevent duplicate submissions (disable button while saving, guard double-click)
+
+Ensure UI does NOT add note twice (e.g., optimistic add + refetch add)
+Acceptance:
+
+Add Note shows success
+
+Note appears once
+
+Refresh: still one note, no duplicates
+
+2) Properties / Locations Card list compactness
+
+In the “Properties / Locations” card:
+
+Reduce row height/padding
+
+Change row layout from stacked to single line:
+
+Location name on the left
+
+Address on the right
+So more locations fit on screen.
+
+3) Notes Card collapsible (right column)
+
+Make Notes card collapsible (expand/collapse).
+
+Default can be expanded; just ensure it collapses cleanly so we can add more cards later.
+
+4) Add Location stays, delete location removed from company page
+
+Keep “Add Location” button on company page.
+
+Do not allow deleting locations from this page (delete will be on location page).
+
+B) Location Detail Page
+5) Header shows wrong label
+
+Currently top header shows “Location” instead of the actual location name.
+Fix:
+
+Show location field (nickname/name).
+
+If missing, fallback to address or “Unnamed Location” (never show literal “Location”).
+
+6) Notes bug (same as above)
+
+Apply the same notes fix on the location page:
+
+No false failure
+
+No duplicates after refresh
+
+7) Edit Location dialog (critical)
+
+Issues:
+
+Dialog too large, clipped top/bottom
+
+Fields don’t pre-populate (all blank)
+
+Fix:
+
+Dialog must fit viewport:
+
+max-height ~80–90vh
+
+internal scroll
+
+Fields must pre-populate from current location record:
+
+location name, address, city, province, postal
+
+contact info if present
+
+Save must update correctly and refresh UI state
+
+8) Delete Location option (Location page)
+
+Add “Delete Location” action on location page:
+
+Confirm prompt “Are you sure?”
+
+Prefer safe behavior:
+
+If hard delete is safe, do it
+
+If hard delete breaks references, implement “delete” as set inactive=true and show message “Location marked inactive”
+But user must have a visible “Delete” action.
+
+9) Set Primary Location
+
+Add ability to mark ONE location as Primary for a company.
+Implementation options:
+
+Add primaryLocationId on parent company OR
+
+Add isPrimary flag on child locations (enforce only one true per parent)
+Requirements:
+
+Only one primary per company
+
+Primary indicator appears in Properties/Locations list (star/badge)
+
+Ability to set primary from Location page (and update list accordingly)
+
+Deliverables
+
+List exact files changed
+
+Confirm each acceptance item:
+
+Notes works + no duplicates (client + location pages)
+
+compact location rows on company page
+
+notes collapsible
+
+location header correct
+
+edit dialog fits + prefilled + saves
+
+delete location exists
+
+primary location works + shows indicator
