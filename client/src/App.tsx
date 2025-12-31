@@ -266,7 +266,7 @@ function AppContent() {
   };
 
   const handleAddClient = () => {
-    setAddClientModalOpen(true);
+    setLocation('/clients/new');
   };
 
   const handleClientCreated = (clientId: string) => {
