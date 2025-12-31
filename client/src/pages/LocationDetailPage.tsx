@@ -207,7 +207,10 @@ export default function LocationDetailPage() {
   }
 
   const companyName = parentCompany?.name || parentClient?.companyName || "Client";
-  const locationName = location.location || location.companyName || "Location";
+  // Derive location name: prefer location field, then address, then "Unnamed Location"
+  const locationName = location.location?.trim() || 
+    (location.address ? `${location.address}${location.city ? `, ${location.city}` : ''}` : null) || 
+    "Unnamed Location";
   const isActive = !location.inactive;
   const billParent = location.billWithParent ?? true;
 
@@ -261,25 +264,26 @@ export default function LocationDetailPage() {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={() => setEditModalOpen(true)} data-testid="button-edit-location">
+          <Button variant="outline" size="sm" onClick={() => setEditModalOpen(true)} data-testid="button-edit-location">
             Edit Location
           </Button>
-          <Button onClick={() => setJobDialogOpen(true)} data-testid="button-create-job">
-            <Briefcase className="h-4 w-4 mr-2" />
+          <Button size="sm" onClick={() => setJobDialogOpen(true)} data-testid="button-create-job">
+            <Briefcase className="h-3.5 w-3.5 mr-1.5" />
             Create Job
           </Button>
-          <Button variant="outline" data-testid="button-create-invoice">
-            <FileText className="h-4 w-4 mr-2" />
+          <Button variant="outline" size="sm" data-testid="button-create-invoice">
+            <FileText className="h-3.5 w-3.5 mr-1.5" />
             Create Invoice
           </Button>
           <Button 
             variant="outline" 
+            size="sm"
             className="text-destructive hover:text-destructive" 
             onClick={() => setDeleteLocationDialogOpen(true)}
             data-testid="button-delete-location"
           >
-            <Trash2 className="h-4 w-4 mr-2" />
-            Delete Location
+            <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+            Delete
           </Button>
         </div>
       </header>
