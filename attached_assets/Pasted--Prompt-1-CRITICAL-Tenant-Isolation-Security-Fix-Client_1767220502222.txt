@@ -1,0 +1,84 @@
+✅ Prompt 1 (CRITICAL): Tenant Isolation / Security Fix — Clients & Locations Leak Across Accounts
+
+You are working in our HVAC dispatching app (React/TypeScript frontend + Express API + Drizzle ORM). There is a critical multi-tenant security bug: the Clients list is showing clients that belong to another user/company. Clicking them leads to “Client not found” or unauthorized behavior. This must be fixed first.
+
+Goal
+
+Ensure no API endpoint ever returns clients/locations/related data for a different tenant than the logged-in session.
+
+Requirements
+
+Scope all client list queries
+
+GET /api/clients (and any “search clients” endpoint)
+
+Must filter by the current session tenant:
+
+preferred: clients.companyId === session.companyId
+
+If your architecture is user-based: include clients.userId === session.userId
+
+Result must contain ONLY the current tenant’s clients.
+
+Scope client detail queries
+
+GET /api/clients/:id
+
+Must verify the requested id belongs to the current tenant (companyId/userId).
+
+If not, return 404 (or 403, but 404 is better to avoid revealing existence).
+
+Scope locations and child lookups
+
+GET /api/clients/:id/locations (or equivalent)
+
+Must ensure:
+
+the parent :id belongs to tenant
+
+returned children (where parentCompanyId = :id) are also tenant-scoped
+
+Scope all related data endpoints
+Audit and fix tenant scoping for any endpoints that return client-related or location-related data, including:
+
+notes endpoints (company notes, location notes)
+
+maintenance plan endpoints
+
+equipment endpoints
+
+parts/filters/belts endpoints
+
+anything that joins to clients or locations
+
+Every query should include tenant filters at the DB layer (not only frontend).
+
+Implementation Checklist
+
+Identify how the session tenant is determined (likely req.user.companyId or similar).
+
+Add WHERE eq(clients.companyId, tenantCompanyId) to:
+
+list queries
+
+detail queries
+
+joins
+
+For joins: ensure the root table is tenant filtered; don’t rely on child table alone.
+
+Acceptance Criteria
+
+Clients list shows ONLY this user/company’s clients.
+
+Clicking any client row that appears in the list loads successfully (no “client not found” due to cross-tenant leakage).
+
+Manually trying to access a client ID belonging to another tenant returns 404/403.
+
+No other-tenant locations/notes/PM/equipment/parts appear anywhere.
+
+Deliverables
+
+List exact files changed
+
+Short summary of which endpoints were patched and how tenant scoping is enforced

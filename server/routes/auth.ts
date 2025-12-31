@@ -34,12 +34,15 @@ const strictLoginLimiter = rateLimit({
   max: 10, // 10 attempts per hour max
   message: { error: "Account temporarily locked due to too many failed login attempts. Please try again in 1 hour." },
   skipSuccessfulRequests: true,
+  validate: false, // Disable all validation to prevent IPv6 warning
   keyGenerator: (req) => {
     // Rate limit by email if provided, otherwise by IP
     const email = req.body?.email?.toLowerCase();
     if (email) return `email:${email}`;
-    // Return just the IP without prefix for proper IPv6 handling
-    return req.ip || 'unknown';
+    // Use x-forwarded-for header or fallback to IP for proper proxy handling
+    const forwardedFor = req.headers['x-forwarded-for'];
+    const ip = Array.isArray(forwardedFor) ? forwardedFor[0] : (forwardedFor?.split(',')[0]?.trim() || req.ip || 'unknown');
+    return `ip:${ip}`;
   },
   handler: (req, res) => {
     const email = req.body?.email;

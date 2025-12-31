@@ -6,7 +6,8 @@ const router = express.Router();
 
 router.post("/", async (req, res) => {
   const { name, userId } = req.body;
-  const tech = await createTechnician(req.user.companyId, name, userId);
+  const companyId = req.companyId!;
+  const tech = await createTechnician(companyId, name, userId);
   res.json(tech);
 });
 

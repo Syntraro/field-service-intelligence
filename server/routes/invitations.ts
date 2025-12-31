@@ -9,11 +9,12 @@ const router = express.Router();
 // Admin/dispatcher create invite (protected by requireAuth upstream)
 router.post("/", requireRole(["admin", "dispatcher"]), async (req, res) => {
   const { email, role } = req.body;
-  const { token, expiresAt } = await createInvitation(req.user.companyId, email, role);
+  const companyId = req.companyId!;
+  const { token, expiresAt } = await createInvitation(companyId, email, role);
 
   await writeAuditLog({
-    companyId: req.user.companyId,
-    userId: req.user.id,
+    companyId,
+    userId: req.user!.id,
     action: "invitation_created",
     entity: "invitation",
     metadata: { email, role, expiresAt },
@@ -24,11 +25,12 @@ router.post("/", requireRole(["admin", "dispatcher"]), async (req, res) => {
 
 // Resend invite (pending only)
 router.post("/:id/resend", requireRole(["admin", "dispatcher"]), async (req, res) => {
+  const companyId = req.companyId!;
   const { token, expiresAt } = await resendInvitation(req.params.id);
 
   await writeAuditLog({
-    companyId: req.user.companyId,
-    userId: req.user.id,
+    companyId,
+    userId: req.user!.id,
     action: "invitation_resent",
     entity: "invitation",
     entityId: req.params.id,

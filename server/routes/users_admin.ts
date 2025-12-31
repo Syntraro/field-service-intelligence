@@ -10,12 +10,13 @@ const router = express.Router();
 
 router.patch("/:id/role", requireRole(["admin"]), async (req, res) => {
   const { role } = req.body;
+  const companyId = req.companyId!;
 
   await db.update(users).set({ role }).where(eq(users.id, req.params.id));
 
   await writeAuditLog({
-    companyId: req.user.companyId,
-    userId: req.user.id,
+    companyId,
+    userId: req.user!.id,
     action: "user_role_changed",
     entity: "user",
     entityId: req.params.id,
@@ -26,11 +27,13 @@ router.patch("/:id/role", requireRole(["admin"]), async (req, res) => {
 });
 
 router.post("/:id/disable", requireRole(["admin"]), async (req, res) => {
+  const companyId = req.companyId!;
+  
   await db.update(users).set({ disabled: true }).where(eq(users.id, req.params.id));
 
   await writeAuditLog({
-    companyId: req.user.companyId,
-    userId: req.user.id,
+    companyId,
+    userId: req.user!.id,
     action: "user_disabled",
     entity: "user",
     entityId: req.params.id,
