@@ -43,6 +43,7 @@ export default function LocationDetailPage() {
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editNoteContent, setEditNoteContent] = useState("");
   const [deleteNoteId, setDeleteNoteId] = useState<string | null>(null);
+  const [deleteLocationDialogOpen, setDeleteLocationDialogOpen] = useState(false);
 
   const { data: location, isLoading: locationLoading, error: locationError } = useQuery<Client>({
     queryKey: ["/api/clients", locationId],
@@ -98,8 +99,10 @@ export default function LocationDetailPage() {
 
   const toggleBillWithParentMutation = useMutation({
     mutationFn: async (billWithParent: boolean) => {
-      const res = await apiRequest("PATCH", `/api/clients/${locationId}`, { billWithParent });
-      return await res.json();
+      return await apiRequest(`/api/clients/${locationId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ billWithParent }),
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId] });
@@ -112,8 +115,10 @@ export default function LocationDetailPage() {
 
   const createNoteMutation = useMutation({
     mutationFn: async (noteText: string) => {
-      const res = await apiRequest("POST", `/api/client-notes`, { clientId: locationId, noteText });
-      return await res.json();
+      return await apiRequest(`/api/client-notes`, {
+        method: "POST",
+        body: JSON.stringify({ clientId: locationId, noteText }),
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/client-notes", locationId] });
@@ -128,8 +133,10 @@ export default function LocationDetailPage() {
 
   const updateNoteMutation = useMutation({
     mutationFn: async ({ noteId, noteText }: { noteId: string; noteText: string }) => {
-      const res = await apiRequest("PATCH", `/api/client-notes/${noteId}`, { noteText });
-      return await res.json();
+      return await apiRequest(`/api/client-notes/${noteId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ noteText }),
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/client-notes", locationId] });
@@ -144,7 +151,7 @@ export default function LocationDetailPage() {
 
   const deleteNoteMutation = useMutation({
     mutationFn: async (noteId: string) => {
-      await apiRequest("DELETE", `/api/client-notes/${noteId}`);
+      await apiRequest(`/api/client-notes/${noteId}`, { method: "DELETE" });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/client-notes", locationId] });
@@ -153,6 +160,24 @@ export default function LocationDetailPage() {
     },
     onError: () => {
       toast({ title: "Error", description: "Failed to delete note.", variant: "destructive" });
+    },
+  });
+
+  const deleteLocationMutation = useMutation({
+    mutationFn: async () => {
+      return await apiRequest(`/api/clients/${locationId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ inactive: true }),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+      setDeleteLocationDialogOpen(false);
+      toast({ title: "Location deleted", description: "The location has been marked as inactive." });
+      setLocation(`/clients/${id}`);
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to delete location.", variant: "destructive" });
     },
   });
 
@@ -246,6 +271,15 @@ export default function LocationDetailPage() {
           <Button variant="outline" data-testid="button-create-invoice">
             <FileText className="h-4 w-4 mr-2" />
             Create Invoice
+          </Button>
+          <Button 
+            variant="outline" 
+            className="text-destructive hover:text-destructive" 
+            onClick={() => setDeleteLocationDialogOpen(true)}
+            data-testid="button-delete-location"
+          >
+            <Trash2 className="h-4 w-4 mr-2" />
+            Delete Location
           </Button>
         </div>
       </header>
@@ -729,6 +763,27 @@ export default function LocationDetailPage() {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={deleteLocationDialogOpen} onOpenChange={setDeleteLocationDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Location</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete this location? The location will be marked as inactive and hidden from the active locations list.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => deleteLocationMutation.mutate()}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deleteLocationMutation.isPending}
+            >
+              {deleteLocationMutation.isPending ? "Deleting..." : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

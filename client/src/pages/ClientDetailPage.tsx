@@ -30,8 +30,10 @@ import {
   Briefcase,
   FileText,
   ChevronRight,
+  ChevronDown,
   Settings,
 } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -72,6 +74,7 @@ export default function ClientDetailPage() {
   const [jobDialogOpen, setJobDialogOpen] = useState(false);
   const [preselectedLocationId, setPreselectedLocationId] = useState<string | undefined>();
   const [isAddingNote, setIsAddingNote] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(true);
   const [newNoteContent, setNewNoteContent] = useState("");
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [editNoteContent, setEditNoteContent] = useState("");
@@ -163,12 +166,10 @@ export default function ClientDetailPage() {
 
   const createNoteMutation = useMutation({
     mutationFn: async (noteText: string) => {
-      const res = await apiRequest(`/api/client-notes`, {
+      return await apiRequest(`/api/client-notes`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ clientId, noteText }),
       });
-      return await res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/client-notes", clientId] });
@@ -183,12 +184,10 @@ export default function ClientDetailPage() {
 
   const updateNoteMutation = useMutation({
     mutationFn: async ({ noteId, noteText }: { noteId: string; noteText: string }) => {
-      const res = await apiRequest(`/api/client-notes/${noteId}`, {
+      return await apiRequest(`/api/client-notes/${noteId}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ noteText }),
       });
-      return await res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/client-notes", clientId] });
@@ -381,45 +380,39 @@ export default function ClientDetailPage() {
                 {locations.length === 0 ? (
                   <button
                     type="button"
-                    className="flex w-full items-center justify-between px-4 py-3 text-left hover-elevate"
+                    className="flex w-full items-center justify-between px-3 py-1.5 text-left hover-elevate"
                     onClick={() => handleGoToLocation(clientId!)}
                     data-testid={`row-location-${clientId}`}
                   >
-                    <div>
-                      <div className="flex items-center gap-2 text-sm font-medium">
-                        <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />
-                        <span>{client.location || "Primary Location"}</span>
-                      </div>
-                      <div className="text-xs text-muted-foreground mt-0.5">
-                        {client.city}, {client.province} {client.postalCode}
-                      </div>
+                    <div className="flex items-center gap-2 text-sm">
+                      <Star className="h-3.5 w-3.5 text-yellow-500 fill-yellow-500 flex-shrink-0" />
+                      <span className="font-medium">{client.location || "Primary Location"}</span>
                     </div>
-                    <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">{client.address || `${client.city}, ${client.province}`}</span>
+                      <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                    </div>
                   </button>
                 ) : (
                   locations.map((loc) => (
                     <button
                       key={loc.id}
                       type="button"
-                      className="flex w-full items-center justify-between px-4 py-3 text-left hover-elevate"
+                      className="flex w-full items-center justify-between px-3 py-1.5 text-left hover-elevate"
                       onClick={() => handleGoToLocation(loc.id)}
                       data-testid={`row-location-${loc.id}`}
                     >
-                      <div>
-                        <div className="flex items-center gap-2 text-sm font-medium">
-                          {loc.id === clientId && <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />}
-                          <span>{loc.location || loc.companyName}</span>
-                          {loc.inactive && (
-                            <Badge variant="secondary" className="text-xs">
-                              Inactive
-                            </Badge>
-                          )}
-                        </div>
-                        <div className="text-xs text-muted-foreground mt-0.5">
-                          {loc.city}, {loc.province} {loc.postalCode}
-                        </div>
+                      <div className="flex items-center gap-2 text-sm">
+                        {loc.id === clientId && <Star className="h-3.5 w-3.5 text-yellow-500 fill-yellow-500 flex-shrink-0" />}
+                        <span className="font-medium">{loc.location || loc.companyName}</span>
+                        {loc.inactive && (
+                          <Badge variant="secondary" className="text-[10px] px-1 py-0">Inactive</Badge>
+                        )}
                       </div>
-                      <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground truncate max-w-[200px]">{loc.address || `${loc.city}, ${loc.province}`}</span>
+                        <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                      </div>
                     </button>
                   ))
                 )}
@@ -648,23 +641,30 @@ export default function ClientDetailPage() {
             </CardContent>
           </Card>
 
-          {/* Notes Card */}
-          <Card>
-            <CardHeader className="pb-3 flex flex-row items-center justify-between gap-2">
-              <CardTitle className="text-sm font-semibold">Notes</CardTitle>
-              {!isAddingNote && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-xs h-auto p-0 text-primary"
-                  onClick={() => setIsAddingNote(true)}
-                  data-testid="button-add-note"
-                >
-                  + Add Note
-                </Button>
-              )}
-            </CardHeader>
-            <CardContent className="max-h-80 overflow-y-auto space-y-3">
+          {/* Notes Card - Collapsible */}
+          <Collapsible open={notesOpen} onOpenChange={setNotesOpen}>
+            <Card>
+              <CardHeader className="pb-3 flex flex-row items-center justify-between gap-2">
+                <CollapsibleTrigger asChild>
+                  <button type="button" className="flex items-center gap-1 text-sm font-semibold hover:text-primary transition-colors" data-testid="button-toggle-notes">
+                    <ChevronDown className={`h-4 w-4 transition-transform ${notesOpen ? '' : '-rotate-90'}`} />
+                    Notes ({notes.length})
+                  </button>
+                </CollapsibleTrigger>
+                {!isAddingNote && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs h-auto p-0 text-primary"
+                    onClick={() => setIsAddingNote(true)}
+                    data-testid="button-add-note"
+                  >
+                    + Add Note
+                  </Button>
+                )}
+              </CardHeader>
+              <CollapsibleContent>
+                <CardContent className="max-h-80 overflow-y-auto space-y-3 pt-0">
               {isAddingNote && (
                 <div className="space-y-2">
                   <Textarea
@@ -761,7 +761,9 @@ export default function ClientDetailPage() {
                 </div>
               ))}
             </CardContent>
-          </Card>
+              </CollapsibleContent>
+            </Card>
+          </Collapsible>
         </div>
       </div>
 

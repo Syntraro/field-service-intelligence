@@ -85,8 +85,10 @@ export default function LocationFormModal({
   // Create mutation
   const createMutation = useMutation({
     mutationFn: async (data: any) => {
-      const res = await apiRequest("POST", "/api/clients", data);
-      return await res.json();
+      return await apiRequest("/api/clients", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
@@ -109,8 +111,10 @@ export default function LocationFormModal({
   // Update mutation
   const updateMutation = useMutation({
     mutationFn: async (data: any) => {
-      const res = await apiRequest("PATCH", `/api/clients/${location!.id}`, data);
-      return await res.json();
+      return await apiRequest(`/api/clients/${location!.id}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
@@ -175,7 +179,7 @@ export default function LocationFormModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{isEditing ? "Edit Location" : "Add Location"}</DialogTitle>
           <DialogDescription>
