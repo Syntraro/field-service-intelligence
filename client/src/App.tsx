@@ -15,6 +15,7 @@ import Reports from "@/pages/Reports";
 import Admin from "@/pages/Admin";
 import SupportConsole from "@/pages/SupportConsole";
 import AddClientPage from "@/pages/AddClientPage";
+import NewClientPage from "@/pages/NewClientPage";
 import ClientDetailPage from "@/pages/ClientDetailPage";
 import LocationDetailPage from "@/pages/LocationDetailPage";
 import PartsManagementPage from "@/pages/PartsManagementPage";
@@ -112,6 +113,11 @@ function Router() {
       <Route path="/add-client">
         <ProtectedRoute requireAdmin>
           <AddClientPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/clients/new">
+        <ProtectedRoute requireAdmin>
+          <NewClientPage />
         </ProtectedRoute>
       </Route>
       <Route path="/products">

@@ -143,6 +143,187 @@ router.post("/", async (req, res) => {
   }
 });
 
+// POST /api/clients/full-create - Create client with company, primary location, and additional locations
+router.post("/full-create", async (req, res) => {
+  try {
+    const companyId = req.companyId;
+    const userId = req.user!.id;
+    const { company, primaryLocation, additionalLocations = [] } = req.body;
+
+    if (!company?.name?.trim()) {
+      return res.status(400).json({ error: "Company name is required" });
+    }
+
+    const totalLocations = 1 + (additionalLocations?.length || 0);
+
+    // Check subscription limits
+    const limitCheck = await storage.canAddLocation(companyId);
+    if (!limitCheck.allowed) {
+      return res.status(403).json({
+        error: limitCheck.reason,
+        current: limitCheck.current,
+        limit: limitCheck.limit,
+        subscriptionLimitReached: true,
+      });
+    }
+
+    // Create customer company (parent)
+    const customerCompanyData = {
+      name: company.name.trim(),
+      legalName: company.legalName?.trim() || null,
+      phone: company.phone?.trim() || null,
+      email: company.email?.trim() || null,
+      billingAddressStreet: company.billingAddress?.street?.trim() || null,
+      billingAddressCity: company.billingAddress?.city?.trim() || null,
+      billingAddressState: company.billingAddress?.stateOrProvince?.trim() || null,
+      billingAddressPostalCode: company.billingAddress?.postalCode?.trim() || null,
+      billingAddressCountry: company.billingAddress?.country?.trim() || "Canada",
+      isActive: true,
+    };
+
+    const customerCompany = await storage.createCustomerCompany(companyId!, customerCompanyData);
+
+    // Helper to calculate next due date
+    const calculateNextDue = (selectedMonths: number[]): string => {
+      if (!selectedMonths || selectedMonths.length === 0) {
+        return new Date("9999-12-31").toISOString();
+      }
+      const today = new Date();
+      const currentMonth = today.getMonth();
+      const currentYear = today.getFullYear();
+      const currentDay = today.getDate();
+      const sorted = [...selectedMonths].sort((a, b) => a - b);
+
+      if (sorted.includes(currentMonth) && currentDay < 15) {
+        return new Date(currentYear, currentMonth, 15).toISOString();
+      }
+      let next = sorted.find((m) => m > currentMonth);
+      if (next === undefined) {
+        next = sorted[0];
+        return new Date(currentYear + 1, next, 15).toISOString();
+      }
+      return new Date(currentYear, next, 15).toISOString();
+    };
+
+    // Create primary location (client)
+    const primaryLocationName = primaryLocation?.name?.trim() || company.name.trim();
+    const primarySelectedMonths = primaryLocation?.selectedMonths || [];
+
+    const primaryClientData = {
+      parentCompanyId: customerCompany.id,
+      companyName: company.name.trim(),
+      location: primaryLocationName,
+      address: primaryLocation?.serviceAddress?.street?.trim() || null,
+      city: primaryLocation?.serviceAddress?.city?.trim() || null,
+      province: primaryLocation?.serviceAddress?.stateOrProvince?.trim() || null,
+      postalCode: primaryLocation?.serviceAddress?.postalCode?.trim() || null,
+      contactName: primaryLocation?.contactName?.trim() || null,
+      email: primaryLocation?.contactEmail?.trim() || null,
+      phone: primaryLocation?.contactPhone?.trim() || null,
+      roofLadderCode: null,
+      notes: primaryLocation?.notes?.trim() || null,
+      selectedMonths: primarySelectedMonths,
+      inactive: false,
+      nextDue: calculateNextDue(primarySelectedMonths),
+      billWithParent: primaryLocation?.billWithParent !== false,
+      needsDetails: primaryLocation?.needsDetails === true,
+    };
+
+    const primaryClient = await storage.createClient(companyId!, userId, primaryClientData);
+
+    // Create additional locations
+    const createdLocations = [primaryClient];
+    for (const loc of additionalLocations) {
+      if (!loc.name?.trim()) continue;
+
+      const locSelectedMonths = loc.selectedMonths || [];
+      const locData = {
+        parentCompanyId: customerCompany.id,
+        companyName: company.name.trim(),
+        location: loc.name.trim(),
+        address: loc.serviceAddress?.street?.trim() || null,
+        city: loc.serviceAddress?.city?.trim() || null,
+        province: loc.serviceAddress?.stateOrProvince?.trim() || null,
+        postalCode: loc.serviceAddress?.postalCode?.trim() || null,
+        contactName: loc.contactName?.trim() || null,
+        email: loc.contactEmail?.trim() || null,
+        phone: loc.contactPhone?.trim() || null,
+        roofLadderCode: null,
+        notes: loc.notes?.trim() || null,
+        selectedMonths: locSelectedMonths,
+        inactive: false,
+        nextDue: calculateNextDue(locSelectedMonths),
+        billWithParent: loc.billWithParent !== false,
+        needsDetails: loc.needsDetails === true,
+      };
+
+      const newLoc = await storage.createClient(companyId!, userId, locData);
+      createdLocations.push(newLoc);
+    }
+
+    res.json({
+      customerCompany,
+      client: primaryClient,
+      locations: createdLocations,
+    });
+  } catch (error) {
+    console.error("Full create error:", error);
+    res.status(500).json({ error: "Failed to create client" });
+  }
+});
+
+// POST /api/clients/quick-create - Quick create with minimal info (sets needsDetails=true)
+router.post("/quick-create", async (req, res) => {
+  try {
+    const companyId = req.companyId;
+    const userId = req.user!.id;
+    const { companyName } = req.body;
+
+    if (!companyName?.trim()) {
+      return res.status(400).json({ error: "Company name is required" });
+    }
+
+    // Check subscription limits
+    const limitCheck = await storage.canAddLocation(companyId);
+    if (!limitCheck.allowed) {
+      return res.status(403).json({
+        error: limitCheck.reason,
+        current: limitCheck.current,
+        limit: limitCheck.limit,
+        subscriptionLimitReached: true,
+      });
+    }
+
+    // Create minimal client with needsDetails=true
+    const clientData = {
+      parentCompanyId: null,
+      companyName: companyName.trim(),
+      location: companyName.trim(),
+      address: null,
+      city: null,
+      province: null,
+      postalCode: null,
+      contactName: null,
+      email: null,
+      phone: null,
+      roofLadderCode: null,
+      notes: null,
+      selectedMonths: [],
+      inactive: false,
+      nextDue: new Date("9999-12-31").toISOString(),
+      billWithParent: true,
+      needsDetails: true,
+    };
+
+    const client = await storage.createClient(companyId!, userId, clientData);
+
+    res.json({ client });
+  } catch (error) {
+    console.error("Quick create error:", error);
+    res.status(500).json({ error: "Failed to create client" });
+  }
+});
+
 // POST /api/clients/import-simple - Simple import
 router.post("/import-simple", async (req, res) => {
   try {

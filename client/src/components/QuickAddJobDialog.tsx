@@ -33,9 +33,10 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Check, ChevronsUpDown, Loader2 } from "lucide-react";
+import { Check, ChevronsUpDown, Loader2, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Client, User, Job, InsertJob } from "@shared/schema";
+import { CommandSeparator } from "@/components/ui/command";
 
 interface QuickAddJobDialogProps {
   open: boolean;
@@ -62,6 +63,8 @@ const STATUSES = [
 export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, editJob, onSuccess }: QuickAddJobDialogProps) {
   const { toast } = useToast();
   const [locationOpen, setLocationOpen] = useState(false);
+  const [quickCreateName, setQuickCreateName] = useState("");
+  const [showQuickCreate, setShowQuickCreate] = useState(false);
   const isEditMode = !!editJob;
   
   const getDefaultFormData = () => ({
@@ -135,7 +138,10 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
 
   const createJobMutation = useMutation({
     mutationFn: async (data: Partial<InsertJob>) => {
-      return apiRequest("POST", "/api/jobs", data);
+      return apiRequest("/api/jobs", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
@@ -144,6 +150,17 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
         title: "Job Created",
         description: `Job has been created successfully.`,
       });
+      
+      const client = clients.find(c => c.id === formData.locationId);
+      if (client?.needsDetails) {
+        setTimeout(() => {
+          toast({
+            title: "Reminder",
+            description: `Don't forget to complete the details for "${client.companyName}"!`,
+          });
+        }, 1500);
+      }
+      
       onOpenChange(false);
       onSuccess?.();
     },
@@ -158,7 +175,10 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
 
   const updateJobMutation = useMutation({
     mutationFn: async (data: Partial<InsertJob>) => {
-      return apiRequest("PUT", `/api/jobs/${editJob?.id}`, data);
+      return apiRequest(`/api/jobs/${editJob?.id}`, {
+        method: "PUT",
+        body: JSON.stringify(data),
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
@@ -179,6 +199,40 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
       });
     },
   });
+
+  const quickCreateClientMutation = useMutation({
+    mutationFn: async (companyName: string) => {
+      return await apiRequest<{ client: Client }>("/api/clients/quick-create", {
+        method: "POST",
+        body: JSON.stringify({ companyName }),
+      });
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+      if (result.client?.id) {
+        setFormData(prev => ({ ...prev, locationId: result.client.id }));
+      }
+      setShowQuickCreate(false);
+      setQuickCreateName("");
+      setLocationOpen(false);
+      toast({
+        title: "Client Created",
+        description: "Client has been quick-created. Remember to fill in details later!",
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to create client",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleQuickCreateClient = () => {
+    if (!quickCreateName.trim()) return;
+    quickCreateClientMutation.mutate(quickCreateName.trim());
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -259,6 +313,17 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                     <CommandList>
                       <CommandEmpty>No locations found.</CommandEmpty>
                       <CommandGroup>
+                        <CommandItem
+                          onSelect={() => setShowQuickCreate(true)}
+                          data-testid="option-quick-create-client"
+                          className="text-primary"
+                        >
+                          <Plus className="mr-2 h-4 w-4" />
+                          <span>Add New Client...</span>
+                        </CommandItem>
+                      </CommandGroup>
+                      <CommandSeparator />
+                      <CommandGroup heading="Existing Clients">
                         {activeLocations.map(location => (
                           <CommandItem
                             key={location.id}
@@ -286,6 +351,49 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                       </CommandGroup>
                     </CommandList>
                   </Command>
+                  {showQuickCreate && (
+                    <div className="p-3 border-t">
+                      <div className="flex gap-2">
+                        <Input
+                          value={quickCreateName}
+                          onChange={(e) => setQuickCreateName(e.target.value)}
+                          placeholder="Enter client name..."
+                          data-testid="input-quick-create-name"
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              handleQuickCreateClient();
+                            }
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={handleQuickCreateClient}
+                          disabled={!quickCreateName.trim() || quickCreateClientMutation.isPending}
+                          data-testid="btn-quick-create-submit"
+                        >
+                          {quickCreateClientMutation.isPending ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            "Add"
+                          )}
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            setShowQuickCreate(false);
+                            setQuickCreateName("");
+                          }}
+                          data-testid="btn-quick-create-cancel"
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </PopoverContent>
               </Popover>
             </div>
