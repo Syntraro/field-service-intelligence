@@ -184,6 +184,8 @@ export const clients = pgTable("clients", {
   selectedMonths: integer("selected_months").array().notNull(),
   inactive: boolean("inactive").notNull().default(false),
   nextDue: text("next_due").notNull(),
+  // Quick-create tracking
+  needsDetails: boolean("needs_details").notNull().default(false), // true = created via quick-create, needs full details later
   // QBO sync fields
   billWithParent: boolean("bill_with_parent").notNull().default(true), // Maps to QBO "Bill with parent"
   qboCustomerId: text("qbo_customer_id"), // QBO Sub-Customer.Id
