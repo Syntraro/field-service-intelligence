@@ -125,7 +125,13 @@ export default function ClientDetailPage() {
   const parentCompany = overview?.company;
 
   // Keep your existing variable names so the UI doesn’t change.
-  const locations: Client[] = overview?.locations ?? [];
+  const unsortedLocations: Client[] = overview?.locations ?? [];
+  // Sort locations: primary first, then by createdAt for deterministic order
+  const locations: Client[] = [...unsortedLocations].sort((a, b) => {
+    if (a.isPrimary && !b.isPrimary) return -1;
+    if (!a.isPrimary && b.isPrimary) return 1;
+    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+  });
   const jobs: Job[] = overview?.jobs ?? [];
   const invoices: Invoice[] = overview?.invoices ?? [];
 
@@ -403,7 +409,7 @@ export default function ClientDetailPage() {
                       data-testid={`row-location-${loc.id}`}
                     >
                       <div className="flex items-center gap-2 text-sm">
-                        {loc.id === clientId && <Star className="h-3.5 w-3.5 text-yellow-500 fill-yellow-500 flex-shrink-0" />}
+                        {loc.isPrimary && <Star className="h-3.5 w-3.5 text-yellow-500 fill-yellow-500 flex-shrink-0" />}
                         <span className="font-medium">{loc.location || loc.companyName}</span>
                         {loc.inactive && (
                           <Badge variant="secondary" className="text-[10px] px-1 py-0">Inactive</Badge>

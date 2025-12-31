@@ -184,6 +184,8 @@ export const clients = pgTable("clients", {
   selectedMonths: integer("selected_months").array().notNull(),
   inactive: boolean("inactive").notNull().default(false),
   nextDue: text("next_due").notNull(),
+  // Primary location flag - only one location per parent company should be primary
+  isPrimary: boolean("is_primary").notNull().default(false),
   // Quick-create tracking
   needsDetails: boolean("needs_details").notNull().default(false), // true = created via quick-create, needs full details later
   // QBO sync fields

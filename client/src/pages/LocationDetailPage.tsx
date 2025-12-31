@@ -8,7 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowLeft, Briefcase, FileText, Trash2, ChevronDown, ChevronRight } from "lucide-react";
+import { ArrowLeft, Briefcase, FileText, Trash2, ChevronDown, ChevronRight, Star } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
@@ -62,6 +62,9 @@ export default function LocationDetailPage() {
 
   const { data: notes = [] } = useQuery<ClientNote[]>({
     queryKey: ["/api/client-notes", locationId],
+    queryFn: async () => {
+      return await apiRequest(`/api/client-notes?clientId=${locationId}`);
+    },
     enabled: Boolean(locationId),
   });
 
@@ -110,6 +113,22 @@ export default function LocationDetailPage() {
     },
     onError: () => {
       toast({ title: "Error", description: "Failed to update billing.", variant: "destructive" });
+    },
+  });
+
+  const setPrimaryMutation = useMutation({
+    mutationFn: async () => {
+      return await apiRequest(`/api/clients/${locationId}/set-primary`, {
+        method: "POST",
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/clients", id, "overview"] });
+      toast({ title: "Primary location updated" });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to set as primary.", variant: "destructive" });
     },
   });
 
@@ -249,7 +268,12 @@ export default function LocationDetailPage() {
       {/* Header */}
       <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold" data-testid="text-location-name">{locationName}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-semibold" data-testid="text-location-name">{locationName}</h1>
+            {location.isPrimary && (
+              <Star className="h-5 w-5 text-yellow-500 fill-yellow-500" />
+            )}
+          </div>
           <p className="mt-1 text-sm text-muted-foreground">
             {location.address}, {location.city} {location.province} {location.postalCode}
           </p>
@@ -257,6 +281,9 @@ export default function LocationDetailPage() {
             <Badge variant={isActive ? "default" : "secondary"} className={isActive ? "bg-blue-50 text-blue-700 hover:bg-blue-50" : ""}>
               {isActive ? "Active" : "Inactive"}
             </Badge>
+            {location.isPrimary && (
+              <Badge variant="outline" className="bg-yellow-50 text-yellow-700 border-yellow-200">Primary</Badge>
+            )}
             <span className="text-muted-foreground">
               Bill Parent: <span className="font-medium">{billParent ? "Yes" : "No"}</span>
             </span>
@@ -264,6 +291,18 @@ export default function LocationDetailPage() {
         </div>
 
         <div className="flex flex-wrap gap-2">
+          {location.parentCompanyId && !location.isPrimary && (
+            <Button 
+              variant="outline" 
+              size="sm" 
+              onClick={() => setPrimaryMutation.mutate()}
+              disabled={setPrimaryMutation.isPending}
+              data-testid="button-set-primary"
+            >
+              <Star className="h-3.5 w-3.5 mr-1.5" />
+              Set as Primary
+            </Button>
+          )}
           <Button variant="outline" size="sm" onClick={() => setEditModalOpen(true)} data-testid="button-edit-location">
             Edit Location
           </Button>

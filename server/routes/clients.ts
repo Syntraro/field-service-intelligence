@@ -755,6 +755,55 @@ router.patch("/:id", async (req, res) => {
   }
 });
 
+// POST /api/clients/:id/set-primary - Set location as primary for its parent company
+router.post("/:id/set-primary", async (req, res) => {
+  try {
+    const companyId = req.companyId;
+    const locationId = req.params.id;
+
+    if (!companyId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    // Get the location first - this already enforces companyId scoping
+    const location = await storage.getClient(companyId, locationId);
+    if (!location) {
+      return res.status(404).json({ error: "Location not found" });
+    }
+
+    if (!location.parentCompanyId) {
+      return res.status(400).json({ error: "Cannot set standalone client as primary" });
+    }
+
+    // Use a transaction to ensure atomicity
+    await db.transaction(async (tx) => {
+      // Clear isPrimary on all other locations with the same parentCompanyId AND companyId
+      // This ensures cross-tenant isolation - parentCompanyId is unique within a tenant
+      await tx.update(clients)
+        .set({ isPrimary: false })
+        .where(and(
+          eq(clients.companyId, companyId),
+          eq(clients.parentCompanyId, location.parentCompanyId)
+        ));
+
+      // Set this location as primary - double-check companyId for safety
+      await tx.update(clients)
+        .set({ isPrimary: true })
+        .where(and(
+          eq(clients.id, locationId),
+          eq(clients.companyId, companyId)
+        ));
+    });
+
+    // Fetch the updated location
+    const updated = await storage.getClient(companyId, locationId);
+    res.json(updated);
+  } catch (error) {
+    console.error("Set primary error:", error);
+    res.status(500).json({ error: "Failed to set primary location" });
+  }
+});
+
 // DELETE /api/clients/:id - Delete client
 router.delete("/:id", async (req, res) => {
   try {
