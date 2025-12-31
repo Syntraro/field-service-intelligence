@@ -82,34 +82,23 @@ export default function ClientDetailPage() {
     enabled: Boolean(clientId),
   });
 
-  const { data: parentCompany } = useQuery<CustomerCompany>({
-    queryKey: [`/api/customer-companies/${client?.parentCompanyId}`],
-    queryFn: async () => {
-      const res = await fetch(`/api/customer-companies/${client?.parentCompanyId}`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch parent company");
-      return res.json();
-    },
-    enabled: Boolean(client?.parentCompanyId),
-  });
-
   /**
-   * ✅ LONG-TERM FIX:
-   * Replace separate /locations, /jobs?clientId, /invoices?clientId with ONE canonical call:
-   *   GET /api/customer-companies/:parentCompanyId/overview
-   *
-   * Backend should roll up jobs+invoices via locationIds (schema-correct).
+   * Unified client overview endpoint - works for both parent clients and child locations.
+   * Uses /api/clients/:id/overview which handles both cases server-side.
    */
   const { data: overview } = useQuery<CompanyOverview>({
-    queryKey: ["/api/customer-companies", client?.parentCompanyId, "overview"],
+    queryKey: ["/api/clients", clientId, "overview"],
     queryFn: async () => {
-      const res = await fetch(`/api/customer-companies/${client?.parentCompanyId}/overview`, {
+      const res = await fetch(`/api/clients/${clientId}/overview`, {
         credentials: "include",
       });
-      if (!res.ok) throw new Error("Failed to fetch company overview");
+      if (!res.ok) throw new Error("Failed to fetch client overview");
       return res.json();
     },
-    enabled: Boolean(client?.parentCompanyId),
+    enabled: Boolean(clientId),
   });
+
+  const parentCompany = overview?.company;
 
   // Keep your existing variable names so the UI doesn’t change.
   const locations: Client[] = overview?.locations ?? [];

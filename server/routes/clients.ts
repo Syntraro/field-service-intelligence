@@ -1,9 +1,11 @@
 import { Router } from "express";
 import type { Request, Response, NextFunction } from "express";
 import { storage } from "../storage/index";
-import { insertClientSchema } from "@shared/schema";
+import { insertClientSchema, clients, jobs, invoices, customerCompanies } from "@shared/schema";
 import { z } from "zod";
 import type { Client } from "@shared/schema";
+import { db } from "../db";
+import { eq, and, desc, inArray } from "drizzle-orm";
 
 const router = Router();
 
@@ -264,6 +266,106 @@ router.post("/import", async (req, res) => {
   } catch (error) {
     console.error('Bulk import error:', error);
     res.status(500).json({ error: "Failed to import clients" });
+  }
+});
+
+// GET /api/clients/:id/overview - Unified overview for any client (parent or child)
+router.get("/:id/overview", async (req, res) => {
+  try {
+    const tenantCompanyId = req.companyId;
+    const clientId = req.params.id;
+
+    // Fetch the clicked client
+    const client = await storage.getClient(tenantCompanyId, clientId);
+    if (!client) {
+      return res.status(404).json({ error: "Client not found" });
+    }
+
+    let locations: Client[] = [];
+    let jobsList: any[] = [];
+    let invoicesList: any[] = [];
+    let company: any = null;
+
+    if (client.parentCompanyId) {
+      // This is a child location - fetch via parent customer company
+      const [parentCompany] = await db
+        .select()
+        .from(customerCompanies)
+        .where(and(eq(customerCompanies.id, client.parentCompanyId), eq(customerCompanies.companyId, tenantCompanyId!)))
+        .limit(1);
+
+      if (parentCompany) {
+        company = parentCompany;
+        // Get all sibling locations
+        locations = await db
+          .select()
+          .from(clients)
+          .where(and(eq(clients.companyId, tenantCompanyId!), eq(clients.parentCompanyId, client.parentCompanyId)))
+          .orderBy(desc(clients.createdAt)) as Client[];
+
+        const locationIds = locations.map((l) => l.id).filter(Boolean);
+        if (locationIds.length > 0) {
+          jobsList = await db
+            .select()
+            .from(jobs)
+            .where(and(eq(jobs.companyId, tenantCompanyId!), inArray(jobs.locationId, locationIds)))
+            .orderBy(desc(jobs.createdAt));
+
+          invoicesList = await db
+            .select()
+            .from(invoices)
+            .where(and(eq(invoices.companyId, tenantCompanyId!), inArray(invoices.locationId, locationIds)))
+            .orderBy(desc(invoices.createdAt));
+        }
+      }
+    } else {
+      // This IS the parent record (parentCompanyId is null)
+      // Treat this client as both the "company" and a location
+      // Also check for any child locations that reference this client's id
+      company = { id: client.id, name: client.companyName, companyId: tenantCompanyId };
+
+      // Get child locations where parentCompanyId = this client's id
+      const childLocations = await db
+        .select()
+        .from(clients)
+        .where(and(eq(clients.companyId, tenantCompanyId!), eq(clients.parentCompanyId, client.id)))
+        .orderBy(desc(clients.createdAt)) as Client[];
+
+      // Include the parent client itself as a location + any children
+      locations = [client, ...childLocations];
+
+      const locationIds = locations.map((l) => l.id).filter(Boolean);
+      if (locationIds.length > 0) {
+        jobsList = await db
+          .select()
+          .from(jobs)
+          .where(and(eq(jobs.companyId, tenantCompanyId!), inArray(jobs.locationId, locationIds)))
+          .orderBy(desc(jobs.createdAt));
+
+        invoicesList = await db
+          .select()
+          .from(invoices)
+          .where(and(eq(invoices.companyId, tenantCompanyId!), inArray(invoices.locationId, locationIds)))
+          .orderBy(desc(invoices.createdAt));
+      }
+    }
+
+    const stats = {
+      totalLocations: locations.length,
+      openJobs: jobsList.filter((j: any) => j.status !== "completed" && j.status !== "cancelled").length,
+      openInvoices: invoicesList.filter((i: any) => i.status !== "paid" && i.status !== "void").length,
+    };
+
+    res.json({
+      company,
+      locations,
+      jobs: jobsList,
+      invoices: invoicesList,
+      stats,
+    });
+  } catch (error) {
+    console.error("Failed to fetch client overview:", error);
+    res.status(500).json({ error: "Failed to fetch client overview" });
   }
 });
 
