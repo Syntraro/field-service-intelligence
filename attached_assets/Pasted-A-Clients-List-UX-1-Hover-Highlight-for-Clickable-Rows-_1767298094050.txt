@@ -1,0 +1,130 @@
+A) Clients List UX
+1) Hover Highlight for Clickable Rows
+
+When hovering a client row: subtle background highlight + pointer cursor across the full row.
+
+Entire row is clickable (not just the name).
+
+B) Company Detail Page Issues
+2) Primary Location is Random (Must Fix)
+
+Problem: primary location appears random across refreshes (Oakville/Ryerson/Finch & Yonge etc).
+
+Requirement: Implement a deterministic primary location system.
+
+Choose one approach (pick what best fits current schema):
+
+Option A (preferred): add primaryLocationId column on the parent/company record
+
+Option B: add isPrimary boolean on child locations (enforce only one true per parent)
+
+Rules:
+
+Primary location always appears first in the “Properties / Locations” list.
+
+Primary location shows a star/badge.
+
+Default behavior:
+
+If only one location exists, it is primary.
+
+If multiple exist and none set, set one deterministically (e.g., earliest created) and save it.
+
+Provide a way to set a location as primary (either from company page list or location page).
+
+3) Company Contact Info Disappears
+
+Ensure company contact fields load consistently from the company record (parent).
+
+Do not accidentally pull/overwrite company contact with a child location record.
+
+C) Location Detail Page Issues
+4) Location Page Header Shows “Location” Instead of Real Name
+
+Title must show the actual location name:
+
+use location field if present
+
+else address
+
+else “Unnamed Location”
+
+Never show literal “Location” as the title.
+
+5) Edit Location Dialog: Too Big + Doesn’t Pre-populate (Critical)
+
+Fix both:
+
+Dialog sizing:
+
+max-height ~80–90vh
+
+internal scroll
+
+not cut off top/bottom
+
+Pre-population:
+
+For ANY location, open Edit Location and fields must be pre-filled
+
+Ensure it’s using the correct location ID (not the primary location ID or parent ID)
+
+Save:
+
+update persists
+
+UI reflects changes without full refresh if possible
+
+6) Location Notes: “Success” but doesn’t show / doesn’t persist
+
+Fix notes for location pages:
+
+Ensure note is saved against the correct locationId
+
+Ensure backend is tenant-scoped (should already be after Prompt 1)
+
+Update UI correctly after create (optimistic add OR refetch)
+
+No false success
+
+No duplicates
+
+Acceptance:
+
+Add note on any location page → shows immediately and persists after refresh.
+
+7) Buttons too big on Location page
+
+Tone down the top-right buttons visually:
+
+smaller padding / font size
+
+keep “Create Job” primary
+
+others secondary
+
+No redesign—just scale them to match the rest of the UI.
+
+Deliverables & Acceptance Checklist
+
+Deliverables:
+
+List exact files changed
+
+Summary of changes
+
+Acceptance:
+
+Client list has hover highlight + full row click
+
+Primary location is consistent (never random), shows indicator, can be set
+
+Company contact shows reliably
+
+Location header shows real name
+
+Edit Location modal fits screen + pre-fills for any location + saves
+
+Location notes save and display properly
+
+Buttons look appropriately sized

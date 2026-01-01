@@ -30,5 +30,9 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
+  // CRITICAL SECURITY FIX: Set companyId on request for tenant isolation
+  // Without this line, req.companyId is undefined and queries return ALL tenants' data!
+  (req as any).companyId = user.companyId;
+
   return next();
 }

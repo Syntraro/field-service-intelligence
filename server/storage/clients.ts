@@ -40,6 +40,7 @@ export class ClientRepository extends BaseRepository {
 
   /**
    * Get paginated clients with search and filtering
+   * SECURITY FIX: Properly combines all WHERE clauses with AND to maintain tenant isolation
    */
   async getPaginatedClients(
     companyId: string,
@@ -51,38 +52,46 @@ export class ClientRepository extends BaseRepository {
     const page = Math.max(1, options.page ?? 1);
     const offset = options.offset ?? (page - 1) * limit;
 
-    let query = db
-      .select()
-      .from(clients)
-      .where(eq(clients.companyId, companyId))
-      .$dynamic();
+    // Build WHERE conditions array - ALWAYS include companyId
+    const whereConditions = [eq(clients.companyId, companyId)];
 
+    // Add inactive filter
     if (options.inactive !== undefined) {
-      query = query.where(eq(clients.inactive, options.inactive));
+      whereConditions.push(eq(clients.inactive, options.inactive));
     } else {
-      query = query.where(eq(clients.inactive, false));
+      whereConditions.push(eq(clients.inactive, false));
     }
 
+    // Add search filter
     if (options.search && options.search.trim()) {
       const searchTerm = escapeLike(options.search.trim());
-      query = query.where(
+      whereConditions.push(
         or(
           ilike(clients.companyName, `%${searchTerm}%`),
           ilike(clients.contactName, `%${searchTerm}%`),
           ilike(clients.email, `%${searchTerm}%`),
           ilike(clients.phone, `%${searchTerm}%`),
           ilike(clients.location, `%${searchTerm}%`)
-        )
+        )!
       );
     }
 
+    // Build query with ALL conditions ANDed together
+    let query = db
+      .select()
+      .from(clients)
+      .where(and(...whereConditions))
+      .$dynamic();
+
+    // Get total count with same filters
     const countResult = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(clients)
-      .where(eq(clients.companyId, companyId));
+      .where(and(...whereConditions));
 
     const total = countResult[0]?.count ?? 0;
 
+    // Apply sorting
     const sortBy = options.sortBy ?? 'companyName';
     const sortOrder = options.sortOrder ?? 'asc';
 
@@ -111,7 +120,6 @@ export class ClientRepository extends BaseRepository {
       },
     };
   }
-
   /**
    * Get single client by ID
    */
