@@ -2,61 +2,75 @@ import { Router, Request, Response, NextFunction } from "express";
 import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import db from "../db";
-import { clientNotes, insertClientNoteSchema } from "@shared/schema";
+import { clientNotes, insertClientNoteSchema, clients } from "@shared/schema";
+import { sql } from "drizzle-orm";
 
 type AuthedRequest = Request & {
   user?: { id: string } | undefined;
   companyId?: string | undefined;
 };
 
-function requireCompanyContext(req: AuthedRequest, res: Response, next: NextFunction) {
+function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
   if (!req.user) return res.status(401).json({ error: "Unauthorized" });
-  if (!req.companyId) return res.status(400).json({ error: "Missing company context" });
+  if (!req.companyId) return res.status(401).json({ error: "Unauthorized" });
   next();
 }
 
 const router = Router();
-router.use(requireCompanyContext);
+router.use(requireAuth);
 
 /**
- * CANONICAL:
+ * NOTE ROUTES
+ *
+ * Canonical:
  *  - GET    /api/clients/:clientId/notes
  *  - POST   /api/clients/:clientId/notes
  *  - PATCH  /api/clients/:clientId/notes/:noteId
  *  - DELETE /api/clients/:clientId/notes/:noteId
  *
- * ALIAS (back-compat):
+ * Alias (back-compat):
  *  - GET    /api/client-notes?clientId=...
  *  - POST   /api/client-notes
- *  - PATCH  /api/client-notes/:id
- *  - DELETE /api/client-notes/:id
+ *  - PATCH  /api/client-notes/:noteId
+ *  - DELETE /api/client-notes/:noteId
  */
 
-// ---------------------
-// Helpers
-// ---------------------
-function normalizeNoteInput(body: any) {
-  const parsed = insertClientNoteSchema
-    .extend({
-      clientId: z.string(),
-      noteText: z.string().min(1),
-    })
-    .safeParse(body);
+function normalizeNoteInput(input: unknown) {
+  const base = insertClientNoteSchema
+    .pick({ clientId: true, noteText: true })
+    .safeParse(input);
 
-  if (!parsed.success) {
-    const msg = parsed.error.issues?.[0]?.message ?? "Invalid note payload";
-    return { ok: false as const, error: msg };
+  if (!base.success) {
+    return { ok: false as const, error: "Invalid note payload" };
   }
-  return { ok: true as const, data: parsed.data };
+
+  const trimmed = base.data.noteText?.trim?.() ?? "";
+  if (!trimmed) return { ok: false as const, error: "Note text is required" };
+
+  return {
+    ok: true as const,
+    data: { clientId: base.data.clientId, noteText: trimmed },
+  };
 }
 
-// ---------------------
-// Canonical routes
-// ---------------------
+async function assertClientOwned(companyId: string, clientId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: clients.id })
+    .from(clients)
+    .where(and(eq(clients.id, clientId), eq(clients.companyId, companyId)))
+    .limit(1);
+
+  return !!row;
+}
+
 router.get("/clients/:clientId/notes", async (req: AuthedRequest, res: Response) => {
   try {
     const { companyId } = req;
     const { clientId } = req.params;
+
+    // Ownership check: ensure client exists in this tenant
+    const ownsClient = await assertClientOwned(companyId!, clientId);
+    if (!ownsClient) return res.status(404).json({ error: "Client not found" });
 
     const notes = await db
       .select()
@@ -78,6 +92,33 @@ router.post("/clients/:clientId/notes", async (req: AuthedRequest, res: Response
     const parsed = normalizeNoteInput({ ...req.body, clientId });
     if (!parsed.ok) return res.status(400).json({ error: parsed.error });
 
+    // Ownership check: ensure client exists in this tenant
+    const ownsClient = await assertClientOwned(companyId!, clientId);
+    if (!ownsClient) return res.status(404).json({ error: "Client not found" });
+
+    // Check for duplicate note in last 5 seconds (same user, client, text)
+    // This catches retry attempts from network timeouts
+    const fiveSecondsAgo = new Date(Date.now() - 5000);
+    const [recentDuplicate] = await db
+      .select()
+      .from(clientNotes)
+      .where(
+        and(
+          eq(clientNotes.companyId, companyId!),
+          eq(clientNotes.userId, user!.id),
+          eq(clientNotes.clientId, clientId),
+          eq(clientNotes.noteText, parsed.data.noteText),
+          sql`${clientNotes.createdAt} > ${fiveSecondsAgo}`
+        )
+      )
+      .limit(1);
+
+    if (recentDuplicate) {
+      // Return existing note with 200 (not 201) to indicate it already existed
+      return res.status(200).json(recentDuplicate);
+    }
+
+    // Create new note
     const [created] = await db
       .insert(clientNotes)
       .values({
@@ -99,13 +140,23 @@ router.patch("/clients/:clientId/notes/:noteId", async (req: AuthedRequest, res:
     const { companyId } = req;
     const { clientId, noteId } = req.params;
 
-    const noteText = z.string().min(1).safeParse(req.body?.noteText);
-    if (!noteText.success) return res.status(400).json({ error: "Invalid noteText" });
+    const parsed = normalizeNoteInput({ ...req.body, clientId });
+    if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+    // Ownership check: ensure client exists in this tenant
+    const ownsClient = await assertClientOwned(companyId!, clientId);
+    if (!ownsClient) return res.status(404).json({ error: "Client not found" });
 
     const [updated] = await db
       .update(clientNotes)
-      .set({ noteText: noteText.data, updatedAt: new Date() })
-      .where(and(eq(clientNotes.id, noteId), eq(clientNotes.companyId, companyId!), eq(clientNotes.clientId, clientId)))
+      .set({ noteText: parsed.data.noteText })
+      .where(
+        and(
+          eq(clientNotes.id, noteId),
+          eq(clientNotes.companyId, companyId!),
+          eq(clientNotes.clientId, clientId)
+        )
+      )
       .returning();
 
     if (!updated) return res.status(404).json({ error: "Note not found" });
@@ -120,9 +171,19 @@ router.delete("/clients/:clientId/notes/:noteId", async (req: AuthedRequest, res
     const { companyId } = req;
     const { clientId, noteId } = req.params;
 
+    // Ownership check: ensure client exists in this tenant
+    const ownsClient = await assertClientOwned(companyId!, clientId);
+    if (!ownsClient) return res.status(404).json({ error: "Client not found" });
+
     const [deleted] = await db
       .delete(clientNotes)
-      .where(and(eq(clientNotes.id, noteId), eq(clientNotes.companyId, companyId!), eq(clientNotes.clientId, clientId)))
+      .where(
+        and(
+          eq(clientNotes.id, noteId),
+          eq(clientNotes.companyId, companyId!),
+          eq(clientNotes.clientId, clientId)
+        )
+      )
       .returning();
 
     if (!deleted) return res.status(404).json({ error: "Note not found" });
@@ -140,6 +201,10 @@ router.get("/client-notes", async (req: AuthedRequest, res: Response) => {
     const { companyId } = req;
     const clientId = String(req.query?.clientId ?? "");
     if (!clientId) return res.status(400).json({ error: "clientId is required" });
+
+    // Ownership check: ensure client exists in this tenant
+    const ownsClient = await assertClientOwned(companyId!, clientId);
+    if (!ownsClient) return res.status(404).json({ error: "Client not found" });
 
     const notes = await db
       .select()
@@ -160,6 +225,30 @@ router.post("/client-notes", async (req: AuthedRequest, res: Response) => {
     const parsed = normalizeNoteInput(req.body);
     if (!parsed.ok) return res.status(400).json({ error: parsed.error });
 
+    // Ownership check: ensure client exists in this tenant
+    const ownsClient = await assertClientOwned(companyId!, parsed.data.clientId);
+    if (!ownsClient) return res.status(404).json({ error: "Client not found" });
+
+    // Check for duplicate note in last 5 seconds
+    const fiveSecondsAgo = new Date(Date.now() - 5000);
+    const [recentDuplicate] = await db
+      .select()
+      .from(clientNotes)
+      .where(
+        and(
+          eq(clientNotes.companyId, companyId!),
+          eq(clientNotes.userId, user!.id),
+          eq(clientNotes.clientId, parsed.data.clientId),
+          eq(clientNotes.noteText, parsed.data.noteText),
+          sql`${clientNotes.createdAt} > ${fiveSecondsAgo}`
+        )
+      )
+      .limit(1);
+
+    if (recentDuplicate) {
+      return res.status(200).json(recentDuplicate);
+    }
+
     const [created] = await db
       .insert(clientNotes)
       .values({
@@ -176,18 +265,19 @@ router.post("/client-notes", async (req: AuthedRequest, res: Response) => {
   }
 });
 
-router.patch("/client-notes/:id", async (req: AuthedRequest, res: Response) => {
+router.patch("/client-notes/:noteId", async (req: AuthedRequest, res: Response) => {
   try {
     const { companyId } = req;
-    const { id } = req.params;
+    const { noteId } = req.params;
 
-    const noteText = z.string().min(1).safeParse(req.body?.noteText);
-    if (!noteText.success) return res.status(400).json({ error: "Invalid noteText" });
+    const bodySchema = z.object({ noteText: z.string().min(1) });
+    const parsed = bodySchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Invalid note payload" });
 
     const [updated] = await db
       .update(clientNotes)
-      .set({ noteText: noteText.data, updatedAt: new Date() })
-      .where(and(eq(clientNotes.id, id), eq(clientNotes.companyId, companyId!)))
+      .set({ noteText: parsed.data.noteText.trim() })
+      .where(and(eq(clientNotes.id, noteId), eq(clientNotes.companyId, companyId!)))
       .returning();
 
     if (!updated) return res.status(404).json({ error: "Note not found" });
@@ -197,14 +287,14 @@ router.patch("/client-notes/:id", async (req: AuthedRequest, res: Response) => {
   }
 });
 
-router.delete("/client-notes/:id", async (req: AuthedRequest, res: Response) => {
+router.delete("/client-notes/:noteId", async (req: AuthedRequest, res: Response) => {
   try {
     const { companyId } = req;
-    const { id } = req.params;
+    const { noteId } = req.params;
 
     const [deleted] = await db
       .delete(clientNotes)
-      .where(and(eq(clientNotes.id, id), eq(clientNotes.companyId, companyId!)))
+      .where(and(eq(clientNotes.id, noteId), eq(clientNotes.companyId, companyId!)))
       .returning();
 
     if (!deleted) return res.status(404).json({ error: "Note not found" });

@@ -30,12 +30,16 @@ export class ClientRepository extends BaseRepository {
   /**
    * Get all clients for a company
    */
-  async getAllClients(companyId: string): Promise<Client[]> {
+ async getAllClients(companyId: string): Promise<Client[]> {
     return await db
       .select()
       .from(clients)
       .where(eq(clients.companyId, companyId))
-      .orderBy(clients.companyName);
+      .orderBy(
+        clients.companyName,              // Primary: company name
+        sql`${clients.isPrimary} DESC`,   // Secondary: primary locations first
+        clients.createdAt                 // Tertiary: creation order (deterministic tie-breaker)
+      );
   }
 
   /**
@@ -95,16 +99,50 @@ export class ClientRepository extends BaseRepository {
     const sortBy = options.sortBy ?? 'companyName';
     const sortOrder = options.sortOrder ?? 'asc';
 
-    if (sortOrder === 'desc') {
-      if (sortBy === 'createdAt') query = query.orderBy(sql`${clients.createdAt} DESC`);
-      else if (sortBy === 'updatedAt') query = query.orderBy(sql`${clients.updatedAt} DESC`);
-      else query = query.orderBy(sql`${clients.companyName} DESC`);
-    } else {
-      if (sortBy === 'createdAt') query = query.orderBy(clients.createdAt);
-      else if (sortBy === 'updatedAt') query = query.orderBy(clients.updatedAt);
-      else query = query.orderBy(clients.companyName);
+    // Apply sorting with deterministic tie-breakers
+    if (sortBy === 'companyName') {
+      if (sortOrder === 'desc') {
+        query = query.orderBy(
+          sql`${clients.companyName} DESC`,
+          sql`${clients.isPrimary} DESC`,  // Primary locations first
+          clients.createdAt                 // Tie-breaker
+        );
+      } else {
+        query = query.orderBy(
+          clients.companyName,
+          sql`${clients.isPrimary} DESC`,  // Primary locations first
+          clients.createdAt                 // Tie-breaker
+        );
+      }
+    } else if (sortBy === 'createdAt') {
+      if (sortOrder === 'desc') {
+        query = query.orderBy(
+          sql`${clients.createdAt} DESC`,
+          clients.companyName,             // Tie-breaker
+          sql`${clients.isPrimary} DESC`   // Tie-breaker
+        );
+      } else {
+        query = query.orderBy(
+          clients.createdAt,
+          clients.companyName,             // Tie-breaker
+          sql`${clients.isPrimary} DESC`   // Tie-breaker
+        );
+      }
+    } else if (sortBy === 'updatedAt') {
+      if (sortOrder === 'desc') {
+        query = query.orderBy(
+          sql`${clients.updatedAt} DESC`,
+          clients.companyName,             // Tie-breaker
+          sql`${clients.isPrimary} DESC`   // Tie-breaker
+        );
+      } else {
+        query = query.orderBy(
+          clients.updatedAt,
+          clients.companyName,             // Tie-breaker
+          sql`${clients.isPrimary} DESC`   // Tie-breaker
+        );
+      }
     }
-
     const data = await query.limit(limit).offset(offset);
     const totalPages = Math.ceil(total / limit);
 
@@ -244,20 +282,30 @@ export class ClientRepository extends BaseRepository {
     return rows[0];
   }
 
-  /**
-   * Delete client
+ /**
+   * Delete client (soft delete)
+   * Sets inactive flag instead of removing from database
+   * This preserves referential integrity and allows recovery
    */
   async deleteClient(companyId: string, clientId: string): Promise<boolean> {
-    const result = await db
-      .delete(clients)
+    this.assertCompanyId(companyId);
+    this.validateUUID(clientId, "clientId");
+
+    const rows = await db
+      .update(clients)
+      .set({ 
+        inactive: true,
+        updatedAt: new Date() 
+      })
       .where(and(eq(clients.id, clientId), eq(clients.companyId, companyId)))
       .returning();
 
-    return result.length > 0;
+    return rows.length > 0;
   }
 
   /**
-   * Bulk delete clients
+   * Bulk delete clients (soft delete)
+   * Sets inactive flag on multiple clients at once
    */
   async deleteClients(
     companyId: string,
@@ -267,8 +315,14 @@ export class ClientRepository extends BaseRepository {
       return { deletedIds: [], notFoundIds: [] };
     }
 
+    this.assertCompanyId(companyId);
+
     const deleted = await db
-      .delete(clients)
+      .update(clients)
+      .set({ 
+        inactive: true,
+        updatedAt: new Date() 
+      })
       .where(and(inArray(clients.id, clientIds), eq(clients.companyId, companyId)))
       .returning();
 

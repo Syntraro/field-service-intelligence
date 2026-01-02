@@ -143,18 +143,20 @@ router.post("/", async (req, res) => {
   }
 });
 
-// POST /api/clients/full-create - Create client with company, primary location, and additional locations
+// POST /api/clients/full-create - Create customer company + primary location + additional locations (Model A)
 router.post("/full-create", async (req, res) => {
   try {
     const companyId = req.companyId;
     const userId = req.user!.id;
     const { company, primaryLocation, additionalLocations = [] } = req.body;
 
+    if (!companyId) return res.status(401).json({ error: "Unauthorized" });
+
     if (!company?.name?.trim()) {
       return res.status(400).json({ error: "Company name is required" });
     }
 
-    // Check subscription limits
+    // Check subscription limits (locations count)
     const limitCheck = await storage.canAddLocation(companyId);
     if (!limitCheck.allowed) {
       return res.status(403).json({
@@ -165,7 +167,7 @@ router.post("/full-create", async (req, res) => {
       });
     }
 
-    // Helper to calculate next due date
+    // Helper to calculate next due date (kept for back-compat)
     const calculateNextDue = (selectedMonths: number[]): string => {
       if (!selectedMonths || selectedMonths.length === 0) {
         return new Date("9999-12-31").toISOString();
@@ -187,13 +189,40 @@ router.post("/full-create", async (req, res) => {
       return new Date(currentYear, next, 15).toISOString();
     };
 
-    // Create primary location (client)
-    const primaryLocationName = primaryLocation?.name?.trim() || company.name.trim();
+    // 1) Create (or reuse) customer company row
+    // Reuse if same name exists for this tenant (prevents duplicates when users retry)
+    const companyName = company.name.trim();
+    const [existingCustomerCompany] = await db
+      .select()
+      .from(customerCompanies)
+      .where(and(eq(customerCompanies.companyId, companyId), eq(customerCompanies.name, companyName)))
+      .limit(1);
+
+    const customerCompany =
+      existingCustomerCompany ??
+      (await db
+        .insert(customerCompanies)
+        .values({
+          companyId,
+          name: companyName,
+          phone: company.phone?.trim() || null,
+          email: company.email?.trim() || null,
+          billingStreet: company.billingAddress?.street?.trim() || null,
+          billingCity: company.billingAddress?.city?.trim() || null,
+          billingProvince: company.billingAddress?.stateOrProvince?.trim() || null,
+          billingPostalCode: company.billingAddress?.postalCode?.trim() || null,
+          billingCountry: company.billingAddress?.country?.trim() || null,
+        })
+        .returning()
+        .then((rows) => rows[0]));
+
+    // 2) Create primary location (client record linked to customer company)
+    const primaryLocationName = primaryLocation?.name?.trim() || companyName;
     const primarySelectedMonths = primaryLocation?.selectedMonths || [];
 
-    const primaryClientData = {
-      parentCompanyId: null, // No customer company - leave null
-      companyName: company.name.trim(),
+    const primaryClientData: any = {
+      parentCompanyId: customerCompany.id,
+      companyName,
       location: primaryLocationName,
       address: primaryLocation?.serviceAddress?.street?.trim() || null,
       city: primaryLocation?.serviceAddress?.city?.trim() || null,
@@ -209,47 +238,51 @@ router.post("/full-create", async (req, res) => {
       nextDue: calculateNextDue(primarySelectedMonths),
       billWithParent: primaryLocation?.billWithParent !== false,
       needsDetails: primaryLocation?.needsDetails === true,
+      // If schema supports it, mark primary explicitly
+      isPrimary: true,
     };
 
-    const primaryClient = await storage.createClient(companyId!, userId, primaryClientData);
+    const primaryClient = await storage.createClient(companyId, userId, primaryClientData);
 
-    // Create additional locations (all share same companyName, parentCompanyId stays null)
-    const createdLocations = [primaryClient];
+    // 3) Create additional locations (children of same customer company)
+    const createdLocations: Client[] = [primaryClient];
     for (const loc of additionalLocations) {
-      if (!loc.name?.trim()) continue;
+      if (!loc?.name?.trim()) continue;
 
-      const locSelectedMonths = loc.selectedMonths || [];
-      const locData = {
-        parentCompanyId: null, // No customer company - leave null
-        companyName: company.name.trim(), // Same company name links them together
+      const selectedMonths = loc.selectedMonths || [];
+      const locData: any = {
+        parentCompanyId: customerCompany.id,
+        companyName,
         location: loc.name.trim(),
         address: loc.serviceAddress?.street?.trim() || null,
         city: loc.serviceAddress?.city?.trim() || null,
         province: loc.serviceAddress?.stateOrProvince?.trim() || null,
         postalCode: loc.serviceAddress?.postalCode?.trim() || null,
         contactName: loc.contactName?.trim() || null,
-        email: loc.contactEmail?.trim() || null,
-        phone: loc.contactPhone?.trim() || null,
+        email: loc.contactEmail?.trim() || company.email?.trim() || null,
+        phone: loc.contactPhone?.trim() || company.phone?.trim() || null,
         roofLadderCode: null,
         notes: loc.notes?.trim() || null,
-        selectedMonths: locSelectedMonths,
+        selectedMonths,
         inactive: false,
-        nextDue: calculateNextDue(locSelectedMonths),
+        nextDue: calculateNextDue(selectedMonths),
         billWithParent: loc.billWithParent !== false,
         needsDetails: loc.needsDetails === true,
+        isPrimary: false,
       };
 
-      const newLoc = await storage.createClient(companyId!, userId, locData);
+      const newLoc = await storage.createClient(companyId, userId, locData);
       createdLocations.push(newLoc);
     }
 
     res.json({
+      customerCompany,
       client: primaryClient,
       locations: createdLocations,
     });
   } catch (error) {
     console.error("Full create error:", error);
-    res.status(500).json({ error: "Failed to create client" });
+    res.status(500).json({ error: "Failed to create company and locations" });
   }
 });
 
@@ -491,25 +524,93 @@ router.get("/:id/overview", async (req, res) => {
         }
       }
     } else {
-      // This IS the parent record (parentCompanyId is null)
-      // Treat this client as both the "company" and a location
-      // Find all locations with the same companyName (this is how locations are linked)
-      company = { id: client.id, name: client.companyName, companyId: tenantCompanyId };
+      // Legacy/standalone record (parentCompanyId is null).
+      // Normalize to Model A: ensure a customerCompanies parent exists and link all same-name locations.
+      const companyName = client.companyName;
 
-      // Get all locations with the same companyName (linked by shared name)
-      const allLocationsWithSameName = await db
+      // Find or create the customer company for this tenant + name
+      let [parentCompany] = await db
+        .select()
+        .from(customerCompanies)
+        .where(and(
+          eq(customerCompanies.companyId, tenantCompanyId!),
+          eq(customerCompanies.name, companyName)
+        ))
+        .limit(1);
+
+      if (!parentCompany) {
+        [parentCompany] = await db
+          .insert(customerCompanies)
+          .values({
+            companyId: tenantCompanyId!,
+            name: companyName,
+            phone: client.phone,
+            email: client.email,
+            billingStreet: client.address,
+            billingCity: client.city,
+            billingProvince: client.province,
+            billingPostalCode: client.postalCode,
+            billingCountry: null,
+          })
+          .returning();
+      }
+
+      company = parentCompany;
+
+      // Link any tenant-owned clients with same companyName that are not yet linked
+      const unlinkedSameName = await db
+        .select({ id: clients.id, isPrimary: (clients as any).isPrimary, createdAt: clients.createdAt })
+        .from(clients)
+        .where(and(
+          eq(clients.companyId, tenantCompanyId!),
+          eq(clients.companyName, companyName),
+          // only migrate rows that aren't already linked
+          eq(clients.parentCompanyId, null as any)
+        ));
+
+      if (unlinkedSameName.length > 0) {
+        // Determine a primary candidate (prefer existing isPrimary, else the current client, else oldest)
+        const existingPrimary = unlinkedSameName.find((r) => (r as any).isPrimary === true);
+        const currentRow = unlinkedSameName.find((r) => r.id === client.id);
+        const oldest = [...unlinkedSameName].sort((a, b) => {
+          const ta = a.createdAt ? new Date(a.createdAt as any).getTime() : 0;
+          const tb = b.createdAt ? new Date(b.createdAt as any).getTime() : 0;
+          return ta - tb;
+        })[0];
+
+        const primaryId = (existingPrimary?.id || currentRow?.id || oldest?.id) as string;
+
+        // Link all and set isPrimary deterministically within this batch
+        await db.transaction(async (tx) => {
+          for (const row of unlinkedSameName) {
+            await tx.update(clients)
+              .set({
+                parentCompanyId: parentCompany.id,
+                isPrimary: row.id === primaryId,
+              } as any)
+              .where(and(
+                eq(clients.id, row.id),
+                eq(clients.companyId, tenantCompanyId!)
+              ));
+          }
+        });
+
+        // Refresh client reference if we just linked it
+        if (client.id === primaryId) {
+          (client as any).parentCompanyId = parentCompany.id;
+          (client as any).isPrimary = true;
+        }
+      }
+
+      // Now fetch all linked locations for this customer company
+      locations = await db
         .select()
         .from(clients)
         .where(and(
           eq(clients.companyId, tenantCompanyId!),
-          eq(clients.companyName, client.companyName)
+          eq(clients.parentCompanyId, parentCompany.id)
         ))
-        .orderBy(desc(clients.createdAt)) as Client[];
-
-      // Put the current client first, then other locations
-      const currentClient = allLocationsWithSameName.find(loc => loc.id === client.id);
-      const otherLocations = allLocationsWithSameName.filter(loc => loc.id !== client.id);
-      locations = currentClient ? [currentClient, ...otherLocations] : allLocationsWithSameName;
+        .orderBy(desc((clients as any).isPrimary), desc(clients.createdAt)) as Client[];
 
       const locationIds = locations.map((l) => l.id).filter(Boolean);
       if (locationIds.length > 0) {
@@ -551,71 +652,99 @@ router.post("/:companyId/locations", async (req, res) => {
   try {
     const tenantCompanyId = req.companyId;
     const userId = (req.user as any)?.id;
-    const parentClientId = req.params.companyId;
+    const idParam = req.params.companyId; // customerCompanyId (preferred) OR legacy parent client id
+
+    if (!tenantCompanyId) return res.status(401).json({ error: "Unauthorized" });
 
     // Check subscription limits
     const limitCheck = await storage.canAddLocation(tenantCompanyId);
     if (!limitCheck.allowed) {
       return res.status(403).json({
         error: limitCheck.reason,
-        code: 'SUBSCRIPTION_LIMIT',
+        code: "SUBSCRIPTION_LIMIT",
         currentCount: limitCheck.currentCount,
-        limit: limitCheck.limit
+        limit: limitCheck.limit,
       });
     }
 
-    // Fetch the parent client to get companyName
-    const parentClient = await storage.getClient(tenantCompanyId, parentClientId);
-    if (!parentClient) {
-      return res.status(404).json({ error: "Parent client not found" });
+    // 1) Preferred: treat param as customerCompanies.id
+    let [customerCompany] = await db
+      .select()
+      .from(customerCompanies)
+      .where(and(eq(customerCompanies.id, idParam), eq(customerCompanies.companyId, tenantCompanyId)))
+      .limit(1);
+
+    // 2) Back-compat: if not found, treat param as a legacy client id and normalize to customerCompanies
+    if (!customerCompany) {
+      const legacyParentClient = await storage.getClient(tenantCompanyId, idParam);
+      if (!legacyParentClient) {
+        return res.status(404).json({ error: "Company not found" });
+      }
+
+      // Find or create a customer company by name
+      const [existing] = await db
+        .select()
+        .from(customerCompanies)
+        .where(and(
+          eq(customerCompanies.companyId, tenantCompanyId),
+          eq(customerCompanies.name, legacyParentClient.companyName)
+        ))
+        .limit(1);
+
+      customerCompany =
+        existing ??
+        (await db
+          .insert(customerCompanies)
+          .values({
+            companyId: tenantCompanyId,
+            name: legacyParentClient.companyName,
+            phone: legacyParentClient.phone,
+            email: legacyParentClient.email,
+            billingStreet: legacyParentClient.address,
+            billingCity: legacyParentClient.city,
+            billingProvince: legacyParentClient.province,
+            billingPostalCode: legacyParentClient.postalCode,
+            billingCountry: null,
+          })
+          .returning()
+          .then((rows) => rows[0]));
+
+      // Link all same-name unlinked locations under this customer company (Model A normalization)
+      const sameNameUnlinked = await db
+        .select({ id: clients.id, createdAt: clients.createdAt })
+        .from(clients)
+        .where(and(
+          eq(clients.companyId, tenantCompanyId),
+          eq(clients.companyName, legacyParentClient.companyName),
+          eq(clients.parentCompanyId, null as any)
+        ));
+
+      if (sameNameUnlinked.length > 0) {
+        const oldest = [...sameNameUnlinked].sort((a, b) => {
+          const ta = a.createdAt ? new Date(a.createdAt as any).getTime() : 0;
+          const tb = b.createdAt ? new Date(b.createdAt as any).getTime() : 0;
+          return ta - tb;
+        })[0];
+
+        await db.transaction(async (tx) => {
+          for (const row of sameNameUnlinked) {
+            await tx.update(clients)
+              .set({
+                parentCompanyId: customerCompany!.id,
+                isPrimary: row.id === oldest.id,
+              } as any)
+              .where(and(eq(clients.id, row.id), eq(clients.companyId, tenantCompanyId)));
+          }
+        });
+      }
     }
 
     const { location, address, city, province, postalCode, contactName, phone, email } = req.body;
 
-    // Find or create a customer_companies record for this company
-    // This is the parent entity that child locations reference
-    let customerCompanyId: string;
-
-    // Check if any existing location for this company already has a customer company
-    const [existingWithCustomerCompany] = await db
-      .select({ parentCompanyId: clients.parentCompanyId })
-      .from(clients)
-      .where(and(
-        eq(clients.companyId, tenantCompanyId!),
-        eq(clients.companyName, parentClient.companyName),
-        isNotNull(clients.parentCompanyId)
-      ))
-      .limit(1);
-
-    if (existingWithCustomerCompany?.parentCompanyId) {
-      // Use existing customer company
-      customerCompanyId = existingWithCustomerCompany.parentCompanyId;
-    } else {
-      // Create a new customer company based on the parent client
-      const [newCustomerCompany] = await db
-        .insert(customerCompanies)
-        .values({
-          companyId: tenantCompanyId!,
-          name: parentClient.companyName,
-          phone: parentClient.phone,
-          email: parentClient.email,
-          billingStreet: parentClient.address,
-          billingCity: parentClient.city,
-          billingProvince: parentClient.province,
-          billingPostalCode: parentClient.postalCode,
-          isActive: true,
-        })
-        .returning();
-      
-      customerCompanyId = newCustomerCompany.id;
-    }
-
-    // Create child location linked to the customer company
-    // Parent client keeps parentCompanyId = null, children link via customer_companies
-    const childLocationData = {
-      parentCompanyId: customerCompanyId, // Link to customer company
-      companyName: parentClient.companyName, // Same company name
-      location: location?.trim() || `${parentClient.companyName} - Location`,
+    const childLocationData: any = {
+      parentCompanyId: customerCompany.id,
+      companyName: customerCompany.name,
+      location: location?.trim() || customerCompany.name,
       address: address?.trim() || null,
       city: city?.trim() || null,
       province: province?.trim() || null,
@@ -623,25 +752,22 @@ router.post("/:companyId/locations", async (req, res) => {
       contactName: contactName?.trim() || null,
       phone: phone?.trim() || null,
       email: email?.trim() || null,
-      roofLadderCode: null,
-      notes: null,
-      selectedMonths: [],
       inactive: false,
       nextDue: null,
       billWithParent: true,
       needsDetails: false,
+      isPrimary: false,
     };
 
-    const newLocation = await storage.createClient(tenantCompanyId!, userId, childLocationData);
+    const newLocation = await storage.createClient(tenantCompanyId, userId, childLocationData);
 
-    res.json(newLocation);
+    res.json({ customerCompany, location: newLocation });
   } catch (error) {
     console.error("Failed to create child location:", error);
     res.status(500).json({ error: "Failed to create location" });
   }
 });
-
-// GET /api/clients/:id - Get single client
+ - Get single client
 router.get("/:id", async (req, res) => {
   try {
     const companyId = req.companyId;
