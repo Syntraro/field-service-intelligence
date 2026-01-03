@@ -767,7 +767,7 @@ router.post("/:companyId/locations", async (req, res) => {
     res.status(500).json({ error: "Failed to create location" });
   }
 });
- - Get single client
+ // Get single client
 router.get("/:id", async (req, res) => {
   try {
     const companyId = req.companyId;

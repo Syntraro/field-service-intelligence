@@ -1,5 +1,12 @@
-import { useState, useEffect } from "react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
+import { useEffect, useMemo, useState } from "react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogDescription,
+} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,16 +17,18 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Client } from "@shared/schema";
 
-// Location form for creating and editing locations
-// Each Location maps to a QuickBooks Sub-Customer
-// billWithParent controls whether invoices go to parent company or this location directly
-
 interface LocationFormModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  location: Client | null; // null = create mode, object = edit mode
+
+  // Can be temporarily null depending on parent load timing
+  location: Client | null;
+
+  // Always pass the route param so we can fetch reliably
+  locationId?: string;
+
   companyId: string;
-  parentCompanyId?: string;
+  parentCompanyId?: string; // customerCompanies.id (Model A)
   onSuccess: () => void;
 }
 
@@ -27,12 +36,20 @@ export default function LocationFormModal({
   open,
   onOpenChange,
   location,
+  locationId,
   companyId,
   parentCompanyId,
   onSuccess,
 }: LocationFormModalProps) {
   const { toast } = useToast();
-  const isEditing = Boolean(location);
+
+  const [resolvedLocation, setResolvedLocation] = useState<Client | null>(null);
+  const [isResolving, setIsResolving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Treat as edit if we have a locationId from route
+  const isEditIntent = Boolean(locationId);
+  const activeLocation = useMemo(() => location ?? resolvedLocation, [location, resolvedLocation]);
 
   // Form state
   const [name, setName] = useState("");
@@ -46,145 +63,160 @@ export default function LocationFormModal({
   const [contactEmail, setContactEmail] = useState("");
   const [billWithParent, setBillWithParent] = useState(true);
   const [isActive, setIsActive] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
-  // Reset form when modal opens/closes or location changes
+  // Resolve record on open if needed (EDIT mode)
   useEffect(() => {
-    if (open) {
-      if (location) {
-        // Edit mode - populate from existing location
-        setName(location.location || "");
-        setSiteCode(location.roofLadderCode || "");
-        setStreet(location.address || "");
-        setCity(location.city || "");
-        setProvince(location.province || "");
-        setPostalCode(location.postalCode || "");
-        setCountry("Canada");
-        setContactPhone(location.phone || "");
-        setContactEmail(location.email || "");
-        setBillWithParent(location.billWithParent ?? true);
-        setIsActive(!location.inactive);
-      } else {
-        // Create mode - reset to defaults
-        setName("");
-        setSiteCode("");
-        setStreet("");
-        setCity("");
-        setProvince("");
-        setPostalCode("");
-        setCountry("Canada");
-        setContactPhone("");
-        setContactEmail("");
-        setBillWithParent(true);
-        setIsActive(true);
-      }
-      setError(null);
-    }
-  }, [open, location]);
+    if (!open) return;
 
-  // Create mutation
+    setError(null);
+
+    // If parent already has the record, use it
+    if (location) {
+      setResolvedLocation(location);
+      return;
+    }
+
+    // If edit intent and we don't have location yet, fetch it by id
+    if (isEditIntent && locationId) {
+      setIsResolving(true);
+      (async () => {
+        try {
+          const res = await fetch(`/api/clients/${locationId}`, { credentials: "include" });
+          if (!res.ok) throw new Error("Failed to load location");
+          const data = (await res.json()) as Client;
+          setResolvedLocation(data);
+        } catch (e: any) {
+          setError(e?.message || "Failed to load location details.");
+        } finally {
+          setIsResolving(false);
+        }
+      })();
+    } else {
+      // Create mode
+      setResolvedLocation(null);
+    }
+  }, [open, location, isEditIntent, locationId]);
+
+  // Prefill whenever modal opens OR activeLocation changes
+  useEffect(() => {
+    if (!open) return;
+    setError(null);
+
+    if (activeLocation) {
+      setName(activeLocation.location || "");
+      setSiteCode(activeLocation.roofLadderCode || "");
+      setStreet(activeLocation.address || "");
+      setCity(activeLocation.city || "");
+      setProvince(activeLocation.province || "");
+      setPostalCode(activeLocation.postalCode || "");
+      setCountry("Canada");
+      setContactPhone(activeLocation.phone || "");
+      setContactEmail(activeLocation.email || "");
+      setBillWithParent(activeLocation.billWithParent ?? true);
+      setIsActive(!activeLocation.inactive);
+    } else {
+      // Create defaults
+      setName("");
+      setSiteCode("");
+      setStreet("");
+      setCity("");
+      setProvince("");
+      setPostalCode("");
+      setCountry("Canada");
+      setContactPhone("");
+      setContactEmail("");
+      setBillWithParent(true);
+      setIsActive(true);
+    }
+  }, [open, activeLocation]);
+
+  // Model A create: create a location under customerCompanies parent
   const createMutation = useMutation({
     mutationFn: async (data: any) => {
-      return await apiRequest("/api/clients", {
+      if (!parentCompanyId) throw new Error("Missing parentCompanyId for create.");
+      return await apiRequest(`/api/customer-companies/${parentCompanyId}/locations`, {
         method: "POST",
         body: JSON.stringify(data),
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-      toast({
-        title: "Location created",
-        description: "The location has been added successfully.",
-      });
+      if (parentCompanyId) {
+        queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", parentCompanyId, "locations"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", parentCompanyId, "overview"] });
+      }
+      toast({ title: "Location created" });
       onSuccess();
     },
     onError: (err: any) => {
-      const message = err?.message || "Failed to create location.";
-      if (message.includes("duplicate") || message.includes("exists")) {
-        setError("A location with this name already exists for this client. Please choose a different name.");
-      } else {
-        setError(message);
-      }
+      setError(err?.message || "Failed to create location.");
     },
   });
 
-  // Update mutation
+  // Update location
   const updateMutation = useMutation({
     mutationFn: async (data: any) => {
-      return await apiRequest(`/api/clients/${location!.id}`, {
+      const targetId = activeLocation?.id || locationId;
+      if (!targetId) throw new Error("Missing location id.");
+      return await apiRequest(`/api/clients/${targetId}`, {
         method: "PATCH",
         body: JSON.stringify(data),
       });
     },
     onSuccess: () => {
+      const targetId = activeLocation?.id || locationId;
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-      toast({
-        title: "Location updated",
-        description: "The location has been updated successfully.",
-      });
+      if (targetId) queryClient.invalidateQueries({ queryKey: ["/api/clients", targetId] });
+      if (parentCompanyId) {
+        queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", parentCompanyId, "locations"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", parentCompanyId, "overview"] });
+      }
+      toast({ title: "Location updated" });
       onSuccess();
     },
     onError: (err: any) => {
-      const message = err?.message || "Failed to update location.";
-      if (message.includes("duplicate") || message.includes("exists")) {
-        setError("A location with this name already exists for this client. Please choose a different name.");
-      } else {
-        setError(message);
-      }
+      setError(err?.message || "Failed to update location.");
     },
   });
 
   const handleSubmit = () => {
     setError(null);
-
     if (!name.trim()) {
       setError("Location name is required.");
       return;
     }
 
-    // Build data payload for creating/updating a location
-    // Note: parentCompanyId ties this location to a parent company (QBO Customer)
-    // billWithParent determines invoice routing in QuickBooks
-    const data: Record<string, any> = {
+    const payload: Record<string, any> = {
       location: name.trim(),
-      companyName: location?.companyName || name.trim(), // Use location name as company name for new locations
       billWithParent,
       inactive: !isActive,
-      selectedMonths: location?.selectedMonths || [],
-      nextDue: location?.nextDue || new Date('9999-12-31').toISOString(),
     };
-    
-    // Only include optional fields if they have values
-    if (siteCode.trim()) data.roofLadderCode = siteCode.trim();
-    if (street.trim()) data.address = street.trim();
-    if (city.trim()) data.city = city.trim();
-    if (province.trim()) data.province = province.trim();
-    if (postalCode.trim()) data.postalCode = postalCode.trim();
-    if (contactPhone.trim()) data.phone = contactPhone.trim();
-    if (contactEmail.trim()) data.email = contactEmail.trim();
-    
-    // Always include parentCompanyId for new locations to maintain hierarchy
-    if (parentCompanyId) {
-      data.parentCompanyId = parentCompanyId;
-    }
 
-    if (isEditing) {
-      updateMutation.mutate(data);
-    } else {
-      createMutation.mutate(data);
-    }
+    if (siteCode.trim()) payload.roofLadderCode = siteCode.trim();
+    if (street.trim()) payload.address = street.trim();
+    if (city.trim()) payload.city = city.trim();
+    if (province.trim()) payload.province = province.trim();
+    if (postalCode.trim()) payload.postalCode = postalCode.trim();
+    if (contactPhone.trim()) payload.phone = contactPhone.trim();
+    if (contactEmail.trim()) payload.email = contactEmail.trim();
+
+    // keep linkage consistent
+    if (parentCompanyId) payload.parentCompanyId = parentCompanyId;
+
+    if (isEditIntent) updateMutation.mutate(payload);
+    else createMutation.mutate(payload);
   };
 
-  const isPending = createMutation.isPending || updateMutation.isPending;
+  const isPending = isResolving || createMutation.isPending || updateMutation.isPending;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{isEditing ? "Edit Location" : "Add Location"}</DialogTitle>
+          <DialogTitle>{isEditIntent ? "Edit Location" : "Add Location"}</DialogTitle>
           <DialogDescription>
-            {isEditing 
-              ? "Update the location details. This location maps to a QuickBooks Sub-Customer."
+            {isEditIntent
+              ? "Update the location details."
               : "Add a new service location. Each location maps to a QuickBooks Sub-Customer."}
           </DialogDescription>
         </DialogHeader>
@@ -200,10 +232,9 @@ export default function LocationFormModal({
             <Label htmlFor="location-name">Location Name *</Label>
             <Input
               id="location-name"
-              data-testid="input-location-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Toronto Warehouse"
+              disabled={isResolving}
             />
           </div>
 
@@ -211,49 +242,23 @@ export default function LocationFormModal({
             <Label htmlFor="site-code">Site Code / Store Number</Label>
             <Input
               id="site-code"
-              data-testid="input-site-code"
               value={siteCode}
               onChange={(e) => setSiteCode(e.target.value)}
-              placeholder="TOR-001"
+              disabled={isResolving}
             />
           </div>
 
           <div className="space-y-2">
             <Label>Service Address</Label>
             <div className="space-y-3">
-              <Input
-                data-testid="input-street"
-                value={street}
-                onChange={(e) => setStreet(e.target.value)}
-                placeholder="Street address"
-              />
+              <Input value={street} onChange={(e) => setStreet(e.target.value)} placeholder="Street address" disabled={isResolving} />
               <div className="grid grid-cols-2 gap-3">
-                <Input
-                  data-testid="input-city"
-                  value={city}
-                  onChange={(e) => setCity(e.target.value)}
-                  placeholder="City"
-                />
-                <Input
-                  data-testid="input-province"
-                  value={province}
-                  onChange={(e) => setProvince(e.target.value)}
-                  placeholder="Province/State"
-                />
+                <Input value={city} onChange={(e) => setCity(e.target.value)} placeholder="City" disabled={isResolving} />
+                <Input value={province} onChange={(e) => setProvince(e.target.value)} placeholder="Province/State" disabled={isResolving} />
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <Input
-                  data-testid="input-postal"
-                  value={postalCode}
-                  onChange={(e) => setPostalCode(e.target.value)}
-                  placeholder="Postal/ZIP Code"
-                />
-                <Input
-                  data-testid="input-country"
-                  value={country}
-                  onChange={(e) => setCountry(e.target.value)}
-                  placeholder="Country"
-                />
+                <Input value={postalCode} onChange={(e) => setPostalCode(e.target.value)} placeholder="Postal/ZIP Code" disabled={isResolving} />
+                <Input value={country} onChange={(e) => setCountry(e.target.value)} placeholder="Country" disabled={isResolving} />
               </div>
             </div>
           </div>
@@ -261,73 +266,46 @@ export default function LocationFormModal({
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label htmlFor="contact-phone">Contact Phone</Label>
-              <Input
-                id="contact-phone"
-                data-testid="input-contact-phone"
-                value={contactPhone}
-                onChange={(e) => setContactPhone(e.target.value)}
-                placeholder="(555) 123-4567"
-              />
+              <Input id="contact-phone" value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} disabled={isResolving} />
             </div>
             <div className="space-y-2">
               <Label htmlFor="contact-email">Contact Email</Label>
-              <Input
-                id="contact-email"
-                data-testid="input-contact-email"
-                type="email"
-                value={contactEmail}
-                onChange={(e) => setContactEmail(e.target.value)}
-                placeholder="contact@location.com"
-              />
+              <Input id="contact-email" type="email" value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} disabled={isResolving} />
             </div>
           </div>
 
           <div className="flex items-center justify-between p-4 border rounded-lg bg-muted/30">
             <div className="space-y-1">
-              <Label htmlFor="bill-with-parent" className="text-sm font-medium">
-                Bill this location with the parent company
-              </Label>
+              <Label className="text-sm font-medium">Bill this location with the parent company</Label>
               <p className="text-xs text-muted-foreground">
-                {billWithParent 
-                  ? "Invoices for this location will be billed to the parent company in QuickBooks."
-                  : "This location will be billed directly to this location (sub-customer) in QuickBooks."}
+                {billWithParent
+                  ? "Invoices for this location will be billed to the parent company."
+                  : "This location will be billed directly to this location."}
               </p>
             </div>
-            <Switch
-              id="bill-with-parent"
-              data-testid="switch-bill-with-parent"
-              checked={billWithParent}
-              onCheckedChange={setBillWithParent}
-            />
+            <Switch checked={billWithParent} onCheckedChange={setBillWithParent} disabled={isResolving} />
           </div>
 
-          {isEditing && (
+          {isEditIntent && (
             <div className="flex items-center justify-between p-4 border rounded-lg">
               <div className="space-y-1">
-                <Label htmlFor="is-active" className="text-sm font-medium">
-                  Active
-                </Label>
+                <Label className="text-sm font-medium">Active</Label>
                 <p className="text-xs text-muted-foreground">
                   Inactive locations are hidden from schedules and reports.
                 </p>
               </div>
-              <Switch
-                id="is-active"
-                data-testid="switch-is-active"
-                checked={isActive}
-                onCheckedChange={setIsActive}
-              />
+              <Switch checked={isActive} onCheckedChange={setIsActive} disabled={isResolving} />
             </div>
           )}
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>
             Cancel
           </Button>
-          <Button onClick={handleSubmit} disabled={isPending}>
+          <Button onClick={handleSubmit} disabled={isPending || !name.trim()}>
             {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-            {isEditing ? "Save Changes" : "Add Location"}
+            {isEditIntent ? "Save Changes" : "Add Location"}
           </Button>
         </DialogFooter>
       </DialogContent>

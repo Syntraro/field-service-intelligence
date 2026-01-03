@@ -107,8 +107,8 @@ export default function ClientDetailPage() {
   });
 
   /**
-   * Unified client overview endpoint - works for both parent clients and child locations.
-   * Uses /api/clients/:id/overview which handles both cases server-side.
+   * Unified overview endpoint - server normalizes legacy IDs into Model A.
+   * Uses /api/clients/:id/overview
    */
   const { data: overview } = useQuery<CompanyOverview>({
     queryKey: ["/api/clients", clientId, "overview"],
@@ -123,6 +123,7 @@ export default function ClientDetailPage() {
   });
 
   const parentCompany = overview?.company;
+  const companyId = parentCompany?.id;
 
   // Keep your existing variable names so the UI doesn’t change.
   const unsortedLocations: Client[] = overview?.locations ?? [];
@@ -132,6 +133,7 @@ export default function ClientDetailPage() {
     if (!a.isPrimary && b.isPrimary) return 1;
     return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
   });
+
   const jobs: Job[] = overview?.jobs ?? [];
   const invoices: Invoice[] = overview?.invoices ?? [];
 
@@ -146,15 +148,10 @@ export default function ClientDetailPage() {
   });
 
   /**
-   * ✅ IMPORTANT FIX:
-   * Jobs do NOT have job.clientId in your schema model.
-   * Rollups must match on job.locationId.
+   * Jobs roll up by locationId (not clientId)
    */
   const companyJobs = jobs.filter((job) => {
-    // If overview returned locations, only include jobs that belong to those locations
     if (locations.length) return locations.some((loc) => loc.id === job.locationId);
-
-    // If locations didn’t load for any reason, treat the current "clientId" as a location id
     return job.locationId === clientId;
   });
 
@@ -220,16 +217,28 @@ export default function ClientDetailPage() {
     },
   });
 
+  /**
+   * ✅ MODEL A FIX:
+   * Add Location must attach to customerCompanies (parent) — not to /api/clients/:id/locations.
+   */
   const createLocationMutation = useMutation({
     mutationFn: async (locationData: typeof newLocationForm) => {
-      return await apiRequest(`/api/clients/${clientId}/locations`, {
+      if (!companyId) {
+        throw new Error("Company not loaded yet. Please refresh and try again.");
+      }
+      return await apiRequest(`/api/customer-companies/${companyId}/locations`, {
         method: "POST",
         body: JSON.stringify(locationData),
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/clients", clientId, "overview"] });
+      if (companyId) {
+        queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", companyId, "locations"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", companyId, "overview"] });
+      }
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+
       setAddLocationDialogOpen(false);
       setNewLocationForm({
         location: "",
@@ -243,17 +252,15 @@ export default function ClientDetailPage() {
       });
       toast({ title: "Location added", description: "The new property/location has been created." });
     },
-    onError: (error: Error) => {
-      // Show server error message if available
-      const errorMessage = error.message || "Failed to add location.";
-      toast({ 
-        title: "Error", 
-        description: errorMessage.includes("SUBSCRIPTION_LIMIT") 
+    onError: (error: any) => {
+      const errorMessage = error?.message || "Failed to add location.";
+      toast({
+        title: "Error",
+        description: errorMessage.includes("SUBSCRIPTION_LIMIT")
           ? "You've reached your location limit. Please upgrade your plan to add more locations."
           : errorMessage,
-        variant: "destructive" 
+        variant: "destructive",
       });
-      // Keep dialog open so user can see the error and retry
     },
   });
 
@@ -395,7 +402,9 @@ export default function ClientDetailPage() {
                       <span className="font-medium">{client.location || "Primary Location"}</span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="text-xs text-muted-foreground">{client.address || `${client.city}, ${client.province}`}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {client.address || `${client.city}, ${client.province}`}
+                      </span>
                       <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                     </div>
                   </button>
@@ -409,14 +418,20 @@ export default function ClientDetailPage() {
                       data-testid={`row-location-${loc.id}`}
                     >
                       <div className="flex items-center gap-2 text-sm">
-                        {loc.isPrimary && <Star className="h-3.5 w-3.5 text-yellow-500 fill-yellow-500 flex-shrink-0" />}
+                        {loc.isPrimary && (
+                          <Star className="h-3.5 w-3.5 text-yellow-500 fill-yellow-500 flex-shrink-0" />
+                        )}
                         <span className="font-medium">{loc.location || loc.companyName}</span>
                         {loc.inactive && (
-                          <Badge variant="secondary" className="text-[10px] px-1 py-0">Inactive</Badge>
+                          <Badge variant="secondary" className="text-[10px] px-1 py-0">
+                            Inactive
+                          </Badge>
                         )}
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground truncate max-w-[200px]">{loc.address || `${loc.city}, ${loc.province}`}</span>
+                        <span className="text-xs text-muted-foreground truncate max-w-[200px]">
+                          {loc.address || `${loc.city}, ${loc.province}`}
+                        </span>
                         <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                       </div>
                     </button>
@@ -652,8 +667,12 @@ export default function ClientDetailPage() {
             <Card>
               <CardHeader className="pb-3 flex flex-row items-center justify-between gap-2">
                 <CollapsibleTrigger asChild>
-                  <button type="button" className="flex items-center gap-1 text-sm font-semibold hover:text-primary transition-colors" data-testid="button-toggle-notes">
-                    <ChevronDown className={`h-4 w-4 transition-transform ${notesOpen ? '' : '-rotate-90'}`} />
+                  <button
+                    type="button"
+                    className="flex items-center gap-1 text-sm font-semibold hover:text-primary transition-colors"
+                    data-testid="button-toggle-notes"
+                  >
+                    <ChevronDown className={`h-4 w-4 transition-transform ${notesOpen ? "" : "-rotate-90"}`} />
                     Notes ({notes.length})
                   </button>
                 </CollapsibleTrigger>
@@ -671,62 +690,21 @@ export default function ClientDetailPage() {
               </CardHeader>
               <CollapsibleContent>
                 <CardContent className="max-h-80 overflow-y-auto space-y-3 pt-0">
-              {isAddingNote && (
-                <div className="space-y-2">
-                  <Textarea
-                    placeholder="Enter note..."
-                    value={newNoteContent}
-                    onChange={(e) => setNewNoteContent(e.target.value)}
-                    className="min-h-[60px]"
-                    data-testid="textarea-new-note"
-                  />
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      onClick={() => createNoteMutation.mutate(newNoteContent.trim())}
-                      disabled={!newNoteContent.trim() || createNoteMutation.isPending}
-                      data-testid="button-save-note"
-                    >
-                      Save
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        setIsAddingNote(false);
-                        setNewNoteContent("");
-                      }}
-                      data-testid="button-cancel-note"
-                    >
-                      Cancel
-                    </Button>
-                  </div>
-                </div>
-              )}
-
-              {notes.length === 0 && !isAddingNote && (
-                <p className="text-xs text-muted-foreground">
-                  No notes yet. Use "Add Note" to record client-wide information.
-                </p>
-              )}
-
-              {notes.map((note) => (
-                <div key={note.id} className="p-2 border rounded-lg text-sm" data-testid={`card-note-${note.id}`}>
-                  {editingNoteId === note.id ? (
+                  {isAddingNote && (
                     <div className="space-y-2">
                       <Textarea
-                        value={editNoteContent}
-                        onChange={(e) => setEditNoteContent(e.target.value)}
+                        placeholder="Enter note..."
+                        value={newNoteContent}
+                        onChange={(e) => setNewNoteContent(e.target.value)}
                         className="min-h-[60px]"
-                        data-testid="textarea-edit-note"
+                        data-testid="textarea-new-note"
                       />
                       <div className="flex gap-2">
                         <Button
                           size="sm"
-                          onClick={() =>
-                            updateNoteMutation.mutate({ noteId: note.id, noteText: editNoteContent.trim() })
-                          }
-                          disabled={!editNoteContent.trim() || updateNoteMutation.isPending}
+                          onClick={() => createNoteMutation.mutate(newNoteContent.trim())}
+                          disabled={!newNoteContent.trim() || createNoteMutation.isPending}
+                          data-testid="button-save-note"
                         >
                           Save
                         </Button>
@@ -734,39 +712,80 @@ export default function ClientDetailPage() {
                           variant="outline"
                           size="sm"
                           onClick={() => {
-                            setEditingNoteId(null);
-                            setEditNoteContent("");
+                            setIsAddingNote(false);
+                            setNewNoteContent("");
                           }}
+                          data-testid="button-cancel-note"
                         >
                           Cancel
                         </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="text-destructive ml-auto"
-                          onClick={() => setDeleteNoteId(note.id)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
                       </div>
                     </div>
-                  ) : (
-                    <div
-                      className="cursor-pointer"
-                      onClick={() => {
-                        setEditingNoteId(note.id);
-                        setEditNoteContent(note.noteText);
-                      }}
-                    >
-                      <p className="text-xs text-muted-foreground mb-1">
-                        {note.createdAt ? format(new Date(note.createdAt), "MMM dd, yyyy") : "—"}
-                      </p>
-                      <p className="whitespace-pre-wrap">{note.noteText}</p>
-                    </div>
                   )}
-                </div>
-              ))}
-            </CardContent>
+
+                  {notes.length === 0 && !isAddingNote && (
+                    <p className="text-xs text-muted-foreground">
+                      No notes yet. Use "Add Note" to record client-wide information.
+                    </p>
+                  )}
+
+                  {notes.map((note) => (
+                    <div key={note.id} className="p-2 border rounded-lg text-sm" data-testid={`card-note-${note.id}`}>
+                      {editingNoteId === note.id ? (
+                        <div className="space-y-2">
+                          <Textarea
+                            value={editNoteContent}
+                            onChange={(e) => setEditNoteContent(e.target.value)}
+                            className="min-h-[60px]"
+                            data-testid="textarea-edit-note"
+                          />
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              onClick={() =>
+                                updateNoteMutation.mutate({ noteId: note.id, noteText: editNoteContent.trim() })
+                              }
+                              disabled={!editNoteContent.trim() || updateNoteMutation.isPending}
+                            >
+                              Save
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                setEditingNoteId(null);
+                                setEditNoteContent("");
+                              }}
+                            >
+                              Cancel
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="text-destructive ml-auto"
+                              onClick={() => setDeleteNoteId(note.id)}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div
+                          className="cursor-pointer"
+                          onClick={() => {
+                            setEditingNoteId(note.id);
+                            setEditNoteContent(note.noteText);
+                          }}
+                        >
+                          <p className="text-xs text-muted-foreground mb-1">
+                            {note.createdAt ? format(new Date(note.createdAt), "MMM dd, yyyy") : "—"}
+                          </p>
+                          <p className="whitespace-pre-wrap">{note.noteText}</p>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </CardContent>
               </CollapsibleContent>
             </Card>
           </Collapsible>
@@ -774,7 +793,11 @@ export default function ClientDetailPage() {
       </div>
 
       {/* Dialogs */}
-      <QuickAddJobDialog open={jobDialogOpen} onOpenChange={setJobDialogOpen} preselectedLocationId={preselectedLocationId} />
+      <QuickAddJobDialog
+        open={jobDialogOpen}
+        onOpenChange={setJobDialogOpen}
+        preselectedLocationId={preselectedLocationId}
+      />
 
       <AlertDialog open={!!deleteNoteId} onOpenChange={(open) => !open && setDeleteNoteId(null)}>
         <AlertDialogContent>
@@ -803,8 +826,11 @@ export default function ClientDetailPage() {
           onOpenChange={setEditDialogOpen}
           onSaved={() => {
             queryClient.invalidateQueries({ queryKey: ["/api/clients", clientId] });
-            queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", client.parentCompanyId, "locations"] });
-            queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", client.parentCompanyId, "overview"] });
+            queryClient.invalidateQueries({ queryKey: ["/api/clients", clientId, "overview"] });
+            if (companyId) {
+              queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", companyId, "locations"] });
+              queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", companyId, "overview"] });
+            }
             setEditDialogOpen(false);
           }}
         />
@@ -815,9 +841,7 @@ export default function ClientDetailPage() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Add Property / Location</DialogTitle>
-            <DialogDescription>
-              Add a new property or location under {companyName}
-            </DialogDescription>
+            <DialogDescription>Add a new property or location under {companyName}</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
@@ -901,7 +925,11 @@ export default function ClientDetailPage() {
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setAddLocationDialogOpen(false)} data-testid="button-cancel-location">
+            <Button
+              variant="outline"
+              onClick={() => setAddLocationDialogOpen(false)}
+              data-testid="button-cancel-location"
+            >
               Cancel
             </Button>
             <Button

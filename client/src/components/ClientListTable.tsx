@@ -22,8 +22,9 @@ const MONTH_NAMES = [
 ];
 
 interface CompanyGroup {
+  companyId: string;            // Model A: customerCompanies id OR legacy fallback id
   companyName: string;
-  primaryClientId: string;
+  primaryLocationId: string;    // location client id
   location: string;
   address: string;
   maintenanceMonths: string;
@@ -52,35 +53,45 @@ export default function ClientListTable() {
 
   const formatMonths = (selectedMonths: number[] | null) => {
     if (!selectedMonths || selectedMonths.length === 0) return "—";
-    return selectedMonths.map(m => MONTH_NAMES[m]).join(", ");
+    return selectedMonths.map((m) => MONTH_NAMES[m]).join(", ");
   };
 
+  /**
+   * Model A grouping:
+   * - company key = parentCompanyId (customerCompanies.id) if present
+   * - otherwise fallback to the client.id (legacy single-location / unlinked data)
+   */
   const companyGroups = useMemo(() => {
     const groupMap = new Map<string, Client[]>();
-    
-    clients.forEach(client => {
-      const key = client.companyName;
-      if (!groupMap.has(key)) {
-        groupMap.set(key, []);
+
+    clients.forEach((client) => {
+      const companyKey = client.parentCompanyId ?? client.id;
+      if (!groupMap.has(companyKey)) {
+        groupMap.set(companyKey, []);
       }
-      groupMap.get(key)!.push(client);
+      groupMap.get(companyKey)!.push(client);
     });
 
     const groups: CompanyGroup[] = [];
-    groupMap.forEach((locations, companyName) => {
+
+    groupMap.forEach((locations, companyId) => {
       const hasMultiple = locations.length > 1;
-      const primary = locations.find(l => !l.parentCompanyId) || locations[0];
-      const hasActiveLocation = locations.some(l => !l.inactive);
-      const allInactive = locations.every(l => l.inactive);
-      
+
+      // Model A primary: explicit isPrimary first, then deterministic fallback
+      const primary =
+        locations.find((l) => (l as any).isPrimary) ??
+        locations[0];
+
+      const hasActiveLocation = locations.some((l) => !l.inactive);
+      const allInactive = locations.every((l) => l.inactive);
+
       groups.push({
-        companyName,
-        primaryClientId: primary.id,
+        companyId,
+        companyName: primary.companyName,
+        primaryLocationId: primary.id,
         location: hasMultiple ? "Multiple" : (primary.location || "—"),
         address: hasMultiple ? "Multiple" : (primary.address || "—"),
-        maintenanceMonths: hasMultiple 
-          ? "Multiple" 
-          : formatMonths(primary.selectedMonths),
+        maintenanceMonths: hasMultiple ? "Multiple" : formatMonths((primary as any).selectedMonths ?? null),
         locationCount: locations.length,
         hasActiveLocation,
         allInactive,
@@ -92,22 +103,14 @@ export default function ClientListTable() {
 
   const filteredGroups = useMemo(() => {
     if (activeTab === "active") {
-      return companyGroups.filter(g => g.hasActiveLocation);
-    } else {
-      return companyGroups.filter(g => g.allInactive);
+      return companyGroups.filter((g) => g.hasActiveLocation);
     }
+    return companyGroups.filter((g) => g.allInactive);
   }, [companyGroups, activeTab]);
 
-  const handleSearch = (value: string) => {
-    setSearch(value);
-  };
-
-  const handleRowClick = (clientId: string) => {
-    setLocation(`/clients/${clientId}`);
-  };
-
-  const handleTabChange = (tab: string) => {
-    setActiveTab(tab as "active" | "inactive");
+  const handleRowClick = (companyId: string) => {
+    // IMPORTANT: navigate to company route (Model A)
+    setLocation(`/clients/${companyId}`);
   };
 
   if (isLoading) {
@@ -121,8 +124,10 @@ export default function ClientListTable() {
   return (
     <div className="flex-1 space-y-3 p-4 pt-3">
       <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold tracking-tight" data-testid="text-page-title">All Clients</h2>
-        
+        <h2 className="text-2xl font-bold tracking-tight" data-testid="text-page-title">
+          All Clients
+        </h2>
+
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" data-testid="button-import-clients">
             <Upload className="h-4 w-4 mr-2" />
@@ -139,22 +144,22 @@ export default function ClientListTable() {
         </div>
       </div>
 
-      <Tabs value={activeTab} onValueChange={handleTabChange}>
+      <Tabs value={activeTab} onValueChange={(tab) => setActiveTab(tab as "active" | "inactive")}>
         <div className="flex items-center justify-between gap-4">
           <TabsList data-testid="tabs-client-status">
             <TabsTrigger value="active" data-testid="tab-active">
-              Active ({companyGroups.filter(g => g.hasActiveLocation).length})
+              Active ({companyGroups.filter((g) => g.hasActiveLocation).length})
             </TabsTrigger>
             <TabsTrigger value="inactive" data-testid="tab-inactive">
-              Inactive ({companyGroups.filter(g => g.allInactive).length})
+              Inactive ({companyGroups.filter((g) => g.allInactive).length})
             </TabsTrigger>
           </TabsList>
-          
+
           <div className="relative flex-1 max-w-sm">
             <Input
               placeholder="Search clients..."
               value={search}
-              onChange={(e) => handleSearch(e.target.value)}
+              onChange={(e) => setSearch(e.target.value)}
               data-testid="input-search-clients"
             />
           </div>
@@ -171,6 +176,7 @@ export default function ClientListTable() {
                   <TableHead className="py-2">Maintenance Months</TableHead>
                 </TableRow>
               </TableHeader>
+
               <TableBody>
                 {filteredGroups.length === 0 ? (
                   <TableRow>
@@ -180,24 +186,17 @@ export default function ClientListTable() {
                   </TableRow>
                 ) : (
                   filteredGroups.map((group) => (
-                    <TableRow 
-                      key={group.primaryClientId} 
+                    <TableRow
+                      key={group.companyId}
                       className="cursor-pointer hover:bg-muted/50 transition-colors"
-                      onClick={() => handleRowClick(group.primaryClientId)}
-                      data-testid={`row-client-${group.primaryClientId}`}
+                      onClick={() => handleRowClick(group.companyId)}
+                      data-testid={`row-client-${group.companyId}`}
+                      title={group.locationCount > 1 ? `${group.locationCount} locations` : undefined}
                     >
-                      <TableCell className="py-2 font-medium">
-                        {group.companyName}
-                      </TableCell>
-                      <TableCell className="py-2 text-muted-foreground">
-                        {group.location}
-                      </TableCell>
-                      <TableCell className="py-2 text-muted-foreground">
-                        {group.address}
-                      </TableCell>
-                      <TableCell className="py-2 text-sm">
-                        {group.maintenanceMonths}
-                      </TableCell>
+                      <TableCell className="py-2 font-medium">{group.companyName}</TableCell>
+                      <TableCell className="py-2 text-muted-foreground">{group.location}</TableCell>
+                      <TableCell className="py-2 text-muted-foreground">{group.address}</TableCell>
+                      <TableCell className="py-2 text-sm">{group.maintenanceMonths}</TableCell>
                     </TableRow>
                   ))
                 )}
