@@ -1,6 +1,7 @@
 import { Router } from "express";
 import passport from "passport";
 import rateLimit from "express-rate-limit";
+import bcrypt from "bcryptjs";
 import type { Request, Response } from "express";
 import { storage } from "../storage/index";
 
@@ -157,9 +158,10 @@ router.post("/signup", async (req: Request, res: Response) => {
       companyId = newCompany.id;
     }
 
+    const hashedPassword = await bcrypt.hash(password, 10);
     const user = await storage.createUser({
       email,
-      password,
+      password: hashedPassword,
       companyId,
       role,
       firstName,
