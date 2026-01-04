@@ -1,0 +1,87 @@
+Context: Client List Architecture Decision
+
+We intentionally changed the client list to display locations (sites) instead of only parent company names, and this was a deliberate architectural decision, not a UI preference.
+
+Reasoning:
+
+Operational scope
+In the HVAC/service domain, all operational entities are location-scoped:
+
+Jobs
+
+Equipment
+
+Maintenance schedules
+
+Calendar assignments
+
+Service history
+
+Often invoices
+
+Technicians and dispatch do not act on a company in the abstract — they act on a specific site with an address, equipment, and history.
+
+Data model alignment
+The backend already treats locations as first-class entities:
+
+Jobs reference a location/client ID
+
+Equipment and PM records are location-bound
+
+Calendar entries are location-bound
+
+Showing only companies in the primary list creates a mismatch between UI abstraction and actual data relationships, forcing additional selection steps everywhere downstream.
+
+Multi-location companies
+Many customers have multiple locations (chains, franchises, property managers). Each location may have:
+
+Different contacts
+
+Different billing rules
+
+Different PM intervals
+
+Different equipment
+
+Listing locations directly avoids ambiguity and removes the need for secondary pickers or expand-first flows.
+
+QuickBooks compatibility
+QuickBooks Online maps cleanly to this model:
+
+Company → customer
+
+Location → sub-customer / job site
+
+Treating locations as the primary operational unit simplifies invoice sync, reporting, and future accounting logic.
+
+UX simplification
+A company-only list looks cleaner initially but introduces hidden complexity:
+
+Extra clicks to select a location
+
+Ambiguous actions (“Which site?”)
+
+Modal or dropdown selectors everywhere
+
+Showing locations directly reduces friction and better reflects how the system is actually used.
+
+Important clarification:
+
+The company entity still exists as a parent.
+
+This is not flattening or removing hierarchy.
+
+This is a presentation-layer decision to surface the true operational unit.
+
+Future flexibility:
+If needed, the UI can support:
+
+Group-by-company views
+
+Expandable company rows
+
+Company-level summaries
+
+But the default list should remain location-based to align with operations, data, and accounting.
+
+Please treat this as an intentional architectural choice and maintain consistency with this model in future UI and backend changes.

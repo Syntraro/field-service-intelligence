@@ -68,7 +68,60 @@ router.get("/:companyId/locations", async (req: AuthedRequest, res: Response) =>
     res.status(500).json({ error: "Failed to fetch locations" });
   }
 });
+/**
+ * POST /api/customer-companies/:companyId/locations
+ * Create a new location under a customer company
+ */
+router.post("/:companyId/locations", async (req: AuthedRequest, res: Response) => {
+  try {
+    const { companyId: tenantCompanyId, user } = req;
+    const { companyId } = req.params;
 
+    if (!tenantCompanyId || !user) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    // Ensure customer company exists and belongs to tenant
+    const [company] = await db
+      .select()
+      .from(customerCompanies)
+      .where(and(eq(customerCompanies.id, companyId), eq(customerCompanies.companyId, tenantCompanyId)))
+      .limit(1);
+
+    if (!company) {
+      return res.status(404).json({ error: "Customer company not found" });
+    }
+
+    // Create the location linked to this customer company
+    const [newLocation] = await db
+      .insert(clients)
+      .values({
+        companyId: tenantCompanyId,
+        userId: user.id,
+        parentCompanyId: companyId, // ✅ Link to customer company
+        companyName: company.name, // Use parent company name
+        location: req.body.location || "",
+        address: req.body.address || null,
+        city: req.body.city || null,
+        province: req.body.province || null,
+        postalCode: req.body.postalCode || null,
+        contactName: req.body.contactName || null,
+        email: req.body.email || null,
+        phone: req.body.phone || null,
+        roofLadderCode: req.body.roofLadderCode || null,
+        billWithParent: req.body.billWithParent ?? true,
+        inactive: req.body.inactive ?? false,
+        isPrimary: false, // New locations are not primary by default
+        needsDetails: false,
+      })
+      .returning();
+
+    res.status(201).json(newLocation);
+  } catch (err: any) {
+    console.error("Create location error:", err);
+    res.status(500).json({ error: err?.message || "Failed to create location" });
+  }
+});
 /**
  * GET /api/customer-companies/:companyId/overview
  * Single, canonical endpoint for the Company/Client detail page.

@@ -108,11 +108,10 @@ export default function ClientListTable() {
     return companyGroups.filter((g) => g.allInactive);
   }, [companyGroups, activeTab]);
 
-  const handleRowClick = (companyId: string) => {
-    // IMPORTANT: navigate to company route (Model A)
-    setLocation(`/clients/${companyId}`);
-  };
-
+ const handleRowClick = (primaryLocationId: string) => {
+  // Navigate to location detail (primary location for this company)
+  setLocation(`/clients/${primaryLocationId}`);
+};
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-96">
@@ -189,7 +188,7 @@ export default function ClientListTable() {
                     <TableRow
                       key={group.companyId}
                       className="cursor-pointer hover:bg-muted/50 transition-colors"
-                      onClick={() => handleRowClick(group.companyId)}
+                      onClick={() => handleRowClick(group.primaryLocationId)}
                       data-testid={`row-client-${group.companyId}`}
                       title={group.locationCount > 1 ? `${group.locationCount} locations` : undefined}
                     >
