@@ -113,6 +113,7 @@ router.post("/:companyId/locations", async (req: AuthedRequest, res: Response) =
         inactive: req.body.inactive ?? false,
         isPrimary: false, // New locations are not primary by default
         needsDetails: false,
+        selectedMonths: [],
       })
       .returning();
 
