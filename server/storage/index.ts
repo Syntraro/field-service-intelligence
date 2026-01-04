@@ -127,6 +127,10 @@ export interface IStorage {
   getSubscriptionUsage: typeof subscriptionRepository.getSubscriptionUsage;
   canAddLocation: typeof subscriptionRepository.canAddLocation;
 
+  createCompany: (data: { name: string; email: string }) => Promise<any>;
+getInvitationByToken: (token: string) => Promise<any>;
+updateInvitation: (id: string, data: { status: string }) => Promise<any>;
+  
   // Company operations
   getCompanySettings: typeof companyRepository.getCompanySettings;
   upsertCompanySettings: typeof companyRepository.upsertCompanySettings;
@@ -241,7 +245,50 @@ export const storage: IStorage = {
   getCompanySettings: companyRepository.getCompanySettings.bind(companyRepository),
   upsertCompanySettings: companyRepository.upsertCompanySettings.bind(companyRepository),
   getImpersonationStatus: companyRepository.getImpersonationStatus.bind(companyRepository),
+  createCompany: async (data: { name: string; email: string }) => {
+    const { companies } = await import("@shared/schema");
+    const { db } = await import("../db");
 
+    const [company] = await db
+      .insert(companies)
+      .values({
+        name: data.name,
+        email: data.email,
+        trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000), // 14 day trial
+      })
+      .returning();
+
+    return company;
+  },
+
+  getInvitationByToken: async (token: string) => {
+    const { invitations } = await import("@shared/schema");
+    const { db } = await import("../db");
+    const { eq } = await import("drizzle-orm");
+
+    const rows = await db
+      .select()
+      .from(invitations)
+      .where(eq(invitations.token, token))
+      .limit(1);
+
+    return rows[0] || null;
+  },
+
+  updateInvitation: async (id: string, data: { status: string }) => {
+    const { invitations } = await import("@shared/schema");
+    const { db } = await import("../db");
+    const { eq } = await import("drizzle-orm");
+
+    const [updated] = await db
+      .update(invitations)
+      .set({ status: data.status })
+      .where(eq(invitations.id, id))
+      .returning();
+
+    return updated;
+  },
+  
   // Placeholder for customer company operations
   getCustomerCompany: async (companyId: string, customerCompanyId: string) => {
     // TODO: Implement when customer companies are needed

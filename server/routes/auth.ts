@@ -2,6 +2,7 @@ import { Router } from "express";
 import passport from "passport";
 import rateLimit from "express-rate-limit";
 import type { Request, Response } from "express";
+import { storage } from "../storage/index";
 
 const router = Router();
 
@@ -120,5 +121,65 @@ router.get("/me", (req: Request, res: Response) => {
     companyId: req.user.companyId,
   });
 });
+/**
+ * POST /api/auth/signup
+ * Create new user account
+ */
+router.post("/signup", async (req: Request, res: Response) => {
+  try {
+    const { email, password, firstName, lastName, invitationToken } = req.body;
 
+    if (!email || !password) {
+      return res.status(400).json({ error: "Email and password are required" });
+    }
+
+    const existingUser = await storage.getUserByEmail(email);
+    if (existingUser) {
+      return res.status(400).json({ error: "User already exists" });
+    }
+
+    let companyId: string;
+    let role = "admin";
+
+    if (invitationToken) {
+      const invitation = await storage.getInvitationByToken(invitationToken);
+      if (!invitation || invitation.status !== 'pending') {
+        return res.status(400).json({ error: "Invalid or expired invitation" });
+      }
+      companyId = invitation.companyId;
+      role = invitation.role || "technician";
+      await storage.updateInvitation(invitation.id, { status: 'accepted' });
+    } else {
+      const newCompany = await storage.createCompany({
+        name: email.split('@')[0] + "'s Company",
+        email: email,
+      });
+      companyId = newCompany.id;
+    }
+
+    const user = await storage.createUser({
+      email,
+      password,
+      companyId,
+      role,
+      firstName,
+      lastName,
+    });
+
+    req.logIn(user, (err) => {
+      if (err) {
+        return res.status(500).json({ error: "Account created but login failed" });
+      }
+      res.status(201).json({
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        companyId: user.companyId,
+      });
+    });
+  } catch (error: any) {
+    console.error("[AUTH] Signup error:", error);
+    res.status(500).json({ error: error.message || "Failed to create account" });
+  }
+});
 export default router;

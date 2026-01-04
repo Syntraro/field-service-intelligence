@@ -109,27 +109,10 @@ app.get('/api/csrf-token', csrfProtection, (req, res) => {
   res.json({ csrfToken: (req as any).csrfToken() });
 });
 
-// Apply CSRF to state-changing requests
-app.use('/api', (req, res, next) => {
-  // Skip CSRF for:
-  // 1. Safe methods (GET, HEAD, OPTIONS)
-  // 2. Public endpoints
-  const safeMethods = ['GET', 'HEAD', 'OPTIONS'];
-  const publicEndpoints = [
-    '/auth/login',
-    '/auth/logout',
-    '/invitations/accept',
-    '/health',
-  ];
-
-  if (safeMethods.includes(req.method) || 
-      publicEndpoints.some(endpoint => req.path === endpoint)) {
-    return next();
-  }
-
-  // Apply CSRF protection to all other API requests
-  return csrfProtection(req, res, next);
-});
+// Apply CSRF to all /api requests.
+// csurf automatically ignores safe methods (GET/HEAD/OPTIONS), and enforces token
+// validation on state-changing methods (POST/PUT/PATCH/DELETE).
+app.use('/api', csrfProtection);
 
 // Log requests
 app.use((req, _res, next) => {

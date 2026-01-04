@@ -6,6 +6,12 @@ import { QueryClient } from "@tanstack/react-query";
 
 let csrfToken: string | null = null;
 
+// Reset CSRF token (call after login/signup/logout when session changes)
+export function resetCsrf(): void {
+  csrfToken = null;
+}
+
+
 /**
  * Initialize CSRF token - call this when app mounts
  */
@@ -72,7 +78,7 @@ export async function apiRequest<T = any>(
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
     // Ensure we have a token
     const token = await getCSRFToken();
-    headers.set('X-CSRF-Token', token);
+    headers.set('x-csrf-token', token);
     console.log(`[CSRF] Adding token to ${method} ${url}`);
   }
 
@@ -97,7 +103,7 @@ export async function apiRequest<T = any>(
 
         // Retry request with new token
         const newToken = await getCSRFToken();
-        headers.set('X-CSRF-Token', newToken);
+        headers.set('x-csrf-token', newToken);
 
         const retryResponse = await fetch(url, {
           ...options,

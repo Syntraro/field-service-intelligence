@@ -44,7 +44,7 @@ export function registerRoutes(app: Express): Server {
   // ========================================
 
   // 1) Auth guard (API only)
-  app.use(requireAuth);
+  app.use("/api", requireAuth);
 
   // 2) Tenant context
   app.use(ensureTenantContext);

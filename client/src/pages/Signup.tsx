@@ -10,6 +10,8 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery } from "@tanstack/react-query";
+import { apiRequest, resetCsrf } from "@/lib/queryClient";
+
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Building2 } from "lucide-react";
 
@@ -64,10 +66,9 @@ export default function Signup() {
   const onSubmit = async (data: SignupFormData) => {
     setIsLoading(true);
     try {
-      // Include invitation token in signup request
-      const response = await fetch('/api/auth/signup', {
+      // Best long-term: use centralized apiRequest() which auto-handles CSRF + credentials
+      const userData = await apiRequest<any>('/api/auth/signup', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: data.email,
           firstName: data.firstName || undefined,
@@ -75,17 +76,12 @@ export default function Signup() {
           password: data.password,
           invitationToken: invitationToken || undefined,
         }),
-        credentials: 'include',
       });
 
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Signup failed');
-      }
+      // Session likely changed; force CSRF token refresh on next write request
+      resetCsrf();
 
-      const userData = await response.json();
-
-      toast({
+toast({
         title: "Account created",
         description: invitationToken 
           ? `Welcome to ${invitationData?.companyName || 'the team'}!`

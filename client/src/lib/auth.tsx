@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { apiRequest, queryClient } from "./queryClient";
+import { apiRequest, queryClient, resetCsrf } from "./queryClient";
 
 interface User {
   id: string;
@@ -40,65 +40,54 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [data, isError]);
 
   const loginMutation = useMutation({
-    mutationFn: async ({ email, password }: { email: string; password: string }) => {
-      // Fixed: Use correct apiRequest signature (url, options)
-      return await apiRequest<User>("/api/auth/login", {
+    mutationFn: async ({ email, password }: { email: string; password: string }) =>
+      apiRequest<User>("/api/auth/login", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
-      });
-    },
+      }),
     onSuccess: (userData) => {
+      resetCsrf(); // session changed → force fresh CSRF token
       setUser(userData);
       queryClient.setQueryData(["/api/auth/user"], userData);
     },
   });
 
   const signupMutation = useMutation({
-    mutationFn: async ({ email, password }: { email: string; password: string }) => {
-      // Fixed: Use correct apiRequest signature (url, options)
-      return await apiRequest<User>("/api/auth/signup", {
+    mutationFn: async ({ email, password }: { email: string; password: string }) =>
+      apiRequest<User>("/api/auth/signup", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
-      });
-    },
+      }),
     onSuccess: (userData) => {
+      resetCsrf(); // session changed → force fresh CSRF token
       setUser(userData);
       queryClient.setQueryData(["/api/auth/user"], userData);
     },
   });
 
   const logoutMutation = useMutation({
-    mutationFn: async () => {
-      // Fixed: Use correct apiRequest signature (url, options)
-      await apiRequest("/api/auth/logout", {
-        method: "POST",
-      });
-    },
+    mutationFn: async () =>
+      apiRequest("/api/auth/logout", { method: "POST" }),
     onMutate: () => {
       setUser(null);
       queryClient.cancelQueries();
     },
     onSuccess: () => {
+      resetCsrf(); // session destroyed → clear CSRF
       queryClient.clear();
     },
   });
 
-  const login = async (email: string, password: string) => {
-    await loginMutation.mutateAsync({ email, password });
-  };
-
-  const signup = async (email: string, password: string) => {
-    await signupMutation.mutateAsync({ email, password });
-  };
-
-  const logout = async () => {
-    await logoutMutation.mutateAsync();
-  };
-
   return (
-    <AuthContext.Provider value={{ user, isLoading: isLoading || !userInitialized, login, signup, logout }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        isLoading: isLoading || !userInitialized,
+        login: (e, p) => loginMutation.mutateAsync({ email: e, password: p }),
+        signup: (e, p) => signupMutation.mutateAsync({ email: e, password: p }),
+        logout: () => logoutMutation.mutateAsync(),
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
@@ -106,7 +95,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
 export function useAuth() {
   const context = useContext(AuthContext);
-  if (context === undefined) {
+  if (!context) {
     throw new Error("useAuth must be used within an AuthProvider");
   }
   return context;
