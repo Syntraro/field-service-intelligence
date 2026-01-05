@@ -4,6 +4,9 @@ import { impersonationService } from "../impersonationService";
 
 const router = Router();
 
+// Note: This file only has GET routes, no POST/PUT/PATCH
+// No validation needed for GET routes
+
 /**
  * GET /api/impersonation/status
  * Returns whether an impersonation session is active for the current request.

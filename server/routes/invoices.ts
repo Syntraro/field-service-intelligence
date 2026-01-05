@@ -1,8 +1,66 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { storage } from "../storage/index";
+import { z } from "zod";
 
 const router = Router();
+
+// ========================================
+// VALIDATION SCHEMAS
+// ========================================
+
+const createInvoiceLineSchema = z.object({
+  description: z.string().min(1).max(500),
+  quantity: z.string().regex(/^\d+(\.\d{1,2})?$/).optional().default("1"),
+  unitPrice: z.number().min(0).max(999999.99),
+  lineSubtotal: z.number().min(0).max(999999.99),
+  taxRate: z.number().min(0).max(1).optional().default(0),
+  taxAmount: z.number().min(0).max(999999.99).optional().default(0),
+  lineTotal: z.number().min(0).max(999999.99),
+  lineNumber: z.number().int().positive().optional(),
+  source: z.enum(["manual", "job"]).optional().default("manual"),
+});
+
+const createInvoiceFromJobSchema = z.object({
+  markJobCompleted: z.boolean().optional().default(false),
+});
+
+const updateInvoiceSchema = z.object({
+  status: z.enum(["draft", "sent", "paid", "void", "overdue"]).optional(),
+  issueDate: z.string().datetime().optional(),
+  dueDate: z.string().datetime().optional(),
+  notesInternal: z.string().max(2000).optional(),
+  notesCustomer: z.string().max(2000).optional(),
+  workDescription: z.string().max(2000).optional(),
+  clientMessage: z.string().max(2000).optional(),
+  showQuantity: z.boolean().optional(),
+  showUnitPrice: z.boolean().optional(),
+  showLineTotals: z.boolean().optional(),
+  showLineItems: z.boolean().optional(),
+  showBalance: z.boolean().optional(),
+  amountPaid: z.number().min(0).max(999999.99).optional(),
+  version: z.number().int().nonnegative().optional(),
+}).strict();
+
+function requireInvoiceEditable() {
+  return async (req: Request, res: Response, next: any) => {
+    try {
+      const invoice = await storage.getInvoice(req.companyId, req.params.id);
+
+      if (!invoice) {
+        return res.status(404).json({ error: "Invoice not found" });
+      }
+
+      if ((invoice as any).status === "Sent") {
+        return res.status(409).json({ error: "Invoice is locked after being sent" });
+      }
+
+      return next();
+    } catch (err) {
+      return next(err);
+    }
+  };
+}
 
 router.get("/list", async (req: Request, res: Response) => {
   const companyId = req.companyId;
@@ -29,19 +87,30 @@ router.get("/:id/lines", async (req: Request, res: Response) => {
   res.json(lines);
 });
 
-router.post("/:id/lines", async (req: Request, res: Response) => {
-  const companyId = req.companyId;
-  const created = await storage.createInvoiceLine(companyId, req.params.id, req.body);
-  res.json(created);
+router.post("/:id/lines", requireInvoiceEditable(), async (req: Request, res: Response) => {
+  try {
+    const validation = createInvoiceLineSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({ 
+        error: "Validation failed", 
+        details: validation.error.errors 
+      });
+    }
+    
+    const created = await storage.createInvoiceLine(req.companyId, req.params.id, validation.data);
+    res.json(created);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
-router.delete("/:id/lines/:lineId", async (req: Request, res: Response) => {
+router.delete("/:id/lines/:lineId", requireInvoiceEditable(), async (req: Request, res: Response) => {
   const companyId = req.companyId;
   const result = await storage.deleteInvoiceLine(companyId, req.params.id, req.params.lineId);
   res.json(result);
 });
 
-router.post("/:id/refresh-from-job", async (req: Request, res: Response) => {
+router.post("/:id/refresh-from-job", requireInvoiceEditable(), async (req: Request, res: Response) => {
   const companyId = req.companyId;
   const result = await storage.refreshInvoiceFromJob(companyId, req.params.id);
   res.json(result);
@@ -55,6 +124,14 @@ router.post("/from-job/:jobId", async (req: Request, res: Response) => {
   try {
     const companyId = req.companyId;
     const jobId = req.params.jobId;
+
+    const validation = createInvoiceFromJobSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({ 
+        error: "Validation failed", 
+        details: validation.error.errors 
+      });
+    }
     
     // Get the job to verify it exists and belongs to company
     const job = await storage.getJob(companyId, jobId);
@@ -120,7 +197,7 @@ router.post("/from-job/:jobId", async (req: Request, res: Response) => {
       ));
 
     // Mark job as completed if requested
-    if (req.body.markJobCompleted) {
+    if (validation.data.markJobCompleted) {
       await storage.updateJobStatus(companyId, jobId, "completed");
     }
 
@@ -134,10 +211,20 @@ router.post("/from-job/:jobId", async (req: Request, res: Response) => {
 /**
  * PATCH /api/invoices/:id - Update invoice with optimistic locking
  */
-router.patch("/:id", async (req: Request, res: Response) => {
+router.patch("/:id", requireInvoiceEditable(), async (req: Request, res: Response) => {
   try {
     const companyId = req.companyId;
-    const { version, ...patch } = req.body;
+    
+    // ✅ ADD VALIDATION:
+    const validation = updateInvoiceSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({ 
+        error: "Validation failed", 
+        details: validation.error.errors 
+      });
+    }
+    
+    const { version, ...patch } = validation.data;
 
     // Version is optional for backward compatibility
     const updated = await storage.updateInvoice(

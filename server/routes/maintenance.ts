@@ -5,6 +5,9 @@ import { storage } from "../storage/index";
 // Note: requireAuth and ensureTenantContext middleware already applied globally in routes/index.ts
 const router = Router();
 
+// Note: This file only has GET routes, no POST/PUT/PATCH
+// No validation needed for GET routes
+
 router.get("/recently-completed", async (req: Request, res: Response) => {
   const companyId = req.companyId;
   if (!companyId) return res.status(401).json({ error: "Unauthorized" });

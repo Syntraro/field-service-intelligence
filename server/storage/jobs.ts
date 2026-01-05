@@ -22,6 +22,26 @@ interface JobFilters {
 }
 
 export class JobRepository extends BaseRepository {
+
+  /**
+   * Convert date string fields to Date objects
+   * Handles the common date fields in job data
+   */
+  private normalizeDateFields(data: any): any {
+    const result = { ...data };
+
+    // Convert date strings to Date objects for these fields
+    const dateFields = ['scheduledStart', 'scheduledEnd', 'actualStart', 'actualEnd'];
+
+    for (const field of dateFields) {
+      if (result[field] && typeof result[field] === 'string') {
+        result[field] = new Date(result[field]);
+      }
+    }
+
+    return result;
+  }
+  
   /**
    * Get next job number for company
    */
@@ -53,6 +73,9 @@ export class JobRepository extends BaseRepository {
     });
   }
 
+
+
+  
   /**
    * Get jobs with optional filters
    */
@@ -198,11 +221,14 @@ export class JobRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     
     const jobNumber = await this.getNextJobNumber(companyId);
+    
+    // Normalize date strings to Date objects
+    const normalizedData = this.normalizeDateFields(jobData);
 
     const rows = await db
       .insert(jobs)
       .values({
-        ...jobData,
+        ...normalizedData,
         companyId,
         jobNumber,
       })
@@ -211,7 +237,7 @@ export class JobRepository extends BaseRepository {
     return rows[0];
   }
 
-  /**
+ /**
    * Update job with optimistic locking
    * @param currentVersion - Current version from client (for optimistic locking)
    */
@@ -224,12 +250,15 @@ export class JobRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
+    // Normalize date strings to Date objects
+    const normalizedPatch = this.normalizeDateFields(patch);
+
     // If no version provided, skip version check (backward compatibility)
     if (currentVersion === undefined) {
       const rows = await db
         .update(jobs)
         .set({ 
-          ...patch, 
+          ...normalizedPatch, 
           version: sql`${jobs.version} + 1`,
           updatedAt: new Date() 
         })
@@ -243,7 +272,7 @@ export class JobRepository extends BaseRepository {
     const rows = await db
       .update(jobs)
       .set({
-        ...patch,
+        ...normalizedPatch,
         version: sql`${jobs.version} + 1`, // Increment version
         updatedAt: new Date(),
       })
@@ -272,7 +301,6 @@ export class JobRepository extends BaseRepository {
 
     return rows[0];
   }
-
   /**
    * Update job status (increments version)
    */
@@ -456,6 +484,93 @@ export class JobRepository extends BaseRepository {
     });
   }
 
+  /**
+   * Create recurring job series with optional phases
+   * Automatically creates a default phase if none provided
+   */
+  async createRecurringJobSeries(companyId: string, data: any) {
+    this.assertCompanyId(companyId);
+
+    // Use transaction for atomic series + phases creation
+    return await db.transaction(async (tx) => {
+      // Create series
+      const [series] = await tx
+        .insert(recurringJobSeries)
+        .values({
+          companyId,
+          name: data.name,
+          description: data.description || null,
+          frequency: data.frequency || 'monthly',
+          isActive: data.isActive ?? true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .returning();
+
+      // Create phases - either provided or default
+      const phasesToCreate = data.phases && data.phases.length > 0
+        ? data.phases.map((phase: any, index: number) => ({
+            seriesId: series.id,
+            companyId,
+            name: phase.name,
+            phaseOrder: phase.phaseOrder ?? index + 1,
+            description: phase.description || null,
+            isActive: phase.isActive ?? true,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          }))
+        : [{
+            seriesId: series.id,
+            companyId,
+            name: 'Standard',
+            phaseOrder: 1,
+            description: null,
+            isActive: true,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          }];
+
+      await tx.insert(recurringJobPhases).values(phasesToCreate);
+
+      return series;
+    });
+  }
+
+  /**
+   * Create a phase within an existing recurring series
+   * Validates series ownership before creating phase
+   */
+  async createRecurringJobPhase(companyId: string, data: any) {
+    this.assertCompanyId(companyId);
+    this.validateUUID(data.seriesId, 'seriesId');
+
+    // Verify series exists and belongs to company
+    const series = await this.getRecurringSeries(companyId, data.seriesId);
+    if (!series) {
+      throw this.notFoundError('Recurring series');
+    }
+
+    // Create phase
+    const [phase] = await db
+      .insert(recurringJobPhases)
+      .values({
+        seriesId: data.seriesId,
+        companyId,
+        name: data.name,
+        phaseOrder: data.phaseOrder,
+        description: data.description || null,
+        isActive: data.isActive ?? true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .returning();
+
+    return phase;
+  }
+
+
+
+  
   /**
    * Get job equipment
    */

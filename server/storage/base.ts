@@ -122,8 +122,14 @@ export function formatDateOnly(date: Date | string | null): string | null {
 /**
  * Helper for safe text search patterns (avoids wildcard injection / runaway LIKE scans).
  */
-export function escapeLike(value: string): string {
-  return value.replace(/[\\%_]/g, (m) => `\\${m}`);
+export function escapeLike(str: string): string {
+  // Normalize Unicode quotes to ASCII
+  const normalized = str
+    .replace(/[\u2018\u2019]/g, "'")  // ' and ' -> '
+    .replace(/[\u201C\u201D]/g, '"'); // " and " -> "
+  
+  // Escape SQL LIKE wildcards
+  return normalized.replace(/[%_]/g, "\\$&");
 }
 
 /**
@@ -139,4 +145,13 @@ export function clampOffset(offset: number): number {
   const n = Number(offset);
   if (!Number.isFinite(n) || n < 0) return 0;
   return Math.floor(n);
+}
+
+export function normalizeSearchTerm(input: string) {
+  return input
+    .normalize("NFKC")
+    .replace(/[\u2018\u2019\u201B\u2032]/g, "'")
+    .replace(/[\u201C\u201D\u2033]/g, '"')
+    .replace(/\s+/g, " ")
+    .trim();
 }

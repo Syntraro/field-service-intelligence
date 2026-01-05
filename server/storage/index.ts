@@ -77,6 +77,8 @@ export interface IStorage {
   getLocationEquipmentItem: typeof jobRepository.getLocationEquipmentItem;
   getRecurringSeries: typeof jobRepository.getRecurringSeries;
   reconcileJobInvoiceLinks: typeof jobRepository.reconcileJobInvoiceLinks;
+  createRecurringJobSeries: typeof jobRepository.createRecurringJobSeries;
+  createRecurringJobPhase: typeof jobRepository.createRecurringJobPhase;
 
   // Invoice operations
   getInvoices: typeof invoiceRepository.getInvoices;
@@ -86,7 +88,9 @@ export interface IStorage {
   createInvoiceLine: typeof invoiceRepository.createInvoiceLine;
   deleteInvoiceLine: typeof invoiceRepository.deleteInvoiceLine;
   refreshInvoiceFromJob: typeof invoiceRepository.refreshInvoiceFromJob;
-
+  updateInvoice: typeof invoiceRepository.updateInvoice;
+  createInvoiceFromJob: typeof invoiceRepository.createInvoiceFromJob;
+  
   // Parts operations
   getParts: typeof partRepository.getParts;
   getPart: typeof partRepository.getPart;
@@ -191,6 +195,8 @@ export const storage: IStorage = {
   getLocationEquipmentItem: jobRepository.getLocationEquipmentItem.bind(jobRepository),
   getRecurringSeries: jobRepository.getRecurringSeries.bind(jobRepository),
   reconcileJobInvoiceLinks: jobRepository.reconcileJobInvoiceLinks.bind(jobRepository),
+  createRecurringJobSeries: jobRepository.createRecurringJobSeries.bind(jobRepository),
+  createRecurringJobPhase: jobRepository.createRecurringJobPhase.bind(jobRepository),
 
   // Invoice operations
   getInvoices: invoiceRepository.getInvoices.bind(invoiceRepository),
@@ -200,7 +206,9 @@ export const storage: IStorage = {
   createInvoiceLine: invoiceRepository.createInvoiceLine.bind(invoiceRepository),
   deleteInvoiceLine: invoiceRepository.deleteInvoiceLine.bind(invoiceRepository),
   refreshInvoiceFromJob: invoiceRepository.refreshInvoiceFromJob.bind(invoiceRepository),
-
+  updateInvoice: invoiceRepository.updateInvoice.bind(invoiceRepository),
+  createInvoiceFromJob: invoiceRepository.createInvoiceFromJob.bind(invoiceRepository),
+  
   // Parts operations
   getParts: partRepository.getParts.bind(partRepository),
   getPart: partRepository.getPart.bind(partRepository),

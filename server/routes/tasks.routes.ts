@@ -1,12 +1,58 @@
 import { Router } from "express";
 import * as service from "../services/tasks.service.ts";
+import { z } from "zod";
 
 const router = Router();
+
+// ========================================
+// VALIDATION SCHEMAS
+// ========================================
+
+const createTaskSchema = z.object({
+  title: z.string().min(1).max(200),
+  description: z.string().max(2000).optional(),
+  dueDate: z.string().datetime().optional(),
+  assignedToUserId: z.string().uuid().optional(),
+  type: z.string().max(50).optional(),
+  jobId: z.string().uuid().optional(),
+  status: z.enum(["pending", "in_progress", "completed", "cancelled"]).optional().default("pending"),
+}).passthrough(); // Allow other fields the service might expect
+
+const assignTaskSchema = z.object({
+  assignedToUserId: z.string().uuid().nullable(),
+});
+
+const closeTaskSchema = z.object({
+  userId: z.string().uuid(),
+});
+
+const updateTaskSchema = z.object({
+  title: z.string().min(1).max(200).optional(),
+  description: z.string().max(2000).optional(),
+  dueDate: z.string().datetime().optional(),
+  assignedToUserId: z.string().uuid().optional(),
+  status: z.enum(["pending", "in_progress", "completed", "cancelled"]).optional(),
+  type: z.string().max(50).optional(),
+}).passthrough();
+
+const updateSupplierVisitSchema = z.object({
+  supplierName: z.string().max(200).optional(),
+  visitDate: z.string().datetime().optional(),
+  notes: z.string().max(1000).optional(),
+}).passthrough();
 
 /* CREATE */
 router.post("/", async (req, res) => {
   try {
-    res.json(await service.createTask(req.body));
+    const validation = createTaskSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({ 
+        error: "Validation failed", 
+        details: validation.error.errors 
+      });
+    }
+
+    res.json(await service.createTask(validation.data));
   } catch (e: any) {
     res.status(400).json({ error: e.message });
   }
@@ -35,7 +81,15 @@ router.get("/", async (req, res) => {
 /* ASSIGN / UNASSIGN */
 router.post("/:id/assign", async (req, res) => {
   try {
-    res.json(await service.assignTask(req.params.id, req.body.assignedToUserId ?? null));
+    const validation = assignTaskSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({ 
+        error: "Validation failed", 
+        details: validation.error.errors 
+      });
+    }
+
+    res.json(await service.assignTask(req.params.id, validation.data.assignedToUserId ?? null));
   } catch (e: any) {
     res.status(400).json({ error: e.message });
   }
@@ -62,7 +116,15 @@ router.post("/:id/check-out", async (req, res) => {
 /* CLOSE */
 router.post("/:id/close", async (req, res) => {
   try {
-    res.json(await service.closeTask(req.params.id, req.body.userId));
+    const validation = closeTaskSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({ 
+        error: "Validation failed", 
+        details: validation.error.errors 
+      });
+    }
+
+    res.json(await service.closeTask(req.params.id, validation.data.userId));
   } catch (e: any) {
     res.status(400).json({ error: e.message });
   }
@@ -71,7 +133,15 @@ router.post("/:id/close", async (req, res) => {
 /* ADMIN UPDATE */
 router.patch("/:id", async (req, res) => {
   try {
-    res.json(await service.updateTask(req.params.id, req.body));
+    const validation = updateTaskSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({ 
+        error: "Validation failed", 
+        details: validation.error.errors 
+      });
+    }
+
+    res.json(await service.updateTask(req.params.id, validation.data));
   } catch (e: any) {
     res.status(400).json({ error: e.message });
   }
@@ -80,7 +150,15 @@ router.patch("/:id", async (req, res) => {
 /* SUPPLIER VISIT UPDATE (OFFICE) */
 router.patch("/:id/supplier-visit", async (req, res) => {
   try {
-    res.json(await service.updateSupplierVisit(req.params.id, req.body));
+    const validation = updateSupplierVisitSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({ 
+        error: "Validation failed", 
+        details: validation.error.errors 
+      });
+    }
+
+    res.json(await service.updateSupplierVisit(req.params.id, validation.data));
   } catch (e: any) {
     res.status(400).json({ error: e.message });
   }

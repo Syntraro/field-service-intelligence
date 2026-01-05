@@ -230,7 +230,7 @@ export class InvoiceRepository extends BaseRepository {
     return await db.transaction(async (tx) => {
       const [line] = await tx
         .insert(invoiceLines)
-        .values({ ...lineData, invoiceId })
+        .values({ ...lineData, source: lineData?.source ?? "manual", invoiceId })
         .returning();
 
       // Recalculate totals within same transaction
@@ -343,7 +343,16 @@ export class InvoiceRepository extends BaseRepository {
       // Step 1: Delete ALL existing invoice lines (idempotent - always start fresh)
       await tx
         .delete(invoiceLines)
+        .where(and(eq(invoiceLines.invoiceId, invoiceId), eq(invoiceLines.source, "job")));
+
+      // Step 2: Get current job parts
+
+      // Step 1b: Find next lineNumber after remaining manual lines
+      const [{ maxLine }] = await tx
+        .select({ maxLine: sql<number>`COALESCE(MAX(${invoiceLines.lineNumber}), 0)` })
+        .from(invoiceLines)
         .where(eq(invoiceLines.invoiceId, invoiceId));
+      const baseLineNumber = Number(maxLine || 0);
 
       // Step 2: Get current job parts
       const parts = await tx
@@ -365,9 +374,10 @@ export class InvoiceRepository extends BaseRepository {
           
           return {
             invoiceId,
-            lineNumber: index + 1,
+            lineNumber: baseLineNumber + index + 1,
             description: part.description,
             quantity: part.quantity?.toString() || "1",
+          source: "job",
             unitPrice: price,
             lineSubtotal: lineSubtotal,
             taxRate: 0,

@@ -4,6 +4,9 @@ import { storage } from "../storage/index";
 
 const router = Router();
 
+// Note: This file only has GET routes, no POST/PUT/PATCH
+// No validation needed for GET routes
+
 router.get("/usage", async (req: Request, res: Response) => {
   const companyId = req.companyId;
   const usage = await storage.getSubscriptionUsage(companyId);

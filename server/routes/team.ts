@@ -3,6 +3,44 @@ import { storage } from "../storage/index";
 
 const router = Router();
 
+// ========================================
+// VALIDATION SCHEMAS
+// ========================================
+
+const updateTeamMemberSchema = z.object({
+  firstName: z.string().min(1).max(100).optional(),
+  lastName: z.string().min(1).max(100).optional(),
+  fullName: z.string().min(1).max(200).optional(),
+  phone: z.string().max(20).optional(),
+  roleId: z.string().uuid().optional(),
+  status: z.enum(["active", "inactive"]).optional(),
+  useCustomSchedule: z.boolean().optional(),
+});
+
+const updateTechnicianProfileSchema = z.object({
+  laborCostPerHour: z.number().min(0).max(9999.99).optional(),
+  billableRatePerHour: z.number().min(0).max(9999.99).optional(),
+  color: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
+  phone: z.string().max(20).optional(),
+  note: z.string().max(1000).optional(),
+});
+
+const setWorkingHoursSchema = z.object({
+  hours: z.array(z.object({
+    dayOfWeek: z.number().int().min(0).max(6),
+    startTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/),
+    endTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/),
+    isAvailable: z.boolean(),
+  })),
+});
+
+const setPermissionOverridesSchema = z.object({
+  overrides: z.array(z.object({
+    permission: z.string().min(1),
+    granted: z.boolean(),
+  })),
+});
+
 router.get("/", async (req, res) => {
   try {
     const members = await storage.getTeamMembers(req.companyId);
@@ -47,18 +85,16 @@ router.get("/:userId", async (req, res) => {
 router.patch("/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    const { firstName, lastName, fullName, phone, roleId, status, useCustomSchedule } = req.body;
+    
+    const validation = updateTeamMemberSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({ 
+        error: "Validation failed", 
+        details: validation.error.errors 
+      });
+    }
 
-    const updated = await storage.updateTeamMember(req.companyId, userId, {
-      firstName,
-      lastName,
-      fullName,
-      phone,
-      roleId,
-      status,
-      useCustomSchedule,
-    });
-
+    const updated = await storage.updateTeamMember(req.companyId, userId, validation.data);
     if (!updated) {
       return res.status(404).json({ error: "Team member not found" });
     }
@@ -123,16 +159,15 @@ router.put("/:userId/profile", async (req, res) => {
       return res.status(404).json({ error: "Team member not found" });
     }
 
-    const { laborCostPerHour, billableRatePerHour, color, phone, note } = req.body;
+    const validation = updateTechnicianProfileSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({ 
+        error: "Validation failed", 
+        details: validation.error.errors 
+      });
+    }
 
-    const profile = await storage.upsertTechnicianProfile(userId, {
-      laborCostPerHour,
-      billableRatePerHour,
-      color,
-      phone,
-      note,
-    });
-
+    const profile = await storage.upsertTechnicianProfile(userId, validation.data);
     res.json(profile);
   } catch (error) {
     console.error('Update technician profile error:', error);
@@ -149,12 +184,15 @@ router.put("/:userId/working-hours", async (req, res) => {
       return res.status(404).json({ error: "Team member not found" });
     }
 
-    const { hours } = req.body;
-    if (!Array.isArray(hours)) {
-      return res.status(400).json({ error: "hours must be an array" });
+    const validation = setWorkingHoursSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({ 
+        error: "Validation failed", 
+        details: validation.error.errors 
+      });
     }
 
-    const workingHours = await storage.setWorkingHours(userId, hours);
+    const workingHours = await storage.setWorkingHours(userId, validation.data.hours);
     res.json(workingHours);
   } catch (error) {
     console.error('Set working hours error:', error);
@@ -171,12 +209,15 @@ router.put("/:userId/permissions", async (req, res) => {
       return res.status(404).json({ error: "Team member not found" });
     }
 
-    const { overrides } = req.body;
-    if (!Array.isArray(overrides)) {
-      return res.status(400).json({ error: "overrides must be an array" });
+    const validation = setPermissionOverridesSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({ 
+        error: "Validation failed", 
+        details: validation.error.errors 
+      });
     }
 
-    await storage.setUserPermissionOverrides(userId, overrides);
+    await storage.setUserPermissionOverrides(userId, validation.data.overrides);
     const updated = await storage.getUserPermissionOverrides(userId);
     res.json(updated);
   } catch (error) {

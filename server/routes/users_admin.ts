@@ -4,11 +4,28 @@ import { db } from "../db";
 import { users } from "@shared/schema";
 import { and, eq } from "drizzle-orm";
 import { writeAuditLog } from "../services/audit";
+import { z } from "zod";
 
 const router = express.Router();
 
+// ========================================
+// VALIDATION SCHEMAS
+// ========================================
+
+const updateRoleSchema = z.object({
+  role: z.enum(["admin", "technician", "dispatcher"]),
+});
+
 router.patch("/:id/role", requireRole(["admin"]), async (req, res) => {
-  const { role } = req.body;
+  const validation = updateRoleSchema.safeParse(req.body);
+  if (!validation.success) {
+    return res.status(400).json({ 
+      error: "Validation failed", 
+      details: validation.error.errors 
+    });
+  }
+
+  const { role } = validation.data;
   const companyId = req.companyId!;
 
   const updated = await db

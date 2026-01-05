@@ -22,7 +22,7 @@ import authRouter from "./auth";
 // ✅ NEW (long-term client/company detail fix)
 import customerCompaniesRouter from "./customer-companies";
 import clientNotesRouter from "./client-notes";
-
+import healthRouter from "./health";
 import { requireAuth } from "../auth/requireAuth";
 import { ensureTenantContext, rateLimitPerTenant } from "../auth/tenantIsolation";
 import { impersonationMiddleware, trackActivity } from "../impersonationMiddleware";
@@ -34,6 +34,10 @@ import tasksRoutes from "./tasks.routes";
  * This is the authoritative route map for the backend.
  */
 export function registerRoutes(app: Express): Server {
+  // ========================================
+  // HEALTH CHECK (before auth)
+  // ========================================
+  app.use("/api/health", healthRouter);  //
   // ========================================
   // CRITICAL: Auth routes MUST come FIRST
   // ========================================

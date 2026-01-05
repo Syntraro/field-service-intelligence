@@ -5,6 +5,18 @@ import bcrypt from "bcryptjs";
 import type { Request, Response } from "express";
 import { storage } from "../storage/index";
 
+declare module "express-serve-static-core" {
+  interface Request {
+    rateLimit?: {
+      limit: number;
+      current: number;
+      remaining: number;
+      resetTime: Date;
+    };
+  }
+}
+
+
 const router = Router();
 
 /**
@@ -22,7 +34,7 @@ const loginLimiter = rateLimit({
     console.warn(`[SECURITY] Rate limit exceeded for IP: ${req.ip}`);
     res.status(429).json({ 
       error: "Too many login attempts. Please try again in 15 minutes.",
-      retryAfter: Math.ceil(req.rateLimit.resetTime! / 1000)
+      retryAfter: req.rateLimit?.resetTime ? Math.ceil(req.rateLimit.resetTime.getTime() / 1000) : 900
     });
   },
 });
@@ -51,7 +63,7 @@ const strictLoginLimiter = rateLimit({
     console.error(`[SECURITY] Account lockout triggered for: ${email || req.ip}`);
     res.status(429).json({ 
       error: "Account temporarily locked due to too many failed login attempts. Please try again later.",
-      retryAfter: Math.ceil(req.rateLimit.resetTime! / 1000)
+      retryAfter: req.rateLimit?.resetTime ? Math.ceil(req.rateLimit.resetTime.getTime() / 1000) : 3600
     });
   },
 });

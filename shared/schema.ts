@@ -784,7 +784,9 @@ export const insertInvoiceLineSchema = createInsertSchema(invoiceLines).omit({
   createdAt: true,
   updatedAt: true,
 }).extend({
-  lineItemType: z.enum(lineItemTypeEnum).default("service"),
+    lineItemType: z.enum(lineItemTypeEnum).default("service"),
+    source: z.enum(["manual", "job"]).default("manual"),
+
 });
 
 export const updateInvoiceLineSchema = z.object({
@@ -1182,8 +1184,7 @@ export const jobParts = pgTable("job_parts", {
   description: text("description").notNull(),
   quantity: text("quantity").notNull(), // Stored as text for decimal precision
   unitCost: numeric("unit_cost", { precision: 12, scale: 2 }), // Cost per unit (for profit margin calc)
-  unitPrice: numeric("unit_price", { precision: 12, scale: 2 }), // Price per unit
-  source: text("source").notNull().default("manual"), // pm_template, added_by_tech, quoted, manual
+  unitPrice: numeric("unit_price", { precision: 12, scale: 2 }), // Price per unit // pm_template, added_by_tech, quoted, manual
   equipmentLabel: text("equipment_label"), // Legacy: Copied from PM template or added by tech
   sortOrder: integer("sort_order").notNull().default(0), // For ordering line items in Parts & Billing
   isActive: boolean("is_active").notNull().default(true),
@@ -1196,7 +1197,6 @@ export const insertJobPartSchema = createInsertSchema(jobParts).omit({
   createdAt: true,
   updatedAt: true,
 }).extend({
-  source: z.enum(jobPartSourceEnum).default("manual"),
   unitCost: z.string().nullable().optional(),
   equipmentId: z.string().nullable().optional(),
   sortOrder: z.number().optional(),
@@ -1209,7 +1209,6 @@ export const updateJobPartSchema = z.object({
   quantity: z.string().optional(),
   unitCost: z.string().nullable().optional(),
   unitPrice: z.string().nullable().optional(),
-  source: z.enum(jobPartSourceEnum).optional(),
   equipmentLabel: z.string().nullable().optional(),
   sortOrder: z.number().optional(),
   isActive: z.boolean().optional(),

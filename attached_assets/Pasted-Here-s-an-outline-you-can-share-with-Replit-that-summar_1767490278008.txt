@@ -1,0 +1,92 @@
+Here’s an outline you can share with Replit that summarizes the structural/backend + contract changes we’ve been making (the “why the UI broke” stuff), in a way they can act on.
+
+Structural changes overview
+1) Backend became the source of truth first
+
+We prioritized completing backend routes/data contracts before refitting the UI.
+
+Result: frontend 404s were expected until route coverage matched the UI.
+
+2) Route surface area expanded and got standardized under /api/*
+
+We identified missing route registrations (app was calling endpoints that didn’t exist yet).
+
+Added/standardized route groups so the API surface matches the app modules:
+
+/api/clients
+
+/api/calendar
+
+/api/parts
+
+/api/technicians
+
+/api/company-settings
+
+/api/maintenance/*
+
+plus existing /api/invitations, /api/users, /api/jobs, /api/invoices
+
+3) Storage/repository layer was incomplete → filled out
+
+The pulled code had routes calling storage functions that didn’t exist.
+
+We aligned route handlers to real storage functions (or added the missing ones) to remove runtime failures.
+
+4) Client model clarified: Company vs Location
+
+We made the UI/flow align with the real operational entity:
+
+Parent: Customer Company
+
+Child: Client Location/Site
+
+Lists and downstream references are location-scoped because jobs/maintenance/equipment/history happen at sites.
+
+5) Invoice pipeline rules corrected
+
+Refresh from Job duplication bug fixed by making refresh idempotent (delete lines correctly before copy).
+
+Invoice “Add Item” implemented properly via a dedicated endpoint:
+
+POST /api/invoices/:id/lines
+
+Editability gating changed to match requirement:
+
+invoice remains editable until Sent (job completion does not lock it)
+
+6) Search normalization hardened
+
+Client search updated to normalize punctuation (curly apostrophe vs straight), spacing, etc.
+
+Prevents “can’t find Juliana’s Aesthetics” style misses.
+
+7) Security/auth structure stabilized (Passport + CSRF)
+
+Implemented/standardized session-based auth with Passport.
+
+CSRF enforcement made consistent across the app:
+
+CSRF token issued from /api/csrf-token
+
+Writes require x-csrf-token
+
+Frontend uses a single request layer to attach CSRF automatically (no per-page hacks)
+
+Auth middleware corrected so:
+
+/api/auth/login and /api/auth/signup are public
+
+everything else under /api is protected via req.isAuthenticated()
+
+8) Frontend contract changes implied by backend refactor
+
+Some UI calls had wrong paths due to renamed/relocated backend routes.
+
+The goal is to minimize manual patching by:
+
+keeping a stable API contract
+
+centralizing client calls (one API wrapper)
+
+then refitting pages to the finalized endpoints

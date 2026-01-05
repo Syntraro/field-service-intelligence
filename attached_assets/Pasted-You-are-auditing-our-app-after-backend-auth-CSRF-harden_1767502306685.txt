@@ -1,0 +1,127 @@
+You are auditing our app after backend + auth + CSRF hardening. Produce a verification report.
+
+GOAL
+Return a concise report with:
+- ✅ Pass / ❌ Fail / ⚠️ Risk
+- exact file + line references for any failures
+- exact curl commands to reproduce each failing endpoint
+
+DO NOT refactor or change code unless I explicitly ask. This is a READ + VERIFY task.
+
+1) SERVER BOOT + MIDDLEWARE ORDER
+- Find the Express entry file (server index/app/main).
+- Confirm order is correct:
+  a) express.json()
+  b) session middleware (if used)
+  c) passport.initialize() + passport.session()
+  d) CSRF middleware for /api
+  e) auth guard for /api protected routes
+- Report:
+  - entry file path
+  - middleware order (as a bullet list)
+  - any mismatch or missing middleware
+
+2) AUTH + SESSION BEHAVIOR (PASSPORT)
+Verify public vs protected:
+- Public (must be accessible without login):
+  - POST /api/auth/signup
+  - POST /api/auth/login
+  - GET  /api/auth/user (returns null/401 when logged out, returns user when logged in)
+- Protected:
+  - POST /api/auth/logout
+  - Most other /api routes
+Report:
+- where the auth guard is applied (file + line)
+- how it checks auth (req.isAuthenticated / req.user / session)
+- whether signup calls req.login(...) after creating user
+
+3) CSRF FLOW
+Verify:
+- GET /api/csrf-token returns JSON { csrfToken }
+- All write methods POST/PUT/PATCH/DELETE under /api require x-csrf-token
+- Frontend request wrapper attaches x-csrf-token automatically for writes
+Report:
+- CSRF middleware location/config (file + line)
+- Header name expected (x-csrf-token)
+- Any allowlists/bypasses (should be none unless justified)
+
+4) ROUTE REGISTRATION COVERAGE (NO 404 CASCADE)
+Confirm these endpoints are mounted and return non-404 (even if stubbed):
+- /api/clients
+- /api/customer-companies
+- /api/calendar
+- /api/maintenance/*
+- /api/company-settings
+- /api/parts
+- /api/technicians
+- /api/jobs
+- /api/invoices
+- /api/invitations
+Report:
+- route aggregator file(s) and what is registered
+- any missing route group causing frontend 404s
+
+5) STORAGE / REPO COMPLETENESS
+Search for route handlers calling missing storage methods.
+Report:
+- missing functions (name + file + line)
+- suggested minimal fix: either implement method in storage or change route to existing method
+
+6) BUSINESS RULE VERIFICATION
+Invoice rules:
+- Refresh from Job idempotent (no duplicates)
+- POST /api/invoices/:id/lines exists for invoice-only items
+- invoice editable until Sent
+Client model:
+- list view is location-based (company parent, location child)
+Search normalization:
+- handles curly apostrophes vs straight
+
+7) OUTPUT FORMAT (STRICT)
+Return the report as:
+
+# Verification Report (YYYY-MM-DD)
+## A) Boot + Middleware
+- Status:
+- Findings:
+- Evidence (file:line):
+
+## B) Auth + Session
+- Status:
+- Findings:
+- Evidence (file:line):
+- Repro curls:
+
+## C) CSRF
+- Status:
+- Findings:
+- Evidence (file:line):
+- Repro curls:
+
+## D) Routes
+- Status:
+- Findings:
+- Missing endpoints:
+- Evidence (file:line):
+- Repro curls:
+
+## E) Storage Completeness
+- Status:
+- Missing methods list:
+- Evidence (file:line):
+
+## F) Business Rules
+- Status:
+- Findings:
+- Evidence (file:line):
+
+## G) Top 5 Fixes (in priority order)
+1.
+2.
+3.
+4.
+5.
+
+IMPORTANT
+- Include at least one curl for: csrf-token, signup, login, auth/user, and one protected route.
+- If anything is unknown, mark ⚠️ Risk and say exactly what file you need to check.

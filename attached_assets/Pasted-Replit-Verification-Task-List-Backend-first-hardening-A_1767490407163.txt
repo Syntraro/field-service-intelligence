@@ -1,0 +1,130 @@
+Replit Verification Task List (Backend-first hardening)
+A) Server boot + middleware order
+
+ Confirm Express server boots with no runtime errors.
+
+ Confirm middleware order is correct:
+
+ express.json() enabled
+
+ passport.initialize() + passport.session() enabled (session auth)
+
+ CSRF middleware mounted for /api writes
+
+ Auth guard mounted for protected /api routes
+
+ Confirm /health returns 200.
+
+B) Auth + session behavior
+
+ /api/auth/signup is public (not blocked by auth guard).
+
+ /api/auth/login is public.
+
+ /api/auth/logout is protected (requires session).
+
+ Signup/login create a valid session (Passport):
+
+ After signup/login, /api/auth/user returns the user object.
+
+ After logout, /api/auth/user returns null/401 consistently.
+
+ Confirm cookies are actually set in browser (no SameSite/Secure issues behind proxy).
+
+C) CSRF flow (global + correct)
+
+ GET /api/csrf-token returns { csrfToken }.
+
+ All write requests (POST/PUT/PATCH/DELETE) require x-csrf-token and reject missing/invalid tokens with 403.
+
+ Frontend request layer attaches CSRF automatically:
+
+ apiRequest() adds x-csrf-token for writes
+
+ credentials: "include" is always set
+
+ token cache resets on login/signup/logout (session changes)
+
+D) Route registration coverage (stop 404 cascade)
+
+Verify the backend registers and responds (even if empty stubs) for routes the UI calls:
+
+ /api/clients
+
+ /api/customer-companies
+
+ /api/calendar and /api/maintenance/*
+
+ /api/company-settings
+
+ /api/parts
+
+ /api/technicians
+
+ /api/jobs
+
+ /api/invoices
+
+ /api/invitations
+
+For each:
+
+ Confirm route is mounted in server/routes.ts (or equivalent aggregator).
+
+ Confirm handlers call real storage/repo methods (no missing functions).
+
+ Confirm tenant/company scoping is applied consistently (companyId context).
+
+E) Client model consistency (Company vs Location)
+
+ Confirm data model is consistent:
+
+ Parent entity = customer company
+
+ Child entity = client location/site
+
+ Confirm list endpoints support location-based listing (what UI expects now).
+
+ Confirm downstream references use location IDs consistently:
+
+ jobs
+
+ maintenance / calendar assignments
+
+ equipment (if present)
+
+ service history (if present)
+
+F) Invoice structural rules (must match requirements)
+
+ “Refresh from Job” is idempotent (refresh repeatedly doesn’t duplicate lines).
+
+ Invoice line add endpoint exists and works:
+
+ POST /api/invoices/:id/lines creates invoice-only lines
+
+ Invoice editability rule is correct:
+
+ editable until Sent
+
+ job completion does not lock invoice
+
+G) Search normalization
+
+ Client search matches names with punctuation variants:
+
+ curly apostrophes vs straight apostrophes
+
+ spacing/punctuation normalization
+
+ Confirm “Juliana’s Aesthetics” is discoverable via partial search.
+
+H) Frontend integration smoke test (minimum)
+
+ Login works (no immediate “Unauthorized” loop).
+
+ Signup works (no CSRF 403, no auth 401).
+
+ After login, key initial fetches do not 404 (or are handled gracefully if intentionally unimplemented).
+
+ Navigation to Clients/Jobs/Invoices doesn’t crash due to missing endpoints.

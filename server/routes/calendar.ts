@@ -13,6 +13,15 @@ import { resizeJobTime } from "../services/calendarService";
  */
 const router = express.Router();
 
+const resizeJobSchema = z.object({
+  job: z.object({
+    id: z.string().uuid(),
+    scheduledStart: z.string().datetime(),
+    scheduledEnd: z.string().datetime(),
+  }).passthrough(), // Allow other job fields
+  newEndTime: z.string().datetime(),
+});
+
 // Basic calendar payload used by Dashboard
 router.get("/", async (_req, res) => {
   res.json({ assignments: [] });
@@ -38,7 +47,15 @@ router.get("/old-unscheduled", async (_req, res) => {
 
 // Resize job block on calendar (used for drag-to-extend)
 router.post("/resize", async (req, res) => {
-  const { job, newEndTime } = req.body;
+  const validation = resizeJobSchema.safeParse(req.body);
+  if (!validation.success) {
+    return res.status(400).json({ 
+      error: "Validation failed", 
+      details: validation.error.errors 
+    });
+  }
+  
+  const { job, newEndTime } = validation.data;
   const updated = await resizeJobTime(job, newEndTime);
   res.json(updated);
 });
