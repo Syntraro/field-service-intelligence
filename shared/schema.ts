@@ -774,6 +774,8 @@ export const invoiceLines = pgTable("invoice_lines", {
   qboTaxCodeRefId: text("qbo_tax_code_ref_id"), // Maps to QBO TaxCodeRef
   // Metadata for extensibility
   metadata: text("metadata"), // JSON string for future use
+  // Source tracking - manual vs job-derived
+  source: text("source").notNull().default("manual"), // "manual" or "job"
   // Timestamps
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),

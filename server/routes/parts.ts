@@ -1,5 +1,6 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
+import { z } from "zod";
 import { storage } from "../storage/index";
 
 // Note: requireAuth and ensureTenantContext middleware already applied globally in routes/index.ts

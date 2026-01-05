@@ -286,9 +286,9 @@ export class InvoiceRepository extends BaseRepository {
     await db
       .update(invoices)
       .set({
-        subtotal: totals.subtotal,
-        taxTotal: totals.taxTotal,
-        total: totals.total,
+        subtotal: String(totals.subtotal),
+        taxTotal: String(totals.taxTotal),
+        total: String(totals.total),
         updatedAt: new Date(),
       })
       .where(and(eq(invoices.companyId, companyId), eq(invoices.id, invoiceId)));
@@ -312,9 +312,9 @@ export class InvoiceRepository extends BaseRepository {
     await tx
       .update(invoices)
       .set({
-        subtotal: totals.subtotal,
-        taxTotal: totals.taxTotal,
-        total: totals.total,
+        subtotal: String(totals.subtotal),
+        taxTotal: String(totals.taxTotal),
+        total: String(totals.total),
         updatedAt: new Date(),
       })
       .where(and(eq(invoices.companyId, companyId), eq(invoices.id, invoiceId)));
@@ -359,7 +359,7 @@ export class InvoiceRepository extends BaseRepository {
         .select()
         .from(jobParts)
         .where(and(
-          eq(jobParts.jobId, invoice.jobId),
+          eq(jobParts.jobId, invoice.jobId!),
           eq(jobParts.isActive, true)
         ))
         .orderBy(jobParts.sortOrder);
@@ -369,7 +369,7 @@ export class InvoiceRepository extends BaseRepository {
       if (parts.length > 0) {
         const newLines = parts.map((part, index) => {
           const qty = parseFloat(part.quantity?.toString() || "1");
-          const price = part.unitPrice || 0;  // Already NUMERIC!
+          const price = parseFloat(String(part.unitPrice || "0"));
           const lineSubtotal = qty * price;
           
           return {
@@ -377,12 +377,12 @@ export class InvoiceRepository extends BaseRepository {
             lineNumber: baseLineNumber + index + 1,
             description: part.description,
             quantity: part.quantity?.toString() || "1",
-          source: "job",
-            unitPrice: price,
-            lineSubtotal: lineSubtotal,
-            taxRate: 0,
-            taxAmount: 0,
-            lineTotal: lineSubtotal,
+            source: "job" as const,
+            unitPrice: String(price),
+            lineSubtotal: String(lineSubtotal),
+            taxRate: "0",
+            taxAmount: "0",
+            lineTotal: String(lineSubtotal),
           };
         });
 
@@ -398,6 +398,94 @@ export class InvoiceRepository extends BaseRepository {
         jobId: invoice.jobId,
         linesRefreshed: linesCreated,
       };
+    });
+  }
+
+  /**
+   * Create a new invoice from an existing job
+   * Handles counter increment, invoice creation, and line population
+   */
+  async createInvoiceFromJob(
+    companyId: string,
+    jobId: string,
+    options?: { markJobCompleted?: boolean }
+  ) {
+    this.assertCompanyId(companyId);
+    this.validateUUID(jobId, "jobId");
+
+    const { jobs, companyCounters } = await import("@shared/schema");
+
+    return await db.transaction(async (tx) => {
+      // 1. Get the job
+      const [job] = await tx
+        .select()
+        .from(jobs)
+        .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+        .limit(1);
+
+      if (!job) {
+        throw this.notFoundError("Job");
+      }
+
+      if (job.invoiceId) {
+        throw this.validationError("Job already has an invoice");
+      }
+
+      // 2. Get or create counter and increment
+      let [counter] = await tx
+        .select()
+        .from(companyCounters)
+        .where(eq(companyCounters.companyId, companyId))
+        .limit(1);
+
+      let invoiceNumber = 1001;
+      if (counter) {
+        invoiceNumber = counter.nextInvoiceNumber;
+        await tx
+          .update(companyCounters)
+          .set({ nextInvoiceNumber: invoiceNumber + 1 })
+          .where(eq(companyCounters.companyId, companyId));
+      } else {
+        await tx.insert(companyCounters).values({
+          companyId,
+          nextJobNumber: 10000,
+          nextInvoiceNumber: 1002,
+        });
+      }
+
+      // 3. Create invoice
+      const [invoice] = await tx
+        .insert(invoices)
+        .values({
+          companyId,
+          locationId: job.locationId,
+          jobId: jobId,
+          invoiceNumber: String(invoiceNumber),
+          status: "draft",
+          issueDate: new Date().toISOString().split("T")[0], // 'YYYY-MM-DD' format
+          subtotal: "0",
+          taxTotal: "0",
+          total: "0",
+          amountPaid: "0",
+          balance: "0",
+        })
+        .returning();
+
+      // 4. Update job with invoice reference
+      await tx
+        .update(jobs)
+        .set({ invoiceId: invoice.id })
+        .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
+
+      // 5. Mark job completed if requested
+      if (options?.markJobCompleted) {
+        await tx
+          .update(jobs)
+          .set({ status: "completed" })
+          .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
+      }
+
+      return invoice;
     });
   }
 }
