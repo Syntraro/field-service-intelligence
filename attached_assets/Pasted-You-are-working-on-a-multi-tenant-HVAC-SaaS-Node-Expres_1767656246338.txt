@@ -1,0 +1,47 @@
+You are working on a multi-tenant HVAC SaaS (Node/Express + TypeScript + Drizzle). Frontend has been updated so ALL paginated list calls now send explicit params like: offset=0&limit=200 (Jobs.tsx, InvoicesListPage.tsx, LocationDetailPage.tsx, ClientJobsTab.tsx). Other /api/jobs usage is single-item fetches, sub-resources, or mutations.
+
+TASK: Turn server-side pagination back on for ALL list endpoints that return collections (jobs, invoices, clients/locations, parts, equipment, notes, team members, etc. — any endpoint returning a list). Do NOT break existing UI.
+
+REQUIREMENTS:
+1) Enforce pagination on every list endpoint:
+   - Parse query params: offset, limit
+   - Defaults: offset=0, limit=50 (or 100 if existing conventions require)
+   - Hard cap MAX_LIMIT=200 (since UI uses limit=200)
+   - Clamp/validate:
+     - offset must be integer >= 0 (fallback to 0)
+     - limit must be integer between 1 and MAX_LIMIT (fallback to default; cap if too high)
+     - Handle NaN / undefined / negative safely (never allow unbounded queries)
+
+2) Deterministic ordering:
+   - Ensure every paginated list query has a stable sort (e.g. createdAt DESC, id DESC)
+   - Do not allow pagination without an ORDER BY
+
+3) Response shape:
+   - Standardize list responses to include metadata:
+     {
+       items: [...],
+       offset,
+       limit,
+       total OR hasMore
+     }
+   - If adding `total` is expensive, use `hasMore` by fetching limit+1 or equivalent.
+   - Keep backwards compatibility: if the frontend expects a raw array today, either:
+     a) keep returning raw arrays for now and add metadata via headers, OR
+     b) update the exact frontend callers to handle {items,...} (BUT only if minimal + safe).
+   - Prefer the least risky approach that avoids UI breakage.
+
+4) Multi-tenant safety:
+   - Preserve existing companyId scoping on every query (never leak cross-tenant data).
+
+5) Tests / sanity checks:
+   - Add at least quick route-level tests or minimal assertions (if no test setup exists, add lightweight checks):
+     - No params => returns default limit
+     - limit>MAX => capped to MAX
+     - negative/NaN => corrected to defaults
+     - items.length <= limit
+   - Also add a quick manual verification checklist in your output.
+
+DELIVERABLE:
+- Provide the patched files (diff-style or full file content) showing the pagination helper (recommended: a shared util like parsePagination(req.query)), applied across list endpoints.
+- Call out any endpoint where you chose total vs hasMore and why.
+- Confirm no list endpoint can return unbounded results anymore.
