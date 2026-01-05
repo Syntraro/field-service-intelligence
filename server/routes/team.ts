@@ -2,10 +2,11 @@ import { Router, Request, Response } from "express";
 import { z } from "zod";
 import { storage } from "../storage/index";
 import { requireRole } from "../auth/requireRole";
+import { RESTRICTED_MANAGER_ROLES } from "../auth/roles";
 
 const router = Router();
 
-const MANAGER_ROLES = ["owner", "admin", "manager"];
+const MANAGER_ROLES = RESTRICTED_MANAGER_ROLES;
 
 // ========================================
 // VALIDATION SCHEMAS

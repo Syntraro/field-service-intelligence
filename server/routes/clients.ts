@@ -7,10 +7,9 @@ import type { Client } from "@shared/schema";
 import { db } from "../db";
 import { eq, and, desc, inArray, isNotNull } from "drizzle-orm";
 import { requireRole } from "../auth/requireRole";
+import { MANAGER_ROLES } from "../auth/roles";
 
 const router = Router();
-
-const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"];
 
 // ========================================
 // HELPER FUNCTIONS

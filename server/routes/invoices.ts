@@ -3,10 +3,9 @@ import type { Request, Response } from "express";
 import { storage } from "../storage/index";
 import { z } from "zod";
 import { requireRole } from "../auth/requireRole";
+import { MANAGER_ROLES } from "../auth/roles";
 
 const router = Router();
-
-const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"];
 
 // ========================================
 // VALIDATION SCHEMAS

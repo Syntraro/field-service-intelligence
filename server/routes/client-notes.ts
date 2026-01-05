@@ -5,8 +5,7 @@ import db from "../db";
 import { clientNotes, insertClientNoteSchema, clients } from "@shared/schema";
 import { sql } from "drizzle-orm";
 import { requireRole } from "../auth/requireRole";
-
-const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"];
+import { MANAGER_ROLES } from "../auth/roles";
 
 type AuthedRequest = Request & {
   user?: { id: string } | undefined;

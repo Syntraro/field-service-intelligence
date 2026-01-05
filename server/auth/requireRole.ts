@@ -1,7 +1,6 @@
-
 import { Request, Response, NextFunction } from "express";
 
-export function requireRole(roles: string[]) {
+export function requireRole(roles: readonly string[]) {
   return (req: Request, res: Response, next: NextFunction) => {
     const userRole = req.user?.role;
     if (!userRole || !roles.includes(userRole)) {

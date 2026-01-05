@@ -1,0 +1,74 @@
+Good — this is the kind of RBAC pass that actually changes your security posture. A few recommendations to make sure it stays solid over time (and doesn’t get bypassed by “one weird endpoint” later):
+
+1) Sanity-check the role model against real workflow
+
+You used:
+
+Manager roles: Owner/Admin/Manager/Dispatcher (most writes)
+
+Restricted manager roles: Owner/Admin/Manager (team/tech creation)
+
+That’s a sensible default, but double-check two operational realities:
+
+Dispatchers often need to edit jobs (schedule, status, assign techs) ✅ (you covered)
+
+Dispatchers should not:
+
+change user roles / permissions ✅
+
+create technicians (HR-ish) ✅
+
+change company settings ✅
+
+So far your split matches reality.
+
+2) Make sure “write endpoints” includes the sneaky ones
+
+The most commonly missed high-impact writes are “actions” that aren’t obvious CRUD:
+
+Invoices
+
+“send” / “mark paid” / “void” / “sync to QBO” / “refresh from job”
+You mentioned refresh + lines + update—good. Confirm QBO sync actions too if they exist.
+
+Jobs
+
+assign/unassign techs
+
+reschedule
+
+status transitions
+
+recurring generation actions
+
+Clients
+
+import/merge/dedupe actions
+
+bulk operations beyond delete (bulk update inactive, bulk attach parent, etc.)
+
+Calendar
+
+drag/resize is gated, but also check: create/move assignments, mark complete, batch reschedule.
+
+Tasks
+
+“check-in/out” + “close” are gated—good. Make sure technicians who need to do those actions aren’t blocked if that’s intended (some systems want techs to check-in/out).
+
+If technicians are supposed to interact with tasks, you may want a third role group like TECH_ROLES for specific endpoints only.
+
+3) Add a “default deny” guardrail so you don’t regress later
+
+Right now you “protected 90+ endpoints,” which is awesome, but the risk is: a future dev adds a new POST route and forgets RBAC.
+
+Two low-effort options:
+
+Option A: route helper wrappers
+
+Create helpers like:
+
+managerWrite(router.post(...))
+
+restrictedWrite(router.post(...))
+
+So RBAC is baked into how you define routes.

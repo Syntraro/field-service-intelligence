@@ -3,11 +3,12 @@ import type { Request, Response } from "express";
 import { storage } from "../storage/index";
 import { z } from "zod";
 import { requireRole } from "../auth/requireRole";
+import { RESTRICTED_MANAGER_ROLES } from "../auth/roles";
 
 // Note: requireAuth and ensureTenantContext middleware already applied globally in routes/index.ts
 const router = Router();
 
-const MANAGER_ROLES = ["owner", "admin", "manager"];
+const MANAGER_ROLES = RESTRICTED_MANAGER_ROLES;
 
 // ========================================
 // VALIDATION SCHEMAS

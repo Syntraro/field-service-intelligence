@@ -12,10 +12,9 @@ import { assertJobStatusTransition } from "../statusRules";
 import type { JobStatus } from "../schemas";
 import type { User } from "@shared/schema";
 import { requireRole } from "../auth/requireRole";
+import { MANAGER_ROLES } from "../auth/roles";
 
 const router = Router();
-
-const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"];
 
 
 

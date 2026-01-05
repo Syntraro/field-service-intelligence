@@ -3,10 +3,9 @@ import { storage } from "../storage/index";
 import { insertJobTemplateSchema, insertJobTemplateLineItemSchema } from "@shared/schema";
 import { z } from "zod";
 import { requireRole } from "../auth/requireRole";
+import { MANAGER_ROLES } from "../auth/roles";
 
 const router = Router();
-
-const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"];
 
 /**
  * Tenant context helper.

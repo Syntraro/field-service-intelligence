@@ -2,8 +2,7 @@ import express from "express";
 import { z } from "zod";
 import { resizeJobTime } from "../services/calendarService";
 import { requireRole } from "../auth/requireRole";
-
-const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"];
+import { MANAGER_ROLES } from "../auth/roles";
 
 /**
  * Calendar API

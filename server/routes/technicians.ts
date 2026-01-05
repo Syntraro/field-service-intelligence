@@ -2,10 +2,11 @@ import express from "express";
 import { createTechnician } from "../services/technicians";
 import { z } from "zod";
 import { requireRole } from "../auth/requireRole";
+import { RESTRICTED_MANAGER_ROLES } from "../auth/roles";
 
 const router = express.Router();
 
-const MANAGER_ROLES = ["owner", "admin", "manager"];
+const MANAGER_ROLES = RESTRICTED_MANAGER_ROLES;
 
 // ========================================
 // VALIDATION SCHEMAS

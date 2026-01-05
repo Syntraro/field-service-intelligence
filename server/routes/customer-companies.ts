@@ -3,8 +3,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import db from "../db";
 import { customerCompanies, clients, jobs, invoices } from "@shared/schema";
 import { requireRole } from "../auth/requireRole";
-
-const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"];
+import { MANAGER_ROLES } from "../auth/roles";
 
 type AuthedRequest = Request & {
   user?: { id: string } | undefined;
