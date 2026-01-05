@@ -4,6 +4,8 @@ import { insertJobTemplateSchema, insertJobTemplateLineItemSchema } from "@share
 import { z } from "zod";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
+import { parsePaginationLenient, applyOffsetPagination } from "../utils/pagination";
+import { paginatedCompat } from "../utils/paginatedResponse";
 
 const router = Router();
 
@@ -29,6 +31,7 @@ router.get("/", async (req, res) => {
       return res.status(401).json({ error: "Not authenticated" });
     }
 
+    const { params, explicit } = parsePaginationLenient(req.query);
     const { jobType, activeOnly } = req.query;
 
     // Preserve original semantics:
@@ -38,9 +41,17 @@ router.get("/", async (req, res) => {
       activeOnly: activeOnly === "false" ? false : true,
     };
 
-    const templates = await storage.getJobTemplates(companyId, filter);
-    return res.json(templates);
+    const allTemplates = await storage.getJobTemplates(companyId, filter);
+    
+    // Apply pagination
+    const offset = params.offset ?? 0;
+    const { items, meta } = applyOffsetPagination(allTemplates, offset, params.limit);
+    
+    return res.json(paginatedCompat(items, meta, explicit));
   } catch (error: any) {
+    if (error?.status === 400) {
+      return res.status(400).json({ error: error.message });
+    }
     console.error("Error fetching job templates:", error);
     return res.status(500).json({ error: error.message || "Failed to fetch job templates" });
   }

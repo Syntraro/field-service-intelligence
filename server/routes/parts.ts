@@ -4,6 +4,8 @@ import { z } from "zod";
 import { storage } from "../storage/index";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
+import { parsePaginationLenient, applyOffsetPagination } from "../utils/pagination";
+import { paginatedCompat } from "../utils/paginatedResponse";
 
 // Note: requireAuth and ensureTenantContext middleware already applied globally in routes/index.ts
 const router = Router();
@@ -29,10 +31,21 @@ router.get("/", async (req: Request, res: Response) => {
     const companyId = req.companyId;
     if (!companyId) return res.status(401).json({ error: "Unauthorized" });
 
+    const { params, explicit } = parsePaginationLenient(req.query);
     const q = String((req.query as any)?.q ?? "").trim();
-    const rows = await storage.getParts(companyId, q || undefined);
-    return res.json(rows ?? []);
+    
+    // Fetch all matching rows (storage already orders by partNumber)
+    const allRows = await storage.getParts(companyId, q || undefined);
+    
+    // Apply pagination
+    const offset = params.offset ?? 0;
+    const { items, meta } = applyOffsetPagination(allRows ?? [], offset, params.limit);
+    
+    return res.json(paginatedCompat(items, meta, explicit));
   } catch (err: any) {
+    if ((err as any).status === 400) {
+      return res.status(400).json({ error: err.message });
+    }
     return res.status(500).json({ error: err?.message || "Failed to load parts" });
   }
 });

@@ -3,6 +3,8 @@ import { z } from "zod";
 import { storage } from "../storage/index";
 import { requireRole } from "../auth/requireRole";
 import { RESTRICTED_MANAGER_ROLES } from "../auth/roles";
+import { parsePaginationLenient, applyOffsetPagination } from "../utils/pagination";
+import { paginatedCompat } from "../utils/paginatedResponse";
 
 const router = Router();
 
@@ -60,13 +62,24 @@ const setPermissionOverridesSchema = z.object({
 
 router.get("/", async (req, res) => {
   try {
+    const { params, explicit } = parsePaginationLenient(req.query);
+    
+    // Fetch all members (storage already orders by fullName)
     const members = await storage.getTeamMembers(req.companyId!);
     const sanitized = members.map(m => ({
       ...m,
       password: undefined,
     }));
-    res.json(sanitized);
-  } catch (error) {
+    
+    // Apply pagination
+    const offset = params.offset ?? 0;
+    const { items, meta } = applyOffsetPagination(sanitized, offset, params.limit);
+    
+    res.json(paginatedCompat(items, meta, explicit));
+  } catch (error: any) {
+    if (error?.status === 400) {
+      return res.status(400).json({ error: error.message });
+    }
     console.error('Get team members error:', error);
     res.status(500).json({ error: "Failed to get team members" });
   }

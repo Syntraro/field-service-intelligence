@@ -6,6 +6,8 @@ import { clientNotes, insertClientNoteSchema, clients } from "@shared/schema";
 import { sql } from "drizzle-orm";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
+import { parsePaginationLenient, applyOffsetPagination } from "../utils/pagination";
+import { paginatedCompat } from "../utils/paginatedResponse";
 
 type AuthedRequest = Request & {
   user?: { id: string } | undefined;
@@ -69,19 +71,35 @@ router.get("/clients/:clientId/notes", async (req: AuthedRequest, res: Response)
   try {
     const { companyId } = req;
     const { clientId } = req.params;
+    const { params, explicit } = parsePaginationLenient(req.query);
 
     // Ownership check: ensure client exists in this tenant
     const ownsClient = await assertClientOwned(companyId!, clientId);
     if (!ownsClient) return res.status(404).json({ error: "Client not found" });
 
+    // Fetch with LIMIT + 1 to determine hasMore efficiently
+    const offset = params.offset ?? 0;
     const notes = await db
       .select()
       .from(clientNotes)
       .where(and(eq(clientNotes.companyId, companyId!), eq(clientNotes.clientId, clientId)))
-      .orderBy(desc(clientNotes.createdAt));
+      .orderBy(desc(clientNotes.createdAt))
+      .limit(params.limit + 1)
+      .offset(offset);
 
-    res.json(notes);
-  } catch {
+    const hasMore = notes.length > params.limit;
+    const items = hasMore ? notes.slice(0, params.limit) : notes;
+    const meta = {
+      limit: params.limit,
+      hasMore,
+      nextOffset: hasMore ? offset + params.limit : undefined,
+    };
+
+    res.json(paginatedCompat(items, meta, explicit));
+  } catch (err: any) {
+    if (err?.status === 400) {
+      return res.status(400).json({ error: err.message });
+    }
     res.status(500).json({ error: "Failed to fetch notes" });
   }
 });
@@ -201,6 +219,7 @@ router.delete("/clients/:clientId/notes/:noteId", requireRole(MANAGER_ROLES), as
 router.get("/client-notes", async (req: AuthedRequest, res: Response) => {
   try {
     const { companyId } = req;
+    const { params, explicit } = parsePaginationLenient(req.query);
     const clientId = String(req.query?.clientId ?? "");
     if (!clientId) return res.status(400).json({ error: "clientId is required" });
 
@@ -208,14 +227,29 @@ router.get("/client-notes", async (req: AuthedRequest, res: Response) => {
     const ownsClient = await assertClientOwned(companyId!, clientId);
     if (!ownsClient) return res.status(404).json({ error: "Client not found" });
 
+    // Fetch with LIMIT + 1 to determine hasMore efficiently
+    const offset = params.offset ?? 0;
     const notes = await db
       .select()
       .from(clientNotes)
       .where(and(eq(clientNotes.companyId, companyId!), eq(clientNotes.clientId, clientId)))
-      .orderBy(desc(clientNotes.createdAt));
+      .orderBy(desc(clientNotes.createdAt))
+      .limit(params.limit + 1)
+      .offset(offset);
 
-    res.json(notes);
-  } catch {
+    const hasMore = notes.length > params.limit;
+    const items = hasMore ? notes.slice(0, params.limit) : notes;
+    const meta = {
+      limit: params.limit,
+      hasMore,
+      nextOffset: hasMore ? offset + params.limit : undefined,
+    };
+
+    res.json(paginatedCompat(items, meta, explicit));
+  } catch (err: any) {
+    if (err?.status === 400) {
+      return res.status(400).json({ error: err.message });
+    }
     res.status(500).json({ error: "Failed to fetch notes" });
   }
 });

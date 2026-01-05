@@ -4,6 +4,8 @@ import db from "../db";
 import { customerCompanies, clients, jobs, invoices } from "@shared/schema";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
+import { parsePaginationLenient, applyOffsetPagination, MAX_LIMIT } from "../utils/pagination";
+import { paginatedCompat } from "../utils/paginatedResponse";
 
 type AuthedRequest = Request & {
   user?: { id: string } | undefined;
@@ -49,6 +51,7 @@ router.get("/:companyId/locations", async (req: AuthedRequest, res: Response) =>
   try {
     const { companyId: tenantCompanyId } = req;
     const { companyId } = req.params;
+    const { params, explicit } = parsePaginationLenient(req.query);
 
     // Ensure company belongs to tenant
     const [company] = await db
@@ -59,14 +62,29 @@ router.get("/:companyId/locations", async (req: AuthedRequest, res: Response) =>
 
     if (!company) return res.status(404).json({ error: "Customer company not found" });
 
+    // Fetch with LIMIT + 1 to determine hasMore efficiently
+    const offset = params.offset ?? 0;
     const locations = await db
       .select()
       .from(clients)
       .where(and(eq(clients.companyId, tenantCompanyId!), eq(clients.parentCompanyId, companyId)))
-      .orderBy(desc(clients.createdAt));
+      .orderBy(desc(clients.createdAt))
+      .limit(params.limit + 1)
+      .offset(offset);
 
-    res.json(locations);
-  } catch (err) {
+    const hasMore = locations.length > params.limit;
+    const items = hasMore ? locations.slice(0, params.limit) : locations;
+    const meta = {
+      limit: params.limit,
+      hasMore,
+      nextOffset: hasMore ? offset + params.limit : undefined,
+    };
+
+    res.json(paginatedCompat(items, meta, explicit));
+  } catch (err: any) {
+    if (err?.status === 400) {
+      return res.status(400).json({ error: err.message });
+    }
     res.status(500).json({ error: "Failed to fetch locations" });
   }
 });

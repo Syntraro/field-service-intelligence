@@ -13,8 +13,8 @@ import type { JobStatus } from "../schemas";
 import type { User } from "@shared/schema";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
-import { parsePagination } from "../utils/pagination";
-import { paginated } from "../utils/paginatedResponse";
+import { parsePagination, parsePaginationLenient, applyOffsetPagination } from "../utils/pagination";
+import { paginated, paginatedCompat } from "../utils/paginatedResponse";
 
 const router = Router();
 
@@ -177,13 +177,22 @@ router.post("/:id/status", requireRole(MANAGER_ROLES), async (req: Request, res:
 router.get("/:jobId/parts", async (req, res) => {
   try {
     const companyId = req.companyId;
+    const { params, explicit } = parsePaginationLenient(req.query);
 
     const job = await storage.getJob(companyId, req.params.jobId);
     if (!job) return res.status(404).json({ error: "Job not found" });
 
-    const parts = await storage.getJobParts(req.params.jobId);
-    res.json(parts);
+    const allParts = await storage.getJobParts(req.params.jobId);
+    
+    // Apply pagination
+    const offset = params.offset ?? 0;
+    const { items, meta } = applyOffsetPagination(allParts, offset, params.limit);
+    
+    res.json(paginatedCompat(items, meta, explicit));
   } catch (error: any) {
+    if (error?.status === 400) {
+      return res.status(400).json({ error: error.message });
+    }
     console.error("Get job parts error:", error);
     res.status(500).json({ error: error.message || "Failed to get job parts" });
   }
@@ -275,13 +284,22 @@ router.patch("/:jobId/parts/reorder", requireRole(MANAGER_ROLES), async (req, re
 router.get("/:jobId/equipment", async (req, res) => {
   try {
     const companyId = req.companyId;
+    const { params, explicit } = parsePaginationLenient(req.query);
 
     const job = await storage.getJob(companyId, req.params.jobId);
     if (!job) return res.status(404).json({ error: "Job not found" });
 
-    const equipment = await storage.getJobEquipment(req.params.jobId);
-    res.json(equipment);
+    const allEquipment = await storage.getJobEquipment(req.params.jobId);
+    
+    // Apply pagination
+    const offset = params.offset ?? 0;
+    const { items, meta } = applyOffsetPagination(allEquipment, offset, params.limit);
+    
+    res.json(paginatedCompat(items, meta, explicit));
   } catch (error: any) {
+    if (error?.status === 400) {
+      return res.status(400).json({ error: error.message });
+    }
     console.error("Get job equipment error:", error);
     res.status(500).json({ error: error.message || "Failed to get job equipment" });
   }

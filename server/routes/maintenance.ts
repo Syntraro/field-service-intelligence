@@ -1,6 +1,8 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
 import { storage } from "../storage/index";
+import { parsePaginationLenient, applyOffsetPagination, MAX_LIMIT } from "../utils/pagination";
+import { paginatedCompat } from "../utils/paginatedResponse";
 
 // Note: requireAuth and ensureTenantContext middleware already applied globally in routes/index.ts
 const router = Router();
@@ -9,18 +11,48 @@ const router = Router();
 // No validation needed for GET routes
 
 router.get("/recently-completed", async (req: Request, res: Response) => {
-  const companyId = req.companyId;
-  if (!companyId) return res.status(401).json({ error: "Unauthorized" });
-  const limit = Number((req.query as any)?.limit ?? 50);
-  const rows = await storage.getMaintenanceRecentlyCompleted(companyId, Number.isFinite(limit) ? limit : 50);
-  res.json(rows);
+  try {
+    const companyId = req.companyId;
+    if (!companyId) return res.status(401).json({ error: "Unauthorized" });
+    
+    const { params, explicit } = parsePaginationLenient(req.query);
+    
+    // Fetch with a bounded limit from storage (use params.limit capped by MAX_LIMIT)
+    const rows = await storage.getMaintenanceRecentlyCompleted(companyId, MAX_LIMIT);
+    
+    // Apply pagination
+    const offset = params.offset ?? 0;
+    const { items, meta } = applyOffsetPagination(rows, offset, params.limit);
+    
+    res.json(paginatedCompat(items, meta, explicit));
+  } catch (err: any) {
+    if (err?.status === 400) {
+      return res.status(400).json({ error: err.message });
+    }
+    res.status(500).json({ error: "Failed to fetch recently completed" });
+  }
 });
 
 router.get("/statuses", async (req: Request, res: Response) => {
-  const companyId = req.companyId;
-  if (!companyId) return res.status(401).json({ error: "Unauthorized" });
-  const rows = await storage.getMaintenanceStatuses(companyId);
-  res.json(rows);
+  try {
+    const companyId = req.companyId;
+    if (!companyId) return res.status(401).json({ error: "Unauthorized" });
+    
+    const { params, explicit } = parsePaginationLenient(req.query);
+    
+    const rows = await storage.getMaintenanceStatuses(companyId);
+    
+    // Apply pagination (statuses are typically small, but we bound them for consistency)
+    const offset = params.offset ?? 0;
+    const { items, meta } = applyOffsetPagination(rows, offset, params.limit);
+    
+    res.json(paginatedCompat(items, meta, explicit));
+  } catch (err: any) {
+    if (err?.status === 400) {
+      return res.status(400).json({ error: err.message });
+    }
+    res.status(500).json({ error: "Failed to fetch statuses" });
+  }
 });
 
 export default router;

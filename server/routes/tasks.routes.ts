@@ -3,6 +3,8 @@ import * as service from "../services/tasks.service.ts";
 import { z } from "zod";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
+import { parsePaginationLenient, applyOffsetPagination } from "../utils/pagination";
+import { paginatedCompat } from "../utils/paginatedResponse";
 
 const router = Router();
 
@@ -63,19 +65,28 @@ router.post("/", requireRole(MANAGER_ROLES), async (req, res) => {
 /* LIST (FILTERED) */
 router.get("/", async (req, res) => {
   try {
-    res.json(
-      await service.listTasks({
-        companyId: req.query.companyId,
-        status: req.query.status,
-        assignedToUserId: req.query.assignedToUserId,
-        unassigned: req.query.unassigned === "true",
-        type: req.query.type,
-        jobId: req.query.jobId,
-        fromDate: req.query.fromDate ? new Date(req.query.fromDate as string) : undefined,
-        toDate: req.query.toDate ? new Date(req.query.toDate as string) : undefined,
-      })
-    );
+    const { params, explicit } = parsePaginationLenient(req.query);
+    
+    const allTasks = await service.listTasks({
+      companyId: req.query.companyId,
+      status: req.query.status,
+      assignedToUserId: req.query.assignedToUserId,
+      unassigned: req.query.unassigned === "true",
+      type: req.query.type,
+      jobId: req.query.jobId,
+      fromDate: req.query.fromDate ? new Date(req.query.fromDate as string) : undefined,
+      toDate: req.query.toDate ? new Date(req.query.toDate as string) : undefined,
+    });
+    
+    // Apply pagination
+    const offset = params.offset ?? 0;
+    const { items, meta } = applyOffsetPagination(allTasks, offset, params.limit);
+    
+    res.json(paginatedCompat(items, meta, explicit));
   } catch (e: any) {
+    if (e?.status === 400) {
+      return res.status(400).json({ error: e.message });
+    }
     res.status(400).json({ error: e.message });
   }
 });
