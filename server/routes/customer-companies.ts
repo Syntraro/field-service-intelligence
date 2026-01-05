@@ -2,6 +2,9 @@ import { Router, Request, Response, NextFunction } from "express";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import db from "../db";
 import { customerCompanies, clients, jobs, invoices } from "@shared/schema";
+import { requireRole } from "../auth/requireRole";
+
+const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"];
 
 type AuthedRequest = Request & {
   user?: { id: string } | undefined;
@@ -72,7 +75,7 @@ router.get("/:companyId/locations", async (req: AuthedRequest, res: Response) =>
  * POST /api/customer-companies/:companyId/locations
  * Create a new location under a customer company
  */
-router.post("/:companyId/locations", async (req: AuthedRequest, res: Response) => {
+router.post("/:companyId/locations", requireRole(MANAGER_ROLES), async (req: AuthedRequest, res: Response) => {
   try {
     const { companyId: tenantCompanyId, user } = req;
     const { companyId } = req.params;

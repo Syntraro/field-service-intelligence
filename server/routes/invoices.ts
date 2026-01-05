@@ -86,7 +86,7 @@ router.get("/:id/lines", async (req: Request, res: Response) => {
   res.json(lines);
 });
 
-router.post("/:id/lines", requireInvoiceEditable(), async (req: Request, res: Response) => {
+router.post("/:id/lines", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async (req: Request, res: Response) => {
   try {
     const validation = createInvoiceLineSchema.safeParse(req.body);
     if (!validation.success) {
@@ -103,12 +103,12 @@ router.post("/:id/lines", requireInvoiceEditable(), async (req: Request, res: Re
   }
 });
 
-router.delete("/:id/lines/:lineId", requireInvoiceEditable(), async (req: Request, res: Response) => {
+router.delete("/:id/lines/:lineId", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async (req: Request, res: Response) => {
   const result = await storage.deleteInvoiceLine(req.companyId!, req.params.id, req.params.lineId);
   res.json(result);
 });
 
-router.post("/:id/refresh-from-job", requireInvoiceEditable(), async (req: Request, res: Response) => {
+router.post("/:id/refresh-from-job", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async (req: Request, res: Response) => {
   const result = await storage.refreshInvoiceFromJob(req.companyId!, req.params.id);
   res.json(result);
 });
@@ -152,7 +152,7 @@ router.post("/from-job/:jobId", requireRole(MANAGER_ROLES), async (req: Request,
 /**
  * PATCH /api/invoices/:id - Update invoice with optimistic locking
  */
-router.patch("/:id", requireInvoiceEditable(), async (req: Request, res: Response) => {
+router.patch("/:id", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async (req: Request, res: Response) => {
   try {
     const validation = updateInvoiceSchema.safeParse(req.body);
     if (!validation.success) {

@@ -4,6 +4,9 @@ import { z } from "zod";
 import db from "../db";
 import { clientNotes, insertClientNoteSchema, clients } from "@shared/schema";
 import { sql } from "drizzle-orm";
+import { requireRole } from "../auth/requireRole";
+
+const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"];
 
 type AuthedRequest = Request & {
   user?: { id: string } | undefined;
@@ -84,7 +87,7 @@ router.get("/clients/:clientId/notes", async (req: AuthedRequest, res: Response)
   }
 });
 
-router.post("/clients/:clientId/notes", async (req: AuthedRequest, res: Response) => {
+router.post("/clients/:clientId/notes", requireRole(MANAGER_ROLES), async (req: AuthedRequest, res: Response) => {
   try {
     const { companyId, user } = req;
     const { clientId } = req.params;
@@ -135,7 +138,7 @@ router.post("/clients/:clientId/notes", async (req: AuthedRequest, res: Response
   }
 });
 
-router.patch("/clients/:clientId/notes/:noteId", async (req: AuthedRequest, res: Response) => {
+router.patch("/clients/:clientId/notes/:noteId", requireRole(MANAGER_ROLES), async (req: AuthedRequest, res: Response) => {
   try {
     const { companyId } = req;
     const { clientId, noteId } = req.params;
@@ -166,7 +169,7 @@ router.patch("/clients/:clientId/notes/:noteId", async (req: AuthedRequest, res:
   }
 });
 
-router.delete("/clients/:clientId/notes/:noteId", async (req: AuthedRequest, res: Response) => {
+router.delete("/clients/:clientId/notes/:noteId", requireRole(MANAGER_ROLES), async (req: AuthedRequest, res: Response) => {
   try {
     const { companyId } = req;
     const { clientId, noteId } = req.params;
@@ -218,7 +221,7 @@ router.get("/client-notes", async (req: AuthedRequest, res: Response) => {
   }
 });
 
-router.post("/client-notes", async (req: AuthedRequest, res: Response) => {
+router.post("/client-notes", requireRole(MANAGER_ROLES), async (req: AuthedRequest, res: Response) => {
   try {
     const { companyId, user } = req;
 
@@ -265,7 +268,7 @@ router.post("/client-notes", async (req: AuthedRequest, res: Response) => {
   }
 });
 
-router.patch("/client-notes/:noteId", async (req: AuthedRequest, res: Response) => {
+router.patch("/client-notes/:noteId", requireRole(MANAGER_ROLES), async (req: AuthedRequest, res: Response) => {
   try {
     const { companyId } = req;
     const { noteId } = req.params;
@@ -287,7 +290,7 @@ router.patch("/client-notes/:noteId", async (req: AuthedRequest, res: Response) 
   }
 });
 
-router.delete("/client-notes/:noteId", async (req: AuthedRequest, res: Response) => {
+router.delete("/client-notes/:noteId", requireRole(MANAGER_ROLES), async (req: AuthedRequest, res: Response) => {
   try {
     const { companyId } = req;
     const { noteId } = req.params;

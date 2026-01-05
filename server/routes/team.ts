@@ -1,8 +1,11 @@
 import { Router, Request, Response } from "express";
 import { z } from "zod";
 import { storage } from "../storage/index";
+import { requireRole } from "../auth/requireRole";
 
 const router = Router();
+
+const MANAGER_ROLES = ["owner", "admin", "manager"];
 
 // ========================================
 // VALIDATION SCHEMAS
@@ -21,15 +24,21 @@ const updateTeamMemberSchema = z.object({
 const updateTechnicianProfileSchema = z.object({
   laborCostPerHour: z.union([
     z.string().regex(/^\d+(\.\d{1,2})?$/),
-    z.number().min(0).max(9999.99)
-  ]).transform(v => String(v)).optional(),
+    z.number().min(0).max(999.99)
+  ]).transform(v => {
+    const s = String(v);
+    return s === "" ? null : s;
+  }).nullable().optional(),
   billableRatePerHour: z.union([
     z.string().regex(/^\d+(\.\d{1,2})?$/),
-    z.number().min(0).max(9999.99)
-  ]).transform(v => String(v)).optional(),
+    z.number().min(0).max(999.99)
+  ]).transform(v => {
+    const s = String(v);
+    return s === "" ? null : s;
+  }).nullable().optional(),
   color: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
-  phone: z.string().max(20).optional(),
-  note: z.string().max(1000).optional(),
+  phone: z.string().max(20).transform(v => v === "" ? null : v).nullable().optional(),
+  note: z.string().max(1000).transform(v => v === "" ? null : v).nullable().optional(),
 });
 
 const setWorkingHoursSchema = z.object({
@@ -89,7 +98,7 @@ router.get("/:userId", async (req, res) => {
   }
 });
 
-router.patch("/:userId", async (req, res) => {
+router.patch("/:userId", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const { userId } = req.params;
     
@@ -113,7 +122,7 @@ router.patch("/:userId", async (req, res) => {
   }
 });
 
-router.post("/:userId/deactivate", async (req, res) => {
+router.post("/:userId/deactivate", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const { userId } = req.params;
 
@@ -133,7 +142,7 @@ router.post("/:userId/deactivate", async (req, res) => {
   }
 });
 
-router.post("/:userId/activate", async (req, res) => {
+router.post("/:userId/activate", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const { userId } = req.params;
 
@@ -157,7 +166,7 @@ router.post("/:userId/activate", async (req, res) => {
   }
 });
 
-router.put("/:userId/profile", async (req, res) => {
+router.put("/:userId/profile", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const { userId } = req.params;
 
@@ -182,7 +191,7 @@ router.put("/:userId/profile", async (req, res) => {
   }
 });
 
-router.put("/:userId/working-hours", async (req, res) => {
+router.put("/:userId/working-hours", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const { userId } = req.params;
 
@@ -207,7 +216,7 @@ router.put("/:userId/working-hours", async (req, res) => {
   }
 });
 
-router.put("/:userId/permissions", async (req, res) => {
+router.put("/:userId/permissions", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const { userId } = req.params;
 

@@ -1,6 +1,9 @@
 import express from "express";
 import { z } from "zod";
 import { resizeJobTime } from "../services/calendarService";
+import { requireRole } from "../auth/requireRole";
+
+const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"];
 
 /**
  * Calendar API
@@ -47,7 +50,7 @@ router.get("/old-unscheduled", async (_req, res) => {
 });
 
 // Resize job block on calendar (used for drag-to-extend)
-router.post("/resize", async (req, res) => {
+router.post("/resize", requireRole(MANAGER_ROLES), async (req, res) => {
   const validation = resizeJobSchema.safeParse(req.body);
   if (!validation.success) {
     return res.status(400).json({ 

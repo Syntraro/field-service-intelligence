@@ -1,8 +1,11 @@
 import express from "express";
 import { createTechnician } from "../services/technicians";
 import { z } from "zod";
+import { requireRole } from "../auth/requireRole";
 
 const router = express.Router();
+
+const MANAGER_ROLES = ["owner", "admin", "manager"];
 
 // ========================================
 // VALIDATION SCHEMAS
@@ -13,7 +16,7 @@ const createTechnicianSchema = z.object({
   userId: z.string().uuid().optional(),
 });
 
-router.post("/", async (req, res) => {
+router.post("/", requireRole(MANAGER_ROLES), async (req, res) => {
   const validation = createTechnicianSchema.safeParse(req.body);
   if (!validation.success) {
     return res.status(400).json({ 

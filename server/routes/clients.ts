@@ -312,7 +312,7 @@ router.post("/full-create", requireRole(MANAGER_ROLES), async (req, res) => {
 });
 
 // POST /api/clients/quick-create - Quick create with minimal info (sets needsDetails=true)
-router.post("/quick-create", async (req, res) => {
+router.post("/quick-create", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const companyId = req.companyId;
     const userId = req.user!.id;
@@ -364,7 +364,7 @@ router.post("/quick-create", async (req, res) => {
 });
 
 // POST /api/clients/import-simple - Simple import
-router.post("/import-simple", async (req, res) => {
+router.post("/import-simple", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const { clients } = req.body;
 
@@ -412,7 +412,7 @@ router.post("/import-simple", async (req, res) => {
 });
 
 // POST /api/clients/import - Full import with equipment and parts
-router.post("/import", async (req, res) => {
+router.post("/import", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const { clients } = req.body;
 
@@ -673,7 +673,7 @@ router.get("/:id/overview", async (req, res) => {
 });
 
 // POST /api/clients/:companyId/locations - Create a child location under a parent client
-router.post("/:companyId/locations", async (req, res) => {
+router.post("/:companyId/locations", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const tenantCompanyId = req.companyId;
     const userId = (req.user as any)?.id;
@@ -836,7 +836,7 @@ router.get("/:id/report", async (req, res) => {
 });
 
 // PUT /api/clients/:id - Update client with optimistic locking
-router.put("/:id", async (req, res) => {
+router.put("/:id", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const { version, ...data } = req.body;
     const validated = insertClientSchema.partial().parse(data);
@@ -880,7 +880,7 @@ router.put("/:id", async (req, res) => {
 });
 
 // PATCH /api/clients/:id - Partial update with optimistic locking
-router.patch("/:id", async (req, res) => {
+router.patch("/:id", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const { version, ...data } = req.body;
     const validated = insertClientSchema.partial().parse(data);
@@ -907,7 +907,7 @@ router.patch("/:id", async (req, res) => {
 });
 
 // POST /api/clients/:id/set-primary - Set location as primary for its parent company
-router.post("/:id/set-primary", async (req, res) => {
+router.post("/:id/set-primary", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const companyId = req.companyId;
     const locationId = req.params.id;

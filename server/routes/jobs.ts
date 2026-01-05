@@ -78,7 +78,7 @@ router.post("/", requireRole(MANAGER_ROLES), async (req: Request, res: Response)
   }
 });
 
-router.patch("/:id", async (req: Request, res: Response) => {
+router.patch("/:id", requireRole(MANAGER_ROLES), async (req: Request, res: Response) => {
   try {
     const companyId = req.companyId;
 
@@ -113,7 +113,7 @@ router.patch("/:id", async (req: Request, res: Response) => {
   }
 });
 
-router.delete("/:id", async (req: Request, res: Response) => {
+router.delete("/:id", requireRole(MANAGER_ROLES), async (req: Request, res: Response) => {
   try {
     const companyId = req.companyId;
 
@@ -137,7 +137,7 @@ const statusUpdateSchema = z.object({
   status: jobStatusEnum,
 });
 
-router.post("/:id/status", async (req: Request, res: Response) => {
+router.post("/:id/status", requireRole(MANAGER_ROLES), async (req: Request, res: Response) => {
   try {
     const companyId = req.companyId;
 
@@ -183,7 +183,7 @@ router.get("/:jobId/parts", async (req, res) => {
   }
 });
 
-router.post("/:jobId/parts", async (req, res) => {
+router.post("/:jobId/parts", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const companyId = req.companyId;
 
@@ -206,7 +206,7 @@ router.post("/:jobId/parts", async (req, res) => {
   }
 });
 
-router.put("/:jobId/parts/:id", async (req, res) => {
+router.put("/:jobId/parts/:id", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const companyId = req.companyId;
 
@@ -223,7 +223,7 @@ router.put("/:jobId/parts/:id", async (req, res) => {
   }
 });
 
-router.delete("/:jobId/parts/:id", async (req, res) => {
+router.delete("/:jobId/parts/:id", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const companyId = req.companyId;
 
@@ -240,7 +240,7 @@ router.delete("/:jobId/parts/:id", async (req, res) => {
   }
 });
 
-router.patch("/:jobId/parts/reorder", async (req, res) => {
+router.patch("/:jobId/parts/reorder", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const companyId = req.companyId;
 
@@ -281,7 +281,7 @@ router.get("/:jobId/equipment", async (req, res) => {
   }
 });
 
-router.post("/:jobId/equipment", async (req, res) => {
+router.post("/:jobId/equipment", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const companyId = req.companyId;
 
@@ -311,7 +311,7 @@ router.post("/:jobId/equipment", async (req, res) => {
   }
 });
 
-router.put("/:jobId/equipment/:jobEquipmentId", async (req, res) => {
+router.put("/:jobId/equipment/:jobEquipmentId", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const companyId = req.companyId;
 
@@ -329,7 +329,7 @@ router.put("/:jobId/equipment/:jobEquipmentId", async (req, res) => {
   }
 });
 
-router.delete("/:jobId/equipment/:jobEquipmentId", async (req, res) => {
+router.delete("/:jobId/equipment/:jobEquipmentId", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const companyId = req.companyId;
 
@@ -352,7 +352,7 @@ router.delete("/:jobId/equipment/:jobEquipmentId", async (req, res) => {
  * ----------------------------
  */
 
-router.post("/recurring/series", async (req: Request, res: Response) => {
+router.post("/recurring/series", requireRole(MANAGER_ROLES), async (req: Request, res: Response) => {
   try {
     const companyId = req.companyId;
     const parsed = insertRecurringJobSeriesSchema.parse(req.body);
@@ -367,7 +367,7 @@ router.post("/recurring/series", async (req: Request, res: Response) => {
   }
 });
 
-router.post("/recurring/phases", async (req: Request, res: Response) => {
+router.post("/recurring/phases", requireRole(MANAGER_ROLES), async (req: Request, res: Response) => {
   try {
     const companyId = req.companyId;
     const parsed = insertRecurringJobPhaseSchema.parse(req.body);
@@ -387,7 +387,7 @@ router.post("/recurring/phases", async (req: Request, res: Response) => {
  * Utility: reconcile Job ↔ Invoice links
  * ----------------------------
  */
-router.post("/:id/reconcile-invoice-links", async (req: Request, res: Response) => {
+router.post("/:id/reconcile-invoice-links", requireRole(MANAGER_ROLES), async (req: Request, res: Response) => {
   try {
     const companyId = req.companyId;
     const { id: jobId } = req.params;

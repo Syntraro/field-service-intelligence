@@ -1,8 +1,11 @@
 import { Router } from "express";
 import * as service from "../services/tasks.service.ts";
 import { z } from "zod";
+import { requireRole } from "../auth/requireRole";
 
 const router = Router();
+
+const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"];
 
 // ========================================
 // VALIDATION SCHEMAS
@@ -42,7 +45,7 @@ const updateSupplierVisitSchema = z.object({
 }).passthrough();
 
 /* CREATE */
-router.post("/", async (req, res) => {
+router.post("/", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const validation = createTaskSchema.safeParse(req.body);
     if (!validation.success) {
@@ -79,7 +82,7 @@ router.get("/", async (req, res) => {
 });
 
 /* ASSIGN / UNASSIGN */
-router.post("/:id/assign", async (req, res) => {
+router.post("/:id/assign", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const validation = assignTaskSchema.safeParse(req.body);
     if (!validation.success) {
@@ -96,7 +99,7 @@ router.post("/:id/assign", async (req, res) => {
 });
 
 /* CHECK-IN */
-router.post("/:id/check-in", async (req, res) => {
+router.post("/:id/check-in", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     res.json(await service.checkInTask(req.params.id));
   } catch (e: any) {
@@ -105,7 +108,7 @@ router.post("/:id/check-in", async (req, res) => {
 });
 
 /* CHECK-OUT */
-router.post("/:id/check-out", async (req, res) => {
+router.post("/:id/check-out", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     res.json(await service.checkOutTask(req.params.id));
   } catch (e: any) {
@@ -114,7 +117,7 @@ router.post("/:id/check-out", async (req, res) => {
 });
 
 /* CLOSE */
-router.post("/:id/close", async (req, res) => {
+router.post("/:id/close", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const validation = closeTaskSchema.safeParse(req.body);
     if (!validation.success) {
@@ -131,7 +134,7 @@ router.post("/:id/close", async (req, res) => {
 });
 
 /* ADMIN UPDATE */
-router.patch("/:id", async (req, res) => {
+router.patch("/:id", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const validation = updateTaskSchema.safeParse(req.body);
     if (!validation.success) {
@@ -148,7 +151,7 @@ router.patch("/:id", async (req, res) => {
 });
 
 /* SUPPLIER VISIT UPDATE (OFFICE) */
-router.patch("/:id/supplier-visit", async (req, res) => {
+router.patch("/:id/supplier-visit", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const validation = updateSupplierVisitSchema.safeParse(req.body);
     if (!validation.success) {

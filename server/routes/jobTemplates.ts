@@ -2,8 +2,11 @@ import { Router } from "express";
 import { storage } from "../storage/index";
 import { insertJobTemplateSchema, insertJobTemplateLineItemSchema } from "@shared/schema";
 import { z } from "zod";
+import { requireRole } from "../auth/requireRole";
 
 const router = Router();
+
+const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"];
 
 /**
  * Tenant context helper.
@@ -73,7 +76,7 @@ const createTemplateSchema = insertJobTemplateSchema.extend({
   lines: z.array(insertJobTemplateLineItemSchema.omit({ templateId: true })).optional().default([]),
 });
 
-router.post("/", async (req, res) => {
+router.post("/", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const companyId = getCompanyId(req);
     if (!companyId) {
@@ -101,7 +104,7 @@ const updateTemplateSchema = insertJobTemplateSchema.partial().extend({
   lines: z.array(insertJobTemplateLineItemSchema.omit({ templateId: true })).optional(),
 });
 
-router.patch("/:id", async (req, res) => {
+router.patch("/:id", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const companyId = getCompanyId(req);
     if (!companyId) {
@@ -134,7 +137,7 @@ router.patch("/:id", async (req, res) => {
   }
 });
 
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const companyId = getCompanyId(req);
     if (!companyId) {
@@ -159,7 +162,7 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
-router.post("/:id/set-default", async (req, res) => {
+router.post("/:id/set-default", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const companyId = getCompanyId(req);
     if (!companyId) {
@@ -194,7 +197,7 @@ const applyToJobSchema = z.object({
   templateId: z.string().min(1),
 });
 
-router.post("/apply-to-job", async (req, res) => {
+router.post("/apply-to-job", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const companyId = getCompanyId(req);
     if (!companyId) {
@@ -241,7 +244,7 @@ router.get("/default/:jobType", async (req, res) => {
   }
 });
 
-router.post("/:id/clone", async (req, res) => {
+router.post("/:id/clone", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const companyId = getCompanyId(req);
     if (!companyId) {

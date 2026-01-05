@@ -28,6 +28,22 @@ declare global {
 }
 
 /**
+ * Type-safe request interface for routes that run after requireAuth + ensureTenantContext.
+ * Use this instead of Express.Request in route handlers to get type-level guarantees
+ * for companyId and user, eliminating the need for non-null assertions.
+ * 
+ * Usage:
+ *   router.get("/", async (req: AuthedRequest, res: Response) => {
+ *     const companyId = req.companyId; // string, not string | undefined
+ *     const userId = req.user.id;       // guaranteed to exist
+ *   });
+ */
+export interface AuthedRequest extends Request {
+  companyId: string;
+  user: Express.User;
+}
+
+/**
  * Ensures authenticated user has valid company context and attaches req.companyId.
  */
 export const ensureTenantContext: RequestHandler = (req: Request, res: Response, next: NextFunction) => {

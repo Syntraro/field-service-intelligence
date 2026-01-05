@@ -2,9 +2,12 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { storage } from "../storage/index";
 import { z } from "zod";
+import { requireRole } from "../auth/requireRole";
 
 // Note: requireAuth and ensureTenantContext middleware already applied globally in routes/index.ts
 const router = Router();
+
+const MANAGER_ROLES = ["owner", "admin", "manager"];
 
 // ========================================
 // VALIDATION SCHEMAS
@@ -38,7 +41,7 @@ router.get("/", async (req: Request, res: Response) => {
   res.json(settings ?? {});
 });
 
-router.put("/", async (req: Request, res: Response) => {
+router.put("/", requireRole(MANAGER_ROLES), async (req: Request, res: Response) => {
   const companyId = req.companyId;
   if (!companyId) return res.status(401).json({ error: "Unauthorized" });
   
