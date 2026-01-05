@@ -1,0 +1,109 @@
+You are performing a FULL architectural + security + scalability + cost sweep of our multi-tenant HVAC SaaS app.
+
+GOAL
+Produce a written report that flags:
+- security risks (tenant isolation, auth, CSRF, injection, secrets, roles)
+- scalability/performance risks (N+1 queries, unindexed queries, heavy joins, chatty endpoints, payload bloat)
+- cost risks (unbounded reads/writes, expensive cron loops, repeated recomputation, missing caching, logging volume)
+- architectural risks (duplicate code, inconsistent patterns, circular dependencies, leaky abstractions, mixed concerns)
+- maintainability risks (inconsistent naming, missing tests, brittle coupling, undocumented invariants)
+AND provide prioritized fixes with concrete code locations.
+
+SCOPE
+Scan the entire repo:
+- server/ routes, middleware, storage/repositories, db, auth, background jobs
+- shared/ schema, validation, types
+- client/ request layer, queries/mutations, routing, state management
+- migrations/ and any scripts
+- config: env usage, logging, rate limiting, CORS, session/cookies
+
+IMPORTANT RULES
+- This is READ + ANALYZE + REPORT. Do NOT refactor code unless asked.
+- Every finding MUST include: severity, impact, exact file path + line range, and suggested fix.
+- Prefer minimal, long-term fixes. Avoid “quick hacks.”
+- Assume production deployment and multi-tenant data sensitivity.
+
+REPORT FORMAT (STRICT)
+Return exactly:
+
+# Architecture / Security / Scalability Sweep Report (YYYY-MM-DD)
+
+## 0) Repo Map (1 screen)
+- Key folders + what they contain
+- Critical entrypoints (server index, routes aggregator, auth, storage)
+
+## 1) Top Risks Summary (Table)
+Columns: Severity | Category | Risk | Impact | Location | Suggested Fix (1 line)
+
+Severity levels:
+- CRITICAL (exploitable / data leak / major outage risk)
+- HIGH (likely production incident / major cost)
+- MEDIUM (will hurt scale or velocity)
+- LOW (cleanup)
+
+## 2) Security Review
+Cover at minimum:
+- Tenant isolation enforcement everywhere (companyId scoping)
+- Auth boundaries (public vs protected routes)
+- Role/permission enforcement correctness
+- CSRF correctness on writes
+- Input validation & injection (SQL/ORM, XSS surfaces, file uploads)
+- Secrets handling (env vars, leakage, logs)
+- Session/cookie settings (secure, sameSite, trust proxy)
+- Rate limiting & brute-force resistance
+For each issue: severity + evidence + fix.
+
+## 3) Scalability & Performance Review
+Cover at minimum:
+- N+1 query patterns (routes calling storage repeatedly in loops)
+- Missing/incorrect indexes and slow filters
+- Query patterns that load too much data
+- Any “select *” where large tables exist
+- Pagination on lists (clients/jobs/invoices/calendar)
+- Heavy joins and repeated computed fields
+- Caching opportunities (server + client)
+- Request waterfall risk from client (too many queries on load)
+For each: severity + evidence + fix.
+
+## 4) Cost & Reliability Review
+Cover at minimum:
+- Unbounded loops / polling / cron frequency
+- Logging volume & sensitive logging
+- Large payloads / repeated recomputation
+- Inefficient data sync patterns (QBO, external APIs)
+- Retry storms / idempotency holes
+- Transaction boundaries (where atomicity required)
+For each: severity + evidence + fix.
+
+## 5) Architecture & Maintainability Review
+Cover at minimum:
+- Duplicate code (especially across routes/storage)
+- Inconsistent patterns (error handling, response shapes, tenant scoping)
+- Mixed concerns (routes doing business logic instead of service/repo)
+- Circular dependencies or leaky abstractions
+- Naming inconsistencies (client vs location, company vs customer_company)
+- Missing tests for critical rules (invoice refresh, auth/tenant, permissions)
+For each: severity + evidence + fix.
+
+## 6) “Future Tax” List (What will cost us money later)
+List the top 10 items most likely to create:
+- support burden
+- scaling cost
+- refactor cost
+- data migration cost
+Include location + why it’s expensive + recommended fix.
+
+## 7) Priority Fix Plan (2 weeks)
+Give a staged plan:
+- Week 1: security + correctness must-fix
+- Week 2: performance + cleanup
+Each task must include: owner-type (backend/frontend), file targets, and acceptance criteria.
+
+## 8) Appendix
+- Grep/search results that support key findings (brief)
+- Any recommended metrics to add (timing, DB slow queries, audit logs)
+
+OUTPUT QUALITY BAR
+- No vague statements. Every claim must point to code evidence.
+- If something cannot be verified from code, label it as “UNKNOWN” and say exactly what’s missing.
+- Focus on practical long-term outcomes: security, correctness, scale, and cost containment.
