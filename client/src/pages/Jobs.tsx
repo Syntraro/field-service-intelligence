@@ -81,8 +81,14 @@ export default function Jobs() {
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const loaderRef = useRef<HTMLDivElement>(null);
 
-  const { data: jobs = [], isLoading } = useQuery<EnrichedJob[]>({
-    queryKey: ["/api/jobs"],
+  const { data: jobs = [], isLoading } = useQuery<{ data: EnrichedJob[]; meta: { limit: number; hasMore: boolean; nextOffset?: number } }, Error, EnrichedJob[]>({
+    queryKey: ["/api/jobs", { offset: 0, limit: 200 }],
+    queryFn: async () => {
+      const res = await fetch("/api/jobs?offset=0&limit=200", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch jobs");
+      return res.json();
+    },
+    select: (response) => response.data,
   });
 
   const filteredAndSortedJobs = useMemo(() => {

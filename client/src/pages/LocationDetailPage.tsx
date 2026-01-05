@@ -93,8 +93,14 @@ export default function LocationDetailPage() {
   });
   const allParts = partsData?.items || [];
 
-  const { data: jobs = [] } = useQuery<Job[]>({
-    queryKey: ["/api/jobs"],
+  const { data: jobs = [] } = useQuery<{ data: Job[]; meta: { limit: number; hasMore: boolean; nextOffset?: number } }, Error, Job[]>({
+    queryKey: ["/api/jobs", { offset: 0, limit: 200 }],
+    queryFn: async () => {
+      const res = await fetch("/api/jobs?offset=0&limit=200", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch jobs");
+      return res.json();
+    },
+    select: (response) => response.data,
     enabled: Boolean(locationId),
   });
 

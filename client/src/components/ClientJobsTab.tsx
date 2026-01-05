@@ -111,28 +111,29 @@ export default function ClientJobsTab({
     : (parentCompanyId ? locations.map(l => l.id) : [clientId]);
   
   // Fetch jobs from the Jobs API with location filter
-  const { data: jobs = [], isLoading: jobsLoading } = useQuery<JobWithLocation[]>({
-    queryKey: ["/api/jobs", { locationIds }],
+  const { data: jobs = [], isLoading: jobsLoading } = useQuery<{ data: JobWithLocation[]; meta: { limit: number; hasMore: boolean; nextOffset?: number } }, Error, JobWithLocation[]>({
+    queryKey: ["/api/jobs", { locationIds, offset: 0, limit: 200 }],
     queryFn: async () => {
       // If we have specific location IDs to filter, use the first one
       // The API supports single locationId filter
       if (selectedLocationId !== "all") {
-        const res = await fetch(`/api/jobs?locationId=${encodeURIComponent(selectedLocationId)}`, { credentials: "include" });
+        const res = await fetch(`/api/jobs?locationId=${encodeURIComponent(selectedLocationId)}&offset=0&limit=200`, { credentials: "include" });
         if (!res.ok) throw new Error(`Failed to fetch jobs: ${res.statusText}`);
         return res.json();
       }
       
       // For "all locations", fetch all jobs and filter client-side
-      const res = await fetch("/api/jobs", { credentials: "include" });
+      const res = await fetch("/api/jobs?offset=0&limit=200", { credentials: "include" });
       if (!res.ok) throw new Error(`Failed to fetch jobs: ${res.statusText}`);
-      const allJobs: JobWithLocation[] = await res.json();
-      
+      return res.json();
+    },
+    select: (response) => {
+      const allJobs = response.data;
       // Filter to only jobs for locations under this parent company
       if (parentCompanyId && locations.length > 0) {
         const locationIdSet = new Set(locations.map(l => l.id));
         return allJobs.filter(job => job.locationId && locationIdSet.has(job.locationId));
       }
-      
       // If no parent company, filter to just this client's jobs
       return allJobs.filter(job => job.locationId === clientId);
     },

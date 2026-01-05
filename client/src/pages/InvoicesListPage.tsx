@@ -86,8 +86,14 @@ export default function InvoicesListPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [userDensityPreference, setUserDensityPreference] = useState<ViewDensity | null>(null);
 
-  const { data: invoices = [], isLoading } = useQuery<EnrichedInvoice[]>({
-    queryKey: ["/api/invoices/list"],
+  const { data: invoices = [], isLoading } = useQuery<{ data: EnrichedInvoice[]; meta: { limit: number; hasMore: boolean; nextOffset?: number } }, Error, EnrichedInvoice[]>({
+    queryKey: ["/api/invoices/list", { offset: 0, limit: 200 }],
+    queryFn: async () => {
+      const res = await fetch("/api/invoices/list?offset=0&limit=200", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch invoices");
+      return res.json();
+    },
+    select: (response) => response.data,
   });
 
   const { data: stats } = useQuery<InvoiceStats>({
