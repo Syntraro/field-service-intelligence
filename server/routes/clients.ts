@@ -13,6 +13,19 @@ const router = Router();
 // HELPER FUNCTIONS
 // ========================================
 
+function clampInt(raw: string | undefined, def: number, min: number, max: number) {
+  const n = raw ? Number(raw) : def;
+  if (!Number.isFinite(n)) return def;
+  return Math.max(min, Math.min(max, Math.trunc(n)));
+}
+
+function getISODateOrDefault(raw: string | undefined, dayOffset: number) {
+  if (raw && /^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const d = new Date();
+  d.setDate(d.getDate() + dayOffset);
+  return d.toISOString().slice(0, 10);
+}
+
 function formatDateOnly(d: Date): string {
   return d.toISOString().split("T")[0];
 }
@@ -76,7 +89,16 @@ router.get("/", async (req, res) => {
     });
     
     // Get calendar assignments for nextDue calculation
-    const assignments = await storage.getAllCalendarAssignments(companyId);
+    const start = getISODateOrDefault(req.query.assignStart as string | undefined, -30);
+    const end = getISODateOrDefault(req.query.assignEnd as string | undefined, +60);
+    const assignmentLimit = clampInt(req.query.assignLimit as string | undefined, 5000, 1, 5000);
+
+    const assignments = await storage.getCalendarAssignmentsInRange(companyId, {
+    start,
+    end,
+    limit: assignmentLimit,
+});
+
     const futureDueByClientId = buildFutureDueIndex(assignments);
 
     // Add nextDue to each client

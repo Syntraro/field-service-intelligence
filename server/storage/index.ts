@@ -50,6 +50,7 @@ export interface IStorage {
   getClientReport: typeof clientRepository.getClientReport;
   getAssignmentsByClient: typeof clientRepository.getAssignmentsByClient;
   getAllCalendarAssignments: typeof clientRepository.getAllCalendarAssignments;
+  getCalendarAssignmentsInRange: typeof clientRepository.getCalendarAssignmentsInRange;
   getClientParts: typeof clientRepository.getClientParts;
   addClientPart: typeof clientRepository.addClientPart;
   deleteAllClientParts: typeof clientRepository.deleteAllClientParts;
@@ -168,6 +169,7 @@ export const storage: IStorage = {
   getClientReport: clientRepository.getClientReport.bind(clientRepository),
   getAssignmentsByClient: clientRepository.getAssignmentsByClient.bind(clientRepository),
   getAllCalendarAssignments: clientRepository.getAllCalendarAssignments.bind(clientRepository),
+  getCalendarAssignmentsInRange: clientRepository.getCalendarAssignmentsInRange.bind(clientRepository),
   getClientParts: clientRepository.getClientParts.bind(clientRepository),
   addClientPart: clientRepository.addClientPart.bind(clientRepository),
   deleteAllClientParts: clientRepository.deleteAllClientParts.bind(clientRepository),

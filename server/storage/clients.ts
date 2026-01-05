@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { eq, and, inArray, sql, or, ilike } from "drizzle-orm";
+import { eq, and, inArray, sql, or, ilike, gte, lte } from "drizzle-orm";
 import { clients, clientParts, equipment, calendarAssignments } from "@shared/schema";
 import type { InsertClient, Client } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset, escapeLike } from "./base";
@@ -379,6 +379,29 @@ export class ClientRepository extends BaseRepository {
       .where(eq(calendarAssignments.companyId, companyId))
       .orderBy(calendarAssignments.scheduledDate);
   }
+/**
+ * Get calendar assignments for a company within a date range (SAFE for list pages)
+ * NOTE: scheduledDate is assumed to be stored as YYYY-MM-DD text (lexicographic compare works).
+ */
+async getCalendarAssignmentsInRange(
+  companyId: string,
+  args: { start: string; end: string; limit: number }
+) {
+  const limit = clampLimit(args.limit, 5000); // hard cap (adjust if you want lower)
+
+  return await db
+    .select()
+    .from(calendarAssignments)
+    .where(
+      and(
+        eq(calendarAssignments.companyId, companyId),
+        gte(calendarAssignments.scheduledDate, args.start),
+        lte(calendarAssignments.scheduledDate, args.end)
+      )
+    )
+    .orderBy(calendarAssignments.scheduledDate)
+    .limit(limit);
+}
 
   /**
    * Get client parts

@@ -55,7 +55,16 @@ const router = Router();
     try {
       const companyId = req.user!.companyId;
       const clients = await storage.getAllClients(companyId);
-      const assignments = await storage.getAllCalendarAssignments(companyId);
+      const start = getISODateOrDefault(req.query.assignStart as string | undefined, -30);
+const end = getISODateOrDefault(req.query.assignEnd as string | undefined, +60);
+const assignmentLimit = clampInt(req.query.assignLimit as string | undefined, 5000, 1, 5000);
+
+const assignments = await storage.getCalendarAssignmentsInRange(companyId, {
+  start,
+  end,
+  limit: assignmentLimit,
+});
+
       const futureDueByClientId = buildFutureDueIndex(assignments);
 
       const clientsWithDue = clients.map((c: any) => ({
