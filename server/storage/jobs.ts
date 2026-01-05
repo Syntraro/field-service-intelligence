@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { eq, and, gte, lte, sql } from "drizzle-orm";
+import { eq, and, gte, lte, sql, desc, or, lt } from "drizzle-orm";
 import { validate as isUUID } from "uuid";
 import { 
   jobs, 
@@ -8,10 +8,13 @@ import {
   locationEquipment,
   recurringJobSeries,
   companyCounters,
-  clients // Add clients for JOIN
+  clients
 } from "@shared/schema";
 import type { InsertJob, Job, InsertJobPart, JobPart } from "@shared/schema";
 import { BaseRepository } from "./base";
+import { encodeCursor, decodeCursor } from "../utils/cursor";
+import type { PaginationParams } from "../utils/pagination";
+import type { PaginatedResult } from "./types";
 
 interface JobFilters {
   status?: string;
@@ -19,6 +22,7 @@ interface JobFilters {
   locationId?: string;
   startDate?: string;
   endDate?: string;
+  search?: string;
 }
 
 export class JobRepository extends BaseRepository {
@@ -77,67 +81,68 @@ export class JobRepository extends BaseRepository {
 
   
   /**
-   * Get jobs with optional filters
+   * Get jobs with optional filters (paginated)
+   * Supports cursor-based or offset-based pagination
+   * Order: createdAt DESC, id DESC (stable cursor ordering)
    */
-  async getJobs(companyId: string, filters?: JobFilters) {
+  async getJobs(companyId: string, filters?: JobFilters, pagination?: PaginationParams): Promise<PaginatedResult<any>> {
     this.assertCompanyId(companyId);
 
+    const limit = pagination?.limit ?? 50;
+    const { cursor, offset } = pagination ?? {};
+    const fetchLimit = limit + 1;
+
+    const selectFields = {
+      id: jobs.id,
+      companyId: jobs.companyId,
+      locationId: jobs.locationId,
+      jobNumber: jobs.jobNumber,
+      primaryTechnicianId: jobs.primaryTechnicianId,
+      assignedTechnicianIds: jobs.assignedTechnicianIds,
+      status: jobs.status,
+      priority: jobs.priority,
+      jobType: jobs.jobType,
+      summary: jobs.summary,
+      description: jobs.description,
+      accessInstructions: jobs.accessInstructions,
+      scheduledStart: jobs.scheduledStart,
+      scheduledEnd: jobs.scheduledEnd,
+      actualStart: jobs.actualStart,
+      actualEnd: jobs.actualEnd,
+      invoiceId: jobs.invoiceId,
+      qboInvoiceId: jobs.qboInvoiceId,
+      billingNotes: jobs.billingNotes,
+      recurringSeriesId: jobs.recurringSeriesId,
+      calendarAssignmentId: jobs.calendarAssignmentId,
+      isActive: jobs.isActive,
+      version: jobs.version,
+      createdAt: jobs.createdAt,
+      updatedAt: jobs.updatedAt,
+      location: {
+        id: clients.id,
+        companyName: clients.companyName,
+        location: clients.location,
+      }
+    };
+
     let query = db
-      .select({
-        // All job fields
-        id: jobs.id,
-        companyId: jobs.companyId,
-        locationId: jobs.locationId,
-        jobNumber: jobs.jobNumber,
-        primaryTechnicianId: jobs.primaryTechnicianId,
-        assignedTechnicianIds: jobs.assignedTechnicianIds,
-        status: jobs.status,
-        priority: jobs.priority,
-        jobType: jobs.jobType,
-        summary: jobs.summary,
-        description: jobs.description,
-        accessInstructions: jobs.accessInstructions,
-        scheduledStart: jobs.scheduledStart,
-        scheduledEnd: jobs.scheduledEnd,
-        actualStart: jobs.actualStart,
-        actualEnd: jobs.actualEnd,
-        invoiceId: jobs.invoiceId,
-        qboInvoiceId: jobs.qboInvoiceId,
-        billingNotes: jobs.billingNotes,
-        recurringSeriesId: jobs.recurringSeriesId,
-        calendarAssignmentId: jobs.calendarAssignmentId,
-        isActive: jobs.isActive,
-        version: jobs.version,
-        createdAt: jobs.createdAt,
-        updatedAt: jobs.updatedAt,
-        // Add location data
-        location: {
-          id: clients.id,
-          companyName: clients.companyName,
-          location: clients.location,
-        }
-      })
+      .select(selectFields)
       .from(jobs)
       .leftJoin(clients, eq(jobs.locationId, clients.id))
       .where(eq(jobs.companyId, companyId))
       .$dynamic();
 
     if (filters?.status) {
-      // Validate status is from allowed enum
       query = query.where(eq(jobs.status, filters.status));
     }
 
     if (filters?.locationId) {
-      // Validate UUID format
       this.validateUUID(filters.locationId, "locationId");
       query = query.where(eq(jobs.locationId, filters.locationId));
     }
 
     if (filters?.technicianId) {
-      // SECURITY FIX: Validate UUID before using in SQL
       this.validateUUID(filters.technicianId, "technicianId");
-      
-      // Safe to use after validation
       query = query.where(
         sql`${filters.technicianId} = ANY(${jobs.assignedTechnicianIds})`
       );
@@ -157,7 +162,44 @@ export class JobRepository extends BaseRepository {
       }
     }
 
-    return await query.orderBy(jobs.createdAt);
+    if (cursor) {
+      const { createdAtISO, id: cursorId } = decodeCursor(cursor);
+      const cursorDate = new Date(createdAtISO);
+      query = query.where(
+        or(
+          lt(jobs.createdAt, cursorDate),
+          and(eq(jobs.createdAt, cursorDate), lt(jobs.id, cursorId))
+        )
+      );
+    }
+
+    query = query
+      .orderBy(desc(jobs.createdAt), desc(jobs.id))
+      .limit(fetchLimit);
+
+    if (offset !== undefined && !cursor) {
+      query = query.offset(offset);
+    }
+
+    const rows = await query;
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+
+    const meta: PaginatedResult<any>["meta"] = { limit, hasMore };
+
+    if (hasMore && items.length > 0) {
+      const lastItem = items[items.length - 1];
+      if (cursor !== undefined || offset === undefined) {
+        meta.nextCursor = encodeCursor(
+          (lastItem.createdAt as Date).toISOString(),
+          lastItem.id
+        );
+      } else {
+        meta.nextOffset = offset + limit;
+      }
+    }
+
+    return { items, meta };
   }
 
   /**

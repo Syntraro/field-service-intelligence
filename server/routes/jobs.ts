@@ -13,6 +13,8 @@ import type { JobStatus } from "../schemas";
 import type { User } from "@shared/schema";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
+import { parsePagination } from "../utils/pagination";
+import { paginated } from "../utils/paginatedResponse";
 
 const router = Router();
 
@@ -28,18 +30,30 @@ router.get("/", async (req: Request, res: Response) => {
   try {
     const companyId = req.companyId;
 
+    // TODO: Temporary backward compatibility - default to offset=0 if no pagination provided
+    // Remove once UI is updated to include pagination params
+    const queryWithDefaults = {
+      ...req.query,
+      ...(req.query.cursor === undefined && req.query.offset === undefined ? { offset: "0" } : {})
+    };
+
+    const pagination = parsePagination(queryWithDefaults);
+
     const status = req.query.status ? String(req.query.status) : undefined;
     const technicianId = req.query.technicianId ? String(req.query.technicianId) : undefined;
     const search = req.query.search ? String(req.query.search) : undefined;
 
-    const jobs = await storage.getJobs(companyId, {
+    const result = await storage.getJobs(companyId, {
       status,
       technicianId,
       search,
-    });
+    }, pagination);
 
-    res.json(jobs);
+    res.json(paginated(result.items, result.meta));
   } catch (error: any) {
+    if (error.status === 400) {
+      return res.status(400).json({ error: error.message });
+    }
     console.error("Get jobs error:", error);
     res.status(500).json({ error: error.message || "Failed to get jobs" });
   }

@@ -1,0 +1,72 @@
+You are working in an Express + TypeScript + Drizzle backend.
+
+Goal: Implement required pagination + max limit enforced across list endpoints, using the new shared utilities:
+- server/utils/pagination.ts (parsePagination, MAX_LIMIT)
+- server/utils/paginatedResponse.ts (paginated)
+- server/utils/cursor.ts (encodeCursor/decodeCursor)
+
+Implement Step 4 pattern for these endpoints FIRST:
+1) GET /api/invoices
+2) GET /api/jobs
+
+Requirements:
+A) Route layer:
+- In server/routes/invoices.ts and server/routes/jobs.ts, update the GET list endpoint (router.get("/") or equivalent list route)
+- Must call parsePagination(req.query) and reject requests missing cursor/offset
+- Must return a standardized response shape:
+  { data: <items>, meta: { limit, hasMore, nextCursor? or nextOffset? } }
+  Use paginated(items, meta)
+
+B) Storage layer:
+- Update the storage methods used by those list routes (storage.getInvoices, storage.getJobs) so they accept a pagination object and return:
+  { items: T[], meta: { limit, hasMore, nextCursor? nextOffset? } }
+- Use limit + 1 fetch strategy to compute hasMore
+- Support cursor mode (preferred) and offset mode (fallback) exactly as parsePagination allows
+- Cursor must be based on stable ordering: createdAt DESC then id DESC
+- Use encodeCursor/decodeCursor helpers for cursor
+- Ensure tenant isolation: always filter by companyId in WHERE clause
+- Preserve existing filters already supported by the endpoint (status, search, date filters, etc.). Do NOT remove filters.
+
+C) Wiring:
+- Ensure IStorage interface and storage aggregator exports remain correct after signature updates.
+- Update any calling code so TypeScript compiles.
+
+D) Frontend compatibility:
+- Do not break existing UI:
+  - If the UI currently calls /api/invoices or /api/jobs without pagination params, temporarily keep backward compatibility by allowing offset=0 as the default ONLY for these two endpoints while we update the UI later.
+  - However, still enforce MAX_LIMIT from pagination.ts.
+  - Add a TODO comment noting this is temporary compatibility.
+
+Implementation details:
+1) In route files:
+   - import parsePagination from server/utils/pagination
+   - import paginated from server/utils/paginatedResponse
+   - For backward compatibility, if req.query has neither cursor nor offset, set req.query.offset = "0" BEFORE calling parsePagination (ONLY for /api/invoices and /api/jobs).
+2) In storage:
+   - Implement cursor pagination:
+     - If cursor is present, decode it to { createdAtISO, id }
+     - Apply "before cursor" condition for DESC order:
+       (createdAt < cursorCreatedAt) OR (createdAt = cursorCreatedAt AND id < cursorId)
+     - Order by createdAt DESC, id DESC
+   - Implement offset pagination when offset is present:
+     - order by createdAt DESC, id DESC
+     - offset(offset)
+   - Always limit(limit + 1) and slice to limit for items
+   - nextCursor should be computed from the last returned item if hasMore is true
+3) Add/verify DB indexes if needed:
+   - Ensure invoices and jobs have an index on (companyId, createdAt, id) or at least (companyId, createdAt).
+   - If a migrations file exists for performance indexes, add missing ones there (do not create a brand new migrations system).
+
+Deliverables:
+- Modified files:
+  - server/routes/invoices.ts
+  - server/routes/jobs.ts
+  - server/storage/invoices.ts (or wherever getInvoices lives)
+  - server/storage/jobs.ts (or wherever getJobs lives)
+  - server/storage/index.ts (only if needed to keep interface matching)
+- Provide a short checklist at the end:
+  - example curl request for invoices with offset
+  - example curl request for invoices with cursor
+  - same for jobs
+
+Do not refactor unrelated code. Keep existing naming conventions and code style. Ensure TypeScript passes.

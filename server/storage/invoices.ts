@@ -1,62 +1,111 @@
 import { db } from "../db";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, desc, or, lt } from "drizzle-orm";
 import { invoices, invoiceLines, clients } from "@shared/schema";
 import { BaseRepository, parseDecimal } from "./base";
+import { encodeCursor, decodeCursor } from "../utils/cursor";
+import type { PaginationParams } from "../utils/pagination";
+import type { PaginatedResult } from "./types";
 
 export class InvoiceRepository extends BaseRepository {
   /**
-   * Get invoices for a company with client data
+   * Get invoices for a company with client data (paginated)
+   * Supports cursor-based or offset-based pagination
+   * Order: createdAt DESC, id DESC (stable cursor ordering)
    */
-  async getInvoices(companyId: string) {
-    return await db
-      .select({
-        // All invoice fields
-        id: invoices.id,
-        companyId: invoices.companyId,
-        locationId: invoices.locationId,
-        customerCompanyId: invoices.customerCompanyId,
-        invoiceNumber: invoices.invoiceNumber,
-        status: invoices.status,
-        issueDate: invoices.issueDate,
-        dueDate: invoices.dueDate,
-        currency: invoices.currency,
-        subtotal: invoices.subtotal,
-        taxTotal: invoices.taxTotal,
-        total: invoices.total,
-        amountPaid: invoices.amountPaid,
-        balance: invoices.balance,
-        jobId: invoices.jobId,
-        sentAt: invoices.sentAt,
-        viewedAt: invoices.viewedAt,
-        notesInternal: invoices.notesInternal,
-        notesCustomer: invoices.notesCustomer,
-        workDescription: invoices.workDescription,
-        clientMessage: invoices.clientMessage,
-        showQuantity: invoices.showQuantity,
-        showUnitPrice: invoices.showUnitPrice,
-        showLineTotals: invoices.showLineTotals,
-        showLineItems: invoices.showLineItems,
-        showBalance: invoices.showBalance,
-        qboInvoiceId: invoices.qboInvoiceId,
-        qboSyncToken: invoices.qboSyncToken,
-        qboLastSyncedAt: invoices.qboLastSyncedAt,
-        qboDocNumber: invoices.qboDocNumber,
-        dirty: invoices.dirty,
-        isActive: invoices.isActive,
-        version: invoices.version,
-        createdAt: invoices.createdAt,
-        updatedAt: invoices.updatedAt,
-        // Add client data
-        client: {
-          id: clients.id,
-          companyName: clients.companyName,
-          location: clients.location,
-        }
-      })
+  async getInvoices(companyId: string, pagination: PaginationParams): Promise<PaginatedResult<any>> {
+    this.assertCompanyId(companyId);
+
+    const { limit, cursor, offset } = pagination;
+    const fetchLimit = limit + 1;
+
+    const selectFields = {
+      id: invoices.id,
+      companyId: invoices.companyId,
+      locationId: invoices.locationId,
+      customerCompanyId: invoices.customerCompanyId,
+      invoiceNumber: invoices.invoiceNumber,
+      status: invoices.status,
+      issueDate: invoices.issueDate,
+      dueDate: invoices.dueDate,
+      currency: invoices.currency,
+      subtotal: invoices.subtotal,
+      taxTotal: invoices.taxTotal,
+      total: invoices.total,
+      amountPaid: invoices.amountPaid,
+      balance: invoices.balance,
+      jobId: invoices.jobId,
+      sentAt: invoices.sentAt,
+      viewedAt: invoices.viewedAt,
+      notesInternal: invoices.notesInternal,
+      notesCustomer: invoices.notesCustomer,
+      workDescription: invoices.workDescription,
+      clientMessage: invoices.clientMessage,
+      showQuantity: invoices.showQuantity,
+      showUnitPrice: invoices.showUnitPrice,
+      showLineTotals: invoices.showLineTotals,
+      showLineItems: invoices.showLineItems,
+      showBalance: invoices.showBalance,
+      qboInvoiceId: invoices.qboInvoiceId,
+      qboSyncToken: invoices.qboSyncToken,
+      qboLastSyncedAt: invoices.qboLastSyncedAt,
+      qboDocNumber: invoices.qboDocNumber,
+      dirty: invoices.dirty,
+      isActive: invoices.isActive,
+      version: invoices.version,
+      createdAt: invoices.createdAt,
+      updatedAt: invoices.updatedAt,
+      client: {
+        id: clients.id,
+        companyName: clients.companyName,
+        location: clients.location,
+      }
+    };
+
+    let query = db
+      .select(selectFields)
       .from(invoices)
       .leftJoin(clients, eq(invoices.locationId, clients.id))
       .where(and(eq(invoices.companyId, companyId), eq(invoices.isActive, true)))
-      .orderBy(invoices.createdAt);
+      .$dynamic();
+
+    if (cursor) {
+      const { createdAtISO, id: cursorId } = decodeCursor(cursor);
+      const cursorDate = new Date(createdAtISO);
+      query = query.where(
+        or(
+          lt(invoices.createdAt, cursorDate),
+          and(eq(invoices.createdAt, cursorDate), lt(invoices.id, cursorId))
+        )
+      );
+    }
+
+    query = query
+      .orderBy(desc(invoices.createdAt), desc(invoices.id))
+      .limit(fetchLimit);
+
+    if (offset !== undefined && !cursor) {
+      query = query.offset(offset);
+    }
+
+    const rows = await query;
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+
+    const meta: PaginatedResult<any>["meta"] = { limit, hasMore };
+
+    if (hasMore && items.length > 0) {
+      const lastItem = items[items.length - 1];
+      if (cursor !== undefined || offset === undefined) {
+        meta.nextCursor = encodeCursor(
+          (lastItem.createdAt as Date).toISOString(),
+          lastItem.id
+        );
+      } else {
+        meta.nextOffset = offset + limit;
+      }
+    }
+
+    return { items, meta };
   }
 
   /**
