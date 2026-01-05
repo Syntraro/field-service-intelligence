@@ -53,17 +53,29 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
 
   const { data: jobEquipment = [], isLoading: jobEquipmentLoading } = useQuery<JobEquipmentWithDetails[]>({
     queryKey: ["/api/jobs", jobId, "equipment"],
+    queryFn: async () => {
+      const res = await fetch(`/api/jobs/${jobId}/equipment`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch job equipment");
+      return res.json();
+    },
   });
 
   const { data: locationEquipment = [], isLoading: locationEquipmentLoading } = useQuery<LocationEquipment[]>({
     queryKey: ["/api/locations", locationId, "equipment"],
+    queryFn: async () => {
+      const res = await fetch(`/api/locations/${locationId}/equipment`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch location equipment");
+      return res.json();
+    },
     enabled: !!locationId,
   });
 
   const addMutation = useMutation({
     mutationFn: async (data: { equipmentId: string; notes?: string }) => {
-      const res = await apiRequest("POST", `/api/jobs/${jobId}/equipment`, data);
-      return await res.json();
+      return await apiRequest(`/api/jobs/${jobId}/equipment`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "equipment"] });
@@ -86,7 +98,9 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
 
   const removeMutation = useMutation({
     mutationFn: async (jobEquipmentId: string) => {
-      await apiRequest("DELETE", `/api/jobs/${jobId}/equipment/${jobEquipmentId}`);
+      await apiRequest(`/api/jobs/${jobId}/equipment/${jobEquipmentId}`, {
+        method: "DELETE",
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "equipment"] });
