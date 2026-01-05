@@ -2,8 +2,11 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { storage } from "../storage/index";
 import { z } from "zod";
+import { requireRole } from "../auth/requireRole";
 
 const router = Router();
+
+const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"];
 
 // ========================================
 // VALIDATION SCHEMAS
@@ -114,7 +117,7 @@ router.post("/:id/refresh-from-job", requireInvoiceEditable(), async (req: Reque
  * POST /api/invoices/from-job/:jobId
  * Create a new invoice from an existing job
  */
-router.post("/from-job/:jobId", async (req: Request, res: Response) => {
+router.post("/from-job/:jobId", requireRole(MANAGER_ROLES), async (req: Request, res: Response) => {
   try {
     const validation = createInvoiceFromJobSchema.safeParse(req.body);
     if (!validation.success) {

@@ -11,8 +11,11 @@ import {
 import { assertJobStatusTransition } from "../statusRules";
 import type { JobStatus } from "../schemas";
 import type { User } from "@shared/schema";
+import { requireRole } from "../auth/requireRole";
 
 const router = Router();
+
+const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"];
 
 
 
@@ -59,7 +62,7 @@ router.get("/:id", async (req: Request, res: Response) => {
   }
 });
 
-router.post("/", async (req: Request, res: Response) => {
+router.post("/", requireRole(MANAGER_ROLES), async (req: Request, res: Response) => {
   try {
     const companyId = req.companyId;
 

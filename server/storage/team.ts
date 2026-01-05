@@ -11,7 +11,7 @@ import { cache, CacheKeys, CacheTTL } from "../services/cache";
 
 export class TeamRepository extends BaseRepository {
   /**
-   * Get all team members for a company
+   * Get team members for a company
    */
   async getTeamMembers(companyId: string) {
     return await db

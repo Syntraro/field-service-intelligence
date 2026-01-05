@@ -9,8 +9,6 @@ const PUBLIC_PATHS = new Set([
 ]);
 
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
-  console.log('🔍 DEBUG requireAuth - path:', req.path, 'url:', req.url);
-  
   if (PUBLIC_PATHS.has(req.path)) return next();
 
   const isAuthed = typeof (req as any).isAuthenticated === "function" && (req as any).isAuthenticated();

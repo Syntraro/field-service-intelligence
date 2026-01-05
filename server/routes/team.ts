@@ -19,8 +19,14 @@ const updateTeamMemberSchema = z.object({
 });
 
 const updateTechnicianProfileSchema = z.object({
-  laborCostPerHour: z.number().min(0).max(9999.99).optional(),
-  billableRatePerHour: z.number().min(0).max(9999.99).optional(),
+  laborCostPerHour: z.union([
+    z.string().regex(/^\d+(\.\d{1,2})?$/),
+    z.number().min(0).max(9999.99)
+  ]).transform(v => String(v)).optional(),
+  billableRatePerHour: z.union([
+    z.string().regex(/^\d+(\.\d{1,2})?$/),
+    z.number().min(0).max(9999.99)
+  ]).transform(v => String(v)).optional(),
   color: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
   phone: z.string().max(20).optional(),
   note: z.string().max(1000).optional(),
@@ -29,22 +35,22 @@ const updateTechnicianProfileSchema = z.object({
 const setWorkingHoursSchema = z.object({
   hours: z.array(z.object({
     dayOfWeek: z.number().int().min(0).max(6),
-    startTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/),
-    endTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/),
-    isAvailable: z.boolean(),
+    startTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/).optional().nullable(),
+    endTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/).optional().nullable(),
+    isWorking: z.boolean(),
   })),
 });
 
 const setPermissionOverridesSchema = z.object({
   overrides: z.array(z.object({
-    permission: z.string().min(1),
-    granted: z.boolean(),
+    permissionId: z.string().min(1),
+    override: z.enum(["grant", "revoke"]),
   })),
 });
 
 router.get("/", async (req, res) => {
   try {
-    const members = await storage.getTeamMembers(req.companyId);
+    const members = await storage.getTeamMembers(req.companyId!);
     const sanitized = members.map(m => ({
       ...m,
       password: undefined,
@@ -59,7 +65,7 @@ router.get("/", async (req, res) => {
 router.get("/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    const member = await storage.getTeamMember(req.companyId, userId);
+    const member = await storage.getTeamMember(req.companyId!, userId);
     if (!member) {
       return res.status(404).json({ error: "Team member not found" });
     }
@@ -95,7 +101,7 @@ router.patch("/:userId", async (req, res) => {
       });
     }
 
-    const updated = await storage.updateTeamMember(req.companyId, userId, validation.data);
+    const updated = await storage.updateTeamMember(req.companyId!, userId, validation.data);
     if (!updated) {
       return res.status(404).json({ error: "Team member not found" });
     }
@@ -115,7 +121,7 @@ router.post("/:userId/deactivate", async (req, res) => {
       return res.status(400).json({ error: "Cannot deactivate your own account" });
     }
 
-    const updated = await storage.deactivateTeamMember(req.companyId, userId);
+    const updated = await storage.deactivateTeamMember(req.companyId!, userId);
     if (!updated) {
       return res.status(404).json({ error: "Team member not found" });
     }
@@ -131,12 +137,12 @@ router.post("/:userId/activate", async (req, res) => {
   try {
     const { userId } = req.params;
 
-    const member = await storage.getTeamMember(req.companyId, userId);
+    const member = await storage.getTeamMember(req.companyId!, userId);
     if (!member) {
       return res.status(404).json({ error: "Team member not found" });
     }
 
-    const updated = await storage.updateTeamMember(req.companyId, userId, {
+    const updated = await storage.updateTeamMember(req.companyId!, userId, {
       status: 'active'
     });
 
@@ -155,7 +161,7 @@ router.put("/:userId/profile", async (req, res) => {
   try {
     const { userId } = req.params;
 
-    const member = await storage.getTeamMember(req.companyId, userId);
+    const member = await storage.getTeamMember(req.companyId!, userId);
     if (!member) {
       return res.status(404).json({ error: "Team member not found" });
     }
@@ -180,7 +186,7 @@ router.put("/:userId/working-hours", async (req, res) => {
   try {
     const { userId } = req.params;
 
-    const member = await storage.getTeamMember(req.companyId, userId);
+    const member = await storage.getTeamMember(req.companyId!, userId);
     if (!member) {
       return res.status(404).json({ error: "Team member not found" });
     }
@@ -205,7 +211,7 @@ router.put("/:userId/permissions", async (req, res) => {
   try {
     const { userId } = req.params;
 
-    const member = await storage.getTeamMember(req.companyId, userId);
+    const member = await storage.getTeamMember(req.companyId!, userId);
     if (!member) {
       return res.status(404).json({ error: "Team member not found" });
     }
@@ -231,7 +237,7 @@ router.get("/:userId/effective-permissions", async (req, res) => {
   try {
     const { userId } = req.params;
 
-    const member = await storage.getTeamMember(req.companyId, userId);
+    const member = await storage.getTeamMember(req.companyId!, userId);
     if (!member) {
       return res.status(404).json({ error: "Team member not found" });
     }

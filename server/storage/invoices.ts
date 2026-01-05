@@ -5,7 +5,7 @@ import { BaseRepository, parseDecimal } from "./base";
 
 export class InvoiceRepository extends BaseRepository {
   /**
-   * Get all invoices for a company with client data
+   * Get invoices for a company with client data
    */
   async getInvoices(companyId: string) {
     return await db

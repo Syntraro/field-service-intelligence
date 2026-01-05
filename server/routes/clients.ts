@@ -6,8 +6,11 @@ import { z } from "zod";
 import type { Client } from "@shared/schema";
 import { db } from "../db";
 import { eq, and, desc, inArray, isNotNull } from "drizzle-orm";
+import { requireRole } from "../auth/requireRole";
 
 const router = Router();
+
+const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"];
 
 // ========================================
 // HELPER FUNCTIONS
@@ -119,7 +122,7 @@ router.get("/", async (req, res) => {
 });
 
 // POST /api/clients - Create new client
-router.post("/", async (req, res) => {
+router.post("/", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     // Check subscription limits
     const limitCheck = await storage.canAddLocation(req.companyId);
@@ -166,7 +169,7 @@ router.post("/", async (req, res) => {
 });
 
 // POST /api/clients/full-create - Create customer company + primary location + additional locations (Model A)
-router.post("/full-create", async (req, res) => {
+router.post("/full-create", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const companyId = req.companyId;
     const userId = req.user!.id;
@@ -953,7 +956,7 @@ router.post("/:id/set-primary", async (req, res) => {
 });
 
 // DELETE /api/clients/:id - Delete client
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     await storage.deleteAllClientParts(req.companyId, req.params.id);
     const deleted = await storage.deleteClient(req.companyId, req.params.id);
@@ -967,7 +970,7 @@ router.delete("/:id", async (req, res) => {
 });
 
 // POST /api/clients/bulk-delete - Bulk delete clients
-router.post("/bulk-delete", async (req, res) => {
+router.post("/bulk-delete", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const schema = z.object({
       ids: z.array(z.string().uuid()).min(1).max(200)
