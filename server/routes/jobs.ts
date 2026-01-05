@@ -30,14 +30,7 @@ router.get("/", async (req: Request, res: Response) => {
   try {
     const companyId = req.companyId;
 
-    // TODO: Temporary backward compatibility - default to offset=0 if no pagination provided
-    // Remove once UI is updated to include pagination params
-    const queryWithDefaults = {
-      ...req.query,
-      ...(req.query.cursor === undefined && req.query.offset === undefined ? { offset: "0" } : {})
-    };
-
-    const pagination = parsePagination(queryWithDefaults);
+    const pagination = parsePagination(req.query);
 
     const status = req.query.status ? String(req.query.status) : undefined;
     const technicianId = req.query.technicianId ? String(req.query.technicianId) : undefined;

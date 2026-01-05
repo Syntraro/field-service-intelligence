@@ -68,14 +68,7 @@ function requireInvoiceEditable() {
 
 router.get("/list", async (req: Request, res: Response) => {
   try {
-    // TODO: Temporary backward compatibility - default to offset=0 if no pagination provided
-    // Remove once UI is updated to include pagination params
-    const queryWithDefaults = {
-      ...req.query,
-      ...(req.query.cursor === undefined && req.query.offset === undefined ? { offset: "0" } : {})
-    };
-    
-    const pagination = parsePagination(queryWithDefaults);
+    const pagination = parsePagination(req.query);
     const result = await storage.getInvoices(req.companyId!, pagination);
     res.json(paginated(result.items, result.meta));
   } catch (error: any) {
