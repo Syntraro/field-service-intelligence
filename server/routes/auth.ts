@@ -16,7 +16,6 @@ declare module "express-serve-static-core" {
   }
 }
 
-
 const router = Router();
 
 /**
@@ -32,9 +31,11 @@ const loginLimiter = rateLimit({
   skipSuccessfulRequests: true, // Don't count successful logins against the limit
   handler: (req, res) => {
     console.warn(`[SECURITY] Rate limit exceeded for IP: ${req.ip}`);
-    res.status(429).json({ 
+    res.status(429).json({
       error: "Too many login attempts. Please try again in 15 minutes.",
-      retryAfter: req.rateLimit?.resetTime ? Math.ceil(req.rateLimit.resetTime.getTime() / 1000) : 900
+      retryAfter: req.rateLimit?.resetTime
+        ? Math.ceil(req.rateLimit.resetTime.getTime() / 1000)
+        : 900,
     });
   },
 });
@@ -46,7 +47,10 @@ const loginLimiter = rateLimit({
 const strictLoginLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
   max: 10, // 10 attempts per hour max
-  message: { error: "Account temporarily locked due to too many failed login attempts. Please try again in 1 hour." },
+  message: {
+    error:
+      "Account temporarily locked due to too many failed login attempts. Please try again in 1 hour.",
+  },
   skipSuccessfulRequests: true,
   validate: false, // Disable all validation to prevent IPv6 warning
   keyGenerator: (req) => {
@@ -54,16 +58,21 @@ const strictLoginLimiter = rateLimit({
     const email = req.body?.email?.toLowerCase();
     if (email) return `email:${email}`;
     // Use x-forwarded-for header or fallback to IP for proper proxy handling
-    const forwardedFor = req.headers['x-forwarded-for'];
-    const ip = Array.isArray(forwardedFor) ? forwardedFor[0] : (forwardedFor?.split(',')[0]?.trim() || req.ip || 'unknown');
+    const forwardedFor = req.headers["x-forwarded-for"];
+    const ip = Array.isArray(forwardedFor)
+      ? forwardedFor[0]
+      : forwardedFor?.split(",")[0]?.trim() || req.ip || "unknown";
     return `ip:${ip}`;
   },
   handler: (req, res) => {
     const email = req.body?.email;
     console.error(`[SECURITY] Account lockout triggered for: ${email || req.ip}`);
-    res.status(429).json({ 
-      error: "Account temporarily locked due to too many failed login attempts. Please try again later.",
-      retryAfter: req.rateLimit?.resetTime ? Math.ceil(req.rateLimit.resetTime.getTime() / 1000) : 3600
+    res.status(429).json({
+      error:
+        "Account temporarily locked due to too many failed login attempts. Please try again later.",
+      retryAfter: req.rateLimit?.resetTime
+        ? Math.ceil(req.rateLimit.resetTime.getTime() / 1000)
+        : 3600,
     });
   },
 });
@@ -73,38 +82,45 @@ const strictLoginLimiter = rateLimit({
  * Authenticate user with email and password
  * Protected by rate limiting to prevent brute force attacks
  */
-router.post("/login", loginLimiter, strictLoginLimiter, (req: Request, res: Response, next) => {
-  // Log login attempt (without password!)
-  console.log(`[AUTH] Login attempt for: ${req.body?.email || 'unknown'} from IP: ${req.ip}`);
-  
-  passport.authenticate("local", (err: any, user: any, info: any) => {
-    if (err) {
-      console.error(`[AUTH] Authentication error:`, err);
-      return res.status(500).json({ error: "Authentication error" });
-    }
-    if (!user) {
-      // Don't reveal whether email exists - generic error message
-      console.warn(`[AUTH] Failed login for: ${req.body?.email || 'unknown'}`);
-      return res.status(401).json({ error: "Invalid email or password" });
-    }
-    req.logIn(user, (loginErr) => {
-      if (loginErr) {
-        console.error(`[AUTH] Login error:`, loginErr);
-        return res.status(500).json({ error: "Login error" });
+router.post(
+  "/login",
+  loginLimiter,
+  strictLoginLimiter,
+  (req: Request, res: Response, next) => {
+    // Log login attempt (without password!)
+    console.log(
+      `[AUTH] Login attempt for: ${req.body?.email || "unknown"} from IP: ${req.ip}`,
+    );
+
+    passport.authenticate("local", (err: any, user: any) => {
+      if (err) {
+        console.error(`[AUTH] Authentication error:`, err);
+        return res.status(500).json({ error: "Authentication error" });
       }
-      
-      // Successful login
-      console.log(`[AUTH] Successful login: ${user.email}`);
-      
-      res.json({
-        id: user.id,
-        email: user.email,
-        role: user.role,
-        companyId: user.companyId,
+      if (!user) {
+        // Don't reveal whether email exists - generic error message
+        console.warn(`[AUTH] Failed login for: ${req.body?.email || "unknown"}`);
+        return res.status(401).json({ error: "Invalid email or password" });
+      }
+      req.logIn(user, (loginErr) => {
+        if (loginErr) {
+          console.error(`[AUTH] Login error:`, loginErr);
+          return res.status(500).json({ error: "Login error" });
+        }
+
+        // Successful login
+        console.log(`[AUTH] Successful login: ${user.email}`);
+
+        res.json({
+          id: user.id,
+          email: user.email,
+          role: user.role,
+          companyId: user.companyId,
+        });
       });
-    });
-  })(req, res, next);
-});
+    })(req, res, next);
+  },
+);
 
 /**
  * POST /api/auth/logout
@@ -134,6 +150,7 @@ router.get("/me", (req: Request, res: Response) => {
     companyId: req.user.companyId,
   });
 });
+
 /**
  * POST /api/auth/signup
  * Create new user account
@@ -151,24 +168,21 @@ router.post("/signup", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "User already exists" });
     }
 
-    let companyId: string;
-    let role = "admin";
-
-    if (invitationToken) {
-      const invitation = await storage.getInvitationByToken(invitationToken);
-      if (!invitation || invitation.status !== 'pending') {
-        return res.status(400).json({ error: "Invalid or expired invitation" });
-      }
-      companyId = invitation.companyId;
-      role = invitation.role || "technician";
-      await storage.updateInvitation(invitation.id, { status: 'accepted' });
-    } else {
-      const newCompany = await storage.createCompany({
-        name: email.split('@')[0] + "'s Company",
-        email: email,
+    // ✅ Production safety: require invitation for signup
+    if (!invitationToken) {
+      return res.status(403).json({
+        error: "Signup requires an invitation. Contact support to get started.",
       });
-      companyId = newCompany.id;
     }
+
+    const invitation = await storage.getInvitationByToken(invitationToken);
+    if (!invitation || invitation.status !== "pending") {
+      return res.status(400).json({ error: "Invalid or expired invitation" });
+    }
+
+    const companyId = invitation.companyId;
+    const role = invitation.role || "technician";
+    await storage.updateInvitation(invitation.id, { status: "accepted" });
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const user = await storage.createUser({
@@ -182,7 +196,9 @@ router.post("/signup", async (req: Request, res: Response) => {
 
     req.logIn(user, (err) => {
       if (err) {
-        return res.status(500).json({ error: "Account created but login failed" });
+        return res
+          .status(500)
+          .json({ error: "Account created but login failed" });
       }
       res.status(201).json({
         id: user.id,
@@ -196,4 +212,5 @@ router.post("/signup", async (req: Request, res: Response) => {
     res.status(500).json({ error: error.message || "Failed to create account" });
   }
 });
+
 export default router;

@@ -56,6 +56,20 @@ export function registerRoutes(app: Express): Server {
   // 3) Rate limiting (API only)
   app.use(rateLimitPerTenant({ scope: "api", windowMs: 60_000, max: 1200 }));
 
+  // 3b) ✅ Mutation-only rate limiting (tighter)
+  const mutationLimiter = rateLimitPerTenant({
+    scope: "mutations",
+    windowMs: 60_000,
+    max: 200,
+  });
+  app.use("/api", (req, res, next) => {
+    const method = req.method?.toUpperCase();
+    if (method && ["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+      return mutationLimiter(req, res, next);
+    }
+    return next();
+  });
+  
   // 4) Impersonation context & activity tracking (API only)
   app.use(impersonationMiddleware(storage as any));
   app.use(trackActivity);

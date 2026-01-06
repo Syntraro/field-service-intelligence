@@ -21,7 +21,7 @@ const createTaskSchema = z.object({
   type: z.string().max(50).optional(),
   jobId: z.string().uuid().optional(),
   status: z.enum(["pending", "in_progress", "completed", "cancelled"]).optional().default("pending"),
-}).passthrough();
+}).strict();
 
 const assignTaskSchema = z.object({
   assignedToUserId: z.string().uuid().nullable(),
@@ -38,13 +38,13 @@ const updateTaskSchema = z.object({
   assignedToUserId: z.string().uuid().optional(),
   status: z.enum(["pending", "in_progress", "completed", "cancelled"]).optional(),
   type: z.string().max(50).optional(),
-}).passthrough();
+}).strict();
 
 const updateSupplierVisitSchema = z.object({
   supplierName: z.string().max(200).optional(),
   visitDate: z.string().datetime().optional(),
   notes: z.string().max(1000).optional(),
-}).passthrough();
+}).strict();
 
 /* CREATE */
 router.post("/", requireRole(MANAGER_ROLES), async (req: Request, res: Response) => {

@@ -33,7 +33,7 @@ const updateCompanySettingsSchema = z.object({
     showCompanyLogo: z.boolean().optional(),
     footer: z.string().max(500).optional(),
   }).optional(),
-}).passthrough(); // Allow other settings fields
+}).strict(); // Allow other settings fields
 
 router.get("/", async (req: Request, res: Response) => {
   const companyId = req.companyId;

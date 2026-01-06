@@ -21,7 +21,7 @@ const resizeJobSchema = z.object({
     id: z.string().uuid(),
     scheduledStart: z.string().datetime(),
     scheduledEnd: z.string().datetime(),
-  }).passthrough(), // Allow other job fields
+  }).strict(), // Allow other job fields
   newEndTime: z.string().datetime(),
 });
 
