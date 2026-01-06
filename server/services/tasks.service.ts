@@ -1,22 +1,44 @@
 import { db } from "../db.ts";
 import { tasks, supplierVisitDetails } from "../../shared/schema.ts";
-import { and, eq, isNull, gte, lte } from "drizzle-orm";
+import { and, eq, isNull, gte, lte, desc } from "drizzle-orm";
 
 /**
  * Notes:
  * - DB tables come from shared/schema.ts (canonical Drizzle schema location)
  * - This file is backend-only service logic
+ * - ALL functions require companyId for tenant isolation
  */
+
+const MAX_LIMIT = 200;
+const DEFAULT_LIMIT = 50;
+
+export interface TaskListFilters {
+  companyId: string; // REQUIRED - tenant isolation
+  status?: string;
+  assignedToUserId?: string;
+  unassigned?: boolean;
+  type?: string;
+  jobId?: string;
+  fromDate?: Date;
+  toDate?: Date;
+  offset?: number;
+  limit?: number;
+}
+
+export interface TaskListResult {
+  items: any[];
+  hasMore: boolean;
+}
 
 /* =========================================================
    CREATE TASK
    ========================================================= */
-export async function createTask(input: any) {
+export async function createTask(companyId: string, input: any) {
   return db.transaction(async (tx) => {
     const [task] = await tx
       .insert(tasks)
       .values({
-        companyId: input.companyId,
+        companyId, // Use passed companyId, not from input
         createdByUserId: input.createdByUserId,
         assignedToUserId: input.assignedToUserId ?? null,
         type: input.type, // "GENERAL" | "SUPPLIER_VISIT"
@@ -43,12 +65,16 @@ export async function createTask(input: any) {
 }
 
 /* =========================================================
-   LIST TASKS (FILTERED)
+   LIST TASKS (FILTERED) - DB-LAYER PAGINATION
    ========================================================= */
-export async function listTasks(filters: any) {
-  const where: any[] = [];
+export async function listTasks(filters: TaskListFilters): Promise<TaskListResult> {
+  // companyId is REQUIRED for tenant isolation
+  if (!filters.companyId) {
+    throw new Error("companyId is required for tenant isolation");
+  }
 
-  if (filters.companyId) where.push(eq(tasks.companyId, filters.companyId));
+  const where: any[] = [eq(tasks.companyId, filters.companyId)]; // ALWAYS filter by tenant
+
   if (filters.status) where.push(eq(tasks.status, filters.status));
 
   if (filters.unassigned) {
@@ -63,53 +89,78 @@ export async function listTasks(filters: any) {
   if (filters.fromDate) where.push(gte(tasks.checkedInAt, filters.fromDate));
   if (filters.toDate) where.push(lte(tasks.checkedInAt, filters.toDate));
 
-  return db
+  // Clamp pagination params
+  const offset = Math.max(0, filters.offset ?? 0);
+  const limit = Math.min(MAX_LIMIT, Math.max(1, filters.limit ?? DEFAULT_LIMIT));
+
+  // Fetch limit + 1 to determine hasMore
+  const rows = await db
     .select()
     .from(tasks)
-    .where(where.length ? and(...where) : undefined)
-    .orderBy(tasks.createdAt);
+    .where(and(...where))
+    .orderBy(desc(tasks.createdAt), desc(tasks.id)) // Stable ordering
+    .limit(limit + 1)
+    .offset(offset);
+
+  const hasMore = rows.length > limit;
+  const items = hasMore ? rows.slice(0, limit) : rows;
+
+  return { items, hasMore };
+}
+
+/* =========================================================
+   GET SINGLE TASK (with tenant check)
+   ========================================================= */
+export async function getTask(companyId: string, taskId: string) {
+  const [task] = await db
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)));
+
+  return task ?? null;
 }
 
 /* =========================================================
    ASSIGN / UNASSIGN
    ========================================================= */
-export async function assignTask(taskId: string, assignedToUserId: string | null) {
+export async function assignTask(companyId: string, taskId: string, assignedToUserId: string | null) {
   const [updated] = await db
     .update(tasks)
     .set({ assignedToUserId })
-    .where(eq(tasks.id, taskId))
+    .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)))
     .returning();
 
+  if (!updated) throw new Error("Task not found or access denied");
   return updated;
 }
 
 /* =========================================================
    CHECK-IN / CHECK-OUT
    ========================================================= */
-export async function checkInTask(taskId: string) {
-  const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId));
-  if (!task) throw new Error("Task not found");
+export async function checkInTask(companyId: string, taskId: string) {
+  const task = await getTask(companyId, taskId);
+  if (!task) throw new Error("Task not found or access denied");
   if (task.checkedInAt) return task;
 
   const [updated] = await db
     .update(tasks)
     .set({ checkedInAt: new Date() })
-    .where(eq(tasks.id, taskId))
+    .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)))
     .returning();
 
   return updated;
 }
 
-export async function checkOutTask(taskId: string) {
-  const [task] = await db.select().from(tasks).where(eq(tasks.id, taskId));
-  if (!task) throw new Error("Task not found");
+export async function checkOutTask(companyId: string, taskId: string) {
+  const task = await getTask(companyId, taskId);
+  if (!task) throw new Error("Task not found or access denied");
   if (!task.checkedInAt) throw new Error("Cannot check out before check in");
   if (task.checkedOutAt) return task;
 
   const [updated] = await db
     .update(tasks)
     .set({ checkedOutAt: new Date() })
-    .where(eq(tasks.id, taskId))
+    .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)))
     .returning();
 
   return updated;
@@ -118,7 +169,10 @@ export async function checkOutTask(taskId: string) {
 /* =========================================================
    CLOSE TASK
    ========================================================= */
-export async function closeTask(taskId: string, userId: string) {
+export async function closeTask(companyId: string, taskId: string, userId: string) {
+  const task = await getTask(companyId, taskId);
+  if (!task) throw new Error("Task not found or access denied");
+
   const [updated] = await db
     .update(tasks)
     .set({
@@ -126,7 +180,7 @@ export async function closeTask(taskId: string, userId: string) {
       closedAt: new Date(),
       closedByUserId: userId,
     })
-    .where(eq(tasks.id, taskId))
+    .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)))
     .returning();
 
   return updated;
@@ -135,7 +189,10 @@ export async function closeTask(taskId: string, userId: string) {
 /* =========================================================
    ADMIN UPDATE (title/notes/schedule/job link)
    ========================================================= */
-export async function updateTask(taskId: string, input: any) {
+export async function updateTask(companyId: string, taskId: string, input: any) {
+  const task = await getTask(companyId, taskId);
+  if (!task) throw new Error("Task not found or access denied");
+
   const updates: any = {};
 
   if ("title" in input) updates.title = input.title;
@@ -148,7 +205,7 @@ export async function updateTask(taskId: string, input: any) {
   const [updated] = await db
     .update(tasks)
     .set(updates)
-    .where(eq(tasks.id, taskId))
+    .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)))
     .returning();
 
   return updated;
@@ -157,7 +214,11 @@ export async function updateTask(taskId: string, input: any) {
 /* =========================================================
    SUPPLIER VISIT UPDATE (OFFICE RECONCILIATION)
    ========================================================= */
-export async function updateSupplierVisit(taskId: string, input: any) {
+export async function updateSupplierVisit(companyId: string, taskId: string, input: any) {
+  // Verify task ownership first
+  const task = await getTask(companyId, taskId);
+  if (!task) throw new Error("Task not found or access denied");
+
   const updates: any = {
     supplierId: input.supplierId ?? null,
     supplierNameOther: input.supplierNameOther ?? null,
