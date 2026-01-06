@@ -19,6 +19,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { TasksSidebar } from "@/components/TasksSidebar";
 
 // Helper function to parse date string as local date (not UTC)
 // This prevents timezone issues where "2025-12-05" becomes December 4th in local time
@@ -83,11 +84,12 @@ interface ClientPart {
 }
 
 export default function Dashboard() {
-  const { toast } = useToast();
+const { toast } = useToast();
   const [location, setLocation] = useLocation();
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [addClientDialogOpen, setAddClientDialogOpen] = useState(false);
+  
   const [expandedSections, setExpandedSections] = useState<{
     overdue: boolean;
     upcoming: boolean;
@@ -111,6 +113,23 @@ export default function Dashboard() {
     thisMonthAll: true,
     completed: true,
   });
+
+  // ✅ Tasks sidebar collapse state (persisted)
+  const TASKS_COLLAPSE_KEY = "dashboardTasksCollapsed";
+  const [tasksCollapsed, setTasksCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(TASKS_COLLAPSE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(TASKS_COLLAPSE_KEY, tasksCollapsed ? "1" : "0");
+    } catch {}
+  }, [tasksCollapsed]);
+  
   const [reportDialogClientId, setReportDialogClientId] = useState<string | null>(null);
   const [jobDialogOpen, setJobDialogOpen] = useState(false);
   const [selectedJobClient, setSelectedJobClient] = useState<any>(null);
@@ -656,7 +675,9 @@ export default function Dashboard() {
       <main className="mx-auto px-4 sm:px-6 lg:px-8 py-4 space-y-4">
 
         <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-4">
-          <TabsContent value="schedule" className="space-y-6">
+          <TabsContent value="schedule" className="space-y-0">
+            <div className="flex gap-4">
+            <div className="flex-1 min-w-0 space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
               <StatsCard 
                 title="Overdue" 
@@ -912,7 +933,17 @@ export default function Dashboard() {
                   )}
                 </Card>
               )}
-            </div>
+            </div> 
+              
+               </div> {/* ✅ closes left column (flex-1) */}
+              
+              <div className="h-[calc(100vh-140px)] sticky top-20 self-start">
+                  <TasksSidebar
+                    collapsed={tasksCollapsed}
+                    onToggleCollapsed={() => setTasksCollapsed((v) => !v)}
+                  />
+                </div>
+              </div> {/* ✅ closes flex container */}
           </TabsContent>
 
           <TabsContent value="clients">

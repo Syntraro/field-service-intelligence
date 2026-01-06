@@ -34,6 +34,10 @@ export interface TaskListResult {
    CREATE TASK
    ========================================================= */
 export async function createTask(companyId: string, input: any) {
+  if (!input.createdByUserId) {
+    throw new Error("createdByUserId is required");
+  }
+
   return db.transaction(async (tx) => {
     const [task] = await tx
       .insert(tasks)

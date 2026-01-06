@@ -21,7 +21,7 @@ const createTaskSchema = z.object({
   type: z.string().max(50).optional(),
   jobId: z.string().uuid().optional(),
   status: z.enum(["pending", "in_progress", "completed", "cancelled"]).optional().default("pending"),
-}).strict();
+}).passthrough();
 
 const assignTaskSchema = z.object({
   assignedToUserId: z.string().uuid().nullable(),
@@ -38,18 +38,18 @@ const updateTaskSchema = z.object({
   assignedToUserId: z.string().uuid().optional(),
   status: z.enum(["pending", "in_progress", "completed", "cancelled"]).optional(),
   type: z.string().max(50).optional(),
-}).strict();
+}).passthrough();
 
 const updateSupplierVisitSchema = z.object({
   supplierName: z.string().max(200).optional(),
   visitDate: z.string().datetime().optional(),
   notes: z.string().max(1000).optional(),
-}).strict();
+}).passthrough();
 
 /* CREATE */
 router.post("/", requireRole(MANAGER_ROLES), async (req: Request, res: Response) => {
   try {
-    const companyId = req.companyId!; // Derived from session, NOT from body/query
+    const companyId = req.companyId!;
     
     const validation = createTaskSchema.safeParse(req.body);
     if (!validation.success) {
@@ -59,26 +59,37 @@ router.post("/", requireRole(MANAGER_ROLES), async (req: Request, res: Response)
       });
     }
 
-    const task = await service.createTask(companyId, validation.data);
+    if (!req.user?.id) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+
+    const task = await service.createTask(companyId, {
+      ...validation.data,
+      createdByUserId: req.user.id,
+      notes: (validation.data as any).description ?? undefined,
+    });
+
     res.json(task);
   } catch (e: any) {
-    res.status(400).json({ error: e.message });
+    console.error("CREATE TASK ERROR:", e);
+    return res.status(400).json({
+      error: e.message,
+      details: e,
+    });
   }
 });
 
 /* LIST (FILTERED) - companyId from session ONLY */
 router.get("/", async (req: Request, res: Response) => {
   try {
-    const companyId = req.companyId!; // CRITICAL: Derived from session, NOT query params
+    const companyId = req.companyId!;
     const { params, explicit } = parsePaginationLenient(req.query);
     
-    // Use clamped values for pagination
     const offset = params.offset ?? 0;
-    const limit = params.limit; // Already clamped by parsePaginationLenient (default 50, max 200)
+    const limit = params.limit;
     
-    // Pass tenant-safe filters to service (no companyId from query allowed)
     const result = await service.listTasks({
-      companyId, // From session only
+      companyId,
       status: req.query.status as string | undefined,
       assignedToUserId: req.query.assignedToUserId as string | undefined,
       unassigned: req.query.unassigned === "true",

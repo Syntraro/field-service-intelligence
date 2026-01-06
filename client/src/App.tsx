@@ -57,10 +57,17 @@ import {
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import Suppliers from "@/pages/Suppliers";
 
 function Router() {
   return (
     <Switch>
+      <Route path="/suppliers">
+        <ProtectedRoute requireAdmin>
+          <Suppliers />
+        </ProtectedRoute>
+      </Route>
+
       <Route path="/login" component={Login} />
       <Route path="/signup" component={Signup} />
       <Route path="/request-reset" component={RequestReset} />
