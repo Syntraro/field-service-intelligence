@@ -1,9 +1,8 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { format } from "date-fns";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { DndContext, DragOverlay, closestCenter, DragEndEvent, DragStartEvent, useDroppable, pointerWithin, CollisionDetection, useDraggable, PointerSensor, useSensor, useSensors, rectIntersection } from "@dnd-kit/core";
-import { useSortable, SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
+import { DndContext, DragOverlay, closestCenter, DragEndEvent, DragStartEvent, useDroppable, pointerWithin, CollisionDetection, PointerSensor, useSensor, useSensors, rectIntersection } from "@dnd-kit/core";
+import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import NewAddClientDialog from "@/components/NewAddClientDialog";
 import { JobDetailDialog } from "@/components/JobDetailDialog";
 import { PartsDialog } from "@/components/PartsDialog";
@@ -18,32 +17,21 @@ import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 import { useAuth } from "@/lib/auth";
 import { UnscheduledJobsSidebar } from "@/components/UnscheduledJobsSidebar";
-
-const MONTH_ABBREV = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-// Technician color palette - colors for left border indicator
-const TECHNICIAN_COLORS = [
-  { bg: 'bg-blue-50 dark:bg-blue-950/20', border: 'border-blue-500', borderLeft: 'border-l-blue-500', dot: 'bg-blue-500', text: 'text-blue-700 dark:text-blue-300', label: 'Blue' },
-  { bg: 'bg-green-50 dark:bg-green-950/20', border: 'border-green-500', borderLeft: 'border-l-green-500', dot: 'bg-green-500', text: 'text-green-700 dark:text-green-300', label: 'Green' },
-  { bg: 'bg-purple-50 dark:bg-purple-950/20', border: 'border-purple-500', borderLeft: 'border-l-purple-500', dot: 'bg-purple-500', text: 'text-purple-700 dark:text-purple-300', label: 'Purple' },
-  { bg: 'bg-amber-50 dark:bg-amber-950/20', border: 'border-amber-500', borderLeft: 'border-l-amber-500', dot: 'bg-amber-500', text: 'text-amber-700 dark:text-amber-300', label: 'Amber' },
-  { bg: 'bg-rose-50 dark:bg-rose-950/20', border: 'border-rose-500', borderLeft: 'border-l-rose-500', dot: 'bg-rose-500', text: 'text-rose-700 dark:text-rose-300', label: 'Rose' },
-  { bg: 'bg-cyan-50 dark:bg-cyan-950/20', border: 'border-cyan-500', borderLeft: 'border-l-cyan-500', dot: 'bg-cyan-500', text: 'text-cyan-700 dark:text-cyan-300', label: 'Cyan' },
-  { bg: 'bg-orange-50 dark:bg-orange-950/20', border: 'border-orange-500', borderLeft: 'border-l-orange-500', dot: 'bg-orange-500', text: 'text-orange-700 dark:text-orange-300', label: 'Orange' },
-  { bg: 'bg-indigo-50 dark:bg-indigo-950/20', border: 'border-indigo-500', borderLeft: 'border-l-indigo-500', dot: 'bg-indigo-500', text: 'text-indigo-700 dark:text-indigo-300', label: 'Indigo' },
-];
-
-type CalendarDensity = 'compact' | 'comfortable' | 'expanded';
-
-const DRAG_ENABLED = true; // enable drag & drop
-
-const DENSITY_STYLES = {
-  compact: { card: 'py-1 px-2', row: 'min-h-10', gap: 'gap-1', rowHeight: 40 },
-  comfortable: { card: 'py-1.5 px-2.5', row: 'min-h-12', gap: 'gap-1', rowHeight: 48 },
-  expanded: { card: 'py-2 px-3', row: 'min-h-14', gap: 'gap-1.5', rowHeight: 56 },
-};
-
-const ALLDAY_ROW_HEIGHTS: Record<string, number> = { compact: 72, comfortable: 84, roomy: 96 };
+import {
+  MONTH_ABBREV,
+  TECHNICIAN_COLORS,
+  DRAG_ENABLED,
+  DENSITY_STYLES,
+  ALLDAY_ROW_HEIGHTS,
+  CalendarDensity,
+  getAssignmentStartMinutes,
+  calculateLanes,
+  getMondayOfWeek,
+  createTechnicianColorMap,
+  getTechnicianColorForAssignment,
+} from "@/components/calendar";
+import { DraggableClient } from "@/components/calendar/DraggableClient";
+import { ResizableJobCard } from "@/components/calendar/ResizableJobCard";
 
 function UnscheduledPanel({ clients, onClientClick, isMinimized, onToggleMinimize, currentMonth, currentYear }: { 
   clients: any[]; 
@@ -134,373 +122,6 @@ function UnscheduledPanel({ clients, onClientClick, isMinimized, onToggleMinimiz
   );
 }
 
-// Helper function to calculate lanes for overlapping jobs
-
-function getAssignmentStartMinutes(a: any): number {
-  if (a == null) return 0;
-  const hour = a.scheduledHour;
-  if (hour == null) return 0;
-  const offset = a.scheduledStartMinutes != null ? Number(a.scheduledStartMinutes) : 0;
-  return hour * 60 + offset;
-}
-function calculateLanes(assignments: any[]): Map<string, { laneIndex: number; totalLanes: number }> {
-  const laneMap = new Map<string, { laneIndex: number; totalLanes: number }>();
-  
-  if (assignments.length === 0) return laneMap;
-  
-  // Get time range for each assignment
-  const getTimeRange = (a: any) => {
-    const start = getAssignmentStartMinutes(a);
-    const duration = a.durationMinutes || 60;
-    return { start, end: start + duration };
-  };
-  
-  // Sort by start time
-  const sorted = [...assignments].sort((a, b) => {
-    return getTimeRange(a).start - getTimeRange(b).start;
-  });
-  
-  // Track active lanes (each lane has an end time)
-  const lanes: number[] = [];
-  
-  // First pass: assign lane indices using greedy allocation
-  for (const assignment of sorted) {
-    const range = getTimeRange(assignment);
-    
-    // Find the first lane that's free (ends before this job starts)
-    let laneIndex = lanes.findIndex(laneEnd => laneEnd <= range.start);
-    
-    if (laneIndex === -1) {
-      // No free lane, create a new one
-      laneIndex = lanes.length;
-      lanes.push(range.end);
-    } else {
-      // Use this lane and update its end time
-      lanes[laneIndex] = range.end;
-    }
-    
-    laneMap.set(assignment.id, { laneIndex, totalLanes: 1 });
-  }
-  
-  // Second pass: use sweep-line to find max concurrent at each moment
-  // Build events for sweep line
-  type Event = { time: number; type: 'start' | 'end'; id: string };
-  const events: Event[] = [];
-  for (const assignment of assignments) {
-    const range = getTimeRange(assignment);
-    events.push({ time: range.start, type: 'start', id: assignment.id });
-    events.push({ time: range.end, type: 'end', id: assignment.id });
-  }
-  // Sort: by time, then 'end' before 'start' at same time (half-open intervals [start, end))
-  // This ensures back-to-back jobs (A ends at 60, C starts at 60) don't count as overlapping
-  events.sort((a, b) => a.time - b.time || (a.type === 'end' ? -1 : 1));
-  
-  // Track max concurrent for each active assignment during sweep
-  const maxConcurrentMap = new Map<string, number>();
-  const activeSet = new Set<string>();
-  
-  for (const event of events) {
-    if (event.type === 'start') {
-      activeSet.add(event.id);
-      const currentCount = activeSet.size;
-      // Update max concurrent for ALL currently active assignments
-      activeSet.forEach(id => {
-        const existing = maxConcurrentMap.get(id) || 1;
-        maxConcurrentMap.set(id, Math.max(existing, currentCount));
-      });
-    } else {
-      activeSet.delete(event.id);
-    }
-  }
-  
-  // Apply max concurrent to lane map
-  for (const assignment of assignments) {
-    const lane = laneMap.get(assignment.id);
-    if (lane) {
-      lane.totalLanes = maxConcurrentMap.get(assignment.id) || 1;
-    }
-  }
-  
-  // Third pass: ensure directly overlapping assignments share the same totalLanes
-  for (const assignment of assignments) {
-    const range = getTimeRange(assignment);
-    const lane = laneMap.get(assignment.id);
-    if (!lane) continue;
-    
-    for (const other of assignments) {
-      if (other.id === assignment.id) continue;
-      const otherRange = getTimeRange(other);
-      const otherLane = laneMap.get(other.id);
-      if (!otherLane) continue;
-      
-      // If they directly overlap, ensure same totalLanes (take max)
-      if (otherRange.start < range.end && otherRange.end > range.start) {
-        const maxLanes = Math.max(lane.totalLanes, otherLane.totalLanes);
-        lane.totalLanes = maxLanes;
-        otherLane.totalLanes = maxLanes;
-      }
-    }
-  }
-  
-  return laneMap;
-}
-
-// Resizable job card wrapper for weekly/daily views with absolute positioning
-function ResizableJobCard({ 
-  assignment, 
-  client, 
-  rowHeight, 
-  onResize, 
-  getTechnicianColor, 
-  densityStyle, 
-  onClick,
-  isCompleted,
-  isOverdue,
-  laneIndex = 0,
-  totalLanes = 1
-}: { 
-  assignment: any; 
-  client: any; 
-  rowHeight: number; 
-  onResize: (assignmentId: string, newDurationMinutes: number) => void;
-  getTechnicianColor: (assignment: any) => any;
-  densityStyle: string;
-  onClick: () => void;
-  isCompleted: boolean;
-  isOverdue: boolean;
-  laneIndex?: number;
-  totalLanes?: number;
-}) {
-  const [isResizing, setIsResizing] = useState(false);
-  const [tempDuration, setTempDuration] = useState<number | null>(null);
-  const resizeStartRef = useRef<{ y: number; duration: number } | null>(null);
-
-  const startMinutes = getAssignmentStartMinutes(assignment);
-  const startOffsetWithinHour = startMinutes % 60;
-  const durationMinutes = tempDuration ?? (assignment.durationMinutes || 60);
-  
-  // Calculate position and height based on time
-  const pixelsPerMinute = rowHeight / 60;
-  const topOffset = startOffsetWithinHour * pixelsPerMinute; // Offset within the hour cell
-  const height = durationMinutes * pixelsPerMinute;
-  
-  // Minimum height for visibility (15 minutes)
-  const minHeight = 15 * pixelsPerMinute;
-  
-  // Calculate width and left position for overlapping jobs
-  const widthPercent = 100 / totalLanes;
-  const leftPercent = laneIndex * widthPercent;
-
-  const handleResizeStart = useCallback((e: React.PointerEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsResizing(true);
-    resizeStartRef.current = { y: e.clientY, duration: assignment.durationMinutes || 60 };
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-  }, [assignment.durationMinutes]);
-
-  const handleResizeMove = useCallback((e: React.PointerEvent) => {
-    if (!isResizing || !resizeStartRef.current) return;
-    
-    const deltaY = e.clientY - resizeStartRef.current.y;
-    const deltaMinutes = Math.round(deltaY / pixelsPerMinute);
-    
-    // Snap to 15-minute increments
-    const snappedDelta = Math.round(deltaMinutes / 15) * 15;
-    const newDuration = Math.max(15, Math.min(720, resizeStartRef.current.duration + snappedDelta));
-    
-    setTempDuration(newDuration);
-  }, [isResizing, pixelsPerMinute]);
-
-  const handleResizeEnd = useCallback((e: React.PointerEvent) => {
-    if (!isResizing) return;
-    
-    setIsResizing(false);
-    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    
-    if (tempDuration !== null && tempDuration !== (assignment.durationMinutes || 60)) {
-      onResize(assignment.id, tempDuration);
-    }
-    setTempDuration(null);
-    resizeStartRef.current = null;
-  }, [isResizing, tempDuration, assignment.id, assignment.durationMinutes, onResize]);
-
-  const techColor = getTechnicianColor(assignment);
-
-  return (
-    <div
-      className="absolute z-10"
-      style={{ 
-        top: `${topOffset}px`, 
-        height: `${Math.max(height, minHeight)}px`,
-        left: `calc(${leftPercent}% + 1px)`,
-        width: `calc(${widthPercent}% - 2px)`,
-      }}
-    >
-      <DraggableClient
-        id={assignment.id}
-        client={client}
-        inCalendar
-        onClick={onClick}
-        isCompleted={isCompleted}
-        isOverdue={isOverdue}
-        assignment={assignment}
-        technicianColor={techColor}
-        densityStyle={densityStyle}
-        cardHeight={Math.max(height, minHeight)}
-      />
-      {/* Resize handle at bottom */}
-      <div
-        className={`absolute bottom-0 left-0 right-0 h-2 cursor-row-resize hover:bg-primary/20 transition-colors ${isResizing ? 'bg-primary/30' : ''}`}
-        onPointerDown={handleResizeStart}
-        onPointerMove={handleResizeMove}
-        onPointerUp={handleResizeEnd}
-        onPointerCancel={handleResizeEnd}
-        data-testid={`resize-handle-${assignment.id}`}
-      />
-      {/* Duration tooltip during resize */}
-      {isResizing && tempDuration !== null && (
-        <div className="absolute -bottom-6 left-1/2 -translate-x-1/2 bg-foreground text-background text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap z-20">
-          {Math.floor(tempDuration / 60)}h {tempDuration % 60}m
-        </div>
-      )}
-    </div>
-  );
-}
-
-function DraggableClient({ id, client, inCalendar, onClick, isCompleted, isOverdue, assignment, onAssignTechnician, monthLabel, isOffMonth, isPastMonth, technicianColor, densityStyle, cardHeight }: { id: string; client: any; inCalendar?: boolean; onClick?: () => void; isCompleted?: boolean; isOverdue?: boolean; assignment?: any; onAssignTechnician?: (assignmentId: string, technicianId: string | null) => void; monthLabel?: string | null; isOffMonth?: boolean; isPastMonth?: boolean; technicianColor?: { bg: string; border: string; text: string; borderLeft?: string; dot?: string }; densityStyle?: string; cardHeight?: number }) {
-  // Calendar items: use ONLY useDraggable for unrestricted movement
-  // Unscheduled items: use ONLY useSortable for sorting in panel
-  const draggableResult = inCalendar ? useDraggable({
-    id,
-    disabled: !DRAG_ENABLED,
-    data: { type: 'assignment', assignmentId: id }
-  }) : null;
-  
-  const sortableResult = !inCalendar ? useSortable({ id, disabled: !DRAG_ENABLED }) : null;
-  
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    isDragging,
-  } = (inCalendar ? draggableResult : sortableResult)!;
-  
-  // useSortable has transition, useDraggable doesn't
-  const transition = sortableResult?.transition;
-
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-  };
-
-  // Card styling: left border for technician color ONLY (not overdue status)
-  // Overdue is always indicated by red dot, not border color
-  const getCardStyle = () => {
-    const baseStyle = 'bg-card border border-border shadow-sm hover:shadow-md';
-    if (!inCalendar) {
-      // Unscheduled drawer: neutral border (no technician assigned), overdue shown as red dot
-      return `${baseStyle} border-l-4 border-l-muted-foreground/40`;
-    }
-    // Calendar items: technician color on left border, never red
-    const completedOpacity = isCompleted ? 'opacity-60' : '';
-    const leftBorder = technicianColor?.borderLeft || 'border-l-muted-foreground/40';
-    return `${baseStyle} border-l-4 ${leftBorder} ${completedOpacity}`;
-  };
-
-  // When cardHeight is provided, use full height styling
-  const heightStyle = cardHeight ? { height: `${cardHeight}px` } : {};
-
-  return (
-    <div
-      ref={setNodeRef}
-      style={{ ...style, ...heightStyle }}
-      {...attributes}
-      className={`text-xs rounded-md transition-all relative select-none group ${cardHeight ? 'overflow-hidden' : ''} ${densityStyle || 'py-1.5 px-2.5'} ${getCardStyle()}`}
-      data-testid={inCalendar ? `assigned-client-${id}` : `unscheduled-client-${client.id}`}
-    >
-      <div 
-        {...listeners}
-        className={inCalendar ? (DRAG_ENABLED ? "cursor-grab active:cursor-grabbing" : "cursor-default") : ""}
-      >
-        {/* In Calendar: Clean layout - no status badges, job info only */}
-        {inCalendar ? (
-          <div className="space-y-0.5">
-            {/* Line 1: Client + Location */}
-            <div className="flex items-start gap-1">
-              <div className="flex-1 min-w-0">
-                <div className={`font-semibold text-[12px] leading-[1.2] truncate ${isCompleted ? 'line-through opacity-60' : ''}`}>
-                  {client.companyName}
-                  {client.location && <span className="font-normal text-muted-foreground"> - {client.location}</span>}
-                </div>
-              </div>
-            </div>
-            {/* Line 2: Time range (shows 15-min starts/ends when present) */}
-            {assignment && (assignment.scheduledHour !== null && assignment.scheduledHour !== undefined) && (
-              <div className={`text-[11px] text-muted-foreground leading-[1.2] ${isCompleted ? 'opacity-60' : ''}`}>
-                {(() => {
-                  const startM = (getAssignmentStartMinutes(assignment)) as number;
-                  const dur = (assignment.durationMinutes || 60) as number;
-                  const endM = startM + dur;
-                  const fmt = (m: number) => {
-                    const h24 = Math.floor(m / 60) % 24;
-                    const min = m % 60;
-                    const ampm = h24 >= 12 ? 'PM' : 'AM';
-                    const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
-                    return `${h12}:${String(min).padStart(2, '0')} ${ampm}`;
-                  };
-                  return `${fmt(startM)}–${fmt(endM)}`;
-                })()}
-              </div>
-            )}
-            {/* Line 2: Job description */}
-            <div className={`text-[12px] text-foreground/80 leading-[1.2] ${isCompleted ? 'line-through opacity-60' : ''}`}>
-              Preventive Maintenance
-              {assignment?.jobNumber && <span className="text-muted-foreground ml-1">#{assignment.jobNumber}</span>}
-            </div>
-            {/* Line 3: City */}
-            {client.city && (
-              <div className={`text-[12px] text-muted-foreground leading-[1.2] ${isCompleted ? 'opacity-60' : ''}`}>
-                {client.city}
-              </div>
-            )}
-          </div>
-        ) : (
-          /* Unscheduled drawer: Stacked 2-line layout - client name and location only */
-          <div className="space-y-0.5">
-            {/* Line 1: Client name */}
-            <div className="flex items-start gap-1">
-              <div className="font-semibold text-[12px] leading-[1.2] truncate flex-1 min-w-0">
-                {client.companyName}
-              </div>
-            </div>
-            {/* Line 2: Location info */}
-            {client.location && (
-              <div className="text-[12px] text-muted-foreground leading-[1.2] truncate">
-                {client.location}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-      {inCalendar && onClick && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onClick();
-          }}
-          className="absolute bottom-0.5 right-0.5 opacity-0 group-hover:opacity-100 transition-opacity h-4 w-4 flex items-center justify-center hover:bg-primary/20 rounded"
-          data-testid={`button-open-client-${id}`}
-        >
-          <Info className="h-3 w-3" />
-        </button>
-      )}
-    </div>
-  );
-}
-
 function DayPartsCell({ assignments, clients, dayName, date, showOnlyOutstanding }: { assignments: any[]; clients: any[]; dayName: string; date: Date; showOnlyOutstanding: boolean }) {
   const { toast } = useToast();
   
@@ -558,17 +179,17 @@ function DayPartsCell({ assignments, clients, dayName, date, showOnlyOutstanding
   );
 }
 
-function DroppableDay({ day, year, month, assignments, clients, onRemove, onClientClick, onClearDay, showParts = false, getTechnicianColor, densityStyle, gapStyle }: { 
-  day: number; 
-  year: number; 
-  month: number; 
-  assignments: any[]; 
+function DroppableDay({ day, year, month, assignments, clients, onRemove, onClientClick, onClearDay, showParts = false, getTechnicianColor, densityStyle, gapStyle }: {
+  day: number;
+  year: number;
+  month: number;
+  assignments: any[];
   clients: any[];
   onRemove: (assignmentId: string) => void;
   onClientClick: (client: any, assignment: any) => void;
   onClearDay: (day: number, dayAssignments: any[]) => void;
   showParts?: boolean;
-  getTechnicianColor?: (assignment: any) => { bg: string; border: string; text: string };
+  getTechnicianColor?: (assignment: any) => ReturnType<typeof getTechnicianColorForAssignment>;
   densityStyle?: string;
   gapStyle?: string;
 }) {
@@ -663,15 +284,6 @@ export default function Calendar() {
   
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth() + 1;
-
-  // Helper to get Monday of the week
-  const getMondayOfWeek = (date: Date) => {
-    const d = new Date(date);
-    const day = d.getDay();
-    const daysToMonday = day === 0 ? 6 : day - 1; // Sunday = 6 days back, Monday = 0 days back
-    d.setDate(d.getDate() - daysToMonday);
-    return d;
-  };
 
   // Calculate which months to fetch based on view
   const getMonthsToFetch = () => {
@@ -773,29 +385,13 @@ export default function Calendar() {
   });
 
   // Create technician color map for consistent coloring
-  const technicianColorMap = useMemo(() => {
-    const map = new Map<string, typeof TECHNICIAN_COLORS[0]>();
-    technicians.forEach((tech: any, index: number) => {
-      map.set(tech.id, TECHNICIAN_COLORS[index % TECHNICIAN_COLORS.length]);
-    });
-    return map;
-  }, [technicians]);
+  const technicianColorMap = useMemo(() => createTechnicianColorMap(technicians), [technicians]);
 
   // Helper to get technician color for an assignment
-  const getTechnicianColor = (assignment: any) => {
-    // Check both new (assignedTechnicianIds) and legacy (assignedTechnicianId) fields
-    const techIds = assignment?.assignedTechnicianIds || [];
-    const legacyTechId = assignment?.assignedTechnicianId;
-    
-    if (techIds.length > 0) {
-      return technicianColorMap.get(techIds[0]) || TECHNICIAN_COLORS[0];
-    }
-    if (legacyTechId) {
-      return technicianColorMap.get(legacyTechId) || TECHNICIAN_COLORS[0];
-    }
-    // Unassigned - use neutral color
-    return { bg: 'bg-muted/50', border: 'border-muted-foreground/30', text: 'text-muted-foreground' };
-  };
+  const getTechnicianColor = useCallback(
+    (assignment: any) => getTechnicianColorForAssignment(assignment, technicianColorMap),
+    [technicianColorMap]
+  );
 
   const { data: companySettings } = useQuery<any>({
     queryKey: ['/api/company-settings'],

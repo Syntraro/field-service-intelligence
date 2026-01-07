@@ -4,21 +4,16 @@ import { useRoute, useLocation, Link } from "wouter";
 import { format } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { 
-  ArrowLeft, 
-  Pencil, 
-  Trash2, 
-  Loader2, 
-  MapPin, 
-  User, 
+import {
+  ArrowLeft,
+  Pencil,
+  Trash2,
+  Loader2,
+  MapPin,
+  User,
   Calendar,
   Clock,
   AlertTriangle,
-  CheckCircle,
-  XCircle,
-  Pause,
-  Play,
-  FileText,
   Building2,
   Phone,
   Mail,
@@ -28,12 +23,11 @@ import {
   ChevronDown,
   UserPlus,
   Package,
-  Receipt,
   History,
   Wrench,
   Send,
   Check,
-  Plus
+  Plus,
 } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import JobEquipmentSection from "@/components/JobEquipmentSection";
@@ -42,6 +36,7 @@ import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import { JobHeaderCard } from "@/components/JobHeaderCard";
 import { JobAssignmentsCard } from "@/components/JobAssignmentsCard";
 import { JobMetaCard } from "@/components/JobMetaCard";
+import { StatusProgressBar, getJobStatusDisplay, getPriorityDisplay } from "@/components/job";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -201,192 +196,6 @@ interface JobDetailResponse extends Job {
   parentCompany?: CustomerCompany;
   technicians?: UserType[];
   recurringSeries?: RecurringJobSeries;
-}
-
-const JOB_STATUS_FLOW = [
-  { key: "draft", label: "Draft", icon: FileText },
-  { key: "scheduled", label: "Scheduled", icon: Calendar },
-  { key: "in_progress", label: "In Progress", icon: Play },
-  { key: "completed", label: "Completed", icon: CheckCircle },
-  { key: "invoiced", label: "Invoiced", icon: Receipt },
-];
-
-const STATUS_TRANSITIONS: Record<string, string[]> = {
-  draft: ["scheduled", "cancelled"],
-  scheduled: ["in_progress", "on_hold", "cancelled"],
-  in_progress: ["completed", "on_hold", "cancelled"],
-  on_hold: ["in_progress", "cancelled"],
-  completed: ["invoiced"],
-  invoiced: [],
-  cancelled: [],
-};
-
-function getJobStatusDisplay(status: string, scheduledStart: Date | null): { 
-  label: string; 
-  variant: "default" | "destructive" | "secondary" | "outline"; 
-  icon: any;
-  isOverdue?: boolean;
-} {
-  const now = new Date();
-  
-  if (status === "completed") {
-    return { label: "Completed", variant: "secondary", icon: CheckCircle };
-  }
-  if (status === "invoiced") {
-    return { label: "Invoiced", variant: "default", icon: Receipt };
-  }
-  if (status === "cancelled") {
-    return { label: "Cancelled", variant: "outline", icon: XCircle };
-  }
-  if (status === "on_hold") {
-    return { label: "On Hold", variant: "outline", icon: Pause };
-  }
-  if (status === "in_progress") {
-    return { label: "In Progress", variant: "default", icon: Play };
-  }
-  if (status === "draft") {
-    return { label: "Draft", variant: "outline", icon: FileText };
-  }
-  
-  if (status === "scheduled" && scheduledStart) {
-    const scheduled = new Date(scheduledStart);
-    if (scheduled < now) {
-      return { label: "Overdue", variant: "destructive", icon: AlertTriangle, isOverdue: true };
-    }
-    return { label: "Scheduled", variant: "default", icon: Calendar };
-  }
-  
-  return { label: status, variant: "outline", icon: FileText };
-}
-
-function getPriorityDisplay(priority: string): { label: string; variant: "default" | "destructive" | "secondary" | "outline" } {
-  switch (priority) {
-    case "urgent":
-      return { label: "Urgent", variant: "destructive" };
-    case "high":
-      return { label: "High", variant: "default" };
-    case "medium":
-      return { label: "Medium", variant: "secondary" };
-    case "low":
-      return { label: "Low", variant: "outline" };
-    default:
-      return { label: priority, variant: "outline" };
-  }
-}
-
-
-function StatusProgressBar({ currentStatus, onStatusChange, isUpdating }: {
-  currentStatus: string;
-  onStatusChange: (status: string) => void;
-  isUpdating: boolean;
-}) {
-  const currentIndex = JOB_STATUS_FLOW.findIndex(s => s.key === currentStatus);
-  const isCancelled = currentStatus === "cancelled";
-  const isOnHold = currentStatus === "on_hold";
-  const availableTransitions = STATUS_TRANSITIONS[currentStatus] || [];
-  const canCancel = availableTransitions.includes("cancelled");
-  const canHold = availableTransitions.includes("on_hold");
-  const canResume = currentStatus === "on_hold" && availableTransitions.includes("in_progress");
-  
-  if (isCancelled) {
-    return (
-      <div className="flex items-center gap-2 px-4 py-2 bg-muted rounded-lg">
-        <XCircle className="h-4 w-4 text-muted-foreground" />
-        <span className="text-sm font-medium text-muted-foreground">Job Cancelled</span>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex items-center gap-2 flex-wrap" data-testid="status-progress-bar">
-      <div className="flex items-center gap-1">
-        {JOB_STATUS_FLOW.map((step, index) => {
-          const Icon = step.icon;
-          const isActive = step.key === currentStatus || (isOnHold && step.key === "in_progress");
-          const isCompleted = index < currentIndex && !isOnHold;
-          const isClickable = !isUpdating && (
-            (index === currentIndex + 1 && STATUS_TRANSITIONS[currentStatus]?.includes(step.key))
-          );
-          
-          return (
-            <div key={step.key} className="flex items-center">
-              {index > 0 && (
-                <div className={cn(
-                  "w-6 h-0.5 mx-0.5",
-                  isCompleted || isActive ? "bg-primary" : "bg-muted"
-                )} />
-              )}
-              <button
-                onClick={() => isClickable && onStatusChange(step.key)}
-                disabled={!isClickable || isUpdating}
-                className={cn(
-                  "flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium transition-all",
-                  isActive && "bg-primary text-primary-foreground",
-                  isCompleted && !isActive && "bg-primary/20 text-primary",
-                  !isActive && !isCompleted && "bg-muted text-muted-foreground",
-                  isClickable && "hover-elevate cursor-pointer",
-                  !isClickable && "cursor-default"
-                )}
-                data-testid={`status-step-${step.key}`}
-              >
-                <Icon className="h-3 w-3" />
-                <span className="hidden md:inline">{step.label}</span>
-              </button>
-            </div>
-          );
-        })}
-      </div>
-      
-      {isOnHold && (
-        <Badge variant="outline" className="gap-1">
-          <Pause className="h-3 w-3" />
-          On Hold
-        </Badge>
-      )}
-      
-      {(canHold || canCancel || canResume) && (
-        <div className="flex items-center gap-1 ml-2 border-l pl-2">
-          {canResume && (
-            <Button 
-              variant="outline" 
-              size="sm" 
-              onClick={() => onStatusChange("in_progress")}
-              disabled={isUpdating}
-              data-testid="button-resume"
-            >
-              <Play className="h-3 w-3 mr-1" />
-              Resume
-            </Button>
-          )}
-          {canHold && (
-            <Button 
-              variant="outline" 
-              size="sm" 
-              onClick={() => onStatusChange("on_hold")}
-              disabled={isUpdating}
-              data-testid="button-hold"
-            >
-              <Pause className="h-3 w-3 mr-1" />
-              Hold
-            </Button>
-          )}
-          {canCancel && (
-            <Button 
-              variant="ghost" 
-              size="sm" 
-              onClick={() => onStatusChange("cancelled")}
-              disabled={isUpdating}
-              className="text-destructive hover:text-destructive"
-              data-testid="button-cancel-job"
-            >
-              <XCircle className="h-3 w-3 mr-1" />
-              Cancel
-            </Button>
-          )}
-        </div>
-      )}
-    </div>
-  );
 }
 
 function AssignTechnicianDialog({ 
