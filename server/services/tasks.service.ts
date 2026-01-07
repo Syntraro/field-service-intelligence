@@ -38,34 +38,26 @@ export async function createTask(companyId: string, input: any) {
     throw new Error("createdByUserId is required");
   }
 
-  return db.transaction(async (tx) => {
-    const [task] = await tx
-      .insert(tasks)
-      .values({
-        companyId, // Use passed companyId, not from input
-        createdByUserId: input.createdByUserId,
-        assignedToUserId: input.assignedToUserId ?? null,
-        type: input.type, // "GENERAL" | "SUPPLIER_VISIT"
-        title: input.title,
-        notes: input.notes ?? null,
-        scheduledStartAt: input.scheduledStartAt ?? null,
-        scheduledEndAt: input.scheduledEndAt ?? null,
-        allDay: input.allDay ?? false,
-        jobId: input.jobId ?? null,
-      })
-      .returning();
+  const [task] = await db
+    .insert(tasks)
+    .values({
+      companyId, // Use passed companyId, not from input
+      createdByUserId: input.createdByUserId,
+      assignedToUserId: input.assignedToUserId ?? null,
+      type: input.type, // "GENERAL" | "SUPPLIER_VISIT"
+      title: input.title,
+      notes: input.notes ?? null,
+      status: input.status ?? "pending",
+      scheduledStartAt: input.scheduledStartAt ?? null,
+      scheduledEndAt: input.scheduledEndAt ?? null,
+      allDay: input.allDay ?? false,
+      jobId: input.jobId ?? null,
+      clientId: input.clientId ?? null,
+      estimatedDurationMinutes: input.estimatedDurationMinutes ?? null,
+    })
+    .returning();
 
-    if (input.type === "SUPPLIER_VISIT") {
-      await tx.insert(supplierVisitDetails).values({
-        taskId: task.id,
-        supplierId: input.supplierId ?? null,
-        supplierNameOther: input.supplierNameOther ?? null,
-        poNumber: input.poNumber ?? null,
-      });
-    }
-
-    return task;
-  });
+  return task;
 }
 
 /* =========================================================
@@ -148,7 +140,10 @@ export async function checkInTask(companyId: string, taskId: string) {
 
   const [updated] = await db
     .update(tasks)
-    .set({ checkedInAt: new Date() })
+    .set({
+      checkedInAt: new Date(),
+      status: "in_progress", // Auto-set status when checking in
+    })
     .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)))
     .returning();
 
@@ -161,9 +156,18 @@ export async function checkOutTask(companyId: string, taskId: string) {
   if (!task.checkedInAt) throw new Error("Cannot check out before check in");
   if (task.checkedOutAt) return task;
 
+  const checkOutTime = new Date();
+
+  // Calculate actual duration in minutes
+  const durationMs = checkOutTime.getTime() - new Date(task.checkedInAt).getTime();
+  const actualDurationMinutes = Math.round(durationMs / 60000); // Convert ms to minutes
+
   const [updated] = await db
     .update(tasks)
-    .set({ checkedOutAt: new Date() })
+    .set({
+      checkedOutAt: checkOutTime,
+      actualDurationMinutes, // Auto-calculated duration
+    })
     .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)))
     .returning();
 
@@ -177,12 +181,42 @@ export async function closeTask(companyId: string, taskId: string, userId: strin
   const task = await getTask(companyId, taskId);
   if (!task) throw new Error("Task not found or access denied");
 
+  const closeTime = new Date();
+  const updates: any = {
+    status: "completed", // Use enum value instead of "CLOSED"
+    closedAt: closeTime,
+    closedByUserId: userId,
+  };
+
+  // If task was checked in but not checked out, auto check-out and calculate duration
+  if (task.checkedInAt && !task.checkedOutAt) {
+    const durationMs = closeTime.getTime() - new Date(task.checkedInAt).getTime();
+    updates.checkedOutAt = closeTime;
+    updates.actualDurationMinutes = Math.round(durationMs / 60000);
+  }
+
+  const [updated] = await db
+    .update(tasks)
+    .set(updates)
+    .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)))
+    .returning();
+
+  return updated;
+}
+
+/* =========================================================
+   REOPEN TASK
+   ========================================================= */
+export async function reopenTask(companyId: string, taskId: string) {
+  const task = await getTask(companyId, taskId);
+  if (!task) throw new Error("Task not found or access denied");
+
   const [updated] = await db
     .update(tasks)
     .set({
-      status: "CLOSED",
-      closedAt: new Date(),
-      closedByUserId: userId,
+      status: "pending",
+      closedAt: null,
+      closedByUserId: null,
     })
     .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)))
     .returning();
@@ -191,7 +225,21 @@ export async function closeTask(companyId: string, taskId: string, userId: strin
 }
 
 /* =========================================================
-   ADMIN UPDATE (title/notes/schedule/job link)
+   DELETE TASK
+   ========================================================= */
+export async function deleteTask(companyId: string, taskId: string) {
+  const task = await getTask(companyId, taskId);
+  if (!task) throw new Error("Task not found or access denied");
+
+  await db
+    .delete(tasks)
+    .where(and(eq(tasks.id, taskId), eq(tasks.companyId, companyId)));
+
+  return { success: true };
+}
+
+/* =========================================================
+   ADMIN UPDATE (title/notes/schedule/job link/status)
    ========================================================= */
 export async function updateTask(companyId: string, taskId: string, input: any) {
   const task = await getTask(companyId, taskId);
@@ -205,6 +253,32 @@ export async function updateTask(companyId: string, taskId: string, input: any) 
   if ("scheduledEndAt" in input) updates.scheduledEndAt = input.scheduledEndAt;
   if ("allDay" in input) updates.allDay = input.allDay;
   if ("jobId" in input) updates.jobId = input.jobId;
+  if ("clientId" in input) updates.clientId = input.clientId;
+  if ("assignedToUserId" in input) updates.assignedToUserId = input.assignedToUserId;
+  if ("estimatedDurationMinutes" in input) updates.estimatedDurationMinutes = input.estimatedDurationMinutes;
+  if ("type" in input) updates.type = input.type;
+
+  // Handle status changes with automatic timestamp updates
+  if ("status" in input && input.status !== task.status) {
+    updates.status = input.status;
+
+    // Auto-set checkedInAt when transitioning to in_progress
+    if (input.status === "in_progress" && !task.checkedInAt) {
+      updates.checkedInAt = new Date();
+    }
+
+    // Auto-set checkedOutAt and calculate duration when transitioning to completed
+    if (input.status === "completed") {
+      const completionTime = new Date();
+      updates.closedAt = completionTime;
+
+      if (task.checkedInAt && !task.checkedOutAt) {
+        const durationMs = completionTime.getTime() - new Date(task.checkedInAt).getTime();
+        updates.checkedOutAt = completionTime;
+        updates.actualDurationMinutes = Math.round(durationMs / 60000);
+      }
+    }
+  }
 
   const [updated] = await db
     .update(tasks)
@@ -223,22 +297,43 @@ export async function updateSupplierVisit(companyId: string, taskId: string, inp
   const task = await getTask(companyId, taskId);
   if (!task) throw new Error("Task not found or access denied");
 
-  const updates: any = {
-    supplierId: input.supplierId ?? null,
-    supplierNameOther: input.supplierNameOther ?? null,
-    poNumber: input.poNumber ?? null,
-  };
+  return db.transaction(async (tx) => {
+    // Check if supplier visit details exist
+    const [existing] = await tx
+      .select()
+      .from(supplierVisitDetails)
+      .where(eq(supplierVisitDetails.taskId, taskId));
 
-  if (input.reconcile) {
-    updates.reconciledAt = new Date();
-    updates.reconciledByUserId = input.reconciledByUserId;
-  }
+    const updates: any = {
+      supplierId: input.supplierId ?? null,
+      supplierLocationId: input.supplierLocationId ?? null,
+      supplierNameOther: input.supplierNameOther ?? null,
+      poNumber: input.poNumber ?? null,
+      updatedAt: new Date(),
+    };
 
-  const [updated] = await db
-    .update(supplierVisitDetails)
-    .set(updates)
-    .where(eq(supplierVisitDetails.taskId, taskId))
-    .returning();
+    if (input.reconcile) {
+      updates.reconciledAt = new Date();
+      updates.reconciledByUserId = input.reconciledByUserId;
+    }
 
-  return updated;
+    // Insert or update
+    if (existing) {
+      const [updated] = await tx
+        .update(supplierVisitDetails)
+        .set(updates)
+        .where(eq(supplierVisitDetails.taskId, taskId))
+        .returning();
+      return updated;
+    } else {
+      const [created] = await tx
+        .insert(supplierVisitDetails)
+        .values({
+          taskId,
+          ...updates,
+        })
+        .returning();
+      return created;
+    }
+  });
 }

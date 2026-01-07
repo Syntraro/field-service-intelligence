@@ -28,6 +28,7 @@ import { ensureTenantContext, rateLimitPerTenant } from "../auth/tenantIsolation
 import { impersonationMiddleware, trackActivity } from "../impersonationMiddleware";
 import { storage } from "../storage/index";
 import tasksRoutes from "./tasks.routes";
+import suppliersRouter from "./suppliers";
 
 /**
  * Register all API routes in a single place.
@@ -95,6 +96,7 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/subscriptions", subscriptionsRouter);
   app.use("/api/impersonation", impersonationRouter);
   app.use("/api/tasks", tasksRoutes);
+  app.use("/api/suppliers", suppliersRouter);
 
   // ✅ NEW ROUTES (company rollups + notes API)
   // Company/Client (parent) endpoints: /api/customer-companies/:id/overview, /locations, etc.

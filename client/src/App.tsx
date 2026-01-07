@@ -57,17 +57,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import Suppliers from "@/pages/Suppliers";
+import SuppliersListPage from "@/pages/SuppliersListPage";
+import SupplierDetailPage from "@/pages/SupplierDetailPage";
 
 function Router() {
   return (
     <Switch>
-      <Route path="/suppliers">
-        <ProtectedRoute requireAdmin>
-          <Suppliers />
-        </ProtectedRoute>
-      </Route>
-
       <Route path="/login" component={Login} />
       <Route path="/signup" component={Signup} />
       <Route path="/request-reset" component={RequestReset} />
@@ -220,6 +215,16 @@ function Router() {
       <Route path="/clients/:id/locations/:locationId">
         <ProtectedRoute requireAdmin>
           <LocationDetailPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/suppliers">
+        <ProtectedRoute requireAdmin>
+          <SuppliersListPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/suppliers/:id">
+        <ProtectedRoute requireAdmin>
+          <SupplierDetailPage />
         </ProtectedRoute>
       </Route>
       <Route component={NotFound} />

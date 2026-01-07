@@ -1,10 +1,10 @@
-import { 
-  LayoutDashboard, 
-  Calendar as CalendarIcon, 
+import {
+  LayoutDashboard,
+  Calendar as CalendarIcon,
   ClipboardList,
-  Users, 
-  FileText, 
-  Shield, 
+  Users,
+  FileText,
+  Shield,
   LogOut,
   Smartphone,
   MessageCircle,
@@ -12,7 +12,8 @@ import {
   ShieldAlert,
   Settings,
   Package,
-  Receipt
+  Receipt,
+  Building2
 } from "lucide-react";
 import { Link, useLocation, useSearch } from "wouter";
 import { useAuth } from "@/lib/auth";
@@ -130,6 +131,13 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
         setLocation('/?tab=clients');
       },
       testId: "nav-clients"
+    });
+    menuItems.push({
+      title: "Suppliers",
+      icon: Building2,
+      href: "/suppliers",
+      isActive: location === "/suppliers" || location.startsWith("/suppliers/"),
+      testId: "nav-suppliers"
     });
     menuItems.push({
       title: "Calendar",

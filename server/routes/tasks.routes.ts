@@ -17,11 +17,14 @@ const router = Router();
 
 const createTaskSchema = z.object({
   title: z.string().min(1).max(200),
-  description: z.string().max(2000).optional(),
+  notes: z.string().max(2000).optional(), // Primary field for task notes
+  description: z.string().max(2000).optional(), // Backwards compatibility alias for notes
   dueDate: z.string().datetime().optional(),
   assignedToUserId: z.string().uuid().optional(),
   type: z.string().max(50).optional(),
   jobId: z.string().uuid().optional(),
+  clientId: z.string().uuid().optional(),
+  estimatedDurationMinutes: z.number().int().positive().optional(),
   status: z.enum(["pending", "in_progress", "completed", "cancelled"]).optional().default("pending"),
 }).strict();
 
@@ -35,17 +38,27 @@ const closeTaskSchema = z.object({
 
 const updateTaskSchema = z.object({
   title: z.string().min(1).max(200).optional(),
-  description: z.string().max(2000).optional(),
-  dueDate: z.string().datetime().optional(),
-  assignedToUserId: z.string().uuid().optional(),
+  notes: z.string().max(2000).nullable().optional(), // Primary field for task notes
+  description: z.string().max(2000).nullable().optional(), // Backwards compatibility alias for notes
+  dueDate: z.string().datetime().nullable().optional(),
+  assignedToUserId: z.string().uuid().nullable().optional(),
   status: z.enum(["pending", "in_progress", "completed", "cancelled"]).optional(),
   type: z.string().max(50).optional(),
+  jobId: z.string().uuid().nullable().optional(),
+  clientId: z.string().uuid().nullable().optional(),
+  estimatedDurationMinutes: z.number().int().positive().nullable().optional(),
+  scheduledStartAt: z.string().datetime().nullable().optional(),
+  scheduledEndAt: z.string().datetime().nullable().optional(),
+  allDay: z.boolean().optional(),
 }).strict();
 
 const updateSupplierVisitSchema = z.object({
-  supplierName: z.string().max(200).optional(),
-  visitDate: z.string().datetime().optional(),
-  notes: z.string().max(1000).optional(),
+  supplierId: z.string().uuid().nullable().optional(),
+  supplierLocationId: z.string().uuid().nullable().optional(),
+  supplierNameOther: z.string().max(200).nullable().optional(),
+  poNumber: z.string().max(100).nullable().optional(),
+  reconciledByUserId: z.string().uuid().optional(),
+  reconcile: z.boolean().optional(),
 }).strict();
 
 // ========================================
@@ -65,7 +78,10 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
   const task = await service.createTask(companyId, {
     ...validated,
     createdByUserId: req.user.id,
-    notes: (validated as any).description ?? undefined,
+    // Use notes if provided, otherwise fall back to description for backwards compatibility
+    notes: validated.notes ?? (validated as any).description ?? null,
+    clientId: validated.clientId ?? null,
+    estimatedDurationMinutes: validated.estimatedDurationMinutes ?? null,
   });
 
   res.json(task);
@@ -149,12 +165,37 @@ router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
   res.json(task);
 }));
 
+/* REOPEN */
+router.post("/:id/reopen", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const task = await service.reopenTask(companyId, req.params.id);
+
+  res.json(task);
+}));
+
+/* DELETE */
+router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const result = await service.deleteTask(companyId, req.params.id);
+
+  res.json(result);
+}));
+
 /* ADMIN UPDATE */
 router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
 
   const validated = validateSchema(updateTaskSchema, req.body);
-  const task = await service.updateTask(companyId, req.params.id, validated);
+
+  // Map description to notes for backwards compatibility
+  const updates: any = { ...validated };
+  if ('description' in validated && !('notes' in validated)) {
+    // Only use description as fallback if notes not provided
+    updates.notes = (validated as any).description;
+  }
+  delete updates.description; // Remove description field, we only use notes in service
+
+  const task = await service.updateTask(companyId, req.params.id, updates);
 
   res.json(task);
 }));

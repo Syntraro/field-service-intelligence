@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ChevronLeft, ChevronRight, Plus, CheckSquare, Square, ClipboardList, Filter, Trash2 } from "lucide-react";
 import { NewTaskDialog } from "@/components/NewTaskDialog";
 
-type TaskStatus = "OPEN" | "CLOSED";
+type TaskStatus = "pending" | "in_progress" | "completed" | "cancelled";
 type TaskType = "GENERAL" | "SUPPLIER_VISIT";
 
 type Task = {
@@ -24,14 +24,17 @@ type Task = {
 };
 
 function buildTasksUrl(params: {
-  status?: TaskStatus;
+  status?: TaskStatus | "active";
   assignedToUserId?: string;
   type?: TaskType;
   offset?: number;
   limit?: number;
 }) {
   const usp = new URLSearchParams();
-  if (params.status) usp.set("status", params.status);
+  // Don't send status filter if we want "active" (all non-completed) - we'll filter client-side
+  if (params.status && params.status !== "active") {
+    usp.set("status", params.status);
+  }
   if (params.assignedToUserId) usp.set("assignedToUserId", params.assignedToUserId);
   if (params.type) usp.set("type", params.type);
   usp.set("offset", String(params.offset ?? 0));
@@ -39,12 +42,19 @@ function buildTasksUrl(params: {
   return `/api/tasks?${usp.toString()}`;
 }
 
-function normalizeTasks(payload: any): Task[] {
+function normalizeTasks(payload: any, statusFilter?: "active" | TaskStatus): Task[] {
+  let tasks: Task[] = [];
   if (!payload) return [];
-  if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload.items)) return payload.items;
-  if (Array.isArray(payload.data)) return payload.data;
-  return [];
+  if (Array.isArray(payload)) tasks = payload;
+  else if (Array.isArray(payload.items)) tasks = payload.items;
+  else if (Array.isArray(payload.data)) tasks = payload.data;
+
+  // Client-side filter for "active" status (pending or in_progress)
+  if (statusFilter === "active") {
+    return tasks.filter(t => t.status === "pending" || t.status === "in_progress");
+  }
+
+  return tasks;
 }
 
 // ---------- Task modal ----------
@@ -230,10 +240,10 @@ function TaskDetailsDialog(props: {
                 Save
               </Button>
 
-              {task.status === "OPEN" ? (
-                <Button onClick={() => closeMutation.mutate()}>Mark complete</Button>
-              ) : (
+              {task.status === "completed" || task.status === "cancelled" ? (
                 <Button onClick={() => reopenMutation.mutate()}>Reopen</Button>
+              ) : (
+                <Button onClick={() => closeMutation.mutate()}>Mark complete</Button>
               )}
             </div>
           </>
@@ -252,7 +262,7 @@ export function TasksSidebar(props: {
   const { user } = useAuth();
   const currentUserId = user?.id;
 
-  const [status, setStatus] = useState<TaskStatus>("OPEN");
+  const [status, setStatus] = useState<TaskStatus | "active">("active");
   const [scope, setScope] = useState<"mine" | "all">("mine");
   const [type, setType] = useState<"all" | TaskType>("all");
   const [newDialogOpen, setNewDialogOpen] = useState(false);
@@ -277,7 +287,7 @@ export function TasksSidebar(props: {
     enabled: !collapsed,
   });
 
-  const tasks = useMemo(() => normalizeTasks(data), [data]);
+  const tasks = useMemo(() => normalizeTasks(data, status), [data, status]);
 
   const closeTask = useMutation({
     mutationFn: async (id: string) => {
@@ -372,14 +382,20 @@ export function TasksSidebar(props: {
                 </div>
               </div>
 
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-sm">Status</div>
-                <div className="flex gap-2">
-                  <Button size="sm" variant={status === "OPEN" ? "default" : "outline"} onClick={() => setStatus("OPEN")}>
-                    Open
+              <div className="space-y-2">
+                <div className="text-sm font-medium">Status</div>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant={status === "active" ? "default" : "outline"} onClick={() => setStatus("active")}>
+                    Active
                   </Button>
-                  <Button size="sm" variant={status === "CLOSED" ? "default" : "outline"} onClick={() => setStatus("CLOSED")}>
-                    Closed
+                  <Button size="sm" variant={status === "pending" ? "default" : "outline"} onClick={() => setStatus("pending")}>
+                    Pending
+                  </Button>
+                  <Button size="sm" variant={status === "in_progress" ? "default" : "outline"} onClick={() => setStatus("in_progress")}>
+                    In Progress
+                  </Button>
+                  <Button size="sm" variant={status === "completed" ? "default" : "outline"} onClick={() => setStatus("completed")}>
+                    Completed
                   </Button>
                 </div>
               </div>
@@ -426,7 +442,7 @@ export function TasksSidebar(props: {
         ) : (
           <ul className="divide-y">
             {tasks.map((t) => {
-              const isDone = t.status === "CLOSED";
+              const isDone = t.status === "completed" || t.status === "cancelled";
               return (
                 <li
                   key={t.id}
@@ -447,7 +463,7 @@ export function TasksSidebar(props: {
                       if (isDone) reopenTask.mutate(t.id);
                       else closeTask.mutate(t.id);
                     }}
-                    title={isDone ? "Reopen" : "Close"}
+                    title={isDone ? "Reopen" : "Complete"}
                   >
                     {isDone ? <CheckSquare className="h-5 w-5" /> : <Square className="h-5 w-5" />}
                   </Button>

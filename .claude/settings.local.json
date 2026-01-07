@@ -24,7 +24,12 @@
       "Bash(git push:*)",
       "Bash(client/src/components/calendar/ client/src/components/job/ )",
       "Bash(client/src/hooks/useArrayRows.ts client/src/hooks/useImageUpload.ts client/src/hooks/useMutationWithToast.ts)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(psql:*)",
+      "Bash(curl:*)",
+      "Bash(lsof:*)",
+      "Bash(xargs kill -9)",
+      "Bash(npm run dev:*)"
     ]
   }
 }

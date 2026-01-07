@@ -1494,7 +1494,7 @@ export const applyJobTemplateSchema = z.object({
 export const taskTypeEnum = ["GENERAL", "SUPPLIER_VISIT"] as const;
 export type TaskType = typeof taskTypeEnum[number];
 
-export const taskStatusEnum = ["OPEN", "CLOSED"] as const;
+export const taskStatusEnum = ["pending", "in_progress", "completed", "cancelled"] as const;
 export type TaskStatus = typeof taskStatusEnum[number];
 
 export const tasks = pgTable("tasks", {
@@ -1510,7 +1510,7 @@ export const tasks = pgTable("tasks", {
   title: text("title").notNull(),
   notes: text("notes"),
 
-  status: text("status").notNull().default("OPEN"), // OPEN | CLOSED
+  status: text("status").notNull().default("pending"), // pending | in_progress | completed | cancelled
 
   // Close metadata
   closedAt: timestamp("closed_at"),
@@ -1525,45 +1525,163 @@ export const tasks = pgTable("tasks", {
   checkedInAt: timestamp("checked_in_at"),
   checkedOutAt: timestamp("checked_out_at"),
 
-  // Optional attribution to a Job (does NOT create billing or calendar coupling)
+  // Duration tracking (in minutes)
+  estimatedDurationMinutes: integer("estimated_duration_minutes"), // Estimated time to complete
+  actualDurationMinutes: integer("actual_duration_minutes"), // Auto-calculated from checkedInAt to checkedOutAt
+
+  // Optional attribution to a Job and Client (does NOT create billing or calendar coupling)
   jobId: varchar("job_id").references(() => jobs.id, { onDelete: "set null" }),
+  clientId: varchar("client_id").references(() => clients.id, { onDelete: "set null" }),
 
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
-});
+}, (table) => ({
+  // Indexes for common queries
+  companyAssignedIdx: uniqueIndex("tasks_company_assigned_idx").on(table.companyId, table.assignedToUserId),
+  companyStatusIdx: uniqueIndex("tasks_company_status_idx").on(table.companyId, table.status),
+  companyJobIdx: uniqueIndex("tasks_company_job_idx").on(table.companyId, table.jobId),
+  companyClientIdx: uniqueIndex("tasks_company_client_idx").on(table.companyId, table.clientId),
+}));
 
 export const insertTaskSchema = createInsertSchema(tasks).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
+  actualDurationMinutes: true, // Auto-calculated, not user input
+  closedAt: true, // Auto-set
+  closedByUserId: true, // Auto-set
 }).extend({
   type: z.enum(taskTypeEnum),
-  status: z.enum(taskStatusEnum).default("OPEN"),
+  status: z.enum(taskStatusEnum).default("pending"),
+  notes: z.string().max(2000).optional(), // Explicitly allow notes field
+  estimatedDurationMinutes: z.number().int().positive().optional(),
+  clientId: z.string().uuid().nullable().optional(),
 });
 
+export const updateTaskSchema = z.object({
+  title: z.string().min(1).max(200).optional(),
+  notes: z.string().max(2000).nullable().optional(),
+  status: z.enum(taskStatusEnum).optional(),
+  assignedToUserId: z.string().uuid().nullable().optional(),
+  jobId: z.string().uuid().nullable().optional(),
+  clientId: z.string().uuid().nullable().optional(),
+  scheduledStartAt: z.string().datetime().nullable().optional(),
+  scheduledEndAt: z.string().datetime().nullable().optional(),
+  allDay: z.boolean().optional(),
+  estimatedDurationMinutes: z.number().int().positive().nullable().optional(),
+  type: z.enum(taskTypeEnum).optional(),
+}).strict();
+
 export type InsertTask = z.infer<typeof insertTaskSchema>;
+export type UpdateTask = z.infer<typeof updateTaskSchema>;
 export type Task = typeof tasks.$inferSelect;
 
 // ============================================================================
-// SUPPLIERS (minimal v1)
+// SUPPLIERS (with QBO Vendor sync and multi-location support)
 // ============================================================================
+
+export const qboSyncStatusEnum = ["NOT_SYNCED", "SYNCED", "PENDING", "ERROR"] as const;
+export type QboSyncStatus = typeof qboSyncStatusEnum[number];
 
 export const suppliers = pgTable("suppliers", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
+  // Status
+  isActive: boolean("is_active").notNull().default(true),
+  // QBO Vendor sync fields
+  qboVendorId: text("qbo_vendor_id"),
+  qboSyncToken: text("qbo_sync_token"),
+  qboLastSyncedAt: timestamp("qbo_last_synced_at"),
+  qboSyncStatus: text("qbo_sync_status").notNull().default("NOT_SYNCED"),
+  qboSyncError: text("qbo_sync_error"),
+  // Contact information
+  email: text("email"),
+  phone: text("phone"),
+  website: text("website"),
+  // Timestamps
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
 });
 
 export const insertSupplierSchema = createInsertSchema(suppliers).omit({
   id: true,
+  companyId: true,
   createdAt: true,
   updatedAt: true,
+}).extend({
+  name: z.string().min(1, "Supplier name is required"),
+  email: z.string().email().nullable().optional(),
+  website: z.string().url().nullable().optional(),
+  qboSyncStatus: z.enum(qboSyncStatusEnum).default("NOT_SYNCED"),
+});
+
+export const updateSupplierSchema = z.object({
+  name: z.string().min(1).optional(),
+  email: z.string().email().nullable().optional(),
+  phone: z.string().nullable().optional(),
+  website: z.string().url().nullable().optional(),
+  isActive: z.boolean().optional(),
 });
 
 export type InsertSupplier = z.infer<typeof insertSupplierSchema>;
+export type UpdateSupplier = z.infer<typeof updateSupplierSchema>;
 export type Supplier = typeof suppliers.$inferSelect;
+
+// ============================================================================
+// SUPPLIER LOCATIONS (multi-location support for suppliers)
+// ============================================================================
+
+export const supplierLocations = pgTable("supplier_locations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  supplierId: varchar("supplier_id").notNull().references(() => suppliers.id, { onDelete: "cascade" }),
+  // Location details
+  name: text("name").notNull(),
+  address: text("address"),
+  city: text("city"),
+  province: text("province"),
+  postalCode: text("postal_code"),
+  country: text("country"),
+  // Contact information
+  contactName: text("contact_name"),
+  email: text("email"),
+  phone: text("phone"),
+  // Status
+  isPrimary: boolean("is_primary").notNull().default(false),
+  isActive: boolean("is_active").notNull().default(true),
+  // Timestamps
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+});
+
+export const insertSupplierLocationSchema = createInsertSchema(supplierLocations).omit({
+  id: true,
+  companyId: true,
+  supplierId: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  name: z.string().min(1, "Location name is required"),
+  email: z.string().email().optional().or(z.literal('')),
+});
+
+export const updateSupplierLocationSchema = z.object({
+  name: z.string().min(1).optional(),
+  address: z.string().nullable().optional(),
+  city: z.string().nullable().optional(),
+  province: z.string().nullable().optional(),
+  postalCode: z.string().nullable().optional(),
+  country: z.string().nullable().optional(),
+  contactName: z.string().nullable().optional(),
+  email: z.string().email().nullable().optional(),
+  phone: z.string().nullable().optional(),
+  isActive: z.boolean().optional(),
+});
+
+export type InsertSupplierLocation = z.infer<typeof insertSupplierLocationSchema>;
+export type UpdateSupplierLocation = z.infer<typeof updateSupplierLocationSchema>;
+export type SupplierLocation = typeof supplierLocations.$inferSelect;
 
 // ============================================================================
 // SUPPLIER VISIT DETAILS (1:1 extension of a Task where type=SUPPLIER_VISIT)
@@ -1575,7 +1693,8 @@ export const supplierVisitDetails = pgTable("supplier_visit_details", {
   taskId: varchar("task_id").primaryKey().references(() => tasks.id, { onDelete: "cascade" }),
 
   supplierId: varchar("supplier_id").references(() => suppliers.id, { onDelete: "set null" }),
-  supplierNameOther: text("supplier_name_other"), // tech may type supplier name if not in system yet
+  supplierLocationId: varchar("supplier_location_id").references(() => supplierLocations.id, { onDelete: "set null" }),
+  supplierNameOther: text("supplier_name_other"), // tech may type supplier name if not in system yet (legacy)
   poNumber: text("po_number"),
 
   reconciledAt: timestamp("reconciled_at"),
@@ -1591,6 +1710,7 @@ export const insertSupplierVisitDetailsSchema = createInsertSchema(supplierVisit
 }).extend({
   // supplierId OR supplierNameOther can be present; validation can be enforced at route/service layer
   supplierId: z.string().nullable().optional(),
+  supplierLocationId: z.string().nullable().optional(),
   supplierNameOther: z.string().nullable().optional(),
   poNumber: z.string().nullable().optional(),
 });
