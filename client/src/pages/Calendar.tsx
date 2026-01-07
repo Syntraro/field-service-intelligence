@@ -17,6 +17,7 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 import { useAuth } from "@/lib/auth";
+import { UnscheduledJobsSidebar } from "@/components/UnscheduledJobsSidebar";
 
 const MONTH_ABBREV = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -2361,30 +2362,38 @@ export default function Calendar() {
               </Card>
             </div>
 
-            {!isUnscheduledMinimized && (
-              <aside className="w-[13%] min-w-[260px] flex-shrink-0 h-full overflow-hidden">
-                <UnscheduledPanel 
-                  clients={unscheduledClients} 
-                  onClientClick={setReportDialogClientId}
-                  isMinimized={isUnscheduledMinimized}
-                  onToggleMinimize={() => setIsUnscheduledMinimized(!isUnscheduledMinimized)}
-                  currentMonth={month}
-                  currentYear={year}
-                />
-              </aside>
-            )}
+            <aside className="w-auto flex-shrink-0 h-full overflow-hidden">
+  <UnscheduledJobsSidebar
+    collapsed={isUnscheduledMinimized}
+    onToggleCollapsed={() => setIsUnscheduledMinimized((v) => !v)}
+    items={unscheduledClients}
+    renderItem={(item: any) => {
+      const monthLabel = `${MONTH_ABBREV[item.month - 1]} '${String(item.year).slice(-2)}`;
+
+      const now = new Date();
+      const todayYear = now.getFullYear();
+      const todayMonth = now.getMonth() + 1;
+      const isPastMonth =
+        item.year < todayYear || (item.year === todayYear && item.month < todayMonth);
+
+      return (
+        <DraggableClient
+          key={item.id}
+          id={item.id}
+          client={{ companyName: item.companyName, location: item.location, id: item.clientId }}
+          onClick={() => setReportDialogClientId(item.clientId)}
+          monthLabel={monthLabel}
+          isOffMonth={true}
+          isPastMonth={isPastMonth}
+        />
+      );
+    }}
+  />
+</aside>
+
           </div>
 
-          {isUnscheduledMinimized && (
-            <UnscheduledPanel 
-              clients={unscheduledClients} 
-              onClientClick={setReportDialogClientId}
-              isMinimized={isUnscheduledMinimized}
-              onToggleMinimize={() => setIsUnscheduledMinimized(!isUnscheduledMinimized)}
-              currentMonth={month}
-              currentYear={year}
-            />
-          )}
+          
         </main>
 
         <DragOverlay>

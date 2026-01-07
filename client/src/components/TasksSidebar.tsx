@@ -4,7 +4,9 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { ChevronLeft, ChevronRight, Plus, CheckSquare, Square, ClipboardList, Filter } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { ChevronLeft, ChevronRight, Plus, CheckSquare, Square, ClipboardList, Filter, Trash2 } from "lucide-react";
 import { NewTaskDialog } from "@/components/NewTaskDialog";
 
 type TaskStatus = "OPEN" | "CLOSED";
@@ -16,6 +18,7 @@ type Task = {
   status: TaskStatus;
   type: TaskType;
   assignedToUserId?: string | null;
+  notes?: string | null;
   createdAt?: string;
 };
 
@@ -36,7 +39,6 @@ function buildTasksUrl(params: {
 }
 
 function normalizeTasks(payload: any): Task[] {
-  // backend returns { items, hasMore } in service; but routes may wrap. Be defensive.
   if (!payload) return [];
   if (Array.isArray(payload)) return payload;
   if (Array.isArray(payload.items)) return payload.items;
@@ -44,6 +46,202 @@ function normalizeTasks(payload: any): Task[] {
   return [];
 }
 
+// ---------- Task modal ----------
+function TaskDetailsDialog(props: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  taskId?: string;
+  currentUserId?: string;
+  onChanged: () => void;
+}) {
+  const { open, onOpenChange, taskId, currentUserId, onChanged } = props;
+
+  // Fetch full task details on demand
+  const { data, isLoading } = useQuery({
+    queryKey: taskId ? [`/api/tasks/${taskId}`] : ["task-details-empty"],
+    enabled: open && !!taskId,
+  });
+
+  const task: Task | undefined = data?.task ?? data; // defensive
+
+  const [title, setTitle] = useState("");
+  const [notes, setNotes] = useState("");
+  const [assignedToUserId, setAssignedToUserId] = useState<string>("");
+
+  // When task loads, hydrate form
+  useMemo(() => {
+    if (!task) return;
+    setTitle(task.title ?? "");
+    setNotes((task.notes ?? "") as string);
+    setAssignedToUserId((task.assignedToUserId ?? "") as string);
+  }, [task?.id]); // only when switching tasks
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      if (!taskId) throw new Error("Missing taskId");
+      return apiRequest(`/api/tasks/${taskId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title,
+          notes,
+        }),
+      });
+    },
+    onSuccess: () => {
+      onChanged();
+      onOpenChange(false);
+    },
+    onError: (e: any) => alert(e?.message ?? "Failed to save task"),
+  });
+
+  const assignMutation = useMutation({
+    mutationFn: async (nextAssignedToUserId: string | null) => {
+      if (!taskId) throw new Error("Missing taskId");
+      return apiRequest(`/api/tasks/${taskId}/assign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          assignedToUserId: nextAssignedToUserId,
+        }),
+      });
+    },
+    onSuccess: () => onChanged(),
+    onError: (e: any) => alert(e?.message ?? "Failed to assign"),
+  });
+
+  const closeMutation = useMutation({
+    mutationFn: async () => {
+      if (!taskId) throw new Error("Missing taskId");
+      if (!currentUserId) throw new Error("Missing currentUserId");
+      return apiRequest(`/api/tasks/${taskId}/close`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: currentUserId }),
+      });
+    },
+    onSuccess: () => {
+      onChanged();
+      onOpenChange(false);
+    },
+    onError: (e: any) => alert(e?.message ?? "Failed to close task"),
+  });
+
+  const reopenMutation = useMutation({
+    mutationFn: async () => {
+      if (!taskId) throw new Error("Missing taskId");
+      if (!currentUserId) throw new Error("Missing currentUserId");
+      // requires backend endpoint (see below)
+      return apiRequest(`/api/tasks/${taskId}/reopen`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: currentUserId }),
+      });
+    },
+    onSuccess: () => {
+      onChanged();
+      onOpenChange(false);
+    },
+    onError: (e: any) => alert(e?.message ?? "Failed to reopen task"),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      if (!taskId) throw new Error("Missing taskId");
+      // requires backend endpoint (see below)
+      return apiRequest(`/api/tasks/${taskId}`, { method: "DELETE" });
+    },
+    onSuccess: () => {
+      onChanged();
+      onOpenChange(false);
+    },
+    onError: (e: any) => alert(e?.message ?? "Failed to delete task"),
+  });
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={() => onOpenChange(false)}
+    >
+      <div className="w-full max-w-xl rounded-lg bg-background border shadow-lg p-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <div className="font-semibold">Task</div>
+          <div className="flex gap-2">
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                if (confirm("Delete this task?")) deleteMutation.mutate();
+              }}
+            >
+              <Trash2 className="h-4 w-4 mr-2" />
+              Delete
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+              Close
+            </Button>
+          </div>
+        </div>
+
+        {isLoading ? (
+          <div className="text-sm opacity-70">Loading…</div>
+        ) : !task ? (
+          <div className="text-sm text-destructive">Task not found</div>
+        ) : (
+          <>
+            <div className="space-y-3">
+              <div>
+                <div className="text-xs opacity-70 mb-1">Title</div>
+                <Input value={title} onChange={(e) => setTitle(e.target.value)} />
+              </div>
+
+              <div>
+                <div className="text-xs opacity-70 mb-1">Notes</div>
+                <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={4} />
+              </div>
+
+              <div>
+                <div className="text-xs opacity-70 mb-1">Assign technician (User ID for now)</div>
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="assignedToUserId (uuid)"
+                    value={assignedToUserId}
+                    onChange={(e) => setAssignedToUserId(e.target.value)}
+                  />
+                  <Button
+                    variant="outline"
+                    onClick={() => assignMutation.mutate(assignedToUserId.trim() ? assignedToUserId.trim() : null)}
+                  >
+                    Assign
+                  </Button>
+                </div>
+                <div className="text-xs opacity-60 mt-1">
+                  Next step: swap this Input for a dropdown fed from your team/users endpoint.
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between mt-4">
+              <Button variant="outline" onClick={() => saveMutation.mutate()}>
+                Save
+              </Button>
+
+              {task.status === "OPEN" ? (
+                <Button onClick={() => closeMutation.mutate()}>Mark complete</Button>
+              ) : (
+                <Button onClick={() => reopenMutation.mutate()}>Reopen</Button>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Sidebar ----------
 export function TasksSidebar(props: {
   collapsed: boolean;
   onToggleCollapsed: () => void;
@@ -55,6 +253,9 @@ export function TasksSidebar(props: {
   const [scope, setScope] = useState<"mine" | "all">("mine");
   const [type, setType] = useState<"all" | TaskType>("all");
   const [newDialogOpen, setNewDialogOpen] = useState(false);
+
+  const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>(undefined);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const assignedToUserId = scope === "mine" ? currentUserId : undefined;
 
@@ -75,18 +276,34 @@ export function TasksSidebar(props: {
 
   const tasks = useMemo(() => normalizeTasks(data), [data]);
 
-  const updateStatus = useMutation({
-    mutationFn: async (args: { id: string; nextStatus: TaskStatus }) => {
-      // Prefer /close endpoint for CLOSED if you want the closedAt/by fields.
-      // For now, PATCH is ok if your route supports status updates.
-      return apiRequest(`/api/tasks/${args.id}`, {
-        method: "PATCH",
+  const closeTask = useMutation({
+    mutationFn: async (id: string) => {
+      if (!currentUserId) throw new Error("Missing currentUserId");
+      return apiRequest(`/api/tasks/${id}/close`, {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: args.nextStatus }),
+        body: JSON.stringify({ userId: currentUserId }),
       });
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: [tasksUrl] }),
+    onError: (e: any) => alert(e?.message ?? "Failed to close task"),
   });
+
+  const reopenTask = useMutation({
+    mutationFn: async (id: string) => {
+      if (!currentUserId) throw new Error("Missing currentUserId");
+      // requires backend endpoint (see below)
+      return apiRequest(`/api/tasks/${id}/reopen`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: currentUserId }),
+      });
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: [tasksUrl] }),
+    onError: (e: any) => alert(e?.message ?? "Failed to reopen task"),
+  });
+
+  const refresh = () => queryClient.invalidateQueries({ queryKey: [tasksUrl] });
 
   if (collapsed) {
     return (
@@ -110,11 +327,7 @@ export function TasksSidebar(props: {
           </Button>
         </div>
 
-        <NewTaskDialog
-          open={newDialogOpen}
-          onOpenChange={setNewDialogOpen}
-          onCreated={() => queryClient.invalidateQueries({ queryKey: [tasksUrl] })}
-        />
+        <NewTaskDialog open={newDialogOpen} onOpenChange={setNewDialogOpen} onCreated={refresh} />
       </div>
     );
   }
@@ -142,7 +355,12 @@ export function TasksSidebar(props: {
               <div className="flex items-center justify-between mb-2">
                 <div className="text-sm">Scope</div>
                 <div className="flex gap-2">
-                  <Button size="sm" variant={scope === "mine" ? "default" : "outline"} onClick={() => setScope("mine")} disabled={!currentUserId}>
+                  <Button
+                    size="sm"
+                    variant={scope === "mine" ? "default" : "outline"}
+                    onClick={() => setScope("mine")}
+                    disabled={!currentUserId}
+                  >
                     My
                   </Button>
                   <Button size="sm" variant={scope === "all" ? "default" : "outline"} onClick={() => setScope("all")}>
@@ -172,7 +390,11 @@ export function TasksSidebar(props: {
                   <Button size="sm" variant={type === "GENERAL" ? "default" : "outline"} onClick={() => setType("GENERAL")}>
                     General
                   </Button>
-                  <Button size="sm" variant={type === "SUPPLIER_VISIT" ? "default" : "outline"} onClick={() => setType("SUPPLIER_VISIT")}>
+                  <Button
+                    size="sm"
+                    variant={type === "SUPPLIER_VISIT" ? "default" : "outline"}
+                    onClick={() => setType("SUPPLIER_VISIT")}
+                  >
                     Supplier
                   </Button>
                 </div>
@@ -203,26 +425,32 @@ export function TasksSidebar(props: {
             {tasks.map((t) => {
               const isDone = t.status === "CLOSED";
               return (
-                <li key={t.id} className="p-3 flex items-start gap-2">
+                <li
+                  key={t.id}
+                  className="p-3 flex items-start gap-2 cursor-pointer hover:bg-muted/40"
+                  onClick={() => {
+                    setSelectedTaskId(t.id);
+                    setDetailsOpen(true);
+                  }}
+                  title="Click to view/edit"
+                >
+                  {/* Checkbox only toggles complete/reopen */}
                   <Button
                     variant="ghost"
                     size="icon"
                     className="mt-0.5"
-                    onClick={() =>
-                      updateStatus.mutate({
-                        id: t.id,
-                        nextStatus: isDone ? "OPEN" : "CLOSED",
-                      })
-                    }
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (isDone) reopenTask.mutate(t.id);
+                      else closeTask.mutate(t.id);
+                    }}
                     title={isDone ? "Reopen" : "Close"}
                   >
                     {isDone ? <CheckSquare className="h-5 w-5" /> : <Square className="h-5 w-5" />}
                   </Button>
 
                   <div className="min-w-0 flex-1">
-                    <div className={`text-sm font-medium ${isDone ? "line-through opacity-60" : ""}`}>
-                      {t.title}
-                    </div>
+                    <div className={`text-sm font-medium ${isDone ? "line-through opacity-60" : ""}`}>{t.title}</div>
                     <div className="text-xs opacity-70">{t.type}</div>
                   </div>
                 </li>
@@ -232,10 +460,14 @@ export function TasksSidebar(props: {
         )}
       </div>
 
-      <NewTaskDialog
-        open={newDialogOpen}
-        onOpenChange={setNewDialogOpen}
-        onCreated={() => queryClient.invalidateQueries({ queryKey: [tasksUrl] })}
+      <NewTaskDialog open={newDialogOpen} onOpenChange={setNewDialogOpen} onCreated={refresh} />
+
+      <TaskDetailsDialog
+        open={detailsOpen}
+        onOpenChange={setDetailsOpen}
+        taskId={selectedTaskId}
+        currentUserId={currentUserId}
+        onChanged={refresh}
       />
     </div>
   );

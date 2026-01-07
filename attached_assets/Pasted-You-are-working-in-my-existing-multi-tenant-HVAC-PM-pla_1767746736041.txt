@@ -1,0 +1,83 @@
+You are working in my existing multi-tenant HVAC PM platform (Node/Express + Drizzle/Postgres + React/TanStack Query). We ALREADY have a Settings → Team Management UI page that renders but only shows 1 member and is not fully connected. Do NOT recreate a new Team page. Your job is to wire the backend and connect the existing UI to it.
+
+PRIMARY GOAL
+Make the existing Team Management page fully functional:
+- list all team members for the current tenant/company
+- show roles and active status correctly
+- allow OWNER/ADMIN to change role
+- allow OWNER/ADMIN to deactivate/reactivate users
+- ensure everything is company-scoped and protected by existing auth/RBAC middleware
+
+SECONDARY GOAL (unblock Tasks)
+- Provide a reliable way for frontend to know current logged-in user { id, role }
+- Provide a “technicians list” (filterable) that Tasks can use for assignment dropdown later
+- Fix the Tasks close/complete flow so it can send userId (avoid “Missing currentUserId”)
+
+NON-GOALS
+- No supplier invoices/bills/QBO bills module
+- No invitations flow rewrite (only reuse if already exists)
+- No UI redesign; keep the existing layout and component structure
+
+STEP 1: DISCOVERY (MANDATORY)
+Search the repo for:
+1) The Team Management page component path under Settings (e.g., SettingsTeamManagement, TeamManagementPage, etc.)
+2) Any existing API calls or query keys it expects (e.g., /api/team, /api/users, /api/team-members, etc.)
+3) Existing backend routes related to team/users/invitations
+4) Existing schema tables: users, teamMembers, invitations, companyUsers, membership tables, etc.
+5) Auth context on frontend (useAuth/AuthProvider) and how it exposes current user
+
+After discovery, DO NOT create new UI. Only modify the existing Team Management page if needed to point it to the correct endpoints and payload shapes.
+
+STEP 2: BACKEND ROUTES (CREATE OR FIX)
+Implement company-scoped endpoints that match (or adapt to) the existing UI expectations.
+
+Preferred routes (but align to what UI already calls):
+- GET /api/team/users
+  - requireAuth
+  - returns all users/members belonging to req.companyId
+  - fields: id, name, email, role, active, createdAt
+- PATCH /api/team/users/:id/role
+  - requireRole([OWNER, ADMIN])
+  - body: { role: "OWNER"|"ADMIN"|"MANAGER"|"TECH" }
+  - validate role enum using Zod
+  - ensure target user belongs to same company
+  - safeguard: cannot demote the last active OWNER
+- PATCH /api/team/users/:id/status
+  - requireRole([OWNER, ADMIN])
+  - body: { active: boolean }
+  - ensure target user belongs to same company
+  - safeguard: cannot deactivate the last active OWNER
+
+Important:
+- Use the existing DB model. If a membership join table exists, use it.
+- If the users table already has role/active columns, use them. If missing, add minimal columns with sensible defaults.
+- Return consistent errors: { error: "..." } and appropriate status codes.
+
+STEP 3: FRONTEND WIRING (MINIMAL)
+Connect the existing Team Management page to these endpoints:
+- Use TanStack Query for list
+- Mutations invalidate the list query
+- Keep the UI exactly the same visually; only fix the data hookups
+
+Also ensure the auth context exposes the current user id + role consistently (so Tasks and Team page can gate actions without passing props around).
+
+STEP 4: TASKS CURRENT USER ID (FIX)
+We are seeing “Missing currentUserId” when closing tasks.
+Fix by:
+- deriving currentUserId from auth context (useAuth().user.id)
+- and sending it to POST /api/tasks/:id/close as { userId }
+Do NOT add reopen right now.
+
+STEP 5: DELIVERABLES
+- List all changed/added files
+- Confirm:
+  1) Team management page shows all members
+  2) OWNER/ADMIN can change role + deactivate/reactivate
+  3) Non-admin users see read-only controls or disabled controls
+  4) Task close/complete works without “Missing currentUserId”
+- Provide quick manual test steps
+
+NOTES
+- Prefer using existing constants/middleware like MANAGER_ROLES / requireRole / requireAuth.
+- Follow existing naming conventions and folder structure.
+- Do not break other routes.
