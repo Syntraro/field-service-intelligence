@@ -128,8 +128,10 @@ export default function QuickAddClientModal({
 
   const createClientMutation = useMutation({
     mutationFn: async (data: QuickAddClientFormData) => {
-      const res = await apiRequest("POST", "/api/clients/with-company", data);
-      return await res.json();
+      return apiRequest("/api/clients/with-company", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
     },
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });

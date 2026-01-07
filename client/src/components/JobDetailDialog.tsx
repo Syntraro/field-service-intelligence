@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { Trash2, Plus, Camera, Edit2, X, AlertTriangle, Save, AlertCircle, Calendar as CalendarIcon, MapPin, Clock, User, Wrench, FileText, Image as ImageIcon, CheckCircle2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -21,8 +21,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useMutationWithToast } from "@/hooks/useMutationWithToast";
 import ClientReportDialog from "@/components/ClientReportDialog";
 
 interface CalendarAssignment {
@@ -175,140 +176,99 @@ export function JobDetailDialog({
     client?.postalCode
   ].filter(Boolean).join(', ');
 
-  const toggleComplete = useMutation({
+  const toggleComplete = useMutationWithToast({
     mutationFn: async (completed: boolean) => {
       if (!assignment) return;
-      return apiRequest("PATCH", `/api/calendar/assign/${assignment.id}`, { completed });
-    },
-    onSuccess: (_data, completed) => {
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar/all'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar/overdue'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/maintenance/statuses'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/maintenance/recently-completed'] });
-      toast({
-        title: completed ? "Marked as complete" : "Marked as incomplete",
-        description: completed ? "Job marked as completed" : "Job moved back to active"
+      return apiRequest(`/api/calendar/assign/${assignment.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ completed }),
       });
     },
-    onError: () => {
-      toast({ title: "Error", description: "Failed to update status", variant: "destructive" });
-    }
+    successMessage: (_, completed) => completed ? "Marked as complete" : "Marked as incomplete",
+    errorMessage: "Failed to update status",
+    invalidate: { groups: ["calendar", "maintenance"] },
   });
 
-  const updateDate = useMutation({
+  const updateDate = useMutationWithToast({
     mutationFn: async (newDate: Date) => {
       if (!assignment) return;
       const year = newDate.getFullYear();
       const month = newDate.getMonth() + 1;
       const day = newDate.getDate();
-      return apiRequest("PATCH", `/api/calendar/assign/${assignment.id}`, {
-        year, month, day,
-        scheduledDate: format(newDate, 'yyyy-MM-dd')
+      return apiRequest(`/api/calendar/assign/${assignment.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ year, month, day, scheduledDate: format(newDate, 'yyyy-MM-dd') }),
       });
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar/all'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar/overdue'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar/unscheduled'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/maintenance/statuses'] });
-      toast({ title: "Date updated", description: "Job has been rescheduled" });
-      setDatePickerOpen(false);
-    },
-    onError: () => {
-      toast({ title: "Error", description: "Failed to update date", variant: "destructive" });
-    }
+    successMessage: "Date updated",
+    errorMessage: "Failed to update date",
+    invalidate: { groups: ["calendar", "maintenance"] },
+    onSuccess: () => setDatePickerOpen(false),
   });
 
-  const unscheduleJob = useMutation({
+  const unscheduleJob = useMutationWithToast({
     mutationFn: async () => {
       if (!assignment) return;
-      return apiRequest("PATCH", `/api/calendar/assign/${assignment.id}`, {
-        day: null,
-        scheduledHour: null
+      return apiRequest(`/api/calendar/assign/${assignment.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ day: null, scheduledHour: null }),
       });
     },
-    onSuccess: () => {
-      setSelectedDate(undefined);
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar/all'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar/overdue'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar/unscheduled'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/maintenance/statuses'] });
-      toast({ title: "Job unscheduled", description: "Job has been removed from the calendar" });
-    },
-    onError: () => {
-      toast({ title: "Error", description: "Failed to unschedule job", variant: "destructive" });
-    }
+    successMessage: "Job unscheduled",
+    errorMessage: "Failed to unschedule job",
+    invalidate: { groups: ["calendar", "maintenance"] },
+    onSuccess: () => setSelectedDate(undefined),
   });
 
-  const deleteJobMutation = useMutation({
+  const deleteJobMutation = useMutationWithToast({
     mutationFn: async () => {
-      await apiRequest("DELETE", `/api/calendar/assign/${assignment!.id}`);
+      return apiRequest(`/api/calendar/assign/${assignment!.id}`, { method: "DELETE" });
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/all"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/overdue"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/maintenance/statuses"] });
-      toast({ title: "Job deleted successfully" });
-      onOpenChange(false);
-    },
-    onError: () => {
-      toast({ title: "Failed to delete job", variant: "destructive" });
-    },
+    successMessage: "Job deleted successfully",
+    errorMessage: "Failed to delete job",
+    invalidate: { groups: ["calendar", "maintenance"] },
+    onSuccess: () => onOpenChange(false),
   });
 
-  const createNoteMutation = useMutation({
+  const createNoteMutation = useMutationWithToast({
     mutationFn: async (data: { noteText: string; imageUrl: string | null }) => {
-      await apiRequest("POST", "/api/job-notes", {
-        assignmentId: assignment!.id,
-        noteText: data.noteText,
-        imageUrl: data.imageUrl,
+      return apiRequest("/api/job-notes", {
+        method: "POST",
+        body: JSON.stringify({ assignmentId: assignment!.id, noteText: data.noteText, imageUrl: data.imageUrl }),
       });
     },
+    successMessage: "Note added successfully",
+    errorMessage: "Failed to add note",
+    invalidate: { keys: [["/api/job-notes", assignment?.id]] },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/job-notes", assignment?.id] });
       setNewNoteText("");
       setNewNoteImage(null);
-      toast({ title: "Note added successfully" });
-    },
-    onError: () => {
-      toast({ title: "Failed to add note", variant: "destructive" });
     },
   });
 
-  const updateNoteMutation = useMutation({
+  const updateNoteMutation = useMutationWithToast({
     mutationFn: async ({ id, noteText, imageUrl }: { id: string; noteText: string; imageUrl?: string | null }) => {
       const body: { noteText: string; imageUrl?: string | null } = { noteText };
       if (imageUrl !== undefined) body.imageUrl = imageUrl;
-      await apiRequest("PATCH", `/api/job-notes/${id}`, body);
+      return apiRequest(`/api/job-notes/${id}`, { method: "PATCH", body: JSON.stringify(body) });
     },
+    successMessage: "Note updated successfully",
+    errorMessage: "Failed to update note",
+    invalidate: { keys: [["/api/job-notes", assignment?.id]] },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/job-notes", assignment?.id] });
       setEditingNoteId(null);
       setEditingNoteText("");
       setEditingNoteImage(null);
-      toast({ title: "Note updated successfully" });
-    },
-    onError: () => {
-      toast({ title: "Failed to update note", variant: "destructive" });
     },
   });
 
-  const deleteNoteMutation = useMutation({
+  const deleteNoteMutation = useMutationWithToast({
     mutationFn: async (id: string) => {
-      await apiRequest("DELETE", `/api/job-notes/${id}`);
+      return apiRequest(`/api/job-notes/${id}`, { method: "DELETE" });
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/job-notes", assignment?.id] });
-      toast({ title: "Note deleted successfully" });
-    },
-    onError: () => {
-      toast({ title: "Failed to delete note", variant: "destructive" });
-    },
+    successMessage: "Note deleted successfully",
+    errorMessage: "Failed to delete note",
+    invalidate: { keys: [["/api/job-notes", assignment?.id]] },
   });
 
   const uploadImage = async (file: File): Promise<string | null> => {

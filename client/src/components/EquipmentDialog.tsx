@@ -6,6 +6,7 @@ import { Plus, Trash2 } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useMutationWithToast } from "@/hooks/useMutationWithToast";
 
 export interface Equipment {
   id: string;
@@ -57,43 +58,40 @@ export default function EquipmentDialog({ open, onClose, clientId, clientName }:
 
   const createMutation = useMutation({
     mutationFn: async (data: EquipmentRow) => {
-      const payload = {
-        clientId,
-        name: data.name,
-        modelNumber: data.modelNumber || null,
-        serialNumber: data.serialNumber || null,
-        notes: data.notes || null,
-      };
-      const res = await apiRequest('POST', `/api/clients/${clientId}/equipment`, payload);
-      return await res.json();
+      return apiRequest(`/api/clients/${clientId}/equipment`, {
+        method: "POST",
+        body: JSON.stringify({
+          clientId,
+          name: data.name,
+          modelNumber: data.modelNumber || null,
+          serialNumber: data.serialNumber || null,
+          notes: data.notes || null,
+        }),
+      });
     },
   });
 
   const updateMutation = useMutation({
     mutationFn: async ({ id, data }: { id: string; data: EquipmentRow }) => {
-      const payload = {
-        name: data.name,
-        modelNumber: data.modelNumber || null,
-        serialNumber: data.serialNumber || null,
-        notes: data.notes || null,
-      };
-      const res = await apiRequest('PUT', `/api/equipment/${id}`, payload);
-      return await res.json();
+      return apiRequest(`/api/equipment/${id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          name: data.name,
+          modelNumber: data.modelNumber || null,
+          serialNumber: data.serialNumber || null,
+          notes: data.notes || null,
+        }),
+      });
     },
   });
 
-  const deleteMutation = useMutation({
+  const deleteMutation = useMutationWithToast({
     mutationFn: async (equipmentId: string) => {
-      await apiRequest('DELETE', `/api/equipment/${equipmentId}`);
+      return apiRequest(`/api/equipment/${equipmentId}`, { method: "DELETE" });
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/clients', clientId, 'equipment'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/clients', clientId, 'report'] });
-      toast({ title: "Success", description: "Equipment deleted successfully" });
-    },
-    onError: () => {
-      toast({ title: "Error", description: "Failed to delete equipment", variant: "destructive" });
-    },
+    successMessage: "Equipment deleted successfully",
+    errorMessage: "Failed to delete equipment",
+    invalidate: { keys: [["/api/clients", clientId, "equipment"], ["/api/clients", clientId, "report"]] },
   });
 
   const handleAddRow = () => {

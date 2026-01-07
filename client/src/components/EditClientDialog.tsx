@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   Dialog,
   DialogContent,
@@ -15,8 +15,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Loader2, Plus, Trash2 } from "lucide-react";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useMutationWithToast } from "@/hooks/useMutationWithToast";
 import type { Client, Part } from "@shared/schema";
 
 const MONTHS = [
@@ -130,44 +131,32 @@ export default function EditClientDialog({ client, open, onOpenChange, onSaved }
   };
 
   // Update mutation
-  const updateMutation = useMutation({
+  const updateMutation = useMutationWithToast({
     mutationFn: async () => {
       // Update basic client info
       await apiRequest(`/api/clients/${client.id}`, {
         method: "PUT",
-        body: JSON.stringify(formData)
+        body: JSON.stringify(formData),
       });
 
       // Update parts if on parts tab
       if (activeTab === "parts" && partRows.length > 0) {
         const partsToSave = partRows
           .filter(row => row.partId && row.quantity > 0)
-          .map(row => ({
-            partId: row.partId,
-            quantity: row.quantity,
-          }));
+          .map(row => ({ partId: row.partId, quantity: row.quantity }));
 
         if (partsToSave.length > 0) {
           await apiRequest(`/api/clients/${client.id}/parts/bulk`, {
             method: "POST",
-            body: JSON.stringify({ parts: partsToSave })
+            body: JSON.stringify({ parts: partsToSave }),
           });
         }
       }
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/clients", client.id] });
-      toast({ title: "Client updated successfully" });
-      onSaved(client.id);
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Failed to update client",
-        description: error.message,
-        variant: "destructive"
-      });
-    }
+    successMessage: "Client updated successfully",
+    errorMessage: "Failed to update client",
+    invalidate: { groups: ["clients"], keys: [["/api/clients", client.id]] },
+    onSuccess: () => onSaved(client.id),
   });
 
   const handleSave = () => {

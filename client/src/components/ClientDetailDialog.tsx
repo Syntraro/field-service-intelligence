@@ -6,10 +6,10 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Calendar } from "@/components/ui/calendar";
 import { Badge } from "@/components/ui/badge";
 import { useState, useEffect } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Plus, X, Calendar as CalendarIcon, AlertCircle } from "lucide-react";
-import { apiRequest, queryClient } from "@/lib/queryClient";
-import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
+import { useMutationWithToast } from "@/hooks/useMutationWithToast";
 import ClientReportDialog from "@/components/ClientReportDialog";
 import { format } from "date-fns";
 
@@ -34,8 +34,6 @@ export function ClientDetailDialog({
   const [notes, setNotes] = useState("");
   const [datePickerOpen, setDatePickerOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
-  const { toast } = useToast();
-
   // Sync selected technicians, completion status, notes and date when assignment changes
   useEffect(() => {
     if (assignment) {
@@ -58,115 +56,61 @@ export function ClientDetailDialog({
 
   const clientParts = bulkParts[client?.id] || [];
 
-  const toggleComplete = useMutation({
+  const toggleComplete = useMutationWithToast({
     mutationFn: async (completed: boolean) => {
       if (!assignment) return;
-      return apiRequest("PATCH", `/api/calendar/assign/${assignment.id}`, {
-        completed
+      return apiRequest(`/api/calendar/assign/${assignment.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ completed }),
       });
     },
-    onSuccess: (_data, completed) => {
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar/overdue'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/maintenance/statuses'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/maintenance/recently-completed'] });
-      toast({
-        title: completed ? "Marked as complete" : "Marked as incomplete",
-        description: completed ? "Job marked as completed" : "Job moved back to active"
-      });
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to update status",
-        variant: "destructive"
-      });
-    }
+    successMessage: (_, completed) => completed ? "Marked as complete" : "Marked as incomplete",
+    errorMessage: "Failed to update status",
+    invalidate: { groups: ["calendar", "maintenance"] },
   });
 
-  const updateDate = useMutation({
+  const updateDate = useMutationWithToast({
     mutationFn: async (newDate: Date) => {
       if (!assignment) return;
       const year = newDate.getFullYear();
       const month = newDate.getMonth() + 1;
       const day = newDate.getDate();
-      return apiRequest("PATCH", `/api/calendar/assign/${assignment.id}`, {
-        year,
-        month,
-        day,
-        scheduledDate: format(newDate, 'yyyy-MM-dd')
+      return apiRequest(`/api/calendar/assign/${assignment.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ year, month, day, scheduledDate: format(newDate, 'yyyy-MM-dd') }),
       });
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar/overdue'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar/unscheduled'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/maintenance/statuses'] });
-      toast({
-        title: "Date updated",
-        description: "Job has been rescheduled"
-      });
-      setDatePickerOpen(false);
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to update date",
-        variant: "destructive"
-      });
-    }
+    successMessage: "Date updated",
+    errorMessage: "Failed to update date",
+    invalidate: { groups: ["calendar", "maintenance"] },
+    onSuccess: () => setDatePickerOpen(false),
   });
 
-  const unscheduleJob = useMutation({
+  const unscheduleJob = useMutationWithToast({
     mutationFn: async () => {
       if (!assignment) return;
-      // Just clear day and hour - keep scheduledDate as a placeholder since it's required in DB
-      return apiRequest("PATCH", `/api/calendar/assign/${assignment.id}`, {
-        day: null,
-        scheduledHour: null
+      return apiRequest(`/api/calendar/assign/${assignment.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ day: null, scheduledHour: null }),
       });
     },
-    onSuccess: () => {
-      setSelectedDate(undefined);
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar/overdue'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar/unscheduled'] });
-      queryClient.invalidateQueries({ queryKey: ['/api/maintenance/statuses'] });
-      toast({
-        title: "Job unscheduled",
-        description: "Job has been removed from the calendar"
-      });
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to unschedule job",
-        variant: "destructive"
-      });
-    }
+    successMessage: "Job unscheduled",
+    errorMessage: "Failed to unschedule job",
+    invalidate: { groups: ["calendar", "maintenance"] },
+    onSuccess: () => setSelectedDate(undefined),
   });
 
-  const updateNotes = useMutation({
+  const updateNotes = useMutationWithToast({
     mutationFn: async (newNotes: string) => {
       if (!assignment) return;
-      return apiRequest("PATCH", `/api/calendar/assign/${assignment.id}`, {
-        completionNotes: newNotes
+      return apiRequest(`/api/calendar/assign/${assignment.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ completionNotes: newNotes }),
       });
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/calendar'] });
-      toast({
-        title: "Notes saved",
-        description: "Job notes have been updated"
-      });
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to save notes",
-        variant: "destructive"
-      });
-    }
+    successMessage: "Notes saved",
+    errorMessage: "Failed to save notes",
+    invalidate: { keys: [["/api/calendar"]] },
   });
 
   const handleDateSelect = (date: Date | undefined) => {

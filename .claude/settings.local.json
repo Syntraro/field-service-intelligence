@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "Bash(npm run check:*)",
+      "Bash(tsx scripts/verify-indexes.ts:*)",
+      "Bash(head:*)",
+      "Bash(echo \"=== PHASE 1 REFACTORING: Route Files Analysis ===\" echo \"\" echo \"Route files to refactor:\" wc -l server/routes/*.ts)",
+      "Bash(echo:*)",
+      "Bash(for file in client-notes.ts team.ts jobs.ts invoices.ts parts.ts tasks.routes.ts)",
+      "Bash(do)",
+      "Bash(done)",
+      "Bash(grep:*)",
+      "Bash(npx tsc:*)",
+      "Bash(git stash:*)",
+      "Bash(git add:*)",
+      "Bash(server/routes/auth.ts server/routes/client-notes.ts server/routes/clients.ts )",
+      "Bash(server/routes/customer-companies.ts server/routes/invoices.ts server/routes/jobTemplates.ts )",
+      "Bash(server/routes/jobs.ts server/routes/parts.ts server/routes/tasks.routes.ts server/routes/team.ts )",
+      "Bash(server/middleware/ server/guards/ server/utils/validationHelpers.ts )",
+      "Bash(migrations/0001_critical_indexes.sql scripts/verify-indexes.ts)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nRefactor server routes with centralized error handling and validation\n\nPhase 1 refactoring reduces route code by 640 lines \\(-18.4%\\) while improving security and maintainability:\n\n- Add asyncHandler wrapper eliminating 50+ try/catch blocks\n- Add validateSchema helper for centralized Zod validation\n- Add ownershipGuards for last-owner protection logic\n- Apply .strict\\(\\) to all Zod schemas preventing mass assignment\n- Standardize error handling with createError utility\n- Add 30 critical database indexes for performance\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(rm:*)",
+      "Bash(git push:*)",
+      "Bash(client/src/components/calendar/ client/src/components/job/ )",
+      "Bash(client/src/hooks/useArrayRows.ts client/src/hooks/useImageUpload.ts client/src/hooks/useMutationWithToast.ts)",
+      "Bash(git commit:*)"
+    ]
+  }
+}
