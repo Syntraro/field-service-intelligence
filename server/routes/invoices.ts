@@ -1,11 +1,13 @@
-import { Router } from "express";
-import type { Request, Response } from "express";
+import { Router, Response } from "express";
 import { storage } from "../storage/index";
 import { z } from "zod";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
 import { parsePagination } from "../utils/pagination";
 import { paginated } from "../utils/paginatedResponse";
+import { asyncHandler, createError } from "../middleware/errorHandler";
+import { validateSchema } from "../utils/validationHelpers";
+import { AuthedRequest } from "../auth/tenantIsolation";
 
 const router = Router();
 
@@ -23,11 +25,11 @@ const createInvoiceLineSchema = z.object({
   lineTotal: z.number().min(0).max(999999.99),
   lineNumber: z.number().int().positive().optional(),
   source: z.enum(["manual", "job"]).optional().default("manual"),
-});
+}).strict();
 
 const createInvoiceFromJobSchema = z.object({
   markJobCompleted: z.boolean().optional().default(false),
-});
+}).strict();
 
 const updateInvoiceSchema = z.object({
   status: z.enum(["draft", "sent", "paid", "void", "overdue"]).optional(),
@@ -46,101 +48,87 @@ const updateInvoiceSchema = z.object({
   version: z.number().int().nonnegative().optional(),
 }).strict();
 
+// ========================================
+// MIDDLEWARE
+// ========================================
+
 function requireInvoiceEditable() {
-  return async (req: Request, res: Response, next: any) => {
-    try {
-      const invoice = await storage.getInvoice(req.companyId!, req.params.id);
+  return asyncHandler(async (req: AuthedRequest, res: Response, next: any) => {
+    const invoice = await storage.getInvoice(req.companyId!, req.params.id);
 
-      if (!invoice) {
-        return res.status(404).json({ error: "Invoice not found" });
-      }
-
-      if ((invoice as any).status === "Sent") {
-        return res.status(409).json({ error: "Invoice is locked after being sent" });
-      }
-
-      return next();
-    } catch (err) {
-      return next(err);
+    if (!invoice) {
+      throw createError(404, "Invoice not found");
     }
-  };
+
+    if ((invoice as any).status === "Sent") {
+      throw createError(409, "Invoice is locked after being sent");
+    }
+
+    next();
+  });
 }
 
-router.get("/list", async (req: Request, res: Response) => {
-  try {
-    const pagination = parsePagination(req.query);
-    const result = await storage.getInvoices(req.companyId!, pagination);
-    res.json(paginated(result.items, result.meta));
-  } catch (error: any) {
-    if (error.status === 400) {
-      return res.status(400).json({ error: error.message });
-    }
-    console.error("Get invoices error:", error);
-    res.status(500).json({ error: error.message || "Failed to get invoices" });
-  }
-});
+// ========================================
+// ROUTES
+// ========================================
 
-router.get("/stats", async (req: Request, res: Response) => {
+// GET /api/invoices/list - List all invoices with pagination
+router.get("/list", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const pagination = parsePagination(req.query);
+  const result = await storage.getInvoices(req.companyId!, pagination);
+
+  res.json(paginated(result.items, result.meta));
+}));
+
+// GET /api/invoices/stats - Get invoice statistics
+router.get("/stats", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const rows = await storage.getInvoiceStats(req.companyId!);
   res.json(rows);
-});
+}));
 
-router.get("/:id", async (req: Request, res: Response) => {
+// GET /api/invoices/:id - Get single invoice
+router.get("/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const invoice = await storage.getInvoice(req.companyId!, req.params.id);
-  if (!invoice) return res.status(404).json({ error: "Invoice not found" });
-  res.json(invoice);
-});
+  if (!invoice) throw createError(404, "Invoice not found");
 
-router.get("/:id/lines", async (req: Request, res: Response) => {
+  res.json(invoice);
+}));
+
+// GET /api/invoices/:id/lines - Get invoice lines
+router.get("/:id/lines", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const lines = await storage.getInvoiceLines(req.companyId!, req.params.id);
   res.json(lines);
-});
+}));
 
-router.post("/:id/lines", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async (req: Request, res: Response) => {
-  try {
-    const validation = createInvoiceLineSchema.safeParse(req.body);
-    if (!validation.success) {
-      return res.status(400).json({ 
-        error: "Validation failed", 
-        details: validation.error.errors 
-      });
-    }
-    
-    const created = await storage.createInvoiceLine(req.companyId!, req.params.id, validation.data);
-    res.json(created);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
+// POST /api/invoices/:id/lines - Add line to invoice
+router.post("/:id/lines", requireRole(MANAGER_ROLES), requireInvoiceEditable(), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const validated = validateSchema(createInvoiceLineSchema, req.body);
+  const created = await storage.createInvoiceLine(req.companyId!, req.params.id, validated);
 
-router.delete("/:id/lines/:lineId", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async (req: Request, res: Response) => {
+  res.json(created);
+}));
+
+// DELETE /api/invoices/:id/lines/:lineId - Remove line from invoice
+router.delete("/:id/lines/:lineId", requireRole(MANAGER_ROLES), requireInvoiceEditable(), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const result = await storage.deleteInvoiceLine(req.companyId!, req.params.id, req.params.lineId);
   res.json(result);
-});
+}));
 
-router.post("/:id/refresh-from-job", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async (req: Request, res: Response) => {
+// POST /api/invoices/:id/refresh-from-job - Refresh invoice lines from job
+router.post("/:id/refresh-from-job", requireRole(MANAGER_ROLES), requireInvoiceEditable(), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const result = await storage.refreshInvoiceFromJob(req.companyId!, req.params.id);
   res.json(result);
-});
+}));
 
-/**
- * POST /api/invoices/from-job/:jobId
- * Create a new invoice from an existing job
- */
-router.post("/from-job/:jobId", requireRole(MANAGER_ROLES), async (req: Request, res: Response) => {
+// POST /api/invoices/from-job/:jobId - Create invoice from job
+router.post("/from-job/:jobId", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const validated = validateSchema(createInvoiceFromJobSchema, req.body);
+
   try {
-    const validation = createInvoiceFromJobSchema.safeParse(req.body);
-    if (!validation.success) {
-      return res.status(400).json({ 
-        error: "Validation failed", 
-        details: validation.error.errors 
-      });
-    }
-
     const invoice = await storage.createInvoiceFromJob(
       req.companyId!,
       req.params.jobId,
-      { markJobCompleted: validation.data.markJobCompleted }
+      { markJobCompleted: validated.markJobCompleted }
     );
 
     // Refresh invoice lines from job parts
@@ -149,31 +137,21 @@ router.post("/from-job/:jobId", requireRole(MANAGER_ROLES), async (req: Request,
     res.json(invoice);
   } catch (error: any) {
     if (error.message?.includes("not found")) {
-      return res.status(404).json({ error: error.message });
+      throw createError(404, error.message);
     }
     if (error.message?.includes("already has an invoice")) {
-      return res.status(400).json({ error: error.message });
+      throw createError(400, error.message);
     }
-    console.error("Error creating invoice from job:", error);
-    res.status(500).json({ error: error.message || "Failed to create invoice" });
+    throw error;
   }
-});
+}));
 
-/**
- * PATCH /api/invoices/:id - Update invoice with optimistic locking
- */
-router.patch("/:id", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async (req: Request, res: Response) => {
+// PATCH /api/invoices/:id - Update invoice with optimistic locking
+router.patch("/:id", requireRole(MANAGER_ROLES), requireInvoiceEditable(), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const validated = validateSchema(updateInvoiceSchema, req.body);
+  const { version, ...patch } = validated;
+
   try {
-    const validation = updateInvoiceSchema.safeParse(req.body);
-    if (!validation.success) {
-      return res.status(400).json({ 
-        error: "Validation failed", 
-        details: validation.error.errors 
-      });
-    }
-    
-    const { version, ...patch } = validation.data;
-
     // Version is optional for backward compatibility
     const updated = await storage.updateInvoice(
       req.companyId!,
@@ -183,22 +161,20 @@ router.patch("/:id", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async
     );
 
     if (!updated) {
-      return res.status(404).json({ error: "Invoice not found" });
+      throw createError(404, "Invoice not found");
     }
 
     res.json(updated);
   } catch (error: any) {
     // Check for version mismatch error
     if (error.message?.includes('modified by another user')) {
-      return res.status(409).json({ 
+      return res.status(409).json({
         error: error.message,
         code: 'VERSION_MISMATCH'
       });
     }
-    
-    console.error("Update invoice error:", error);
-    res.status(500).json({ error: error.message || "Failed to update invoice" });
+    throw error;
   }
-});
+}));
 
 export default router;

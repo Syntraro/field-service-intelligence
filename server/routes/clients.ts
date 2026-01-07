@@ -8,6 +8,9 @@ import { db } from "../db";
 import { eq, and, desc, inArray, isNotNull } from "drizzle-orm";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
+import { asyncHandler, createError } from "../middleware/errorHandler";
+import { validateSchema } from "../utils/validationHelpers";
+import { AuthedRequest } from "../auth/tenantIsolation";
 
 const router = Router();
 
@@ -68,437 +71,386 @@ function buildFutureDueIndex(assignments: any[]): Map<string, string> {
 // ========================================
 
 // GET /api/clients - List all clients with pagination
-router.get("/", async (req, res) => {
-  try {
-    const companyId = req.companyId;
-    
-    // Parse pagination params from query
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 50;
-    const search = req.query.search as string;
-    const sortBy = req.query.sortBy as 'companyName' | 'createdAt' | 'updatedAt' | undefined;
-    const sortOrder = req.query.sortOrder as 'asc' | 'desc' | undefined;
-    const inactive = req.query.inactive === 'true' ? true : req.query.inactive === 'false' ? false : undefined;
-    
-    // Get paginated clients
-    const result = await storage.getPaginatedClients(companyId, {
-      page,
-      limit,
-      search,
-      sortBy,
-      sortOrder,
-      inactive,
-    });
-    
-    // Get calendar assignments for nextDue calculation
-    const start = getISODateOrDefault(req.query.assignStart as string | undefined, -30);
-    const end = getISODateOrDefault(req.query.assignEnd as string | undefined, +60);
-    const assignmentLimit = clampInt(req.query.assignLimit as string | undefined, 5000, 1, 5000);
+router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
 
-    const assignments = await storage.getCalendarAssignmentsInRange(companyId, {
+  // Parse pagination params from query
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 50;
+  const search = req.query.search as string;
+  const sortBy = req.query.sortBy as 'companyName' | 'createdAt' | 'updatedAt' | undefined;
+  const sortOrder = req.query.sortOrder as 'asc' | 'desc' | undefined;
+  const inactive = req.query.inactive === 'true' ? true : req.query.inactive === 'false' ? false : undefined;
+
+  // Get paginated clients
+  const result = await storage.getPaginatedClients(companyId, {
+    page,
+    limit,
+    search,
+    sortBy,
+    sortOrder,
+    inactive,
+  });
+
+  // Get calendar assignments for nextDue calculation
+  const start = getISODateOrDefault(req.query.assignStart as string | undefined, -30);
+  const end = getISODateOrDefault(req.query.assignEnd as string | undefined, +60);
+  const assignmentLimit = clampInt(req.query.assignLimit as string | undefined, 5000, 1, 5000);
+
+  const assignments = await storage.getCalendarAssignmentsInRange(companyId, {
     start,
     end,
     limit: assignmentLimit,
-});
+  });
 
-    const futureDueByClientId = buildFutureDueIndex(assignments);
+  const futureDueByClientId = buildFutureDueIndex(assignments);
 
-    // Add nextDue to each client
-    const clientsWithDue = result.data.map((c: any) => ({
-      ...c,
-      nextDue: deriveNextDueForClient(c, futureDueByClientId),
-    }));
+  // Add nextDue to each client
+  const clientsWithDue = result.data.map((c: any) => ({
+    ...c,
+    nextDue: deriveNextDueForClient(c, futureDueByClientId),
+  }));
 
-    // Return paginated response
-    res.json({
-      data: clientsWithDue,
-      pagination: result.pagination,
-    });
-  } catch (error) {
-    console.error('Error fetching clients:', error);
-    res.status(500).json({ error: "Failed to fetch clients" });
-  }
-});
+  // Return paginated response
+  res.json({
+    data: clientsWithDue,
+    pagination: result.pagination,
+  });
+}));
 
 // POST /api/clients - Create new client
-router.post("/", requireRole(MANAGER_ROLES), async (req, res) => {
-  try {
-    // Check subscription limits
-    const limitCheck = await storage.canAddLocation(req.companyId);
-    if (!limitCheck.allowed) {
-      return res.status(403).json({ 
-        error: limitCheck.reason,
-        current: limitCheck.current,
-        limit: limitCheck.limit,
-        subscriptionLimitReached: true
-      });
-    }
-
-    const { parts, ...clientData } = req.body;
-    const validated = insertClientSchema.parse(clientData);
-
-    let client: Client;
-
-    // If parts are provided, use transactional method
-    if (parts && Array.isArray(parts) && parts.length > 0) {
-      const partsSchema = z.array(z.object({
-        partId: z.string().uuid(),
-        quantity: z.number().int().positive()
-      }));
-
-      const validatedParts = partsSchema.parse(parts);
-      client = await storage.createClientWithParts(
-        req.companyId, 
-        req.user!.id, 
-        validated, 
-        validatedParts
-      );
-    } else {
-      // No parts, use regular client creation
-      client = await storage.createClient(req.companyId, req.user!.id, validated);
-    }
-
-    res.json(client);
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      return res.status(400).json({ error: "Invalid client or parts data", details: error.errors });
-    }
-    res.status(400).json({ error: "Invalid client data" });
+router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  // Check subscription limits
+  const limitCheck = await storage.canAddLocation(req.companyId!);
+  if (!limitCheck.allowed) {
+    throw createError(403, limitCheck.reason || "Subscription limit reached");
   }
-});
+
+  const { parts, ...clientData } = req.body;
+  const validated = validateSchema(insertClientSchema, clientData);
+
+  let client: Client;
+
+  // If parts are provided, use transactional method
+  if (parts && Array.isArray(parts) && parts.length > 0) {
+    const partsSchema = z.array(z.object({
+      partId: z.string().uuid(),
+      quantity: z.number().int().positive()
+    }).strict());
+
+    const validatedParts = validateSchema(partsSchema, parts);
+    client = await storage.createClientWithParts(
+      req.companyId,
+      req.user.id,
+      validated,
+      validatedParts
+    );
+  } else {
+    // No parts, use regular client creation
+    client = await storage.createClient(req.companyId, req.user.id, validated);
+  }
+
+  res.json(client);
+}));
 
 // POST /api/clients/full-create - Create customer company + primary location + additional locations (Model A)
-router.post("/full-create", requireRole(MANAGER_ROLES), async (req, res) => {
-  try {
-    const companyId = req.companyId;
-    const userId = req.user!.id;
-    const { company, primaryLocation, additionalLocations = [] } = req.body;
+router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const userId = req.user.id;
+  const { company, primaryLocation, additionalLocations = [] } = req.body;
 
-    if (!companyId) return res.status(401).json({ error: "Unauthorized" });
+  if (!company?.name?.trim()) {
+    throw createError(400, "Company name is required");
+  }
 
-    if (!company?.name?.trim()) {
-      return res.status(400).json({ error: "Company name is required" });
+  // Check subscription limits (locations count)
+  const limitCheck = await storage.canAddLocation(companyId!);
+  if (!limitCheck.allowed) {
+    throw createError(403, limitCheck.reason || "Subscription limit reached");
+  }
+
+  // Helper to calculate next due date (kept for back-compat)
+  const calculateNextDue = (selectedMonths: number[]): string => {
+    if (!selectedMonths || selectedMonths.length === 0) {
+      return new Date("9999-12-31").toISOString();
     }
+    const today = new Date();
+    const currentMonth = today.getMonth();
+    const currentYear = today.getFullYear();
+    const currentDay = today.getDate();
+    const sorted = [...selectedMonths].sort((a, b) => a - b);
 
-    // Check subscription limits (locations count)
-    const limitCheck = await storage.canAddLocation(companyId);
-    if (!limitCheck.allowed) {
-      return res.status(403).json({
-        error: limitCheck.reason,
-        current: limitCheck.current,
-        limit: limitCheck.limit,
-        subscriptionLimitReached: true,
-      });
+    if (sorted.includes(currentMonth) && currentDay < 15) {
+      return new Date(currentYear, currentMonth, 15).toISOString();
     }
+    let next = sorted.find((m) => m > currentMonth);
+    if (next === undefined) {
+      next = sorted[0];
+      return new Date(currentYear + 1, next, 15).toISOString();
+    }
+    return new Date(currentYear, next, 15).toISOString();
+  };
 
-    // Helper to calculate next due date (kept for back-compat)
-    const calculateNextDue = (selectedMonths: number[]): string => {
-      if (!selectedMonths || selectedMonths.length === 0) {
-        return new Date("9999-12-31").toISOString();
-      }
-      const today = new Date();
-      const currentMonth = today.getMonth();
-      const currentYear = today.getFullYear();
-      const currentDay = today.getDate();
-      const sorted = [...selectedMonths].sort((a, b) => a - b);
+  // 1) Create (or reuse) customer company row
+  // Reuse if same name exists for this tenant (prevents duplicates when users retry)
+  const companyName = company.name.trim();
+  const [existingCustomerCompany] = await db
+    .select()
+    .from(customerCompanies)
+    .where(and(eq(customerCompanies.companyId, companyId), eq(customerCompanies.name, companyName)))
+    .limit(1);
 
-      if (sorted.includes(currentMonth) && currentDay < 15) {
-        return new Date(currentYear, currentMonth, 15).toISOString();
-      }
-      let next = sorted.find((m) => m > currentMonth);
-      if (next === undefined) {
-        next = sorted[0];
-        return new Date(currentYear + 1, next, 15).toISOString();
-      }
-      return new Date(currentYear, next, 15).toISOString();
-    };
+  const customerCompany =
+    existingCustomerCompany ??
+    (await db
+      .insert(customerCompanies)
+      .values({
+        companyId,
+        name: companyName,
+        phone: company.phone?.trim() || null,
+        email: company.email?.trim() || null,
+        billingStreet: company.billingAddress?.street?.trim() || null,
+        billingCity: company.billingAddress?.city?.trim() || null,
+        billingProvince: company.billingAddress?.stateOrProvince?.trim() || null,
+        billingPostalCode: company.billingAddress?.postalCode?.trim() || null,
+        billingCountry: company.billingAddress?.country?.trim() || null,
+      })
+      .returning()
+      .then((rows) => rows[0]));
 
-    // 1) Create (or reuse) customer company row
-    // Reuse if same name exists for this tenant (prevents duplicates when users retry)
-    const companyName = company.name.trim();
-    const [existingCustomerCompany] = await db
-      .select()
-      .from(customerCompanies)
-      .where(and(eq(customerCompanies.companyId, companyId), eq(customerCompanies.name, companyName)))
-      .limit(1);
+  // 2) Create primary location (client record linked to customer company)
+  const primaryLocationName = primaryLocation?.name?.trim() || companyName;
+  const primarySelectedMonths = primaryLocation?.selectedMonths || [];
 
-    const customerCompany =
-      existingCustomerCompany ??
-      (await db
-        .insert(customerCompanies)
-        .values({
-          companyId,
-          name: companyName,
-          phone: company.phone?.trim() || null,
-          email: company.email?.trim() || null,
-          billingStreet: company.billingAddress?.street?.trim() || null,
-          billingCity: company.billingAddress?.city?.trim() || null,
-          billingProvince: company.billingAddress?.stateOrProvince?.trim() || null,
-          billingPostalCode: company.billingAddress?.postalCode?.trim() || null,
-          billingCountry: company.billingAddress?.country?.trim() || null,
-        })
-        .returning()
-        .then((rows) => rows[0]));
+  const primaryClientData: any = {
+    parentCompanyId: customerCompany.id,
+    companyName,
+    location: primaryLocationName,
+    address: primaryLocation?.serviceAddress?.street?.trim() || null,
+    city: primaryLocation?.serviceAddress?.city?.trim() || null,
+    province: primaryLocation?.serviceAddress?.stateOrProvince?.trim() || null,
+    postalCode: primaryLocation?.serviceAddress?.postalCode?.trim() || null,
+    contactName: primaryLocation?.contactName?.trim() || null,
+    email: primaryLocation?.contactEmail?.trim() || company.email?.trim() || null,
+    phone: primaryLocation?.contactPhone?.trim() || company.phone?.trim() || null,
+    roofLadderCode: null,
+    notes: primaryLocation?.notes?.trim() || null,
+    selectedMonths: primarySelectedMonths,
+    inactive: false,
+    nextDue: calculateNextDue(primarySelectedMonths),
+    billWithParent: primaryLocation?.billWithParent !== false,
+    needsDetails: primaryLocation?.needsDetails === true,
+    // If schema supports it, mark primary explicitly
+    isPrimary: true,
+  };
 
-    // 2) Create primary location (client record linked to customer company)
-    const primaryLocationName = primaryLocation?.name?.trim() || companyName;
-    const primarySelectedMonths = primaryLocation?.selectedMonths || [];
+  const primaryClient = await storage.createClient(companyId, userId, primaryClientData);
 
-    const primaryClientData: any = {
+  // 3) Create additional locations (children of same customer company)
+  const createdLocations: Client[] = [primaryClient];
+  for (const loc of additionalLocations) {
+    if (!loc?.name?.trim()) continue;
+
+    const selectedMonths = loc.selectedMonths || [];
+    const locData: any = {
       parentCompanyId: customerCompany.id,
       companyName,
-      location: primaryLocationName,
-      address: primaryLocation?.serviceAddress?.street?.trim() || null,
-      city: primaryLocation?.serviceAddress?.city?.trim() || null,
-      province: primaryLocation?.serviceAddress?.stateOrProvince?.trim() || null,
-      postalCode: primaryLocation?.serviceAddress?.postalCode?.trim() || null,
-      contactName: primaryLocation?.contactName?.trim() || null,
-      email: primaryLocation?.contactEmail?.trim() || company.email?.trim() || null,
-      phone: primaryLocation?.contactPhone?.trim() || company.phone?.trim() || null,
+      location: loc.name.trim(),
+      address: loc.serviceAddress?.street?.trim() || null,
+      city: loc.serviceAddress?.city?.trim() || null,
+      province: loc.serviceAddress?.stateOrProvince?.trim() || null,
+      postalCode: loc.serviceAddress?.postalCode?.trim() || null,
+      contactName: loc.contactName?.trim() || null,
+      email: loc.contactEmail?.trim() || company.email?.trim() || null,
+      phone: loc.contactPhone?.trim() || company.phone?.trim() || null,
       roofLadderCode: null,
-      notes: primaryLocation?.notes?.trim() || null,
-      selectedMonths: primarySelectedMonths,
+      notes: loc.notes?.trim() || null,
+      selectedMonths,
       inactive: false,
-      nextDue: calculateNextDue(primarySelectedMonths),
-      billWithParent: primaryLocation?.billWithParent !== false,
-      needsDetails: primaryLocation?.needsDetails === true,
-      // If schema supports it, mark primary explicitly
-      isPrimary: true,
+      nextDue: calculateNextDue(selectedMonths),
+      billWithParent: loc.billWithParent !== false,
+      needsDetails: loc.needsDetails === true,
+      isPrimary: false,
     };
 
-    const primaryClient = await storage.createClient(companyId, userId, primaryClientData);
-
-    // 3) Create additional locations (children of same customer company)
-    const createdLocations: Client[] = [primaryClient];
-    for (const loc of additionalLocations) {
-      if (!loc?.name?.trim()) continue;
-
-      const selectedMonths = loc.selectedMonths || [];
-      const locData: any = {
-        parentCompanyId: customerCompany.id,
-        companyName,
-        location: loc.name.trim(),
-        address: loc.serviceAddress?.street?.trim() || null,
-        city: loc.serviceAddress?.city?.trim() || null,
-        province: loc.serviceAddress?.stateOrProvince?.trim() || null,
-        postalCode: loc.serviceAddress?.postalCode?.trim() || null,
-        contactName: loc.contactName?.trim() || null,
-        email: loc.contactEmail?.trim() || company.email?.trim() || null,
-        phone: loc.contactPhone?.trim() || company.phone?.trim() || null,
-        roofLadderCode: null,
-        notes: loc.notes?.trim() || null,
-        selectedMonths,
-        inactive: false,
-        nextDue: calculateNextDue(selectedMonths),
-        billWithParent: loc.billWithParent !== false,
-        needsDetails: loc.needsDetails === true,
-        isPrimary: false,
-      };
-
-      const newLoc = await storage.createClient(companyId, userId, locData);
-      createdLocations.push(newLoc);
-    }
-
-    res.json({
-      customerCompany,
-      client: primaryClient,
-      locations: createdLocations,
-    });
-  } catch (error) {
-    console.error("Full create error:", error);
-    res.status(500).json({ error: "Failed to create company and locations" });
+    const newLoc = await storage.createClient(companyId, userId, locData);
+    createdLocations.push(newLoc);
   }
-});
+
+  res.json({
+    customerCompany,
+    client: primaryClient,
+    locations: createdLocations,
+  });
+}));
 
 // POST /api/clients/quick-create - Quick create with minimal info (sets needsDetails=true)
-router.post("/quick-create", requireRole(MANAGER_ROLES), async (req, res) => {
-  try {
-    const companyId = req.companyId;
-    const userId = req.user!.id;
-    const { companyName } = req.body;
+router.post("/quick-create", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const userId = req.user.id;
+  const { companyName } = req.body;
 
-    if (!companyName?.trim()) {
-      return res.status(400).json({ error: "Company name is required" });
-    }
-
-    // Check subscription limits
-    const limitCheck = await storage.canAddLocation(companyId);
-    if (!limitCheck.allowed) {
-      return res.status(403).json({
-        error: limitCheck.reason,
-        current: limitCheck.current,
-        limit: limitCheck.limit,
-        subscriptionLimitReached: true,
-      });
-    }
-
-    // Create minimal client with needsDetails=true
-    const clientData = {
-      parentCompanyId: null,
-      companyName: companyName.trim(),
-      location: companyName.trim(),
-      address: null,
-      city: null,
-      province: null,
-      postalCode: null,
-      contactName: null,
-      email: null,
-      phone: null,
-      roofLadderCode: null,
-      notes: null,
-      selectedMonths: [],
-      inactive: false,
-      nextDue: new Date("9999-12-31").toISOString(),
-      billWithParent: true,
-      needsDetails: true,
-    };
-
-    const client = await storage.createClient(companyId!, userId, clientData);
-
-    res.json({ client });
-  } catch (error) {
-    console.error("Quick create error:", error);
-    res.status(500).json({ error: "Failed to create client" });
+  if (!companyName?.trim()) {
+    throw createError(400, "Company name is required");
   }
-});
+
+  // Check subscription limits
+  const limitCheck = await storage.canAddLocation(companyId!);
+  if (!limitCheck.allowed) {
+    throw createError(403, limitCheck.reason || "Subscription limit reached");
+  }
+
+  // Create minimal client with needsDetails=true
+  const clientData = {
+    parentCompanyId: null,
+    companyName: companyName.trim(),
+    location: companyName.trim(),
+    address: null,
+    city: null,
+    province: null,
+    postalCode: null,
+    contactName: null,
+    email: null,
+    phone: null,
+    roofLadderCode: null,
+    notes: null,
+    selectedMonths: [],
+    inactive: false,
+    nextDue: new Date("9999-12-31").toISOString(),
+    billWithParent: true,
+    needsDetails: true,
+  };
+
+  const client = await storage.createClient(companyId, userId, clientData);
+
+  res.json({ client });
+}));
 
 // POST /api/clients/import-simple - Simple import
-router.post("/import-simple", requireRole(MANAGER_ROLES), async (req, res) => {
-  try {
-    const { clients } = req.body;
+router.post("/import-simple", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { clients } = req.body;
 
-    if (!Array.isArray(clients) || clients.length === 0) {
-      return res.status(400).json({ error: "Invalid import data: clients array is required" });
-    }
-
-    // Check if user can import this many clients
-    const usage = await storage.getSubscriptionUsage(req.companyId);
-    const availableSlots = usage.plan ? usage.plan.locationLimit - usage.usage.locations : 999999;
-
-    const subscriptionsEnabled = process.env.ENABLE_SUBSCRIPTIONS === 'true';
-    if (subscriptionsEnabled && clients.length > availableSlots) {
-      return res.status(403).json({ 
-        error: `Cannot import ${clients.length} clients. You have ${availableSlots} available locations on your ${usage.plan?.displayName} plan.`,
-        subscriptionLimitReached: true,
-        current: usage.usage.locations,
-        limit: usage.plan?.locationLimit || 0,
-        requested: clients.length
-      });
-    }
-
-    let imported = 0;
-    const errors: string[] = [];
-
-    for (const clientData of clients) {
-      try {
-        const validated = insertClientSchema.parse(clientData);
-        await storage.createClient(req.companyId, req.user!.id, validated);
-        imported++;
-      } catch (error) {
-        errors.push(`Failed to import ${clientData.companyName || 'unknown client'}`);
-      }
-    }
-
-    res.json({ 
-      imported, 
-      errors: errors.length > 0 ? errors : undefined,
-      total: clients.length 
-    });
-  } catch (error) {
-    console.error('Simple import error:', error);
-    res.status(500).json({ error: "Failed to import clients" });
+  if (!Array.isArray(clients) || clients.length === 0) {
+    throw createError(400, "Invalid import data: clients array is required");
   }
-});
+
+  // Check if user can import this many clients
+  const usage = await storage.getSubscriptionUsage(req.companyId!) as any;
+  const availableSlots = usage.plan ? usage.plan.locationLimit - usage.usage.locations : 999999;
+
+  const subscriptionsEnabled = process.env.ENABLE_SUBSCRIPTIONS === 'true';
+  if (subscriptionsEnabled && clients.length > availableSlots) {
+    const error: any = createError(403, `Cannot import ${clients.length} clients. You have ${availableSlots} available locations on your ${usage.plan?.displayName} plan.`);
+    error.subscriptionLimitReached = true;
+    error.current = usage.usage.locations;
+    error.limit = usage.plan?.locationLimit || 0;
+    error.requested = clients.length;
+    throw error;
+  }
+
+  let imported = 0;
+  const errors: string[] = [];
+
+  for (const clientData of clients) {
+    try {
+      const validated = insertClientSchema.parse(clientData);
+      await storage.createClient(req.companyId, req.user.id, validated);
+      imported++;
+    } catch (error) {
+      errors.push(`Failed to import ${clientData.companyName || 'unknown client'}`);
+    }
+  }
+
+  res.json({
+    imported,
+    errors: errors.length > 0 ? errors : undefined,
+    total: clients.length
+  });
+}));
 
 // POST /api/clients/import - Full import with equipment and parts
-router.post("/import", requireRole(MANAGER_ROLES), async (req, res) => {
-  try {
-    const { clients } = req.body;
+router.post("/import", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { clients } = req.body;
 
-    if (!Array.isArray(clients) || clients.length === 0) {
-      return res.status(400).json({ error: "Invalid import data: clients array is required" });
-    }
-
-    let imported = 0;
-    const errors: string[] = [];
-
-    for (const clientData of clients) {
-      try {
-        const { parts, equipment, ...clientInfo } = clientData;
-        const validated = insertClientSchema.parse(clientInfo);
-        const client = await storage.createClient(req.companyId, req.user!.id, validated);
-        imported++;
-
-        // Import parts if present
-        if (parts && Array.isArray(parts) && parts.length > 0) {
-          for (const partData of parts) {
-            try {
-              // Create part as "other" type with the name from backup
-              const part = await storage.createPart(req.companyId, req.user!.id, {
-                type: 'other',
-                name: partData.name,
-                filterType: null,
-                beltType: null,
-                size: null,
-                description: null,
-              });
-
-              // Link part to client
-              await storage.addClientPart(req.companyId, req.user!.id, {
-                clientId: client.id,
-                partId: part.id,
-                quantity: partData.quantity || 1,
-              });
-            } catch (partError) {
-              console.error(`Failed to import part for ${client.companyName}:`, partError);
-            }
-          }
-        }
-
-        // Import equipment if present
-        if (equipment && Array.isArray(equipment) && equipment.length > 0) {
-          for (const equipData of equipment) {
-            try {
-              await storage.createEquipment(req.companyId, req.user!.id, {
-                clientId: client.id,
-                name: equipData.name,
-                modelNumber: equipData.modelNumber || null,
-                serialNumber: equipData.serialNumber || null,
-                notes: null,
-              });
-            } catch (equipError) {
-              console.error(`Failed to import equipment for ${client.companyName}:`, equipError);
-            }
-          }
-        }
-      } catch (error) {
-        console.error('Import client error:', error);
-        errors.push(`Failed to import ${clientData.companyName || 'unknown client'}`);
-      }
-    }
-
-    res.json({ 
-      imported, 
-      errors: errors.length > 0 ? errors : undefined,
-      total: clients.length 
-    });
-  } catch (error) {
-    console.error('Bulk import error:', error);
-    res.status(500).json({ error: "Failed to import clients" });
+  if (!Array.isArray(clients) || clients.length === 0) {
+    throw createError(400, "Invalid import data: clients array is required");
   }
-});
+
+  let imported = 0;
+  const errors: string[] = [];
+
+  for (const clientData of clients) {
+    try {
+      const { parts, equipment, ...clientInfo } = clientData;
+      const validated = insertClientSchema.parse(clientInfo);
+      const client = await storage.createClient(req.companyId, req.user.id, validated);
+      imported++;
+
+      // Import parts if present
+      if (parts && Array.isArray(parts) && parts.length > 0) {
+        for (const partData of parts) {
+          try {
+            // Create part as "other" type with the name from backup
+            const part = await storage.createPart(req.companyId, req.user.id, {
+              type: 'other',
+              name: partData.name,
+              filterType: null,
+              beltType: null,
+              size: null,
+              description: null,
+            });
+
+            // Link part to client
+            await storage.addClientPart(req.companyId, req.user.id, {
+              clientId: client.id,
+              partId: part.id,
+              quantity: partData.quantity || 1,
+            });
+          } catch (partError) {
+            console.error(`Failed to import part for ${client.companyName}:`, partError);
+          }
+        }
+      }
+
+      // Import equipment if present
+      if (equipment && Array.isArray(equipment) && equipment.length > 0) {
+        for (const equipData of equipment) {
+          try {
+            await storage.createEquipment(req.companyId, req.user.id, {
+              clientId: client.id,
+              name: equipData.name,
+              modelNumber: equipData.modelNumber || null,
+              serialNumber: equipData.serialNumber || null,
+              notes: null,
+            });
+          } catch (equipError) {
+            console.error(`Failed to import equipment for ${client.companyName}:`, equipError);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Import client error:', error);
+      errors.push(`Failed to import ${clientData.companyName || 'unknown client'}`);
+    }
+  }
+
+  res.json({
+    imported,
+    errors: errors.length > 0 ? errors : undefined,
+    total: clients.length
+  });
+}));
 
 // GET /api/clients/:id/overview - Unified overview for any client (parent or child)
-router.get("/:id/overview", async (req, res) => {
-  try {
-    const tenantCompanyId = req.companyId;
-    const clientId = req.params.id;
+router.get("/:id/overview", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const tenantCompanyId = req.companyId;
+  const clientId = req.params.id;
 
-    // Fetch the clicked client
-    const client = await storage.getClient(tenantCompanyId, clientId);
-    if (!client) {
-      return res.status(404).json({ error: "Client not found" });
-    }
+  // Fetch the clicked client
+  const client = await storage.getClient(tenantCompanyId, clientId);
+  if (!client) {
+    throw createError(404, "Client not found");
+  }
 
     let locations: Client[] = [];
     let jobsList: any[] = [];
@@ -658,38 +610,30 @@ router.get("/:id/overview", async (req, res) => {
       openInvoices: invoicesList.filter((i: any) => i.status !== "paid" && i.status !== "void").length,
     };
 
-    res.json({
-      company,
-      locations,
-      jobs: jobsList,
-      invoices: invoicesList,
-      stats,
-    });
-  } catch (error) {
-    console.error("Failed to fetch client overview:", error);
-    res.status(500).json({ error: "Failed to fetch client overview" });
-  }
-});
+  res.json({
+    company,
+    locations,
+    jobs: jobsList,
+    invoices: invoicesList,
+    stats,
+  });
+}));
 
 // POST /api/clients/:companyId/locations - Create a child location under a parent client
-router.post("/:companyId/locations", requireRole(MANAGER_ROLES), async (req, res) => {
-  try {
-    const tenantCompanyId = req.companyId;
-    const userId = (req.user as any)?.id;
-    const idParam = req.params.companyId; // customerCompanyId (preferred) OR legacy parent client id
+router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const tenantCompanyId = req.companyId;
+  const userId = req.user.id;
+  const idParam = req.params.companyId; // customerCompanyId (preferred) OR legacy parent client id
 
-    if (!tenantCompanyId) return res.status(401).json({ error: "Unauthorized" });
-
-    // Check subscription limits
-    const limitCheck = await storage.canAddLocation(tenantCompanyId);
-    if (!limitCheck.allowed) {
-      return res.status(403).json({
-        error: limitCheck.reason,
-        code: "SUBSCRIPTION_LIMIT",
-        currentCount: limitCheck.currentCount,
-        limit: limitCheck.limit,
-      });
-    }
+  // Check subscription limits
+  const limitCheck = await storage.canAddLocation(tenantCompanyId!) as any;
+  if (!limitCheck.allowed) {
+    const error: any = createError(403, limitCheck.reason || "Subscription limit reached");
+    error.code = "SUBSCRIPTION_LIMIT";
+    error.currentCount = limitCheck.currentCount;
+    error.limit = limitCheck.limit;
+    throw error;
+  }
 
     // 1) Preferred: treat param as customerCompanies.id
     let [customerCompany] = await db
@@ -698,12 +642,12 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), async (req, res
       .where(and(eq(customerCompanies.id, idParam), eq(customerCompanies.companyId, tenantCompanyId)))
       .limit(1);
 
-    // 2) Back-compat: if not found, treat param as a legacy client id and normalize to customerCompanies
-    if (!customerCompany) {
-      const legacyParentClient = await storage.getClient(tenantCompanyId, idParam);
-      if (!legacyParentClient) {
-        return res.status(404).json({ error: "Company not found" });
-      }
+  // 2) Back-compat: if not found, treat param as a legacy client id and normalize to customerCompanies
+  if (!customerCompany) {
+    const legacyParentClient = await storage.getClient(tenantCompanyId, idParam);
+    if (!legacyParentClient) {
+      throw createError(404, "Company not found");
+    }
 
       // Find or create a customer company by name
       const [existing] = await db
@@ -783,72 +727,59 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), async (req, res
       isPrimary: false,
     };
 
-    const newLocation = await storage.createClient(tenantCompanyId, userId, childLocationData);
+  const newLocation = await storage.createClient(tenantCompanyId, userId, childLocationData);
 
-    res.json({ customerCompany, location: newLocation });
-  } catch (error) {
-    console.error("Failed to create child location:", error);
-    res.status(500).json({ error: "Failed to create location" });
+  res.json({ customerCompany, location: newLocation });
+}));
+// GET /api/clients/:id - Get single client
+router.get("/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const client = await storage.getClient(companyId, req.params.id);
+  if (!client) {
+    throw createError(404, "Client not found");
   }
-});
- // Get single client
-router.get("/:id", async (req, res) => {
-  try {
-    const companyId = req.companyId;
-    const client = await storage.getClient(companyId, req.params.id);
-    if (!client) {
-      return res.status(404).json({ error: "Client not found" });
-    }
 
-    const assignments = await storage.getAssignmentsByClient(companyId, client.id);
-    const futureDueByClientId = buildFutureDueIndex(assignments);
-    const clientWithDue = {
-      ...client,
-      nextDue: deriveNextDueForClient(client, futureDueByClientId),
-    };
+  const assignments = await storage.getAssignmentsByClient(companyId, client.id);
+  const futureDueByClientId = buildFutureDueIndex(assignments);
+  const clientWithDue = {
+    ...client,
+    nextDue: deriveNextDueForClient(client, futureDueByClientId),
+  };
 
-    res.json(clientWithDue);
-  } catch (error) {
-    res.status(500).json({ error: "Failed to fetch client" });
-  }
-});
+  res.json(clientWithDue);
+}));
 
 // GET /api/clients/:id/report - Get client report
-router.get("/:id/report", async (req, res) => {
-  try {
-    const companyId = req.companyId;
-    const clientId = req.params.id;
-    console.log(`[Report] Fetching report for companyId: ${companyId}, clientId: ${clientId}`);
+router.get("/:id/report", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const clientId = req.params.id;
+  console.log(`[Report] Fetching report for companyId: ${companyId}, clientId: ${clientId}`);
 
-    const report = await storage.getClientReport(companyId, clientId);
-    if (!report) {
-      console.log(`[Report] Client not found - companyId: ${companyId}, clientId: ${clientId}`);
-      return res.status(404).json({ error: "Client not found" });
-    }
-
-    console.log(`[Report] Successfully generated report for: ${report.client.companyName}`);
-    res.json(report);
-  } catch (error) {
-    console.error('[Report] Error generating report:', error);
-    res.status(500).json({ error: "Failed to generate client report" });
+  const report = await storage.getClientReport(companyId, clientId);
+  if (!report) {
+    console.log(`[Report] Client not found - companyId: ${companyId}, clientId: ${clientId}`);
+    throw createError(404, "Client not found");
   }
-});
+
+  console.log(`[Report] Successfully generated report for: ${report.client.companyName}`);
+  res.json(report);
+}));
 
 // PUT /api/clients/:id - Update client with optimistic locking
-router.put("/:id", requireRole(MANAGER_ROLES), async (req, res) => {
+router.put("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { version, ...data } = req.body;
+  const validated = insertClientSchema.partial().parse(data);
+  const companyId = req.companyId;
+  const clientId = req.params.id;
+
+  // Check if selectedMonths is being updated
+  const isUpdatingPmMonths = validated.selectedMonths !== undefined;
+
   try {
-    const { version, ...data } = req.body;
-    const validated = insertClientSchema.partial().parse(data);
-    const companyId = req.companyId;
-    const clientId = req.params.id;
-
-    // Check if selectedMonths is being updated
-    const isUpdatingPmMonths = validated.selectedMonths !== undefined;
-
     // Update the client with version check
     const client = await storage.updateClient(companyId, clientId, version, validated);
     if (!client) {
-      return res.status(404).json({ error: "Client not found" });
+      throw createError(404, "Client not found");
     }
 
     // If PM months were updated, cleanup invalid calendar assignments
@@ -868,128 +799,107 @@ router.put("/:id", requireRole(MANAGER_ROLES), async (req, res) => {
   } catch (error: any) {
     // Check for version mismatch
     if (error.message?.includes('modified by another user')) {
-      return res.status(409).json({ 
+      return res.status(409).json({
         error: error.message,
         code: 'VERSION_MISMATCH'
       });
     }
-    
-    res.status(400).json({ error: "Invalid client data" });
+    throw error;
   }
-});
+}));
 
 // PATCH /api/clients/:id - Partial update with optimistic locking
-router.patch("/:id", requireRole(MANAGER_ROLES), async (req, res) => {
-  try {
-    const { version, ...data } = req.body;
-    const validated = insertClientSchema.partial().parse(data);
-    const companyId = req.companyId;
-    const clientId = req.params.id;
+router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { version, ...data } = req.body;
+  const validated = insertClientSchema.partial().parse(data);
+  const companyId = req.companyId;
+  const clientId = req.params.id;
 
+  try {
     const client = await storage.updateClient(companyId, clientId, version, validated);
     if (!client) {
-      return res.status(404).json({ error: "Client not found" });
+      throw createError(404, "Client not found");
     }
 
     res.json(client);
   } catch (error: any) {
     // Check for version mismatch
     if (error.message?.includes('modified by another user')) {
-      return res.status(409).json({ 
+      return res.status(409).json({
         error: error.message,
         code: 'VERSION_MISMATCH'
       });
     }
-    
-    res.status(400).json({ error: "Invalid client data" });
+    throw error;
   }
-});
+}));
 
 // POST /api/clients/:id/set-primary - Set location as primary for its parent company
-router.post("/:id/set-primary", requireRole(MANAGER_ROLES), async (req, res) => {
-  try {
-    const companyId = req.companyId;
-    const locationId = req.params.id;
+router.post("/:id/set-primary", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const locationId = req.params.id;
 
-    if (!companyId) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-
-    // Get the location first - this already enforces companyId scoping
-    const location = await storage.getClient(companyId, locationId);
-    if (!location) {
-      return res.status(404).json({ error: "Location not found" });
-    }
-
-    if (!location.parentCompanyId) {
-      return res.status(400).json({ error: "Cannot set standalone client as primary" });
-    }
-
-    // Use a transaction to ensure atomicity
-    await db.transaction(async (tx) => {
-      // Clear isPrimary on all other locations with the same parentCompanyId AND companyId
-      // This ensures cross-tenant isolation - parentCompanyId is unique within a tenant
-      await tx.update(clients)
-        .set({ isPrimary: false })
-        .where(and(
-          eq(clients.companyId, companyId),
-          eq(clients.parentCompanyId, location.parentCompanyId)
-        ));
-
-      // Set this location as primary - double-check companyId for safety
-      await tx.update(clients)
-        .set({ isPrimary: true })
-        .where(and(
-          eq(clients.id, locationId),
-          eq(clients.companyId, companyId)
-        ));
-    });
-
-    // Fetch the updated location
-    const updated = await storage.getClient(companyId, locationId);
-    res.json(updated);
-  } catch (error) {
-    console.error("Set primary error:", error);
-    res.status(500).json({ error: "Failed to set primary location" });
+  // Get the location first - this already enforces companyId scoping
+  const location = await storage.getClient(companyId, locationId);
+  if (!location) {
+    throw createError(404, "Location not found");
   }
-});
+
+  if (!location.parentCompanyId) {
+    throw createError(400, "Cannot set standalone client as primary");
+  }
+
+  // Use a transaction to ensure atomicity
+  await db.transaction(async (tx) => {
+    // Clear isPrimary on all other locations with the same parentCompanyId AND companyId
+    // This ensures cross-tenant isolation - parentCompanyId is unique within a tenant
+    await tx.update(clients)
+      .set({ isPrimary: false })
+      .where(and(
+        eq(clients.companyId, companyId),
+        eq(clients.parentCompanyId, location.parentCompanyId)
+      ));
+
+    // Set this location as primary - double-check companyId for safety
+    await tx.update(clients)
+      .set({ isPrimary: true })
+      .where(and(
+        eq(clients.id, locationId),
+        eq(clients.companyId, companyId)
+      ));
+  });
+
+  // Fetch the updated location
+  const updated = await storage.getClient(companyId, locationId);
+  res.json(updated);
+}));
 
 // DELETE /api/clients/:id - Delete client
-router.delete("/:id", requireRole(MANAGER_ROLES), async (req, res) => {
-  try {
-    await storage.deleteAllClientParts(req.companyId, req.params.id);
-    const deleted = await storage.deleteClient(req.companyId, req.params.id);
-    if (!deleted) {
-      return res.status(404).json({ error: "Client not found" });
-    }
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: "Failed to delete client" });
+router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  await storage.deleteAllClientParts(req.companyId, req.params.id);
+  const deleted = await storage.deleteClient(req.companyId, req.params.id);
+  if (!deleted) {
+    throw createError(404, "Client not found");
   }
-});
+  res.json({ success: true });
+}));
 
 // POST /api/clients/bulk-delete - Bulk delete clients
-router.post("/bulk-delete", requireRole(MANAGER_ROLES), async (req, res) => {
-  try {
-    const schema = z.object({
-      ids: z.array(z.string().uuid()).min(1).max(200)
-    });
-    const { ids } = schema.parse(req.body);
+router.post("/bulk-delete", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const schema = z.object({
+    ids: z.array(z.string().uuid()).min(1).max(200)
+  }).strict();
 
-    const result = await storage.deleteClients(req.companyId, ids);
+  const { ids } = validateSchema(schema, req.body);
 
-    res.json({
-      deletedIds: result.deletedIds,
-      notFoundIds: result.notFoundIds,
-      deletedCount: result.deletedIds.length,
-      notFoundCount: result.notFoundIds.length
-    });
-  } catch (error) {
-    if (error instanceof z.ZodError) {
-      return res.status(400).json({ error: "Invalid request: must provide 1-200 client IDs" });
-    }
-    res.status(500).json({ error: "Failed to delete clients" });
-  }
-});
+  const result = await storage.deleteClients(req.companyId, ids);
+
+  res.json({
+    deletedIds: result.deletedIds,
+    notFoundIds: result.notFoundIds,
+    deletedCount: result.deletedIds.length,
+    notFoundCount: result.notFoundIds.length
+  });
+}));
 
 export default router;

@@ -4,6 +4,7 @@ import rateLimit from "express-rate-limit";
 import bcrypt from "bcryptjs";
 import type { Request, Response } from "express";
 import { storage } from "../storage/index";
+import { asyncHandler, createError } from "../middleware/errorHandler";
 
 declare module "express-serve-static-core" {
   interface Request {
@@ -155,62 +156,55 @@ router.get("/me", (req: Request, res: Response) => {
  * POST /api/auth/signup
  * Create new user account
  */
-router.post("/signup", async (req: Request, res: Response) => {
-  try {
-    const { email, password, firstName, lastName, invitationToken } = req.body;
+router.post("/signup", asyncHandler(async (req: Request, res: Response) => {
+  const { email, password, firstName, lastName, invitationToken } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ error: "Email and password are required" });
-    }
-
-    const existingUser = await storage.getUserByEmail(email);
-    if (existingUser) {
-      return res.status(400).json({ error: "User already exists" });
-    }
-
-    // ✅ Production safety: require invitation for signup
-    if (!invitationToken) {
-      return res.status(403).json({
-        error: "Signup requires an invitation. Contact support to get started.",
-      });
-    }
-
-    const invitation = await storage.getInvitationByToken(invitationToken);
-    if (!invitation || invitation.status !== "pending") {
-      return res.status(400).json({ error: "Invalid or expired invitation" });
-    }
-
-    const companyId = invitation.companyId;
-    const role = invitation.role || "technician";
-    await storage.updateInvitation(invitation.id, { status: "accepted" });
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const user = await storage.createUser({
-      email,
-      password: hashedPassword,
-      companyId,
-      role,
-      firstName,
-      lastName,
-    });
-
-    req.logIn(user, (err) => {
-      if (err) {
-        return res
-          .status(500)
-          .json({ error: "Account created but login failed" });
-      }
-      res.status(201).json({
-        id: user.id,
-        email: user.email,
-        role: user.role,
-        companyId: user.companyId,
-      });
-    });
-  } catch (error: any) {
-    console.error("[AUTH] Signup error:", error);
-    res.status(500).json({ error: error.message || "Failed to create account" });
+  if (!email || !password) {
+    throw createError(400, "Email and password are required");
   }
-});
+
+  const existingUser = await storage.getUserByEmail(email);
+  if (existingUser) {
+    throw createError(400, "User already exists");
+  }
+
+  // ✅ Production safety: require invitation for signup
+  if (!invitationToken) {
+    throw createError(403, "Signup requires an invitation. Contact support to get started.");
+  }
+
+  const invitation = await storage.getInvitationByToken(invitationToken);
+  if (!invitation || invitation.status !== "pending") {
+    throw createError(400, "Invalid or expired invitation");
+  }
+
+  const companyId = invitation.companyId;
+  const role = invitation.role || "technician";
+  await storage.updateInvitation(invitation.id, { status: "accepted" });
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+  const user = await storage.createUser({
+    email,
+    password: hashedPassword,
+    companyId,
+    role,
+    firstName,
+    lastName,
+  });
+
+  req.logIn(user, (err) => {
+    if (err) {
+      return res
+        .status(500)
+        .json({ error: "Account created but login failed" });
+    }
+    res.status(201).json({
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      companyId: user.companyId,
+    });
+  });
+}));
 
 export default router;

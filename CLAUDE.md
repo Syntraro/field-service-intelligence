@@ -41,8 +41,11 @@ Required environment variables:
   - `routes/` - API route handlers
   - `services/` - Business logic services
   - `auth/` - Authentication & authorization middleware
+  - `middleware/` - Shared middleware (error handling, etc.)
+  - `guards/` - Business rule guards (ownership protection, etc.)
+  - `utils/` - Server utilities (validation, pagination, etc.)
   - `qbo/` - QuickBooks Online integration
-  - `storage/` - File storage handling
+  - `storage/` - Repository layer for database access
   - `index.ts` - Server entry point
 - **`shared/`** - Shared code between client and server
   - `schema.ts` - Drizzle ORM schema (single source of truth for database structure)
@@ -185,10 +188,30 @@ const { data, isLoading } = useQuery({
 
 ### Adding a New API Endpoint
 1. Create/edit route file in `server/routes/`
-2. Add tenant isolation: filter queries by `req.user.companyId`
-3. Add authentication: `requireAuth` middleware
-4. Add authorization: `requirePermission("permission_name")` if needed
-5. Register route in `server/routes/index.ts`
+2. Use `asyncHandler` wrapper to eliminate try/catch boilerplate
+3. Use `validateSchema` helper for Zod validation
+4. Use `createError(status, message)` for consistent error handling
+5. Add tenant isolation: filter queries by `req.user.companyId`
+6. Add authorization: `requireRole(...)` if needed
+7. Register route in `server/routes/index.ts`
+
+**Example:**
+```typescript
+import { asyncHandler, createError } from "../middleware/errorHandler";
+import { validateSchema } from "../utils/validationHelpers";
+
+router.post("/endpoint", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const data = validateSchema(mySchema, req.body);
+
+  // Validation throws automatically on failure
+  if (!someCondition) {
+    throw createError(400, "Invalid operation");
+  }
+
+  const result = await db.query...;
+  res.json(result);
+}));
+```
 
 ### Adding a New Page
 1. Create page component in `client/src/pages/`
@@ -220,4 +243,26 @@ const { data, isLoading } = useQuery({
 - **Date Handling:** Dates stored as ISO strings or PostgreSQL date type; use date-fns for formatting
 - **Calendar Cleanup:** System automatically removes invalid calendar assignments when client PM months change
 - **Job Numbers:** Atomic sequences per company to prevent collisions
-- **Optimistic Locking:** QBO sync uses version tokens to prevent concurrent update conflicts
+- **Optimistic Locking:** QBO sync uses version tokens to prevent concurrent update 
+conflicts
+
+
+# Project Instructions: Dispatching Software Optimization
+
+## Role
+You are a Senior Systems Architect specializing in high-performance dispatching software and DRY (Don't Repeat Yourself) principles.
+
+## Objectives for Analysis & Development
+1. **Prioritize Line Count Reduction:** Every time we touch a module, identify redundant logic. If the same logic appears in 2+ places, refactor it into a shared utility or service.
+2. **Modular Architecture:** Aim for a "Thin Controller, Thick Service" model. Keep files under 300 lines where possible.
+3. **Dead Code Elimination:** Automatically flag and suggest removal for unused variables, imported but unused libraries, and "hallucinated" or orphaned functions common in AI-generated code.
+4. **Data Integrity:** Since this is dispatching software, prioritize the reliability of state management (e.g., driver status, GPS coordinates, and job assignments).
+
+## Coding Standards
+- Use ES6+ features to shorten code (e.g., destructuring, arrow functions).
+- Consolidate multiple `if/else` chains into early returns or lookup objects.
+- Ensure all API calls have a unified error handling wrapper rather than individual try/catch blocks in every file.
+
+## Workflow
+- Before writing new code, check the existing codebase for a similar function.
+- If a proposed change increases line count significantly, explain why it is necessary or offer a more concise alternative.

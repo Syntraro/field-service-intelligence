@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, Response } from "express";
 import { storage } from "../storage/index";
 import { insertJobTemplateSchema, insertJobTemplateLineItemSchema } from "@shared/schema";
 import { z } from "zod";
@@ -6,16 +6,11 @@ import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
 import { parsePaginationLenient, applyOffsetPagination } from "../utils/pagination";
 import { paginatedCompat } from "../utils/paginatedResponse";
+import { asyncHandler, createError } from "../middleware/errorHandler";
+import { validateSchema } from "../utils/validationHelpers";
+import { AuthedRequest } from "../auth/tenantIsolation";
 
 const router = Router();
-
-/**
- * Tenant context helper.
- * Prefer req.companyId (set by tenantIsolation middleware) and fall back to req.user.companyId.
- */
-function getCompanyId(req: any): string | null {
-  return req.companyId || req.user?.companyId || null;
-}
 
 /**
  * Lightweight validators (non-breaking).
@@ -24,259 +19,164 @@ function getCompanyId(req: any): string | null {
 const idSchema = z.string().min(1);
 const jobTypeSchema = z.string().min(1);
 
-router.get("/", async (req, res) => {
-  try {
-    const companyId = getCompanyId(req);
-    if (!companyId) {
-      return res.status(401).json({ error: "Not authenticated" });
-    }
+router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const { params, explicit } = parsePaginationLenient(req.query);
+  const { jobType, activeOnly } = req.query;
 
-    const { params, explicit } = parsePaginationLenient(req.query);
-    const { jobType, activeOnly } = req.query;
+  // Preserve original semantics:
+  // activeOnly defaults true unless explicitly "false"
+  const filter = {
+    jobType: typeof jobType === "string" ? jobType : undefined,
+    activeOnly: activeOnly === "false" ? false : true,
+  };
 
-    // Preserve original semantics:
-    // activeOnly defaults true unless explicitly "false"
-    const filter = {
-      jobType: typeof jobType === "string" ? jobType : undefined,
-      activeOnly: activeOnly === "false" ? false : true,
-    };
+  const allTemplates = await storage.getJobTemplates(companyId, filter);
 
-    const allTemplates = await storage.getJobTemplates(companyId, filter);
-    
-    // Apply pagination
-    const offset = params.offset ?? 0;
-    const { items, meta } = applyOffsetPagination(allTemplates, offset, params.limit);
-    
-    return res.json(paginatedCompat(items, meta, explicit));
-  } catch (error: any) {
-    if (error?.status === 400) {
-      return res.status(400).json({ error: error.message });
-    }
-    console.error("Error fetching job templates:", error);
-    return res.status(500).json({ error: error.message || "Failed to fetch job templates" });
+  // Apply pagination
+  const offset = params.offset ?? 0;
+  const { items, meta } = applyOffsetPagination(allTemplates, offset, params.limit);
+
+  res.json(paginatedCompat(items, meta, explicit));
+}));
+
+router.get("/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const idParsed = idSchema.safeParse(req.params.id);
+  if (!idParsed.success) {
+    throw createError(400, "Invalid template id");
   }
-});
 
-router.get("/:id", async (req, res) => {
-  try {
-    const companyId = getCompanyId(req);
-    if (!companyId) {
-      return res.status(401).json({ error: "Not authenticated" });
-    }
-
-    const idParsed = idSchema.safeParse(req.params.id);
-    if (!idParsed.success) {
-      return res.status(400).json({ error: "Invalid template id" });
-    }
-
-    const template = await storage.getJobTemplate(companyId, idParsed.data);
-    if (!template) {
-      return res.status(404).json({ error: "Template not found" });
-    }
-
-    const lines = await storage.getJobTemplateLineItems(template.id);
-    return res.json({ ...template, lines });
-  } catch (error: any) {
-    console.error("Error fetching job template:", error);
-    return res.status(500).json({ error: error.message || "Failed to fetch job template" });
+  const template = await storage.getJobTemplate(companyId, idParsed.data);
+  if (!template) {
+    throw createError(404, "Template not found");
   }
-});
+
+  const lines = await storage.getJobTemplateLineItems(template.id);
+  res.json({ ...template, lines });
+}));
 
 const createTemplateSchema = insertJobTemplateSchema.extend({
   lines: z.array(insertJobTemplateLineItemSchema.omit({ templateId: true })).optional().default([]),
-});
+}).strict();
 
-router.post("/", requireRole(MANAGER_ROLES), async (req, res) => {
-  try {
-    const companyId = getCompanyId(req);
-    if (!companyId) {
-      return res.status(401).json({ error: "Not authenticated" });
-    }
+router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const parsed = validateSchema(createTemplateSchema, req.body);
 
-    const parsed = createTemplateSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid data", details: parsed.error.errors });
-    }
+  const { lines, ...templateData } = parsed;
 
-    const { lines, ...templateData } = parsed.data;
+  const template = await storage.createJobTemplate(companyId, templateData, lines);
 
-    const template = await storage.createJobTemplate(companyId, templateData, lines);
-
-    const createdLines = await storage.getJobTemplateLineItems(template.id);
-    return res.status(201).json({ ...template, lines: createdLines });
-  } catch (error: any) {
-    console.error("Error creating job template:", error);
-    return res.status(500).json({ error: error.message || "Failed to create job template" });
-  }
-});
+  const createdLines = await storage.getJobTemplateLineItems(template.id);
+  res.status(201).json({ ...template, lines: createdLines });
+}));
 
 const updateTemplateSchema = insertJobTemplateSchema.partial().extend({
   lines: z.array(insertJobTemplateLineItemSchema.omit({ templateId: true })).optional(),
-});
+}).strict();
 
-router.patch("/:id", requireRole(MANAGER_ROLES), async (req, res) => {
-  try {
-    const companyId = getCompanyId(req);
-    if (!companyId) {
-      return res.status(401).json({ error: "Not authenticated" });
-    }
-
-    const idParsed = idSchema.safeParse(req.params.id);
-    if (!idParsed.success) {
-      return res.status(400).json({ error: "Invalid template id" });
-    }
-
-    const parsed = updateTemplateSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: "Invalid data", details: parsed.error.errors });
-    }
-
-    const { lines, ...templateData } = parsed.data;
-
-    const template = await storage.updateJobTemplate(companyId, idParsed.data, templateData, lines);
-
-    if (!template) {
-      return res.status(404).json({ error: "Template not found" });
-    }
-
-    const updatedLines = await storage.getJobTemplateLineItems(template.id);
-    return res.json({ ...template, lines: updatedLines });
-  } catch (error: any) {
-    console.error("Error updating job template:", error);
-    return res.status(500).json({ error: error.message || "Failed to update job template" });
+router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const idParsed = idSchema.safeParse(req.params.id);
+  if (!idParsed.success) {
+    throw createError(400, "Invalid template id");
   }
-});
 
-router.delete("/:id", requireRole(MANAGER_ROLES), async (req, res) => {
-  try {
-    const companyId = getCompanyId(req);
-    if (!companyId) {
-      return res.status(401).json({ error: "Not authenticated" });
-    }
+  const parsed = validateSchema(updateTemplateSchema, req.body);
 
-    const idParsed = idSchema.safeParse(req.params.id);
-    if (!idParsed.success) {
-      return res.status(400).json({ error: "Invalid template id" });
-    }
+  const { lines, ...templateData } = parsed;
 
-    const deleted = await storage.deleteJobTemplate(companyId, idParsed.data);
-    if (!deleted) {
-      return res.status(404).json({ error: "Template not found" });
-    }
+  const template = await storage.updateJobTemplate(companyId, idParsed.data, templateData, lines);
 
-    // Preserve original behavior: 204 no content
-    return res.status(204).send();
-  } catch (error: any) {
-    console.error("Error deleting job template:", error);
-    return res.status(500).json({ error: error.message || "Failed to delete job template" });
+  if (!template) {
+    throw createError(404, "Template not found");
   }
-});
 
-router.post("/:id/set-default", requireRole(MANAGER_ROLES), async (req, res) => {
-  try {
-    const companyId = getCompanyId(req);
-    if (!companyId) {
-      return res.status(401).json({ error: "Not authenticated" });
-    }
+  const updatedLines = await storage.getJobTemplateLineItems(template.id);
+  res.json({ ...template, lines: updatedLines });
+}));
 
-    const idParsed = idSchema.safeParse(req.params.id);
-    if (!idParsed.success) {
-      return res.status(400).json({ error: "Invalid template id" });
-    }
-
-    const { jobType } = req.body;
-    const jobTypeParsed = jobTypeSchema.safeParse(jobType);
-    if (!jobTypeParsed.success) {
-      return res.status(400).json({ error: "jobType is required" });
-    }
-
-    const template = await storage.setJobTemplateAsDefault(companyId, idParsed.data, jobTypeParsed.data);
-    if (!template) {
-      return res.status(404).json({ error: "Template not found" });
-    }
-
-    return res.json(template);
-  } catch (error: any) {
-    console.error("Error setting default template:", error);
-    return res.status(500).json({ error: error.message || "Failed to set default template" });
+router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const idParsed = idSchema.safeParse(req.params.id);
+  if (!idParsed.success) {
+    throw createError(400, "Invalid template id");
   }
-});
+
+  const deleted = await storage.deleteJobTemplate(companyId, idParsed.data);
+  if (!deleted) {
+    throw createError(404, "Template not found");
+  }
+
+  // Preserve original behavior: 204 no content
+  res.status(204).send();
+}));
+
+router.post("/:id/set-default", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const idParsed = idSchema.safeParse(req.params.id);
+  if (!idParsed.success) {
+    throw createError(400, "Invalid template id");
+  }
+
+  const { jobType } = req.body;
+  const jobTypeParsed = jobTypeSchema.safeParse(jobType);
+  if (!jobTypeParsed.success) {
+    throw createError(400, "jobType is required");
+  }
+
+  const template = await storage.setJobTemplateAsDefault(companyId, idParsed.data, jobTypeParsed.data);
+  if (!template) {
+    throw createError(404, "Template not found");
+  }
+
+  res.json(template);
+}));
 
 const applyToJobSchema = z.object({
   jobId: z.string().min(1),
   templateId: z.string().min(1),
-});
+}).strict();
 
-router.post("/apply-to-job", requireRole(MANAGER_ROLES), async (req, res) => {
-  try {
-    const companyId = getCompanyId(req);
-    if (!companyId) {
-      return res.status(401).json({ error: "Not authenticated" });
-    }
+router.post("/apply-to-job", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const { jobId, templateId } = validateSchema(applyToJobSchema, req.body);
 
-    const parsed = applyToJobSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ error: "jobId and templateId are required", details: parsed.error.errors });
-    }
+  const createdParts = await storage.applyJobTemplateToJob(companyId, jobId, templateId);
+  res.status(201).json(createdParts);
+}));
 
-    const { jobId, templateId } = parsed.data;
-
-    const createdParts = await storage.applyJobTemplateToJob(companyId, jobId, templateId);
-    return res.status(201).json(createdParts);
-  } catch (error: any) {
-    console.error("Error applying template to job:", error);
-    return res.status(500).json({ error: error.message || "Failed to apply template to job" });
+router.get("/default/:jobType", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const jobTypeParsed = jobTypeSchema.safeParse(req.params.jobType);
+  if (!jobTypeParsed.success) {
+    throw createError(400, "Invalid jobType");
   }
-});
 
-router.get("/default/:jobType", async (req, res) => {
-  try {
-    const companyId = getCompanyId(req);
-    if (!companyId) {
-      return res.status(401).json({ error: "Not authenticated" });
-    }
-
-    const jobTypeParsed = jobTypeSchema.safeParse(req.params.jobType);
-    if (!jobTypeParsed.success) {
-      return res.status(400).json({ error: "Invalid jobType" });
-    }
-
-    const template = await storage.getDefaultJobTemplateForJobType(companyId, jobTypeParsed.data);
-    if (!template) {
-      return res.status(404).json({ error: "No default template for this job type" });
-    }
-
-    const lines = await storage.getJobTemplateLineItems(template.id);
-    return res.json({ ...template, lines });
-  } catch (error: any) {
-    console.error("Error fetching default template:", error);
-    return res.status(500).json({ error: error.message || "Failed to fetch default template" });
+  const template = await storage.getDefaultJobTemplateForJobType(companyId, jobTypeParsed.data);
+  if (!template) {
+    throw createError(404, "No default template for this job type");
   }
-});
 
-router.post("/:id/clone", requireRole(MANAGER_ROLES), async (req, res) => {
-  try {
-    const companyId = getCompanyId(req);
-    if (!companyId) {
-      return res.status(401).json({ error: "Not authenticated" });
-    }
+  const lines = await storage.getJobTemplateLineItems(template.id);
+  res.json({ ...template, lines });
+}));
 
-    const idParsed = idSchema.safeParse(req.params.id);
-    if (!idParsed.success) {
-      return res.status(400).json({ error: "Invalid template id" });
-    }
-
-    const clonedTemplate = await storage.cloneJobTemplate(companyId, idParsed.data);
-    if (!clonedTemplate) {
-      return res.status(404).json({ error: "Template not found" });
-    }
-
-    const lines = await storage.getJobTemplateLineItems(clonedTemplate.id);
-    return res.status(201).json({ ...clonedTemplate, lines });
-  } catch (error: any) {
-    console.error("Error cloning job template:", error);
-    return res.status(500).json({ error: error.message || "Failed to clone job template" });
+router.post("/:id/clone", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const idParsed = idSchema.safeParse(req.params.id);
+  if (!idParsed.success) {
+    throw createError(400, "Invalid template id");
   }
-});
+
+  const clonedTemplate = await storage.cloneJobTemplate(companyId, idParsed.data);
+  if (!clonedTemplate) {
+    throw createError(404, "Template not found");
+  }
+
+  const lines = await storage.getJobTemplateLineItems(clonedTemplate.id);
+  res.status(201).json({ ...clonedTemplate, lines });
+}));
 
 export default router;

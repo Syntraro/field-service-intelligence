@@ -1,13 +1,14 @@
-import { Router } from "express";
-import type { Request, Response } from "express";
+import { Router, Response } from "express";
 import { z } from "zod";
 import { storage } from "../storage/index";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
 import { parsePaginationLenient, applyOffsetPagination } from "../utils/pagination";
 import { paginatedCompat } from "../utils/paginatedResponse";
+import { asyncHandler, createError } from "../middleware/errorHandler";
+import { validateSchema } from "../utils/validationHelpers";
+import { AuthedRequest } from "../auth/tenantIsolation";
 
-// Note: requireAuth and ensureTenantContext middleware already applied globally in routes/index.ts
 const router = Router();
 
 // ========================================
@@ -22,84 +23,61 @@ const createPartSchema = z.object({
   reorderPoint: z.number().int().min(0).optional(),
   preferredVendor: z.string().max(200).optional(),
   notes: z.string().max(1000).optional(),
-});
+}).strict();
 
-const updatePartSchema = createPartSchema.partial();
+const updatePartSchema = createPartSchema.partial().strict();
 
-router.get("/", async (req: Request, res: Response) => {
-  try {
-    const companyId = req.companyId;
-    if (!companyId) return res.status(401).json({ error: "Unauthorized" });
+// ========================================
+// ROUTES
+// ========================================
 
-    const { params, explicit } = parsePaginationLenient(req.query);
-    const q = String((req.query as any)?.q ?? "").trim();
-    
-    // Fetch all matching rows (storage already orders by partNumber)
-    const allRows = await storage.getParts(companyId, q || undefined);
-    
-    // Apply pagination
-    const offset = params.offset ?? 0;
-    const { items, meta } = applyOffsetPagination(allRows ?? [], offset, params.limit);
-    
-    return res.json(paginatedCompat(items, meta, explicit));
-  } catch (err: any) {
-    if ((err as any).status === 400) {
-      return res.status(400).json({ error: err.message });
-    }
-    return res.status(500).json({ error: err?.message || "Failed to load parts" });
-  }
-});
+// GET /api/parts - List parts with optional search
+router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  if (!companyId) throw createError(401, "Unauthorized");
 
-router.post("/", requireRole(MANAGER_ROLES), async (req: Request, res: Response) => {
-  try {
-    const companyId = req.companyId;
-    if (!companyId) return res.status(401).json({ error: "Unauthorized" });
+  const { params, explicit } = parsePaginationLenient(req.query);
+  const q = String((req.query as any)?.q ?? "").trim();
 
-    const validation = createPartSchema.safeParse(req.body);
-    if (!validation.success) {
-      return res.status(400).json({ 
-        error: "Validation failed", 
-        details: validation.error.errors 
-      });
-    }
+  // Fetch all matching rows (storage already orders by partNumber)
+  const allRows = await storage.getParts(companyId, q || undefined);
 
-    const created = await storage.createPart(companyId, validation.data);
-    return res.json(created);
-  } catch (err: any) {
-    return res.status(500).json({ error: err?.message || "Failed to create part" });
-  }
-});
+  // Apply pagination
+  const offset = params.offset ?? 0;
+  const { items, meta } = applyOffsetPagination(allRows ?? [], offset, params.limit);
 
-router.put("/:id", requireRole(MANAGER_ROLES), async (req: Request, res: Response) => {
-  try {
-    const companyId = req.companyId;
-    if (!companyId) return res.status(401).json({ error: "Unauthorized" });
+  res.json(paginatedCompat(items, meta, explicit));
+}));
 
-    const validation = updatePartSchema.safeParse(req.body);
-    if (!validation.success) {
-      return res.status(400).json({ 
-        error: "Validation failed", 
-        details: validation.error.errors 
-      });
-    }
+// POST /api/parts - Create new part
+router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  if (!companyId) throw createError(401, "Unauthorized");
 
-    const updated = await storage.updatePart(companyId, req.params.id, validation.data);
-    return res.json(updated);
-  } catch (err: any) {
-    return res.status(500).json({ error: err?.message || "Failed to update part" });
-  }
-});
+  const validated = validateSchema(createPartSchema, req.body);
+  const created = await storage.createPart(companyId, validated);
 
-router.delete("/:id", requireRole(MANAGER_ROLES), async (req: Request, res: Response) => {
-  try {
-    const companyId = req.companyId;
-    if (!companyId) return res.status(401).json({ error: "Unauthorized" });
+  res.json(created);
+}));
 
-    const result = await storage.deletePart(companyId, req.params.id);
-    return res.json(result);
-  } catch (err: any) {
-    return res.status(500).json({ error: err?.message || "Failed to delete part" });
-  }
-});
+// PUT /api/parts/:id - Update part
+router.put("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  if (!companyId) throw createError(401, "Unauthorized");
+
+  const validated = validateSchema(updatePartSchema, req.body);
+  const updated = await storage.updatePart(companyId, req.params.id, validated);
+
+  res.json(updated);
+}));
+
+// DELETE /api/parts/:id - Delete part
+router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  if (!companyId) throw createError(401, "Unauthorized");
+
+  const result = await storage.deletePart(companyId, req.params.id);
+  res.json(result);
+}));
 
 export default router;
