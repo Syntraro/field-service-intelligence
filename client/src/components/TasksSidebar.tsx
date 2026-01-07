@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -51,10 +52,11 @@ function TaskDetailsDialog(props: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   taskId?: string;
-  currentUserId?: string;
   onChanged: () => void;
 }) {
-  const { open, onOpenChange, taskId, currentUserId, onChanged } = props;
+  const { open, onOpenChange, taskId, onChanged } = props;
+  const { user } = useAuth();
+  const currentUserId = user?.id;
 
   // Fetch full task details on demand
   const { data, isLoading } = useQuery({
@@ -62,7 +64,7 @@ function TaskDetailsDialog(props: {
     enabled: open && !!taskId,
   });
 
-  const task: Task | undefined = data?.task ?? data; // defensive
+  const task: Task | undefined = (data as any)?.task ?? data as Task | undefined; // defensive
 
   const [title, setTitle] = useState("");
   const [notes, setNotes] = useState("");
@@ -245,9 +247,10 @@ function TaskDetailsDialog(props: {
 export function TasksSidebar(props: {
   collapsed: boolean;
   onToggleCollapsed: () => void;
-  currentUserId?: string;
 }) {
-  const { collapsed, onToggleCollapsed, currentUserId } = props;
+  const { collapsed, onToggleCollapsed } = props;
+  const { user } = useAuth();
+  const currentUserId = user?.id;
 
   const [status, setStatus] = useState<TaskStatus>("OPEN");
   const [scope, setScope] = useState<"mine" | "all">("mine");
@@ -466,7 +469,6 @@ export function TasksSidebar(props: {
         open={detailsOpen}
         onOpenChange={setDetailsOpen}
         taskId={selectedTaskId}
-        currentUserId={currentUserId}
         onChanged={refresh}
       />
     </div>

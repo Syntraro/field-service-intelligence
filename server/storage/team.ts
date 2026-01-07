@@ -46,6 +46,7 @@ export class TeamRepository extends BaseRepository {
       fullName?: string;
       phone?: string;
       roleId?: string;
+      role?: string;
       status?: string;
       useCustomSchedule?: boolean;
     }
@@ -66,6 +67,19 @@ export class TeamRepository extends BaseRepository {
     const rows = await db
       .update(users)
       .set({ status: "deactivated", disabled: true })
+      .where(and(eq(users.id, userId), eq(users.companyId, companyId)))
+      .returning();
+
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Activate team member (sets status to active and clears disabled flag)
+   */
+  async activateTeamMember(companyId: string, userId: string) {
+    const rows = await db
+      .update(users)
+      .set({ status: "active", disabled: false })
       .where(and(eq(users.id, userId), eq(users.companyId, companyId)))
       .returning();
 

@@ -60,6 +60,34 @@ const setPermissionOverridesSchema = z.object({
   })),
 });
 
+const updateRoleSchema = z.object({
+  role: z.enum(["owner", "admin", "manager", "dispatcher", "technician"]),
+});
+
+const updateStatusSchema = z.object({
+  active: z.boolean(),
+});
+
+// GET /api/team/technicians - Get technicians for assignment dropdowns
+router.get("/technicians", async (req, res) => {
+  try {
+    const members = await storage.getTeamMembers(req.companyId!);
+    const technicians = members
+      .filter(m => m.status === "active")
+      .map(m => ({
+        id: m.id,
+        fullName: m.fullName || `${m.firstName ?? ""} ${m.lastName ?? ""}`.trim() || m.email,
+        email: m.email,
+        role: m.role,
+      }));
+    
+    res.json(technicians);
+  } catch (error) {
+    console.error('Get technicians error:', error);
+    res.status(500).json({ error: "Failed to get technicians" });
+  }
+});
+
 router.get("/", async (req, res) => {
   try {
     const { params, explicit } = parsePaginationLenient(req.query);
@@ -115,6 +143,7 @@ router.get("/:userId", async (req, res) => {
 router.patch("/:userId", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const { userId } = req.params;
+    const companyId = req.companyId!;
     
     const validation = updateTeamMemberSchema.safeParse(req.body);
     if (!validation.success) {
@@ -124,7 +153,30 @@ router.patch("/:userId", requireRole(MANAGER_ROLES), async (req, res) => {
       });
     }
 
-    const updated = await storage.updateTeamMember(req.companyId!, userId, validation.data);
+    // Last-owner safeguard when changing roleId
+    if (validation.data.roleId) {
+      const member = await storage.getTeamMember(companyId, userId);
+      if (member && member.role === "owner") {
+        // Check if the new role is owner (need to lookup by roleId)
+        const { getRolesWithPermissions } = await import("../permissions");
+        const allRoles = await getRolesWithPermissions();
+        const newRole = allRoles.find(r => r.id === validation.data.roleId);
+        
+        // If changing from owner to non-owner, check safeguard
+        if (newRole && newRole.name !== "owner") {
+          const allMembers = await storage.getTeamMembers(companyId);
+          const activeOwners = allMembers.filter(m => m.role === "owner" && m.status === "active");
+          
+          if (activeOwners.length <= 1) {
+            return res.status(400).json({ 
+              error: "Cannot demote the last active owner. Promote another user to owner first." 
+            });
+          }
+        }
+      }
+    }
+
+    const updated = await storage.updateTeamMember(companyId, userId, validation.data);
     if (!updated) {
       return res.status(404).json({ error: "Team member not found" });
     }
@@ -139,12 +191,26 @@ router.patch("/:userId", requireRole(MANAGER_ROLES), async (req, res) => {
 router.post("/:userId/deactivate", requireRole(MANAGER_ROLES), async (req, res) => {
   try {
     const { userId } = req.params;
+    const companyId = req.companyId!;
 
     if (userId === req.user!.id) {
       return res.status(400).json({ error: "Cannot deactivate your own account" });
     }
 
-    const updated = await storage.deactivateTeamMember(req.companyId!, userId);
+    // Last-owner safeguard
+    const member = await storage.getTeamMember(companyId, userId);
+    if (member && member.role === "owner") {
+      const allMembers = await storage.getTeamMembers(companyId);
+      const activeOwners = allMembers.filter(m => m.role === "owner" && m.status === "active");
+      
+      if (activeOwners.length <= 1) {
+        return res.status(400).json({ 
+          error: "Cannot deactivate the last active owner. Promote another user to owner first." 
+        });
+      }
+    }
+
+    const updated = await storage.deactivateTeamMember(companyId, userId);
     if (!updated) {
       return res.status(404).json({ error: "Team member not found" });
     }
@@ -165,9 +231,8 @@ router.post("/:userId/activate", requireRole(MANAGER_ROLES), async (req, res) =>
       return res.status(404).json({ error: "Team member not found" });
     }
 
-    const updated = await storage.updateTeamMember(req.companyId!, userId, {
-      status: 'active'
-    });
+    // Set both status to active and disabled to false
+    const updated = await storage.activateTeamMember(req.companyId!, userId);
 
     if (!updated) {
       return res.status(404).json({ error: "Team member not found" });
@@ -177,6 +242,107 @@ router.post("/:userId/activate", requireRole(MANAGER_ROLES), async (req, res) =>
   } catch (error) {
     console.error('Activate team member error:', error);
     res.status(500).json({ error: "Failed to activate team member" });
+  }
+});
+
+// PATCH /api/team/:userId/role - Change user role (with last-owner safeguard)
+router.patch("/:userId/role", requireRole(["owner", "admin"]), async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const companyId = req.companyId!;
+    
+    const validation = updateRoleSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({ 
+        error: "Validation failed", 
+        details: validation.error.errors 
+      });
+    }
+    
+    const { role: newRole } = validation.data;
+
+    const member = await storage.getTeamMember(companyId, userId);
+    if (!member) {
+      return res.status(404).json({ error: "Team member not found" });
+    }
+
+    // Safeguard: Cannot demote the last active owner
+    if (member.role === "owner" && newRole !== "owner") {
+      const allMembers = await storage.getTeamMembers(companyId);
+      const activeOwners = allMembers.filter(m => m.role === "owner" && m.status === "active");
+      
+      if (activeOwners.length <= 1) {
+        return res.status(400).json({ 
+          error: "Cannot demote the last active owner. Promote another user to owner first." 
+        });
+      }
+    }
+
+    const updated = await storage.updateTeamMember(companyId, userId, { role: newRole });
+    if (!updated) {
+      return res.status(404).json({ error: "Team member not found" });
+    }
+
+    res.json({ ...updated, password: undefined });
+  } catch (error) {
+    console.error('Update role error:', error);
+    res.status(500).json({ error: "Failed to update role" });
+  }
+});
+
+// PATCH /api/team/:userId/status - Toggle active/inactive status (with last-owner safeguard)
+router.patch("/:userId/status", requireRole(["owner", "admin"]), async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const companyId = req.companyId!;
+    
+    const validation = updateStatusSchema.safeParse(req.body);
+    if (!validation.success) {
+      return res.status(400).json({ 
+        error: "Validation failed", 
+        details: validation.error.errors 
+      });
+    }
+    
+    const { active } = validation.data;
+
+    if (userId === req.user!.id && !active) {
+      return res.status(400).json({ error: "Cannot deactivate your own account" });
+    }
+
+    const member = await storage.getTeamMember(companyId, userId);
+    if (!member) {
+      return res.status(404).json({ error: "Team member not found" });
+    }
+
+    // Safeguard: Cannot deactivate the last active owner
+    if (!active && member.role === "owner") {
+      const allMembers = await storage.getTeamMembers(companyId);
+      const activeOwners = allMembers.filter(m => m.role === "owner" && m.status === "active");
+      
+      if (activeOwners.length <= 1) {
+        return res.status(400).json({ 
+          error: "Cannot deactivate the last active owner. Promote another user to owner first." 
+        });
+      }
+    }
+
+    // Use dedicated methods that sync both status and disabled flag
+    let updated;
+    if (active) {
+      updated = await storage.activateTeamMember(companyId, userId);
+    } else {
+      updated = await storage.deactivateTeamMember(companyId, userId);
+    }
+    
+    if (!updated) {
+      return res.status(404).json({ error: "Team member not found" });
+    }
+
+    res.json({ ...updated, password: undefined });
+  } catch (error) {
+    console.error('Update status error:', error);
+    res.status(500).json({ error: "Failed to update status" });
   }
 });
 

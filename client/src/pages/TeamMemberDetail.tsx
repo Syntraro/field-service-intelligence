@@ -240,9 +240,12 @@ export default function TeamMemberDetail() {
 
   const updateBasicMutation = useMutation({
     mutationFn: async (data: typeof basicInfo & { useCustomSchedule: boolean }) => {
-      return await apiRequest("PATCH", `/api/team/${userId}`, {
-        ...data,
-        fullName: `${data.firstName} ${data.lastName}`.trim() || null,
+      return await apiRequest(`/api/team/${userId}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          ...data,
+          fullName: `${data.firstName} ${data.lastName}`.trim() || null,
+        }),
       });
     },
     onSuccess: () => {
@@ -256,7 +259,10 @@ export default function TeamMemberDetail() {
 
   const updateProfileMutation = useMutation({
     mutationFn: async (data: typeof profile) => {
-      return await apiRequest("PUT", `/api/team/${userId}/profile`, data);
+      return await apiRequest(`/api/team/${userId}/profile`, {
+        method: "PUT",
+        body: JSON.stringify(data),
+      });
     },
     onSuccess: () => {
       toast({ title: "Profile updated successfully" });
@@ -269,7 +275,10 @@ export default function TeamMemberDetail() {
 
   const updateWorkingHoursMutation = useMutation({
     mutationFn: async (hours: typeof workingHours) => {
-      return await apiRequest("PUT", `/api/team/${userId}/working-hours`, { hours });
+      return await apiRequest(`/api/team/${userId}/working-hours`, {
+        method: "PUT",
+        body: JSON.stringify({ hours }),
+      });
     },
     onSuccess: () => {
       toast({ title: "Working hours updated successfully" });
@@ -282,7 +291,10 @@ export default function TeamMemberDetail() {
 
   const updatePermissionsMutation = useMutation({
     mutationFn: async (overrides: Array<{ permissionId: string; override: "grant" | "revoke" }>) => {
-      return await apiRequest("PUT", `/api/team/${userId}/permissions`, { overrides });
+      return await apiRequest(`/api/team/${userId}/permissions`, {
+        method: "PUT",
+        body: JSON.stringify({ overrides }),
+      });
     },
     onSuccess: () => {
       toast({ title: "Permissions updated successfully" });
@@ -296,7 +308,9 @@ export default function TeamMemberDetail() {
 
   const deactivateMutation = useMutation({
     mutationFn: async () => {
-      return await apiRequest("POST", `/api/team/${userId}/deactivate`, {});
+      return await apiRequest(`/api/team/${userId}/deactivate`, {
+        method: "POST",
+      });
     },
     onSuccess: () => {
       toast({ title: "Member deactivated" });
@@ -310,7 +324,9 @@ export default function TeamMemberDetail() {
 
   const activateMutation = useMutation({
     mutationFn: async () => {
-      return await apiRequest("POST", `/api/team/${userId}/activate`, {});
+      return await apiRequest(`/api/team/${userId}/activate`, {
+        method: "POST",
+      });
     },
     onSuccess: () => {
       toast({ title: "Member activated" });
