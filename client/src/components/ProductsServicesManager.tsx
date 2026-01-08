@@ -90,7 +90,7 @@ const defaultFormData: ProductFormData = {
 };
 
 interface PartsResponse {
-  items: Item[];
+  items: Part[];
   total: number;
   offset: number;
   limit: number;
@@ -237,8 +237,7 @@ export default function ProductsServicesManager() {
 
   const createMutation = useMutation({
     mutationFn: async (data: Partial<Part>) => {
-      const res = await apiRequest("POST", "/api/items", data);
-      return await res.json();
+      return await apiRequest("/api/items", { method: "POST", body: JSON.stringify(data) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/items"] });
@@ -252,8 +251,7 @@ export default function ProductsServicesManager() {
 
   const updateMutation = useMutation({
     mutationFn: async ({ id, data }: { id: string; data: Partial<Part> }) => {
-      const res = await apiRequest("PUT", `/api/items/${id}`, data);
-      return await res.json();
+      return await apiRequest(`/api/items/${id}`, { method: "PUT", body: JSON.stringify(data) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/items"] });
@@ -269,8 +267,7 @@ export default function ProductsServicesManager() {
 
   const deletePartMutation = useMutation({
     mutationFn: async (id: string) => {
-      const res = await apiRequest("DELETE", `/api/items/${id}`);
-      return await res.json();
+      return await apiRequest(`/api/items/${id}`, { method: "DELETE" });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/items"] });
@@ -283,8 +280,7 @@ export default function ProductsServicesManager() {
 
   const bulkDeleteMutation = useMutation({
     mutationFn: async (ids: string[]) => {
-      const res = await apiRequest("POST", "/api/items/bulk-delete", { ids });
-      return res.json();
+      return await apiRequest("/api/items/bulk-delete", { method: "POST", body: JSON.stringify({ ids }) });
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/items"] });
@@ -299,7 +295,7 @@ export default function ProductsServicesManager() {
 
   const bulkArchiveMutation = useMutation({
     mutationFn: async (ids: string[]) => {
-      const promises = ids.map((id) => apiRequest("PUT", `/api/items/${id}`, { isActive: false }));
+      const promises = ids.map((id) => apiRequest(`/api/items/${id}`, { method: "PUT", body: JSON.stringify({ isActive: false }) }));
       await Promise.all(promises);
     },
     onSuccess: () => {
@@ -314,7 +310,7 @@ export default function ProductsServicesManager() {
 
   const bulkCategoryMutation = useMutation({
     mutationFn: async ({ ids, category }: { ids: string[]; category: string }) => {
-      const promises = ids.map((id) => apiRequest("PUT", `/api/items/${id}`, { category }));
+      const promises = ids.map((id) => apiRequest(`/api/items/${id}`, { method: "PUT", body: JSON.stringify({ category }) }));
       await Promise.all(promises);
     },
     onSuccess: () => {
@@ -331,8 +327,7 @@ export default function ProductsServicesManager() {
 
   const importMutation = useMutation({
     mutationFn: async ({ csvData, updateExisting }: { csvData: string; updateExisting: boolean }) => {
-      const res = await apiRequest("POST", "/api/items/import", { csvData, skipDuplicates: !updateExisting, updateExisting });
-      return res.json();
+      return await apiRequest("/api/items/import", { method: "POST", body: JSON.stringify({ csvData, skipDuplicates: !updateExisting, updateExisting }) });
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/items"] });
