@@ -240,7 +240,7 @@ export default function ProductsServicesManager() {
       return await apiRequest("/api/items", { method: "POST", body: JSON.stringify(data) });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"], exact: false });
       toast({ title: "Success", description: editingProduct ? "Item updated." : "Item created." });
       handleCloseDialog();
     },
@@ -254,7 +254,7 @@ export default function ProductsServicesManager() {
       return await apiRequest(`/api/items/${id}`, { method: "PUT", body: JSON.stringify(data) });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"], exact: false });
       toast({ title: "Success", description: "Item updated." });
       handleCloseDialog();
       setInlineEditId(null);
@@ -270,7 +270,7 @@ export default function ProductsServicesManager() {
       return await apiRequest(`/api/items/${id}`, { method: "DELETE" });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"], exact: false });
       toast({ title: "Deleted", description: "Item deleted." });
     },
     onError: () => {
@@ -283,7 +283,7 @@ export default function ProductsServicesManager() {
       return await apiRequest("/api/items/bulk-delete", { method: "POST", body: JSON.stringify({ ids }) });
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"], exact: false });
       toast({ title: "Deleted", description: `Deleted ${data.deletedCount} item(s).` });
       setSelectedIds(new Set());
       setBulkDeleteDialogOpen(false);
@@ -299,7 +299,7 @@ export default function ProductsServicesManager() {
       await Promise.all(promises);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"], exact: false });
       toast({ title: "Archived", description: `Archived ${selectedIds.size} item(s).` });
       setSelectedIds(new Set());
     },
@@ -314,7 +314,7 @@ export default function ProductsServicesManager() {
       await Promise.all(promises);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"], exact: false });
       toast({ title: "Updated", description: `Updated category for ${selectedIds.size} item(s).` });
       setSelectedIds(new Set());
       setBulkCategoryDialogOpen(false);
@@ -330,7 +330,7 @@ export default function ProductsServicesManager() {
       return await apiRequest("/api/items/import", { method: "POST", body: JSON.stringify({ csvData, skipDuplicates: !updateExisting, updateExisting }) });
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"], exact: false });
       const { imported, skipped, updated, errors } = data;
       let description = `Imported ${imported} item(s).`;
       if (updated > 0) description += ` Updated ${updated}.`;
