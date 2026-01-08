@@ -90,11 +90,12 @@ const defaultFormData: ProductFormData = {
 };
 
 interface PartsResponse {
-  items: Part[];
-  total: number;
-  offset: number;
-  limit: number;
-  hasMore: boolean;
+  data: Part[];
+  meta: {
+    limit: number;
+    hasMore: boolean;
+    nextOffset?: number;
+  };
 }
 
 type SortField = "name" | "type" | "category" | "cost" | "unitPrice";
@@ -161,7 +162,7 @@ export default function ProductsServicesManager() {
     },
   });
 
-  const allParts = partsData?.items ?? [];
+  const allParts = partsData?.data ?? [];
 
   const filteredAndSortedParts = useMemo(() => {
     let filtered = [...allParts];
