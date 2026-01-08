@@ -14,7 +14,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { Plus, Pencil, Trash2, Loader2, Calendar, Package, Wrench, Save } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { LocationPMPlan, LocationPMPartTemplate, Part } from "@shared/schema";
+import type { LocationPMPlan, LocationPMPartTemplate, Item } from "@shared/schema";
 import LocationEquipmentSection from "./LocationEquipmentSection";
 
 interface LocationPMSectionProps {
@@ -65,8 +65,8 @@ export default function LocationPMSection({ locationId }: LocationPMSectionProps
     queryKey: ["/api/locations", locationId, "pm-parts"],
   });
 
-  const { data: productsResponse } = useQuery<{ items: Part[]; total: number }>({
-    queryKey: ["/api/parts"],
+  const { data: productsResponse } = useQuery<{ items: Item[]; total: number }>({
+    queryKey: ["/api/items"],
   });
   const products = productsResponse?.items ?? [];
 

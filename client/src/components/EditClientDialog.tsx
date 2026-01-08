@@ -18,7 +18,7 @@ import { Loader2, Plus, Trash2 } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useMutationWithToast } from "@/hooks/useMutationWithToast";
-import type { Client, Part } from "@shared/schema";
+import type { Client, Item } from "@shared/schema";
 
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
@@ -87,10 +87,10 @@ export default function EditClientDialog({ client, open, onOpenChange, onSaved }
 
   // Fetch available parts
   const { data: partsData } = useQuery({
-    queryKey: ["/api/parts?limit=1000"],
+    queryKey: ["/api/items?limit=1000"],
     enabled: open && activeTab === "parts",
   });
-  const availableParts = (partsData?.items || []) as Part[];
+  const availableParts = (partsData?.items || []) as Item[];
 
   // Fetch client parts
   const { data: clientParts = [] } = useQuery({

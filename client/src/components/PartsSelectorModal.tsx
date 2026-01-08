@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { X } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { Part, LocationPMPartTemplate } from "@shared/schema";
+import type { Item, LocationPMItemTemplate } from "@shared/schema";
 
 interface SelectedPart {
   templateId?: string;
@@ -28,11 +28,11 @@ interface PartsSelectorModalProps {
 export function PartsSelectorModal({ open, onOpenChange, locationId, existingParts = [] }: PartsSelectorModalProps) {
   const { toast } = useToast();
   const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<SelectedPart[]>([]);
+  const [selected, setSelected] = useState<SelectedItem[]>([]);
   const [isSaving, setIsSaving] = useState(false);
 
-  const { data: partsData, isLoading } = useQuery<{ items: Part[] }>({
-    queryKey: ["/api/parts"],
+  const { data: partsData, isLoading } = useQuery<{ items: Item[] }>({
+    queryKey: ["/api/items"],
     enabled: open,
   });
   const parts = partsData?.items || [];

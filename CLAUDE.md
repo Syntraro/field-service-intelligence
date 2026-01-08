@@ -101,8 +101,9 @@ The app is **multi-tenant by company**. Each HVAC business is a separate company
 ### Key Domain Models
 - **Companies** - Tenant root, subscription data, tax settings
 - **Users** - Scoped to company, roles/permissions, technician profiles
-- **Clients** - HVAC customers (supports locations as sub-customers)
-- **Jobs** - Work orders with status workflow, assigned technicians, equipment tracking
+- **Customer Companies** - Main client companies (e.g., "Basil Box")
+- **Client Locations** (`client_locations` table, formerly `clients`) - Service locations under customer companies
+- **Jobs** - Work orders with status workflow, assigned technicians, equipment tracking (linked to client_locations)
   - Job statuses: Scheduled, In Progress, Completed, Cancelled, Invoiced, etc.
   - Job types: PM, Repair, Install, etc.
   - Supports recurring job series

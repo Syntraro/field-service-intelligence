@@ -9,11 +9,11 @@ export default function PartsManagementPage() {
 
   const seedPartsMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/parts/seed");
+      const res = await apiRequest("POST", "/api/items/seed");
       return await res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/parts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
       toast({
         title: "Success",
         description: "Standard parts seeded successfully. Missing parts have been restored (244 filters and belts available).",

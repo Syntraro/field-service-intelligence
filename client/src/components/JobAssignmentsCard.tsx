@@ -1,22 +1,19 @@
-import { User as UserIcon, UserPlus, Calendar, Plus } from "lucide-react";
+import { User as UserIcon, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
 import type { User } from "@shared/schema";
 
 interface JobAssignmentsCardProps {
   technicians: Array<User & { firstName?: string | null; lastName?: string | null }>;
   primaryTechnicianId: string | null;
   onAssignTechnician: () => void;
-  onNewVisit: () => void;
 }
 
 export function JobAssignmentsCard({
   technicians,
   primaryTechnicianId,
   onAssignTechnician,
-  onNewVisit,
 }: JobAssignmentsCardProps) {
   return (
     <Card className="min-w-[200px]" data-testid="card-job-assignments">
@@ -63,29 +60,6 @@ export function JobAssignmentsCard({
         ) : (
           <p className="text-sm text-muted-foreground">No technicians assigned</p>
         )}
-      </CardContent>
-
-      <Separator />
-
-      <CardHeader className="pt-3 pb-2">
-        <div className="flex items-center justify-between gap-2">
-          <CardTitle className="text-sm font-semibold flex items-center gap-1.5">
-            <Calendar className="h-4 w-4 text-muted-foreground" />
-            Visits
-          </CardTitle>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onNewVisit}
-            data-testid="button-new-visit"
-          >
-            <Plus className="h-4 w-4 mr-1" />
-            New Visit
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <p className="text-sm text-muted-foreground">No visits scheduled</p>
       </CardContent>
     </Card>
   );

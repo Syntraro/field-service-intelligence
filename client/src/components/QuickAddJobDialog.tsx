@@ -182,7 +182,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", editJob?.id] });
+      queryClient.invalidateQueries({ queryKey: [`/api/jobs/${editJob?.id}`] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       toast({
         title: "Job Updated",
@@ -299,7 +299,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                     {selectedLocation ? (
                       <span className="truncate">
                         {selectedLocation.companyName}
-                        {selectedLocation.city && ` - ${selectedLocation.city}`}
+                        {selectedLocation.location && ` - ${selectedLocation.location}`}
                       </span>
                     ) : (
                       <span className="text-muted-foreground">Select location...</span>
@@ -327,7 +327,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                         {activeLocations.map(location => (
                           <CommandItem
                             key={location.id}
-                            value={`${location.companyName} ${location.city || ""}`}
+                            value={`${location.companyName} ${location.location || ""}`}
                             onSelect={() => {
                               setFormData(prev => ({ ...prev, locationId: location.id }));
                               setLocationOpen(false);
@@ -342,8 +342,8 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                             />
                             <div className="flex flex-col">
                               <span>{location.companyName}</span>
-                              {location.city && (
-                                <span className="text-xs text-muted-foreground">{location.city}</span>
+                              {location.location && (
+                                <span className="text-xs text-muted-foreground">{location.location}</span>
                               )}
                             </div>
                           </CommandItem>

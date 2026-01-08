@@ -21,7 +21,7 @@ interface MaintenanceCardProps {
   onMarkComplete: (id: string) => void;
   onEdit: (id: string) => void;
   onViewReport?: (clientId: string) => void;
-  parts?: ClientPart[];
+  parts?: ClientItem[];
   isCompleted?: boolean;
   isScheduled?: boolean;
   isThisMonthPM?: boolean;

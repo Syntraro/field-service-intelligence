@@ -11,7 +11,7 @@ import jobTemplatesRouter from "./jobTemplates";
 import invitationsRouter from "./invitations";
 import invitationsResendRouter from "./invitations_resend";
 import usersAdminRouter from "./users_admin";
-import partsRouter from "./parts";
+import itemsRouter from "./items";
 import clientPartsRouter from "./clientParts";
 import companySettingsRouter from "./companySettings";
 import maintenanceRouter from "./maintenance";
@@ -29,6 +29,7 @@ import { impersonationMiddleware, trackActivity } from "../impersonationMiddlewa
 import { storage } from "../storage/index";
 import tasksRoutes from "./tasks.routes";
 import suppliersRouter from "./suppliers";
+import jobVisitsRoutes from "./jobVisits.routes";
 
 /**
  * Register all API routes in a single place.
@@ -80,6 +81,7 @@ export function registerRoutes(app: Express): Server {
   // ========================================
 
   app.use("/api/jobs", jobsRouter);
+  app.use("/api/jobs", jobVisitsRoutes);
   app.use("/api/invoices", invoicesRouter);
   app.use("/api/team", teamRouter);
   app.use("/api/calendar", calendarRouter);
@@ -89,7 +91,7 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/invitations", invitationsRouter);
   app.use("/api/invitations-resend", invitationsResendRouter);
   app.use("/api/users-admin", usersAdminRouter);
-  app.use("/api/parts", partsRouter);
+  app.use("/api/items", itemsRouter);
   app.use("/api/client-parts", clientPartsRouter);
   app.use("/api/company-settings", companySettingsRouter);
   app.use("/api/maintenance", maintenanceRouter);

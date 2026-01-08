@@ -32,7 +32,7 @@ interface Part {
 }
 
 interface PartsResponse {
-  items: Part[];
+  items: Item[];
   total: number;
 }
 
@@ -64,9 +64,9 @@ export default function CategoryManagementPage() {
   const [categoryToDelete, setCategoryToDelete] = useState<CategoryInfo | null>(null);
 
   const { data: partsData, isLoading } = useQuery<PartsResponse>({
-    queryKey: ["/api/parts", { limit: 1000 }],
+    queryKey: ["/api/items", { limit: 1000 }],
     queryFn: async () => {
-      const res = await fetch("/api/parts?limit=1000", { credentials: "include" });
+      const res = await fetch("/api/items?limit=1000", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch parts");
       return res.json();
     },
@@ -97,12 +97,12 @@ export default function CategoryManagementPage() {
         (p) => (p.category || "Uncategorized") === oldName
       );
       const promises = partsToUpdate.map((p) =>
-        apiRequest("PUT", `/api/parts/${p.id}`, { category: newName })
+        apiRequest("PUT", `/api/items/${p.id}`, { category: newName })
       );
       await Promise.all(promises);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/parts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
       toast({ title: "Success", description: "Category renamed." });
       setEditDialogOpen(false);
       setEditingCategory(null);
@@ -119,12 +119,12 @@ export default function CategoryManagementPage() {
         (p) => (p.category || "Uncategorized") === categoryName
       );
       const promises = partsToUpdate.map((p) =>
-        apiRequest("PUT", `/api/parts/${p.id}`, { category: null })
+        apiRequest("PUT", `/api/items/${p.id}`, { category: null })
       );
       await Promise.all(promises);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/parts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
       toast({ title: "Deleted", description: "Category removed. Items moved to Uncategorized." });
       setDeleteDialogOpen(false);
       setCategoryToDelete(null);

@@ -77,7 +77,7 @@ interface ClientScheduleItem {
   companyName: string;
   location: string;
   selectedMonths: number[];
-  parts: ClientPart[];
+  parts: ClientItem[];
   equipment: Equipment[];
   isCompleted: boolean;
 }

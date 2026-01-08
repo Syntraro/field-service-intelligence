@@ -49,7 +49,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import type { JobPart, Part, JobTemplate } from "@shared/schema";
+import type { JobPart, Item, JobTemplate } from "@shared/schema";
 
 interface PartsBillingCardProps {
   jobId: string;
@@ -104,7 +104,7 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
   }>({ open: false, templateId: null, templateName: "" });
   const lastSyncedPartsRef = useRef<string>("");
 
-  const { data: jobParts = [], isLoading: partsLoading } = useQuery<JobPart[]>({
+  const { data: jobParts = [], isLoading: partsLoading } = useQuery<JobItem[]>({
     queryKey: ["/api/jobs", jobId, "parts"],
     queryFn: async () => {
       const res = await fetch(`/api/jobs/${jobId}/parts`, { credentials: "include" });
@@ -143,7 +143,7 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
+      queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}`] });
       toast({ title: "Template applied", description: "Line items have been replaced with the template." });
     },
     onError: (error: Error) => {
@@ -169,10 +169,10 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
     setTemplateConfirmState({ open: false, templateId: null, templateName: "" });
   };
 
-  const { data: catalogData } = useQuery<{ items: Part[] }>({
-    queryKey: ["/api/parts", { limit: 1000 }],
+  const { data: catalogData } = useQuery<{ items: Item[] }>({
+    queryKey: ["/api/items", { limit: 1000 }],
     queryFn: async () => {
-      const res = await fetch("/api/parts?limit=1000", { credentials: "include" });
+      const res = await fetch("/api/items?limit=1000", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch catalog");
       return res.json();
     },
@@ -404,7 +404,7 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
 
   const createProductMutation = useMutation({
     mutationFn: async (data: { name: string; description?: string; cost: string; unitPrice: string; type: string }) => {
-      const res = await apiRequest("POST", "/api/parts", {
+      const res = await apiRequest("POST", "/api/items", {
         name: data.name,
         description: data.description || null,
         cost: String(parseFloat(data.cost) || 0),
@@ -417,7 +417,7 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
       return res.json() as Promise<Part>;
     },
     onSuccess: (newPart: Part) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/parts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
       if (productModalState.lineItemId) {
         handleRowChange(productModalState.lineItemId, {
           productId: newPart.id,
@@ -603,7 +603,7 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
 
 interface LineItemRowProps {
   item: LocalLineItem;
-  catalog: Part[];
+  catalog: Item[];
   isEditing: boolean;
   isSaving: boolean;
   onEnterEdit: () => void;

@@ -50,7 +50,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Plus, Trash2, Loader2, GripVertical, Check, ChevronsUpDown, HelpCircle, PlusCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { JobTemplate, Part } from "@shared/schema";
+import type { JobTemplate, Item } from "@shared/schema";
 import { apiRequest } from "@/lib/queryClient";
 
 interface JobTemplateModalProps {
@@ -108,10 +108,10 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
     unitPrice: "",
   });
 
-  const { data: catalogData } = useQuery<{ items: Part[] }>({
-    queryKey: ["/api/parts", { limit: 1000 }],
+  const { data: catalogData } = useQuery<{ items: Item[] }>({
+    queryKey: ["/api/items", { limit: 1000 }],
     queryFn: async () => {
-      const res = await fetch("/api/parts?limit=1000", { credentials: "include" });
+      const res = await fetch("/api/items?limit=1000", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch catalog");
       return res.json();
     },
@@ -176,7 +176,7 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
       const priceStr = data.unitPrice.trim();
       const unitPrice = priceStr === "" ? null : priceStr;
       
-      const res = await apiRequest("POST", "/api/parts", {
+      const res = await apiRequest("POST", "/api/items", {
         type: data.type,
         name: data.name,
         sku: data.sku || null,
@@ -187,7 +187,7 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
       return res.json();
     },
     onSuccess: (newPart) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/parts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
       toast({ title: "Part created", description: `"${newPart.name}" has been added to your catalog.` });
       
       if (quickAddForLineId) {

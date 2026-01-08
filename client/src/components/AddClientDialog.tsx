@@ -93,8 +93,8 @@ export default function AddClientDialog({ onSubmit, onCancel, editData }: AddCli
   const [openRowIndex, setOpenRowIndex] = useState<number | null>(null);
   const [isAdditionalOptionsOpen, setIsAdditionalOptionsOpen] = useState(false);
   
-  const { data: partsResponse } = useQuery<{ items: Part[]; total: number }>({
-    queryKey: ['/api/parts?limit=1000'],
+  const { data: partsResponse } = useQuery<{ items: Item[]; total: number }>({
+    queryKey: ['/api/items?limit=1000'],
   });
   const availableParts = partsResponse?.items ?? [];
   

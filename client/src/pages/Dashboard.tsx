@@ -208,7 +208,7 @@ const { toast } = useToast();
   });
 
 
-  const { data: clientParts = {} } = useQuery<Record<string, ClientPart[]>>({
+  const { data: clientParts = {} } = useQuery<Record<string, ClientItem[]>>({
     queryKey: ["/api/client-parts/bulk"],
     staleTime: 60 * 1000, // Cache for 60 seconds
   });

@@ -57,7 +57,7 @@ interface Client {
 
 interface ClientReportData {
   client: Client;
-  parts: ClientPart[];
+  parts: ClientItem[];
   equipment: Equipment[];
 }
 

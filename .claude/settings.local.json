@@ -29,7 +29,19 @@
       "Bash(curl:*)",
       "Bash(lsof:*)",
       "Bash(xargs kill -9)",
-      "Bash(npm run dev:*)"
+      "Bash(npm run dev:*)",
+      "Bash(npm run db:push:*)",
+      "Bash(if [ -f .env ])",
+      "Bash(then grep \"DATABASE_URL\" .env)",
+      "Bash(else echo \"No .env file found\")",
+      "Bash(fi)",
+      "Bash(if [ -n \"$DATABASE_URL\" ])",
+      "Bash(then echo \"DATABASE_URL is set\")",
+      "Bash(else echo \"DATABASE_URL not found in environment\")",
+      "Bash(find:*)",
+      "Bash(if [ -z \"$DATABASE_URL\" ])",
+      "Bash(then echo \"DATABASE_URL not set\")",
+      "Bash(else echo \"DATABASE_URL is set\")"
     ]
   }
 }

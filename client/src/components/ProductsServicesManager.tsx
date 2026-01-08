@@ -90,7 +90,7 @@ const defaultFormData: ProductFormData = {
 };
 
 interface PartsResponse {
-  items: Part[];
+  items: Item[];
   total: number;
   offset: number;
   limit: number;
@@ -153,9 +153,9 @@ export default function ProductsServicesManager() {
   }, [searchQuery]);
 
   const { data: partsData, isLoading } = useQuery<PartsResponse>({
-    queryKey: ["/api/parts", { limit: 1000 }],
+    queryKey: ["/api/items", { limit: 1000 }],
     queryFn: async () => {
-      const res = await fetch("/api/parts?limit=1000", { credentials: "include" });
+      const res = await fetch("/api/items?limit=1000", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch parts");
       return res.json();
     },
@@ -237,11 +237,11 @@ export default function ProductsServicesManager() {
 
   const createMutation = useMutation({
     mutationFn: async (data: Partial<Part>) => {
-      const res = await apiRequest("POST", "/api/parts", data);
+      const res = await apiRequest("POST", "/api/items", data);
       return await res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/parts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
       toast({ title: "Success", description: editingProduct ? "Item updated." : "Item created." });
       handleCloseDialog();
     },
@@ -252,11 +252,11 @@ export default function ProductsServicesManager() {
 
   const updateMutation = useMutation({
     mutationFn: async ({ id, data }: { id: string; data: Partial<Part> }) => {
-      const res = await apiRequest("PUT", `/api/parts/${id}`, data);
+      const res = await apiRequest("PUT", `/api/items/${id}`, data);
       return await res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/parts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
       toast({ title: "Success", description: "Item updated." });
       handleCloseDialog();
       setInlineEditId(null);
@@ -269,11 +269,11 @@ export default function ProductsServicesManager() {
 
   const deletePartMutation = useMutation({
     mutationFn: async (id: string) => {
-      const res = await apiRequest("DELETE", `/api/parts/${id}`);
+      const res = await apiRequest("DELETE", `/api/items/${id}`);
       return await res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/parts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
       toast({ title: "Deleted", description: "Item deleted." });
     },
     onError: () => {
@@ -283,11 +283,11 @@ export default function ProductsServicesManager() {
 
   const bulkDeleteMutation = useMutation({
     mutationFn: async (ids: string[]) => {
-      const res = await apiRequest("POST", "/api/parts/bulk-delete", { ids });
+      const res = await apiRequest("POST", "/api/items/bulk-delete", { ids });
       return res.json();
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/parts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
       toast({ title: "Deleted", description: `Deleted ${data.deletedCount} item(s).` });
       setSelectedIds(new Set());
       setBulkDeleteDialogOpen(false);
@@ -299,11 +299,11 @@ export default function ProductsServicesManager() {
 
   const bulkArchiveMutation = useMutation({
     mutationFn: async (ids: string[]) => {
-      const promises = ids.map((id) => apiRequest("PUT", `/api/parts/${id}`, { isActive: false }));
+      const promises = ids.map((id) => apiRequest("PUT", `/api/items/${id}`, { isActive: false }));
       await Promise.all(promises);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/parts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
       toast({ title: "Archived", description: `Archived ${selectedIds.size} item(s).` });
       setSelectedIds(new Set());
     },
@@ -314,11 +314,11 @@ export default function ProductsServicesManager() {
 
   const bulkCategoryMutation = useMutation({
     mutationFn: async ({ ids, category }: { ids: string[]; category: string }) => {
-      const promises = ids.map((id) => apiRequest("PUT", `/api/parts/${id}`, { category }));
+      const promises = ids.map((id) => apiRequest("PUT", `/api/items/${id}`, { category }));
       await Promise.all(promises);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/parts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
       toast({ title: "Updated", description: `Updated category for ${selectedIds.size} item(s).` });
       setSelectedIds(new Set());
       setBulkCategoryDialogOpen(false);
@@ -331,11 +331,11 @@ export default function ProductsServicesManager() {
 
   const importMutation = useMutation({
     mutationFn: async ({ csvData, updateExisting }: { csvData: string; updateExisting: boolean }) => {
-      const res = await apiRequest("POST", "/api/parts/import", { csvData, skipDuplicates: !updateExisting, updateExisting });
+      const res = await apiRequest("POST", "/api/items/import", { csvData, skipDuplicates: !updateExisting, updateExisting });
       return res.json();
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/parts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
       const { imported, skipped, updated, errors } = data;
       let description = `Imported ${imported} item(s).`;
       if (updated > 0) description += ` Updated ${updated}.`;
@@ -358,7 +358,7 @@ export default function ProductsServicesManager() {
       if (typeFilter !== "all") params.set("category", typeFilter === "product" ? "products" : "services");
       if (debouncedSearch) params.set("search", debouncedSearch);
       
-      const response = await fetch(`/api/parts/export?${params}`, { credentials: "include" });
+      const response = await fetch(`/api/items/export?${params}`, { credentials: "include" });
       if (!response.ok) throw new Error("Export failed");
 
       const blob = await response.blob();
@@ -481,10 +481,6 @@ export default function ProductsServicesManager() {
   const handleSaveProduct = () => {
     if (!formData.name.trim()) {
       toast({ title: "Validation Error", description: "Name is required.", variant: "destructive" });
-      return;
-    }
-    if (!formData.category.trim()) {
-      toast({ title: "Validation Error", description: "Category is required.", variant: "destructive" });
       return;
     }
 
@@ -906,25 +902,6 @@ export default function ProductsServicesManager() {
               <Textarea value={formData.description} onChange={(e) => setFormData((prev) => ({ ...prev, description: e.target.value }))} rows={2} data-testid="input-description" />
             </div>
 
-            <div className="space-y-2">
-              <Label>Category *</Label>
-              <div className="relative">
-                <Input
-                  value={formData.category}
-                  onChange={(e) => setFormData((prev) => ({ ...prev, category: e.target.value }))}
-                  placeholder="Type or select a category"
-                  list="category-options"
-                  data-testid="input-category"
-                />
-                <datalist id="category-options">
-                  {uniqueCategories.map((cat) => (
-                    <option key={cat} value={cat} />
-                  ))}
-                </datalist>
-              </div>
-              <p className="text-xs text-muted-foreground">Type a new category or select from suggestions</p>
-            </div>
-
             <div className="border-t pt-3">
               <p className="text-sm font-medium mb-3">Pricing</p>
               <div className="grid grid-cols-3 gap-3">
@@ -932,30 +909,48 @@ export default function ProductsServicesManager() {
                   <Label>Cost</Label>
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
-                    <Input 
-                      type="number" 
-                      step="0.01" 
-                      min="0" 
-                      value={formData.cost} 
-                      onChange={(e) => setFormData((prev) => ({ ...prev, cost: e.target.value }))} 
-                      placeholder="0.00" 
+                    <Input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={formData.cost}
+                      onChange={(e) => {
+                        const cost = parseFloat(e.target.value) || 0;
+                        const markup = parseFloat(formData.markupPercent) || 0;
+                        const calculatedPrice = markup > 0 ? (cost * (1 + markup / 100)).toFixed(2) : "";
+                        setFormData((prev) => ({
+                          ...prev,
+                          cost: e.target.value,
+                          unitPrice: calculatedPrice
+                        }));
+                      }}
+                      placeholder="0.00"
                       className="pl-7"
-                      data-testid="input-cost" 
+                      data-testid="input-cost"
                     />
                   </div>
                 </div>
                 <div className="space-y-2">
                   <Label>Markup</Label>
                   <div className="relative">
-                    <Input 
-                      type="number" 
-                      step="1" 
-                      min="0" 
-                      value={formData.markupPercent} 
-                      onChange={(e) => setFormData((prev) => ({ ...prev, markupPercent: e.target.value }))} 
-                      placeholder="50" 
+                    <Input
+                      type="number"
+                      step="1"
+                      min="0"
+                      value={formData.markupPercent}
+                      onChange={(e) => {
+                        const markup = parseFloat(e.target.value) || 0;
+                        const cost = parseFloat(formData.cost) || 0;
+                        const calculatedPrice = cost > 0 ? (cost * (1 + markup / 100)).toFixed(2) : "";
+                        setFormData((prev) => ({
+                          ...prev,
+                          markupPercent: e.target.value,
+                          unitPrice: calculatedPrice
+                        }));
+                      }}
+                      placeholder="50"
                       className="pr-7"
-                      data-testid="input-markup" 
+                      data-testid="input-markup"
                     />
                     <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground">%</span>
                   </div>

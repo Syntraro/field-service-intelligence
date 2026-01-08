@@ -26,6 +26,15 @@ const createTaskSchema = z.object({
   clientId: z.string().uuid().optional(),
   estimatedDurationMinutes: z.number().int().positive().optional(),
   status: z.enum(["pending", "in_progress", "completed", "cancelled"]).optional().default("pending"),
+  scheduledStartAt: z.preprocess(
+    (val) => (typeof val === 'string' && val.trim() !== '' ? val : undefined),
+    z.string().datetime().optional()
+  ),
+  scheduledEndAt: z.preprocess(
+    (val) => (typeof val === 'string' && val.trim() !== '' ? val : undefined),
+    z.string().datetime().optional()
+  ),
+  allDay: z.boolean().optional(),
 }).strict();
 
 const assignTaskSchema = z.object({
@@ -47,8 +56,14 @@ const updateTaskSchema = z.object({
   jobId: z.string().uuid().nullable().optional(),
   clientId: z.string().uuid().nullable().optional(),
   estimatedDurationMinutes: z.number().int().positive().nullable().optional(),
-  scheduledStartAt: z.string().datetime().nullable().optional(),
-  scheduledEndAt: z.string().datetime().nullable().optional(),
+  scheduledStartAt: z.preprocess(
+    (val) => (val === null || (typeof val === 'string' && val.trim() === '') ? undefined : val),
+    z.string().datetime().optional()
+  ),
+  scheduledEndAt: z.preprocess(
+    (val) => (val === null || (typeof val === 'string' && val.trim() === '') ? undefined : val),
+    z.string().datetime().optional()
+  ),
   allDay: z.boolean().optional(),
 }).strict();
 
@@ -79,9 +94,12 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
     ...validated,
     createdByUserId: req.user.id,
     // Use notes if provided, otherwise fall back to description for backwards compatibility
-    notes: validated.notes ?? (validated as any).description ?? null,
-    clientId: validated.clientId ?? null,
-    estimatedDurationMinutes: validated.estimatedDurationMinutes ?? null,
+    notes: validated.notes ?? (validated as any).description ?? undefined,
+    clientId: validated.clientId ?? undefined,
+    estimatedDurationMinutes: validated.estimatedDurationMinutes ?? undefined,
+    scheduledStartAt: validated.scheduledStartAt ?? undefined,
+    scheduledEndAt: validated.scheduledEndAt ?? undefined,
+    allDay: validated.allDay ?? false,
   });
 
   res.json(task);
@@ -198,6 +216,23 @@ router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authed
   const task = await service.updateTask(companyId, req.params.id, updates);
 
   res.json(task);
+}));
+
+/* GET SUPPLIER VISIT DETAILS */
+router.get("/:id/supplier-visit", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const taskId = req.params.id;
+
+  // Verify task belongs to company
+  const task = await service.getTask(companyId, taskId);
+  if (!task) {
+    throw createError(404, "Task not found");
+  }
+
+  // Get supplier visit details
+  const supplierVisit = await service.getSupplierVisitDetails(taskId);
+
+  res.json(supplierVisit || {});
 }));
 
 /* SUPPLIER VISIT UPDATE (OFFICE) */

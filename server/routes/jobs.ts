@@ -355,4 +355,71 @@ router.post("/:id/reconcile-invoice-links", requireRole(MANAGER_ROLES), asyncHan
   res.json(result);
 }));
 
+/**
+ * ----------------------------
+ * Job Notes (simple comments on jobs)
+ * ----------------------------
+ */
+
+import * as jobNotesService from "../services/jobNotes.service.js";
+
+// GET /api/jobs/:jobId/notes - List job notes
+router.get("/:jobId/notes", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+
+  const notes = await jobNotesService.listJobNotes(companyId, req.params.jobId);
+  res.json(notes);
+}));
+
+// POST /api/jobs/:jobId/notes - Create job note
+router.post("/:jobId/notes", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const userId = req.user!.id;
+
+  const { noteText } = req.body;
+
+  if (!noteText || typeof noteText !== 'string' || noteText.trim().length === 0) {
+    throw createError(400, "noteText is required and must be a non-empty string");
+  }
+
+  const note = await jobNotesService.createJobNote(
+    companyId,
+    req.params.jobId,
+    userId,
+    noteText.trim()
+  );
+
+  res.status(201).json(note);
+}));
+
+// PATCH /api/jobs/:jobId/notes/:noteId - Update job note
+router.patch("/:jobId/notes/:noteId", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const userId = req.user!.id;
+
+  const { noteText } = req.body;
+
+  if (!noteText || typeof noteText !== 'string' || noteText.trim().length === 0) {
+    throw createError(400, "noteText is required and must be a non-empty string");
+  }
+
+  const note = await jobNotesService.updateJobNote(
+    companyId,
+    req.params.noteId,
+    userId,
+    noteText.trim()
+  );
+
+  res.json(note);
+}));
+
+// DELETE /api/jobs/:jobId/notes/:noteId - Delete job note
+router.delete("/:jobId/notes/:noteId", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const userId = req.user!.id;
+
+  const result = await jobNotesService.deleteJobNote(companyId, req.params.noteId, userId);
+  res.json(result);
+}));
+
 export default router;

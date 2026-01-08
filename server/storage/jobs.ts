@@ -1,14 +1,15 @@
 import { db } from "../db";
 import { eq, and, gte, lte, sql, desc, or, lt } from "drizzle-orm";
 import { validate as isUUID } from "uuid";
-import { 
-  jobs, 
-  jobParts, 
-  jobEquipment, 
+import {
+  jobs,
+  jobParts,
+  jobEquipment,
   locationEquipment,
   recurringJobSeries,
   companyCounters,
-  clients
+  clients,
+  customerCompanies
 } from "@shared/schema";
 import type { InsertJob, Job, InsertJobPart, JobPart } from "@shared/schema";
 import { BaseRepository } from "./base";
@@ -118,10 +119,20 @@ export class JobRepository extends BaseRepository {
       version: jobs.version,
       createdAt: jobs.createdAt,
       updatedAt: jobs.updatedAt,
+      // Enriched location fields for frontend compatibility
+      // Use parent company name if available, otherwise fall back to location's companyName
+      locationCompanyName: sql<string>`COALESCE(${customerCompanies.name}, ${clients.companyName})`,
+      locationName: clients.location,
+      locationCity: clients.city,
+      locationAddress: clients.address,
       location: {
         id: clients.id,
         companyName: clients.companyName,
         location: clients.location,
+        address: clients.address,
+        city: clients.city,
+        province: clients.province,
+        postalCode: clients.postalCode,
       }
     };
 
@@ -129,6 +140,7 @@ export class JobRepository extends BaseRepository {
       .select(selectFields)
       .from(jobs)
       .leftJoin(clients, eq(jobs.locationId, clients.id))
+      .leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))
       .where(eq(jobs.companyId, companyId))
       .$dynamic();
 

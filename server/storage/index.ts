@@ -17,7 +17,7 @@ import { userRepository } from "./users";
 import { clientRepository } from "./clients";
 import { jobRepository } from "./jobs";
 import { invoiceRepository } from "./invoices";
-import { partRepository } from "./parts";
+import { itemRepository } from "./items";
 import { teamRepository } from "./team";
 import { templateRepository } from "./templates";
 import { maintenanceRepository } from "./maintenance";
@@ -93,11 +93,11 @@ export interface IStorage {
   createInvoiceFromJob: typeof invoiceRepository.createInvoiceFromJob;
   
   // Parts operations
-  getParts: typeof partRepository.getParts;
-  getPart: typeof partRepository.getPart;
-  createPart: typeof partRepository.createPart;
-  updatePart: typeof partRepository.updatePart;
-  deletePart: typeof partRepository.deletePart;
+  getItems: typeof itemRepository.getItems;
+  getItem: typeof itemRepository.getItem;
+  createItem: typeof itemRepository.createItem;
+  updateItem: typeof itemRepository.updateItem;
+  deleteItem: typeof itemRepository.deleteItem;
 
   // Team operations
   getTeamMembers: typeof teamRepository.getTeamMembers;
@@ -212,11 +212,11 @@ export const storage: IStorage = {
   createInvoiceFromJob: invoiceRepository.createInvoiceFromJob.bind(invoiceRepository),
   
   // Parts operations
-  getParts: partRepository.getParts.bind(partRepository),
-  getPart: partRepository.getPart.bind(partRepository),
-  createPart: partRepository.createPart.bind(partRepository),
-  updatePart: partRepository.updatePart.bind(partRepository),
-  deletePart: partRepository.deletePart.bind(partRepository),
+  getItems: itemRepository.getItems.bind(itemRepository),
+  getItem: itemRepository.getItem.bind(itemRepository),
+  createItem: itemRepository.createItem.bind(itemRepository),
+  updateItem: itemRepository.updateItem.bind(itemRepository),
+  deleteItem: itemRepository.deleteItem.bind(itemRepository),
 
   // Team operations
   getTeamMembers: teamRepository.getTeamMembers.bind(teamRepository),
@@ -312,7 +312,7 @@ export {
   clientRepository,
   jobRepository,
   invoiceRepository,
-  partRepository,
+  itemRepository,
   teamRepository,
   templateRepository,
   maintenanceRepository,

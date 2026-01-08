@@ -31,6 +31,8 @@ import {
 } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import JobEquipmentSection from "@/components/JobEquipmentSection";
+import JobVisitsSection from "@/components/JobVisitsSection";
+import JobNotesSection from "@/components/JobNotesSection";
 import { PartsBillingCard } from "@/components/PartsBillingCard";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import { JobHeaderCard } from "@/components/JobHeaderCard";
@@ -93,7 +95,7 @@ function JobDescriptionCard({ jobId, description, onDescriptionChange }: {
         method: "PATCH",
         body: JSON.stringify({ description: editValue })
       });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
+      queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}`] });
       setIsEditing(false);
       toast({ title: "Saved", description: "Job description updated." });
       onDescriptionChange();
@@ -238,7 +240,7 @@ function AssignTechnicianDialog({
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
+      queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}`] });
       toast({
         title: "Technicians Updated",
         description: "Job technician assignments have been updated.",
@@ -360,7 +362,7 @@ export default function JobDetailPage() {
   const jobId = params?.id;
 
   const { data: job, isLoading, error } = useQuery<JobDetailResponse>({
-    queryKey: ["/api/jobs", jobId],
+    queryKey: [`/api/jobs/${jobId}`],
     enabled: !!jobId,
   });
 
@@ -382,7 +384,7 @@ export default function JobDetailPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
+      queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}`] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       toast({
         title: "Status Updated",
@@ -436,7 +438,7 @@ export default function JobDetailPage() {
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
+      queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}`] });
       toast({
         title: "Invoice Created",
         description: "Invoice has been created from this job.",
@@ -515,7 +517,6 @@ export default function JobDetailPage() {
           technicians={job.technicians || []}
           primaryTechnicianId={job.primaryTechnicianId}
           onAssignTechnician={() => setShowAssignTech(true)}
-          onNewVisit={() => toast({ title: "Coming Soon", description: "Visit scheduling coming soon." })}
         />
         
         {/* RIGHT: Job Meta (Job #, Invoice, Status, Scheduled) */}
@@ -532,7 +533,7 @@ export default function JobDetailPage() {
         jobId={jobId!} 
         description={job.description} 
         onDescriptionChange={() => {
-          queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
+          queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}`] });
         }}
       />
 
@@ -582,37 +583,7 @@ export default function JobDetailPage() {
         {/* RIGHT COLUMN: Notes, Equipment, Activity */}
         <div className="space-y-2">
           {/* Notes – collapsible */}
-          <Collapsible open={notesOpen} onOpenChange={setNotesOpen}>
-            <Card>
-              <CollapsibleTrigger asChild>
-                <button className="w-full flex items-center justify-between px-4 py-3 hover-elevate" data-testid="trigger-notes">
-                  <span className="text-sm font-semibold">Notes</span>
-                  <div className="flex items-center gap-2">
-                    <Button 
-                      variant="ghost" 
-                      size="sm" 
-                      className="text-xs h-auto p-0 text-primary"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toast({ title: "Coming Soon", description: "Job notes coming soon." });
-                      }}
-                      data-testid="button-add-note"
-                    >
-                      + Add Note
-                    </Button>
-                    {notesOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-                  </div>
-                </button>
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <div className="border-t px-4 pb-4 pt-3">
-                  <p className="text-xs text-muted-foreground">
-                    No notes yet. Add notes to track job details and communication.
-                  </p>
-                </div>
-              </CollapsibleContent>
-            </Card>
-          </Collapsible>
+          <JobNotesSection jobId={job.id} defaultOpen={notesOpen} />
 
           {/* Labour */}
           <Card data-testid="card-labour">
@@ -637,6 +608,9 @@ export default function JobDetailPage() {
 
           {/* Equipment - collapsed by default */}
           <JobEquipmentSection jobId={job.id} locationId={job.locationId} />
+
+          {/* Visits - collapsed by default */}
+          <JobVisitsSection jobId={job.id} defaultOpen={false} />
 
           {/* Activity - Collapsible */}
           <Collapsible open={activityOpen} onOpenChange={setActivityOpen}>
@@ -729,7 +703,7 @@ export default function JobDetailPage() {
         onOpenChange={setShowEditDialog}
         editJob={job}
         onSuccess={() => {
-          queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
+          queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}`] });
         }}
       />
 

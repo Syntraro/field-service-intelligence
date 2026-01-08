@@ -17,7 +17,7 @@ import { PartsSelectorModal } from "@/components/PartsSelectorModal";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { format } from "date-fns";
-import type { Client, CustomerCompany, ClientNote, Job, LocationPMPartTemplate } from "@shared/schema";
+import type { Client, CustomerCompany, ClientNote, Job, LocationPMItemTemplate } from "@shared/schema";
 
 export default function LocationDetailPage() {
   const { id, locationId } = useParams<{ id: string; locationId: string }>();
@@ -49,12 +49,12 @@ export default function LocationDetailPage() {
   const [deleteLocationDialogOpen, setDeleteLocationDialogOpen] = useState(false);
 
   const { data: location, isLoading: locationLoading, error: locationError } = useQuery<Client>({
-    queryKey: ["/api/clients", locationId],
+    queryKey: [`/api/clients/${locationId}`],
     enabled: Boolean(locationId),
   });
 
   const { data: parentClient } = useQuery<Client>({
-    queryKey: ["/api/clients", id],
+    queryKey: [`/api/clients/${id}`],
     enabled: Boolean(id),
   });
 
@@ -88,7 +88,7 @@ export default function LocationDetailPage() {
   });
 
   const { data: partsData } = useQuery<{ items: { id: string; name: string | null; sku: string | null }[] }>({
-    queryKey: ["/api/parts"],
+    queryKey: ["/api/items"],
     enabled: Boolean(locationId) && pmParts.length > 0,
   });
   const allParts = partsData?.items || [];
@@ -122,7 +122,7 @@ export default function LocationDetailPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId] });
+      queryClient.invalidateQueries({ queryKey: [`/api/clients/${locationId}`] });
       toast({ title: "Billing updated" });
     },
     onError: () => {
@@ -137,7 +137,7 @@ export default function LocationDetailPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId] });
+      queryClient.invalidateQueries({ queryKey: [`/api/clients/${locationId}`] });
       // refresh company overview + locations list if applicable
       queryClient.invalidateQueries({ queryKey: ["/api/clients", id, "overview"] });
       if (effectiveParentCompanyId) {
@@ -787,7 +787,7 @@ export default function LocationDetailPage() {
         parentCompanyId={effectiveParentCompanyId || undefined}
         onSuccess={() => {
           setEditModalOpen(false);
-          queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId] });
+          queryClient.invalidateQueries({ queryKey: [`/api/clients/${locationId}`] });
           queryClient.invalidateQueries({ queryKey: ["/api/clients", id, "overview"] });
           if (effectiveParentCompanyId) {
             queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", effectiveParentCompanyId, "locations"] });

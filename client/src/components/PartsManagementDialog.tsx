@@ -58,18 +58,18 @@ export default function PartsManagementDialog({ onCancel }: PartsManagementDialo
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
 
-  const { data: partsResponse, isLoading } = useQuery<{ items: Part[]; total: number }>({
-    queryKey: ["/api/parts?limit=1000"],
+  const { data: partsResponse, isLoading } = useQuery<{ items: Item[]; total: number }>({
+    queryKey: ["/api/items?limit=1000"],
   });
   const parts = partsResponse?.items ?? [];
 
   const bulkCreateMutation = useMutation({
     mutationFn: async (parts: Partial<Part>[]) => {
-      const res = await apiRequest("POST", "/api/parts/bulk", parts);
+      const res = await apiRequest("POST", "/api/items/bulk", parts);
       return await res.json();
     },
-    onSuccess: (data: { created: Part[]; errors?: Array<{ index: number; error: string }> }) => {
-      queryClient.invalidateQueries({ predicate: (query) => typeof query.queryKey[0] === 'string' && query.queryKey[0].startsWith('/api/parts') });
+    onSuccess: (data: { created: Item[]; errors?: Array<{ index: number; error: string }> }) => {
+      queryClient.invalidateQueries({ predicate: (query) => typeof query.queryKey[0] === 'string' && query.queryKey[0].startsWith('/api/items') });
       
       if (data.errors && data.errors.length > 0) {
         toast({
@@ -94,11 +94,11 @@ export default function PartsManagementDialog({ onCancel }: PartsManagementDialo
 
   const deletePartMutation = useMutation({
     mutationFn: async (id: string) => {
-      const res = await apiRequest("DELETE", `/api/parts/${id}`);
+      const res = await apiRequest("DELETE", `/api/items/${id}`);
       return await res.json();
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ predicate: (query) => typeof query.queryKey[0] === 'string' && query.queryKey[0].startsWith('/api/parts') });
+      queryClient.invalidateQueries({ predicate: (query) => typeof query.queryKey[0] === 'string' && query.queryKey[0].startsWith('/api/items') });
       toast({
         title: "Part deleted",
         description: "The part has been deleted successfully.",
@@ -115,14 +115,14 @@ export default function PartsManagementDialog({ onCancel }: PartsManagementDialo
 
   const bulkDeleteMutation = useMutation({
     mutationFn: async (ids: string[]) => {
-      const res = await apiRequest('POST', '/api/parts/bulk-delete', { ids });
+      const res = await apiRequest('POST', '/api/items/bulk-delete', { ids });
       return res.json();
     },
     onSuccess: (data) => {
       const { deletedCount, notFoundCount } = data;
       
       // Invalidate all related queries
-      queryClient.invalidateQueries({ predicate: (query) => typeof query.queryKey[0] === 'string' && query.queryKey[0].startsWith('/api/parts') });
+      queryClient.invalidateQueries({ predicate: (query) => typeof query.queryKey[0] === 'string' && query.queryKey[0].startsWith('/api/items') });
       queryClient.invalidateQueries({ queryKey: ['/api/clients'] });
       
       if (deletedCount > 0) {
@@ -152,7 +152,7 @@ export default function PartsManagementDialog({ onCancel }: PartsManagementDialo
     },
   });
 
-  const handleSelectAll = (partsToSelect: Part[]) => {
+  const handleSelectAll = (partsToSelect: Item[]) => {
     setSelectedIds(new Set(partsToSelect.map(p => p.id)));
   };
 

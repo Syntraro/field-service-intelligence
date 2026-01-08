@@ -67,7 +67,7 @@ interface Equipment {
 
 interface ClientDetails {
   client: Client;
-  parts: ClientPart[];
+  parts: ClientItem[];
   equipment: Equipment[];
 }
 

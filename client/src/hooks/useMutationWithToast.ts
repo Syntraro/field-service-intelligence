@@ -27,7 +27,7 @@ export const QUERY_GROUPS = {
     ["/api/equipment"],
   ],
   parts: [
-    ["/api/parts"],
+    ["/api/items"],
     ["/api/client-parts/bulk"],
   ],
 } as const;

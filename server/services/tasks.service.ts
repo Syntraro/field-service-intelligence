@@ -38,23 +38,39 @@ export async function createTask(companyId: string, input: any) {
     throw new Error("createdByUserId is required");
   }
 
+  // Build values object, only including defined fields
+  const values: any = {
+    companyId, // Use passed companyId, not from input
+    createdByUserId: input.createdByUserId,
+    type: input.type, // "GENERAL" | "SUPPLIER_VISIT"
+    title: input.title,
+    status: input.status ?? "pending",
+    allDay: input.allDay ?? false,
+  };
+
+  // Only add optional fields if they're defined and valid
+  if (input.assignedToUserId !== undefined) values.assignedToUserId = input.assignedToUserId;
+  if (input.notes !== undefined) values.notes = input.notes;
+
+  // For date fields, ensure they're valid ISO strings or undefined
+  if (input.scheduledStartAt !== undefined && input.scheduledStartAt !== null) {
+    if (typeof input.scheduledStartAt === 'string' && input.scheduledStartAt.trim() !== '') {
+      values.scheduledStartAt = input.scheduledStartAt;
+    }
+  }
+  if (input.scheduledEndAt !== undefined && input.scheduledEndAt !== null) {
+    if (typeof input.scheduledEndAt === 'string' && input.scheduledEndAt.trim() !== '') {
+      values.scheduledEndAt = input.scheduledEndAt;
+    }
+  }
+
+  if (input.jobId !== undefined) values.jobId = input.jobId;
+  if (input.clientId !== undefined) values.clientId = input.clientId;
+  if (input.estimatedDurationMinutes !== undefined) values.estimatedDurationMinutes = input.estimatedDurationMinutes;
+
   const [task] = await db
     .insert(tasks)
-    .values({
-      companyId, // Use passed companyId, not from input
-      createdByUserId: input.createdByUserId,
-      assignedToUserId: input.assignedToUserId ?? null,
-      type: input.type, // "GENERAL" | "SUPPLIER_VISIT"
-      title: input.title,
-      notes: input.notes ?? null,
-      status: input.status ?? "pending",
-      scheduledStartAt: input.scheduledStartAt ?? null,
-      scheduledEndAt: input.scheduledEndAt ?? null,
-      allDay: input.allDay ?? false,
-      jobId: input.jobId ?? null,
-      clientId: input.clientId ?? null,
-      estimatedDurationMinutes: input.estimatedDurationMinutes ?? null,
-    })
+    .values(values)
     .returning();
 
   return task;
@@ -287,6 +303,18 @@ export async function updateTask(companyId: string, taskId: string, input: any) 
     .returning();
 
   return updated;
+}
+
+/* =========================================================
+   GET SUPPLIER VISIT DETAILS
+   ========================================================= */
+export async function getSupplierVisitDetails(taskId: string) {
+  const [details] = await db
+    .select()
+    .from(supplierVisitDetails)
+    .where(eq(supplierVisitDetails.taskId, taskId));
+
+  return details ?? null;
 }
 
 /* =========================================================

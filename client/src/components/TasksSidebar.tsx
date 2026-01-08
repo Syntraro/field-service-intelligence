@@ -4,11 +4,8 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { ChevronLeft, ChevronRight, Plus, CheckSquare, Square, ClipboardList, Filter, Trash2 } from "lucide-react";
-import { NewTaskDialog } from "@/components/NewTaskDialog";
+import { ChevronLeft, ChevronRight, Plus, CheckSquare, Square, ClipboardList } from "lucide-react";
+import { TaskDialog } from "@/components/TaskDialog";
 
 type TaskStatus = "pending" | "in_progress" | "completed" | "cancelled";
 type TaskType = "GENERAL" | "SUPPLIER_VISIT";
@@ -21,7 +18,50 @@ type Task = {
   assignedToUserId?: string | null;
   notes?: string | null;
   createdAt?: string;
+  scheduledStartAt?: string | null;
+  assignedUser?: {
+    id: string;
+    fullName: string;
+    firstName?: string;
+    lastName?: string;
+  } | null;
+  supplierVisit?: {
+    supplier?: {
+      name: string;
+    } | null;
+    supplierLocation?: {
+      name: string;
+    } | null;
+  } | null;
 };
+
+function getInitials(fullName?: string, firstName?: string, lastName?: string): string {
+  if (fullName) {
+    const parts = fullName.trim().split(/\s+/);
+    if (parts.length >= 2) {
+      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    }
+    return fullName.slice(0, 2).toUpperCase();
+  }
+  if (firstName && lastName) {
+    return (firstName[0] + lastName[0]).toUpperCase();
+  }
+  if (firstName) return firstName.slice(0, 2).toUpperCase();
+  return "?";
+}
+
+function formatTaskDate(dateString?: string | null): string {
+  if (!dateString) return "";
+  const date = new Date(dateString);
+  const today = new Date();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+
+  if (date.toDateString() === today.toDateString()) return "Today";
+  if (date.toDateString() === tomorrow.toDateString()) return "Tomorrow";
+
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
 
 function buildTasksUrl(params: {
   status?: TaskStatus | "active";
@@ -31,7 +71,6 @@ function buildTasksUrl(params: {
   limit?: number;
 }) {
   const usp = new URLSearchParams();
-  // Don't send status filter if we want "active" (all non-completed) - we'll filter client-side
   if (params.status && params.status !== "active") {
     usp.set("status", params.status);
   }
@@ -49,7 +88,6 @@ function normalizeTasks(payload: any, statusFilter?: "active" | TaskStatus): Tas
   else if (Array.isArray(payload.items)) tasks = payload.items;
   else if (Array.isArray(payload.data)) tasks = payload.data;
 
-  // Client-side filter for "active" status (pending or in_progress)
   if (statusFilter === "active") {
     return tasks.filter(t => t.status === "pending" || t.status === "in_progress");
   }
@@ -57,203 +95,6 @@ function normalizeTasks(payload: any, statusFilter?: "active" | TaskStatus): Tas
   return tasks;
 }
 
-// ---------- Task modal ----------
-function TaskDetailsDialog(props: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  taskId?: string;
-  onChanged: () => void;
-}) {
-  const { open, onOpenChange, taskId, onChanged } = props;
-  const { user } = useAuth();
-  const currentUserId = user?.id;
-
-  // Fetch full task details on demand
-  const { data, isLoading } = useQuery({
-    queryKey: taskId ? [`/api/tasks/${taskId}`] : ["task-details-empty"],
-    enabled: open && !!taskId,
-  });
-
-  const task: Task | undefined = (data as any)?.task ?? data as Task | undefined; // defensive
-
-  const [title, setTitle] = useState("");
-  const [notes, setNotes] = useState("");
-  const [assignedToUserId, setAssignedToUserId] = useState<string>("");
-
-  // When task loads, hydrate form
-  useMemo(() => {
-    if (!task) return;
-    setTitle(task.title ?? "");
-    setNotes((task.notes ?? "") as string);
-    setAssignedToUserId((task.assignedToUserId ?? "") as string);
-  }, [task?.id]); // only when switching tasks
-
-  const saveMutation = useMutation({
-    mutationFn: async () => {
-      if (!taskId) throw new Error("Missing taskId");
-      return apiRequest(`/api/tasks/${taskId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title,
-          notes,
-        }),
-      });
-    },
-    onSuccess: () => {
-      onChanged();
-      onOpenChange(false);
-    },
-    onError: (e: any) => alert(e?.message ?? "Failed to save task"),
-  });
-
-  const assignMutation = useMutation({
-    mutationFn: async (nextAssignedToUserId: string | null) => {
-      if (!taskId) throw new Error("Missing taskId");
-      return apiRequest(`/api/tasks/${taskId}/assign`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          assignedToUserId: nextAssignedToUserId,
-        }),
-      });
-    },
-    onSuccess: () => onChanged(),
-    onError: (e: any) => alert(e?.message ?? "Failed to assign"),
-  });
-
-  const closeMutation = useMutation({
-    mutationFn: async () => {
-      if (!taskId) throw new Error("Missing taskId");
-      if (!currentUserId) throw new Error("Missing currentUserId");
-      return apiRequest(`/api/tasks/${taskId}/close`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: currentUserId }),
-      });
-    },
-    onSuccess: () => {
-      onChanged();
-      onOpenChange(false);
-    },
-    onError: (e: any) => alert(e?.message ?? "Failed to close task"),
-  });
-
-  const reopenMutation = useMutation({
-    mutationFn: async () => {
-      if (!taskId) throw new Error("Missing taskId");
-      if (!currentUserId) throw new Error("Missing currentUserId");
-      // requires backend endpoint (see below)
-      return apiRequest(`/api/tasks/${taskId}/reopen`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: currentUserId }),
-      });
-    },
-    onSuccess: () => {
-      onChanged();
-      onOpenChange(false);
-    },
-    onError: (e: any) => alert(e?.message ?? "Failed to reopen task"),
-  });
-
-  const deleteMutation = useMutation({
-    mutationFn: async () => {
-      if (!taskId) throw new Error("Missing taskId");
-      // requires backend endpoint (see below)
-      return apiRequest(`/api/tasks/${taskId}`, { method: "DELETE" });
-    },
-    onSuccess: () => {
-      onChanged();
-      onOpenChange(false);
-    },
-    onError: (e: any) => alert(e?.message ?? "Failed to delete task"),
-  });
-
-  if (!open) return null;
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      onClick={() => onOpenChange(false)}
-    >
-      <div className="w-full max-w-xl rounded-lg bg-background border shadow-lg p-4" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-3">
-          <div className="font-semibold">Task</div>
-          <div className="flex gap-2">
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => {
-                if (confirm("Delete this task?")) deleteMutation.mutate();
-              }}
-            >
-              <Trash2 className="h-4 w-4 mr-2" />
-              Delete
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
-              Close
-            </Button>
-          </div>
-        </div>
-
-        {isLoading ? (
-          <div className="text-sm opacity-70">Loading…</div>
-        ) : !task ? (
-          <div className="text-sm text-destructive">Task not found</div>
-        ) : (
-          <>
-            <div className="space-y-3">
-              <div>
-                <div className="text-xs opacity-70 mb-1">Title</div>
-                <Input value={title} onChange={(e) => setTitle(e.target.value)} />
-              </div>
-
-              <div>
-                <div className="text-xs opacity-70 mb-1">Notes</div>
-                <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={4} />
-              </div>
-
-              <div>
-                <div className="text-xs opacity-70 mb-1">Assign technician (User ID for now)</div>
-                <div className="flex gap-2">
-                  <Input
-                    placeholder="assignedToUserId (uuid)"
-                    value={assignedToUserId}
-                    onChange={(e) => setAssignedToUserId(e.target.value)}
-                  />
-                  <Button
-                    variant="outline"
-                    onClick={() => assignMutation.mutate(assignedToUserId.trim() ? assignedToUserId.trim() : null)}
-                  >
-                    Assign
-                  </Button>
-                </div>
-                <div className="text-xs opacity-60 mt-1">
-                  Next step: swap this Input for a dropdown fed from your team/users endpoint.
-                </div>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between mt-4">
-              <Button variant="outline" onClick={() => saveMutation.mutate()}>
-                Save
-              </Button>
-
-              {task.status === "completed" || task.status === "cancelled" ? (
-                <Button onClick={() => reopenMutation.mutate()}>Reopen</Button>
-              ) : (
-                <Button onClick={() => closeMutation.mutate()}>Mark complete</Button>
-              )}
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ---------- Sidebar ----------
 export function TasksSidebar(props: {
   collapsed: boolean;
   onToggleCollapsed: () => void;
@@ -265,10 +106,8 @@ export function TasksSidebar(props: {
   const [status, setStatus] = useState<TaskStatus | "active">("active");
   const [scope, setScope] = useState<"mine" | "all">("mine");
   const [type, setType] = useState<"all" | TaskType>("all");
-  const [newDialogOpen, setNewDialogOpen] = useState(false);
-
+  const [dialogOpen, setDialogOpen] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>(undefined);
-  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const assignedToUserId = scope === "mine" ? currentUserId : undefined;
 
@@ -298,25 +137,49 @@ export function TasksSidebar(props: {
         body: JSON.stringify({ userId: currentUserId }),
       });
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: [tasksUrl] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ predicate: (query) => {
+        const key = query.queryKey[0];
+        return typeof key === 'string' && key.startsWith('/api/tasks');
+      }});
+    },
     onError: (e: any) => alert(e?.message ?? "Failed to close task"),
   });
 
   const reopenTask = useMutation({
     mutationFn: async (id: string) => {
       if (!currentUserId) throw new Error("Missing currentUserId");
-      // requires backend endpoint (see below)
       return apiRequest(`/api/tasks/${id}/reopen`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId: currentUserId }),
       });
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: [tasksUrl] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ predicate: (query) => {
+        const key = query.queryKey[0];
+        return typeof key === 'string' && key.startsWith('/api/tasks');
+      }});
+    },
     onError: (e: any) => alert(e?.message ?? "Failed to reopen task"),
   });
 
-  const refresh = () => queryClient.invalidateQueries({ queryKey: [tasksUrl] });
+  const handleTaskClick = (taskId: string) => {
+    setSelectedTaskId(taskId);
+    setDialogOpen(true);
+  };
+
+  const handleNewTask = () => {
+    setSelectedTaskId(undefined);
+    setDialogOpen(true);
+  };
+
+  const handleDialogChange = () => {
+    queryClient.invalidateQueries({ predicate: (query) => {
+      const key = query.queryKey[0];
+      return typeof key === 'string' && key.startsWith('/api/tasks');
+    }});
+  };
 
   if (collapsed) {
     return (
@@ -332,7 +195,7 @@ export function TasksSidebar(props: {
             size="icon"
             onClick={() => {
               onToggleCollapsed();
-              setNewDialogOpen(true);
+              handleNewTask();
             }}
             title="New task"
           >
@@ -340,7 +203,12 @@ export function TasksSidebar(props: {
           </Button>
         </div>
 
-        <NewTaskDialog open={newDialogOpen} onOpenChange={setNewDialogOpen} onCreated={refresh} />
+        <TaskDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          taskId={selectedTaskId}
+          onChanged={handleDialogChange}
+        />
       </div>
     );
   }
@@ -348,91 +216,117 @@ export function TasksSidebar(props: {
   return (
     <div className="h-full w-[380px] border-l bg-background flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-3 border-b">
-        <div className="flex items-center gap-2">
-          <ClipboardList className="h-5 w-5" />
-          <div className="font-semibold">Tasks</div>
-          <Badge variant="secondary">{tasks.length}</Badge>
+      <div className="px-3 py-2 border-b">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <ClipboardList className="h-5 w-5" />
+            <div className="font-semibold">Tasks</div>
+            <Badge variant="secondary" className="text-xs">{tasks.length}</Badge>
+          </div>
+
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" size="icon" onClick={handleNewTask} title="New task" className="h-8 w-8">
+              <Plus className="h-4 w-4" />
+            </Button>
+
+            <Button variant="ghost" size="icon" onClick={onToggleCollapsed} title="Collapse tasks" className="h-8 w-8">
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <Popover>
-            <PopoverTrigger asChild>
-              <Button variant="ghost" size="icon" title="Filters">
-                <Filter className="h-4 w-4" />
+        {/* Horizontal Filter Bar */}
+        <div className="space-y-2">
+          {/* Status Filter - Horizontal Pills */}
+          <div className="flex items-center gap-1 flex-wrap">
+            <Button
+              size="sm"
+              variant={status === "active" ? "default" : "ghost"}
+              onClick={() => setStatus("active")}
+              className="h-7 text-xs px-2"
+            >
+              Active
+            </Button>
+            <Button
+              size="sm"
+              variant={status === "pending" ? "default" : "ghost"}
+              onClick={() => setStatus("pending")}
+              className="h-7 text-xs px-2"
+            >
+              Pending
+            </Button>
+            <Button
+              size="sm"
+              variant={status === "in_progress" ? "default" : "ghost"}
+              onClick={() => setStatus("in_progress")}
+              className="h-7 text-xs px-2"
+            >
+              In Progress
+            </Button>
+            <Button
+              size="sm"
+              variant={status === "completed" ? "default" : "ghost"}
+              onClick={() => setStatus("completed")}
+              className="h-7 text-xs px-2"
+            >
+              Completed
+            </Button>
+          </div>
+
+          {/* Scope and Type Filters */}
+          <div className="flex items-center gap-2 justify-between">
+            <div className="flex gap-1">
+              <Button
+                size="sm"
+                variant={scope === "mine" ? "secondary" : "ghost"}
+                onClick={() => setScope("mine")}
+                disabled={!currentUserId}
+                className="h-6 text-xs px-2"
+              >
+                My
               </Button>
-            </PopoverTrigger>
-            <PopoverContent align="end" className="w-72">
-              <div className="text-sm font-semibold mb-2">Filters</div>
+              <Button
+                size="sm"
+                variant={scope === "all" ? "secondary" : "ghost"}
+                onClick={() => setScope("all")}
+                className="h-6 text-xs px-2"
+              >
+                All
+              </Button>
+            </div>
 
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-sm">Scope</div>
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    variant={scope === "mine" ? "default" : "outline"}
-                    onClick={() => setScope("mine")}
-                    disabled={!currentUserId}
-                  >
-                    My
-                  </Button>
-                  <Button size="sm" variant={scope === "all" ? "default" : "outline"} onClick={() => setScope("all")}>
-                    All
-                  </Button>
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <div className="text-sm font-medium">Status</div>
-                <div className="flex flex-wrap gap-2">
-                  <Button size="sm" variant={status === "active" ? "default" : "outline"} onClick={() => setStatus("active")}>
-                    Active
-                  </Button>
-                  <Button size="sm" variant={status === "pending" ? "default" : "outline"} onClick={() => setStatus("pending")}>
-                    Pending
-                  </Button>
-                  <Button size="sm" variant={status === "in_progress" ? "default" : "outline"} onClick={() => setStatus("in_progress")}>
-                    In Progress
-                  </Button>
-                  <Button size="sm" variant={status === "completed" ? "default" : "outline"} onClick={() => setStatus("completed")}>
-                    Completed
-                  </Button>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between">
-                <div className="text-sm">Type</div>
-                <div className="flex gap-2">
-                  <Button size="sm" variant={type === "all" ? "default" : "outline"} onClick={() => setType("all")}>
-                    All
-                  </Button>
-                  <Button size="sm" variant={type === "GENERAL" ? "default" : "outline"} onClick={() => setType("GENERAL")}>
-                    General
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant={type === "SUPPLIER_VISIT" ? "default" : "outline"}
-                    onClick={() => setType("SUPPLIER_VISIT")}
-                  >
-                    Supplier
-                  </Button>
-                </div>
-              </div>
-            </PopoverContent>
-          </Popover>
-
-          <Button variant="ghost" size="icon" onClick={() => setNewDialogOpen(true)} title="New task">
-            <Plus className="h-5 w-5" />
-          </Button>
-
-          <Button variant="ghost" size="icon" onClick={onToggleCollapsed} title="Collapse tasks">
-            <ChevronRight className="h-5 w-5" />
-          </Button>
+            <div className="flex gap-1">
+              <Button
+                size="sm"
+                variant={type === "all" ? "secondary" : "ghost"}
+                onClick={() => setType("all")}
+                className="h-6 text-xs px-2"
+              >
+                All
+              </Button>
+              <Button
+                size="sm"
+                variant={type === "GENERAL" ? "secondary" : "ghost"}
+                onClick={() => setType("GENERAL")}
+                className="h-6 text-xs px-2"
+              >
+                General
+              </Button>
+              <Button
+                size="sm"
+                variant={type === "SUPPLIER_VISIT" ? "secondary" : "ghost"}
+                onClick={() => setType("SUPPLIER_VISIT")}
+                className="h-6 text-xs px-2"
+              >
+                Supplier
+              </Button>
+            </div>
+          </div>
         </div>
       </div>
 
       {/* List */}
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-y-auto min-h-0">
         {isLoading ? (
           <div className="p-3 text-sm opacity-70">Loading tasks…</div>
         ) : error ? (
@@ -443,21 +337,27 @@ export function TasksSidebar(props: {
           <ul className="divide-y">
             {tasks.map((t) => {
               const isDone = t.status === "completed" || t.status === "cancelled";
+              const initials = t.assignedUser
+                ? getInitials(t.assignedUser.fullName, t.assignedUser.firstName, t.assignedUser.lastName)
+                : null;
+              const taskDate = formatTaskDate(t.scheduledStartAt);
+              const supplierInfo = t.type === "SUPPLIER_VISIT" && t.supplierVisit
+                ? `Supplier: ${t.supplierVisit.supplier?.name || "Unknown"}${
+                    t.supplierVisit.supplierLocation ? ` - ${t.supplierVisit.supplierLocation.name}` : ""
+                  }`
+                : null;
+
               return (
                 <li
                   key={t.id}
-                  className="p-3 flex items-start gap-2 cursor-pointer hover:bg-muted/40"
-                  onClick={() => {
-                    setSelectedTaskId(t.id);
-                    setDetailsOpen(true);
-                  }}
+                  className="p-2 flex items-start gap-2 cursor-pointer hover:bg-muted/40 relative"
+                  onClick={() => handleTaskClick(t.id)}
                   title="Click to view/edit"
                 >
-                  {/* Checkbox only toggles complete/reopen */}
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="mt-0.5"
+                    className="mt-0.5 h-6 w-6 flex-shrink-0"
                     onClick={(e) => {
                       e.stopPropagation();
                       if (isDone) reopenTask.mutate(t.id);
@@ -465,13 +365,29 @@ export function TasksSidebar(props: {
                     }}
                     title={isDone ? "Reopen" : "Complete"}
                   >
-                    {isDone ? <CheckSquare className="h-5 w-5" /> : <Square className="h-5 w-5" />}
+                    {isDone ? <CheckSquare className="h-4 w-4" /> : <Square className="h-4 w-4" />}
                   </Button>
 
-                  <div className="min-w-0 flex-1">
-                    <div className={`text-sm font-medium ${isDone ? "line-through opacity-60" : ""}`}>{t.title}</div>
-                    <div className="text-xs opacity-70">{t.type}</div>
+                  <div className="min-w-0 flex-1 pr-8">
+                    <div className={`text-sm font-medium ${isDone ? "line-through opacity-60" : ""}`}>
+                      {t.title}
+                    </div>
+                    {supplierInfo && (
+                      <div className="text-xs text-muted-foreground mt-0.5">{supplierInfo}</div>
+                    )}
+                    {taskDate && (
+                      <div className="text-xs text-muted-foreground mt-1">{taskDate}</div>
+                    )}
                   </div>
+
+                  {initials && (
+                    <div
+                      className="absolute top-2 right-2 h-7 w-7 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-medium"
+                      title={t.assignedUser?.fullName}
+                    >
+                      {initials}
+                    </div>
+                  )}
                 </li>
               );
             })}
@@ -479,13 +395,11 @@ export function TasksSidebar(props: {
         )}
       </div>
 
-      <NewTaskDialog open={newDialogOpen} onOpenChange={setNewDialogOpen} onCreated={refresh} />
-
-      <TaskDetailsDialog
-        open={detailsOpen}
-        onOpenChange={setDetailsOpen}
+      <TaskDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
         taskId={selectedTaskId}
-        onChanged={refresh}
+        onChanged={handleDialogChange}
       />
     </div>
   );

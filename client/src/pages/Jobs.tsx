@@ -20,6 +20,7 @@ import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import type { Job } from "@shared/schema";
 
 interface EnrichedJob extends Job {
+  locationCompanyName: string;
   locationName: string;
   locationCity: string;
   locationAddress: string;
@@ -112,14 +113,16 @@ export default function Jobs() {
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
       result = result.filter(job => {
+        const companyName = job.locationCompanyName?.toLowerCase() || "";
         const locationName = job.locationName?.toLowerCase() || "";
         const address = job.locationAddress?.toLowerCase() || "";
         const city = job.locationCity?.toLowerCase() || "";
         const jobNumber = formatJobNumber(job.jobNumber).toLowerCase();
         const summary = job.summary?.toLowerCase() || "";
-        return locationName.includes(query) || 
-               address.includes(query) || 
-               city.includes(query) || 
+        return companyName.includes(query) ||
+               locationName.includes(query) ||
+               address.includes(query) ||
+               city.includes(query) ||
                jobNumber.includes(query) ||
                summary.includes(query);
       });
@@ -129,7 +132,12 @@ export default function Jobs() {
       let comparison = 0;
       switch (sortField) {
         case "location":
-          comparison = (a.locationName || "").localeCompare(b.locationName || "");
+          const companyCompare = (a.locationCompanyName || "").localeCompare(b.locationCompanyName || "");
+          if (companyCompare !== 0) {
+            comparison = companyCompare;
+          } else {
+            comparison = (a.locationName || "").localeCompare(b.locationName || "");
+          }
           break;
         case "jobNumber":
           comparison = a.jobNumber - b.jobNumber;
@@ -354,9 +362,9 @@ export default function Jobs() {
                   data-testid={`row-job-${job.id}`}
                 >
                   <TableCell className="font-medium" data-testid={`text-location-${job.id}`}>
-                    <div>{job.locationName || "Unknown"}</div>
-                    {job.locationCity && (
-                      <div className="text-xs text-muted-foreground">{job.locationCity}</div>
+                    <div>{job.locationCompanyName || "Unknown Company"}</div>
+                    {job.locationName && (
+                      <div className="text-xs text-muted-foreground">{job.locationName}</div>
                     )}
                   </TableCell>
                   <TableCell data-testid={`text-jobnumber-${job.id}`}>
