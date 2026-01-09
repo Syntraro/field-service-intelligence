@@ -1,10 +1,10 @@
 import { db } from "../db";
-import { eq, and } from "drizzle-orm";
-import { 
-  users, 
-  technicianProfiles, 
-  workingHours, 
-  userPermissionOverrides 
+import { eq, and, isNull } from "drizzle-orm";
+import {
+  users,
+  technicianProfiles,
+  workingHours,
+  userPermissionOverrides
 } from "@shared/schema";
 import { BaseRepository } from "./base";
 import { cache, CacheKeys, CacheTTL } from "../services/cache";
@@ -12,12 +12,17 @@ import { cache, CacheKeys, CacheTTL } from "../services/cache";
 export class TeamRepository extends BaseRepository {
   /**
    * Get team members for a company
+   * Excludes soft-deleted users (deletedAt is not null)
    */
   async getTeamMembers(companyId: string) {
     return await db
       .select()
       .from(users)
-      .where(and(eq(users.companyId, companyId), eq(users.disabled, false)))
+      .where(and(
+        eq(users.companyId, companyId),
+        eq(users.disabled, false),
+        isNull(users.deletedAt) // Exclude soft-deleted users
+      ))
       .orderBy(users.fullName);
   }
 
@@ -61,12 +66,17 @@ export class TeamRepository extends BaseRepository {
   }
 
   /**
-   * Deactivate team member
+   * Deactivate team member (soft delete)
+   * Sets status to deactivated, disabled to true, and deletedAt timestamp
    */
   async deactivateTeamMember(companyId: string, userId: string) {
     const rows = await db
       .update(users)
-      .set({ status: "deactivated", disabled: true })
+      .set({
+        status: "deactivated",
+        disabled: true,
+        deletedAt: new Date() // Soft delete timestamp
+      })
       .where(and(eq(users.id, userId), eq(users.companyId, companyId)))
       .returning();
 
@@ -74,12 +84,17 @@ export class TeamRepository extends BaseRepository {
   }
 
   /**
-   * Activate team member (sets status to active and clears disabled flag)
+   * Activate team member (restores soft-deleted user)
+   * Sets status to active, clears disabled flag, and clears deletedAt
    */
   async activateTeamMember(companyId: string, userId: string) {
     const rows = await db
       .update(users)
-      .set({ status: "active", disabled: false })
+      .set({
+        status: "active",
+        disabled: false,
+        deletedAt: null // Clear soft delete timestamp
+      })
       .where(and(eq(users.id, userId), eq(users.companyId, companyId)))
       .returning();
 
@@ -240,6 +255,7 @@ export class TeamRepository extends BaseRepository {
 
   /**
    * Get technicians by company ID
+   * Excludes soft-deleted users
    */
   async getTechniciansByCompanyId(companyId: string) {
     return await db
@@ -248,7 +264,8 @@ export class TeamRepository extends BaseRepository {
       .where(
         and(
           eq(users.companyId, companyId),
-          eq(users.disabled, false)
+          eq(users.disabled, false),
+          isNull(users.deletedAt) // Exclude soft-deleted users
         )
       )
       .orderBy(users.fullName);

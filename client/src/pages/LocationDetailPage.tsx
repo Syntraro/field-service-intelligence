@@ -17,21 +17,28 @@ import { PartsSelectorModal } from "@/components/PartsSelectorModal";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { format } from "date-fns";
-import type { Client, CustomerCompany, ClientNote, Job, LocationPMItemTemplate } from "@shared/schema";
+import type { Client, CustomerCompany, ClientNote, Job, LocationPMPartTemplate, LocationEquipment } from "@shared/schema";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 
 export default function LocationDetailPage() {
   const { id, locationId } = useParams<{ id: string; locationId: string }>();
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   
-  // 🔍 TEMPORARY DEBUG - Remove after fixing
-  console.log('🔍 DEBUG - Route params:', { id, locationId });
-  console.log('🔍 DEBUG - Current URL:', window.location.pathname);
- 
   const [jobDialogOpen, setJobDialogOpen] = useState(false);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [partsModalOpen, setPartsModalOpen] = useState(false);
   const [isAddingNote, setIsAddingNote] = useState(false);
+  const [equipmentModalOpen, setEquipmentModalOpen] = useState(false);
+  const [newEquipmentData, setNewEquipmentData] = useState({
+    name: "",
+    equipmentType: "",
+    manufacturer: "",
+    modelNumber: "",
+    serialNumber: "",
+  });
 
   // Collapsible states
   const [pmOpen, setPmOpen] = useState(false);
@@ -70,16 +77,19 @@ export default function LocationDetailPage() {
   });
 
   const { data: notes = [] } = useQuery<ClientNote[]>({
-    queryKey: ["/api/client-notes", locationId],
+    queryKey: ["/api/clients", locationId, "notes"],
     queryFn: async () => {
-      return await apiRequest(`/api/client-notes?clientId=${locationId}`);
+      return await apiRequest(`/api/clients/${locationId}/notes`);
     },
     enabled: Boolean(locationId),
   });
 
-  const { data: equipment = [] } = useQuery<any[]>({
-    queryKey: ["/api/locations", locationId, "equipment"],
-    enabled: false,  // ✅ DISABLE - endpoint doesn't exist
+  const { data: equipment = [] } = useQuery<LocationEquipment[]>({
+    queryKey: ["/api/clients", locationId, "equipment"],
+    queryFn: async () => {
+      return await apiRequest(`/api/clients/${locationId}/equipment`);
+    },
+    enabled: Boolean(locationId),
   });
 
   const { data: pmParts = [] } = useQuery<LocationPMPartTemplate[]>({
@@ -153,13 +163,13 @@ export default function LocationDetailPage() {
 
   const createNoteMutation = useMutation({
     mutationFn: async (noteText: string) => {
-      return await apiRequest(`/api/client-notes`, {
+      return await apiRequest(`/api/clients/${locationId}/notes`, {
         method: "POST",
-        body: JSON.stringify({ clientId: locationId, noteText }),
+        body: JSON.stringify({ noteText }),
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/client-notes", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "notes"] });
       setNewNoteContent("");
       setIsAddingNote(false);
       toast({ title: "Note added" });
@@ -171,13 +181,13 @@ export default function LocationDetailPage() {
 
   const updateNoteMutation = useMutation({
     mutationFn: async ({ noteId, noteText }: { noteId: string; noteText: string }) => {
-      return await apiRequest(`/api/client-notes/${noteId}`, {
+      return await apiRequest(`/api/clients/${locationId}/notes/${noteId}`, {
         method: "PATCH",
         body: JSON.stringify({ noteText }),
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/client-notes", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "notes"] });
       setEditingNoteId(null);
       setEditNoteContent("");
       toast({ title: "Note updated" });
@@ -189,10 +199,10 @@ export default function LocationDetailPage() {
 
   const deleteNoteMutation = useMutation({
     mutationFn: async (noteId: string) => {
-      await apiRequest(`/api/client-notes/${noteId}`, { method: "DELETE" });
+      await apiRequest(`/api/clients/${locationId}/notes/${noteId}`, { method: "DELETE" });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/client-notes", locationId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "notes"] });
       setDeleteNoteId(null);
       toast({ title: "Note deleted" });
     },
@@ -216,6 +226,37 @@ export default function LocationDetailPage() {
     },
     onError: () => {
       toast({ title: "Error", description: "Failed to delete location.", variant: "destructive" });
+    },
+  });
+
+  const createEquipmentMutation = useMutation({
+    mutationFn: async (data: typeof newEquipmentData) => {
+      return await apiRequest(`/api/clients/${locationId}/equipment`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "equipment"] });
+      setEquipmentModalOpen(false);
+      setNewEquipmentData({ name: "", equipmentType: "", manufacturer: "", modelNumber: "", serialNumber: "" });
+      toast({ title: "Equipment added" });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to add equipment.", variant: "destructive" });
+    },
+  });
+
+  const deleteEquipmentMutation = useMutation({
+    mutationFn: async (equipmentId: string) => {
+      await apiRequest(`/api/clients/${locationId}/equipment/${equipmentId}`, { method: "DELETE" });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "equipment"] });
+      toast({ title: "Equipment removed" });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to remove equipment.", variant: "destructive" });
     },
   });
 
@@ -580,7 +621,7 @@ export default function LocationDetailPage() {
                       className="text-xs h-auto p-0 text-primary"
                       onClick={(e) => {
                         e.stopPropagation();
-                        toast({ title: "Coming soon", description: "Equipment management will be available soon." });
+                        setEquipmentModalOpen(true);
                       }}
                       data-testid="button-add-equipment"
                     >
@@ -597,16 +638,25 @@ export default function LocationDetailPage() {
                       No equipment added yet for this location.
                     </p>
                   ) : (
-                    equipment.map((eq: any) => (
+                    equipment.map((eq) => (
                       <div key={eq.id} className="rounded-lg border p-2 text-sm">
                         <div className="flex items-center justify-between">
                           <div>
                             <div className="font-medium">{eq.name}</div>
-                            <div className="text-xs text-muted-foreground">{eq.equipmentType}</div>
+                            <div className="text-xs text-muted-foreground">{eq.equipmentType || "—"}</div>
                           </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                            onClick={() => deleteEquipmentMutation.mutate(eq.id)}
+                            data-testid={`button-delete-equipment-${eq.id}`}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
                         </div>
                         <div className="mt-1 text-xs text-muted-foreground">
-                          {eq.manufacturer} {eq.modelNumber} • S/N: {eq.serialNumber || "—"}
+                          {eq.manufacturer || ""} {eq.modelNumber || ""} {(eq.manufacturer || eq.modelNumber) && eq.serialNumber ? "•" : ""} S/N: {eq.serialNumber || "—"}
                         </div>
                       </div>
                     ))
@@ -816,6 +866,86 @@ export default function LocationDetailPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={equipmentModalOpen} onOpenChange={setEquipmentModalOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add Equipment</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="eq-name">Name *</Label>
+              <Input
+                id="eq-name"
+                placeholder="e.g., RTU #1, Walk-in Freezer"
+                value={newEquipmentData.name}
+                onChange={(e) => setNewEquipmentData({ ...newEquipmentData, name: e.target.value })}
+                data-testid="input-equipment-name"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="eq-type">Equipment Type</Label>
+              <Input
+                id="eq-type"
+                placeholder="e.g., RTU, Furnace, Freezer"
+                value={newEquipmentData.equipmentType}
+                onChange={(e) => setNewEquipmentData({ ...newEquipmentData, equipmentType: e.target.value })}
+                data-testid="input-equipment-type"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="eq-manufacturer">Manufacturer</Label>
+              <Input
+                id="eq-manufacturer"
+                placeholder="e.g., Carrier, Trane"
+                value={newEquipmentData.manufacturer}
+                onChange={(e) => setNewEquipmentData({ ...newEquipmentData, manufacturer: e.target.value })}
+                data-testid="input-equipment-manufacturer"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="eq-model">Model Number</Label>
+                <Input
+                  id="eq-model"
+                  placeholder="Model #"
+                  value={newEquipmentData.modelNumber}
+                  onChange={(e) => setNewEquipmentData({ ...newEquipmentData, modelNumber: e.target.value })}
+                  data-testid="input-equipment-model"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="eq-serial">Serial Number</Label>
+                <Input
+                  id="eq-serial"
+                  placeholder="Serial #"
+                  value={newEquipmentData.serialNumber}
+                  onChange={(e) => setNewEquipmentData({ ...newEquipmentData, serialNumber: e.target.value })}
+                  data-testid="input-equipment-serial"
+                />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setEquipmentModalOpen(false);
+                setNewEquipmentData({ name: "", equipmentType: "", manufacturer: "", modelNumber: "", serialNumber: "" });
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => createEquipmentMutation.mutate(newEquipmentData)}
+              disabled={!newEquipmentData.name.trim() || createEquipmentMutation.isPending}
+              data-testid="button-save-equipment"
+            >
+              {createEquipmentMutation.isPending ? "Adding..." : "Add Equipment"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

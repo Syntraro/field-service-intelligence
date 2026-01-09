@@ -10,9 +10,10 @@ const router = Router();
 // Note: requireAuth and ensureTenantContext middleware already applied globally in routes/index.ts
 router.post("/bulk", requireRole(MANAGER_ROLES), async (req: Request, res: Response) => {
   const companyId = req.companyId;
-  if (!companyId) return res.status(401).json({ error: "Unauthorized" });
+  const userId = req.user?.id;
+  if (!companyId || !userId) return res.status(401).json({ error: "Unauthorized" });
   const items = Array.isArray(req.body) ? req.body : (req.body?.items ?? []);
-  const result = await storage.upsertClientPartsBulk(companyId, items);
+  const result = await storage.upsertClientPartsBulk(companyId, userId, items);
   res.json(result);
 });
 

@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { eq, and, or, like, sql } from "drizzle-orm";
+import { eq, and, or, like, sql, isNull } from "drizzle-orm";
 import { items } from "@shared/schema";
 import type { InsertItem, Item } from "@shared/schema";
 import { BaseRepository } from "./base";
@@ -7,12 +7,17 @@ import { BaseRepository } from "./base";
 export class ItemRepository extends BaseRepository {
   /**
    * Get items with optional search query
+   * Excludes soft-deleted items (deletedAt is not null)
    */
   async getItems(companyId: string, searchQuery?: string): Promise<Item[]> {
     let query = db
       .select()
       .from(items)
-      .where(and(eq(items.companyId, companyId), eq(items.isActive, true)))
+      .where(and(
+        eq(items.companyId, companyId),
+        eq(items.isActive, true),
+        isNull(items.deletedAt) // Exclude soft-deleted items
+      ))
       .$dynamic();
 
     if (searchQuery) {
@@ -106,15 +111,37 @@ export class ItemRepository extends BaseRepository {
 
   /**
    * Delete item (soft delete)
+   * Sets isActive to false and deletedAt timestamp
    */
   async deleteItem(companyId: string, itemId: string): Promise<{ success: boolean }> {
     const rows = await db
       .update(items)
-      .set({ isActive: false, updatedAt: new Date() })
+      .set({
+        isActive: false,
+        deletedAt: new Date(), // Soft delete timestamp
+        updatedAt: new Date()
+      })
       .where(and(eq(items.id, itemId), eq(items.companyId, companyId)))
       .returning();
 
     return { success: rows.length > 0 };
+  }
+
+  /**
+   * Restore a soft-deleted item
+   */
+  async restoreItem(companyId: string, itemId: string): Promise<Item | null> {
+    const rows = await db
+      .update(items)
+      .set({
+        isActive: true,
+        deletedAt: null,
+        updatedAt: new Date()
+      })
+      .where(and(eq(items.id, itemId), eq(items.companyId, companyId)))
+      .returning();
+
+    return rows[0] ?? null;
   }
 }
 

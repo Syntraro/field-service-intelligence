@@ -1,6 +1,6 @@
 import { db } from "../db";
-import { eq, and, sql, desc, or, lt } from "drizzle-orm";
-import { invoices, invoiceLines, clients } from "@shared/schema";
+import { eq, and, sql, desc, or, lt, isNull } from "drizzle-orm";
+import { invoices, invoiceLines, clients, payments } from "@shared/schema";
 import { BaseRepository, parseDecimal } from "./base";
 import { encodeCursor, decodeCursor } from "../utils/cursor";
 import type { PaginationParams } from "../utils/pagination";
@@ -261,7 +261,10 @@ export class InvoiceRepository extends BaseRepository {
     return await db
       .select()
       .from(invoiceLines)
-      .where(eq(invoiceLines.invoiceId, invoiceId))
+      .where(and(
+        eq(invoiceLines.companyId, companyId),
+        eq(invoiceLines.invoiceId, invoiceId)
+      ))
       .orderBy(invoiceLines.lineNumber);
   }
 
@@ -279,7 +282,12 @@ export class InvoiceRepository extends BaseRepository {
     return await db.transaction(async (tx) => {
       const [line] = await tx
         .insert(invoiceLines)
-        .values({ ...lineData, source: lineData?.source ?? "manual", invoiceId })
+        .values({
+          ...lineData,
+          companyId, // Add tenant isolation
+          source: lineData?.source ?? "manual",
+          invoiceId
+        })
         .returning();
 
       // Recalculate totals within same transaction
@@ -303,7 +311,11 @@ export class InvoiceRepository extends BaseRepository {
     return await db.transaction(async (tx) => {
       const [deleted] = await tx
         .delete(invoiceLines)
-        .where(and(eq(invoiceLines.id, lineId), eq(invoiceLines.invoiceId, invoiceId)))
+        .where(and(
+          eq(invoiceLines.companyId, companyId), // Tenant isolation
+          eq(invoiceLines.id, lineId),
+          eq(invoiceLines.invoiceId, invoiceId)
+        ))
         .returning();
 
       if (!deleted) {
@@ -328,7 +340,10 @@ export class InvoiceRepository extends BaseRepository {
         total: sql<number>`COALESCE(SUM(${invoiceLines.lineSubtotal} * (1 + ${invoiceLines.taxRate})), 0)`,
       })
       .from(invoiceLines)
-      .where(eq(invoiceLines.invoiceId, invoiceId));
+      .where(and(
+        eq(invoiceLines.companyId, companyId), // Tenant isolation
+        eq(invoiceLines.invoiceId, invoiceId)
+      ));
 
     const totals = rows[0] ?? { subtotal: 0, taxTotal: 0, total: 0 };
 
@@ -354,7 +369,10 @@ export class InvoiceRepository extends BaseRepository {
         total: sql<number>`COALESCE(SUM(${invoiceLines.lineSubtotal} * (1 + ${invoiceLines.taxRate})), 0)`,
       })
       .from(invoiceLines)
-      .where(eq(invoiceLines.invoiceId, invoiceId));
+      .where(and(
+        eq(invoiceLines.companyId, companyId), // Tenant isolation
+        eq(invoiceLines.invoiceId, invoiceId)
+      ));
 
     const totals = rows[0] ?? { subtotal: 0, taxTotal: 0, total: 0 };
 
@@ -392,7 +410,11 @@ export class InvoiceRepository extends BaseRepository {
       // Step 1: Delete ALL existing invoice lines (idempotent - always start fresh)
       await tx
         .delete(invoiceLines)
-        .where(and(eq(invoiceLines.invoiceId, invoiceId), eq(invoiceLines.source, "job")));
+        .where(and(
+          eq(invoiceLines.companyId, companyId), // Tenant isolation
+          eq(invoiceLines.invoiceId, invoiceId),
+          eq(invoiceLines.source, "job")
+        ));
 
       // Step 2: Get current job parts
 
@@ -400,7 +422,10 @@ export class InvoiceRepository extends BaseRepository {
       const [{ maxLine }] = await tx
         .select({ maxLine: sql<number>`COALESCE(MAX(${invoiceLines.lineNumber}), 0)` })
         .from(invoiceLines)
-        .where(eq(invoiceLines.invoiceId, invoiceId));
+        .where(and(
+          eq(invoiceLines.companyId, companyId), // Tenant isolation
+          eq(invoiceLines.invoiceId, invoiceId)
+        ));
       const baseLineNumber = Number(maxLine || 0);
 
       // Step 2: Get current job parts
@@ -408,6 +433,7 @@ export class InvoiceRepository extends BaseRepository {
         .select()
         .from(jobParts)
         .where(and(
+          eq(jobParts.companyId, companyId), // Tenant isolation
           eq(jobParts.jobId, invoice.jobId!),
           eq(jobParts.isActive, true)
         ))
@@ -420,8 +446,9 @@ export class InvoiceRepository extends BaseRepository {
           const qty = parseFloat(part.quantity?.toString() || "1");
           const price = parseFloat(String(part.unitPrice || "0"));
           const lineSubtotal = qty * price;
-          
+
           return {
+            companyId, // Add tenant isolation
             invoiceId,
             lineNumber: baseLineNumber + index + 1,
             description: part.description,

@@ -145,7 +145,7 @@ router.get("/:jobId/parts", asyncHandler(async (req: AuthedRequest, res: Respons
   const job = await storage.getJob(companyId, req.params.jobId);
   if (!job) throw createError(404, "Job not found");
 
-  const allParts = await storage.getJobParts(req.params.jobId);
+  const allParts = await storage.getJobParts(companyId, req.params.jobId);
 
   // Apply pagination
   const offset = params.offset ?? 0;
@@ -228,7 +228,7 @@ router.patch("/:jobId/parts/reorder", requireRole(MANAGER_ROLES), asyncHandler(a
 
   const { parts } = validateSchema(reorderJobPartsSchema, req.body);
 
-  await storage.reorderJobParts(req.params.jobId, parts);
+  await storage.reorderJobParts(companyId, req.params.jobId, parts);
   res.json({ success: true });
 }));
 
@@ -246,7 +246,7 @@ router.get("/:jobId/equipment", asyncHandler(async (req: AuthedRequest, res: Res
   const job = await storage.getJob(companyId, req.params.jobId);
   if (!job) throw createError(404, "Job not found");
 
-  const allEquipment = await storage.getJobEquipment(req.params.jobId);
+  const allEquipment = await storage.getJobEquipment(companyId, req.params.jobId);
 
   // Apply pagination
   const offset = params.offset ?? 0;

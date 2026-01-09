@@ -58,6 +58,11 @@ export interface IStorage {
   getClientEquipment: typeof clientRepository.getClientEquipment;
   createEquipment: typeof clientRepository.createEquipment;
   cleanupInvalidCalendarAssignments: typeof clientRepository.cleanupInvalidCalendarAssignments;
+  getLocationEquipment: typeof clientRepository.getLocationEquipment;
+  getLocationEquipmentById: typeof clientRepository.getLocationEquipmentById;
+  createLocationEquipment: typeof clientRepository.createLocationEquipment;
+  updateLocationEquipment: typeof clientRepository.updateLocationEquipment;
+  deleteLocationEquipment: typeof clientRepository.deleteLocationEquipment;
 
   // Job operations
   getJobs: typeof jobRepository.getJobs;
@@ -98,12 +103,14 @@ export interface IStorage {
   createItem: typeof itemRepository.createItem;
   updateItem: typeof itemRepository.updateItem;
   deleteItem: typeof itemRepository.deleteItem;
+  restoreItem: typeof itemRepository.restoreItem;
 
   // Team operations
   getTeamMembers: typeof teamRepository.getTeamMembers;
   getTeamMember: typeof teamRepository.getTeamMember;
   updateTeamMember: typeof teamRepository.updateTeamMember;
   deactivateTeamMember: typeof teamRepository.deactivateTeamMember;
+  activateTeamMember: typeof teamRepository.activateTeamMember;
   getTechnicianProfile: typeof teamRepository.getTechnicianProfile;
   upsertTechnicianProfile: typeof teamRepository.upsertTechnicianProfile;
   getWorkingHours: typeof teamRepository.getWorkingHours;
@@ -177,6 +184,11 @@ export const storage: IStorage = {
   getClientEquipment: clientRepository.getClientEquipment.bind(clientRepository),
   createEquipment: clientRepository.createEquipment.bind(clientRepository),
   cleanupInvalidCalendarAssignments: clientRepository.cleanupInvalidCalendarAssignments.bind(clientRepository),
+  getLocationEquipment: clientRepository.getLocationEquipment.bind(clientRepository),
+  getLocationEquipmentById: clientRepository.getLocationEquipmentById.bind(clientRepository),
+  createLocationEquipment: clientRepository.createLocationEquipment.bind(clientRepository),
+  updateLocationEquipment: clientRepository.updateLocationEquipment.bind(clientRepository),
+  deleteLocationEquipment: clientRepository.deleteLocationEquipment.bind(clientRepository),
 
   // Job operations
   getJobs: jobRepository.getJobs.bind(jobRepository),
@@ -217,12 +229,14 @@ export const storage: IStorage = {
   createItem: itemRepository.createItem.bind(itemRepository),
   updateItem: itemRepository.updateItem.bind(itemRepository),
   deleteItem: itemRepository.deleteItem.bind(itemRepository),
+  restoreItem: itemRepository.restoreItem.bind(itemRepository),
 
   // Team operations
   getTeamMembers: teamRepository.getTeamMembers.bind(teamRepository),
   getTeamMember: teamRepository.getTeamMember.bind(teamRepository),
   updateTeamMember: teamRepository.updateTeamMember.bind(teamRepository),
   deactivateTeamMember: teamRepository.deactivateTeamMember.bind(teamRepository),
+  activateTeamMember: teamRepository.activateTeamMember.bind(teamRepository),
   getTechnicianProfile: teamRepository.getTechnicianProfile.bind(teamRepository),
   upsertTechnicianProfile: teamRepository.upsertTechnicianProfile.bind(teamRepository),
   getWorkingHours: teamRepository.getWorkingHours.bind(teamRepository),

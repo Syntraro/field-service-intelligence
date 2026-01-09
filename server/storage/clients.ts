@@ -1,7 +1,7 @@
 import { db } from "../db";
-import { eq, and, inArray, sql, or, ilike, gte, lte } from "drizzle-orm";
-import { clients, clientParts, equipment, calendarAssignments } from "@shared/schema";
-import type { InsertClient, Client } from "@shared/schema";
+import { eq, and, inArray, sql, or, ilike, gte, lte, isNull, desc } from "drizzle-orm";
+import { clients, clientParts, equipment, calendarAssignments, locationEquipment } from "@shared/schema";
+import type { InsertClient, Client, InsertLocationEquipment, UpdateLocationEquipment } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset, escapeLike } from "./base";
 
 export interface PaginationOptions {
@@ -284,7 +284,7 @@ export class ClientRepository extends BaseRepository {
 
  /**
    * Delete client (soft delete)
-   * Sets inactive flag instead of removing from database
+   * Sets inactive flag and deletedAt instead of removing from database
    * This preserves referential integrity and allows recovery
    */
   async deleteClient(companyId: string, clientId: string): Promise<boolean> {
@@ -293,9 +293,10 @@ export class ClientRepository extends BaseRepository {
 
     const rows = await db
       .update(clients)
-      .set({ 
+      .set({
         inactive: true,
-        updatedAt: new Date() 
+        deletedAt: new Date(), // Soft delete timestamp
+        updatedAt: new Date()
       })
       .where(and(eq(clients.id, clientId), eq(clients.companyId, companyId)))
       .returning();
@@ -305,7 +306,7 @@ export class ClientRepository extends BaseRepository {
 
   /**
    * Bulk delete clients (soft delete)
-   * Sets inactive flag on multiple clients at once
+   * Sets inactive flag and deletedAt on multiple clients at once
    */
   async deleteClients(
     companyId: string,
@@ -319,9 +320,10 @@ export class ClientRepository extends BaseRepository {
 
     const deleted = await db
       .update(clients)
-      .set({ 
+      .set({
         inactive: true,
-        updatedAt: new Date() 
+        deletedAt: new Date(), // Soft delete timestamp
+        updatedAt: new Date()
       })
       .where(and(inArray(clients.id, clientIds), eq(clients.companyId, companyId)))
       .returning();
@@ -514,6 +516,98 @@ async getCalendarAssignmentsInRange(
       .values({ ...data, companyId, userId })
       .returning();
     return rows[0];
+  }
+
+  /**
+   * Get location equipment list
+   */
+  async getLocationEquipment(companyId: string, locationId: string) {
+    this.assertCompanyId(companyId);
+    return await db
+      .select()
+      .from(locationEquipment)
+      .where(
+        and(
+          eq(locationEquipment.companyId, companyId),
+          eq(locationEquipment.locationId, locationId),
+          eq(locationEquipment.isActive, true)
+        )
+      )
+      .orderBy(desc(locationEquipment.createdAt));
+  }
+
+  /**
+   * Get single location equipment item
+   */
+  async getLocationEquipmentById(companyId: string, equipmentId: string) {
+    this.assertCompanyId(companyId);
+    const rows = await db
+      .select()
+      .from(locationEquipment)
+      .where(
+        and(
+          eq(locationEquipment.companyId, companyId),
+          eq(locationEquipment.id, equipmentId)
+        )
+      )
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Create location equipment
+   */
+  async createLocationEquipment(
+    companyId: string,
+    locationId: string,
+    data: Omit<InsertLocationEquipment, "companyId" | "locationId">
+  ) {
+    this.assertCompanyId(companyId);
+    const rows = await db
+      .insert(locationEquipment)
+      .values({ ...data, companyId, locationId })
+      .returning();
+    return rows[0];
+  }
+
+  /**
+   * Update location equipment
+   */
+  async updateLocationEquipment(
+    companyId: string,
+    equipmentId: string,
+    data: UpdateLocationEquipment
+  ) {
+    this.assertCompanyId(companyId);
+    const rows = await db
+      .update(locationEquipment)
+      .set({ ...data, updatedAt: new Date() })
+      .where(
+        and(
+          eq(locationEquipment.companyId, companyId),
+          eq(locationEquipment.id, equipmentId)
+        )
+      )
+      .returning();
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Delete location equipment (soft delete)
+   */
+  async deleteLocationEquipment(companyId: string, equipmentId: string) {
+    this.assertCompanyId(companyId);
+    const rows = await db
+      .update(locationEquipment)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(
+        and(
+          eq(locationEquipment.companyId, companyId),
+          eq(locationEquipment.id, equipmentId)
+        )
+      )
+      .returning();
+    return rows[0] ?? null;
   }
 
   /**

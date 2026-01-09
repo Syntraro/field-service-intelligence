@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Request, Response, NextFunction } from "express";
 import { storage } from "../storage/index";
-import { insertClientSchema, clients, jobs, invoices, customerCompanies } from "@shared/schema";
+import { insertClientSchema, clients, jobs, invoices, customerCompanies, insertLocationEquipmentSchema, updateLocationEquipmentSchema } from "@shared/schema";
 import { z } from "zod";
 import type { Client } from "@shared/schema";
 import { db } from "../db";
@@ -900,6 +900,80 @@ router.post("/bulk-delete", requireRole(MANAGER_ROLES), asyncHandler(async (req:
     deletedCount: result.deletedIds.length,
     notFoundCount: result.notFoundIds.length
   });
+}));
+
+// ========================================
+// LOCATION EQUIPMENT ROUTES
+// ========================================
+
+// GET /api/clients/:locationId/equipment - List location equipment
+router.get("/:locationId/equipment", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const { locationId } = req.params;
+
+  const location = await storage.getClient(companyId, locationId);
+  if (!location) {
+    throw createError(404, "Location not found");
+  }
+
+  const equipment = await storage.getLocationEquipment(companyId, locationId);
+  res.json(equipment);
+}));
+
+// POST /api/clients/:locationId/equipment - Create location equipment
+router.post("/:locationId/equipment", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const { locationId } = req.params;
+
+  const location = await storage.getClient(companyId, locationId);
+  if (!location) {
+    throw createError(404, "Location not found");
+  }
+
+  const createSchema = insertLocationEquipmentSchema.omit({ companyId: true, locationId: true });
+  const data = validateSchema(createSchema, req.body);
+
+  const created = await storage.createLocationEquipment(companyId, locationId, data);
+  res.status(201).json(created);
+}));
+
+// PATCH /api/clients/:locationId/equipment/:equipmentId - Update location equipment
+router.patch("/:locationId/equipment/:equipmentId", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const { locationId, equipmentId } = req.params;
+
+  const location = await storage.getClient(companyId, locationId);
+  if (!location) {
+    throw createError(404, "Location not found");
+  }
+
+  const existing = await storage.getLocationEquipmentById(companyId, equipmentId);
+  if (!existing || existing.locationId !== locationId) {
+    throw createError(404, "Equipment not found");
+  }
+
+  const data = validateSchema(updateLocationEquipmentSchema, req.body);
+  const updated = await storage.updateLocationEquipment(companyId, equipmentId, data);
+  res.json(updated);
+}));
+
+// DELETE /api/clients/:locationId/equipment/:equipmentId - Delete location equipment
+router.delete("/:locationId/equipment/:equipmentId", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const { locationId, equipmentId } = req.params;
+
+  const location = await storage.getClient(companyId, locationId);
+  if (!location) {
+    throw createError(404, "Location not found");
+  }
+
+  const existing = await storage.getLocationEquipmentById(companyId, equipmentId);
+  if (!existing || existing.locationId !== locationId) {
+    throw createError(404, "Equipment not found");
+  }
+
+  await storage.deleteLocationEquipment(companyId, equipmentId);
+  res.json({ success: true });
 }));
 
 export default router;

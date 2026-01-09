@@ -1,0 +1,208 @@
+Here’s a Replit Agent prompt tailored to your exact LocationDetailPage.tsx so it will (1) enable + wire equipment (currently hard-disabled + “Coming soon”) and (2) fix notes save (likely a clientId/locationId mismatch).
+
+Key evidence from your page:
+
+Equipment query is disabled (enabled: false) because it assumes the endpoint doesn’t exist 
+
+LocationDetailPage
+
+“+ Add” equipment button just shows a toast (“Coming soon”) 
+
+LocationDetailPage
+
+Notes are loaded via /api/client-notes?clientId=${locationId} (locationId is being passed as clientId) 
+
+LocationDetailPage
+
+Notes are created via POST /api/client-notes with { clientId: locationId, noteText } 
+
+LocationDetailPage
+
+That’s the most likely reason notes fail: the backend probably expects a real clientId (parent client/company), but this page is sending locationId.
+
+✅ Replit Agent Prompt (copy/paste)
+
+You are working in this repo’s Client Location Detail page: LocationDetailPage.tsx.
+Objective: Fix notes saving and enable “Add Equipment” for the location, without changing the UI layout.
+
+Hard constraints
+
+Do not change the UI layout (no rearranging cards/sections, spacing, or structure).
+
+Keep the same collapsibles and existing components.
+
+Must remain multi-tenant safe: every DB op must filter by companyId.
+
+1) Fix “Notes” (currently errors on save)
+Current behavior in LocationDetailPage.tsx
+
+Notes fetch uses: GET /api/client-notes?clientId=${locationId} 
+
+LocationDetailPage
+
+Notes create uses: POST /api/client-notes with { clientId: locationId, noteText } 
+
+LocationDetailPage
+
+This is likely wrong: locationId is being sent as clientId.
+
+Tasks
+
+Locate backend routes for notes:
+
+Search: client-notes, router.*client-notes, ClientNote, noteText, clientId.
+
+Determine what the notes system actually targets:
+
+If notes are intended for locations, update backend + schema to accept locationId (recommended for this page).
+
+If notes are intended only for clients, then the frontend must pass the real parent client id (route param id or effectiveParentCompanyId / the correct client record).
+
+Implement one of these consistent solutions:
+
+Option A (recommended): Location Notes
+
+Backend endpoints:
+
+GET /api/location-notes?locationId=:locationId
+
+POST /api/location-notes body { locationId, noteText }
+
+PATCH /api/location-notes/:noteId body { noteText }
+
+DELETE /api/location-notes/:noteId
+
+Storage must enforce: companyId AND locationId on reads/writes.
+
+Update LocationDetailPage.tsx:
+
+Replace /api/client-notes?... calls with /api/location-notes?...
+
+Keep UI identical; only change endpoints + payload keys.
+
+Option B: Client Notes (if that’s how the app is designed)
+
+Keep endpoints /api/client-notes
+
+Fix frontend to pass the correct clientId:
+
+Use the parent client/company id (NOT locationId)
+
+Use route param id only if it truly represents the client id used by notes routes.
+
+Ensure the GET uses the same id: /api/client-notes?clientId=${REAL_PARENT_CLIENT_ID}
+
+Make sure query invalidation matches the queryKey:
+
+QueryKey is [ "/api/client-notes", locationId ] today 
+
+LocationDetailPage
+
+If you switch to location notes, rename the queryKey to match, e.g. [ "/api/location-notes", locationId ].
+
+Add logging only temporarily; remove the debug console logs at the top of the page after confirming fix (there are “TEMPORARY DEBUG” logs). 
+
+LocationDetailPage
+
+Acceptance:
+
+Create note succeeds, persists on refresh.
+
+Notes load correctly for the location detail page.
+
+Multi-tenant safe.
+
+2) Enable Equipment for location (wire “+ Add” and list)
+Current behavior in LocationDetailPage.tsx
+
+Equipment query is disabled: enabled: false 
+
+LocationDetailPage
+
+Button shows toast “Coming soon” 
+
+LocationDetailPage
+
+UI already renders an equipment list if equipment.length > 0 
+
+LocationDetailPage
+
+Tasks
+
+Search backend for existing equipment feature:
+
+Search: equipment, client_equipment, location_equipment, equipmentType, serialNumber, modelNumber, manufacturer, locationId.
+
+If equipment endpoints already exist:
+
+Wire the query + mutation to those endpoints.
+
+Enable the equipment query (remove enabled: false) and provide queryFn that calls apiRequest.
+
+If equipment endpoints do NOT exist:
+
+Implement location equipment backend + storage + schema.
+
+Recommended REST shape (location scoped)
+
+GET /api/locations/:locationId/equipment
+
+POST /api/locations/:locationId/equipment
+
+PATCH /api/locations/:locationId/equipment/:equipmentId
+
+DELETE /api/locations/:locationId/equipment/:equipmentId
+
+Storage rules:
+
+getLocationEquipment(companyId, locationId)
+
+createLocationEquipment(companyId, locationId, data)
+
+updates/deletes must filter by companyId AND locationId AND equipmentId
+
+Schema:
+
+Either reuse existing equipment table or create location_equipment with at least:
+
+id, companyId, locationId
+
+name, equipmentType
+
+manufacturer, modelNumber, serialNumber
+
+createdAt, updatedAt
+
+Add indexes: (companyId, locationId).
+
+Frontend wiring (keep UI unchanged):
+
+Replace the “Coming soon” toast handler with opening an Add Equipment modal/drawer.
+
+If an equipment modal already exists in the repo, reuse it.
+
+If none exists, create a small modal component that captures:
+
+name, equipmentType, manufacturer, modelNumber, serialNumber
+
+On submit:
+
+call POST
+
+invalidate equipment queryKey [ "/api/locations", locationId, "equipment" ] and refetch.
+
+Acceptance:
+
+“+ Add” creates equipment.
+
+Equipment list renders immediately after save.
+
+Page layout unchanged.
+
+3) Deliverables
+
+Provide full file replacements for all changed files.
+
+List endpoints used/added and payload shapes.
+
+Confirm tenant scoping (companyId) is enforced on all equipment + notes DB operations.

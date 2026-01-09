@@ -407,19 +407,21 @@ export class JobRepository extends BaseRepository {
   /**
    * Get job parts
    */
-  async getJobParts(jobId: string): Promise<JobPart[]> {
+  async getJobParts(companyId: string, jobId: string): Promise<JobPart[]> {
+    this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
     return await db
       .select()
       .from(jobParts)
-      .where(and(eq(jobParts.jobId, jobId), eq(jobParts.isActive, true)))
+      .where(and(
+        eq(jobParts.companyId, companyId), // Tenant isolation
+        eq(jobParts.jobId, jobId),
+        eq(jobParts.isActive, true)
+      ))
       .orderBy(jobParts.sortOrder);
   }
 
-  /**
-   * Create job part
-   */
   /**
    * Create job part
    */
@@ -435,7 +437,11 @@ export class JobRepository extends BaseRepository {
 
     const rows = await db
       .insert(jobParts)
-      .values({ ...partData, jobId })
+      .values({
+        ...partData,
+        companyId, // Add tenant isolation
+        jobId
+      })
       .returning();
 
     return rows[0];
@@ -444,38 +450,18 @@ export class JobRepository extends BaseRepository {
   /**
    * Update job part
    */
-  /**
-   * Update job part
-   */
   async updateJobPart(companyId: string, partId: string, patch: Partial<InsertJobPart>): Promise<JobPart | null> {
     this.assertCompanyId(companyId);
     this.validateUUID(partId, "partId");
 
-    // Tenant ownership check:
-    // - If jobParts has companyId, filter directly
-    // - Otherwise, join through jobs (jobParts -> jobs) and verify jobs.companyId
-    const jpCompanyCol = (jobParts as any).companyId;
-    const ownership = jpCompanyCol
-      ? await db
-          .select({ id: jobParts.id })
-          .from(jobParts)
-          .where(and(eq(jobParts.id, partId), eq(jpCompanyCol, companyId)))
-          .limit(1)
-      : await db
-          .select({ id: jobParts.id })
-          .from(jobParts)
-          .innerJoin(jobs, eq(jobParts.jobId, jobs.id))
-          .where(and(eq(jobParts.id, partId), eq(jobs.companyId, companyId)))
-          .limit(1);
-
-    if (!ownership[0]) {
-      return null;
-    }
-
+    // Direct tenant isolation via companyId column
     const rows = await db
       .update(jobParts)
       .set({ ...patch, updatedAt: new Date() })
-      .where(eq(jobParts.id, partId))
+      .where(and(
+        eq(jobParts.companyId, companyId), // Tenant isolation
+        eq(jobParts.id, partId)
+      ))
       .returning();
 
     return rows[0] ?? null;
@@ -484,35 +470,18 @@ export class JobRepository extends BaseRepository {
   /**
    * Delete job part (soft delete)
    */
-  /**
-   * Delete job part (soft delete)
-   */
   async deleteJobPart(companyId: string, partId: string): Promise<boolean> {
     this.assertCompanyId(companyId);
     this.validateUUID(partId, "partId");
 
-    const jpCompanyCol = (jobParts as any).companyId;
-    const ownership = jpCompanyCol
-      ? await db
-          .select({ id: jobParts.id })
-          .from(jobParts)
-          .where(and(eq(jobParts.id, partId), eq(jpCompanyCol, companyId)))
-          .limit(1)
-      : await db
-          .select({ id: jobParts.id })
-          .from(jobParts)
-          .innerJoin(jobs, eq(jobParts.jobId, jobs.id))
-          .where(and(eq(jobParts.id, partId), eq(jobs.companyId, companyId)))
-          .limit(1);
-
-    if (!ownership[0]) {
-      return false;
-    }
-
+    // Direct tenant isolation via companyId column
     const rows = await db
       .update(jobParts)
       .set({ isActive: false, updatedAt: new Date() })
-      .where(eq(jobParts.id, partId))
+      .where(and(
+        eq(jobParts.companyId, companyId), // Tenant isolation
+        eq(jobParts.id, partId)
+      ))
       .returning();
 
     return rows.length > 0;
@@ -522,9 +491,11 @@ export class JobRepository extends BaseRepository {
    * Reorder job parts
    */
   async reorderJobParts(
+    companyId: string,
     jobId: string,
     parts: Array<{ id: string; sortOrder: number }>
   ): Promise<void> {
+    this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
     await db.transaction(async (tx) => {
@@ -533,7 +504,11 @@ export class JobRepository extends BaseRepository {
         await tx
           .update(jobParts)
           .set({ sortOrder: part.sortOrder })
-          .where(and(eq(jobParts.id, part.id), eq(jobParts.jobId, jobId)));
+          .where(and(
+            eq(jobParts.companyId, companyId), // Tenant isolation
+            eq(jobParts.id, part.id),
+            eq(jobParts.jobId, jobId)
+          ));
       }
     });
   }
@@ -628,18 +603,19 @@ export class JobRepository extends BaseRepository {
   /**
    * Get job equipment
    */
-  async getJobEquipment(jobId: string) {
+  async getJobEquipment(companyId: string, jobId: string) {
+    this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
     return await db
       .select()
       .from(jobEquipment)
-      .where(eq(jobEquipment.jobId, jobId));
+      .where(and(
+        eq(jobEquipment.companyId, companyId), // Tenant isolation
+        eq(jobEquipment.jobId, jobId)
+      ));
   }
 
-  /**
-   * Create job equipment link
-   */
   /**
    * Create job equipment link
    */
@@ -659,7 +635,11 @@ export class JobRepository extends BaseRepository {
 
     const rows = await db
       .insert(jobEquipment)
-      .values({ ...data, jobId })
+      .values({
+        ...data,
+        companyId, // Add tenant isolation
+        jobId
+      })
       .returning();
 
     return rows[0];
@@ -668,35 +648,18 @@ export class JobRepository extends BaseRepository {
   /**
    * Update job equipment
    */
-  /**
-   * Update job equipment
-   */
   async updateJobEquipment(companyId: string, jobEquipmentId: string, patch: any) {
     this.assertCompanyId(companyId);
     this.validateUUID(jobEquipmentId, "jobEquipmentId");
 
-    const jeCompanyCol = (jobEquipment as any).companyId;
-    const ownership = jeCompanyCol
-      ? await db
-          .select({ id: jobEquipment.id })
-          .from(jobEquipment)
-          .where(and(eq(jobEquipment.id, jobEquipmentId), eq(jeCompanyCol, companyId)))
-          .limit(1)
-      : await db
-          .select({ id: jobEquipment.id })
-          .from(jobEquipment)
-          .innerJoin(jobs, eq(jobEquipment.jobId, jobs.id))
-          .where(and(eq(jobEquipment.id, jobEquipmentId), eq(jobs.companyId, companyId)))
-          .limit(1);
-
-    if (!ownership[0]) {
-      return null;
-    }
-
+    // Direct tenant isolation via companyId column
     const rows = await db
       .update(jobEquipment)
       .set({ ...patch, updatedAt: new Date() })
-      .where(eq(jobEquipment.id, jobEquipmentId))
+      .where(and(
+        eq(jobEquipment.companyId, companyId), // Tenant isolation
+        eq(jobEquipment.id, jobEquipmentId)
+      ))
       .returning();
 
     return rows[0] ?? null;
@@ -705,34 +668,17 @@ export class JobRepository extends BaseRepository {
   /**
    * Delete job equipment link
    */
-  /**
-   * Delete job equipment link
-   */
   async deleteJobEquipment(companyId: string, jobEquipmentId: string): Promise<boolean> {
     this.assertCompanyId(companyId);
     this.validateUUID(jobEquipmentId, "jobEquipmentId");
 
-    const jeCompanyCol = (jobEquipment as any).companyId;
-    const ownership = jeCompanyCol
-      ? await db
-          .select({ id: jobEquipment.id })
-          .from(jobEquipment)
-          .where(and(eq(jobEquipment.id, jobEquipmentId), eq(jeCompanyCol, companyId)))
-          .limit(1)
-      : await db
-          .select({ id: jobEquipment.id })
-          .from(jobEquipment)
-          .innerJoin(jobs, eq(jobEquipment.jobId, jobs.id))
-          .where(and(eq(jobEquipment.id, jobEquipmentId), eq(jobs.companyId, companyId)))
-          .limit(1);
-
-    if (!ownership[0]) {
-      return false;
-    }
-
+    // Direct tenant isolation via companyId column
     const result = await db
       .delete(jobEquipment)
-      .where(eq(jobEquipment.id, jobEquipmentId))
+      .where(and(
+        eq(jobEquipment.companyId, companyId), // Tenant isolation
+        eq(jobEquipment.id, jobEquipmentId)
+      ))
       .returning();
 
     return result.length > 0;
@@ -741,23 +687,18 @@ export class JobRepository extends BaseRepository {
   /**
    * Get location equipment item
    */
-  /**
-   * Get location equipment item
-   */
   async getLocationEquipmentItem(companyId: string, equipmentId: string) {
     this.assertCompanyId(companyId);
     this.validateUUID(equipmentId, "equipmentId");
 
-    const companyCol = (locationEquipment as any).companyId;
-
-    const whereCond = companyCol
-      ? and(eq(locationEquipment.id, equipmentId), eq(companyCol, companyId))
-      : eq(locationEquipment.id, equipmentId);
-
+    // Direct tenant isolation via companyId column
     const rows = await db
       .select()
       .from(locationEquipment)
-      .where(whereCond as any)
+      .where(and(
+        eq(locationEquipment.companyId, companyId), // Tenant isolation
+        eq(locationEquipment.id, equipmentId)
+      ))
       .limit(1);
 
     return rows[0] ?? null;

@@ -53,6 +53,7 @@ export const users = pgTable("users", {
   disabled: boolean("disabled").notNull().default(false),
   useCustomSchedule: boolean("use_custom_schedule").notNull().default(false), // If false, use company default
   lastLoginAt: timestamp("last_login_at"),
+  deletedAt: timestamp("deleted_at"), // Soft delete timestamp
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
@@ -141,6 +142,8 @@ export const customerCompanies = pgTable("customer_companies", {
   qboCustomerId: text("qbo_customer_id"), // QBO Customer.Id
   qboSyncToken: text("qbo_sync_token"), // QBO Customer.SyncToken (required for updates)
   qboLastSyncedAt: timestamp("qbo_last_synced_at"),
+  // Soft delete
+  deletedAt: timestamp("deleted_at"),
   // Metadata
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
@@ -164,7 +167,7 @@ export type CustomerCompany = typeof customerCompanies.$inferSelect;
 export const clientLocations = pgTable("client_locations", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }), // Creator - nullable, set null on user delete
   // Parent company reference (optional - if null, this is a standalone client)
   parentCompanyId: varchar("parent_company_id").references(() => customerCompanies.id, { onDelete: "set null" }),
   companyName: text("company_name").notNull(),
@@ -196,6 +199,8 @@ export const clientLocations = pgTable("client_locations", {
   qboLastSyncedAt: timestamp("qbo_last_synced_at"),
   // Optimistic locking
   version: integer("version").notNull().default(0), // Incremented on every update
+  // Soft delete
+  deletedAt: timestamp("deleted_at"),
   // Metadata
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
@@ -221,7 +226,7 @@ export type InsertClientLocation = z.infer<typeof insertClientLocationSchema>;
 export const items = pgTable("items", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }), // Creator - nullable, set null on user delete
   type: text("type").notNull(), // "product" or "service"
   // Item fields (products/services - QBO aligned)
   name: text("name"),
@@ -242,6 +247,8 @@ export const items = pgTable("items", {
   // QBO sync fields for Items
   qboItemId: text("qbo_item_id"), // QBO Item id if/when synced
   qboSyncToken: text("qbo_sync_token"), // QBO sync token if needed
+  // Soft delete
+  deletedAt: timestamp("deleted_at"),
   // Metadata
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
@@ -260,8 +267,8 @@ export type Item = typeof items.$inferSelect;
 export const clientParts = pgTable("client_parts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }), // Creator - nullable
+  clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if parts exist
   partId: varchar("part_id").notNull().references(() => items.id, { onDelete: "cascade" }),
   quantity: integer("quantity").notNull(),
 });
@@ -278,8 +285,8 @@ export type ClientPart = typeof clientParts.$inferSelect;
 export const maintenanceRecords = pgTable("maintenance_records", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }), // Creator - nullable
+  clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if records exist
   dueDate: date("due_date").notNull(), // FIXED: Changed from text() to date()
   completedAt: timestamp("completed_at"), // FIXED: Changed from text() to timestamp()
 });
@@ -296,8 +303,8 @@ export type MaintenanceRecord = typeof maintenanceRecords.$inferSelect;
 export const calendarAssignments = pgTable("calendar_assignments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }), // Creator - nullable
+  clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if assignments exist
   jobNumber: integer("job_number").notNull(),
   assignedTechnicianIds: varchar("assigned_technician_ids").array(),
   year: integer("year").notNull(),
@@ -357,14 +364,17 @@ export type CalendarAssignment = typeof calendarAssignments.$inferSelect;
 export const equipment = pgTable("equipment", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }), // Creator - nullable
+  clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if equipment exists
   name: text("name").notNull(),
   type: text("type"),
   modelNumber: text("model_number"),
   serialNumber: text("serial_number"),
   location: text("location"),
   notes: text("notes"),
+  // Soft delete
+  isActive: boolean("is_active").notNull().default(true),
+  deletedAt: timestamp("deleted_at"),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
@@ -605,7 +615,7 @@ export type JobNote = typeof jobNotes.$inferSelect;
 export const clientNotes = pgTable("client_notes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "cascade" }),
+  clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if notes exist
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   noteText: text("note_text").notNull(),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -646,7 +656,7 @@ export const invoices = pgTable("invoices", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   // Always links to a Location (client) where work is performed
-  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "cascade" }),
+  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if invoices exist
   // Parent company reference (for easier querying when billing parent)
   customerCompanyId: varchar("customer_company_id").references(() => customerCompanies.id, { onDelete: "set null" }),
   // Invoice details
@@ -752,6 +762,7 @@ export type Invoice = typeof invoices.$inferSelect;
 // Invoice line items table
 export const invoiceLines = pgTable("invoice_lines", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }), // Denormalized for tenant isolation
   invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: "cascade" }),
   lineNumber: integer("line_number").notNull(), // Ordering
   lineItemType: text("line_item_type").notNull().default("service"), // service, material, fee, discount
@@ -815,6 +826,7 @@ export type InvoiceLine = typeof invoiceLines.$inferSelect;
 // Payments table - tracks payments against invoices
 export const payments = pgTable("payments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }), // Denormalized for tenant isolation
   invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: "cascade" }),
   amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
   method: text("method").notNull().default("other"), // cash, credit, debit, e-transfer, cheque, other
@@ -943,7 +955,7 @@ export type RecurringJobPhase = typeof recurringJobPhases.$inferSelect;
 export const jobs = pgTable("jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "cascade" }),
+  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if jobs exist
   // Job identification
   jobNumber: integer("job_number").notNull(),
   // Assignment
@@ -1023,10 +1035,11 @@ export type Job = typeof jobs.$inferSelect;
 // LOCATION PM PLAN - Preventative Maintenance schedule per location
 // ============================================================================
 // This table will be used to calculate part demand per month across all locations.
-// Example: sum quantityPerVisit for all PM visits scheduled in a month to get 
+// Example: sum quantityPerVisit for all PM visits scheduled in a month to get
 // projected filter/belt requirements for inventory planning.
 export const locationPMPlans = pgTable("location_pm_plans", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }), // Denormalized for tenant isolation
   locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "cascade" }),
   hasPm: boolean("has_pm").notNull().default(false),
   pmType: text("pm_type"), // e.g. "filters only", "full HVAC PM"
@@ -1091,6 +1104,7 @@ export type LocationPMPlan = typeof locationPMPlans.$inferSelect;
 // Prepares for future features: Job → Equipment associations, equipment service history.
 export const locationEquipment = pgTable("location_equipment", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }), // Denormalized for tenant isolation
   locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "cascade" }),
   name: text("name").notNull(), // e.g. "RTU #1", "Walk-in Freezer", "Make-up Air #2"
   equipmentType: text("equipment_type"), // e.g. "RTU", "Furnace", "Freezer"
@@ -1133,12 +1147,13 @@ export type LocationEquipment = typeof locationEquipment.$inferSelect;
 // LOCATION PM PART TEMPLATE - Parts/filters/belts used at each PM visit
 // ============================================================================
 // These templates are copied into JobPart entries when generating PM jobs.
-// Used for inventory planning: sum quantityPerVisit across all locations for 
+// Used for inventory planning: sum quantityPerVisit across all locations for
 // a given month to project parts demand.
 // If equipmentId is null, the PM part is location-level (applies to site generally).
 // If equipmentId is non-null, the PM part is specific to that equipment.
 export const locationPMPartTemplates = pgTable("location_pm_part_templates", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }), // Denormalized for tenant isolation
   locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "cascade" }),
   productId: varchar("product_id").notNull().references(() => items.id, { onDelete: "cascade" }),
   equipmentId: varchar("equipment_id").references(() => locationEquipment.id, { onDelete: "set null" }), // Optional link to specific equipment
@@ -1179,6 +1194,7 @@ export const jobPartSourceEnum = ["pm_template", "added_by_tech", "quoted", "man
 
 export const jobParts = pgTable("job_parts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }), // Denormalized for tenant isolation
   jobId: varchar("job_id").notNull().references(() => jobs.id, { onDelete: "cascade" }),
   productId: varchar("product_id").references(() => items.id, { onDelete: "set null" }),
   equipmentId: varchar("equipment_id").references(() => locationEquipment.id, { onDelete: "set null" }), // Optional link to equipment
@@ -1227,6 +1243,7 @@ export type JobPart = typeof jobParts.$inferSelect;
 // Some equipment may never have PM parts but will still appear on jobs for one-off service calls.
 export const jobEquipment = pgTable("job_equipment", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }), // Denormalized for tenant isolation
   jobId: varchar("job_id").notNull().references(() => jobs.id, { onDelete: "cascade" }),
   equipmentId: varchar("equipment_id").notNull().references(() => locationEquipment.id, { onDelete: "cascade" }),
   notes: text("notes"), // e.g. "worked on condenser section only"

@@ -214,6 +214,7 @@ export class TemplateRepository extends BaseRepository {
       const [part] = await db
         .insert(jobParts)
         .values({
+          companyId,
           jobId,
           productId: line.productId,
           description: line.descriptionOverride || "",
