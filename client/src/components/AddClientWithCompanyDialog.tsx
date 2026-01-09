@@ -141,7 +141,7 @@ export default function AddClientWithCompanyDialog({
   const [copyBillingToService, setCopyBillingToService] = useState(false);
   
   const { data: partsResponse } = useQuery<{ items: Item[]; total: number }>({
-    queryKey: ['/api/items?limit=1000'],
+    queryKey: ['/api/items?limit=200'],
   });
   const availableParts = partsResponse?.items ?? [];
   

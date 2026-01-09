@@ -64,9 +64,9 @@ export default function CategoryManagementPage() {
   const [categoryToDelete, setCategoryToDelete] = useState<CategoryInfo | null>(null);
 
   const { data: partsData, isLoading } = useQuery<PartsResponse>({
-    queryKey: ["/api/items", { limit: 1000 }],
+    queryKey: ["/api/items", { limit: 200 }],
     queryFn: async () => {
-      const res = await fetch("/api/items?limit=1000", { credentials: "include" });
+      const res = await fetch("/api/items?limit=200", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch parts");
       return res.json();
     },

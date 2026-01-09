@@ -59,7 +59,7 @@ export default function PartsManagementDialog({ onCancel }: PartsManagementDialo
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
 
   const { data: partsResponse, isLoading } = useQuery<{ items: Item[]; total: number }>({
-    queryKey: ["/api/items?limit=1000"],
+    queryKey: ["/api/items?limit=200"],
   });
   const parts = partsResponse?.items ?? [];
 

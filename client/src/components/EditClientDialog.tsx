@@ -87,7 +87,7 @@ export default function EditClientDialog({ client, open, onOpenChange, onSaved }
 
   // Fetch available parts
   const { data: partsData } = useQuery({
-    queryKey: ["/api/items?limit=1000"],
+    queryKey: ["/api/items?limit=200"],
     enabled: open && activeTab === "parts",
   });
   const availableParts = (partsData?.items || []) as Item[];

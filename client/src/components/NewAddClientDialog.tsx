@@ -77,7 +77,7 @@ export default function NewAddClientDialog({ open, onOpenChange, onSaved }: NewA
   const [openPartRowIndex, setOpenPartRowIndex] = useState<number | null>(null);
 
   const { data: partsResponse } = useQuery<{ items: Item[]; total: number }>({
-    queryKey: ['/api/items?limit=1000'],
+    queryKey: ['/api/items?limit=200'],
   });
   const availableParts = partsResponse?.items ?? [];
 

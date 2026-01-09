@@ -126,7 +126,9 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
     mutationFn: async ({ templateId, replaceExisting }: { templateId: string; replaceExisting: boolean }) => {
       if (replaceExisting && jobParts.length > 0) {
         for (const part of jobParts) {
-          await apiRequest("DELETE", `/api/jobs/${jobId}/parts/${part.id}`);
+          await apiRequest(`/api/jobs/${jobId}/parts/${part.id}`, {
+            method: "DELETE",
+          });
         }
       }
       const res = await fetch("/api/job-templates/apply-to-job", {
@@ -170,14 +172,18 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
   };
 
   const { data: catalogData } = useQuery<{ items: Item[] }>({
-    queryKey: ["/api/items", { limit: 1000 }],
+    queryKey: ["/api/items", { limit: 200 }],
     queryFn: async () => {
-      const res = await fetch("/api/items?limit=1000", { credentials: "include" });
+      const res = await fetch("/api/items?limit=200", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch catalog");
       return res.json();
     },
   });
-  const catalogParts = useMemo(() => catalogData?.items || [], [catalogData]);
+  const catalogParts = useMemo(() => {
+    if (!catalogData) return [];
+    if (Array.isArray(catalogData)) return catalogData;
+    return catalogData?.items ?? catalogData?.data ?? [];
+  }, [catalogData]);
 
   useEffect(() => {
     if (!jobParts || editingRowId) return;
@@ -209,8 +215,10 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
 
   const reorderMutation = useMutation({
     mutationFn: async (newOrder: { id: string; sortOrder: number }[]) => {
-      const res = await apiRequest("PATCH", `/api/jobs/${jobId}/parts/reorder`, { parts: newOrder });
-      if (!res.ok) throw new Error("Failed to reorder");
+      return await apiRequest(`/api/jobs/${jobId}/parts/reorder`, {
+        method: "PATCH",
+        body: JSON.stringify({ parts: newOrder }),
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
@@ -339,7 +347,9 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
     
     try {
       setSavingRowId(id);
-      await apiRequest("DELETE", `/api/jobs/${jobId}/parts/${id}`);
+      await apiRequest(`/api/jobs/${jobId}/parts/${id}`, {
+        method: "DELETE",
+      });
       await queryClient.refetchQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
       if (editingRowId === id) setEditingRowId(null);
       toast({ title: "Deleted", description: "Line item removed." });
@@ -363,22 +373,28 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
       const cost = String(parseFloat(item.unitCost) || 0);
       
       if (item.isNew) {
-        await apiRequest("POST", `/api/jobs/${jobId}/parts`, {
-          description: desc,
-          quantity: qty,
-          unitCost: cost,
-          unitPrice: price,
-          productId: item.productId || null,
-          source: item.source || "manual",
+        await apiRequest(`/api/jobs/${jobId}/parts`, {
+          method: "POST",
+          body: JSON.stringify({
+            description: desc,
+            quantity: qty,
+            unitCost: cost,
+            unitPrice: price,
+            productId: item.productId || null,
+            source: item.source || "manual",
+          }),
         });
       } else {
-        await apiRequest("PUT", `/api/jobs/${jobId}/parts/${item.id}`, {
-          description: desc,
-          quantity: qty,
-          unitCost: cost,
-          unitPrice: price,
-          productId: item.productId || null,
-          source: item.source,
+        await apiRequest(`/api/jobs/${jobId}/parts/${item.id}`, {
+          method: "PUT",
+          body: JSON.stringify({
+            description: desc,
+            quantity: qty,
+            unitCost: cost,
+            unitPrice: price,
+            productId: item.productId || null,
+            source: item.source,
+          }),
         });
       }
 
@@ -404,17 +420,18 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
 
   const createProductMutation = useMutation({
     mutationFn: async (data: { name: string; description?: string; cost: string; unitPrice: string; type: string }) => {
-      const res = await apiRequest("POST", "/api/items", {
-        name: data.name,
-        description: data.description || null,
-        cost: String(parseFloat(data.cost) || 0),
-        unitPrice: String(parseFloat(data.unitPrice) || 0),
-        type: data.type,
-        isTaxable: true,
-        isActive: true,
+      return await apiRequest<Part>("/api/items", {
+        method: "POST",
+        body: JSON.stringify({
+          name: data.name,
+          description: data.description || null,
+          cost: String(parseFloat(data.cost) || 0),
+          unitPrice: String(parseFloat(data.unitPrice) || 0),
+          type: data.type,
+          isTaxable: true,
+          isActive: true,
+        }),
       });
-      if (!res.ok) throw new Error("Failed to create product");
-      return res.json() as Promise<Part>;
     },
     onSuccess: (newPart: Part) => {
       queryClient.invalidateQueries({ queryKey: ["/api/items"] });
