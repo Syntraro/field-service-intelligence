@@ -150,16 +150,18 @@ export default function ProductsServicesManager() {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  const { data: partsData, isLoading } = useQuery<PartsResponse>({
+  const { data: partsData, isLoading } = useQuery<Part[] | PartsResponse>({
     queryKey: ["/api/items", { limit: 1000 }],
     queryFn: async () => {
       const res = await fetch("/api/items?limit=1000", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch parts");
-      return res.json();
+      const json = await res.json();
+      console.log("[ProductsServices] API response:", JSON.stringify(json).slice(0, 200));
+      return json;
     },
   });
 
-  const allParts = partsData?.data ?? [];
+  const allParts = Array.isArray(partsData) ? partsData : (partsData?.data ?? []);
 
   const filteredAndSortedParts = useMemo(() => {
     let filtered = [...allParts];
