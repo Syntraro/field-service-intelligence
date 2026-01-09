@@ -43,9 +43,6 @@ import { Link } from "wouter";
 interface Part {
   id: string;
   type: string;
-  filterType?: string | null;
-  beltType?: string | null;
-  size?: string | null;
   name?: string | null;
   sku?: string | null;
   description?: string | null;

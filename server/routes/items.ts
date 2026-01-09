@@ -45,12 +45,15 @@ router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
 
   // Fetch all matching rows (storage already orders by name)
   const allRows = await storage.getItems(companyId, q || undefined);
+  console.log("[ITEMS] getItems returned", allRows?.length ?? 0, "rows for company", companyId);
 
   // Apply pagination
   const offset = params.offset ?? 0;
   const { items, meta } = applyOffsetPagination(allRows ?? [], offset, params.limit);
 
-  res.json(paginatedCompat(items, meta, explicit));
+  const result = paginatedCompat(items, meta, explicit);
+  console.log("[ITEMS] Returning response, explicit:", explicit, "structure:", Array.isArray(result) ? "array" : "object", "count:", items.length);
+  res.json(result);
 }));
 
 // POST /api/items - Create new item

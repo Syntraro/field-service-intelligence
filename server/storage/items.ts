@@ -21,9 +21,7 @@ export class ItemRepository extends BaseRepository {
         or(
           like(items.name, search),
           like(items.sku, search),
-          like(items.description, search),
-          like(items.filterType, search),
-          like(items.beltType, search)
+          like(items.description, search)
         )
       );
     }

@@ -215,23 +215,17 @@ export type ClientLocation = typeof clientLocations.$inferSelect;
 export type InsertClient = z.infer<typeof insertClientLocationSchema>;
 export type InsertClientLocation = z.infer<typeof insertClientLocationSchema>;
 
-// Parts/Items table - represents both legacy parts (filters/belts) and QBO-aligned Items (products/services)
+// Items table - represents products and services for QuickBooks Online sync
 // These Items are designed to sync to QuickBooks Online Items in the future.
 // The app is currently the primary master for item details, and QBO mapping will be handled via qboItemId.
 export const items = pgTable("items", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  type: text("type").notNull(), // "filter", "belt", "other", "service", "product"
-  // Filter-specific fields
-  filterType: text("filter_type"), // "Pleated", "Media", "Ecology", "Throwaway", "Other"
-  // Belt-specific fields
-  beltType: text("belt_type"), // "A", "B", "Other"
-  // Shared between filters and belts
-  size: text("size"),
+  type: text("type").notNull(), // "product" or "service"
   // Item fields (products/services - QBO aligned)
   name: text("name"),
-  sku: text("sku"), // belt/filter code or internal item code
+  sku: text("sku"), // Internal item code or SKU
   description: text("description"),
   // Pricing fields (for products and services)
   cost: numeric("cost", { precision: 12, scale: 2 }), // Cost price in dollars

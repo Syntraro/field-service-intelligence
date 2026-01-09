@@ -460,7 +460,7 @@ export default function LocationPMSection({ locationId }: LocationPMSectionProps
                           <SelectContent>
                             {products.map(product => (
                               <SelectItem key={product.id} value={product.id}>
-                                {product.name || product.description || `${product.type} - ${product.size}`}
+                                {product.name || product.description || `${product.type}${product.sku ? ` - ${product.sku}` : ''}`}
                               </SelectItem>
                             ))}
                           </SelectContent>
