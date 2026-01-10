@@ -51,9 +51,9 @@ export default function Technician() {
     
     try {
       setIsSubmittingNotes(true);
-      await apiRequest(`PATCH`, `/api/calendar/${selectedPM.id}`, {
-        completed: true,
-        completionNotes: completionNotes
+      await apiRequest(`/api/calendar/${selectedPM.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ completed: true, completionNotes: completionNotes })
       });
       
       queryClient.invalidateQueries({ queryKey: ['/api/technician/today'] });
@@ -69,9 +69,9 @@ export default function Technician() {
 
   const handleUncomplete = async (pm: any) => {
     try {
-      await apiRequest(`PATCH`, `/api/calendar/${pm.id}`, {
-        completed: false,
-        completionNotes: null
+      await apiRequest(`/api/calendar/${pm.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ completed: false, completionNotes: null })
       });
       
       queryClient.invalidateQueries({ queryKey: ['/api/technician/today'] });
@@ -93,8 +93,9 @@ export default function Technician() {
     
     try {
       setIsSubmittingNotes(true);
-      await apiRequest(`PATCH`, `/api/calendar/${selectedPM.id}`, {
-        completionNotes: completionNotes
+      await apiRequest(`/api/calendar/${selectedPM.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ completionNotes: completionNotes })
       });
       
       queryClient.invalidateQueries({ queryKey: ['/api/technician/today'] });

@@ -56,12 +56,12 @@ export default function LocationDetailPage() {
   const [deleteLocationDialogOpen, setDeleteLocationDialogOpen] = useState(false);
 
   const { data: location, isLoading: locationLoading, error: locationError } = useQuery<Client>({
-    queryKey: [`/api/clients/${locationId}`],
+    queryKey: ["/api/clients", locationId],
     enabled: Boolean(locationId),
   });
 
   const { data: parentClient } = useQuery<Client>({
-    queryKey: [`/api/clients/${id}`],
+    queryKey: ["/api/clients", id],
     enabled: Boolean(id),
   });
 
@@ -72,7 +72,7 @@ export default function LocationDetailPage() {
   }, [location?.parentCompanyId, id]);
 
   const { data: parentCompany } = useQuery<CustomerCompany>({
-    queryKey: [`/api/customer-companies/${effectiveParentCompanyId}`],
+    queryKey: ["/api/customer-companies", effectiveParentCompanyId],
     enabled: Boolean(effectiveParentCompanyId),
   });
 
@@ -132,7 +132,7 @@ export default function LocationDetailPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/clients/${locationId}`] });
+      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId] });
       toast({ title: "Billing updated" });
     },
     onError: () => {
@@ -147,7 +147,7 @@ export default function LocationDetailPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/clients/${locationId}`] });
+      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId] });
       // refresh company overview + locations list if applicable
       queryClient.invalidateQueries({ queryKey: ["/api/clients", id, "overview"] });
       if (effectiveParentCompanyId) {
@@ -671,7 +671,7 @@ export default function LocationDetailPage() {
             <Card>
               <CollapsibleTrigger asChild>
                 <button className="w-full flex items-center justify-between px-4 py-3 hover-elevate" data-testid="trigger-parts">
-                  <span className="text-sm font-semibold">PM Parts / Filters / Belts</span>
+                  <span className="text-sm font-semibold">Location Parts</span>
                   <div className="flex items-center gap-2">
                     <Button
                       variant="ghost"
@@ -837,7 +837,7 @@ export default function LocationDetailPage() {
         parentCompanyId={effectiveParentCompanyId || undefined}
         onSuccess={() => {
           setEditModalOpen(false);
-          queryClient.invalidateQueries({ queryKey: [`/api/clients/${locationId}`] });
+          queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId] });
           queryClient.invalidateQueries({ queryKey: ["/api/clients", id, "overview"] });
           if (effectiveParentCompanyId) {
             queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", effectiveParentCompanyId, "locations"] });

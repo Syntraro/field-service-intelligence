@@ -31,35 +31,58 @@ const createPartSchema = z.object({
 
 const updatePartSchema = createPartSchema.partial().strict();
 
+// Convert numeric fields to strings for DB storage
+function toDbNumericString(value: string | number | null | undefined): string | null | undefined {
+  if (value === null) return null;
+  if (value === undefined) return undefined;
+  return String(value);
+}
+
 // ========================================
 // ROUTES
 // ========================================
 
-// GET /api/parts - List parts with optional search
+// GET /api/parts - List parts with optional search (DB-level pagination)
 router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   if (!companyId) throw createError(401, "Unauthorized");
 
   const { params, explicit } = parsePaginationLenient(req.query);
   const q = String((req.query as any)?.q ?? "").trim();
-
-  // Fetch all matching rows (storage already orders by partNumber)
-  const allRows = await storage.getParts(companyId, q || undefined);
-
-  // Apply pagination
   const offset = params.offset ?? 0;
-  const { items, meta } = applyOffsetPagination(allRows ?? [], offset, params.limit);
 
-  res.json(paginatedCompat(items, meta, explicit));
+  // Use DB-level pagination (limit + 1 pattern for hasMore)
+  const items = await storage.getParts(companyId, {
+    searchQuery: q || undefined,
+    limit: params.limit + 1,
+    offset,
+  });
+
+  const hasMore = items.length > params.limit;
+  const resultItems = hasMore ? items.slice(0, params.limit) : items;
+
+  const meta = {
+    limit: params.limit,
+    hasMore,
+    nextOffset: hasMore ? offset + params.limit : undefined,
+  };
+
+  res.json(paginatedCompat(resultItems, meta, explicit));
 }));
 
 // POST /api/parts - Create new part
 router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
-  if (!companyId) throw createError(401, "Unauthorized");
+  const userId = req.user?.id;
+  if (!companyId || !userId) throw createError(401, "Unauthorized");
 
   const validated = validateSchema(createPartSchema, req.body);
-  const created = await storage.createPart(companyId, validated);
+  const created = await storage.createPart(companyId, userId, {
+    ...validated,
+    cost: toDbNumericString(validated.cost),
+    markupPercent: toDbNumericString(validated.markupPercent),
+    unitPrice: toDbNumericString(validated.unitPrice),
+  });
 
   res.json(created);
 }));
@@ -70,7 +93,12 @@ router.put("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRe
   if (!companyId) throw createError(401, "Unauthorized");
 
   const validated = validateSchema(updatePartSchema, req.body);
-  const updated = await storage.updatePart(companyId, req.params.id, validated);
+  const updated = await storage.updatePart(companyId, req.params.id, {
+    ...validated,
+    cost: toDbNumericString(validated.cost),
+    markupPercent: toDbNumericString(validated.markupPercent),
+    unitPrice: toDbNumericString(validated.unitPrice),
+  });
 
   res.json(updated);
 }));

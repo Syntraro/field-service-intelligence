@@ -83,7 +83,7 @@ interface JobDetailDialogProps {
   client: Client | undefined;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  bulkParts?: Record<string, ClientItem[]>;
+  bulkParts?: Record<string, ClientPart[]>;
   onAssignTechnicians?: (assignmentId: string, technicianIds: string[]) => void;
 }
 

@@ -53,8 +53,7 @@ export default function AddClientPage() {
   // Mutation for creating client with company (new QBO-compatible flow)
   const createClientWithCompanyMutation = useMutation({
     mutationFn: async (data: ClientWithCompanyFormData) => {
-      const res = await apiRequest("POST", "/api/clients/with-company", data);
-      return await res.json();
+      return await apiRequest("/api/clients/with-company", { method: "POST", body: JSON.stringify(data) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
@@ -100,7 +99,7 @@ export default function AddClientPage() {
         parts: data.parts,
       };
       
-      const res = await apiRequest("POST", "/api/clients", clientData);
+      const res = await apiRequest("/api/clients", { method: "POST", body: JSON.stringify(clientData) });
       const newClient = await res.json();
       return newClient;
     },
@@ -144,7 +143,7 @@ export default function AddClientPage() {
         nextDue: nextDue ? nextDue.toISOString() : new Date('9999-12-31').toISOString(),
       };
       
-      const res = await apiRequest("PUT", `/api/clients/${id}`, clientData);
+      const res = await apiRequest(`/api/clients/${id}`, { method: "PUT", body: JSON.stringify(clientData) });
       const updatedClient = await res.json();
       return updatedClient;
     },

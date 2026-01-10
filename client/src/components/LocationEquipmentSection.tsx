@@ -73,8 +73,7 @@ export default function LocationEquipmentSection({ locationId }: LocationEquipme
 
   const createMutation = useMutation({
     mutationFn: async (data: typeof formData) => {
-      const res = await apiRequest("POST", `/api/locations/${locationId}/equipment`, data);
-      return await res.json();
+      return await apiRequest(`/api/locations/${locationId}/equipment`, { method: "POST", body: JSON.stringify(data) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/locations", locationId, "equipment"] });
@@ -96,8 +95,7 @@ export default function LocationEquipmentSection({ locationId }: LocationEquipme
 
   const updateMutation = useMutation({
     mutationFn: async ({ id, data }: { id: string; data: typeof formData }) => {
-      const res = await apiRequest("PUT", `/api/locations/${locationId}/equipment/${id}`, data);
-      return await res.json();
+      return await apiRequest(`/api/locations/${locationId}/equipment/${id}`, { method: "PUT", body: JSON.stringify(data) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/locations", locationId, "equipment"] });
@@ -119,7 +117,7 @@ export default function LocationEquipmentSection({ locationId }: LocationEquipme
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      await apiRequest("DELETE", `/api/locations/${locationId}/equipment/${id}`);
+      await apiRequest(`/api/locations/${locationId}/equipment/${id}`, { method: "DELETE" });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/locations", locationId, "equipment"] });

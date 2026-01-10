@@ -455,8 +455,8 @@ async getCalendarAssignmentsInRange(
 
     return await db.transaction(async (tx) => {
       // Bulk delete all matching parts (single query instead of N queries)
-      const clientIds = [...new Set(items.map(i => i.clientId))];
-      const partIds = [...new Set(items.map(i => i.partId))];
+      const clientIds = Array.from(new Set(items.map(i => i.clientId)));
+      const partIds = Array.from(new Set(items.map(i => i.partId)));
 
       await tx
         .delete(clientParts)

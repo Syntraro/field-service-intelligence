@@ -35,8 +35,7 @@ export default function ClientLocationsTab({ clientId, companyId, parentCompanyI
 
   const toggleActiveMutation = useMutation({
     mutationFn: async ({ locationId, isActive }: { locationId: string; isActive: boolean }) => {
-      const res = await apiRequest("PATCH", `/api/clients/${locationId}`, { inactive: !isActive });
-      return await res.json();
+      return await apiRequest(`/api/clients/${locationId}`, { method: "PATCH", body: JSON.stringify({ inactive: !isActive }) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", parentCompanyId, "locations"] });

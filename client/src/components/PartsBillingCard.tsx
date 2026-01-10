@@ -104,7 +104,7 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
   }>({ open: false, templateId: null, templateName: "" });
   const lastSyncedPartsRef = useRef<string>("");
 
-  const { data: jobParts = [], isLoading: partsLoading } = useQuery<JobItem[]>({
+  const { data: jobParts = [], isLoading: partsLoading } = useQuery<JobPart[]>({
     queryKey: ["/api/jobs", jobId, "parts"],
     queryFn: async () => {
       const res = await fetch(`/api/jobs/${jobId}/parts`, { credentials: "include" });
@@ -145,7 +145,7 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
-      queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}`] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
       toast({ title: "Template applied", description: "Line items have been replaced with the template." });
     },
     onError: (error: Error) => {
@@ -182,7 +182,7 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
   const catalogParts = useMemo(() => {
     if (!catalogData) return [];
     if (Array.isArray(catalogData)) return catalogData;
-    return catalogData?.items ?? catalogData?.data ?? [];
+    return catalogData?.items ?? (catalogData as any)?.data ?? [];
   }, [catalogData]);
 
   useEffect(() => {
@@ -205,7 +205,7 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
         quantity: jp.quantity,
         unitCost: jp.unitCost || catalogItem?.cost || "0",
         unitPrice: jp.unitPrice || "0",
-        source: jp.source,
+        source: "manual",
         sortOrder: jp.sortOrder ?? index,
       };
     });
@@ -408,7 +408,7 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
     }
   };
 
-  const handleSelectProduct = (lineId: string, product: Part) => {
+  const handleSelectProduct = (lineId: string, product: Item) => {
     handleRowChange(lineId, {
       productId: product.id,
       description: product.name || product.description || "",
@@ -420,7 +420,7 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
 
   const createProductMutation = useMutation({
     mutationFn: async (data: { name: string; description?: string; cost: string; unitPrice: string; type: string }) => {
-      return await apiRequest<Part>("/api/items", {
+      return await apiRequest<Item>("/api/items", {
         method: "POST",
         body: JSON.stringify({
           name: data.name,
@@ -433,7 +433,7 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
         }),
       });
     },
-    onSuccess: (newPart: Part) => {
+    onSuccess: (newPart: Item) => {
       queryClient.invalidateQueries({ queryKey: ["/api/items"] });
       if (productModalState.lineItemId) {
         handleRowChange(productModalState.lineItemId, {
@@ -628,7 +628,7 @@ interface LineItemRowProps {
   onSave: () => void;
   onCancel: () => void;
   onDelete: () => void;
-  onSelectProduct: (product: Part) => void;
+  onSelectProduct: (product: Item) => void;
   onRequestAddProduct: (name: string) => void;
 }
 

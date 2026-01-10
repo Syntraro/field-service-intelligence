@@ -203,6 +203,7 @@ export const clientLocations = pgTable("client_locations", {
   deletedAt: timestamp("deleted_at"),
   // Metadata
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
 });
 
 export const insertClientLocationSchema = createInsertSchema(clientLocations).omit({
@@ -210,6 +211,7 @@ export const insertClientLocationSchema = createInsertSchema(clientLocations).om
   companyId: true,
   userId: true,
   createdAt: true,
+  updatedAt: true,
 });
 
 // Legacy aliases for backward compatibility during migration

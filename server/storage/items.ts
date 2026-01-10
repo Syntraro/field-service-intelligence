@@ -51,38 +51,25 @@ export class ItemRepository extends BaseRepository {
    * Create item
    */
   async createItem(companyId: string, userId: string, itemData: any): Promise<Item> {
-    console.log("=== STORAGE createItem ===");
-    console.log("Params:", { companyId, userId });
-    console.log("Data:", itemData);
+    // Auto-calculate unitPrice from cost and markup if provided
+    let unitPrice = itemData.unitPrice;
+    if (!unitPrice && itemData.cost && itemData.markupPercent) {
+      const cost = parseFloat(itemData.cost);
+      const markup = parseFloat(itemData.markupPercent);
+      unitPrice = (cost * (1 + markup / 100)).toFixed(2);
+    }
 
-    try {
-      // Auto-calculate unitPrice from cost and markup if provided
-      let unitPrice = itemData.unitPrice;
-      if (!unitPrice && itemData.cost && itemData.markupPercent) {
-        const cost = parseFloat(itemData.cost);
-        const markup = parseFloat(itemData.markupPercent);
-        unitPrice = (cost * (1 + markup / 100)).toFixed(2);
-      }
-
-      const insertData = {
+    const rows = await db
+      .insert(items)
+      .values({
         ...itemData,
         companyId,
         userId,
         unitPrice: unitPrice || itemData.unitPrice,
-      };
+      })
+      .returning();
 
-      console.log("Inserting:", insertData);
-      const rows = await db.insert(items).values(insertData).returning();
-      console.log("Insert successful:", rows[0]?.id);
-
-      return rows[0];
-    } catch (error: any) {
-      console.error("=== STORAGE ERROR ===");
-      console.error("Message:", error.message);
-      console.error("Code:", error.code);
-      console.error("Detail:", error.detail);
-      throw error;
-    }
+    return rows[0];
   }
 
   /**

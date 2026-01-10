@@ -76,8 +76,7 @@ export default function LocationPMSection({ locationId }: LocationPMSectionProps
 
   const savePlanMutation = useMutation({
     mutationFn: async (data: Partial<LocationPMPlan>) => {
-      const res = await apiRequest("POST", `/api/locations/${locationId}/pm-plan`, data);
-      return await res.json();
+      return await apiRequest(`/api/locations/${locationId}/pm-plan`, { method: "POST", body: JSON.stringify(data) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/locations", locationId, "pm-plan"] });
@@ -99,8 +98,7 @@ export default function LocationPMSection({ locationId }: LocationPMSectionProps
 
   const addPartMutation = useMutation({
     mutationFn: async (data: typeof newPart) => {
-      const res = await apiRequest("POST", `/api/locations/${locationId}/pm-parts`, data);
-      return await res.json();
+      return await apiRequest(`/api/locations/${locationId}/pm-parts`, { method: "POST", body: JSON.stringify(data) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/locations", locationId, "pm-parts"] });
@@ -122,8 +120,7 @@ export default function LocationPMSection({ locationId }: LocationPMSectionProps
 
   const updatePartMutation = useMutation({
     mutationFn: async ({ id, data }: { id: string; data: Partial<LocationPMPartTemplate> }) => {
-      const res = await apiRequest("PUT", `/api/locations/${locationId}/pm-parts/${id}`, data);
-      return await res.json();
+      return await apiRequest(`/api/locations/${locationId}/pm-parts/${id}`, { method: "PUT", body: JSON.stringify(data) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/locations", locationId, "pm-parts"] });
@@ -144,8 +141,7 @@ export default function LocationPMSection({ locationId }: LocationPMSectionProps
 
   const deletePartMutation = useMutation({
     mutationFn: async (id: string) => {
-      const res = await apiRequest("DELETE", `/api/locations/${locationId}/pm-parts/${id}`);
-      return await res.json();
+      return await apiRequest(`/api/locations/${locationId}/pm-parts/${id}`, { method: "DELETE" });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/locations", locationId, "pm-parts"] });
@@ -165,8 +161,7 @@ export default function LocationPMSection({ locationId }: LocationPMSectionProps
 
   const generateJobMutation = useMutation({
     mutationFn: async (date: string) => {
-      const res = await apiRequest("POST", `/api/locations/${locationId}/generate-pm-job`, { date });
-      return await res.json();
+      return await apiRequest(`/api/locations/${locationId}/generate-pm-job`, { method: "POST", body: JSON.stringify({ date }) });
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
@@ -382,7 +377,7 @@ export default function LocationPMSection({ locationId }: LocationPMSectionProps
             <div>
               <CardTitle className="flex items-center gap-2">
                 <Package className="h-5 w-5" />
-                PM Parts / Filters / Belts
+                Location Parts
               </CardTitle>
               <CardDescription>
                 Parts used at each PM visit for this location.

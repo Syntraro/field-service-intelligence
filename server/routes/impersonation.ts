@@ -17,7 +17,7 @@ const router = Router();
  */
 router.get("/status", requireAuth, (req, res) => {
   try {
-    const session = impersonationService.getActiveSession(req);
+    const session = impersonationService.getActiveImpersonation(req);
     res.json({ active: !!session, session: session || null });
   } catch (err: any) {
     // Fail-soft: status endpoint should never crash the app

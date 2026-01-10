@@ -236,7 +236,7 @@ function DroppableDay({ day, year, month, assignments, clients, onRemove, onClie
                       )
                     };
                   });
-                  apiRequest('PATCH', `/api/calendar/assign/${assignmentId}`, { assignedTechnicianId: technicianId });
+                  apiRequest(`/api/calendar/assign/${assignmentId}`, { method: 'PATCH', body: JSON.stringify({ assignedTechnicianId: technicianId }) });
                 }}
               />
               <button
@@ -399,7 +399,7 @@ export default function Calendar() {
 
   const updateCompanySettings = useMutation({
     mutationFn: async (settings: any) => {
-      return apiRequest("POST", "/api/company-settings", settings);
+      return apiRequest("/api/company-settings", { method: "POST", body: JSON.stringify(settings) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/company-settings'] });
@@ -435,7 +435,7 @@ export default function Calendar() {
     }) => {
       const useYear = targetYear ?? year;
       const useMonth = targetMonth ?? month;
-      return apiRequest("POST", `/api/calendar/assign`, {
+      return apiRequest(`/api/calendar/assign`, { method: "POST", body: JSON.stringify({
         clientId,
         year: useYear,
         month: useMonth,
@@ -444,7 +444,7 @@ export default function Calendar() {
         scheduledHour: scheduledHour !== undefined ? scheduledHour : undefined,
         scheduledStartMinutes: scheduledStartMinutes !== undefined ? scheduledStartMinutes : undefined,
         autoDueDate: false,
-      });
+      }) });
     },
     onSuccess: async () => {
       await refetchCalendar();
@@ -482,7 +482,7 @@ export default function Calendar() {
     }) => {
       const updateYear = targetYear ?? year;
       const updateMonth = targetMonth ?? month;
-      return apiRequest("PATCH", `/api/calendar/assign/${id}`, {
+      return apiRequest(`/api/calendar/assign/${id}`, { method: "PATCH", body: JSON.stringify({
         year: updateYear,
         month: updateMonth,
         day,
@@ -490,7 +490,7 @@ export default function Calendar() {
         scheduledHour: scheduledHour !== undefined ? scheduledHour : undefined,
         // When scheduling into timed slots, allow sub-hour starts (15-min snapping).
         scheduledStartMinutes: scheduledStartMinutes !== undefined ? scheduledStartMinutes : undefined,
-      });
+      }) });
     },
     onSuccess: async () => {
       await refetchCalendar();
@@ -513,7 +513,7 @@ export default function Calendar() {
 
   const updateDuration = useMutation({
     mutationFn: async ({ id, durationMinutes }: { id: string; durationMinutes: number }) => {
-      return apiRequest("PATCH", `/api/calendar/assign/${id}`, { durationMinutes });
+      return apiRequest(`/api/calendar/assign/${id}`, { method: "PATCH", body: JSON.stringify({ durationMinutes }) });
     },
     onSuccess: async () => {
       await refetchCalendar();
@@ -533,7 +533,7 @@ export default function Calendar() {
 
   const deleteAssignment = useMutation({
     mutationFn: async (id: string) => {
-      return apiRequest("DELETE", `/api/calendar/assign/${id}`);
+      return apiRequest(`/api/calendar/assign/${id}`, { method: "DELETE" });
     },
     onSuccess: async () => {
       await refetchCalendar();
@@ -556,8 +556,8 @@ export default function Calendar() {
   const clearSchedule = useMutation({
     mutationFn: async (assignmentsToDelete: any[]) => {
       // Delete all assignments for this month
-      const deletePromises = assignmentsToDelete.map((assignment: any) => 
-        apiRequest("DELETE", `/api/calendar/assign/${assignment.id}`)
+      const deletePromises = assignmentsToDelete.map((assignment: any) =>
+        apiRequest(`/api/calendar/assign/${assignment.id}`, { method: "DELETE" })
       );
       return Promise.all(deletePromises);
     },
@@ -582,8 +582,8 @@ export default function Calendar() {
   const clearDay = useMutation({
     mutationFn: async ({ day, dayAssignments }: { day: number; dayAssignments: any[] }) => {
       // Delete all assignments for this specific day
-      const deletePromises = dayAssignments.map((assignment: any) => 
-        apiRequest("DELETE", `/api/calendar/assign/${assignment.id}`)
+      const deletePromises = dayAssignments.map((assignment: any) =>
+        apiRequest(`/api/calendar/assign/${assignment.id}`, { method: "DELETE" })
       );
       return Promise.all(deletePromises);
     },
@@ -607,7 +607,7 @@ export default function Calendar() {
 
   const assignTechnicians = useMutation({
     mutationFn: async ({ assignmentId, technicianIds }: { assignmentId: string; technicianIds: string[] }) => {
-      return apiRequest('PATCH', `/api/calendar/assign/${assignmentId}`, { assignedTechnicianIds: technicianIds });
+      return apiRequest(`/api/calendar/assign/${assignmentId}`, { method: 'PATCH', body: JSON.stringify({ assignedTechnicianIds: technicianIds }) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
@@ -879,9 +879,9 @@ export default function Calendar() {
   const toggleComplete = useMutation({
     mutationFn: async () => {
       if (!selectedAssignment) return;
-      return apiRequest("PATCH", `/api/calendar/assign/${selectedAssignment.id}`, {
+      return apiRequest(`/api/calendar/assign/${selectedAssignment.id}`, { method: "PATCH", body: JSON.stringify({
         completed: !selectedAssignment.completed
-      });
+      }) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar", year, month] });
@@ -936,7 +936,7 @@ export default function Calendar() {
   // Delete old unscheduled assignment
   const deleteOldAssignment = useMutation({
     mutationFn: async (assignmentId: string) => {
-      return apiRequest("DELETE", `/api/calendar/assign/${assignmentId}`);
+      return apiRequest(`/api/calendar/assign/${assignmentId}`, { method: "DELETE" });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/old-unscheduled"] });
@@ -958,9 +958,9 @@ export default function Calendar() {
   // Mark old assignment as completed (archive it)
   const archiveOldAssignment = useMutation({
     mutationFn: async (assignmentId: string) => {
-      return apiRequest("PATCH", `/api/calendar/assign/${assignmentId}`, {
+      return apiRequest(`/api/calendar/assign/${assignmentId}`, { method: "PATCH", body: JSON.stringify({
         completed: true
-      });
+      }) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/old-unscheduled"] });

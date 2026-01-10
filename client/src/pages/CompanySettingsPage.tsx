@@ -65,8 +65,7 @@ export default function CompanySettingsPage() {
 
   const updateSettingsMutation = useMutation({
     mutationFn: async (data: CompanySettingsFormData) => {
-      const res = await apiRequest("POST", "/api/company-settings", data);
-      return await res.json();
+      return await apiRequest("/api/company-settings", { method: "POST", body: JSON.stringify(data) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/company-settings"] });
@@ -114,8 +113,7 @@ export default function CompanySettingsPage() {
 
   const updateNumberingMutation = useMutation({
     mutationFn: async (data: { nextJobNumber?: number; nextInvoiceNumber?: number }) => {
-      const res = await apiRequest("PATCH", "/api/settings/numbering", data);
-      return await res.json();
+      return await apiRequest("/api/settings/numbering", { method: "PATCH", body: JSON.stringify(data) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/settings/numbering"] });

@@ -182,7 +182,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-      queryClient.invalidateQueries({ queryKey: [`/api/jobs/${editJob?.id}`] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", editJob?.id] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       toast({
         title: "Job Updated",

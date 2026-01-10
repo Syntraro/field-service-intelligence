@@ -1,9 +1,11 @@
 import { Router } from "express";
-import type { Request, Response } from "express";
+import type { Response } from "express";
 import { storage } from "../storage/index";
 import { z } from "zod";
 import { requireRole } from "../auth/requireRole";
 import { RESTRICTED_MANAGER_ROLES } from "../auth/roles";
+import { asyncHandler, createError } from "../middleware/errorHandler";
+import { AuthedRequest } from "../auth/tenantIsolation";
 
 // Note: requireAuth and ensureTenantContext middleware already applied globally in routes/index.ts
 const router = Router();
@@ -35,27 +37,25 @@ const updateCompanySettingsSchema = z.object({
   }).optional(),
 }).strict(); // Allow other settings fields
 
-router.get("/", async (req: Request, res: Response) => {
+router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
-  if (!companyId) return res.status(401).json({ error: "Unauthorized" });
+  if (!companyId) throw createError(401, "Unauthorized");
   const settings = await storage.getCompanySettings(companyId);
   res.json(settings ?? {});
-});
+}));
 
-router.put("/", requireRole(MANAGER_ROLES), async (req: Request, res: Response) => {
+router.put("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
-  if (!companyId) return res.status(401).json({ error: "Unauthorized" });
-  
+  const userId = req.user?.id;
+  if (!companyId || !userId) throw createError(401, "Unauthorized");
+
   const validation = updateCompanySettingsSchema.safeParse(req.body);
   if (!validation.success) {
-    return res.status(400).json({ 
-      error: "Validation failed", 
-      details: validation.error.errors 
-    });
+    throw createError(400, "Validation failed");
   }
-  
-  const settings = await storage.upsertCompanySettings(companyId, validation.data ?? {});
+
+  const settings = await storage.upsertCompanySettings(companyId, userId, validation.data ?? {});
   res.json(settings ?? {});
-});
+}));
 
 export default router;

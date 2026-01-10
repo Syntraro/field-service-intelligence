@@ -42,7 +42,7 @@ export function ImpersonationBanner() {
   }, [status?.isImpersonating]);
 
   const stopImpersonation = useMutation({
-    mutationFn: () => apiRequest("POST", "/api/impersonation/stop", {}),
+    mutationFn: () => apiRequest("/api/impersonation/stop", { method: "POST", body: JSON.stringify({}) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/impersonation/status"] });
       queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });

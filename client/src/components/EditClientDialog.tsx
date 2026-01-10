@@ -18,7 +18,7 @@ import { Loader2, Plus, Trash2 } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useMutationWithToast } from "@/hooks/useMutationWithToast";
-import type { Client, Item } from "@shared/schema";
+import type { Client, Item, ClientPart, LocationEquipment } from "@shared/schema";
 
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
@@ -55,7 +55,6 @@ export default function EditClientDialog({ client, open, onOpenChange, onSaved }
     email: client.email || "",
     phone: client.phone || "",
     roofLadderCode: client.roofLadderCode || "",
-    notes: client.notes || "",
     selectedMonths: client.selectedMonths || [],
     inactive: client.inactive || false,
   });
@@ -77,7 +76,6 @@ export default function EditClientDialog({ client, open, onOpenChange, onSaved }
         email: client.email || "",
         phone: client.phone || "",
         roofLadderCode: client.roofLadderCode || "",
-        notes: client.notes || "",
         selectedMonths: client.selectedMonths || [],
         inactive: client.inactive || false,
       });
@@ -86,20 +84,20 @@ export default function EditClientDialog({ client, open, onOpenChange, onSaved }
   }, [client, open]);
 
   // Fetch available parts
-  const { data: partsData } = useQuery({
+  const { data: partsData } = useQuery<{ items: Item[] }>({
     queryKey: ["/api/items?limit=200"],
     enabled: open && activeTab === "parts",
   });
-  const availableParts = (partsData?.items || []) as Item[];
+  const availableParts = partsData?.items || [];
 
   // Fetch client parts
-  const { data: clientParts = [] } = useQuery({
+  const { data: clientParts = [] } = useQuery<ClientPart[]>({
     queryKey: ["/api/clients", client.id, "parts"],
     enabled: open && activeTab === "parts",
   });
 
   // Fetch client equipment
-  const { data: clientEquipment = [] } = useQuery({
+  const { data: clientEquipment = [] } = useQuery<LocationEquipment[]>({
     queryKey: ["/api/clients", client.id, "equipment"],
     enabled: open && activeTab === "equipment",
   });
@@ -320,17 +318,7 @@ export default function EditClientDialog({ client, open, onOpenChange, onSaved }
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="notes">Notes</Label>
-                <Textarea
-                  id="notes"
-                  value={formData.notes}
-                  onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-                  placeholder="Additional notes..."
-                  rows={4}
-                />
-              </div>
-
+            
               <div className="flex items-center space-x-2">
                 <Checkbox
                   id="inactive"

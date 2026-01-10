@@ -40,8 +40,7 @@ export default function ClientNotesTab({ clientId }: ClientNotesTabProps) {
   // Create note mutation
   const createNoteMutation = useMutation({
     mutationFn: async (noteText: string) => {
-      const res = await apiRequest("POST", `/api/clients/${clientId}/notes`, { noteText });
-      return await res.json();
+      return await apiRequest(`/api/clients/${clientId}/notes`, { method: "POST", body: JSON.stringify({ noteText }) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/clients", clientId, "notes"] });
@@ -64,8 +63,7 @@ export default function ClientNotesTab({ clientId }: ClientNotesTabProps) {
   // Update note mutation
   const updateNoteMutation = useMutation({
     mutationFn: async ({ noteId, noteText }: { noteId: string; noteText: string }) => {
-      const res = await apiRequest("PATCH", `/api/clients/${clientId}/notes/${noteId}`, { noteText });
-      return await res.json();
+      return await apiRequest(`/api/clients/${clientId}/notes/${noteId}`, { method: "PATCH", body: JSON.stringify({ noteText }) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/clients", clientId, "notes"] });
@@ -88,7 +86,7 @@ export default function ClientNotesTab({ clientId }: ClientNotesTabProps) {
   // Delete note mutation
   const deleteNoteMutation = useMutation({
     mutationFn: async (noteId: string) => {
-      await apiRequest("DELETE", `/api/clients/${clientId}/notes/${noteId}`);
+      await apiRequest(`/api/clients/${clientId}/notes/${noteId}`, { method: "DELETE" });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/clients", clientId, "notes"] });

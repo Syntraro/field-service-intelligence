@@ -23,6 +23,7 @@ import { templateRepository } from "./templates";
 import { maintenanceRepository } from "./maintenance";
 import { subscriptionRepository } from "./subscriptions";
 import { companyRepository } from "./company";
+import { partRepository } from "./parts";
 import type { PaginationOptions, PaginatedResult } from "./clients";
 
 /**
@@ -97,13 +98,20 @@ export interface IStorage {
   updateInvoice: typeof invoiceRepository.updateInvoice;
   createInvoiceFromJob: typeof invoiceRepository.createInvoiceFromJob;
   
-  // Parts operations
+  // Items operations (products/services)
   getItems: typeof itemRepository.getItems;
   getItem: typeof itemRepository.getItem;
   createItem: typeof itemRepository.createItem;
   updateItem: typeof itemRepository.updateItem;
   deleteItem: typeof itemRepository.deleteItem;
   restoreItem: typeof itemRepository.restoreItem;
+
+  // Parts operations (legacy parts table)
+  getParts: typeof partRepository.getParts;
+  getPart: typeof partRepository.getPart;
+  createPart: (companyId: string, userId: string, partData: any) => Promise<any>;
+  updatePart: typeof partRepository.updatePart;
+  deletePart: typeof partRepository.deletePart;
 
   // Team operations
   getTeamMembers: typeof teamRepository.getTeamMembers;
@@ -145,7 +153,7 @@ updateInvitation: (id: string, data: { status: string }) => Promise<any>;
   
   // Company operations
   getCompanySettings: typeof companyRepository.getCompanySettings;
-  upsertCompanySettings: typeof companyRepository.upsertCompanySettings;
+  upsertCompanySettings: (companyId: string, userId: string, settings: any) => Promise<any>;
   getImpersonationStatus: typeof companyRepository.getImpersonationStatus;
 
   // Customer company operations (if needed)
@@ -223,13 +231,20 @@ export const storage: IStorage = {
   updateInvoice: invoiceRepository.updateInvoice.bind(invoiceRepository),
   createInvoiceFromJob: invoiceRepository.createInvoiceFromJob.bind(invoiceRepository),
   
-  // Parts operations
+  // Items operations (products/services)
   getItems: itemRepository.getItems.bind(itemRepository),
   getItem: itemRepository.getItem.bind(itemRepository),
   createItem: itemRepository.createItem.bind(itemRepository),
   updateItem: itemRepository.updateItem.bind(itemRepository),
   deleteItem: itemRepository.deleteItem.bind(itemRepository),
   restoreItem: itemRepository.restoreItem.bind(itemRepository),
+
+  // Parts operations (legacy parts table)
+  getParts: partRepository.getParts.bind(partRepository),
+  getPart: partRepository.getPart.bind(partRepository),
+  createPart: partRepository.createPart.bind(partRepository),
+  updatePart: partRepository.updatePart.bind(partRepository),
+  deletePart: partRepository.deletePart.bind(partRepository),
 
   // Team operations
   getTeamMembers: teamRepository.getTeamMembers.bind(teamRepository),
@@ -327,6 +342,7 @@ export {
   jobRepository,
   invoiceRepository,
   itemRepository,
+  partRepository,
   teamRepository,
   templateRepository,
   maintenanceRepository,

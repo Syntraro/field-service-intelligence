@@ -47,7 +47,7 @@ export function UserSubscriptionDialog({ userId, userEmail }: UserSubscriptionDi
 
   const updateSubscriptionMutation = useMutation({
     mutationFn: async (planName: string) => {
-      await apiRequest("PATCH", `/api/admin/users/${userId}/subscription`, { planName });
+      await apiRequest(`/api/admin/users/${userId}/subscription`, { method: "PATCH", body: JSON.stringify({ planName }) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/users"] });

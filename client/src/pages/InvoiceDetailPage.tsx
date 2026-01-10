@@ -216,7 +216,7 @@ export default function InvoiceDetailPage() {
   });
 
   const sendMutation = useMutation({
-    mutationFn: () => apiRequest("POST", `/api/invoices/${invoiceId}/send`),
+    mutationFn: () => apiRequest(`/api/invoices/${invoiceId}/send`, { method: "POST" }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/invoices", invoiceId] });
       toast({ title: "Invoice sent successfully" });
@@ -226,8 +226,7 @@ export default function InvoiceDetailPage() {
 
   const refreshFromJobMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", `/api/invoices/${invoiceId}/refresh-from-job`);
-      return res.json();
+      return await apiRequest(`/api/invoices/${invoiceId}/refresh-from-job`, { method: "POST" });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/invoices", invoiceId] });
@@ -238,7 +237,7 @@ export default function InvoiceDetailPage() {
 
   const createPaymentMutation = useMutation({
     mutationFn: (data: { amount: string; method: string; reference?: string; notes?: string }) =>
-      apiRequest("POST", `/api/invoices/${invoiceId}/payments`, data),
+      apiRequest(`/api/invoices/${invoiceId}/payments`, { method: "POST", body: JSON.stringify(data) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/invoices", invoiceId] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
@@ -255,7 +254,7 @@ export default function InvoiceDetailPage() {
 
   const reorderLinesMutation = useMutation({
     mutationFn: (orderData: { id: string; lineNumber: number }[]) =>
-      apiRequest("PATCH", `/api/invoices/${invoiceId}/lines/reorder`, orderData),
+      apiRequest(`/api/invoices/${invoiceId}/lines/reorder`, { method: "PATCH", body: JSON.stringify(orderData) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/invoices", invoiceId] });
     },

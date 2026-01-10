@@ -32,7 +32,7 @@ export default function RequestReset() {
   const onSubmit = async (data: RequestResetFormData) => {
     setIsLoading(true);
     try {
-      const response = await apiRequest("POST", "/api/auth/password-reset-request", data);
+      const response = await apiRequest("/api/auth/password-reset-request", { method: "POST", body: JSON.stringify(data) });
       const result = await response.json();
       
       setIsSuccess(true);

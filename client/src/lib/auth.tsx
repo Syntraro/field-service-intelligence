@@ -2,19 +2,21 @@ import { createContext, useContext, useState, useEffect, type ReactNode } from "
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient, resetCsrf } from "./queryClient";
 
-interface User {
+export interface User {
   id: string;
   email: string;
   role: string;
   companyId: string;
   isAdmin?: boolean;
+  firstName?: string | null;
+  lastName?: string | null;
 }
 
 interface AuthContextType {
   user: User | null;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<void>;
-  signup: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<User>;
+  signup: (email: string, password: string) => Promise<User>;
   logout: () => Promise<void>;
 }
 

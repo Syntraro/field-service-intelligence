@@ -221,7 +221,6 @@ export class TemplateRepository extends BaseRepository {
           quantity: line.quantity,
           unitPrice: line.unitPriceOverride || "0",
           sortOrder: line.sortOrder,
-          source: "pm_template",
         })
         .returning();
 

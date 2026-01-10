@@ -6,9 +6,9 @@ import {
   updateJobSchema,
   insertRecurringJobSeriesSchema,
   insertRecurringJobPhaseSchema,
-  jobStatusEnum,
 } from "@shared/schema";
 import { assertJobStatusTransition } from "../statusRules";
+import { jobStatusEnum } from "../schemas";
 import type { JobStatus } from "../schemas";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
@@ -59,7 +59,12 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
   const companyId = req.companyId;
 
   const parsed = validateSchema(insertJobSchema, req.body);
-  const job = await storage.createJob(companyId, parsed);
+  const job = await storage.createJob(companyId, {
+    ...parsed,
+    status: parsed.status || "draft",
+    priority: parsed.priority || "medium",
+    jobType: parsed.jobType || "maintenance",
+  });
 
   res.status(201).json(job);
 }));
@@ -72,9 +77,25 @@ router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authed
   const { version, ...data } = req.body;
   const parsed = validateSchema(updateJobSchema, data);
 
+  // Convert date strings to Date objects for storage
+  const updates: Record<string, unknown> = { ...parsed };
+  if (parsed.actualStart !== undefined) {
+    updates.actualStart = parsed.actualStart ? new Date(parsed.actualStart) : null;
+  }
+  if (parsed.actualEnd !== undefined) {
+    updates.actualEnd = parsed.actualEnd ? new Date(parsed.actualEnd) : null;
+  }
+  if (parsed.scheduledStart !== undefined) {
+    updates.scheduledStart = parsed.scheduledStart ? new Date(parsed.scheduledStart) : null;
+  }
+  if (parsed.scheduledEnd !== undefined) {
+    updates.scheduledEnd = parsed.scheduledEnd ? new Date(parsed.scheduledEnd) : null;
+  }
+
   try {
     // Pass version to storage (can be undefined)
-    const updated = await storage.updateJob(companyId, req.params.id, version, parsed);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const updated = await storage.updateJob(companyId, req.params.id, version, updates as any);
 
     if (!updated) {
       throw createError(404, "Job not found");
@@ -172,7 +193,10 @@ router.post("/:jobId/parts", requireRole(MANAGER_ROLES), asyncHandler(async (req
 
   const jobPart = await storage.createJobPart(companyId, req.params.jobId, {
     ...validated,
+    companyId,
     jobId: req.params.jobId,
+    quantity: String(validated.quantity),
+    unitPrice: validated.unitPrice ? String(validated.unitPrice) : undefined,
   });
 
   res.status(201).json(jobPart);
@@ -193,7 +217,11 @@ router.put("/:jobId/parts/:id", requireRole(MANAGER_ROLES), asyncHandler(async (
   if (!job) throw createError(404, "Job not found");
 
   const validated = validateSchema(updateJobPartSchema, req.body);
-  const jobPart = await storage.updateJobPart(companyId, req.params.id, validated);
+  const jobPart = await storage.updateJobPart(companyId, req.params.id, {
+    ...validated,
+    quantity: validated.quantity !== undefined ? String(validated.quantity) : undefined,
+    unitPrice: validated.unitPrice !== undefined ? String(validated.unitPrice) : undefined,
+  });
   if (!jobPart) throw createError(404, "Job part not found");
 
   res.json(jobPart);
@@ -275,7 +303,6 @@ router.post("/:jobId/equipment", requireRole(MANAGER_ROLES), asyncHandler(async 
   }
 
   const jobEquipment = await storage.createJobEquipment(companyId, req.params.jobId, {
-    jobId: req.params.jobId,
     equipmentId,
     notes,
   });

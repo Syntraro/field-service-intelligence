@@ -175,16 +175,15 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
     mutationFn: async (data: QuickAddPartData) => {
       const priceStr = data.unitPrice.trim();
       const unitPrice = priceStr === "" ? null : priceStr;
-      
-      const res = await apiRequest("POST", "/api/items", {
+
+      return await apiRequest("/api/items", { method: "POST", body: JSON.stringify({
         type: data.type,
         name: data.name,
         sku: data.sku || null,
         description: data.description || null,
         unitPrice,
         isActive: true,
-      });
-      return res.json();
+      }) });
     },
     onSuccess: (newPart) => {
       queryClient.invalidateQueries({ queryKey: ["/api/items"] });

@@ -14,7 +14,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { Supplier, SupplierLocation } from "@shared/schema";
-import { useAuth } from "@clerk/clerk-react";
 
 interface SupplierWithLocations extends Supplier {
   locations?: SupplierLocation[];

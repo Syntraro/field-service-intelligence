@@ -83,7 +83,7 @@ export default function SupportConsole() {
   // Start impersonation mutation
   const startImpersonation = useMutation({
     mutationFn: (data: { targetUserId: string; reason: string }) =>
-      apiRequest("POST", "/api/impersonation/start", data),
+      apiRequest("/api/impersonation/start", { method: "POST", body: JSON.stringify(data) }),
     onSuccess: () => {
       toast({
         title: "Impersonation started",
@@ -107,7 +107,7 @@ export default function SupportConsole() {
   // Extend trial mutation
   const extendTrial = useMutation({
     mutationFn: (data: { companyId: string; days: number }) =>
-      apiRequest("PATCH", `/api/admin/companies/${data.companyId}/trial`, { days: data.days }),
+      apiRequest(`/api/admin/companies/${data.companyId}/trial`, { method: "PATCH", body: JSON.stringify({ days: data.days }) }),
     onSuccess: () => {
       toast({
         title: "Trial extended",
@@ -130,9 +130,9 @@ export default function SupportConsole() {
   // Update subscription mutation
   const updateSubscription = useMutation({
     mutationFn: (data: { companyId: string; plan: string; status: string }) =>
-      apiRequest("PATCH", `/api/admin/companies/${data.companyId}/subscription`, {
-        plan: data.plan,
-        status: data.status,
+      apiRequest(`/api/admin/companies/${data.companyId}/subscription`, {
+        method: "PATCH",
+        body: JSON.stringify({ plan: data.plan, status: data.status }),
       }),
     onSuccess: () => {
       toast({

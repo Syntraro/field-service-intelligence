@@ -7,6 +7,7 @@ import {
   jobEquipment,
   locationEquipment,
   recurringJobSeries,
+  recurringJobPhases,
   companyCounters,
   clients,
   customerCompanies
@@ -527,12 +528,17 @@ export class JobRepository extends BaseRepository {
         .insert(recurringJobSeries)
         .values({
           companyId,
-          name: data.name,
-          description: data.description || null,
-          frequency: data.frequency || 'monthly',
+          locationId: data.locationId,
+          baseSummary: data.baseSummary || data.name || 'Recurring Job',
+          baseDescription: data.baseDescription || data.description || null,
+          baseJobType: data.baseJobType || 'maintenance',
+          basePriority: data.basePriority || 'medium',
+          defaultTechnicianId: data.defaultTechnicianId || null,
+          startDate: data.startDate || new Date().toISOString().split('T')[0],
+          timezone: data.timezone || 'America/Toronto',
+          notes: data.notes || null,
           isActive: data.isActive ?? true,
-          createdAt: new Date(),
-          updatedAt: new Date(),
+          createdByUserId: data.createdByUserId || null,
         })
         .returning();
 
@@ -540,23 +546,19 @@ export class JobRepository extends BaseRepository {
       const phasesToCreate = data.phases && data.phases.length > 0
         ? data.phases.map((phase: any, index: number) => ({
             seriesId: series.id,
-            companyId,
-            name: phase.name,
-            phaseOrder: phase.phaseOrder ?? index + 1,
-            description: phase.description || null,
-            isActive: phase.isActive ?? true,
-            createdAt: new Date(),
-            updatedAt: new Date(),
+            orderIndex: phase.orderIndex ?? phase.phaseOrder ?? index,
+            frequency: phase.frequency || 'monthly',
+            interval: phase.interval ?? 1,
+            occurrences: phase.occurrences || null,
+            untilDate: phase.untilDate || null,
           }))
         : [{
             seriesId: series.id,
-            companyId,
-            name: 'Standard',
-            phaseOrder: 1,
-            description: null,
-            isActive: true,
-            createdAt: new Date(),
-            updatedAt: new Date(),
+            orderIndex: 0,
+            frequency: 'monthly',
+            interval: 1,
+            occurrences: null,
+            untilDate: null,
           }];
 
       await tx.insert(recurringJobPhases).values(phasesToCreate);
@@ -584,13 +586,11 @@ export class JobRepository extends BaseRepository {
       .insert(recurringJobPhases)
       .values({
         seriesId: data.seriesId,
-        companyId,
-        name: data.name,
-        phaseOrder: data.phaseOrder,
-        description: data.description || null,
-        isActive: data.isActive ?? true,
-        createdAt: new Date(),
-        updatedAt: new Date(),
+        orderIndex: data.orderIndex ?? data.phaseOrder ?? 0,
+        frequency: data.frequency || 'monthly',
+        interval: data.interval ?? 1,
+        occurrences: data.occurrences || null,
+        untilDate: data.untilDate || null,
       })
       .returning();
 

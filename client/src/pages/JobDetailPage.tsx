@@ -95,7 +95,7 @@ function JobDescriptionCard({ jobId, description, onDescriptionChange }: {
         method: "PATCH",
         body: JSON.stringify({ description: editValue })
       });
-      queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}`] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
       setIsEditing(false);
       toast({ title: "Saved", description: "Job description updated." });
       onDescriptionChange();
@@ -240,7 +240,7 @@ function AssignTechnicianDialog({
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}`] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
       toast({
         title: "Technicians Updated",
         description: "Job technician assignments have been updated.",
@@ -362,7 +362,7 @@ export default function JobDetailPage() {
   const jobId = params?.id;
 
   const { data: job, isLoading, error } = useQuery<JobDetailResponse>({
-    queryKey: [`/api/jobs/${jobId}`],
+    queryKey: ["/api/jobs", jobId],
     enabled: !!jobId,
   });
 
@@ -384,7 +384,7 @@ export default function JobDetailPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}`] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       toast({
         title: "Status Updated",
@@ -438,7 +438,7 @@ export default function JobDetailPage() {
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
-      queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}`] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
       toast({
         title: "Invoice Created",
         description: "Invoice has been created from this job.",
@@ -533,7 +533,7 @@ export default function JobDetailPage() {
         jobId={jobId!} 
         description={job.description} 
         onDescriptionChange={() => {
-          queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}`] });
+          queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
         }}
       />
 
@@ -703,7 +703,7 @@ export default function JobDetailPage() {
         onOpenChange={setShowEditDialog}
         editJob={job}
         onSuccess={() => {
-          queryClient.invalidateQueries({ queryKey: [`/api/jobs/${jobId}`] });
+          queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
         }}
       />
 

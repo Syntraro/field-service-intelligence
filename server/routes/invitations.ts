@@ -1,7 +1,9 @@
-import express from "express";
+import express, { Request, Response } from "express";
 import { requireRole } from "../auth/requireRole";
 import { createInvitation, acceptInvitation, resendInvitation } from "../services/invitations";
 import { writeAuditLog } from "../services/audit";
+import { asyncHandler, createError } from "../middleware/errorHandler";
+import { AuthedRequest } from "../auth/tenantIsolation";
 import { z } from "zod";
 
 const router = express.Router();
@@ -24,13 +26,10 @@ const acceptInvitationSchema = z.object({
 });
 
 // Admin/dispatcher create invite (protected by requireAuth upstream)
-router.post("/", requireRole(["admin", "dispatcher"]), async (req, res) => {
+router.post("/", requireRole(["admin", "dispatcher"]), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const validation = createInvitationSchema.safeParse(req.body);
   if (!validation.success) {
-    return res.status(400).json({ 
-      error: "Validation failed", 
-      details: validation.error.errors 
-    });
+    throw createError(400, "Validation failed");
   }
 
   const { email, role } = validation.data;
@@ -46,12 +45,12 @@ router.post("/", requireRole(["admin", "dispatcher"]), async (req, res) => {
   });
 
   res.json({ token, expiresAt });
-});
+}));
 
-// Resend invite (pending only)
-router.post("/:id/resend", requireRole(["admin", "dispatcher"]), async (req, res) => {
+// Resend invite (pending only) - validates invitation belongs to company
+router.post("/:id/resend", requireRole(["admin", "dispatcher"]), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
-  const { token, expiresAt } = await resendInvitation(req.params.id);
+  const { token, expiresAt } = await resendInvitation(companyId, req.params.id);
 
   await writeAuditLog({
     companyId,
@@ -63,22 +62,19 @@ router.post("/:id/resend", requireRole(["admin", "dispatcher"]), async (req, res
   });
 
   res.json({ token, expiresAt });
-});
+}));
 
 // Public accept (should be mounted BEFORE requireAuth)
-router.post("/accept", async (req, res) => {
+router.post("/accept", asyncHandler(async (req: Request, res: Response) => {
   const validation = acceptInvitationSchema.safeParse(req.body);
   if (!validation.success) {
-    return res.status(400).json({ 
-      error: "Validation failed", 
-      details: validation.error.errors 
-    });
+    throw createError(400, "Validation failed");
   }
 
   const { token, password, passwordHash } = validation.data;
-  const user = await acceptInvitation(token, password ?? passwordHash);
+  const user = await acceptInvitation(token, password ?? passwordHash!);
 
   res.json({ success: true, user });
-});
+}));
 
 export default router;

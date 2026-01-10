@@ -19,7 +19,7 @@ interface MaintenanceSectionProps {
   onMarkComplete: (id: string) => void;
   onEdit: (id: string) => void;
   emptyMessage?: string;
-  clientParts?: Record<string, ClientItem[]>;
+  clientParts?: Record<string, ClientPart[]>;
   completionStatuses?: Record<string, { completed: boolean; completedDueDate?: string }>;
 }
 

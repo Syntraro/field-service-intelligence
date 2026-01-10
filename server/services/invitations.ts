@@ -63,10 +63,15 @@ export async function acceptInvitation(token: string, password: string) {
   });
 }
 
-export async function resendInvitation(invitationId: string) {
-  const inviteRows = await db.select().from(invitations).where(eq(invitations.id, invitationId)).limit(1);
+export async function resendInvitation(companyId: string, invitationId: string) {
+  const inviteRows = await db
+    .select()
+    .from(invitations)
+    .where(and(eq(invitations.id, invitationId), eq(invitations.companyId, companyId)))
+    .limit(1);
   const invite = inviteRows[0];
-  if (!invite || invite.status !== "pending") throw new Error("Cannot resend invitation");
+  if (!invite) throw new Error("Invitation not found");
+  if (invite.status !== "pending") throw new Error("Cannot resend invitation");
 
   const token = crypto.randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + INVITE_TTL_DAYS * 24 * 60 * 60 * 1000);

@@ -96,11 +96,11 @@ function makeKey(req: Request, scope: string) {
 // Cleanup expired buckets every 5 minutes to prevent memory leak
 setInterval(() => {
   const now = nowMs();
-  for (const [key, bucket] of buckets.entries()) {
+  buckets.forEach((bucket, key) => {
     if (bucket.resetAt <= now) {
       buckets.delete(key);
     }
-  }
+  });
 }, 5 * 60 * 1000);
 
 export function rateLimitPerTenant(options?: {

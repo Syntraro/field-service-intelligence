@@ -15,6 +15,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import type { Item } from "@shared/schema";
 
 interface Part {
   id: string;
@@ -203,8 +204,7 @@ export default function NewAddClientDialog({ open, onOpenChange, onSaved }: NewA
         inactive: data.inactive,
         nextDue: nextDue ? nextDue.toISOString() : new Date('9999-12-31').toISOString(),
       };
-      const response = await apiRequest('POST', '/api/clients', clientData);
-      return response.json();
+      return await apiRequest('/api/clients', { method: 'POST', body: JSON.stringify(clientData) });
     },
     onSuccess: (newClient) => {
       queryClient.invalidateQueries({ queryKey: ['/api/clients'] });
@@ -214,7 +214,7 @@ export default function NewAddClientDialog({ open, onOpenChange, onSaved }: NewA
 
   const createPartsMutation = useMutation({
     mutationFn: async ({ clientId, parts }: { clientId: string; parts: typeof partRows }) => {
-      return await apiRequest('PUT', `/api/clients/${clientId}/parts`, { parts });
+      return await apiRequest(`/api/clients/${clientId}/parts`, { method: 'PUT', body: JSON.stringify({ parts }) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/clients'] });
@@ -224,7 +224,7 @@ export default function NewAddClientDialog({ open, onOpenChange, onSaved }: NewA
 
   const createEquipmentMutation = useMutation({
     mutationFn: async ({ clientId, equipment }: { clientId: string; equipment: typeof equipmentRows }) => {
-      return await apiRequest('PUT', `/api/clients/${clientId}/equipment`, { equipment });
+      return await apiRequest(`/api/clients/${clientId}/equipment`, { method: 'PUT', body: JSON.stringify({ equipment }) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/clients'] });

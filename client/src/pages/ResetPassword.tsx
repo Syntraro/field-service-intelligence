@@ -87,10 +87,9 @@ export default function ResetPassword() {
 
     setIsLoading(true);
     try {
-      const response = await apiRequest("POST", "/api/auth/password-reset/confirm", {
-        tokenId,
-        token,
-        password: data.password,
+      const response = await apiRequest("/api/auth/password-reset/confirm", {
+        method: "POST",
+        body: JSON.stringify({ tokenId, token, password: data.password }),
       });
       const result = await response.json();
 

@@ -1,5 +1,19 @@
+import type { Job, Invoice } from "@shared/schema";
 
-export function refreshInvoiceFromJob(job, invoice) {
+interface JobItem {
+  description: string;
+  qty: number;
+  rate: number;
+}
+
+interface InvoiceItem {
+  description: string;
+  qty: number;
+  rate: number;
+  source: string;
+}
+
+export function refreshInvoiceFromJob(job: Job & { items?: JobItem[] }, invoice: Invoice) {
   // HARD RULE:
   // - Job is source of work
   // - Invoice is source of billing

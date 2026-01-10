@@ -57,7 +57,7 @@ interface Client {
 
 interface ClientReportData {
   client: Client;
-  parts: ClientItem[];
+  parts: ClientPart[];
   equipment: Equipment[];
 }
 
@@ -115,30 +115,25 @@ export default function ClientReportDialog({ clientId, open, onOpenChange }: Cli
     retry: false,
   });
 
+  const notesKey = ["/api/clients", clientId, "notes"] as const;
+
   const { data: clientNotes = [], isLoading: isLoadingNotes } = useQuery<ClientNote[]>({
-    queryKey: ['/api/client-notes', clientId],
+    queryKey: notesKey,
     queryFn: async () => {
-      const res = await fetch(`/api/client-notes/${clientId}`, {
-        credentials: 'include',
-      });
-      if (!res.ok) {
-        throw new Error(`Failed to fetch client notes: ${res.status}`);
-      }
-      return res.json();
+      return await apiRequest(`/api/clients/${clientId}/notes`);
     },
     enabled: !!clientId && open,
   });
 
   const createNoteMutation = useMutation({
     mutationFn: async (noteText: string) => {
-      return apiRequest('/api/client-notes', {
-        method: 'POST',
-        body: JSON.stringify({ clientId, noteText }),
-        headers: { 'Content-Type': 'application/json' },
+      return apiRequest(`/api/clients/${clientId}/notes`, {
+        method: "POST",
+        body: JSON.stringify({ noteText }),
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/client-notes', clientId] });
+      queryClient.invalidateQueries({ queryKey: notesKey });
       setNewNoteText("");
       setIsAddingNote(false);
     },
@@ -146,14 +141,13 @@ export default function ClientReportDialog({ clientId, open, onOpenChange }: Cli
 
   const updateNoteMutation = useMutation({
     mutationFn: async ({ id, noteText }: { id: string; noteText: string }) => {
-      return apiRequest(`/api/client-notes/${id}`, {
-        method: 'PATCH',
+      return apiRequest(`/api/clients/${clientId}/notes/${id}`, {
+        method: "PATCH",
         body: JSON.stringify({ noteText }),
-        headers: { 'Content-Type': 'application/json' },
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/client-notes', clientId] });
+      queryClient.invalidateQueries({ queryKey: notesKey });
       setEditingNoteId(null);
       setEditNoteText("");
     },
@@ -161,12 +155,12 @@ export default function ClientReportDialog({ clientId, open, onOpenChange }: Cli
 
   const deleteNoteMutation = useMutation({
     mutationFn: async (id: string) => {
-      return apiRequest(`/api/client-notes/${id}`, {
-        method: 'DELETE',
+      return apiRequest(`/api/clients/${clientId}/notes/${id}`, {
+        method: "DELETE",
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['/api/client-notes', clientId] });
+      queryClient.invalidateQueries({ queryKey: notesKey });
     },
   });
 

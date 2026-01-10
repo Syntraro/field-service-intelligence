@@ -1,7 +1,7 @@
 
 import crypto from "crypto";
-import { db } from "../storage";
-import { invitations } from "../../shared/schema";
+import { db } from "../db";
+import { invitations } from "@shared/schema";
 import { eq } from "drizzle-orm";
 
 export async function resendInvitation(id: string) {

@@ -37,12 +37,12 @@ class CacheService {
   deletePattern(pattern: string): number {
     const regex = new RegExp('^' + pattern.replace(/\*/g, '.*') + '$');
     let count = 0;
-    for (const key of this.cache.keys()) {
+    Array.from(this.cache.keys()).forEach(key => {
       if (regex.test(key)) {
         this.cache.delete(key);
         count++;
       }
-    }
+    });
     return count;
   }
 
@@ -60,12 +60,12 @@ class CacheService {
   private cleanup(): void {
     const now = Date.now();
     let removed = 0;
-    for (const [key, entry] of this.cache.entries()) {
+    this.cache.forEach((entry, key) => {
       if (now > entry.expiresAt) {
         this.cache.delete(key);
         removed++;
       }
-    }
+    });
     if (removed > 0) {
       console.log(`[Cache] Cleaned up ${removed} expired entries. Current size: ${this.cache.size}`);
     }

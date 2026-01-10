@@ -1,9 +1,11 @@
-import express from "express";
+import express, { Response } from "express";
 import { requireRole } from "../auth/requireRole";
 import { db } from "../db";
 import { users } from "@shared/schema";
 import { and, eq } from "drizzle-orm";
 import { writeAuditLog } from "../services/audit";
+import { asyncHandler, createError } from "../middleware/errorHandler";
+import { AuthedRequest } from "../auth/tenantIsolation";
 import { z } from "zod";
 
 const router = express.Router();
@@ -16,13 +18,10 @@ const updateRoleSchema = z.object({
   role: z.enum(["admin", "technician", "dispatcher"]),
 });
 
-router.patch("/:id/role", requireRole(["admin"]), async (req, res) => {
+router.patch("/:id/role", requireRole(["admin"]), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const validation = updateRoleSchema.safeParse(req.body);
   if (!validation.success) {
-    return res.status(400).json({ 
-      error: "Validation failed", 
-      details: validation.error.errors 
-    });
+    throw createError(400, "Validation failed");
   }
 
   const { role } = validation.data;
@@ -34,8 +33,9 @@ router.patch("/:id/role", requireRole(["admin"]), async (req, res) => {
     .where(and(eq(users.id, req.params.id), eq(users.companyId, companyId)))
     .returning({ id: users.id });
 
-  if (!updated || updated.length === 0)
-    return res.status(404).json({ error: "User not found" });
+  if (!updated || updated.length === 0) {
+    throw createError(404, "User not found");
+  }
 
   await writeAuditLog({
     companyId,
@@ -47,9 +47,9 @@ router.patch("/:id/role", requireRole(["admin"]), async (req, res) => {
   });
 
   res.json({ success: true });
-});
+}));
 
-router.post("/:id/disable", requireRole(["admin"]), async (req, res) => {
+router.post("/:id/disable", requireRole(["admin"]), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
 
   const disabledRes = await db
@@ -58,8 +58,9 @@ router.post("/:id/disable", requireRole(["admin"]), async (req, res) => {
     .where(and(eq(users.id, req.params.id), eq(users.companyId, companyId)))
     .returning({ id: users.id });
 
-  if (!disabledRes || disabledRes.length === 0)
-    return res.status(404).json({ error: "User not found" });
+  if (!disabledRes || disabledRes.length === 0) {
+    throw createError(404, "User not found");
+  }
 
   await writeAuditLog({
     companyId,
@@ -70,6 +71,6 @@ router.post("/:id/disable", requireRole(["admin"]), async (req, res) => {
   });
 
   res.json({ success: true });
-});
+}));
 
 export default router;

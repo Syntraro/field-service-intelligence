@@ -53,7 +53,7 @@ export function InvoiceHeaderCard({
         <div>
           <div className="text-lg font-semibold">Invoice #{invoice.invoiceNumber}</div>
           <div className="text-sm text-muted-foreground">
-            {customerCompany?.companyName ?? location.companyName}
+            {customerCompany?.name ?? location.companyName}
           </div>
           {location.location && (
             <div className="text-sm text-muted-foreground">{location.location}</div>

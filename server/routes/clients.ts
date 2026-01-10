@@ -334,6 +334,11 @@ router.post("/import-simple", requireRole(MANAGER_ROLES), asyncHandler(async (re
     throw createError(400, "Invalid import data: clients array is required");
   }
 
+  // Request size validation - max 500 clients per import
+  if (clients.length > 500) {
+    throw createError(400, `Import limit exceeded: maximum 500 clients per request (received ${clients.length})`);
+  }
+
   // Check if user can import this many clients
   const usage = await storage.getSubscriptionUsage(req.companyId!) as any;
   const availableSlots = usage.plan ? usage.plan.locationLimit - usage.usage.locations : 999999;
@@ -370,74 +375,128 @@ router.post("/import-simple", requireRole(MANAGER_ROLES), asyncHandler(async (re
 
 // POST /api/clients/import - Full import with equipment and parts
 router.post("/import", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const { clients } = req.body;
+  const { clients: clientsToImport } = req.body;
 
-  if (!Array.isArray(clients) || clients.length === 0) {
+  if (!Array.isArray(clientsToImport) || clientsToImport.length === 0) {
     throw createError(400, "Invalid import data: clients array is required");
+  }
+
+  // Request size validation - max 200 clients for full import (has nested parts/equipment)
+  if (clientsToImport.length > 200) {
+    throw createError(400, `Import limit exceeded: maximum 200 clients per full import (received ${clientsToImport.length}). Use /import-simple for larger batches.`);
   }
 
   let imported = 0;
   const errors: string[] = [];
 
-  for (const clientData of clients) {
+  // Phase 1: Validate all clients upfront
+  const validatedClients: Array<{
+    clientInfo: any;
+    parts: Array<{ name: string; quantity?: number }>;
+    equipment: Array<{ name: string; modelNumber?: string; serialNumber?: string }>;
+  }> = [];
+
+  for (const clientData of clientsToImport) {
     try {
       const { parts, equipment, ...clientInfo } = clientData;
       const validated = insertClientSchema.parse(clientInfo);
-      const client = await storage.createClient(req.companyId, req.user.id, validated);
-      imported++;
-
-      // Import parts if present
-      if (parts && Array.isArray(parts) && parts.length > 0) {
-        for (const partData of parts) {
-          try {
-            // Create part as "other" type with the name from backup
-            const part = await storage.createPart(req.companyId, req.user.id, {
-              type: 'other',
-              name: partData.name,
-              filterType: null,
-              beltType: null,
-              size: null,
-              description: null,
-            });
-
-            // Link part to client
-            await storage.addClientPart(req.companyId, req.user.id, {
-              clientId: client.id,
-              partId: part.id,
-              quantity: partData.quantity || 1,
-            });
-          } catch (partError) {
-            console.error(`Failed to import part for ${client.companyName}:`, partError);
-          }
-        }
-      }
-
-      // Import equipment if present
-      if (equipment && Array.isArray(equipment) && equipment.length > 0) {
-        for (const equipData of equipment) {
-          try {
-            await storage.createEquipment(req.companyId, req.user.id, {
-              clientId: client.id,
-              name: equipData.name,
-              modelNumber: equipData.modelNumber || null,
-              serialNumber: equipData.serialNumber || null,
-              notes: null,
-            });
-          } catch (equipError) {
-            console.error(`Failed to import equipment for ${client.companyName}:`, equipError);
-          }
-        }
-      }
+      validatedClients.push({
+        clientInfo: validated,
+        parts: Array.isArray(parts) ? parts : [],
+        equipment: Array.isArray(equipment) ? equipment : [],
+      });
     } catch (error) {
-      console.error('Import client error:', error);
-      errors.push(`Failed to import ${clientData.companyName || 'unknown client'}`);
+      errors.push(`Validation failed for ${clientData.companyName || 'unknown client'}`);
+    }
+  }
+
+  // Phase 2: Batch create clients
+  const createdClients: Array<{ client: any; parts: any[]; equipment: any[] }> = [];
+  for (const { clientInfo, parts, equipment } of validatedClients) {
+    try {
+      const client = await storage.createClient(req.companyId, req.user.id, clientInfo);
+      createdClients.push({ client, parts, equipment });
+      imported++;
+    } catch (error) {
+      errors.push(`Failed to create ${clientInfo.companyName || 'unknown client'}`);
+    }
+  }
+
+  // Phase 3: Collect all parts to create (batch by unique name to avoid duplicates)
+  const uniquePartNames = new Map<string, { name: string; quantity: number; clientIds: string[] }>();
+  for (const { client, parts } of createdClients) {
+    for (const partData of parts) {
+      if (!partData.name) continue;
+      const existing = uniquePartNames.get(partData.name);
+      if (existing) {
+        existing.clientIds.push(client.id);
+      } else {
+        uniquePartNames.set(partData.name, {
+          name: partData.name,
+          quantity: partData.quantity || 1,
+          clientIds: [client.id],
+        });
+      }
+    }
+  }
+
+  // Create parts and link to clients (reduced from N*M queries to N+M)
+  const partIdByName = new Map<string, string>();
+  for (const [name, data] of Array.from(uniquePartNames.entries())) {
+    try {
+      const part = await storage.createPart(req.companyId, req.user.id, {
+        type: 'other',
+        name,
+        filterType: null,
+        beltType: null,
+        size: null,
+        description: null,
+      });
+      partIdByName.set(name, part.id);
+    } catch (partError) {
+      console.error(`Failed to create part ${name}:`, partError);
+    }
+  }
+
+  // Link parts to clients
+  for (const { client, parts } of createdClients) {
+    for (const partData of parts) {
+      const partId = partIdByName.get(partData.name);
+      if (partId) {
+        try {
+          await storage.addClientPart(req.companyId, req.user.id, {
+            clientId: client.id,
+            partId,
+            quantity: partData.quantity || 1,
+          });
+        } catch (linkError) {
+          console.error(`Failed to link part to ${client.companyName}:`, linkError);
+        }
+      }
+    }
+  }
+
+  // Phase 4: Create equipment (still sequential but after all clients created)
+  for (const { client, equipment } of createdClients) {
+    for (const equipData of equipment) {
+      try {
+        await storage.createEquipment(req.companyId, req.user.id, {
+          clientId: client.id,
+          name: equipData.name,
+          modelNumber: equipData.modelNumber || null,
+          serialNumber: equipData.serialNumber || null,
+          notes: null,
+        });
+      } catch (equipError) {
+        console.error(`Failed to import equipment for ${client.companyName}:`, equipError);
+      }
     }
   }
 
   res.json({
     imported,
     errors: errors.length > 0 ? errors : undefined,
-    total: clients.length
+    total: clientsToImport.length
   });
 }));
 
@@ -490,13 +549,15 @@ router.get("/:id/overview", asyncHandler(async (req: AuthedRequest, res: Respons
             .select()
             .from(jobs)
             .where(and(eq(jobs.companyId, tenantCompanyId!), inArray(jobs.locationId, locationIds)))
-            .orderBy(desc(jobs.createdAt));
+            .orderBy(desc(jobs.createdAt))
+            .limit(100);
 
           invoicesList = await db
             .select()
             .from(invoices)
             .where(and(eq(invoices.companyId, tenantCompanyId!), inArray(invoices.locationId, locationIds)))
-            .orderBy(desc(invoices.createdAt));
+            .orderBy(desc(invoices.createdAt))
+            .limit(100);
         }
       }
     } else {
@@ -594,13 +655,15 @@ router.get("/:id/overview", asyncHandler(async (req: AuthedRequest, res: Respons
           .select()
           .from(jobs)
           .where(and(eq(jobs.companyId, tenantCompanyId!), inArray(jobs.locationId, locationIds)))
-          .orderBy(desc(jobs.createdAt));
+          .orderBy(desc(jobs.createdAt))
+          .limit(100);
 
         invoicesList = await db
           .select()
           .from(invoices)
           .where(and(eq(invoices.companyId, tenantCompanyId!), inArray(invoices.locationId, locationIds)))
-          .orderBy(desc(invoices.createdAt));
+          .orderBy(desc(invoices.createdAt))
+          .limit(100);
       }
     }
 
@@ -849,6 +912,9 @@ router.post("/:id/set-primary", requireRole(MANAGER_ROLES), asyncHandler(async (
     throw createError(400, "Cannot set standalone client as primary");
   }
 
+  // Store parentCompanyId to use in transaction (TypeScript narrows it to non-null here)
+  const parentCompanyId = location.parentCompanyId;
+
   // Use a transaction to ensure atomicity
   await db.transaction(async (tx) => {
     // Clear isPrimary on all other locations with the same parentCompanyId AND companyId
@@ -857,7 +923,7 @@ router.post("/:id/set-primary", requireRole(MANAGER_ROLES), asyncHandler(async (
       .set({ isPrimary: false })
       .where(and(
         eq(clients.companyId, companyId),
-        eq(clients.parentCompanyId, location.parentCompanyId)
+        eq(clients.parentCompanyId, parentCompanyId)
       ));
 
     // Set this location as primary - double-check companyId for safety

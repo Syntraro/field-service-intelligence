@@ -1,8 +1,8 @@
-import { InsertPart } from "@shared/schema";
+import { InsertItem } from "@shared/schema";
 
 // Generate belt sizes 18-70 for both A and B types as products
-const generateBelts = (): InsertPart[] => {
-  const belts: InsertPart[] = [];
+const generateBelts = (): InsertItem[] => {
+  const belts: InsertItem[] = [];
   
   for (let size = 18; size <= 70; size++) {
     belts.push({ type: "product", name: `Belt A${size}` });
@@ -14,8 +14,8 @@ const generateBelts = (): InsertPart[] => {
 
 // Generate filter sizes with x1 and x2 thickness variants as products
 // M = Media, P = Pleated, T = Throwaway
-const generateFilters = (): InsertPart[] => {
-  const filters: InsertPart[] = [];
+const generateFilters = (): InsertItem[] => {
+  const filters: InsertItem[] = [];
   
   // Base filter sizes (without thickness)
   const baseSizes = [
@@ -48,5 +48,5 @@ const generateFilters = (): InsertPart[] => {
   return filters;
 };
 
-export const STANDARD_BELTS: InsertPart[] = generateBelts();
-export const STANDARD_FILTERS: InsertPart[] = generateFilters();
+export const STANDARD_BELTS: InsertItem[] = generateBelts();
+export const STANDARD_FILTERS: InsertItem[] = generateFilters();

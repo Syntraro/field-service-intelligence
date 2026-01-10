@@ -1,12 +1,13 @@
 import { useState, useEffect } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { X } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { Item, LocationPMItemTemplate } from "@shared/schema";
+import type { Item, LocationPMPartTemplate } from "@shared/schema";
+
 
 interface SelectedPart {
   templateId?: string;
@@ -28,7 +29,7 @@ interface PartsSelectorModalProps {
 export function PartsSelectorModal({ open, onOpenChange, locationId, existingParts = [] }: PartsSelectorModalProps) {
   const { toast } = useToast();
   const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<SelectedItem[]>([]);
+  const [selected, setSelected] = useState<SelectedPart[]>([]);
   const [isSaving, setIsSaving] = useState(false);
 
   const { data: partsData, isLoading } = useQuery<{ items: Item[] }>({
@@ -61,7 +62,7 @@ export function PartsSelectorModal({ open, onOpenChange, locationId, existingPar
     `${p.name} ${p.sku || ""} ${p.category || ""}`.toLowerCase().includes(search.toLowerCase())
   );
 
-  const toggleSelect = (part: Part) => {
+  const toggleSelect = (part: Item) => {
     const existing = selected.find((s) => s.productId === part.id);
     if (existing) {
       setSelected(selected.filter((s) => s.productId !== part.id));
@@ -100,21 +101,27 @@ export function PartsSelectorModal({ open, onOpenChange, locationId, existingPar
       });
 
       for (const ep of toDelete) {
-        await apiRequest("DELETE", `/api/locations/${locationId}/pm-parts/${ep.id}`);
+        await apiRequest(`/api/locations/${locationId}/pm-parts/${ep.id}`, { method: "DELETE" });
       }
 
       for (const part of toCreate) {
-        await apiRequest("POST", `/api/locations/${locationId}/pm-parts`, {
-          productId: part.productId,
-          quantityPerVisit: part.quantity,
+        await apiRequest(`/api/locations/${locationId}/pm-parts`, {
+          method: "POST",
+          body: JSON.stringify({
+            productId: part.productId,
+            quantityPerVisit: part.quantity,
+          }),
         });
       }
 
       for (const part of toUpdate) {
         const template = existingParts.find(ep => ep.productId === part.productId);
         if (template) {
-          await apiRequest("PUT", `/api/locations/${locationId}/pm-parts/${template.id}`, {
-            quantityPerVisit: part.quantity,
+          await apiRequest(`/api/locations/${locationId}/pm-parts/${template.id}`, {
+            method: "PUT",
+            body: JSON.stringify({
+              quantityPerVisit: part.quantity,
+            }),
           });
         }
       }
@@ -134,7 +141,7 @@ export function PartsSelectorModal({ open, onOpenChange, locationId, existingPar
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-4xl max-h-[80vh] flex flex-col">
         <DialogHeader>
-          <DialogTitle>Assign PM Parts</DialogTitle>
+          <DialogTitle>Location Parts</DialogTitle>
         </DialogHeader>
 
         <div className="grid gap-4 md:grid-cols-2 flex-1 overflow-hidden">

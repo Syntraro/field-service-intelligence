@@ -115,12 +115,11 @@ export function JobHeaderCard({
 
   const createInvoiceMutation = useMutation({
     mutationFn: async (markJobCompleted: boolean = false) => {
-      const response = await apiRequest("POST", `/api/invoices/from-job/${job.id}`, {
+      return await apiRequest(`/api/invoices/from-job/${job.id}`, { method: "POST", body: JSON.stringify({
         includeLineItems: true,
         includeNotes: true,
         markJobCompleted,
-      });
-      return response.json();
+      }) });
     },
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
@@ -142,16 +141,15 @@ export function JobHeaderCard({
       } else if (option === "archive") {
         newStatus = "archived";
       }
-      
-      await apiRequest("PATCH", `/api/jobs/${job.id}/status`, { status: newStatus });
-      
+
+      await apiRequest(`/api/jobs/${job.id}/status`, { method: "PATCH", body: JSON.stringify({ status: newStatus }) });
+
       if (option === "invoice_now") {
-        const response = await apiRequest("POST", `/api/invoices/from-job/${job.id}`, {
+        return await apiRequest(`/api/invoices/from-job/${job.id}`, { method: "POST", body: JSON.stringify({
           includeLineItems: true,
           includeNotes: true,
           markJobCompleted: true,
-        });
-        return response.json();
+        }) });
       }
       return null;
     },

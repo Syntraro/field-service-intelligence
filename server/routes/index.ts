@@ -21,7 +21,6 @@ import authRouter from "./auth";
 
 // ✅ NEW (long-term client/company detail fix)
 import customerCompaniesRouter from "./customer-companies";
-import clientNotesRouter from "./client-notes";
 import healthRouter from "./health";
 import { requireAuth } from "../auth/requireAuth";
 import { ensureTenantContext, rateLimitPerTenant } from "../auth/tenantIsolation";
@@ -30,6 +29,7 @@ import { storage } from "../storage/index";
 import tasksRoutes from "./tasks.routes";
 import suppliersRouter from "./suppliers";
 import jobVisitsRoutes from "./jobVisits.routes";
+import clientNotesRouter from "./client-notes";
 
 /**
  * Register all API routes in a single place.
@@ -104,8 +104,10 @@ export function registerRoutes(app: Express): Server {
   // Company/Client (parent) endpoints: /api/customer-companies/:id/overview, /locations, etc.
   app.use("/api/customer-companies", customerCompaniesRouter);
 
-  // Notes endpoints (supports /api/client-notes and/or /api/clients/:id/notes depending on router implementation)
-  // Mount at /api so it can expose multiple paths cleanly.
+  // Notes endpoints
+  // ✅ Preferred canonical API: /api/clients/:id/notes
+  // ⚠️ Legacy alias (/api/client-notes) may still exist for backward compatibility.
+  // Mounted at /api so the router can expose multiple paths.
   app.use("/api", clientNotesRouter);
 
   // Create and return HTTP server

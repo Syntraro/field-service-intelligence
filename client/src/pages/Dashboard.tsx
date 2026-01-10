@@ -9,7 +9,6 @@ import NewAddClientDialog from "@/components/NewAddClientDialog";
 import { AlertCircle, Calendar, CalendarX, CheckCircle, Clock, Package, Settings, Search, Building2, FileText, Download, Users, ChevronDown, AlertTriangle, ArrowRight } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import MaintenanceCard, { MaintenanceItem } from "@/components/MaintenanceCard";
-import { Client } from "@/components/ClientListTable";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -69,6 +68,25 @@ interface DBClient {
   selectedMonths: number[];
   inactive: boolean;
   nextDue: string;
+}
+
+// Local client type for Dashboard (subset of full schema Client)
+interface DashboardClient {
+  id: string;
+  companyName: string;
+  location?: string | null;
+  address?: string | null;
+  city?: string | null;
+  province?: string | null;
+  postalCode?: string | null;
+  contactName?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  roofLadderCode?: string | null;
+  notes?: string | null;
+  selectedMonths: number[];
+  inactive: boolean;
+  nextDue: Date;
 }
 
 interface ClientPart {
@@ -208,7 +226,7 @@ const { toast } = useToast();
   });
 
 
-  const { data: clientParts = {} } = useQuery<Record<string, ClientItem[]>>({
+  const { data: clientParts = {} } = useQuery<Record<string, ClientPart[]>>({
     queryKey: ["/api/client-parts/bulk"],
     staleTime: 60 * 1000, // Cache for 60 seconds
   });
@@ -237,8 +255,7 @@ const { toast } = useToast();
 
   const deleteClientMutation = useMutation({
     mutationFn: async (id: string) => {
-      const res = await apiRequest("DELETE", `/api/clients/${id}`);
-      return res.json();
+      return await apiRequest(`/api/clients/${id}`, { method: "DELETE" });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
@@ -258,7 +275,7 @@ const { toast } = useToast();
     },
   });
 
-  const clients: Client[] = dbClients
+  const clients: DashboardClient[] = dbClients
     .map(c => ({
       id: c.id,
       companyName: c.companyName,
@@ -328,9 +345,9 @@ const { toast } = useToast();
   // Mutation for assigning technicians
   const assignTechniciansMutation = useMutation({
     mutationFn: async ({ assignmentId, technicianIds }: { assignmentId: string; technicianIds: string[] }) => {
-      return apiRequest("PATCH", `/api/calendar/assign/${assignmentId}`, {
+      return apiRequest(`/api/calendar/assign/${assignmentId}`, { method: "PATCH", body: JSON.stringify({
         assignedTechnicianIds: technicianIds
-      });
+      }) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
@@ -630,9 +647,9 @@ const { toast } = useToast();
           : client.nextDue.toISOString();  // Completing: use current nextDue
       }
       
-      const res = await apiRequest("POST", `/api/maintenance/${clientId}/toggle`, {
+      const res = await apiRequest(`/api/maintenance/${clientId}/toggle`, { method: "POST", body: JSON.stringify({
         dueDate: dueDateToSend
-      });
+      }) });
       const data = await res.json();
       
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });

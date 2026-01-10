@@ -87,8 +87,9 @@ const defaultFormData: ProductFormData = {
 };
 
 interface PartsResponse {
-  data: Part[];
-  meta: {
+  data?: Part[];
+  items?: Part[];
+  meta?: {
     limit: number;
     hasMore: boolean;
     nextOffset?: number;
@@ -229,7 +230,7 @@ export default function ProductsServicesManager() {
 
   const uniqueCategories = useMemo(() => {
     const cats = new Set<string>(DEFAULT_CATEGORY_OPTIONS);
-    allParts.forEach((p) => {
+    allParts.forEach((p: Part) => {
       if (p.category) cats.add(p.category);
     });
     return Array.from(cats).sort();
@@ -464,12 +465,12 @@ export default function ProductsServicesManager() {
   const checkDuplicate = useMemo(() => {
     const nameLower = formData.name.trim().toLowerCase();
     if (!nameLower) return null;
-    
-    const duplicate = allParts.find((p) => {
+
+    const duplicate = allParts.find((p: Part) => {
       if (editingProduct && p.id === editingProduct.id) return false;
       return (p.name || "").toLowerCase() === nameLower;
     });
-    
+
     return duplicate;
   }, [formData.name, allParts, editingProduct]);
 

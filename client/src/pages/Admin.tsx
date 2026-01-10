@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import { useAuth } from "@/lib/auth";
+import { useAuth, type User } from "@/lib/auth";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,15 +35,6 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 
-interface User {
-  id: string;
-  email: string;
-  role: string;
-  companyId: string;
-  firstName?: string | null;
-  lastName?: string | null;
-}
-
 export default function Admin() {
   const { user: currentUser } = useAuth();
   const { toast } = useToast();
@@ -68,16 +59,18 @@ export default function Admin() {
 
   const { data: companySettings } = useQuery<{ calendarStartHour?: number }>({
     queryKey: ["/api/company-settings"],
-    onSuccess: (data) => {
-      if (data?.calendarStartHour !== undefined) {
-        setCalendarStartHour(data.calendarStartHour);
-      }
-    },
   });
+
+  // Update state when company settings load
+  useEffect(() => {
+    if (companySettings?.calendarStartHour !== undefined) {
+      setCalendarStartHour(companySettings.calendarStartHour);
+    }
+  }, [companySettings]);
 
   const deleteUserMutation = useMutation({
     mutationFn: async (userId: string) => {
-      await apiRequest("DELETE", `/api/admin/users/${userId}`);
+      await apiRequest(`/api/admin/users/${userId}`, { method: "DELETE" });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/users"] });
@@ -97,7 +90,7 @@ export default function Admin() {
 
   const toggleAdminMutation = useMutation({
     mutationFn: async ({ userId, role }: { userId: string; role: string }) => {
-      await apiRequest("PATCH", `/api/admin/users/${userId}/role`, { role });
+      await apiRequest(`/api/admin/users/${userId}/role`, { method: "PATCH", body: JSON.stringify({ role }) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/users"] });
@@ -117,8 +110,7 @@ export default function Admin() {
 
   const seedPartsMutation = useMutation({
     mutationFn: async (userId: string) => {
-      const response = await apiRequest("POST", `/api/admin/users/${userId}/seed-parts`);
-      return await response.json();
+      return await apiRequest(`/api/admin/users/${userId}/seed-parts`, { method: "POST" });
     },
     onSuccess: (data) => {
       toast({
@@ -137,8 +129,7 @@ export default function Admin() {
 
   const resetPasswordMutation = useMutation({
     mutationFn: async ({ userId, password }: { userId: string; password: string }) => {
-      const response = await apiRequest("POST", `/api/admin/users/${userId}/reset-password`, { password });
-      return await response.json();
+      return await apiRequest(`/api/admin/users/${userId}/reset-password`, { method: "POST", body: JSON.stringify({ password }) });
     },
     onSuccess: () => {
       toast({
@@ -160,7 +151,7 @@ export default function Admin() {
 
   const updateFeedbackStatusMutation = useMutation({
     mutationFn: async ({ id, status }: { id: string; status: string }) => {
-      await apiRequest("PATCH", `/api/feedback/${id}/status`, { status });
+      await apiRequest(`/api/feedback/${id}/status`, { method: "PATCH", body: JSON.stringify({ status }) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/feedback"] });
@@ -180,7 +171,7 @@ export default function Admin() {
 
   const archiveFeedbackMutation = useMutation({
     mutationFn: async ({ id, archived }: { id: string; archived: boolean }) => {
-      await apiRequest("PATCH", `/api/feedback/${id}/archive`, { archived });
+      await apiRequest(`/api/feedback/${id}/archive`, { method: "PATCH", body: JSON.stringify({ archived }) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/feedback"] });
@@ -200,7 +191,7 @@ export default function Admin() {
 
   const deleteFeedbackMutation = useMutation({
     mutationFn: async (id: string) => {
-      await apiRequest("DELETE", `/api/feedback/${id}`);
+      await apiRequest(`/api/feedback/${id}`, { method: "DELETE" });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/feedback"] });
@@ -220,8 +211,9 @@ export default function Admin() {
 
   const updateSettingsMutation = useMutation({
     mutationFn: async () => {
-      await apiRequest("POST", "/api/company-settings", {
-        calendarStartHour,
+      await apiRequest("/api/company-settings", {
+        method: "POST",
+        body: JSON.stringify({ calendarStartHour }),
       });
     },
     onSuccess: () => {

@@ -4,14 +4,34 @@ import { clients, companies, subscriptionPlans } from "@shared/schema";
 import { BaseRepository } from "./base";
 import { cache, CacheKeys, CacheTTL } from "../services/cache";
 
+// Subscription usage response types
+interface PlanInfo {
+  name: string;
+  displayName: string | null;
+  locationLimit: number;
+  price: number;
+}
+
+interface UsageInfo {
+  locations: number;
+}
+
+interface SubscriptionUsage {
+  plan: PlanInfo | null;
+  usage: UsageInfo;
+  percentUsed: number;
+  trialEndsAt: string | null;
+  subscriptionStatus: string | null;
+}
+
 export class SubscriptionRepository extends BaseRepository {
   /**
    * Get subscription usage info for a company (with caching)
    */
-  async getSubscriptionUsage(companyId: string) {
+  async getSubscriptionUsage(companyId: string): Promise<SubscriptionUsage> {
     // Try cache first (cache for 1 minute - balance freshness vs performance)
     const cacheKey = CacheKeys.subscription(companyId);
-    const cached = cache.get(cacheKey);
+    const cached = cache.get<SubscriptionUsage>(cacheKey);
     if (cached) {
       return cached;
     }

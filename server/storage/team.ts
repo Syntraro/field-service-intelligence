@@ -120,11 +120,11 @@ export class TeamRepository extends BaseRepository {
   async upsertTechnicianProfile(
     userId: string,
     profileData: {
-      laborCostPerHour?: string;
-      billableRatePerHour?: string;
+      laborCostPerHour?: string | null;
+      billableRatePerHour?: string | null;
       color?: string;
-      phone?: string;
-      note?: string;
+      phone?: string | null;
+      note?: string | null;
     }
   ) {
     // Try to update first

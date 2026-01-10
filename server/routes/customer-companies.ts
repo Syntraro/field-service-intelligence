@@ -145,7 +145,7 @@ router.get("/:companyId/overview", asyncHandler(async (req: AuthedRequest, res: 
 
   const locationIds = locations.map((l) => l.id).filter(Boolean);
 
-  // Jobs + invoices live on locationId. Roll up through locations.
+  // Jobs + invoices live on locationId. Roll up through locations. Limited to 100 for performance.
   const jobsList =
     locationIds.length === 0
       ? []
@@ -153,7 +153,8 @@ router.get("/:companyId/overview", asyncHandler(async (req: AuthedRequest, res: 
           .select()
           .from(jobs)
           .where(and(eq(jobs.companyId, tenantCompanyId!), inArray(jobs.locationId, locationIds)))
-          .orderBy(desc(jobs.createdAt));
+          .orderBy(desc(jobs.createdAt))
+          .limit(100);
 
   const invoicesList =
     locationIds.length === 0
@@ -162,7 +163,8 @@ router.get("/:companyId/overview", asyncHandler(async (req: AuthedRequest, res: 
           .select()
           .from(invoices)
           .where(and(eq(invoices.companyId, tenantCompanyId!), inArray(invoices.locationId, locationIds)))
-          .orderBy(desc(invoices.createdAt));
+          .orderBy(desc(invoices.createdAt))
+          .limit(100);
 
   // Minimal summary stats; extend later without breaking the FE contract.
   const stats = {

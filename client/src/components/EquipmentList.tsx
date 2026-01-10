@@ -224,8 +224,7 @@ export default function EquipmentList() {
 
   const createMutation = useMutation({
     mutationFn: async ({ clientId, equipment }: { clientId: string; equipment: Partial<Equipment> }) => {
-      const res = await apiRequest('POST', `/api/clients/${clientId}/equipment`, equipment);
-      return await res.json();
+      return await apiRequest(`/api/clients/${clientId}/equipment`, { method: 'POST', body: JSON.stringify(equipment) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/equipment'] });
@@ -247,8 +246,7 @@ export default function EquipmentList() {
 
   const updateMutation = useMutation({
     mutationFn: async ({ id, equipment }: { id: string; equipment: Partial<Equipment> }) => {
-      const res = await apiRequest('PUT', `/api/equipment/${id}`, equipment);
-      return await res.json();
+      return await apiRequest(`/api/equipment/${id}`, { method: 'PUT', body: JSON.stringify(equipment) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/equipment'] });
@@ -270,7 +268,7 @@ export default function EquipmentList() {
 
   const deleteMutation = useMutation({
     mutationFn: async (equipmentId: string) => {
-      await apiRequest('DELETE', `/api/equipment/${equipmentId}`);
+      await apiRequest(`/api/equipment/${equipmentId}`, { method: 'DELETE' });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/equipment'] });

@@ -25,6 +25,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { ArrowLeft, Pencil, Trash2, Loader2, FolderOpen } from "lucide-react";
+import type { Item } from "@shared/schema";
 
 interface Part {
   id: string;
@@ -97,7 +98,7 @@ export default function CategoryManagementPage() {
         (p) => (p.category || "Uncategorized") === oldName
       );
       const promises = partsToUpdate.map((p) =>
-        apiRequest("PUT", `/api/items/${p.id}`, { category: newName })
+        apiRequest(`/api/items/${p.id}`, { method: "PUT", body: JSON.stringify({ category: newName }) })
       );
       await Promise.all(promises);
     },
@@ -119,7 +120,7 @@ export default function CategoryManagementPage() {
         (p) => (p.category || "Uncategorized") === categoryName
       );
       const promises = partsToUpdate.map((p) =>
-        apiRequest("PUT", `/api/items/${p.id}`, { category: null })
+        apiRequest(`/api/items/${p.id}`, { method: "PUT", body: JSON.stringify({ category: null }) })
       );
       await Promise.all(promises);
     },

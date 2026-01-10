@@ -1,8 +1,4 @@
-
-import {
-  type Invoice,
-  type InvoiceLine,
-} from "../schemas";
+import type { Invoice, InvoiceLine } from "@shared/schema";
 import { assertInvoiceSyncAllowed } from "../services/qboGuards";
 
 export async function syncInvoiceToQBO(invoice: Invoice) {

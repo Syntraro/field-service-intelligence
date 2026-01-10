@@ -34,7 +34,7 @@ export class CompanyRepository extends BaseRepository {
   /**
    * Upsert company settings (invalidates cache)
    */
-  async upsertCompanySettings(companyId: string, settings: any) {
+  async upsertCompanySettings(companyId: string, userId: string, settings: any) {
     const existing = await this.getCompanySettings(companyId);
 
     let result;
@@ -51,7 +51,7 @@ export class CompanyRepository extends BaseRepository {
         .insert(companySettings)
         .values({
           companyId,
-          userId: companyId, // TODO: Pass actual userId
+          userId,
           ...settings,
         })
         .returning();

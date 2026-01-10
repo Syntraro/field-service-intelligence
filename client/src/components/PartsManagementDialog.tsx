@@ -20,6 +20,7 @@ import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import type { Item } from "@shared/schema";
 
 interface Part {
   id: string;
@@ -65,8 +66,7 @@ export default function PartsManagementDialog({ onCancel }: PartsManagementDialo
 
   const bulkCreateMutation = useMutation({
     mutationFn: async (parts: Partial<Part>[]) => {
-      const res = await apiRequest("POST", "/api/items/bulk", parts);
-      return await res.json();
+      return await apiRequest("/api/items/bulk", { method: "POST", body: JSON.stringify(parts) });
     },
     onSuccess: (data: { created: Item[]; errors?: Array<{ index: number; error: string }> }) => {
       queryClient.invalidateQueries({ predicate: (query) => typeof query.queryKey[0] === 'string' && query.queryKey[0].startsWith('/api/items') });
@@ -94,8 +94,7 @@ export default function PartsManagementDialog({ onCancel }: PartsManagementDialo
 
   const deletePartMutation = useMutation({
     mutationFn: async (id: string) => {
-      const res = await apiRequest("DELETE", `/api/items/${id}`);
-      return await res.json();
+      return await apiRequest(`/api/items/${id}`, { method: "DELETE" });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ predicate: (query) => typeof query.queryKey[0] === 'string' && query.queryKey[0].startsWith('/api/items') });
@@ -115,8 +114,7 @@ export default function PartsManagementDialog({ onCancel }: PartsManagementDialo
 
   const bulkDeleteMutation = useMutation({
     mutationFn: async (ids: string[]) => {
-      const res = await apiRequest('POST', '/api/items/bulk-delete', { ids });
-      return res.json();
+      return await apiRequest('/api/items/bulk-delete', { method: 'POST', body: JSON.stringify({ ids }) });
     },
     onSuccess: (data) => {
       const { deletedCount, notFoundCount } = data;

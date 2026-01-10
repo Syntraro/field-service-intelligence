@@ -31,7 +31,7 @@ export default function TechnicianManagementPage() {
 
   const inviteMutation = useMutation({
     mutationFn: async (data: { email: string }) => {
-      return await apiRequest("POST", "/api/technicians/invite", data);
+      return await apiRequest("/api/technicians/invite", { method: "POST", body: JSON.stringify(data) });
     },
     onSuccess: () => {
       toast({ title: "Invitation sent successfully" });
@@ -45,7 +45,7 @@ export default function TechnicianManagementPage() {
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      return await apiRequest("DELETE", `/api/technicians/${id}`, null);
+      return await apiRequest(`/api/technicians/${id}`, { method: "DELETE" });
     },
     onSuccess: () => {
       toast({ title: "Technician deleted" });
@@ -58,7 +58,7 @@ export default function TechnicianManagementPage() {
 
   const resetPasswordMutation = useMutation({
     mutationFn: async (id: string) => {
-      return await apiRequest("POST", `/api/technicians/${id}/reset-password`, {});
+      return await apiRequest(`/api/technicians/${id}/reset-password`, { method: "POST" });
     },
     onSuccess: (data) => {
       toast({ title: "Password reset link generated" });

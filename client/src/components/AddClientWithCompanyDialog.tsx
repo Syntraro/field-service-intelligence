@@ -14,6 +14,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Plus, Trash2, Check, ChevronsUpDown, ChevronDown, Building2, MapPin, Receipt } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
+import type { Item } from "@shared/schema";
 
 interface Part {
   id: string;

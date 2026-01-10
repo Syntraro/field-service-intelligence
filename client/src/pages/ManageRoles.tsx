@@ -95,7 +95,7 @@ export default function ManageRoles() {
 
   const createRoleMutation = useMutation({
     mutationFn: async (data: typeof newRole) => {
-      return await apiRequest("POST", "/api/roles", data);
+      return await apiRequest("/api/roles", { method: "POST", body: JSON.stringify(data) });
     },
     onSuccess: () => {
       toast({ title: "Role created successfully" });
@@ -110,7 +110,7 @@ export default function ManageRoles() {
 
   const updateRoleMutation = useMutation({
     mutationFn: async ({ roleId, permissions }: { roleId: string; permissions: string[] }) => {
-      return await apiRequest("PUT", `/api/roles/${roleId}/permissions`, { permissions });
+      return await apiRequest(`/api/roles/${roleId}/permissions`, { method: "PUT", body: JSON.stringify({ permissions }) });
     },
     onSuccess: () => {
       toast({ title: "Role permissions updated" });
@@ -124,7 +124,7 @@ export default function ManageRoles() {
 
   const deleteRoleMutation = useMutation({
     mutationFn: async (roleId: string) => {
-      return await apiRequest("DELETE", `/api/roles/${roleId}`);
+      return await apiRequest(`/api/roles/${roleId}`, { method: "DELETE" });
     },
     onSuccess: () => {
       toast({ title: "Role deleted" });

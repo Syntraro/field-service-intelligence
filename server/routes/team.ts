@@ -28,21 +28,19 @@ const updateTeamMemberSchema = z.object({
   useCustomSchedule: z.boolean().optional(),
 });
 
+const moneyStringSchema = z.union([
+  z.string().regex(/^\d+(\.\d{1,2})?$/),
+  z.number().min(0).max(999.99),
+  z.literal(""),
+  z.null(),
+]).transform((val): string | null => {
+  if (val === "" || val === null || val === undefined) return null;
+  return String(val);
+}).optional();
+
 const updateTechnicianProfileSchema = z.object({
-  laborCostPerHour: z.union([
-    z.string().regex(/^\d+(\.\d{1,2})?$/),
-    z.number().min(0).max(999.99)
-  ]).transform(v => {
-    const s = String(v);
-    return s === "" ? null : s;
-  }).nullable().optional(),
-  billableRatePerHour: z.union([
-    z.string().regex(/^\d+(\.\d{1,2})?$/),
-    z.number().min(0).max(999.99)
-  ]).transform(v => {
-    const s = String(v);
-    return s === "" ? null : s;
-  }).nullable().optional(),
+  laborCostPerHour: moneyStringSchema,
+  billableRatePerHour: moneyStringSchema,
   color: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
   phone: z.string().max(20).transform(v => v === "" ? null : v).nullable().optional(),
   note: z.string().max(1000).transform(v => v === "" ? null : v).nullable().optional(),
@@ -300,7 +298,13 @@ router.put(
     }
 
     const data = validateSchema(updateTechnicianProfileSchema, req.body);
-    const profile = await storage.upsertTechnicianProfile(userId, data);
+    // Convert numeric fields to strings for storage
+    const profileData = {
+      ...data,
+      laborCostPerHour: data.laborCostPerHour != null ? String(data.laborCostPerHour) : data.laborCostPerHour,
+      billableRatePerHour: data.billableRatePerHour != null ? String(data.billableRatePerHour) : data.billableRatePerHour,
+    };
+    const profile = await storage.upsertTechnicianProfile(userId, profileData);
 
     res.json(profile);
   })

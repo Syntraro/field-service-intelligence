@@ -9,8 +9,7 @@ export default function PartsManagementPage() {
 
   const seedPartsMutation = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/items/seed");
-      return await res.json();
+      return await apiRequest("/api/items/seed", { method: "POST" });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/items"] });

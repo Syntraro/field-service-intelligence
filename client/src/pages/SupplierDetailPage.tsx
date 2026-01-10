@@ -37,7 +37,6 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Supplier, SupplierLocation } from "@shared/schema";
-import { useAuth } from "@clerk/clerk-react";
 import { AddLocationDialog } from "@/components/suppliers/AddLocationDialog";
 import { EditLocationDialog } from "@/components/suppliers/EditLocationDialog";
 

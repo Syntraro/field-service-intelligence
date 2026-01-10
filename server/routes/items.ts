@@ -31,6 +31,13 @@ const createItemSchema = z.object({
 
 const updateItemSchema = createItemSchema.partial().strict();
 
+// Convert numeric fields to strings for DB storage
+function toDbNumericString(value: string | number | null | undefined): string | null | undefined {
+  if (value === null) return null;
+  if (value === undefined) return undefined;
+  return String(value);
+}
+
 // ========================================
 // ROUTES
 // ========================================
@@ -43,56 +50,29 @@ router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const { params, explicit } = parsePaginationLenient(req.query);
   const q = String((req.query as any)?.q ?? "").trim();
 
-  // Fetch all matching rows (storage already orders by name)
   const allRows = await storage.getItems(companyId, q || undefined);
-  console.log("[ITEMS] getItems returned", allRows?.length ?? 0, "rows for company", companyId);
 
-  // Apply pagination
   const offset = params.offset ?? 0;
   const { items, meta } = applyOffsetPagination(allRows ?? [], offset, params.limit);
 
-  const result = paginatedCompat(items, meta, explicit);
-  console.log("[ITEMS] Returning response, explicit:", explicit, "structure:", Array.isArray(result) ? "array" : "object", "count:", items.length);
-  res.json(result);
+  res.json(paginatedCompat(items, meta, explicit));
 }));
 
 // POST /api/items - Create new item
 router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
-  console.log("========== CREATE ITEM REQUEST ==========");
-  console.log("companyId:", req.companyId);
-  console.log("userId:", req.user?.id);
-  console.log("body:", req.body);
-
   const companyId = req.companyId;
   const userId = req.user?.id;
+  if (!companyId || !userId) throw createError(401, "Unauthorized");
 
-  if (!companyId) {
-    console.error("ERROR: Missing companyId");
-    throw createError(401, "Unauthorized");
-  }
-  if (!userId) {
-    console.error("ERROR: Missing userId");
-    throw createError(401, "User ID required");
-  }
+  const validated = validateSchema(createItemSchema, req.body);
+  const created = await storage.createItem(companyId, userId, {
+    ...validated,
+    cost: toDbNumericString(validated.cost),
+    markupPercent: toDbNumericString(validated.markupPercent),
+    unitPrice: toDbNumericString(validated.unitPrice),
+  });
 
-  try {
-    const validated = validateSchema(createItemSchema, req.body);
-    console.log("Validated:", validated);
-
-    console.log("Calling storage.createItem with:", { companyId, userId });
-    const created = await storage.createItem(companyId, userId, validated);
-    console.log("SUCCESS: Item created:", created.id);
-
-    res.json(created);
-  } catch (error: any) {
-    console.error("========== CREATE ITEM ERROR ==========");
-    console.error("Type:", error.constructor.name);
-    console.error("Message:", error.message);
-    console.error("Code:", error.code);
-    console.error("Detail:", error.detail);
-    console.error("Stack:", error.stack);
-    throw error;
-  }
+  res.json(created);
 }));
 
 // PUT /api/items/:id - Update item
@@ -101,7 +81,12 @@ router.put("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRe
   if (!companyId) throw createError(401, "Unauthorized");
 
   const validated = validateSchema(updateItemSchema, req.body);
-  const updated = await storage.updateItem(companyId, req.params.id, validated);
+  const updated = await storage.updateItem(companyId, req.params.id, {
+    ...validated,
+    cost: toDbNumericString(validated.cost),
+    markupPercent: toDbNumericString(validated.markupPercent),
+    unitPrice: toDbNumericString(validated.unitPrice),
+  });
 
   res.json(updated);
 }));

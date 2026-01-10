@@ -138,14 +138,10 @@ export default function ClientDetailPage() {
   const invoices: Invoice[] = overview?.invoices ?? [];
 
   const { data: notes = [] } = useQuery<ClientNote[]>({
-    queryKey: ["/api/client-notes", clientId],
-    queryFn: async () => {
-      const res = await fetch(`/api/client-notes?clientId=${clientId}`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch notes");
-      return res.json();
-    },
-    enabled: Boolean(clientId),
-  });
+  queryKey: ["/api/clients", clientId, "notes"],
+  enabled: Boolean(clientId),
+});
+
 
   /**
    * Jobs roll up by locationId (not clientId)
@@ -168,54 +164,55 @@ export default function ClientDetailPage() {
   );
 
   const createNoteMutation = useMutation({
-    mutationFn: async (noteText: string) => {
-      return await apiRequest(`/api/client-notes`, {
-        method: "POST",
-        body: JSON.stringify({ clientId, noteText }),
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/client-notes", clientId] });
-      setNewNoteContent("");
-      setIsAddingNote(false);
-      toast({ title: "Note added", description: "The note has been added successfully." });
-    },
-    onError: () => {
-      toast({ title: "Error", description: "Failed to add note.", variant: "destructive" });
-    },
-  });
+  mutationFn: async (noteText: string) => {
+    return apiRequest(`/api/clients/${clientId}/notes`, {
+      method: "POST",
+      body: JSON.stringify({ noteText }),
+    });
+  },
+  onSuccess: () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/clients", clientId, "notes"] });
+    setNewNoteContent("");
+    setIsAddingNote(false);
+    toast({ title: "Note added", description: "The note has been added successfully." });
+  },
+  onError: () => {
+    toast({ title: "Error", description: "Failed to add note.", variant: "destructive" });
+  },
+});
 
-  const updateNoteMutation = useMutation({
-    mutationFn: async ({ noteId, noteText }: { noteId: string; noteText: string }) => {
-      return await apiRequest(`/api/client-notes/${noteId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ noteText }),
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/client-notes", clientId] });
-      setEditingNoteId(null);
-      setEditNoteContent("");
-      toast({ title: "Note updated" });
-    },
-    onError: () => {
-      toast({ title: "Error", description: "Failed to update note.", variant: "destructive" });
-    },
-  });
+const updateNoteMutation = useMutation({
+  mutationFn: async ({ noteId, noteText }: { noteId: string; noteText: string }) => {
+    return apiRequest(`/api/clients/${clientId}/notes/${noteId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ noteText }),
+    });
+  },
+  onSuccess: () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/clients", clientId, "notes"] });
+    setEditingNoteId(null);
+    setEditNoteContent("");
+    toast({ title: "Note updated" });
+  },
+  onError: () => {
+    toast({ title: "Error", description: "Failed to update note.", variant: "destructive" });
+  },
+});
 
-  const deleteNoteMutation = useMutation({
-    mutationFn: async (noteId: string) => {
-      await apiRequest(`/api/client-notes/${noteId}`, { method: "DELETE" });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/client-notes", clientId] });
-      setDeleteNoteId(null);
-      toast({ title: "Note deleted" });
-    },
-    onError: () => {
-      toast({ title: "Error", description: "Failed to delete note.", variant: "destructive" });
-    },
-  });
+const deleteNoteMutation = useMutation({
+  mutationFn: async (noteId: string) => {
+    return apiRequest(`/api/clients/${clientId}/notes/${noteId}`, { method: "DELETE" });
+  },
+  onSuccess: () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/clients", clientId, "notes"] });
+    setDeleteNoteId(null);
+    toast({ title: "Note deleted" });
+  },
+  onError: () => {
+    toast({ title: "Error", description: "Failed to delete note.", variant: "destructive" });
+  },
+});
+
 
   /**
    * ✅ MODEL A FIX:
