@@ -1,0 +1,73 @@
+You are working in a production-bound TypeScript + Drizzle ORM + Postgres codebase.
+
+GOAL (Next Best Fix):
+Standardize soft delete across the database and codebase to a single canonical mechanism:
+  ✅ Canonical soft delete = deletedAt TIMESTAMP NULL
+Meaning:
+  - Active row: deletedAt IS NULL
+  - Soft-deleted row: deletedAt IS NOT NULL (timestamp of deletion)
+
+CURRENT PROBLEM:
+Soft delete is inconsistent:
+  - Some tables use deletedAt
+  - Others use isActive
+This causes inconsistent list queries, reporting, and “ghost record” bugs.
+
+HARD RULES
+- Do NOT break existing APIs or UI in this pass.
+- Do NOT remove columns yet (isActive must remain during transition).
+- Prefer additive migrations only.
+- Must be reversible.
+- All new/updated queries should consistently exclude deleted rows.
+- Keep behavior backward-compatible during a transition window.
+
+SCOPE
+Tables currently using deletedAt only (already OK): users, customerCompanies, clientLocations, items, equipment
+Tables currently using isActive only (need standardization): jobParts, locationEquipment, jobs, invoices, jobTemplates, parts (or any remaining legacy tables)
+(Confirm actual list from shared/schema.ts and adjust as needed.)
+
+PHASE 1 — SCHEMA & MIGRATIONS (Additive)
+1) For every table that does NOT have deletedAt but uses isActive:
+   - Add column: deletedAt TIMESTAMP NULL
+   - Add index on deletedAt (and companyId + deletedAt where multi-tenant queries are common)
+2) Backfill deletedAt based on isActive:
+   - If isActive = true => deletedAt = NULL
+   - If isActive = false => deletedAt = NOW() (or a consistent backfill timestamp)
+3) Keep isActive column unchanged for now.
+4) Create migration file(s) under migrations/ with clear names and comments.
+
+PHASE 2 — STORAGE LAYER (Dual-Read / Dual-Write)
+Update repositories/storage functions so:
+- Reads exclude deleted rows using deletedAt IS NULL
+- During transition, if a table still uses isActive in some paths, ensure logic is consistent:
+  - Prefer deletedAt as source of truth
+  - Fallback to isActive only where needed (temporary)
+- Writes:
+  - On “delete” actions: set deletedAt = NOW() AND set isActive = false (dual-write)
+  - On “restore/activate” actions (if any): set deletedAt = NULL AND isActive = true (dual-write)
+- Ensure all list endpoints (jobs, invoices, parts/items, templates, equipment relations, job parts) use consistent filtering.
+
+PHASE 3 — ROUTES (No API changes)
+- Ensure routes still behave the same (no payload changes).
+- Replace any direct `isActive` filtering in routes with storage calls that enforce deletedAt filtering.
+- Do not remove old parameters or response fields yet.
+
+PHASE 4 — INTEGRITY & VERIFICATION
+1) Add a dev-only validation helper (script or endpoint) that reports for each standardized table:
+   - total rows
+   - deletedAt NULL count
+   - deletedAt NOT NULL count
+   - isActive true/false count
+   - mismatch count where (deletedAt IS NULL but isActive=false) OR (deletedAt IS NOT NULL but isActive=true)
+2) Fix mismatches by enforcing:
+   - deletedAt NULL => isActive true
+   - deletedAt NOT NULL => isActive false
+
+PHASE 5 — DOCUMENTATION
+- Update docs/SCHEMA_STANDARDIZATION.md with:
+  - Canonical rule
+  - Transition plan (dual-write window)
+  - Final cleanup step (future sprint): remove isActive columns after burn-in
+
+DELIVERABLES
+1) Migration SQL (or drizzle migration) adding deletedAt + i

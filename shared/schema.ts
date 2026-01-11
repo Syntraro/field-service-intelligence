@@ -488,7 +488,9 @@ export const technicians = pgTable("technicians", {
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }),
-  isActive: boolean("is_active").notNull().default(true),
+  isActive: boolean("is_active").notNull().default(true), // Legacy (use deletedAt)
+  // Soft delete (canonical)
+  deletedAt: timestamp("deleted_at"), // NULL = active, NOT NULL = soft-deleted
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
 });
@@ -708,7 +710,9 @@ export const invoices = pgTable("invoices", {
   qboDocNumber: text("qbo_doc_number"), // QBO DocNumber
   // Status
   dirty: boolean("dirty").notNull().default(false), // True if edited after last sync
-  isActive: boolean("is_active").notNull().default(true), // Soft delete / void
+  isActive: boolean("is_active").notNull().default(true), // Legacy soft delete (use deletedAt)
+  // Soft delete (canonical)
+  deletedAt: timestamp("deleted_at"), // NULL = active, NOT NULL = soft-deleted
   // Optimistic locking
   version: integer("version").notNull().default(0), // Incremented on every update
   // Metadata
@@ -918,7 +922,9 @@ export const recurringJobSeries = pgTable("recurring_job_series", {
   timezone: text("timezone").default("America/Toronto"),
   notes: text("notes"),
   // Status
-  isActive: boolean("is_active").notNull().default(true),
+  isActive: boolean("is_active").notNull().default(true), // Legacy (use deletedAt)
+  // Soft delete (canonical)
+  deletedAt: timestamp("deleted_at"), // NULL = active, NOT NULL = soft-deleted
   // Metadata
   createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -995,7 +1001,9 @@ export const jobs = pgTable("jobs", {
   // Calendar assignment linkage (for backward compatibility during migration)
   calendarAssignmentId: varchar("calendar_assignment_id").references(() => calendarAssignments.id, { onDelete: "set null" }),
   // Soft deletion / state
-  isActive: boolean("is_active").notNull().default(true),
+  isActive: boolean("is_active").notNull().default(true), // Legacy (use deletedAt)
+  // Soft delete (canonical)
+  deletedAt: timestamp("deleted_at"), // NULL = active, NOT NULL = soft-deleted
   // Optimistic locking
   version: integer("version").notNull().default(0), // Incremented on every update
   // Metadata
@@ -1070,7 +1078,9 @@ export const locationPMPlans = pgTable("location_pm_plans", {
   pmDec: boolean("pm_dec").notNull().default(false),
   notes: text("notes"),
   recurringSeriesId: varchar("recurring_series_id").references(() => recurringJobSeries.id, { onDelete: "set null" }),
-  isActive: boolean("is_active").notNull().default(true),
+  isActive: boolean("is_active").notNull().default(true), // Legacy (use deletedAt)
+  // Soft delete (canonical)
+  deletedAt: timestamp("deleted_at"), // NULL = active, NOT NULL = soft-deleted
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
 });
@@ -1127,7 +1137,9 @@ export const locationEquipment = pgTable("location_equipment", {
   installDate: date("install_date"),
   warrantyExpiry: date("warranty_expiry"),
   notes: text("notes"),
-  isActive: boolean("is_active").notNull().default(true),
+  isActive: boolean("is_active").notNull().default(true), // Legacy (use deletedAt)
+  // Soft delete (canonical)
+  deletedAt: timestamp("deleted_at"), // NULL = active, NOT NULL = soft-deleted
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
 });
@@ -1172,7 +1184,9 @@ export const locationPMPartTemplates = pgTable("location_pm_part_templates", {
   descriptionOverride: text("description_override"), // Custom description for job/invoice
   quantityPerVisit: text("quantity_per_visit").notNull(), // Stored as text for decimal precision
   equipmentLabel: text("equipment_label"), // Legacy: e.g. "RTU #1", "Freezer 3" - use equipmentId when possible
-  isActive: boolean("is_active").notNull().default(true),
+  isActive: boolean("is_active").notNull().default(true), // Legacy (use deletedAt)
+  // Soft delete (canonical)
+  deletedAt: timestamp("deleted_at"), // NULL = active, NOT NULL = soft-deleted
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
 });
@@ -1216,7 +1230,9 @@ export const jobParts = pgTable("job_parts", {
   unitPrice: numeric("unit_price", { precision: 12, scale: 2 }), // Price per unit // pm_template, added_by_tech, quoted, manual
   equipmentLabel: text("equipment_label"), // Legacy: Copied from PM template or added by tech
   sortOrder: integer("sort_order").notNull().default(0), // For ordering line items in Parts & Billing
-  isActive: boolean("is_active").notNull().default(true),
+  isActive: boolean("is_active").notNull().default(true), // Legacy (use deletedAt)
+  // Soft delete (canonical)
+  deletedAt: timestamp("deleted_at"), // NULL = active, NOT NULL = soft-deleted
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
 });
@@ -1500,7 +1516,9 @@ export const jobTemplates = pgTable("job_templates", {
   jobType: text("job_type"), // Optional: "service_call", "pm", "install", "repair", etc.
   description: text("description"),
   isDefaultForJobType: boolean("is_default_for_job_type").notNull().default(false),
-  isActive: boolean("is_active").notNull().default(true),
+  isActive: boolean("is_active").notNull().default(true), // Legacy (use deletedAt)
+  // Soft delete (canonical)
+  deletedAt: timestamp("deleted_at"), // NULL = active, NOT NULL = soft-deleted
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
 });
@@ -1694,7 +1712,9 @@ export const suppliers = pgTable("suppliers", {
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   // Status
-  isActive: boolean("is_active").notNull().default(true),
+  isActive: boolean("is_active").notNull().default(true), // Legacy (use deletedAt)
+  // Soft delete (canonical)
+  deletedAt: timestamp("deleted_at"), // NULL = active, NOT NULL = soft-deleted
   // QBO Vendor sync fields
   qboVendorId: text("qbo_vendor_id"),
   qboSyncToken: text("qbo_sync_token"),
@@ -1755,7 +1775,9 @@ export const supplierLocations = pgTable("supplier_locations", {
   phone: text("phone"),
   // Status
   isPrimary: boolean("is_primary").notNull().default(false),
-  isActive: boolean("is_active").notNull().default(true),
+  isActive: boolean("is_active").notNull().default(true), // Legacy (use deletedAt)
+  // Soft delete (canonical)
+  deletedAt: timestamp("deleted_at"), // NULL = active, NOT NULL = soft-deleted
   // Timestamps
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
