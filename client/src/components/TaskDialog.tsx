@@ -72,7 +72,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
 
   // Fetch task details if editing
   const { data: taskData, isLoading: isLoadingTask } = useQuery({
-    queryKey: taskId ? [`/api/tasks/${taskId}`] : ["task-empty"],
+    queryKey: taskId ? ["/api/tasks", taskId] : ["task-empty"],
     enabled: isEditMode && open,
     staleTime: 0,
   });
@@ -81,7 +81,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
 
   // Fetch supplier visit details if editing a supplier visit
   const { data: supplierVisitData } = useQuery({
-    queryKey: taskId ? [`/api/tasks/${taskId}/supplier-visit`] : ["supplier-visit-empty"],
+    queryKey: taskId ? ["/api/tasks", taskId, "supplier-visit"] : ["supplier-visit-empty"],
     enabled: isEditMode && open && type === "SUPPLIER_VISIT",
     staleTime: 0,
   });

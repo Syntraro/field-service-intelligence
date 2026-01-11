@@ -29,8 +29,6 @@ export class RouteOptimizationService {
       throw new Error("OpenRouteService API key not configured");
     }
 
-    console.log(`[Geocoding] Starting location input: "${fullAddress}"`);
-
     try {
       const response = await fetch(
         `${this.baseUrl}/geocode/search?api_key=${this.apiKey}&text=${encodeURIComponent(fullAddress)}&size=1`,
@@ -42,24 +40,18 @@ export class RouteOptimizationService {
       );
 
       if (!response.ok) {
-        console.error(`Geocoding failed for "${fullAddress}":`, response.status, response.statusText);
         return null;
       }
 
       const data = await response.json();
-      
+
       if (data.features && data.features.length > 0) {
         const coords = data.features[0].geometry.coordinates;
-        const matchedAddress = data.features[0].properties?.label || 'unknown';
-        console.log(`[Geocoding] Matched address: "${matchedAddress}"`);
-        console.log(`[Geocoding] Coordinates: [${coords[0]}, ${coords[1]}]`);
         return [coords[0], coords[1]]; // [longitude, latitude]
       }
 
-      console.log(`[Geocoding] No results found for "${fullAddress}"`);
       return null;
-    } catch (error) {
-      console.error(`Error geocoding "${fullAddress}":`, error);
+    } catch {
       return null;
     }
   }
@@ -82,7 +74,6 @@ export class RouteOptimizationService {
     for (const client of clients) {
       // Skip if no address information
       if (!client.address && !client.city) {
-        console.log(`Skipping ${client.companyName} - no address information`);
         continue;
       }
 
@@ -101,8 +92,6 @@ export class RouteOptimizationService {
             .filter(Boolean)
             .join(", ")
         });
-      } else {
-        console.log(`Failed to geocode ${client.companyName}`);
       }
 
       // Rate limiting: 40 requests/min = 1 request per 1.5 seconds
@@ -166,8 +155,6 @@ export class RouteOptimizationService {
       );
 
       if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Route optimization failed:', response.status, errorText);
         return null;
       }
 
@@ -188,8 +175,7 @@ export class RouteOptimizationService {
       }
 
       return null;
-    } catch (error) {
-      console.error('Error optimizing route:', error);
+    } catch {
       return null;
     }
   }
