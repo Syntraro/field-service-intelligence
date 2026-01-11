@@ -1,0 +1,80 @@
+export interface Part {
+  id: string;
+  type: string;
+  name?: string | null;
+  sku?: string | null;
+  description?: string | null;
+  cost?: string | null;
+  markupPercent?: string | null;
+  unitPrice?: string | null;
+  isTaxable?: boolean | null;
+  taxCode?: string | null;
+  category?: string | null;
+  isActive?: boolean | null;
+  qboItemId?: string | null;
+  qboSyncToken?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface ProductFormData {
+  type: "service" | "product";
+  name: string;
+  sku: string;
+  description: string;
+  cost: string;
+  markupPercent: string;
+  unitPrice: string;
+  isTaxable: boolean;
+  taxCode: string;
+  category: string;
+  isActive: boolean;
+}
+
+export interface PartsResponse {
+  data?: Part[];
+  items?: Part[];
+  meta?: {
+    limit: number;
+    hasMore: boolean;
+    nextOffset?: number;
+  };
+}
+
+export type SortField = "name" | "type" | "category" | "cost" | "unitPrice";
+export type SortDirection = "asc" | "desc";
+export type StatusFilter = "all" | "active" | "archived";
+export type TypeFilter = "all" | "product" | "service";
+
+export const DEFAULT_CATEGORY_OPTIONS = [
+  "Belts",
+  "Electrical",
+  "Filters",
+  "Labour",
+  "HVAC Parts",
+  "Refrigeration",
+  "Plumbing",
+  "Controls",
+  "Sheet Metal",
+  "Other",
+];
+
+export const defaultFormData: ProductFormData = {
+  type: "product",
+  name: "",
+  sku: "",
+  description: "",
+  cost: "",
+  markupPercent: "",
+  unitPrice: "",
+  isTaxable: true,
+  taxCode: "",
+  category: "",
+  isActive: true,
+};
+
+export function formatCurrency(value: string | null | undefined): string {
+  if (!value) return "-";
+  const num = parseFloat(value);
+  if (isNaN(num)) return "-";
+  return `$${num.toFixed(2)}`;
+}

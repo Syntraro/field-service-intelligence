@@ -1,11 +1,9 @@
 import { Router } from "express";
 import type { Request, Response, NextFunction } from "express";
-import { storage } from "../storage/index";
-import { insertClientSchema, clients, jobs, invoices, customerCompanies, insertLocationEquipmentSchema, updateLocationEquipmentSchema } from "@shared/schema";
+import { storage, customerCompanyRepository } from "../storage/index";
+import { insertClientSchema, insertLocationEquipmentSchema, updateLocationEquipmentSchema } from "@shared/schema";
 import { z } from "zod";
 import type { Client } from "@shared/schema";
-import { db } from "../db";
-import { eq, and, desc, inArray, isNotNull } from "drizzle-orm";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
 import { asyncHandler, createError } from "../middleware/errorHandler";
@@ -194,29 +192,19 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
   // 1) Create (or reuse) customer company row
   // Reuse if same name exists for this tenant (prevents duplicates when users retry)
   const companyName = company.name.trim();
-  const [existingCustomerCompany] = await db
-    .select()
-    .from(customerCompanies)
-    .where(and(eq(customerCompanies.companyId, companyId), eq(customerCompanies.name, companyName)))
-    .limit(1);
-
-  const customerCompany =
-    existingCustomerCompany ??
-    (await db
-      .insert(customerCompanies)
-      .values({
-        companyId,
-        name: companyName,
-        phone: company.phone?.trim() || null,
-        email: company.email?.trim() || null,
-        billingStreet: company.billingAddress?.street?.trim() || null,
-        billingCity: company.billingAddress?.city?.trim() || null,
-        billingProvince: company.billingAddress?.stateOrProvince?.trim() || null,
-        billingPostalCode: company.billingAddress?.postalCode?.trim() || null,
-        billingCountry: company.billingAddress?.country?.trim() || null,
-      })
-      .returning()
-      .then((rows) => rows[0]));
+  const customerCompany = await customerCompanyRepository.findOrCreateCustomerCompany(
+    companyId,
+    {
+      name: companyName,
+      phone: company.phone?.trim() || null,
+      email: company.email?.trim() || null,
+      billingStreet: company.billingAddress?.street?.trim() || null,
+      billingCity: company.billingAddress?.city?.trim() || null,
+      billingProvince: company.billingAddress?.stateOrProvince?.trim() || null,
+      billingPostalCode: company.billingAddress?.postalCode?.trim() || null,
+      billingCountry: company.billingAddress?.country?.trim() || null,
+    }
+  );
 
   // 2) Create primary location (client record linked to customer company)
   const primaryLocationName = primaryLocation?.name?.trim() || companyName;
@@ -544,26 +532,21 @@ router.get("/:id/overview", asyncHandler(async (req: AuthedRequest, res: Respons
 
     if (client.parentCompanyId) {
       // This is a child location - fetch via parent customer company
-      const [parentCompany] = await db
-        .select()
-        .from(customerCompanies)
-        .where(and(eq(customerCompanies.id, client.parentCompanyId), eq(customerCompanies.companyId, tenantCompanyId!)))
-        .limit(1);
+      const parentCompany = await customerCompanyRepository.getCustomerCompany(
+        tenantCompanyId!,
+        client.parentCompanyId
+      );
 
       if (parentCompany) {
         company = parentCompany;
         // Get all sibling locations - include both:
         // 1. Siblings with same parentCompanyId (newly linked children)
         // 2. Siblings with same companyName (legacy children and parent)
-        const allLocationsWithSameName = await db
-          .select()
-          .from(clients)
-          .where(and(
-            eq(clients.companyId, tenantCompanyId!),
-            eq(clients.companyName, client.companyName)
-          ))
-          .orderBy(desc(clients.createdAt)) as Client[];
-        
+        const allLocationsWithSameName = await customerCompanyRepository.getLocationsByCompanyName(
+          tenantCompanyId!,
+          client.companyName
+        );
+
         // Put the current client first, then other locations
         const currentClient = allLocationsWithSameName.find(loc => loc.id === client.id);
         const otherLocations = allLocationsWithSameName.filter(loc => loc.id !== client.id);
@@ -571,19 +554,13 @@ router.get("/:id/overview", asyncHandler(async (req: AuthedRequest, res: Respons
 
         const locationIds = locations.map((l) => l.id).filter(Boolean);
         if (locationIds.length > 0) {
-          jobsList = await db
-            .select()
-            .from(jobs)
-            .where(and(eq(jobs.companyId, tenantCompanyId!), inArray(jobs.locationId, locationIds)))
-            .orderBy(desc(jobs.createdAt))
-            .limit(100);
-
-          invoicesList = await db
-            .select()
-            .from(invoices)
-            .where(and(eq(invoices.companyId, tenantCompanyId!), inArray(invoices.locationId, locationIds)))
-            .orderBy(desc(invoices.createdAt))
-            .limit(100);
+          const result = await customerCompanyRepository.getJobsAndInvoicesForLocations(
+            tenantCompanyId!,
+            locationIds,
+            100
+          );
+          jobsList = result.jobs;
+          invoicesList = result.invoices;
         }
       }
     } else {
@@ -592,48 +569,31 @@ router.get("/:id/overview", asyncHandler(async (req: AuthedRequest, res: Respons
       const companyName = client.companyName;
 
       // Find or create the customer company for this tenant + name
-      let [parentCompany] = await db
-        .select()
-        .from(customerCompanies)
-        .where(and(
-          eq(customerCompanies.companyId, tenantCompanyId!),
-          eq(customerCompanies.name, companyName)
-        ))
-        .limit(1);
-
-      if (!parentCompany) {
-        [parentCompany] = await db
-          .insert(customerCompanies)
-          .values({
-            companyId: tenantCompanyId!,
-            name: companyName,
-            phone: client.phone,
-            email: client.email,
-            billingStreet: client.address,
-            billingCity: client.city,
-            billingProvince: client.province,
-            billingPostalCode: client.postalCode,
-            billingCountry: null,
-          })
-          .returning();
-      }
+      const parentCompany = await customerCompanyRepository.findOrCreateCustomerCompany(
+        tenantCompanyId!,
+        {
+          name: companyName,
+          phone: client.phone,
+          email: client.email,
+          billingStreet: client.address,
+          billingCity: client.city,
+          billingProvince: client.province,
+          billingPostalCode: client.postalCode,
+          billingCountry: null,
+        }
+      );
 
       company = parentCompany;
 
       // Link any tenant-owned clients with same companyName that are not yet linked
-      const unlinkedSameName = await db
-        .select({ id: clients.id, isPrimary: (clients as any).isPrimary, createdAt: clients.createdAt })
-        .from(clients)
-        .where(and(
-          eq(clients.companyId, tenantCompanyId!),
-          eq(clients.companyName, companyName),
-          // only migrate rows that aren't already linked
-          eq(clients.parentCompanyId, null as any)
-        ));
+      const unlinkedSameName = await customerCompanyRepository.getUnlinkedLocationsByCompanyName(
+        tenantCompanyId!,
+        companyName
+      );
 
       if (unlinkedSameName.length > 0) {
         // Determine a primary candidate (prefer existing isPrimary, else the current client, else oldest)
-        const existingPrimary = unlinkedSameName.find((r) => (r as any).isPrimary === true);
+        const existingPrimary = unlinkedSameName.find((r) => r.isPrimary === true);
         const currentRow = unlinkedSameName.find((r) => r.id === client.id);
         const oldest = [...unlinkedSameName].sort((a, b) => {
           const ta = a.createdAt ? new Date(a.createdAt as any).getTime() : 0;
@@ -644,19 +604,14 @@ router.get("/:id/overview", asyncHandler(async (req: AuthedRequest, res: Respons
         const primaryId = (existingPrimary?.id || currentRow?.id || oldest?.id) as string;
 
         // Link all and set isPrimary deterministically within this batch
-        await db.transaction(async (tx) => {
-          for (const row of unlinkedSameName) {
-            await tx.update(clients)
-              .set({
-                parentCompanyId: parentCompany.id,
-                isPrimary: row.id === primaryId,
-              } as any)
-              .where(and(
-                eq(clients.id, row.id),
-                eq(clients.companyId, tenantCompanyId!)
-              ));
-          }
-        });
+        await customerCompanyRepository.linkLocationsToCustomerCompany(
+          tenantCompanyId!,
+          parentCompany.id,
+          unlinkedSameName.map((row) => ({
+            id: row.id,
+            isPrimary: row.id === primaryId,
+          }))
+        );
 
         // Refresh client reference if we just linked it
         if (client.id === primaryId) {
@@ -666,30 +621,20 @@ router.get("/:id/overview", asyncHandler(async (req: AuthedRequest, res: Respons
       }
 
       // Now fetch all linked locations for this customer company
-      locations = await db
-        .select()
-        .from(clients)
-        .where(and(
-          eq(clients.companyId, tenantCompanyId!),
-          eq(clients.parentCompanyId, parentCompany.id)
-        ))
-        .orderBy(desc((clients as any).isPrimary), desc(clients.createdAt)) as Client[];
+      locations = await customerCompanyRepository.getAllCustomerCompanyLocations(
+        tenantCompanyId!,
+        parentCompany.id
+      );
 
       const locationIds = locations.map((l) => l.id).filter(Boolean);
       if (locationIds.length > 0) {
-        jobsList = await db
-          .select()
-          .from(jobs)
-          .where(and(eq(jobs.companyId, tenantCompanyId!), inArray(jobs.locationId, locationIds)))
-          .orderBy(desc(jobs.createdAt))
-          .limit(100);
-
-        invoicesList = await db
-          .select()
-          .from(invoices)
-          .where(and(eq(invoices.companyId, tenantCompanyId!), inArray(invoices.locationId, locationIds)))
-          .orderBy(desc(invoices.createdAt))
-          .limit(100);
+        const result = await customerCompanyRepository.getJobsAndInvoicesForLocations(
+          tenantCompanyId!,
+          locationIds,
+          100
+        );
+        jobsList = result.jobs;
+        invoicesList = result.invoices;
       }
     }
 
@@ -725,11 +670,10 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
   }
 
     // 1) Preferred: treat param as customerCompanies.id
-    let [customerCompany] = await db
-      .select()
-      .from(customerCompanies)
-      .where(and(eq(customerCompanies.id, idParam), eq(customerCompanies.companyId, tenantCompanyId)))
-      .limit(1);
+    let customerCompany = await customerCompanyRepository.getCustomerCompany(
+      tenantCompanyId,
+      idParam
+    );
 
   // 2) Back-compat: if not found, treat param as a legacy client id and normalize to customerCompanies
   if (!customerCompany) {
@@ -738,69 +682,52 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
       throw createError(404, "Company not found");
     }
 
-      // Find or create a customer company by name
-      const [existing] = await db
-        .select()
-        .from(customerCompanies)
-        .where(and(
-          eq(customerCompanies.companyId, tenantCompanyId),
-          eq(customerCompanies.name, legacyParentClient.companyName)
-        ))
-        .limit(1);
-
-      customerCompany =
-        existing ??
-        (await db
-          .insert(customerCompanies)
-          .values({
-            companyId: tenantCompanyId,
-            name: legacyParentClient.companyName,
-            phone: legacyParentClient.phone,
-            email: legacyParentClient.email,
-            billingStreet: legacyParentClient.address,
-            billingCity: legacyParentClient.city,
-            billingProvince: legacyParentClient.province,
-            billingPostalCode: legacyParentClient.postalCode,
-            billingCountry: null,
-          })
-          .returning()
-          .then((rows) => rows[0]));
-
-      // Link all same-name unlinked locations under this customer company (Model A normalization)
-      const sameNameUnlinked = await db
-        .select({ id: clients.id, createdAt: clients.createdAt })
-        .from(clients)
-        .where(and(
-          eq(clients.companyId, tenantCompanyId),
-          eq(clients.companyName, legacyParentClient.companyName),
-          eq(clients.parentCompanyId, null as any)
-        ));
-
-      if (sameNameUnlinked.length > 0) {
-        const oldest = [...sameNameUnlinked].sort((a, b) => {
-          const ta = a.createdAt ? new Date(a.createdAt as any).getTime() : 0;
-          const tb = b.createdAt ? new Date(b.createdAt as any).getTime() : 0;
-          return ta - tb;
-        })[0];
-
-        await db.transaction(async (tx) => {
-          for (const row of sameNameUnlinked) {
-            await tx.update(clients)
-              .set({
-                parentCompanyId: customerCompany!.id,
-                isPrimary: row.id === oldest.id,
-              } as any)
-              .where(and(eq(clients.id, row.id), eq(clients.companyId, tenantCompanyId)));
-          }
-        });
+    // Find or create a customer company by name
+    customerCompany = await customerCompanyRepository.findOrCreateCustomerCompany(
+      tenantCompanyId,
+      {
+        name: legacyParentClient.companyName,
+        phone: legacyParentClient.phone,
+        email: legacyParentClient.email,
+        billingStreet: legacyParentClient.address,
+        billingCity: legacyParentClient.city,
+        billingProvince: legacyParentClient.province,
+        billingPostalCode: legacyParentClient.postalCode,
+        billingCountry: null,
       }
+    );
+
+    // Link all same-name unlinked locations under this customer company (Model A normalization)
+    const sameNameUnlinked = await customerCompanyRepository.getUnlinkedLocationsByCompanyName(
+      tenantCompanyId,
+      legacyParentClient.companyName
+    );
+
+    if (sameNameUnlinked.length > 0) {
+      const oldest = [...sameNameUnlinked].sort((a, b) => {
+        const ta = a.createdAt ? new Date(a.createdAt as any).getTime() : 0;
+        const tb = b.createdAt ? new Date(b.createdAt as any).getTime() : 0;
+        return ta - tb;
+      })[0];
+
+      await customerCompanyRepository.linkLocationsToCustomerCompany(
+        tenantCompanyId,
+        customerCompany.id,
+        sameNameUnlinked.map((row) => ({
+          id: row.id,
+          isPrimary: row.id === oldest.id,
+        }))
+      );
     }
+  }
 
-    const { location, address, city, province, postalCode, contactName, phone, email } = req.body;
+  const { location, address, city, province, postalCode, contactName, phone, email } = req.body;
 
-    const childLocationData: any = {
-      parentCompanyId: customerCompany.id,
-      companyName: customerCompany.name,
+  const newLocation = await customerCompanyRepository.createLocationUnderCustomerCompany(
+    tenantCompanyId,
+    userId,
+    customerCompany.id,
+    {
       location: location?.trim() || customerCompany.name,
       address: address?.trim() || null,
       city: city?.trim() || null,
@@ -809,14 +736,10 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
       contactName: contactName?.trim() || null,
       phone: phone?.trim() || null,
       email: email?.trim() || null,
-      inactive: false,
-      nextDue: null,
       billWithParent: true,
-      needsDetails: false,
-      isPrimary: false,
-    };
-
-  const newLocation = await storage.createClient(tenantCompanyId, userId, childLocationData);
+      inactive: false,
+    }
+  );
 
   res.json({ customerCompany, location: newLocation });
 }));
@@ -939,24 +862,11 @@ router.post("/:id/set-primary", requireRole(MANAGER_ROLES), asyncHandler(async (
   const parentCompanyId = location.parentCompanyId;
 
   // Use a transaction to ensure atomicity
-  await db.transaction(async (tx) => {
-    // Clear isPrimary on all other locations with the same parentCompanyId AND companyId
-    // This ensures cross-tenant isolation - parentCompanyId is unique within a tenant
-    await tx.update(clients)
-      .set({ isPrimary: false })
-      .where(and(
-        eq(clients.companyId, companyId),
-        eq(clients.parentCompanyId, parentCompanyId)
-      ));
-
-    // Set this location as primary - double-check companyId for safety
-    await tx.update(clients)
-      .set({ isPrimary: true })
-      .where(and(
-        eq(clients.id, locationId),
-        eq(clients.companyId, companyId)
-      ));
-  });
+  await customerCompanyRepository.setLocationAsPrimary(
+    companyId,
+    parentCompanyId,
+    locationId
+  );
 
   // Fetch the updated location
   const updated = await storage.getClient(companyId, locationId);

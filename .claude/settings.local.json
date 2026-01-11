@@ -46,7 +46,10 @@
       "Bash(npm run build:*)",
       "Bash(xargs -I{} sh -c 'echo \"\"\"\"=== {} ===\"\"\"\" && grep -c \"\"\"\"asyncHandler\"\"\"\" {} && grep -c \"\"\"\"async.*req.*res\"\"\"\" {}')",
       "Bash(for f in server/routes/*.ts)",
-      "Bash(do echo \"=== $f ===\" grep -n \"router\\\\.\\\\\\(get\\\\|post\\\\|put\\\\|patch\\\\|delete\\\\\\).*async\" \"$f\")"
+      "Bash(do echo \"=== $f ===\" grep -n \"router\\\\.\\\\\\(get\\\\|post\\\\|put\\\\|patch\\\\|delete\\\\\\).*async\" \"$f\")",
+      "Bash(chmod:*)",
+      "Bash(/home/runner/workspace/scripts/check-db-imports.sh:*)",
+      "Bash(bash:*)"
     ]
   }
 }

@@ -1,13 +1,11 @@
 import { Router, Response, NextFunction } from "express";
-import { and, desc, eq, inArray } from "drizzle-orm";
-import db from "../db";
-import { customerCompanies, clients, jobs, invoices } from "@shared/schema";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
-import { parsePaginationLenient, applyOffsetPagination } from "../utils/pagination";
+import { parsePaginationLenient } from "../utils/pagination";
 import { paginatedCompat } from "../utils/paginatedResponse";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { AuthedRequest } from "../auth/tenantIsolation";
+import { customerCompanyRepository } from "../storage/customerCompanies";
 
 function requireCompanyContext(req: any, res: Response, next: NextFunction) {
   if (!req.user) return res.status(401).json({ error: "Unauthorized" });
@@ -26,12 +24,7 @@ router.get("/:companyId", asyncHandler(async (req: AuthedRequest, res: Response)
   const { companyId: tenantCompanyId } = req;
   const { companyId } = req.params;
 
-  const [company] = await db
-    .select()
-    .from(customerCompanies)
-    .where(and(eq(customerCompanies.id, companyId), eq(customerCompanies.companyId, tenantCompanyId!)))
-    .limit(1);
-
+  const company = await customerCompanyRepository.getCustomerCompany(tenantCompanyId!, companyId);
   if (!company) throw createError(404, "Customer company not found");
   res.json(company);
 }));
@@ -45,34 +38,22 @@ router.get("/:companyId/locations", asyncHandler(async (req: AuthedRequest, res:
   const { companyId } = req.params;
   const { params, explicit } = parsePaginationLenient(req.query);
 
-  // Ensure company belongs to tenant
-  const [company] = await db
-    .select({ id: customerCompanies.id })
-    .from(customerCompanies)
-    .where(and(eq(customerCompanies.id, companyId), eq(customerCompanies.companyId, tenantCompanyId!)))
-    .limit(1);
-
-  if (!company) throw createError(404, "Customer company not found");
-
-  // Fetch with LIMIT + 1 to determine hasMore efficiently
   const offset = params.offset ?? 0;
-  const locations = await db
-    .select()
-    .from(clients)
-    .where(and(eq(clients.companyId, tenantCompanyId!), eq(clients.parentCompanyId, companyId)))
-    .orderBy(desc(clients.createdAt))
-    .limit(params.limit + 1)
-    .offset(offset);
 
-  const hasMore = locations.length > params.limit;
-  const items = hasMore ? locations.slice(0, params.limit) : locations;
+  // Repository handles company existence check and pagination
+  const result = await customerCompanyRepository.getCustomerCompanyLocations(
+    tenantCompanyId!,
+    companyId,
+    { limit: params.limit, offset }
+  );
+
   const meta = {
     limit: params.limit,
-    hasMore,
-    nextOffset: hasMore ? offset + params.limit : undefined,
+    hasMore: result.hasMore,
+    nextOffset: result.nextOffset,
   };
 
-  res.json(paginatedCompat(items, meta, explicit));
+  res.json(paginatedCompat(result.items, meta, explicit));
 }));
 /**
  * POST /api/customer-companies/:companyId/locations
@@ -82,25 +63,12 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
   const { companyId: tenantCompanyId, user } = req;
   const { companyId } = req.params;
 
-  // Ensure customer company exists and belongs to tenant
-  const [company] = await db
-    .select()
-    .from(customerCompanies)
-    .where(and(eq(customerCompanies.id, companyId), eq(customerCompanies.companyId, tenantCompanyId)))
-    .limit(1);
-
-  if (!company) {
-    throw createError(404, "Customer company not found");
-  }
-
-  // Create the location linked to this customer company
-  const [newLocation] = await db
-    .insert(clients)
-    .values({
-      companyId: tenantCompanyId,
-      userId: user.id,
-      parentCompanyId: companyId, // ✅ Link to customer company
-      companyName: company.name, // Use parent company name
+  // Repository handles company existence check
+  const newLocation = await customerCompanyRepository.createLocationUnderCustomerCompany(
+    tenantCompanyId,
+    user.id,
+    companyId,
+    {
       location: req.body.location || "",
       address: req.body.address || null,
       city: req.body.city || null,
@@ -112,11 +80,8 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
       roofLadderCode: req.body.roofLadderCode || null,
       billWithParent: req.body.billWithParent ?? true,
       inactive: req.body.inactive ?? false,
-      isPrimary: false, // New locations are not primary by default
-      needsDetails: false,
-      selectedMonths: [],
-    })
-    .returning();
+    }
+  );
 
   res.status(201).json(newLocation);
 }));
@@ -129,57 +94,14 @@ router.get("/:companyId/overview", asyncHandler(async (req: AuthedRequest, res: 
   const { companyId: tenantCompanyId } = req;
   const { companyId } = req.params;
 
-  const [company] = await db
-    .select()
-    .from(customerCompanies)
-    .where(and(eq(customerCompanies.id, companyId), eq(customerCompanies.companyId, tenantCompanyId!)))
-    .limit(1);
+  const overview = await customerCompanyRepository.getCustomerCompanyOverview(
+    tenantCompanyId!,
+    companyId
+  );
 
-  if (!company) throw createError(404, "Customer company not found");
+  if (!overview) throw createError(404, "Customer company not found");
 
-  const locations = await db
-    .select()
-    .from(clients)
-    .where(and(eq(clients.companyId, tenantCompanyId!), eq(clients.parentCompanyId, companyId)))
-    .orderBy(desc(clients.createdAt));
-
-  const locationIds = locations.map((l) => l.id).filter(Boolean);
-
-  // Jobs + invoices live on locationId. Roll up through locations. Limited to 100 for performance.
-  const jobsList =
-    locationIds.length === 0
-      ? []
-      : await db
-          .select()
-          .from(jobs)
-          .where(and(eq(jobs.companyId, tenantCompanyId!), inArray(jobs.locationId, locationIds)))
-          .orderBy(desc(jobs.createdAt))
-          .limit(100);
-
-  const invoicesList =
-    locationIds.length === 0
-      ? []
-      : await db
-          .select()
-          .from(invoices)
-          .where(and(eq(invoices.companyId, tenantCompanyId!), inArray(invoices.locationId, locationIds)))
-          .orderBy(desc(invoices.createdAt))
-          .limit(100);
-
-  // Minimal summary stats; extend later without breaking the FE contract.
-  const stats = {
-    totalLocations: locations.length,
-    openJobs: jobsList.filter((j: any) => j.status !== "completed" && j.status !== "cancelled").length,
-    openInvoices: invoicesList.filter((i: any) => i.status !== "paid" && i.status !== "void").length,
-  };
-
-  res.json({
-    company,
-    locations,
-    jobs: jobsList,
-    invoices: invoicesList,
-    stats,
-  });
+  res.json(overview);
 }));
 
 export default router;

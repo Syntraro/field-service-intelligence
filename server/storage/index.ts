@@ -24,6 +24,10 @@ import { maintenanceRepository } from "./maintenance";
 import { subscriptionRepository } from "./subscriptions";
 import { companyRepository } from "./company";
 import { partRepository } from "./parts";
+import { customerCompanyRepository } from "./customerCompanies";
+import { taskRepository } from "./tasks";
+import { permissionRepository } from "./permissions";
+import { clientNotesRepository } from "./clientNotes";
 import type { PaginationOptions, PaginatedResult } from "./clients";
 
 /**
@@ -350,6 +354,10 @@ export {
   maintenanceRepository,
   subscriptionRepository,
   companyRepository,
+  customerCompanyRepository,
+  taskRepository,
+  permissionRepository,
+  clientNotesRepository,
 };
 
 // Default export for convenience

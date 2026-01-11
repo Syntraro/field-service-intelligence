@@ -70,6 +70,89 @@ export class UserRepository extends BaseRepository {
     const rows = await db.select().from(companies).where(eq(companies.id, companyId)).limit(1);
     return rows[0] ?? null;
   }
+
+  // ========================================
+  // ADMIN USER MANAGEMENT (tenant-scoped)
+  // ========================================
+
+  /**
+   * Get user by ID within a company (tenant-scoped)
+   */
+  async getUserByCompany(companyId: string, userId: string): Promise<User | null> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(userId, "userId");
+
+    const rows = await db
+      .select()
+      .from(users)
+      .where(and(eq(users.id, userId), eq(users.companyId, companyId)))
+      .limit(1);
+
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Update user role (tenant-scoped)
+   * @throws Error if user not found in company
+   */
+  async updateUserRole(companyId: string, userId: string, role: string): Promise<boolean> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(userId, "userId");
+
+    const result = await db
+      .update(users)
+      .set({ role })
+      .where(and(eq(users.id, userId), eq(users.companyId, companyId)))
+      .returning({ id: users.id });
+
+    if (!result || result.length === 0) {
+      throw this.notFoundError("User");
+    }
+
+    return true;
+  }
+
+  /**
+   * Disable a user (tenant-scoped)
+   * @throws Error if user not found in company
+   */
+  async disableUser(companyId: string, userId: string): Promise<boolean> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(userId, "userId");
+
+    const result = await db
+      .update(users)
+      .set({ disabled: true })
+      .where(and(eq(users.id, userId), eq(users.companyId, companyId)))
+      .returning({ id: users.id });
+
+    if (!result || result.length === 0) {
+      throw this.notFoundError("User");
+    }
+
+    return true;
+  }
+
+  /**
+   * Enable a user (tenant-scoped)
+   * @throws Error if user not found in company
+   */
+  async enableUser(companyId: string, userId: string): Promise<boolean> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(userId, "userId");
+
+    const result = await db
+      .update(users)
+      .set({ disabled: false })
+      .where(and(eq(users.id, userId), eq(users.companyId, companyId)))
+      .returning({ id: users.id });
+
+    if (!result || result.length === 0) {
+      throw this.notFoundError("User");
+    }
+
+    return true;
+  }
 }
 
 export const userRepository = new UserRepository();

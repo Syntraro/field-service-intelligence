@@ -1,14 +1,16 @@
+import { auditRepository } from "../storage/audit";
 
-import { db } from "../db";
-import { companyAuditLogs } from "@shared/schema";
-
+/**
+ * Write a company-scoped audit log entry
+ * @deprecated Use auditRepository.writeCompanyAuditLog directly
+ */
 export async function writeAuditLog({
   companyId,
   userId,
   action,
   entity,
   entityId,
-  metadata
+  metadata,
 }: {
   companyId: string;
   userId?: string;
@@ -17,12 +19,12 @@ export async function writeAuditLog({
   entityId?: string;
   metadata?: any;
 }) {
-  await db.insert(companyAuditLogs).values({
+  return auditRepository.writeCompanyAuditLog({
     companyId,
     userId,
     action,
     entity,
     entityId,
-    metadata
+    metadata,
   });
 }

@@ -1,15 +1,13 @@
 import { Router, Response } from "express";
-import { and, desc, eq, or } from "drizzle-orm";
 import { z } from "zod";
-import db from "../db";
-import { clientNotes, insertClientNoteSchema, clients } from "@shared/schema";
-import { sql } from "drizzle-orm";
+import { insertClientNoteSchema } from "@shared/schema";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
 import { parsePaginationLenient } from "../utils/pagination";
 import { paginatedCompat } from "../utils/paginatedResponse";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { AuthedRequest } from "../auth/tenantIsolation";
+import { clientNotesRepository } from "../storage/clientNotes";
 
 const router = Router();
 
@@ -41,24 +39,7 @@ function normalizeNoteInput(input: unknown) {
   return { clientId: base.data.clientId, noteText: trimmed };
 }
 
-/**
- * Verifies client ownership within tenant
- */
-async function assertClientOwned(companyId: string, clientId: string): Promise<void> {
-  const [row] = await db
-    .select({ id: clients.id })
-    .from(clients)
-    .where(and(eq(clients.id, clientId), eq(clients.companyId, companyId)))
-    .limit(1);
-
-  if (!row) {
-    throw createError(404, "Client not found");
-  }
-}
-
 // GET /api/clients/:clientId/notes
-// DUAL-READ: Reads by locationId OR clientId
-// TODO: [MIGRATION] Once locationId is fully adopted, simplify to locationId only
 router.get(
   "/clients/:clientId/notes",
   asyncHandler(async (req: AuthedRequest, res: Response) => {
@@ -66,40 +47,25 @@ router.get(
     const { clientId } = req.params;
     const { params, explicit } = parsePaginationLenient(req.query);
 
-    await assertClientOwned(companyId!, clientId);
+    await clientNotesRepository.assertClientOwned(companyId!, clientId);
 
     const offset = params.offset ?? 0;
-    const notes = await db
-      .select()
-      .from(clientNotes)
-      .where(
-        and(
-          eq(clientNotes.companyId, companyId!),
-          or(
-            eq(clientNotes.locationId, clientId),
-            eq(clientNotes.clientId, clientId)
-          )
-        )
-      )
-      .orderBy(desc(clientNotes.createdAt))
-      .limit(params.limit + 1)
-      .offset(offset);
+    const result = await clientNotesRepository.listNotes(companyId!, clientId, {
+      limit: params.limit,
+      offset,
+    });
 
-    const hasMore = notes.length > params.limit;
-    const items = hasMore ? notes.slice(0, params.limit) : notes;
     const meta = {
       limit: params.limit,
-      hasMore,
-      nextOffset: hasMore ? offset + params.limit : undefined,
+      hasMore: result.hasMore,
+      nextOffset: result.nextOffset,
     };
 
-    res.json(paginatedCompat(items, meta, explicit));
+    res.json(paginatedCompat(result.items, meta, explicit));
   })
 );
 
 // POST /api/clients/:clientId/notes
-// DUAL-WRITE: Writes both locationId AND clientId
-// TODO: [MIGRATION] Once locationId is fully adopted, remove clientId write
 router.post(
   "/clients/:clientId/notes",
   requireRole(MANAGER_ROLES),
@@ -108,51 +74,32 @@ router.post(
     const { clientId } = req.params;
 
     const { clientId: parsedClientId, noteText } = normalizeNoteInput({ ...req.body, clientId });
-    await assertClientOwned(companyId!, parsedClientId);
+    await clientNotesRepository.assertClientOwned(companyId!, parsedClientId);
 
     // Prevent duplicate notes from retry attempts (5-second window)
-    // DUAL-READ for duplicate check
-    const fiveSecondsAgo = new Date(Date.now() - 5000);
-    const [recentDuplicate] = await db
-      .select()
-      .from(clientNotes)
-      .where(
-        and(
-          eq(clientNotes.companyId, companyId!),
-          eq(clientNotes.userId, user!.id),
-          or(
-            eq(clientNotes.locationId, parsedClientId),
-            eq(clientNotes.clientId, parsedClientId)
-          ),
-          eq(clientNotes.noteText, noteText),
-          sql`${clientNotes.createdAt} > ${fiveSecondsAgo}`
-        )
-      )
-      .limit(1);
+    const recentDuplicate = await clientNotesRepository.findRecentDuplicate(
+      companyId!,
+      user!.id,
+      parsedClientId,
+      noteText
+    );
 
     if (recentDuplicate) {
       return res.status(200).json(recentDuplicate);
     }
 
-    // DUAL-WRITE: Set both locationId and clientId
-    const [created] = await db
-      .insert(clientNotes)
-      .values({
-        companyId: companyId!,
-        userId: user!.id,
-        clientId: parsedClientId,
-        noteText,
-        locationId: parsedClientId, // DUAL-WRITE
-      })
-      .returning();
+    const created = await clientNotesRepository.createNote(
+      companyId!,
+      user!.id,
+      parsedClientId,
+      noteText
+    );
 
     res.status(201).json(created);
   })
 );
 
 // PATCH /api/clients/:clientId/notes/:noteId
-// DUAL-READ: Finds by locationId OR clientId
-// TODO: [MIGRATION] Once locationId is fully adopted, simplify to locationId only
 router.patch(
   "/clients/:clientId/notes/:noteId",
   requireRole(MANAGER_ROLES),
@@ -161,22 +108,14 @@ router.patch(
     const { clientId, noteId } = req.params;
 
     const { noteText } = normalizeNoteInput({ ...req.body, clientId });
-    await assertClientOwned(companyId!, clientId);
+    await clientNotesRepository.assertClientOwned(companyId!, clientId);
 
-    const [updated] = await db
-      .update(clientNotes)
-      .set({ noteText })
-      .where(
-        and(
-          eq(clientNotes.id, noteId),
-          eq(clientNotes.companyId, companyId!),
-          or(
-            eq(clientNotes.locationId, clientId),
-            eq(clientNotes.clientId, clientId)
-          )
-        )
-      )
-      .returning();
+    const updated = await clientNotesRepository.updateNote(
+      companyId!,
+      clientId,
+      noteId,
+      noteText
+    );
 
     if (!updated) {
       throw createError(404, "Note not found");
@@ -187,8 +126,6 @@ router.patch(
 );
 
 // DELETE /api/clients/:clientId/notes/:noteId
-// DUAL-DELETE: Finds by locationId OR clientId
-// TODO: [MIGRATION] Once locationId is fully adopted, simplify to locationId only
 router.delete(
   "/clients/:clientId/notes/:noteId",
   requireRole(MANAGER_ROLES),
@@ -196,21 +133,9 @@ router.delete(
     const { companyId } = req;
     const { clientId, noteId } = req.params;
 
-    await assertClientOwned(companyId!, clientId);
+    await clientNotesRepository.assertClientOwned(companyId!, clientId);
 
-    const [deleted] = await db
-      .delete(clientNotes)
-      .where(
-        and(
-          eq(clientNotes.id, noteId),
-          eq(clientNotes.companyId, companyId!),
-          or(
-            eq(clientNotes.locationId, clientId),
-            eq(clientNotes.clientId, clientId)
-          )
-        )
-      )
-      .returning();
+    const deleted = await clientNotesRepository.deleteNote(companyId!, clientId, noteId);
 
     if (!deleted) {
       throw createError(404, "Note not found");

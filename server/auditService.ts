@@ -1,9 +1,8 @@
-import { db } from "./db";
-import { auditLogs, type InsertAuditLog } from "@shared/schema";
-import { eq, desc } from "drizzle-orm";
+import { auditRepository } from "./storage/audit";
+import type { InsertAuditLog } from "@shared/schema";
 import type { Request } from "express";
 
-export type AuditAction = 
+export type AuditAction =
   | "impersonation_start"
   | "impersonation_stop"
   | "impersonation_auto_timeout"
@@ -25,45 +24,48 @@ interface AuditLogParams {
   req?: Request;
 }
 
+/**
+ * Audit service for platform-level audit logging.
+ * Uses auditRepository for all database operations.
+ */
 class AuditService {
   /**
    * Create an audit log entry
    */
   async log(params: AuditLogParams): Promise<void> {
-    try {
-      const {
-        platformAdminId,
-        platformAdminEmail,
-        action,
-        targetCompanyId,
-        targetUserId,
-        reason,
-        details,
-        req
-      } = params;
+    const {
+      platformAdminId,
+      platformAdminEmail,
+      action,
+      targetCompanyId,
+      targetUserId,
+      reason,
+      details,
+      req,
+    } = params;
 
-      // Validate that impersonation actions include a reason
-      if (action.startsWith("impersonation") && action !== "impersonation_auto_timeout" && !reason) {
-        throw new Error("Reason is required for impersonation actions");
-      }
-
-      const auditLogData: InsertAuditLog = {
-        platformAdminId,
-        platformAdminEmail,
-        action,
-        targetCompanyId: targetCompanyId || null,
-        targetUserId: targetUserId || null,
-        reason: reason || null,
-        details: details ? JSON.stringify(details) : null,
-        ipAddress: req ? this.getIpAddress(req) : null,
-        userAgent: req?.headers['user-agent'] || null,
-      };
-
-      await db.insert(auditLogs).values(auditLogData);
-    } catch (error) {
-      // Log error but don't throw - audit failures shouldn't break operations
-      console.error("Audit logging failed:", error);
+    // Validate that impersonation actions include a reason
+    if (
+      action.startsWith("impersonation") &&
+      action !== "impersonation_auto_timeout" &&
+      !reason
+    ) {
+      throw new Error("Reason is required for impersonation actions");
     }
+
+    const auditLogData: InsertAuditLog = {
+      platformAdminId,
+      platformAdminEmail,
+      action,
+      targetCompanyId: targetCompanyId || null,
+      targetUserId: targetUserId || null,
+      reason: reason || null,
+      details: details ? JSON.stringify(details) : null,
+      ipAddress: req ? auditRepository.getIpAddress(req) : null,
+      userAgent: req?.headers["user-agent"] || null,
+    };
+
+    await auditRepository.writePlatformAuditLog(auditLogData);
   }
 
   /**
@@ -87,8 +89,8 @@ class AuditService {
       req,
       details: {
         expiresIn: "60 minutes",
-        idleTimeout: "15 minutes"
-      }
+        idleTimeout: "15 minutes",
+      },
     });
   }
 
@@ -111,8 +113,8 @@ class AuditService {
       targetUserId,
       req,
       details: {
-        durationMinutes: duration ? Math.round(duration / 60000) : undefined
-      }
+        durationMinutes: duration ? Math.round(duration / 60000) : undefined,
+      },
     });
   }
 
@@ -133,8 +135,8 @@ class AuditService {
       targetCompanyId,
       targetUserId,
       details: {
-        timeoutType
-      }
+        timeoutType,
+      },
     });
   }
 
@@ -155,8 +157,8 @@ class AuditService {
       targetCompanyId,
       req,
       details: {
-        resource
-      }
+        resource,
+      },
     });
   }
 
@@ -179,8 +181,8 @@ class AuditService {
       req,
       details: {
         resource,
-        operation
-      }
+        operation,
+      },
     });
   }
 
@@ -201,8 +203,8 @@ class AuditService {
       req,
       details: {
         attemptedAction,
-        failureReason: reason
-      }
+        failureReason: reason,
+      },
     });
   }
 
@@ -222,7 +224,7 @@ class AuditService {
       action: "billing_adjustment",
       targetCompanyId,
       req,
-      details: adjustment
+      details: adjustment,
     });
   }
 
@@ -242,7 +244,7 @@ class AuditService {
       action: "trial_adjustment",
       targetCompanyId,
       req,
-      details: adjustment
+      details: adjustment,
     });
   }
 
@@ -250,46 +252,21 @@ class AuditService {
    * Get audit logs for a platform admin
    */
   async getLogsForAdmin(platformAdminId: string, limit = 100) {
-    return db
-      .select()
-      .from(auditLogs)
-      .where(eq(auditLogs.platformAdminId, platformAdminId))
-      .orderBy(desc(auditLogs.createdAt))
-      .limit(limit);
+    return auditRepository.getLogsForAdmin(platformAdminId, limit);
   }
 
   /**
    * Get audit logs for a company
    */
   async getLogsForCompany(companyId: string, limit = 100) {
-    return db
-      .select()
-      .from(auditLogs)
-      .where(eq(auditLogs.targetCompanyId, companyId))
-      .orderBy(desc(auditLogs.createdAt))
-      .limit(limit);
+    return auditRepository.getLogsForCompany(companyId, limit);
   }
 
   /**
    * Get recent audit logs (all)
    */
   async getRecentLogs(limit = 100) {
-    return db
-      .select()
-      .from(auditLogs)
-      .orderBy(desc(auditLogs.createdAt))
-      .limit(limit);
-  }
-
-  /**
-   * Extract IP address from request (handles proxies)
-   */
-  private getIpAddress(req: Request): string {
-    const forwarded = req.headers['x-forwarded-for'];
-    if (typeof forwarded === 'string') {
-      return forwarded.split(',')[0].trim();
-    }
-    return req.ip || req.socket.remoteAddress || 'unknown';
+    return auditRepository.getRecentLogs(limit);
   }
 }
 

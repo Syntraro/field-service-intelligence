@@ -91,14 +91,18 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
   }
 
   const task = await service.createTask(companyId, {
-    ...validated,
+    title: validated.title,
+    type: validated.type || "GENERAL", // Default to GENERAL if not specified
+    status: validated.status,
     createdByUserId: req.user.id,
+    assignedToUserId: validated.assignedToUserId,
     // Use notes if provided, otherwise fall back to description for backwards compatibility
     notes: validated.notes ?? (validated as any).description ?? undefined,
     clientId: validated.clientId ?? undefined,
+    jobId: validated.jobId,
     estimatedDurationMinutes: validated.estimatedDurationMinutes ?? undefined,
-    scheduledStartAt: validated.scheduledStartAt ?? undefined,
-    scheduledEndAt: validated.scheduledEndAt ?? undefined,
+    scheduledStartAt: (validated.scheduledStartAt && typeof validated.scheduledStartAt === 'string') ? validated.scheduledStartAt : undefined,
+    scheduledEndAt: (validated.scheduledEndAt && typeof validated.scheduledEndAt === 'string') ? validated.scheduledEndAt : undefined,
     allDay: validated.allDay ?? false,
   });
 
@@ -230,7 +234,7 @@ router.get("/:id/supplier-visit", asyncHandler(async (req: AuthedRequest, res: R
   }
 
   // Get supplier visit details
-  const supplierVisit = await service.getSupplierVisitDetails(taskId);
+  const supplierVisit = await service.getSupplierVisitDetails(companyId, taskId);
 
   res.json(supplierVisit || {});
 }));

@@ -1,57 +1,22 @@
-import { db } from "../db";
-import { jobNotes, jobs, users } from "../../shared/schema";
-import { and, eq, desc } from "drizzle-orm";
+import { jobNotesRepository } from "../storage/jobNotes";
 
 /**
  * LIST JOB NOTES
+ * @deprecated Use jobNotesRepository.listJobNotes directly
  */
 export async function listJobNotes(companyId: string, jobId: string) {
   if (!companyId) {
     throw new Error("companyId is required for tenant isolation");
   }
-
   if (!jobId) {
     throw new Error("jobId is required");
   }
-
-  // Verify job exists and belongs to company
-  const [job] = await db
-    .select()
-    .from(jobs)
-    .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
-
-  if (!job) {
-    throw new Error("Job not found or access denied");
-  }
-
-  // Get notes with user information
-  const notes = await db
-    .select({
-      id: jobNotes.id,
-      jobId: jobNotes.jobId,
-      noteText: jobNotes.noteText,
-      createdAt: jobNotes.createdAt,
-      updatedAt: jobNotes.updatedAt,
-      user: {
-        id: users.id,
-        email: users.email,
-        firstName: users.firstName,
-        lastName: users.lastName,
-      },
-    })
-    .from(jobNotes)
-    .leftJoin(users, eq(jobNotes.userId, users.id))
-    .where(and(
-      eq(jobNotes.companyId, companyId),
-      eq(jobNotes.jobId, jobId)
-    ))
-    .orderBy(desc(jobNotes.createdAt));
-
-  return notes;
+  return jobNotesRepository.listJobNotes(companyId, jobId);
 }
 
 /**
  * CREATE JOB NOTE
+ * @deprecated Use jobNotesRepository.createJobNote directly
  */
 export async function createJobNote(
   companyId: string,
@@ -62,51 +27,12 @@ export async function createJobNote(
   if (!companyId || !jobId || !userId) {
     throw new Error("companyId, jobId, and userId are required");
   }
-
-  // Verify job exists and belongs to company
-  const [job] = await db
-    .select()
-    .from(jobs)
-    .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
-
-  if (!job) {
-    throw new Error("Job not found or access denied");
-  }
-
-  const [note] = await db
-    .insert(jobNotes)
-    .values({
-      companyId,
-      jobId,
-      userId,
-      noteText,
-    })
-    .returning();
-
-  // Get note with user information
-  const [noteWithUser] = await db
-    .select({
-      id: jobNotes.id,
-      jobId: jobNotes.jobId,
-      noteText: jobNotes.noteText,
-      createdAt: jobNotes.createdAt,
-      updatedAt: jobNotes.updatedAt,
-      user: {
-        id: users.id,
-        email: users.email,
-        firstName: users.firstName,
-        lastName: users.lastName,
-      },
-    })
-    .from(jobNotes)
-    .leftJoin(users, eq(jobNotes.userId, users.id))
-    .where(eq(jobNotes.id, note.id));
-
-  return noteWithUser;
+  return jobNotesRepository.createJobNote(companyId, jobId, userId, noteText);
 }
 
 /**
  * UPDATE JOB NOTE
+ * @deprecated Use jobNotesRepository.updateJobNote directly
  */
 export async function updateJobNote(
   companyId: string,
@@ -117,54 +43,12 @@ export async function updateJobNote(
   if (!companyId || !noteId || !userId) {
     throw new Error("companyId, noteId, and userId are required");
   }
-
-  // Verify note exists, belongs to company, and user is the author
-  const [existing] = await db
-    .select()
-    .from(jobNotes)
-    .where(and(
-      eq(jobNotes.id, noteId),
-      eq(jobNotes.companyId, companyId),
-      eq(jobNotes.userId, userId),
-    ));
-
-  if (!existing) {
-    throw new Error("Note not found or access denied");
-  }
-
-  const [updated] = await db
-    .update(jobNotes)
-    .set({
-      noteText,
-      updatedAt: new Date(),
-    })
-    .where(eq(jobNotes.id, noteId))
-    .returning();
-
-  // Get note with user information
-  const [noteWithUser] = await db
-    .select({
-      id: jobNotes.id,
-      jobId: jobNotes.jobId,
-      noteText: jobNotes.noteText,
-      createdAt: jobNotes.createdAt,
-      updatedAt: jobNotes.updatedAt,
-      user: {
-        id: users.id,
-        email: users.email,
-        firstName: users.firstName,
-        lastName: users.lastName,
-      },
-    })
-    .from(jobNotes)
-    .leftJoin(users, eq(jobNotes.userId, users.id))
-    .where(eq(jobNotes.id, updated.id));
-
-  return noteWithUser;
+  return jobNotesRepository.updateJobNote(companyId, noteId, userId, noteText);
 }
 
 /**
- * DELETE JOB NOTE (soft delete)
+ * DELETE JOB NOTE
+ * @deprecated Use jobNotesRepository.deleteJobNote directly
  */
 export async function deleteJobNote(
   companyId: string,
@@ -174,24 +58,5 @@ export async function deleteJobNote(
   if (!companyId || !noteId || !userId) {
     throw new Error("companyId, noteId, and userId are required");
   }
-
-  // Verify note exists, belongs to company, and user is the author
-  const [existing] = await db
-    .select()
-    .from(jobNotes)
-    .where(and(
-      eq(jobNotes.id, noteId),
-      eq(jobNotes.companyId, companyId),
-      eq(jobNotes.userId, userId),
-    ));
-
-  if (!existing) {
-    throw new Error("Note not found or access denied");
-  }
-
-  await db
-    .delete(jobNotes)
-    .where(eq(jobNotes.id, noteId));
-
-  return { success: true };
+  return jobNotesRepository.deleteJobNote(companyId, noteId, userId);
 }

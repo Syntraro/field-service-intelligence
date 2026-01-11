@@ -1,9 +1,9 @@
-import { db } from "../db";
-import { invoices } from "@shared/schema";
-import { eq } from "drizzle-orm";
-
+/**
+ * Mark an invoice as dirty for sync
+ * Note: This is a placeholder for future invoice sync tracking.
+ * TODO: Implement actual dirty tracking in invoices schema if needed.
+ */
 export async function markInvoiceDirty(invoiceId: string) {
-  // Note: 'dirty' field may need to be added to invoices schema
-  // For now, this is a placeholder for invoice sync tracking
+  // Placeholder - no DB access needed yet
   console.log(`[Invoice] Marking invoice ${invoiceId} as dirty for sync`);
 }
