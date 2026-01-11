@@ -1,5 +1,5 @@
 import { Router, Response } from "express";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, or } from "drizzle-orm";
 import { z } from "zod";
 import db from "../db";
 import { clientNotes, insertClientNoteSchema, clients } from "@shared/schema";
@@ -57,6 +57,8 @@ async function assertClientOwned(companyId: string, clientId: string): Promise<v
 }
 
 // GET /api/clients/:clientId/notes
+// DUAL-READ: Reads by locationId OR clientId
+// TODO: [MIGRATION] Once locationId is fully adopted, simplify to locationId only
 router.get(
   "/clients/:clientId/notes",
   asyncHandler(async (req: AuthedRequest, res: Response) => {
@@ -70,7 +72,15 @@ router.get(
     const notes = await db
       .select()
       .from(clientNotes)
-      .where(and(eq(clientNotes.companyId, companyId!), eq(clientNotes.clientId, clientId)))
+      .where(
+        and(
+          eq(clientNotes.companyId, companyId!),
+          or(
+            eq(clientNotes.locationId, clientId),
+            eq(clientNotes.clientId, clientId)
+          )
+        )
+      )
       .orderBy(desc(clientNotes.createdAt))
       .limit(params.limit + 1)
       .offset(offset);
@@ -88,6 +98,8 @@ router.get(
 );
 
 // POST /api/clients/:clientId/notes
+// DUAL-WRITE: Writes both locationId AND clientId
+// TODO: [MIGRATION] Once locationId is fully adopted, remove clientId write
 router.post(
   "/clients/:clientId/notes",
   requireRole(MANAGER_ROLES),
@@ -99,6 +111,7 @@ router.post(
     await assertClientOwned(companyId!, parsedClientId);
 
     // Prevent duplicate notes from retry attempts (5-second window)
+    // DUAL-READ for duplicate check
     const fiveSecondsAgo = new Date(Date.now() - 5000);
     const [recentDuplicate] = await db
       .select()
@@ -107,7 +120,10 @@ router.post(
         and(
           eq(clientNotes.companyId, companyId!),
           eq(clientNotes.userId, user!.id),
-          eq(clientNotes.clientId, parsedClientId),
+          or(
+            eq(clientNotes.locationId, parsedClientId),
+            eq(clientNotes.clientId, parsedClientId)
+          ),
           eq(clientNotes.noteText, noteText),
           sql`${clientNotes.createdAt} > ${fiveSecondsAgo}`
         )
@@ -118,6 +134,7 @@ router.post(
       return res.status(200).json(recentDuplicate);
     }
 
+    // DUAL-WRITE: Set both locationId and clientId
     const [created] = await db
       .insert(clientNotes)
       .values({
@@ -125,6 +142,7 @@ router.post(
         userId: user!.id,
         clientId: parsedClientId,
         noteText,
+        locationId: parsedClientId, // DUAL-WRITE
       })
       .returning();
 
@@ -133,6 +151,8 @@ router.post(
 );
 
 // PATCH /api/clients/:clientId/notes/:noteId
+// DUAL-READ: Finds by locationId OR clientId
+// TODO: [MIGRATION] Once locationId is fully adopted, simplify to locationId only
 router.patch(
   "/clients/:clientId/notes/:noteId",
   requireRole(MANAGER_ROLES),
@@ -150,7 +170,10 @@ router.patch(
         and(
           eq(clientNotes.id, noteId),
           eq(clientNotes.companyId, companyId!),
-          eq(clientNotes.clientId, clientId)
+          or(
+            eq(clientNotes.locationId, clientId),
+            eq(clientNotes.clientId, clientId)
+          )
         )
       )
       .returning();
@@ -164,6 +187,8 @@ router.patch(
 );
 
 // DELETE /api/clients/:clientId/notes/:noteId
+// DUAL-DELETE: Finds by locationId OR clientId
+// TODO: [MIGRATION] Once locationId is fully adopted, simplify to locationId only
 router.delete(
   "/clients/:clientId/notes/:noteId",
   requireRole(MANAGER_ROLES),
@@ -179,7 +204,10 @@ router.delete(
         and(
           eq(clientNotes.id, noteId),
           eq(clientNotes.companyId, companyId!),
-          eq(clientNotes.clientId, clientId)
+          or(
+            eq(clientNotes.locationId, clientId),
+            eq(clientNotes.clientId, clientId)
+          )
         )
       )
       .returning();

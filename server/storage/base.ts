@@ -97,6 +97,27 @@ export class BaseRepository {
     (err as any).statusCode = 409;
     return err;
   }
+
+  /**
+   * MIGRATION GUARD: Validate locationId/clientId consistency.
+   * During the clientId → locationId migration, both columns should have the same value.
+   * This guard catches data inconsistencies early.
+   * TODO: [MIGRATION] Remove once clientId is fully deprecated
+   */
+  protected assertLocationIdConsistency(
+    record: { locationId?: string | null; clientId?: string | null },
+    context: string = "record"
+  ): void {
+    const { locationId, clientId } = record;
+    // If both are present and different, log a warning
+    if (locationId && clientId && locationId !== clientId) {
+      console.warn(
+        `[MIGRATION WARNING] locationId/clientId mismatch in ${context}: ` +
+        `locationId=${locationId}, clientId=${clientId}. ` +
+        `These should be equal during migration.`
+      );
+    }
+  }
 }
 
 /**
@@ -154,4 +175,38 @@ export function normalizeSearchTerm(input: string) {
     .replace(/[\u201C\u201D\u2033]/g, '"')
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/**
+ * MIGRATION GUARD: Validate locationId/clientId consistency for arrays of records.
+ * Logs warnings for any records where locationId !== clientId.
+ * TODO: [MIGRATION] Remove once clientId is fully deprecated
+ */
+export function validateLocationIdConsistencyBatch<T extends { locationId?: string | null; clientId?: string | null }>(
+  records: T[],
+  context: string = "records"
+): void {
+  for (const record of records) {
+    const { locationId, clientId } = record;
+    if (locationId && clientId && locationId !== clientId) {
+      console.warn(
+        `[MIGRATION WARNING] locationId/clientId mismatch in ${context}: ` +
+        `locationId=${locationId}, clientId=${clientId}`
+      );
+    }
+  }
+}
+
+/**
+ * MIGRATION HELPER: Log deprecation warning for clientId-only code paths.
+ * Call this in code paths that should eventually be migrated to use locationId.
+ * TODO: [MIGRATION] Remove once clientId is fully deprecated
+ */
+export function warnClientIdDeprecation(context: string): void {
+  if (process.env.NODE_ENV === "development") {
+    console.warn(
+      `[DEPRECATION] Code path "${context}" uses clientId only. ` +
+      `Consider updating to use locationId for future compatibility.`
+    );
+  }
 }

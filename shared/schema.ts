@@ -271,6 +271,8 @@ export const clientParts = pgTable("client_parts", {
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }), // Creator - nullable
   clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if parts exist
+  // TODO: [MIGRATION] locationId will become the canonical reference. clientId kept for backwards compatibility.
+  locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "restrict" }),
   partId: varchar("part_id").notNull().references(() => items.id, { onDelete: "cascade" }),
   quantity: integer("quantity").notNull(),
 });
@@ -289,6 +291,8 @@ export const maintenanceRecords = pgTable("maintenance_records", {
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }), // Creator - nullable
   clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if records exist
+  // TODO: [MIGRATION] locationId will become the canonical reference. clientId kept for backwards compatibility.
+  locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "restrict" }),
   dueDate: date("due_date").notNull(), // FIXED: Changed from text() to date()
   completedAt: timestamp("completed_at"), // FIXED: Changed from text() to timestamp()
 });
@@ -307,6 +311,8 @@ export const calendarAssignments = pgTable("calendar_assignments", {
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }), // Creator - nullable
   clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if assignments exist
+  // TODO: [MIGRATION] locationId will become the canonical reference. clientId kept for backwards compatibility.
+  locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "restrict" }),
   jobNumber: integer("job_number").notNull(),
   assignedTechnicianIds: varchar("assigned_technician_ids").array(),
   year: integer("year").notNull(),
@@ -368,6 +374,8 @@ export const equipment = pgTable("equipment", {
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }), // Creator - nullable
   clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if equipment exists
+  // TODO: [MIGRATION] locationId will become the canonical reference. clientId kept for backwards compatibility.
+  locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "restrict" }),
   name: text("name").notNull(),
   type: text("type"),
   modelNumber: text("model_number"),
@@ -613,11 +621,13 @@ export type InsertJobNote = z.infer<typeof insertJobNoteSchema>;
 export type UpdateJobNote = z.infer<typeof updateJobNoteSchema>;
 export type JobNote = typeof jobNotes.$inferSelect;
 
-// Client notes table - stores multiple timestamped notes per client
+// Client notes table - stores multiple timestamped notes per client/location
 export const clientNotes = pgTable("client_notes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if notes exist
+  // TODO: [MIGRATION] locationId will become the canonical reference. clientId kept for backwards compatibility.
+  locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "restrict" }),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   noteText: text("note_text").notNull(),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -1622,9 +1632,11 @@ export const tasks = pgTable("tasks", {
   estimatedDurationMinutes: integer("estimated_duration_minutes"), // Estimated time to complete
   actualDurationMinutes: integer("actual_duration_minutes"), // Auto-calculated from checkedInAt to checkedOutAt
 
-  // Optional attribution to a Job and Client (does NOT create billing or calendar coupling)
+  // Optional attribution to a Job and Client/Location (does NOT create billing or calendar coupling)
   jobId: varchar("job_id").references(() => jobs.id, { onDelete: "set null" }),
   clientId: varchar("client_id").references(() => clientLocations.id, { onDelete: "set null" }),
+  // TODO: [MIGRATION] locationId will become the canonical reference. clientId kept for backwards compatibility.
+  locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "set null" }),
 
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
@@ -1634,6 +1646,7 @@ export const tasks = pgTable("tasks", {
   companyStatusIdx: uniqueIndex("tasks_company_status_idx").on(table.companyId, table.status),
   companyJobIdx: uniqueIndex("tasks_company_job_idx").on(table.companyId, table.jobId),
   companyClientIdx: uniqueIndex("tasks_company_client_idx").on(table.companyId, table.clientId),
+  // TODO: [MIGRATION] Add companyLocationIdx after locationId is fully adopted
 }));
 
 export const insertTaskSchema = createInsertSchema(tasks).omit({

@@ -32,6 +32,8 @@ export interface TaskListResult {
 
 /* =========================================================
    CREATE TASK
+   DUAL-WRITE: Writes both locationId AND clientId
+   TODO: [MIGRATION] Once locationId is fully adopted, remove clientId write
    ========================================================= */
 export async function createTask(companyId: string, input: any) {
   if (!input.createdByUserId) {
@@ -65,7 +67,11 @@ export async function createTask(companyId: string, input: any) {
   }
 
   if (input.jobId !== undefined) values.jobId = input.jobId;
-  if (input.clientId !== undefined) values.clientId = input.clientId;
+  // DUAL-WRITE: Set both clientId and locationId
+  if (input.clientId !== undefined) {
+    values.clientId = input.clientId;
+    values.locationId = input.clientId; // Mirror clientId to locationId
+  }
   if (input.estimatedDurationMinutes !== undefined) values.estimatedDurationMinutes = input.estimatedDurationMinutes;
 
   const [task] = await db
@@ -256,6 +262,8 @@ export async function deleteTask(companyId: string, taskId: string) {
 
 /* =========================================================
    ADMIN UPDATE (title/notes/schedule/job link/status)
+   DUAL-WRITE: Writes both locationId AND clientId
+   TODO: [MIGRATION] Once locationId is fully adopted, remove clientId write
    ========================================================= */
 export async function updateTask(companyId: string, taskId: string, input: any) {
   const task = await getTask(companyId, taskId);
@@ -269,7 +277,11 @@ export async function updateTask(companyId: string, taskId: string, input: any) 
   if ("scheduledEndAt" in input) updates.scheduledEndAt = input.scheduledEndAt;
   if ("allDay" in input) updates.allDay = input.allDay;
   if ("jobId" in input) updates.jobId = input.jobId;
-  if ("clientId" in input) updates.clientId = input.clientId;
+  // DUAL-WRITE: Set both clientId and locationId when clientId changes
+  if ("clientId" in input) {
+    updates.clientId = input.clientId;
+    updates.locationId = input.clientId; // Mirror clientId to locationId
+  }
   if ("assignedToUserId" in input) updates.assignedToUserId = input.assignedToUserId;
   if ("estimatedDurationMinutes" in input) updates.estimatedDurationMinutes = input.estimatedDurationMinutes;
   if ("type" in input) updates.type = input.type;

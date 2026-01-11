@@ -209,6 +209,8 @@ export class ClientRepository extends BaseRepository {
 
   /**
    * Create client with parts in a transaction
+   * DUAL-WRITE: Writes both locationId AND clientId for parts
+   * TODO: [MIGRATION] Once locationId is fully adopted, remove clientId write
    */
   async createClientWithParts(
     companyId: string,
@@ -224,6 +226,7 @@ export class ClientRepository extends BaseRepository {
         .returning();
 
       // Add parts if provided
+      // DUAL-WRITE: Write both locationId and clientId
       if (parts.length > 0) {
         await tx.insert(clientParts).values(
           parts.map((p) => ({
@@ -232,6 +235,7 @@ export class ClientRepository extends BaseRepository {
             clientId: client.id,
             partId: p.partId,
             quantity: p.quantity,
+            locationId: client.id, // DUAL-WRITE: Mirror clientId to locationId
           }))
         );
       }
@@ -376,16 +380,21 @@ export class ClientRepository extends BaseRepository {
   }
 
   /**
-   * Get calendar assignments for a client
+   * Get calendar assignments for a client/location
+   * DUAL-READ: Prefers locationId, falls back to clientId
+   * TODO: [MIGRATION] Once locationId is fully adopted, simplify to locationId only
    */
-  async getAssignmentsByClient(companyId: string, clientId: string) {
+  async getAssignmentsByClient(companyId: string, locationId: string) {
     return await db
       .select()
       .from(calendarAssignments)
       .where(
         and(
           eq(calendarAssignments.companyId, companyId),
-          eq(calendarAssignments.clientId, clientId)
+          or(
+            eq(calendarAssignments.locationId, locationId),
+            eq(calendarAssignments.clientId, locationId)
+          )
         )
       )
       .orderBy(calendarAssignments.scheduledDate);
@@ -426,45 +435,72 @@ async getCalendarAssignmentsInRange(
 }
 
   /**
-   * Get client parts
+   * Get client/location parts
+   * DUAL-READ: Prefers locationId, falls back to clientId
+   * TODO: [MIGRATION] Once locationId is fully adopted, simplify to locationId only
    */
-  async getClientParts(companyId: string, clientId: string) {
+  async getClientParts(companyId: string, locationId: string) {
+    // Read by locationId OR clientId (dual-read for migration)
     return await db
       .select()
       .from(clientParts)
       .where(
-        and(eq(clientParts.companyId, companyId), eq(clientParts.clientId, clientId))
+        and(
+          eq(clientParts.companyId, companyId),
+          or(
+            eq(clientParts.locationId, locationId),
+            eq(clientParts.clientId, locationId)
+          )
+        )
       );
   }
 
   /**
-   * Add client part
+   * Add client/location part
+   * DUAL-WRITE: Writes both locationId AND clientId
+   * TODO: [MIGRATION] Once locationId is fully adopted, remove clientId write
    */
   async addClientPart(
     companyId: string,
     userId: string,
     data: { clientId: string; partId: string; quantity: number }
   ) {
+    // Dual-write: set both locationId and clientId
     const rows = await db
       .insert(clientParts)
-      .values({ ...data, companyId, userId })
+      .values({
+        ...data,
+        companyId,
+        userId,
+        locationId: data.clientId, // DUAL-WRITE: Mirror clientId to locationId
+      })
       .returning();
     return rows[0];
   }
 
   /**
-   * Delete all client parts for a client
+   * Delete all parts for a location
+   * DUAL-DELETE: Deletes by locationId OR clientId
+   * TODO: [MIGRATION] Once locationId is fully adopted, simplify to locationId only
    */
-  async deleteAllClientParts(companyId: string, clientId: string): Promise<void> {
+  async deleteAllClientParts(companyId: string, locationId: string): Promise<void> {
     await db
       .delete(clientParts)
       .where(
-        and(eq(clientParts.companyId, companyId), eq(clientParts.clientId, clientId))
+        and(
+          eq(clientParts.companyId, companyId),
+          or(
+            eq(clientParts.locationId, locationId),
+            eq(clientParts.clientId, locationId)
+          )
+        )
       );
   }
 
   /**
    * Bulk upsert client parts - OPTIMIZED (50x faster)
+   * DUAL-WRITE: Writes both locationId AND clientId
+   * TODO: [MIGRATION] Once locationId is fully adopted, remove clientId handling
    */
   async upsertClientPartsBulk(
     companyId: string,
@@ -475,7 +511,8 @@ async getCalendarAssignmentsInRange(
 
     return await db.transaction(async (tx) => {
       // Bulk delete all matching parts (single query instead of N queries)
-      const clientIds = Array.from(new Set(items.map(i => i.clientId)));
+      // DUAL-DELETE: Delete by locationId OR clientId
+      const locationIds = Array.from(new Set(items.map(i => i.clientId)));
       const partIds = Array.from(new Set(items.map(i => i.partId)));
 
       await tx
@@ -483,12 +520,16 @@ async getCalendarAssignmentsInRange(
         .where(
           and(
             eq(clientParts.companyId, companyId),
-            inArray(clientParts.clientId, clientIds),
+            or(
+              inArray(clientParts.locationId, locationIds),
+              inArray(clientParts.clientId, locationIds)
+            ),
             inArray(clientParts.partId, partIds)
           )
         );
 
       // Bulk insert (single query with multiple values)
+      // DUAL-WRITE: Write both locationId and clientId
       const validItems = items.filter(i => i.quantity > 0);
       if (validItems.length === 0) return [];
 
@@ -501,6 +542,7 @@ async getCalendarAssignmentsInRange(
             clientId: item.clientId,
             partId: item.partId,
             quantity: item.quantity,
+            locationId: item.clientId, // DUAL-WRITE: Mirror clientId to locationId
           }))
         )
         .returning();
@@ -509,16 +551,28 @@ async getCalendarAssignmentsInRange(
 
   /**
    * Get client equipment
+   * DUAL-READ: Prefers locationId, falls back to clientId
+   * TODO: [MIGRATION] Once locationId is fully adopted, simplify to locationId only
    */
-  async getClientEquipment(companyId: string, clientId: string) {
+  async getClientEquipment(companyId: string, locationId: string) {
     return await db
       .select()
       .from(equipment)
-      .where(and(eq(equipment.companyId, companyId), eq(equipment.clientId, clientId)));
+      .where(
+        and(
+          eq(equipment.companyId, companyId),
+          or(
+            eq(equipment.locationId, locationId),
+            eq(equipment.clientId, locationId)
+          )
+        )
+      );
   }
 
   /**
    * Create equipment
+   * DUAL-WRITE: Writes both locationId AND clientId
+   * TODO: [MIGRATION] Once locationId is fully adopted, remove clientId write
    */
   async createEquipment(
     companyId: string,
@@ -533,7 +587,12 @@ async getCalendarAssignmentsInRange(
   ) {
     const rows = await db
       .insert(equipment)
-      .values({ ...data, companyId, userId })
+      .values({
+        ...data,
+        companyId,
+        userId,
+        locationId: data.clientId, // DUAL-WRITE: Mirror clientId to locationId
+      })
       .returning();
     return rows[0];
   }
@@ -632,10 +691,12 @@ async getCalendarAssignmentsInRange(
 
   /**
    * Cleanup invalid calendar assignments (assignments in months not in selectedMonths)
+   * DUAL-DELETE: Deletes by locationId OR clientId
+   * TODO: [MIGRATION] Once locationId is fully adopted, simplify to locationId only
    */
   async cleanupInvalidCalendarAssignments(
     companyId: string,
-    clientId: string,
+    locationId: string,
     selectedMonths: number[]
   ): Promise<{ removedCount: number }> {
     const result = await db
@@ -643,7 +704,10 @@ async getCalendarAssignmentsInRange(
       .where(
         and(
           eq(calendarAssignments.companyId, companyId),
-          eq(calendarAssignments.clientId, clientId),
+          or(
+            eq(calendarAssignments.locationId, locationId),
+            eq(calendarAssignments.clientId, locationId)
+          ),
           sql`${calendarAssignments.month} NOT IN (${sql.join(selectedMonths.map(m => sql`${m}`), sql`, `)})`
         )
       )
