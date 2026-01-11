@@ -16,6 +16,13 @@ The frontend is developed using React and TypeScript with Vite. It employs `wout
 ### Backend
 The backend is an Express.js server written in TypeScript, providing a RESTful API. It uses a PostgreSQL database (Neon serverless) with Drizzle ORM for data persistence, managing clients, parts, and their relationships with enforced data integrity via foreign key constraints.
 
+### Soft Delete Standard
+All soft-deletable tables use `deletedAt` timestamp as the canonical mechanism:
+- **Active row**: `deletedAt IS NULL`
+- **Soft-deleted row**: `deletedAt IS NOT NULL`
+- **Legacy `isActive`**: Kept for transition period with dual-write; use `deletedAt` in all new queries
+- **Tables with deletedAt**: users, client_locations, customer_companies, items, equipment, invoices, jobs, job_parts, job_templates, location_equipment, location_pm_plans, location_pm_part_templates, recurring_job_series, suppliers, supplier_locations, technicians
+
 ### Design System
 The application features a Material Design-inspired typography with the Inter font family, consistent spacing, and a responsive 12-column grid system (mobile-first). The color system uses CSS custom properties, and key UI patterns include stats cards, maintenance cards, and dialog-based forms.
 
