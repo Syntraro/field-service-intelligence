@@ -45,6 +45,7 @@ export interface IStorage {
   getClient: typeof clientRepository.getClient;
   createClient: typeof clientRepository.createClient;
   createClientWithParts: typeof clientRepository.createClientWithParts;
+  bulkCreateClients: typeof clientRepository.bulkCreateClients;
   updateClient: typeof clientRepository.updateClient;
   deleteClient: typeof clientRepository.deleteClient;
   deleteClients: typeof clientRepository.deleteClients;
@@ -178,6 +179,7 @@ export const storage: IStorage = {
   getClient: clientRepository.getClient.bind(clientRepository),
   createClient: clientRepository.createClient.bind(clientRepository),
   createClientWithParts: clientRepository.createClientWithParts.bind(clientRepository),
+  bulkCreateClients: clientRepository.bulkCreateClients.bind(clientRepository),
   updateClient: clientRepository.updateClient.bind(clientRepository),
   deleteClient: clientRepository.deleteClient.bind(clientRepository),
   deleteClients: clientRepository.deleteClients.bind(clientRepository),

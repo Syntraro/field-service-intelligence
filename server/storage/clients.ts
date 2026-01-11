@@ -188,6 +188,26 @@ export class ClientRepository extends BaseRepository {
   }
 
   /**
+   * Bulk create clients (single INSERT with multiple values)
+   * Returns array of created clients
+   */
+  async bulkCreateClients(
+    companyId: string,
+    userId: string,
+    clientDataArray: InsertClient[]
+  ): Promise<Client[]> {
+    if (clientDataArray.length === 0) return [];
+
+    // Single INSERT with multiple values - much faster than N individual inserts
+    const rows = await db
+      .insert(clients)
+      .values(clientDataArray.map(data => ({ ...data, companyId, userId })))
+      .returning();
+
+    return rows;
+  }
+
+  /**
    * Create client with parts in a transaction
    */
   async createClientWithParts(

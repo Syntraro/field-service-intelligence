@@ -353,16 +353,27 @@ router.post("/import-simple", requireRole(MANAGER_ROLES), asyncHandler(async (re
     throw error;
   }
 
-  let imported = 0;
+  // Phase 1: Validate all clients upfront
+  const validatedClients: any[] = [];
   const errors: string[] = [];
 
   for (const clientData of clients) {
     try {
       const validated = insertClientSchema.parse(clientData);
-      await storage.createClient(req.companyId, req.user.id, validated);
-      imported++;
+      validatedClients.push(validated);
     } catch (error) {
-      errors.push(`Failed to import ${clientData.companyName || 'unknown client'}`);
+      errors.push(`Validation failed for ${clientData.companyName || 'unknown client'}`);
+    }
+  }
+
+  // Phase 2: Bulk insert all valid clients (single INSERT statement)
+  let imported = 0;
+  if (validatedClients.length > 0) {
+    try {
+      const created = await storage.bulkCreateClients(req.companyId!, req.user!.id, validatedClients);
+      imported = created.length;
+    } catch (error: any) {
+      errors.push(`Bulk insert failed: ${error.message || 'Unknown error'}`);
     }
   }
 
@@ -410,15 +421,24 @@ router.post("/import", requireRole(MANAGER_ROLES), asyncHandler(async (req: Auth
     }
   }
 
-  // Phase 2: Batch create clients
+  // Phase 2: Bulk create all clients (single INSERT)
   const createdClients: Array<{ client: any; parts: any[]; equipment: any[] }> = [];
-  for (const { clientInfo, parts, equipment } of validatedClients) {
+  if (validatedClients.length > 0) {
     try {
-      const client = await storage.createClient(req.companyId, req.user.id, clientInfo);
-      createdClients.push({ client, parts, equipment });
-      imported++;
-    } catch (error) {
-      errors.push(`Failed to create ${clientInfo.companyName || 'unknown client'}`);
+      const clientInfos = validatedClients.map(v => v.clientInfo);
+      const created = await storage.bulkCreateClients(req.companyId!, req.user!.id, clientInfos);
+      imported = created.length;
+
+      // Match created clients back to their parts/equipment
+      for (let i = 0; i < created.length; i++) {
+        createdClients.push({
+          client: created[i],
+          parts: validatedClients[i].parts,
+          equipment: validatedClients[i].equipment,
+        });
+      }
+    } catch (error: any) {
+      errors.push(`Bulk client creation failed: ${error.message || 'Unknown error'}`);
     }
   }
 
@@ -442,9 +462,9 @@ router.post("/import", requireRole(MANAGER_ROLES), asyncHandler(async (req: Auth
 
   // Create parts and link to clients (reduced from N*M queries to N+M)
   const partIdByName = new Map<string, string>();
-  for (const [name, data] of Array.from(uniquePartNames.entries())) {
+  for (const [name] of Array.from(uniquePartNames.entries())) {
     try {
-      const part = await storage.createPart(req.companyId, req.user.id, {
+      const part = await storage.createPart(req.companyId!, req.user!.id, {
         type: 'other',
         name,
         filterType: null,
@@ -453,42 +473,48 @@ router.post("/import", requireRole(MANAGER_ROLES), asyncHandler(async (req: Auth
         description: null,
       });
       partIdByName.set(name, part.id);
-    } catch (partError) {
-      console.error(`Failed to create part ${name}:`, partError);
+    } catch {
+      // Part creation failed - skip linking this part
     }
   }
 
-  // Link parts to clients
+  // Collect all client-part links for bulk insert
+  const clientPartLinks: Array<{ clientId: string; partId: string; quantity: number }> = [];
   for (const { client, parts } of createdClients) {
     for (const partData of parts) {
       const partId = partIdByName.get(partData.name);
       if (partId) {
-        try {
-          await storage.addClientPart(req.companyId, req.user.id, {
-            clientId: client.id,
-            partId,
-            quantity: partData.quantity || 1,
-          });
-        } catch (linkError) {
-          console.error(`Failed to link part to ${client.companyName}:`, linkError);
-        }
+        clientPartLinks.push({
+          clientId: client.id,
+          partId,
+          quantity: partData.quantity || 1,
+        });
       }
     }
   }
 
-  // Phase 4: Create equipment (still sequential but after all clients created)
+  // Bulk insert client-part links
+  if (clientPartLinks.length > 0) {
+    try {
+      await storage.upsertClientPartsBulk(req.companyId!, req.user!.id, clientPartLinks);
+    } catch {
+      // Client-part linking failed - continue with equipment
+    }
+  }
+
+  // Phase 4: Create equipment (collect all then bulk insert would be ideal, but sequential for now)
   for (const { client, equipment } of createdClients) {
     for (const equipData of equipment) {
       try {
-        await storage.createEquipment(req.companyId, req.user.id, {
+        await storage.createEquipment(req.companyId!, req.user!.id, {
           clientId: client.id,
           name: equipData.name,
           modelNumber: equipData.modelNumber || null,
           serialNumber: equipData.serialNumber || null,
           notes: null,
         });
-      } catch (equipError) {
-        console.error(`Failed to import equipment for ${client.companyName}:`, equipError);
+      } catch {
+        // Equipment creation failed - continue with next
       }
     }
   }
@@ -816,15 +842,12 @@ router.get("/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
 router.get("/:id/report", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   const clientId = req.params.id;
-  console.log(`[Report] Fetching report for companyId: ${companyId}, clientId: ${clientId}`);
 
   const report = await storage.getClientReport(companyId, clientId);
   if (!report) {
-    console.log(`[Report] Client not found - companyId: ${companyId}, clientId: ${clientId}`);
     throw createError(404, "Client not found");
   }
 
-  console.log(`[Report] Successfully generated report for: ${report.client.companyName}`);
   res.json(report);
 }));
 
