@@ -54,23 +54,43 @@ const router = Router();
     router.get("/", isAuthenticated, async (req, res) => {
     try {
       const companyId = req.user!.companyId;
+      if (!companyId) {
+  return res.status(401).json({ message: "Missing company context" });
+}
+
       const clients = await storage.getAllClients(companyId);
       const start = getISODateOrDefault(req.query.assignStart as string | undefined, -30);
 const end = getISODateOrDefault(req.query.assignEnd as string | undefined, +60);
 const assignmentLimit = clampInt(req.query.assignLimit as string | undefined, 5000, 1, 5000);
 
-const assignments = await storage.getCalendarAssignmentsInRange(companyId, {
-  start,
-  end,
-  limit: assignmentLimit,
-});
+let clientsWithDue = result.data;
 
-      const futureDueByClientId = buildFutureDueIndex(assignments);
+try {
+  const assignments = await storage.getCalendarAssignmentsInRange(companyId, {
+    start,
+    end,
+    limit: assignmentLimit,
+  });
 
-      const clientsWithDue = clients.map((c: any) => ({
-        ...c,
-        nextDue: deriveNextDueForClient(c, futureDueByClientId),
-      }));
+  const futureDueByClientId = buildFutureDueIndex(assignments);
+
+  clientsWithDue = result.data.map((c: any) => ({
+    ...c,
+    nextDue: deriveNextDueForClient(c, futureDueByClientId),
+  }));
+} catch {
+  // Don’t break /api/clients if calendar enrichment fails
+  clientsWithDue = result.data.map((c: any) => ({
+    ...c,
+    nextDue: c.nextDue ?? "",
+  }));
+}
+
+} catch (err) {
+  // Don't fail the entire clients list if calendar enrichment fails
+  clientsWithDue = result.data.map((c: any) => ({ ...c, nextDue: c.nextDue ?? "" }));
+}
+
 
       res.json(clientsWithDue);
     } catch (error) {

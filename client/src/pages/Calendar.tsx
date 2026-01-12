@@ -495,7 +495,8 @@ export default function Calendar() {
     onSuccess: async () => {
       await refetchCalendar();
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/overdue"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar/overdue"], exact: false });
+
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
       toast({
         title: "Updated",
@@ -610,7 +611,8 @@ export default function Calendar() {
       return apiRequest(`/api/calendar/assign/${assignmentId}`, { method: 'PATCH', body: JSON.stringify({ assignedTechnicianIds: technicianIds }) });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
+
       toast({
         title: "Updated",
         description: "Technician assignments updated",
@@ -886,7 +888,8 @@ export default function Calendar() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar", year, month] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/overdue"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar/overdue"], exact: false });
+
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
       queryClient.invalidateQueries({ queryKey: ["/api/maintenance/recently-completed"] });
       queryClient.invalidateQueries({ queryKey: ["/api/maintenance/statuses"] });

@@ -1,0 +1,49 @@
+We are implementing non-negotiable engineering rules across this repo.
+
+GOAL:
+1) Add a formal engineering rules doc to the repo.
+2) Add guardrails so the rules are enforced automatically and cannot regress.
+
+RULES TO LOCK IN:
+A) Permanent fixes only
+- No try/catch “band-aids” that hide bugs.
+- No silent fallbacks that mask broken invariants.
+- Fixes must enforce correct invariants at the correct layer.
+
+B) Complete the process before fixing symptoms
+- If the bug is caused by incomplete migrations/refactors/contracts, complete that process first.
+
+C) Single source of truth layering
+- server/routes/** handles HTTP only (parse, validate, auth, response)
+- server/storage/** handles DB + business rules (tenant scope, soft delete, limits)
+- No DB usage outside server/storage/** (Stripe files may remain exceptions if already allowed)
+
+D) Fail early and correctly
+- Missing tenant/company context must be 401 (not 500)
+- Invalid inputs must be 400 with clear message
+
+TASKS:
+1) Create docs/ENGINEERING_RULES.md
+- Write the rules above clearly and concisely.
+- Include examples of “workaround vs permanent fix.”
+- Include the required order of operations for bug resolution.
+
+2) Add guardrails:
+- Ensure scripts/check-db-imports.sh is wired into CI and/or npm scripts.
+- Add a new script scripts/check-apiRequest-double-parse.sh that fails if any file contains:
+  - apiRequest(...).json(
+  - await res.json() on apiRequest return values
+- Add npm scripts:
+  - "lint:guardrails": runs both scripts
+  - "precommit" or "ci" job suggestion in README/notes (no need to configure CI if repo doesn’t have it, but add the scripts)
+
+3) Add a “tenant context enforcement” rule note:
+- All tenant routes must require companyId.
+- This should be enforced via middleware (prefer) not repeated per-handler.
+
+DELIVERABLES:
+- docs/ENGINEERING_RULES.md
+- scripts/check-apiRequest-double-parse.sh
+- package.json scripts updates for guardrails
+- short summary of what was added and where
+Do not change application behavior in this prompt; this is rules + guardrails only.

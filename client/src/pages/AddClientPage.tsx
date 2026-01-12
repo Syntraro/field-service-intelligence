@@ -60,7 +60,8 @@ export default function AddClientPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/customer-companies"] });
       queryClient.invalidateQueries({ queryKey: ["/api/reports/parts"] });
       queryClient.invalidateQueries({ queryKey: ["/api/reports/schedule"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
+
       toast({
         title: "Client added",
         description: "The client and company have been added successfully.",
@@ -107,7 +108,8 @@ export default function AddClientPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
       queryClient.invalidateQueries({ queryKey: ["/api/reports/parts"] });
       queryClient.invalidateQueries({ queryKey: ["/api/reports/schedule"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
+
       toast({
         title: "Client added",
         description: "The client has been added successfully.",
@@ -151,7 +153,8 @@ export default function AddClientPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
       queryClient.invalidateQueries({ queryKey: ["/api/reports/parts"] });
       queryClient.invalidateQueries({ queryKey: ["/api/reports/schedule"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
+
       queryClient.invalidateQueries({ queryKey: ["/api/maintenance/recently-completed"] });
       queryClient.invalidateQueries({ queryKey: ["/api/maintenance/statuses"] });
       toast({

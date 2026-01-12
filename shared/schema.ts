@@ -270,9 +270,10 @@ export const clientParts = pgTable("client_parts", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }), // Creator - nullable
-  clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if parts exist
-  // TODO: [MIGRATION] locationId will become the canonical reference. clientId kept for backwards compatibility.
-  locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "restrict" }),
+  // DEPRECATED: clientId kept for backwards compatibility - use locationId instead
+  clientId: varchar("client_id").references(() => clientLocations.id, { onDelete: "restrict" }),
+  // Canonical reference to service location
+  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }),
   partId: varchar("part_id").notNull().references(() => items.id, { onDelete: "cascade" }),
   quantity: integer("quantity").notNull(),
 });
@@ -290,9 +291,10 @@ export const maintenanceRecords = pgTable("maintenance_records", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }), // Creator - nullable
-  clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if records exist
-  // TODO: [MIGRATION] locationId will become the canonical reference. clientId kept for backwards compatibility.
-  locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "restrict" }),
+  // DEPRECATED: clientId kept for backwards compatibility - use locationId instead
+  clientId: varchar("client_id").references(() => clientLocations.id, { onDelete: "restrict" }),
+  // Canonical reference to service location
+  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }),
   dueDate: date("due_date").notNull(), // FIXED: Changed from text() to date()
   completedAt: timestamp("completed_at"), // FIXED: Changed from text() to timestamp()
 });
@@ -310,9 +312,10 @@ export const calendarAssignments = pgTable("calendar_assignments", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }), // Creator - nullable
-  clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if assignments exist
-  // TODO: [MIGRATION] locationId will become the canonical reference. clientId kept for backwards compatibility.
-  locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "restrict" }),
+  // DEPRECATED: clientId kept for backwards compatibility - use locationId instead
+  clientId: varchar("client_id").references(() => clientLocations.id, { onDelete: "restrict" }),
+  // Canonical reference to service location
+  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }),
   jobNumber: integer("job_number").notNull(),
   assignedTechnicianIds: varchar("assigned_technician_ids").array(),
   year: integer("year").notNull(),
@@ -373,9 +376,10 @@ export const equipment = pgTable("equipment", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }), // Creator - nullable
-  clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if equipment exists
-  // TODO: [MIGRATION] locationId will become the canonical reference. clientId kept for backwards compatibility.
-  locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "restrict" }),
+  // DEPRECATED: clientId kept for backwards compatibility - use locationId instead
+  clientId: varchar("client_id").references(() => clientLocations.id, { onDelete: "restrict" }),
+  // Canonical reference to service location
+  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }),
   name: text("name").notNull(),
   type: text("type"),
   modelNumber: text("model_number"),
@@ -627,9 +631,10 @@ export type JobNote = typeof jobNotes.$inferSelect;
 export const clientNotes = pgTable("client_notes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  clientId: varchar("client_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }), // Prevent location deletion if notes exist
-  // TODO: [MIGRATION] locationId will become the canonical reference. clientId kept for backwards compatibility.
-  locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "restrict" }),
+  // DEPRECATED: clientId kept for backwards compatibility - use locationId instead
+  clientId: varchar("client_id").references(() => clientLocations.id, { onDelete: "restrict" }),
+  // Canonical reference to service location
+  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   noteText: text("note_text").notNull(),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -877,16 +882,20 @@ export type Payment = typeof payments.$inferSelect;
 // ============================================
 
 // Job status enum values
+// NOTE: "completed" is LEGACY - kept for backward compatibility with existing data
+// New code should use "requires_invoicing" for jobs awaiting invoicing
+// TODO: [MIGRATION] Remove "completed" after all legacy data is migrated
 export const jobStatusEnum = [
   "draft",
-  "scheduled", 
+  "scheduled",
   "dispatched",
   "en_route",
   "on_site",
   "in_progress",
   "needs_parts",
   "on_hold",
-  "completed",
+  "completed",        // LEGACY: Use "requires_invoicing" for new jobs
+  "requires_invoicing", // Job closed, needs invoice created
   "invoiced",
   "closed",
   "archived",
@@ -1652,8 +1661,9 @@ export const tasks = pgTable("tasks", {
 
   // Optional attribution to a Job and Client/Location (does NOT create billing or calendar coupling)
   jobId: varchar("job_id").references(() => jobs.id, { onDelete: "set null" }),
+  // DEPRECATED: clientId kept for backwards compatibility - use locationId instead
   clientId: varchar("client_id").references(() => clientLocations.id, { onDelete: "set null" }),
-  // TODO: [MIGRATION] locationId will become the canonical reference. clientId kept for backwards compatibility.
+  // Canonical reference to service location (optional for tasks)
   locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "set null" }),
 
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -1663,8 +1673,10 @@ export const tasks = pgTable("tasks", {
   companyAssignedIdx: uniqueIndex("tasks_company_assigned_idx").on(table.companyId, table.assignedToUserId),
   companyStatusIdx: uniqueIndex("tasks_company_status_idx").on(table.companyId, table.status),
   companyJobIdx: uniqueIndex("tasks_company_job_idx").on(table.companyId, table.jobId),
+  // DEPRECATED: companyClientIdx - use companyLocationIdx instead
   companyClientIdx: uniqueIndex("tasks_company_client_idx").on(table.companyId, table.clientId),
-  // TODO: [MIGRATION] Add companyLocationIdx after locationId is fully adopted
+  // Canonical location index
+  companyLocationIdx: uniqueIndex("tasks_company_location_idx").on(table.companyId, table.locationId),
 }));
 
 export const insertTaskSchema = createInsertSchema(tasks).omit({

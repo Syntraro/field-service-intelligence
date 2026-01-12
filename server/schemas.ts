@@ -3,16 +3,19 @@ import { z } from "zod";
 export const moneyNumber = z.coerce.number().min(0).finite();
 export const optionalMoneyNumber = moneyNumber.nullable().optional();
 
+// NOTE: "completed" is LEGACY - kept for backward compatibility
+// New code should use "requires_invoicing" for jobs awaiting invoicing
 export const jobStatusEnum = z.enum([
   "draft",
-  "scheduled", 
+  "scheduled",
   "dispatched",
   "en_route",
   "on_site",
   "in_progress",
   "needs_parts",
   "on_hold",
-  "completed",
+  "completed",          // LEGACY: Use "requires_invoicing" for new jobs
+  "requires_invoicing", // Job closed, needs invoice created
   "invoiced",
   "closed",
   "archived",

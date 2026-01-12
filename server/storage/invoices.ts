@@ -553,11 +553,12 @@ export class InvoiceRepository extends BaseRepository {
         .set({ invoiceId: invoice.id })
         .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
 
-      // 5. Mark job completed if requested
+      // 5. Mark job as invoiced if requested
+      // NOTE: This sets status to "invoiced" since an invoice was just created
       if (options?.markJobCompleted) {
         await tx
           .update(jobs)
-          .set({ status: "completed" })
+          .set({ status: "invoiced" })
           .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
       }
 

@@ -49,7 +49,8 @@
       "Bash(do echo \"=== $f ===\" grep -n \"router\\\\.\\\\\\(get\\\\|post\\\\|put\\\\|patch\\\\|delete\\\\\\).*async\" \"$f\")",
       "Bash(chmod:*)",
       "Bash(/home/runner/workspace/scripts/check-db-imports.sh:*)",
-      "Bash(bash:*)"
+      "Bash(bash:*)",
+      "Bash(npm run lint:guardrails:*)"
     ]
   }
 }

@@ -26,20 +26,24 @@ interface EnrichedJob extends Job {
   locationAddress: string;
 }
 
-type JobStatusFilter = "all" | "draft" | "scheduled" | "in_progress" | "completed" | "cancelled" | "on_hold" | "overdue";
+type JobStatusFilter = "all" | "draft" | "scheduled" | "in_progress" | "completed" | "requires_invoicing" | "cancelled" | "on_hold" | "overdue";
 type SortField = "location" | "jobNumber" | "schedule" | "status";
 type SortDirection = "asc" | "desc";
 
-function getJobStatusDisplay(status: string, scheduledStart: Date | null): { 
-  label: string; 
-  variant: "default" | "destructive" | "secondary" | "outline"; 
+function getJobStatusDisplay(status: string, scheduledStart: Date | null): {
+  label: string;
+  variant: "default" | "destructive" | "secondary" | "outline";
   priority: number;
   isOverdue?: boolean;
 } {
   const now = new Date();
-  
+
+  // LEGACY: "completed" treated same as "requires_invoicing" for display
   if (status === "completed") {
     return { label: "Completed", variant: "secondary", priority: 5 };
+  }
+  if (status === "requires_invoicing") {
+    return { label: "Requires Invoicing", variant: "secondary", priority: 5 };
   }
   if (status === "cancelled") {
     return { label: "Cancelled", variant: "outline", priority: 6 };
@@ -53,7 +57,7 @@ function getJobStatusDisplay(status: string, scheduledStart: Date | null): {
   if (status === "draft") {
     return { label: "Draft", variant: "outline", priority: 3 };
   }
-  
+
   if (status === "scheduled" && scheduledStart) {
     const scheduled = new Date(scheduledStart);
     if (scheduled < now) {

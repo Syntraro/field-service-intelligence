@@ -21,10 +21,11 @@ const router = Router();
 
 /**
  * Normalizes and validates note input
+ * Uses locationId as the canonical reference
  */
 function normalizeNoteInput(input: unknown) {
   const base = insertClientNoteSchema
-    .pick({ clientId: true, noteText: true })
+    .pick({ locationId: true, noteText: true })
     .safeParse(input);
 
   if (!base.success) {
@@ -36,7 +37,13 @@ function normalizeNoteInput(input: unknown) {
     throw createError(400, "Note text is required");
   }
 
-  return { clientId: base.data.clientId, noteText: trimmed };
+  // locationId is required (NOT NULL in schema)
+  const locationId = base.data.locationId;
+  if (!locationId) {
+    throw createError(400, "Location ID is required");
+  }
+
+  return { locationId, noteText: trimmed };
 }
 
 // GET /api/clients/:clientId/notes
@@ -71,16 +78,17 @@ router.post(
   requireRole(MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { companyId, user } = req;
-    const { clientId } = req.params;
+    const { clientId } = req.params; // URL param for backwards compat
 
-    const { clientId: parsedClientId, noteText } = normalizeNoteInput({ ...req.body, clientId });
-    await clientNotesRepository.assertClientOwned(companyId!, parsedClientId);
+    // Pass as locationId (canonical reference)
+    const { locationId, noteText } = normalizeNoteInput({ ...req.body, locationId: clientId });
+    await clientNotesRepository.assertClientOwned(companyId!, locationId);
 
     // Prevent duplicate notes from retry attempts (5-second window)
     const recentDuplicate = await clientNotesRepository.findRecentDuplicate(
       companyId!,
       user!.id,
-      parsedClientId,
+      locationId,
       noteText
     );
 
@@ -91,7 +99,7 @@ router.post(
     const created = await clientNotesRepository.createNote(
       companyId!,
       user!.id,
-      parsedClientId,
+      locationId,
       noteText
     );
 
@@ -105,14 +113,15 @@ router.patch(
   requireRole(MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { companyId } = req;
-    const { clientId, noteId } = req.params;
+    const { clientId, noteId } = req.params; // URL param for backwards compat
 
-    const { noteText } = normalizeNoteInput({ ...req.body, clientId });
-    await clientNotesRepository.assertClientOwned(companyId!, clientId);
+    // Pass as locationId (canonical reference)
+    const { locationId, noteText } = normalizeNoteInput({ ...req.body, locationId: clientId });
+    await clientNotesRepository.assertClientOwned(companyId!, locationId);
 
     const updated = await clientNotesRepository.updateNote(
       companyId!,
-      clientId,
+      locationId,
       noteId,
       noteText
     );

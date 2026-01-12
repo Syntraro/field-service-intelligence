@@ -25,8 +25,8 @@ function getJobStatusDisplay(status: string, scheduledStart: Date | null): {
   isOverdue?: boolean;
 } {
   const now = new Date();
-  const isOverdue = !!(scheduledStart && new Date(scheduledStart) < now && 
-    !["completed", "invoiced", "cancelled", "closed", "archived"].includes(status));
+  const isOverdue = !!(scheduledStart && new Date(scheduledStart) < now &&
+    !["completed", "requires_invoicing", "invoiced", "cancelled", "closed", "archived"].includes(status));
 
   switch (status) {
     case "draft": return { label: "Draft", variant: "outline", isOverdue };
@@ -37,7 +37,8 @@ function getJobStatusDisplay(status: string, scheduledStart: Date | null): {
     case "in_progress": return { label: "In Progress", variant: "default", isOverdue };
     case "needs_parts": return { label: "Needs Parts", variant: "secondary", isOverdue };
     case "on_hold": return { label: "On Hold", variant: "secondary", isOverdue };
-    case "completed": return { label: "Completed", variant: "default", isOverdue: false };
+    case "completed": return { label: "Completed", variant: "default", isOverdue: false }; // LEGACY
+    case "requires_invoicing": return { label: "Requires Invoicing", variant: "secondary", isOverdue: false };
     case "invoiced": return { label: "Invoiced", variant: "default", isOverdue: false };
     case "cancelled": return { label: "Cancelled", variant: "outline", isOverdue: false };
     case "closed": return { label: "Closed", variant: "outline", isOverdue: false };

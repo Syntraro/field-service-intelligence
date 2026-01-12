@@ -145,7 +145,8 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
+
       toast({
         title: "Job Created",
         description: `Job has been created successfully.`,
@@ -183,7 +184,8 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", editJob?.id] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
+
       toast({
         title: "Job Updated",
         description: `Job has been updated successfully.`,

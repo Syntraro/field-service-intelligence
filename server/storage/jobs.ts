@@ -376,7 +376,8 @@ export class JobRepository extends BaseRepository {
     // Set timestamps based on status
     if (status === "in_progress" || status === "on_site") {
       updates.actualStart = new Date();
-    } else if (status === "completed" || status === "closed") {
+    } else if (status === "completed" || status === "requires_invoicing" || status === "closed") {
+      // Set end time when job reaches a closed state
       updates.actualEnd = new Date();
     }
 

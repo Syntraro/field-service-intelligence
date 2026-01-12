@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { eq, and, inArray, sql, or, ilike, gte, lte, isNull, desc } from "drizzle-orm";
+import { eq, and, inArray, sql, or, ilike, gte, lte, isNull, isNotNull, desc } from "drizzle-orm";
 import { clients, clientParts, equipment, calendarAssignments, locationEquipment } from "@shared/schema";
 import type { InsertClient, Client, InsertLocationEquipment, UpdateLocationEquipment } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset, escapeLike } from "./base";
@@ -34,7 +34,10 @@ export class ClientRepository extends BaseRepository {
     return await db
       .select()
       .from(clients)
-      .where(eq(clients.companyId, companyId))
+      .where(and(
+        eq(clients.companyId, companyId),
+        isNull(clients.deletedAt) // Soft delete: only show non-deleted records
+      ))
       .orderBy(
         clients.companyName,              // Primary: company name
         sql`${clients.isPrimary} DESC`,   // Secondary: primary locations first
@@ -56,14 +59,15 @@ export class ClientRepository extends BaseRepository {
     const page = Math.max(1, options.page ?? 1);
     const offset = options.offset ?? (page - 1) * limit;
 
-    // Build WHERE conditions array - ALWAYS include companyId
-    const whereConditions = [eq(clients.companyId, companyId)];
+    // Build WHERE conditions array - ALWAYS include companyId and soft delete filter
+    const whereConditions = [
+      eq(clients.companyId, companyId),
+      isNull(clients.deletedAt), // Soft delete: only show non-deleted records
+    ];
 
-    // Add inactive filter
+    // Add inactive filter (for active/inactive tabs)
     if (options.inactive !== undefined) {
       whereConditions.push(eq(clients.inactive, options.inactive));
-    } else {
-      whereConditions.push(eq(clients.inactive, false));
     }
 
     // Add search filter
@@ -209,8 +213,7 @@ export class ClientRepository extends BaseRepository {
 
   /**
    * Create client with parts in a transaction
-   * DUAL-WRITE: Writes both locationId AND clientId for parts
-   * TODO: [MIGRATION] Once locationId is fully adopted, remove clientId write
+   * Uses locationId as the canonical reference for parts
    */
   async createClientWithParts(
     companyId: string,
@@ -226,16 +229,14 @@ export class ClientRepository extends BaseRepository {
         .returning();
 
       // Add parts if provided
-      // DUAL-WRITE: Write both locationId and clientId
       if (parts.length > 0) {
         await tx.insert(clientParts).values(
           parts.map((p) => ({
             companyId,
             userId,
-            clientId: client.id,
+            locationId: client.id, // locationId is the canonical reference
             partId: p.partId,
             quantity: p.quantity,
-            locationId: client.id, // DUAL-WRITE: Mirror clientId to locationId
           }))
         );
       }
@@ -380,9 +381,8 @@ export class ClientRepository extends BaseRepository {
   }
 
   /**
-   * Get calendar assignments for a client/location
-   * DUAL-READ: Prefers locationId, falls back to clientId
-   * TODO: [MIGRATION] Once locationId is fully adopted, simplify to locationId only
+   * Get calendar assignments for a location
+   * Uses locationId as the canonical reference
    */
   async getAssignmentsByClient(companyId: string, locationId: string) {
     return await db
@@ -391,10 +391,7 @@ export class ClientRepository extends BaseRepository {
       .where(
         and(
           eq(calendarAssignments.companyId, companyId),
-          or(
-            eq(calendarAssignments.locationId, locationId),
-            eq(calendarAssignments.clientId, locationId)
-          )
+          eq(calendarAssignments.locationId, locationId)
         )
       )
       .orderBy(calendarAssignments.scheduledDate);
@@ -435,44 +432,38 @@ async getCalendarAssignmentsInRange(
 }
 
   /**
-   * Get client/location parts
-   * DUAL-READ: Prefers locationId, falls back to clientId
-   * TODO: [MIGRATION] Once locationId is fully adopted, simplify to locationId only
+   * Get location parts
+   * Uses locationId as the canonical reference
    */
   async getClientParts(companyId: string, locationId: string) {
-    // Read by locationId OR clientId (dual-read for migration)
     return await db
       .select()
       .from(clientParts)
       .where(
         and(
           eq(clientParts.companyId, companyId),
-          or(
-            eq(clientParts.locationId, locationId),
-            eq(clientParts.clientId, locationId)
-          )
+          eq(clientParts.locationId, locationId)
         )
       );
   }
 
   /**
-   * Add client/location part
-   * DUAL-WRITE: Writes both locationId AND clientId
-   * TODO: [MIGRATION] Once locationId is fully adopted, remove clientId write
+   * Add location part
+   * Uses locationId as the canonical reference
    */
   async addClientPart(
     companyId: string,
     userId: string,
     data: { clientId: string; partId: string; quantity: number }
   ) {
-    // Dual-write: set both locationId and clientId
     const rows = await db
       .insert(clientParts)
       .values({
-        ...data,
         companyId,
         userId,
-        locationId: data.clientId, // DUAL-WRITE: Mirror clientId to locationId
+        locationId: data.clientId, // locationId is the canonical reference
+        partId: data.partId,
+        quantity: data.quantity,
       })
       .returning();
     return rows[0];
@@ -480,8 +471,7 @@ async getCalendarAssignmentsInRange(
 
   /**
    * Delete all parts for a location
-   * DUAL-DELETE: Deletes by locationId OR clientId
-   * TODO: [MIGRATION] Once locationId is fully adopted, simplify to locationId only
+   * Uses locationId as the canonical reference
    */
   async deleteAllClientParts(companyId: string, locationId: string): Promise<void> {
     await db
@@ -489,18 +479,14 @@ async getCalendarAssignmentsInRange(
       .where(
         and(
           eq(clientParts.companyId, companyId),
-          or(
-            eq(clientParts.locationId, locationId),
-            eq(clientParts.clientId, locationId)
-          )
+          eq(clientParts.locationId, locationId)
         )
       );
   }
 
   /**
-   * Bulk upsert client parts - OPTIMIZED (50x faster)
-   * DUAL-WRITE: Writes both locationId AND clientId
-   * TODO: [MIGRATION] Once locationId is fully adopted, remove clientId handling
+   * Bulk upsert location parts - OPTIMIZED (50x faster)
+   * Uses locationId as the canonical reference
    */
   async upsertClientPartsBulk(
     companyId: string,
@@ -511,7 +497,6 @@ async getCalendarAssignmentsInRange(
 
     return await db.transaction(async (tx) => {
       // Bulk delete all matching parts (single query instead of N queries)
-      // DUAL-DELETE: Delete by locationId OR clientId
       const locationIds = Array.from(new Set(items.map(i => i.clientId)));
       const partIds = Array.from(new Set(items.map(i => i.partId)));
 
@@ -520,16 +505,12 @@ async getCalendarAssignmentsInRange(
         .where(
           and(
             eq(clientParts.companyId, companyId),
-            or(
-              inArray(clientParts.locationId, locationIds),
-              inArray(clientParts.clientId, locationIds)
-            ),
+            inArray(clientParts.locationId, locationIds),
             inArray(clientParts.partId, partIds)
           )
         );
 
       // Bulk insert (single query with multiple values)
-      // DUAL-WRITE: Write both locationId and clientId
       const validItems = items.filter(i => i.quantity > 0);
       if (validItems.length === 0) return [];
 
@@ -539,10 +520,9 @@ async getCalendarAssignmentsInRange(
           validItems.map(item => ({
             companyId,
             userId,
-            clientId: item.clientId,
+            locationId: item.clientId, // locationId is the canonical reference
             partId: item.partId,
             quantity: item.quantity,
-            locationId: item.clientId, // DUAL-WRITE: Mirror clientId to locationId
           }))
         )
         .returning();
@@ -550,9 +530,8 @@ async getCalendarAssignmentsInRange(
   }
 
   /**
-   * Get client equipment
-   * DUAL-READ: Prefers locationId, falls back to clientId
-   * TODO: [MIGRATION] Once locationId is fully adopted, simplify to locationId only
+   * Get location equipment
+   * Uses locationId as the canonical reference
    */
   async getClientEquipment(companyId: string, locationId: string) {
     return await db
@@ -561,18 +540,14 @@ async getCalendarAssignmentsInRange(
       .where(
         and(
           eq(equipment.companyId, companyId),
-          or(
-            eq(equipment.locationId, locationId),
-            eq(equipment.clientId, locationId)
-          )
+          eq(equipment.locationId, locationId)
         )
       );
   }
 
   /**
    * Create equipment
-   * DUAL-WRITE: Writes both locationId AND clientId
-   * TODO: [MIGRATION] Once locationId is fully adopted, remove clientId write
+   * Uses locationId as the canonical reference
    */
   async createEquipment(
     companyId: string,
@@ -588,10 +563,13 @@ async getCalendarAssignmentsInRange(
     const rows = await db
       .insert(equipment)
       .values({
-        ...data,
         companyId,
         userId,
-        locationId: data.clientId, // DUAL-WRITE: Mirror clientId to locationId
+        locationId: data.clientId, // locationId is the canonical reference
+        name: data.name,
+        modelNumber: data.modelNumber,
+        serialNumber: data.serialNumber,
+        notes: data.notes,
       })
       .returning();
     return rows[0];
@@ -691,8 +669,7 @@ async getCalendarAssignmentsInRange(
 
   /**
    * Cleanup invalid calendar assignments (assignments in months not in selectedMonths)
-   * DUAL-DELETE: Deletes by locationId OR clientId
-   * TODO: [MIGRATION] Once locationId is fully adopted, simplify to locationId only
+   * Uses locationId as the canonical reference
    */
   async cleanupInvalidCalendarAssignments(
     companyId: string,
@@ -704,10 +681,7 @@ async getCalendarAssignmentsInRange(
       .where(
         and(
           eq(calendarAssignments.companyId, companyId),
-          or(
-            eq(calendarAssignments.locationId, locationId),
-            eq(calendarAssignments.clientId, locationId)
-          ),
+          eq(calendarAssignments.locationId, locationId),
           sql`${calendarAssignments.month} NOT IN (${sql.join(selectedMonths.map(m => sql`${m}`), sql`, `)})`
         )
       )

@@ -143,7 +143,8 @@ export default function NewClientPage() {
     },
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
+
       toast({
         title: "Client created",
         description: "The client has been created successfully.",

@@ -30,6 +30,7 @@ import tasksRoutes from "./tasks.routes";
 import suppliersRouter from "./suppliers";
 import jobVisitsRoutes from "./jobVisits.routes";
 import clientNotesRouter from "./client-notes";
+import dashboardRouter from "./dashboard";
 
 /**
  * Register all API routes in a single place.
@@ -99,6 +100,7 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/impersonation", impersonationRouter);
   app.use("/api/tasks", tasksRoutes);
   app.use("/api/suppliers", suppliersRouter);
+  app.use("/api/dashboard", dashboardRouter);
 
   // ✅ NEW ROUTES (company rollups + notes API)
   // Company/Client (parent) endpoints: /api/customer-companies/:id/overview, /locations, etc.

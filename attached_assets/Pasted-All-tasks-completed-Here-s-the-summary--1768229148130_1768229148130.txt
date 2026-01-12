@@ -1,0 +1,27 @@
+All tasks completed. Here's the summary:                                                                                                                     
+                                                                                                                                                               
+  Files Created/Modified                                                                                                                                       
+  ┌──────────────────────────────────────────┬─────────────────┬────────────────────────────────────────────────┐                                              
+  │                   File                   │     Action      │                    Purpose                     │                                              
+  ├──────────────────────────────────────────┼─────────────────┼────────────────────────────────────────────────┤                                              
+  │ docs/ENGINEERING_RULES.md                │ Created         │ Formal engineering rules documentation         │                                              
+  ├──────────────────────────────────────────┼─────────────────┼────────────────────────────────────────────────┤                                              
+  │ scripts/check-apiRequest-double-parse.sh │ Created         │ Guards against double JSON parsing             │                                              
+  ├──────────────────────────────────────────┼─────────────────┼────────────────────────────────────────────────┤                                              
+  │ scripts/check-db-imports.sh              │ Already existed │ Guards against DB access outside storage layer │                                              
+  ├──────────────────────────────────────────┼─────────────────┼────────────────────────────────────────────────┤                                              
+  │ package.json                             │ Updated         │ Added lint scripts                             │                                              
+  └──────────────────────────────────────────┴─────────────────┴────────────────────────────────────────────────┘                                              
+  New npm Scripts                                                                                                                                              
+                                                                                                                                                               
+  "lint:db-imports": "./scripts/check-db-imports.sh",                                                                                                          
+  "lint:api-parse": "./scripts/check-apiRequest-double-parse.sh",                                                                                              
+  "lint:guardrails": "npm run lint:db-imports && npm run lint:api-parse"                                                                                       
+                                                                                                                                                               
+  Engineering Rules Documented                                                                                                                                 
+                                                                                                                                                               
+  1. Rule A: Permanent fixes only - No try/catch band-aids, no silent fallbacks                                                                                
+  2. Rule B: Complete the process first - Finish migrations/refactors before fixing symptoms                                                                   
+  3. Rule C: Single source of truth layering - Routes handle HTTP, storage handles DB                                                                          
+  4. Rule D: Fail early and correctly - 401 for auth issues, 400 for validation, not 500                                                                       
+  5. Rule E: Tenant context enforcement - All tenant routes must require companyId via middleware        

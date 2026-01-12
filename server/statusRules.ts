@@ -3,8 +3,22 @@ import type { JobStatus, InvoiceStatus } from "./schemas";
 /**
  * Job Status Flow - defines valid transitions between job statuses
  *
- * Workflow: draft -> scheduled -> dispatched -> en_route -> on_site -> in_progress -> completed -> invoiced -> closed
- * Special states: needs_parts (hold for parts), on_hold (general hold), archived, cancelled
+ * CURRENT WORKFLOW:
+ * Active: draft -> scheduled -> dispatched -> en_route -> on_site -> in_progress
+ * Close options:
+ *   - "Close & invoice now": in_progress -> invoiced (creates invoice)
+ *   - "Close & invoice later": in_progress -> requires_invoicing
+ *   - From requires_invoicing: can create invoice -> invoiced
+ * Terminal: invoiced -> closed -> archived
+ *
+ * Special states:
+ *   - needs_parts: job waiting for parts
+ *   - on_hold: general hold
+ *   - cancelled: job cancelled
+ *   - archived: final terminal state
+ *
+ * NOTE: "completed" is LEGACY - kept for backward compatibility with existing data.
+ * New jobs should use "requires_invoicing" when closed without immediate invoice.
  */
 export const JOB_STATUS_FLOW: Record<JobStatus, JobStatus[]> = {
   draft: ["scheduled", "cancelled"],
@@ -12,10 +26,13 @@ export const JOB_STATUS_FLOW: Record<JobStatus, JobStatus[]> = {
   dispatched: ["en_route", "on_site", "cancelled"],
   en_route: ["on_site", "cancelled"],
   on_site: ["in_progress", "on_hold", "needs_parts", "cancelled"],
-  in_progress: ["completed", "on_hold", "needs_parts", "cancelled"],
+  in_progress: ["requires_invoicing", "invoiced", "on_hold", "needs_parts", "cancelled"],
   needs_parts: ["in_progress", "on_hold", "cancelled"],
   on_hold: ["in_progress", "needs_parts", "cancelled"],
-  completed: ["invoiced", "archived"],
+  // LEGACY: "completed" treated same as "requires_invoicing" for backward compatibility
+  completed: ["invoiced", "requires_invoicing", "archived"],
+  // NEW: requires_invoicing - job done, awaiting invoice creation
+  requires_invoicing: ["invoiced", "archived"],
   invoiced: ["closed", "archived"],
   closed: ["archived"],
   archived: [],

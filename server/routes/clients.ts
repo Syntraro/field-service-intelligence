@@ -71,10 +71,15 @@ function buildFutureDueIndex(assignments: any[]): Map<string, string> {
 // GET /api/clients - List all clients with pagination
 router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
+if (!companyId) {
+  return res.status(401).json({ message: "Missing company context" });
+}
 
   // Parse pagination params from query
-  const page = parseInt(req.query.page as string) || 1;
-  const limit = parseInt(req.query.limit as string) || 50;
+  const page = clampInt(req.query.page as string | undefined, 1, 1, 10_000);
+const limit = clampInt(req.query.limit as string | undefined, 50, 1, 100);
+
+
   const search = req.query.search as string;
   const sortBy = req.query.sortBy as 'companyName' | 'createdAt' | 'updatedAt' | undefined;
   const sortOrder = req.query.sortOrder as 'asc' | 'desc' | undefined;
@@ -93,7 +98,7 @@ router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
   // Get calendar assignments for nextDue calculation
   const start = getISODateOrDefault(req.query.assignStart as string | undefined, -30);
   const end = getISODateOrDefault(req.query.assignEnd as string | undefined, +60);
-  const assignmentLimit = clampInt(req.query.assignLimit as string | undefined, 5000, 1, 5000);
+  const assignmentLimit = clampInt(req.query.assignLimit as string | undefined, 100, 1, 100);
 
   const assignments = await storage.getCalendarAssignmentsInRange(companyId, {
     start,
@@ -638,9 +643,11 @@ router.get("/:id/overview", asyncHandler(async (req: AuthedRequest, res: Respons
       }
     }
 
+    // Closed job statuses that should NOT count as "open"
+    const closedJobStatuses = ["completed", "requires_invoicing", "invoiced", "closed", "archived", "cancelled"];
     const stats = {
       totalLocations: locations.length,
-      openJobs: jobsList.filter((j: any) => j.status !== "completed" && j.status !== "cancelled").length,
+      openJobs: jobsList.filter((j: any) => !closedJobStatuses.includes(j.status)).length,
       openInvoices: invoicesList.filter((i: any) => i.status !== "paid" && i.status !== "void").length,
     };
 
