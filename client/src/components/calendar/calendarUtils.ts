@@ -3,6 +3,135 @@
 
 export const MONTH_ABBREV = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
+// ============================================================================
+// CalendarEvent: Normalized shape for all calendar views
+// ============================================================================
+
+/**
+ * Normalized calendar event used by all views (monthly, weekly, daily).
+ * Raw assignments are transformed into this shape for consistent handling.
+ */
+export type CalendarEvent = {
+  /** Assignment ID (for mutations and keys) */
+  assignmentId: string;
+  /** Resolved location key (prefers locationId, falls back to clientId) */
+  locationKey: string;
+  /** Primary technician ID (first from assignedTechnicianIds, or legacy assignedTechnicianId) */
+  technicianId: string | null;
+  /** All assigned technician IDs */
+  technicianIds: string[];
+  /** Year of the scheduled date */
+  year: number;
+  /** Month of the scheduled date (1-12) */
+  month: number;
+  /** Day of the scheduled date (1-31) */
+  day: number;
+  /** Date key for indexing (YYYY-MM-DD) */
+  dateKey: string;
+  /** Scheduled hour (null = all-day) */
+  scheduledHour: number | null;
+  /** Scheduled start within hour in minutes (0-59) */
+  scheduledStartMinutes: number | null;
+  /** True if this is an all-day event (scheduledHour is null) */
+  isAllDay: boolean;
+  /** Absolute start minutes from midnight (hour*60 + scheduledStartMinutes), null for all-day */
+  startMinutes: number | null;
+  /** Duration in minutes */
+  durationMinutes: number;
+  /** Whether the assignment is completed */
+  completed: boolean;
+  /** Job number if assigned */
+  jobNumber: string | null;
+  /** Scheduled date as ISO string */
+  scheduledDate: string;
+  /** Raw assignment reference for props that need original data */
+  raw: any;
+};
+
+/**
+ * Get location key from entity (prefers locationId, falls back to clientId)
+ */
+export function getLocationKey(entity: { locationId?: string; clientId?: string }): string {
+  return entity.locationId ?? entity.clientId ?? '';
+}
+
+/**
+ * Normalize raw assignments into CalendarEvent objects
+ */
+export function normalizeAssignments(rawAssignments: any[]): CalendarEvent[] {
+  return rawAssignments.map((a): CalendarEvent => {
+    const isAllDay = a.scheduledHour === null || a.scheduledHour === undefined;
+    const startMinutes = isAllDay ? null : (a.scheduledHour * 60 + (a.scheduledStartMinutes ?? 0));
+    const techIds = a.assignedTechnicianIds || [];
+    const legacyTechId = a.assignedTechnicianId;
+    const technicianId = techIds.length > 0 ? techIds[0] : (legacyTechId || null);
+
+    // Build date key (YYYY-MM-DD)
+    const dateKey = `${a.year}-${String(a.month).padStart(2, '0')}-${String(a.day).padStart(2, '0')}`;
+
+    return {
+      assignmentId: a.id,
+      locationKey: getLocationKey(a),
+      technicianId,
+      technicianIds: techIds.length > 0 ? techIds : (legacyTechId ? [legacyTechId] : []),
+      year: a.year,
+      month: a.month,
+      day: a.day,
+      dateKey,
+      scheduledHour: isAllDay ? null : a.scheduledHour,
+      scheduledStartMinutes: isAllDay ? null : (a.scheduledStartMinutes ?? 0),
+      isAllDay,
+      startMinutes,
+      durationMinutes: a.durationMinutes || 60,
+      completed: a.completed || false,
+      jobNumber: a.jobNumber || null,
+      scheduledDate: a.scheduledDate || dateKey,
+      raw: a,
+    };
+  });
+}
+
+/**
+ * Build indexes for efficient event lookup
+ */
+export function buildEventIndexes(events: CalendarEvent[]) {
+  const eventsByDateKey = new Map<string, CalendarEvent[]>();
+  const eventsByTechnician = new Map<string | null, CalendarEvent[]>();
+  const allDayEventsByDateKey = new Map<string, CalendarEvent[]>();
+  const timedEventsByDateKey = new Map<string, CalendarEvent[]>();
+
+  for (const event of events) {
+    // Index by date
+    const dateEvents = eventsByDateKey.get(event.dateKey) || [];
+    dateEvents.push(event);
+    eventsByDateKey.set(event.dateKey, dateEvents);
+
+    // Index by technician (null for unassigned)
+    const techKey = event.technicianId;
+    const techEvents = eventsByTechnician.get(techKey) || [];
+    techEvents.push(event);
+    eventsByTechnician.set(techKey, techEvents);
+
+    // Index all-day vs timed
+    if (event.isAllDay) {
+      const allDayEvents = allDayEventsByDateKey.get(event.dateKey) || [];
+      allDayEvents.push(event);
+      allDayEventsByDateKey.set(event.dateKey, allDayEvents);
+    } else {
+      const timedEvents = timedEventsByDateKey.get(event.dateKey) || [];
+      timedEvents.push(event);
+      timedEventsByDateKey.set(event.dateKey, timedEvents);
+    }
+  }
+
+  return {
+    eventsByDateKey,
+    eventsByTechnician,
+    allDayEventsByDateKey,
+    timedEventsByDateKey,
+  };
+}
+
 // Technician color palette - colors for left border indicator
 export const TECHNICIAN_COLORS = [
   { bg: 'bg-blue-50 dark:bg-blue-950/20', border: 'border-blue-500', borderLeft: 'border-l-blue-500', dot: 'bg-blue-500', text: 'text-blue-700 dark:text-blue-300', label: 'Blue' },

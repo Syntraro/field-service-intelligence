@@ -206,6 +206,49 @@ npm run lint:db-imports
 npm run lint:api-parse
 ```
 
+### CI Integration
+
+Guardrails run automatically on every PR and push to `main` via GitHub Actions (`.github/workflows/ci.yml`):
+
+```yaml
+- name: Type check
+  run: npm run check
+
+- name: Run guardrails
+  run: npm run lint:guardrails
+```
+
+### Local Pre-commit Hook (Optional)
+
+For faster feedback, add a local pre-commit hook. Create `.git/hooks/pre-commit`:
+
+```bash
+#!/bin/bash
+# Pre-commit hook: Run type check and guardrails before committing
+
+echo "Running pre-commit checks..."
+
+# Type check
+npm run check
+if [ $? -ne 0 ]; then
+  echo "Type check failed. Fix errors before committing."
+  exit 1
+fi
+
+# Guardrails
+npm run lint:guardrails
+if [ $? -ne 0 ]; then
+  echo "Guardrails failed. Fix violations before committing."
+  exit 1
+fi
+
+echo "Pre-commit checks passed."
+```
+
+Make it executable: `chmod +x .git/hooks/pre-commit`
+
+**Note:** This is optional for local development. CI will always run these checks on PRs.
+
 ---
 
 ## Summary: The Right Way to Fix Bugs

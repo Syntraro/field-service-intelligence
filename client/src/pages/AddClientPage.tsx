@@ -100,8 +100,7 @@ export default function AddClientPage() {
         parts: data.parts,
       };
       
-      const res = await apiRequest("/api/clients", { method: "POST", body: JSON.stringify(clientData) });
-      const newClient = await res.json();
+      const newClient = await apiRequest("/api/clients", { method: "POST", body: JSON.stringify(clientData) });
       return newClient;
     },
     onSuccess: () => {
@@ -145,8 +144,7 @@ export default function AddClientPage() {
         nextDue: nextDue ? nextDue.toISOString() : new Date('9999-12-31').toISOString(),
       };
       
-      const res = await apiRequest(`/api/clients/${id}`, { method: "PUT", body: JSON.stringify(clientData) });
-      const updatedClient = await res.json();
+      const updatedClient = await apiRequest(`/api/clients/${id}`, { method: "PUT", body: JSON.stringify(clientData) });
       return updatedClient;
     },
     onSuccess: () => {

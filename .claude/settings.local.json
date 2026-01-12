@@ -50,7 +50,8 @@
       "Bash(chmod:*)",
       "Bash(/home/runner/workspace/scripts/check-db-imports.sh:*)",
       "Bash(bash:*)",
-      "Bash(npm run lint:guardrails:*)"
+      "Bash(npm run lint:guardrails:*)",
+      "Bash(npm run lint:api-parse:*)"
     ]
   }
 }
