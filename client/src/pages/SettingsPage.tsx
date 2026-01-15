@@ -1,6 +1,6 @@
 import { Link } from "wouter";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Package, ChevronRight, Users, FormInput, Receipt, Plug, FileText, ListChecks } from "lucide-react";
+import { Package, ChevronRight, Users, FormInput, Receipt, Plug, FileText, ListChecks, FileCheck } from "lucide-react";
 
 interface SettingsCardProps {
   href: string;
@@ -86,6 +86,14 @@ export default function SettingsPage() {
       description: "Manage reusable templates",
       detail: "Create and manage templates with predefined line items for service calls, PMs, and more.",
       testId: "card-job-templates-settings",
+    },
+    {
+      href: "/settings/quote-templates",
+      icon: FileCheck,
+      title: "Quote Templates",
+      description: "Manage quote templates",
+      detail: "Create and manage templates with predefined line items for quotes.",
+      testId: "card-quote-templates-settings",
     },
     {
       href: "/settings/job-statuses",

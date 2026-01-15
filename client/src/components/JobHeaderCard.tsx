@@ -1,11 +1,13 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { format } from "date-fns";
 import { useLocation } from "wouter";
 import { useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
-import { 
-  MapPin, 
+import { ToastAction } from "@/components/ui/toast";
+import {
+  MapPin,
   MoreHorizontal,
   Copy,
   Receipt,
@@ -13,7 +15,8 @@ import {
   Download,
   Printer,
   XCircle,
-  AlertTriangle
+  AlertTriangle,
+  RotateCcw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -95,17 +98,29 @@ function getPriorityDisplay(priority: string): {
   }
 }
 
-export function JobHeaderCard({ 
-  job, 
+// Office roles that can perform billing/admin actions
+const OFFICE_ROLES = ["owner", "admin", "manager", "dispatcher"];
+
+export function JobHeaderCard({
+  job,
   jobInvoices,
-  onEdit, 
+  onEdit,
   onDelete
 }: JobHeaderCardProps) {
   const [, setLocation] = useLocation();
+  const { user } = useAuth();
   const { toast } = useToast();
   const [showCloseJobDialog, setShowCloseJobDialog] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showInvoicedWarning, setShowInvoicedWarning] = useState(false);
   const [closeOption, setCloseOption] = useState<"invoice_now" | "invoice_later" | "archive">("invoice_now");
+
+  // Role-based permissions
+  const isOfficeUser = user?.role && OFFICE_ROLES.includes(user.role);
+
+  // Check if job can be reopened
+  const canReopen = ["completed", "requires_invoicing", "archived"].includes(job.status);
+  const isInvoiced = job.status === "invoiced";
 
   const locationName = job.location?.location || job.location?.companyName || "Location";
   const clientName = job.parentCompany?.name || job.location?.companyName || "Client";
@@ -134,47 +149,113 @@ export function JobHeaderCard({
     },
   });
 
+  // Ref to track active undo timeout
+  const undoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clear undo timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (undoTimeoutRef.current) {
+        clearTimeout(undoTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const undoCloseMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest(`/api/jobs/${job.id}/undo-close`, {
+        method: "POST",
+      });
+      return response as { job: any };
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      toast({ title: "Undo Successful", description: "Job close has been undone." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message || "Failed to undo close", variant: "destructive" });
+    },
+  });
+
   const closeJobMutation = useMutation({
-    mutationFn: async (option: "invoice_now" | "invoice_later" | "archive") => {
-      // Map close options to explicit job statuses:
-      // - "invoice_now" → "invoiced" (invoice created immediately)
-      // - "invoice_later" → "requires_invoicing" (job closed, needs invoice)
-      // - "archive" → "archived" (job closed, no invoice needed)
-      let newStatus = "requires_invoicing";
-      if (option === "invoice_now") {
-        newStatus = "invoiced";
-      } else if (option === "archive") {
-        newStatus = "archived";
-      }
-
-      await apiRequest(`/api/jobs/${job.id}/status`, { method: "POST", body: JSON.stringify({ status: newStatus }) });
-
-      if (option === "invoice_now") {
-        return await apiRequest(`/api/invoices/from-job/${job.id}`, { method: "POST", body: JSON.stringify({
-          includeLineItems: true,
-          includeNotes: true,
-          markJobCompleted: true,
-        }) });
-      }
-      return null;
+    mutationFn: async (mode: "invoice_now" | "invoice_later" | "archive") => {
+      // Use the unified close endpoint that handles multi-step transitions
+      const response = await apiRequest(`/api/jobs/${job.id}/close`, {
+        method: "POST",
+        body: JSON.stringify({ mode }),
+      });
+      return { ...(response as { job: any; invoice: any | null }), mode };
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       setShowCloseJobDialog(false);
-      
-      if (data) {
+
+      if (data.invoice) {
+        // Invoice created - no undo available
         queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
         toast({ title: "Job Closed", description: "Job closed and invoice created." });
-        setLocation(`/invoices/${data.id}`);
+        setLocation(`/invoices/${data.invoice.id}`);
       } else {
-        toast({ title: "Job Closed", description: "Job has been closed." });
+        // Archive or invoice_later - show undo toast
+        const toastResult = toast({
+          title: "Job Closed",
+          description: "Job has been closed.",
+          action: (
+            <ToastAction
+              altText="Undo"
+              onClick={() => {
+                if (undoTimeoutRef.current) {
+                  clearTimeout(undoTimeoutRef.current);
+                  undoTimeoutRef.current = null;
+                }
+                undoCloseMutation.mutate();
+              }}
+            >
+              Undo
+            </ToastAction>
+          ),
+        });
+
+        // Auto-dismiss undo option after 20 seconds
+        undoTimeoutRef.current = setTimeout(() => {
+          toastResult.dismiss();
+          undoTimeoutRef.current = null;
+        }, 20000);
       }
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message || "Failed to close job", variant: "destructive" });
     },
   });
+
+  const reopenJobMutation = useMutation({
+    mutationFn: async () => {
+      const response = await apiRequest(`/api/jobs/${job.id}/reopen`, {
+        method: "POST",
+        body: JSON.stringify({ target: "in_progress" }),
+      });
+      return response as { job: any };
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      toast({ title: "Job Reopened", description: "Job has been reopened and is now in progress." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message || "Failed to reopen job", variant: "destructive" });
+    },
+  });
+
+  const handleReopenJob = () => {
+    if (isInvoiced) {
+      setShowInvoicedWarning(true);
+    } else {
+      reopenJobMutation.mutate();
+    }
+  };
 
   const handleCreateInvoice = () => {
     if (existingInvoice) {
@@ -258,57 +339,79 @@ export function JobHeaderCard({
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="start">
-                    <DropdownMenuItem 
-                      onClick={() => setShowCloseJobDialog(true)}
-                      data-testid="menu-close-job"
-                    >
-                      <XCircle className="h-4 w-4 mr-2" />
-                      Close Job
-                    </DropdownMenuItem>
-                    <DropdownMenuItem 
+                    {/* Office-only: Close Job */}
+                    {isOfficeUser && (
+                      <DropdownMenuItem
+                        onClick={() => setShowCloseJobDialog(true)}
+                        data-testid="menu-close-job"
+                      >
+                        <XCircle className="h-4 w-4 mr-2" />
+                        Close Job
+                      </DropdownMenuItem>
+                    )}
+                    {/* Office-only: Reopen Job */}
+                    {isOfficeUser && (canReopen || isInvoiced) && (
+                      <DropdownMenuItem
+                        onClick={handleReopenJob}
+                        disabled={reopenJobMutation.isPending}
+                        data-testid="menu-reopen-job"
+                      >
+                        <RotateCcw className="h-4 w-4 mr-2" />
+                        {reopenJobMutation.isPending ? "Reopening..." : "Reopen Job"}
+                      </DropdownMenuItem>
+                    )}
+                    <DropdownMenuItem
                       onClick={handleCreateSimilarJob}
                       data-testid="menu-create-similar"
                     >
                       <Copy className="h-4 w-4 mr-2" />
                       Create Similar Job
                     </DropdownMenuItem>
-                    <DropdownMenuItem 
-                      onClick={handleCreateInvoice}
-                      data-testid="menu-create-invoice"
-                    >
-                      <Receipt className="h-4 w-4 mr-2" />
-                      {existingInvoice ? "View Invoice" : "Create Invoice"}
-                    </DropdownMenuItem>
+                    {/* Office-only: Create/View Invoice */}
+                    {isOfficeUser && (
+                      <DropdownMenuItem
+                        onClick={handleCreateInvoice}
+                        data-testid="menu-create-invoice"
+                      >
+                        <Receipt className="h-4 w-4 mr-2" />
+                        {existingInvoice ? "View Invoice" : "Create Invoice"}
+                      </DropdownMenuItem>
+                    )}
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem 
+                    <DropdownMenuItem
                       onClick={handleCollectSignature}
                       data-testid="menu-collect-signature"
                     >
                       <PenTool className="h-4 w-4 mr-2" />
                       Collect Signature
                     </DropdownMenuItem>
-                    <DropdownMenuItem 
+                    <DropdownMenuItem
                       onClick={handleDownloadPDF}
                       data-testid="menu-download-pdf"
                     >
                       <Download className="h-4 w-4 mr-2" />
                       Download PDF
                     </DropdownMenuItem>
-                    <DropdownMenuItem 
+                    <DropdownMenuItem
                       onClick={handlePrint}
                       data-testid="menu-print"
                     >
                       <Printer className="h-4 w-4 mr-2" />
                       Print
                     </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem 
-                      onClick={() => setShowDeleteConfirm(true)}
-                      className="text-destructive"
-                      data-testid="menu-delete-job"
-                    >
-                      Delete Job
-                    </DropdownMenuItem>
+                    {/* Office-only: Delete Job */}
+                    {isOfficeUser && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={() => setShowDeleteConfirm(true)}
+                          className="text-destructive"
+                          data-testid="menu-delete-job"
+                        >
+                          Delete Job
+                        </DropdownMenuItem>
+                      </>
+                    )}
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
@@ -421,7 +524,7 @@ export function JobHeaderCard({
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction 
+            <AlertDialogAction
               onClick={() => { onDelete(); setShowDeleteConfirm(false); }}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
@@ -430,6 +533,39 @@ export function JobHeaderCard({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Invoiced Warning - cannot reopen */}
+      <Dialog open={showInvoicedWarning} onOpenChange={setShowInvoicedWarning}>
+        <DialogContent className="sm:max-w-md" data-testid="dialog-invoiced-warning">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-500" />
+              Cannot Reopen Job
+            </DialogTitle>
+            <DialogDescription>
+              This job has been invoiced and cannot be reopened directly.
+              To reopen this job, you must first void or credit the linked invoice.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex-col sm:flex-row gap-2">
+            <Button variant="outline" onClick={() => setShowInvoicedWarning(false)}>
+              Cancel
+            </Button>
+            {existingInvoice && (
+              <Button
+                onClick={() => {
+                  setShowInvoicedWarning(false);
+                  setLocation(`/invoices/${existingInvoice.id}`);
+                }}
+                data-testid="button-view-invoice"
+              >
+                <Receipt className="h-4 w-4 mr-2" />
+                View Invoice
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

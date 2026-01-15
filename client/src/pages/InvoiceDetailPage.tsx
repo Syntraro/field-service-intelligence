@@ -68,6 +68,8 @@ import {
 } from "@/components/ui/select";
 import type { Invoice, InvoiceLine, Payment, Client, CustomerCompany, Job } from "@shared/schema";
 import { InvoiceHeaderCard } from "@/components/InvoiceHeaderCard";
+import { ConfirmSendModal } from "@/components/invoice/ConfirmSendModal";
+import { ConfirmVoidModal } from "@/components/invoice/ConfirmVoidModal";
 
 interface JobNote {
   id: string;
@@ -186,6 +188,8 @@ export default function InvoiceDetailPage() {
   
   const [isEditing, setIsEditing] = useState(false);
   const [showPaymentDialog, setShowPaymentDialog] = useState(false);
+  const [showSendConfirm, setShowSendConfirm] = useState(false);
+  const [showVoidConfirm, setShowVoidConfirm] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("e-transfer");
   const [paymentReference, setPaymentReference] = useState("");
@@ -195,18 +199,33 @@ export default function InvoiceDetailPage() {
   const [visibilityOpen, setVisibilityOpen] = useState(false);
 
   const { data: details, isLoading } = useQuery<InvoiceDetails>({
-    queryKey: ["/api/invoices", invoiceId, "details"],
+    queryKey: ["invoice", invoiceId, "details"],
+    queryFn: async () => {
+      const res = await fetch(`/api/invoices/${invoiceId}/details`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch invoice details");
+      return res.json();
+    },
     enabled: !!invoiceId,
   });
 
   const { data: payments = [] } = useQuery<Payment[]>({
-    queryKey: ["/api/invoices", invoiceId, "payments"],
+    queryKey: ["invoice", invoiceId, "payments"],
+    queryFn: async () => {
+      const res = await fetch(`/api/invoices/${invoiceId}/payments`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch payments");
+      return res.json();
+    },
     enabled: !!invoiceId,
   });
 
   const jobId = details?.job?.id;
   const { data: jobNotes = [], isLoading: notesLoading } = useQuery<JobNote[]>({
-    queryKey: ["/api/jobs", jobId, "notes"],
+    queryKey: ["job", jobId, "notes"],
+    queryFn: async () => {
+      const res = await fetch(`/api/jobs/${jobId}/notes`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch job notes");
+      return res.json();
+    },
     enabled: !!jobId,
   });
 
@@ -218,10 +237,29 @@ export default function InvoiceDetailPage() {
   const sendMutation = useMutation({
     mutationFn: () => apiRequest(`/api/invoices/${invoiceId}/send`, { method: "POST" }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
+      setShowSendConfirm(false);
       toast({ title: "Invoice sent successfully" });
     },
-    onError: () => toast({ title: "Failed to send invoice", variant: "destructive" }),
+    onError: (error: Error) => {
+      setShowSendConfirm(false);
+      toast({ title: "Failed to send invoice", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const voidMutation = useMutation({
+    mutationFn: () => apiRequest(`/api/invoices/${invoiceId}/void`, { method: "POST" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
+      setShowVoidConfirm(false);
+      toast({ title: "Invoice voided" });
+    },
+    onError: (error: Error) => {
+      setShowVoidConfirm(false);
+      toast({ title: "Failed to void invoice", description: error.message, variant: "destructive" });
+    },
   });
 
   const refreshFromJobMutation = useMutation({
@@ -229,7 +267,7 @@ export default function InvoiceDetailPage() {
       return await apiRequest(`/api/invoices/${invoiceId}/refresh-from-job`, { method: "POST" });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
       toast({ title: "Invoice refreshed from job" });
     },
     onError: () => toast({ title: "Failed to refresh invoice", variant: "destructive" }),
@@ -239,7 +277,7 @@ export default function InvoiceDetailPage() {
     mutationFn: (data: { amount: string; method: string; reference?: string; notes?: string }) =>
       apiRequest(`/api/invoices/${invoiceId}/payments`, { method: "POST", body: JSON.stringify(data) }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/stats"] });
       setShowPaymentDialog(false);
@@ -256,7 +294,7 @@ export default function InvoiceDetailPage() {
     mutationFn: (orderData: { id: string; lineNumber: number }[]) =>
       apiRequest(`/api/invoices/${invoiceId}/lines/reorder`, { method: "PATCH", body: JSON.stringify(orderData) }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
     },
     onError: () => toast({ title: "Failed to reorder items", variant: "destructive" }),
   });
@@ -352,13 +390,17 @@ export default function InvoiceDetailPage() {
             customerCompany={customerCompany}
             job={job}
             onEdit={() => setIsEditing(!isEditing)}
-            onSend={() => sendMutation.mutate()}
+            onSend={() => setShowSendConfirm(true)}
             onCollectPayment={() => setShowPaymentDialog(true)}
+            onVoid={() => setShowVoidConfirm(true)}
             onRefreshFromJob={() => refreshFromJobMutation.mutate()}
             refreshPending={refreshFromJobMutation.isPending}
+            voidPending={voidMutation.isPending}
             canEdit={canEdit}
             isDraft={isDraft}
             sendPending={sendMutation.isPending}
+            statusLabel={statusInfo.label}
+            statusVariant={statusInfo.variant}
           />
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -751,8 +793,8 @@ export default function InvoiceDetailPage() {
             <Button variant="outline" onClick={() => setShowPaymentDialog(false)}>
               Cancel
             </Button>
-            <Button 
-              onClick={handleRecordPayment} 
+            <Button
+              onClick={handleRecordPayment}
               disabled={createPaymentMutation.isPending}
               data-testid="button-save-payment"
             >
@@ -761,6 +803,26 @@ export default function InvoiceDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Send Confirmation Modal */}
+      <ConfirmSendModal
+        open={showSendConfirm}
+        onOpenChange={setShowSendConfirm}
+        invoiceNumber={invoice.invoiceNumber}
+        customerName={clientName}
+        total={invoice.total}
+        onConfirm={() => sendMutation.mutate()}
+        isPending={sendMutation.isPending}
+      />
+
+      {/* Void Confirmation Modal */}
+      <ConfirmVoidModal
+        open={showVoidConfirm}
+        onOpenChange={setShowVoidConfirm}
+        invoiceNumber={invoice.invoiceNumber}
+        onConfirm={() => voidMutation.mutate()}
+        isPending={voidMutation.isPending}
+      />
     </div>
   );
 }

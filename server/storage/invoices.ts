@@ -507,6 +507,17 @@ export class InvoiceRepository extends BaseRepository {
         throw this.validationError("Job already has an invoice");
       }
 
+      // 1b. Get client location to resolve customerCompanyId
+      const [location] = await tx
+        .select()
+        .from(clients)
+        .where(and(eq(clients.id, job.locationId), eq(clients.companyId, companyId)))
+        .limit(1);
+
+      if (!location) {
+        throw this.validationError("Job has invalid location reference");
+      }
+
       // 2. Get or create counter and increment
       let [counter] = await tx
         .select()
@@ -535,6 +546,7 @@ export class InvoiceRepository extends BaseRepository {
         .values({
           companyId,
           locationId: job.locationId,
+          customerCompanyId: location.parentCompanyId, // Link to billing entity
           jobId: jobId,
           invoiceNumber: String(invoiceNumber),
           status: "draft",

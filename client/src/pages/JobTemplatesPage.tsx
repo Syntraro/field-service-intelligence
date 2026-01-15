@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { queryClient } from "@/lib/queryClient";
+import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -86,17 +86,10 @@ export default function JobTemplatesPage() {
 
   const setDefaultMutation = useMutation({
     mutationFn: async ({ id, jobType }: { id: string; jobType: string }) => {
-      const res = await fetch(`/api/job-templates/${id}/set-default`, {
+      return apiRequest(`/api/job-templates/${id}/set-default`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify({ jobType }),
       });
-      if (!res.ok) {
-        const error = await res.json().catch(() => ({}));
-        throw new Error(error.error || "Failed to set default");
-      }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/job-templates"] });
@@ -109,17 +102,10 @@ export default function JobTemplatesPage() {
 
   const toggleActiveMutation = useMutation({
     mutationFn: async ({ id, isActive }: { id: string; isActive: boolean }) => {
-      const res = await fetch(`/api/job-templates/${id}`, {
+      return apiRequest(`/api/job-templates/${id}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify({ isActive }),
       });
-      if (!res.ok) {
-        const error = await res.json().catch(() => ({}));
-        throw new Error(error.error || "Failed to update template");
-      }
-      return res.json();
     },
     onSuccess: (_, { isActive }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/job-templates"] });
@@ -137,16 +123,9 @@ export default function JobTemplatesPage() {
 
   const cloneMutation = useMutation({
     mutationFn: async (id: string) => {
-      const res = await fetch(`/api/job-templates/${id}/clone`, {
+      return apiRequest(`/api/job-templates/${id}/clone`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
       });
-      if (!res.ok) {
-        const error = await res.json().catch(() => ({}));
-        throw new Error(error.error || "Failed to duplicate template");
-      }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/job-templates"] });
@@ -159,15 +138,9 @@ export default function JobTemplatesPage() {
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      const res = await fetch(`/api/job-templates/${id}`, {
+      return apiRequest(`/api/job-templates/${id}`, {
         method: "DELETE",
-        credentials: "include",
       });
-      if (!res.ok) {
-        const error = await res.json().catch(() => ({}));
-        throw new Error(error.error || "Failed to delete template");
-      }
-      return true;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/job-templates"] });

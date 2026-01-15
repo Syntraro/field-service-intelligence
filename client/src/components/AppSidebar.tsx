@@ -13,7 +13,8 @@ import {
   Settings,
   Package,
   Receipt,
-  Building2
+  Building2,
+  FileCheck
 } from "lucide-react";
 import { Link, useLocation, useSearch } from "wouter";
 import { useAuth } from "@/lib/auth";
@@ -124,6 +125,13 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       testId: "nav-invoices"
     });
     menuItems.push({
+      title: "Quotes",
+      icon: FileCheck,
+      href: "/quotes",
+      isActive: location === "/quotes" || location.startsWith("/quotes/"),
+      testId: "nav-quotes"
+    });
+    menuItems.push({
       title: "Clients",
       icon: Users,
       isActive: isClientsTab || location.startsWith("/clients/"),
@@ -150,7 +158,7 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       title: "Reports",
       icon: FileText,
       href: "/reports",
-      isActive: location === "/reports",
+      isActive: location === "/reports" || location.startsWith("/reports/"),
       testId: "nav-reports"
     });
     

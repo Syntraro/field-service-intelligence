@@ -199,8 +199,15 @@ export class TemplateRepository extends BaseRepository {
 
   /**
    * Apply job template to a job (copy line items to job parts)
+   * @param mode - "replace" adds all template items, "merge" skips items with duplicate productId
+   * @returns { appliedCount, skippedCount, parts }
    */
-  async applyJobTemplateToJob(companyId: string, jobId: string, templateId: string) {
+  async applyJobTemplateToJob(
+    companyId: string,
+    jobId: string,
+    templateId: string,
+    mode: "replace" | "merge" = "replace"
+  ): Promise<{ appliedCount: number; skippedCount: number; parts: any[] }> {
     const template = await this.getJobTemplate(companyId, templateId);
     if (!template) {
       throw this.notFoundError("Template");
@@ -208,9 +215,43 @@ export class TemplateRepository extends BaseRepository {
 
     const lines = await this.getJobTemplateLineItems(templateId);
 
+    // For merge mode, get existing job parts to check for duplicates
+    let existingProductIds: Set<string> = new Set();
+    if (mode === "merge") {
+      const existingParts = await db
+        .select({ productId: jobParts.productId })
+        .from(jobParts)
+        .where(eq(jobParts.jobId, jobId));
+      existingProductIds = new Set(
+        existingParts.map((p) => p.productId).filter((id): id is string => id !== null)
+      );
+    }
+
+    // Get current max sortOrder for merge mode
+    let maxSortOrder = 0;
+    if (mode === "merge") {
+      const [maxResult] = await db
+        .select({ maxSort: jobParts.sortOrder })
+        .from(jobParts)
+        .where(eq(jobParts.jobId, jobId))
+        .orderBy(jobParts.sortOrder)
+        .limit(1);
+      maxSortOrder = (maxResult?.maxSort ?? -1) + 1;
+    }
+
     // Create job parts from template lines
     const createdParts = [];
+    let skippedCount = 0;
+
     for (const line of lines) {
+      // In merge mode, skip if productId already exists
+      if (mode === "merge" && existingProductIds.has(line.productId)) {
+        skippedCount++;
+        continue;
+      }
+
+      const sortOrder = mode === "merge" ? maxSortOrder++ : line.sortOrder;
+
       const [part] = await db
         .insert(jobParts)
         .values({
@@ -220,14 +261,18 @@ export class TemplateRepository extends BaseRepository {
           description: line.descriptionOverride || "",
           quantity: line.quantity,
           unitPrice: line.unitPriceOverride || "0",
-          sortOrder: line.sortOrder,
+          sortOrder,
         })
         .returning();
 
       createdParts.push(part);
     }
 
-    return createdParts;
+    return {
+      appliedCount: createdParts.length,
+      skippedCount,
+      parts: createdParts,
+    };
   }
 
   /**

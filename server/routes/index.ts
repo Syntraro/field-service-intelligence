@@ -31,6 +31,11 @@ import suppliersRouter from "./suppliers";
 import jobVisitsRoutes from "./jobVisits.routes";
 import clientNotesRouter from "./client-notes";
 import dashboardRouter from "./dashboard";
+import reportsRouter from "./reports";
+import paymentsRouter from "./payments";
+import qboRouter from "./qbo";
+import quotesRouter from "./quotes";
+import quoteTemplatesRouter from "./quoteTemplates";
 
 /**
  * Register all API routes in a single place.
@@ -84,6 +89,7 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/jobs", jobsRouter);
   app.use("/api/jobs", jobVisitsRoutes);
   app.use("/api/invoices", invoicesRouter);
+  app.use("/api", paymentsRouter); // Payment routes: /api/invoices/:id/payments, /api/payments/:id
   app.use("/api/team", teamRouter);
   app.use("/api/calendar", calendarRouter);
   app.use("/api/clients", clientsRouter);
@@ -101,6 +107,10 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/tasks", tasksRoutes);
   app.use("/api/suppliers", suppliersRouter);
   app.use("/api/dashboard", dashboardRouter);
+  app.use("/api/reports", reportsRouter);
+  app.use("/api/qbo", qboRouter);
+  app.use("/api/quotes", quotesRouter);
+  app.use("/api/quote-templates", quoteTemplatesRouter);
 
   // ✅ NEW ROUTES (company rollups + notes API)
   // Company/Client (parent) endpoints: /api/customer-companies/:id/overview, /locations, etc.

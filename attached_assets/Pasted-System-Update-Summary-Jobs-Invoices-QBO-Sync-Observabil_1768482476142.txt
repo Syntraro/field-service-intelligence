@@ -1,0 +1,364 @@
+System Update Summary — Jobs, Invoices, QBO Sync & Observability
+
+Status: All phases complete
+Build: TypeScript compiles cleanly
+Architecture Goal: Explicit, safe, one-way sync with full observability and zero silent failure modes
+
+1️⃣ Job Lifecycle & Status System (Phases 7–17)
+What Changed
+
+Removed legacy job statuses: needs_parts, on_hold
+
+Introduced canonical unified status:
+
+action_required + structured reason (needs_parts, other, etc.)
+
+Added full status event audit trail via job_status_events
+
+All job status updates are now atomic & transactional
+
+Key Enhancements
+
+actionRequiredAt, actionRequiredEscalatedAt timestamps
+
+SLA tracking (24h warning, 72h escalation)
+
+Escalation actions with audit events
+
+Inline UI actions for notes & follow-up dates
+
+Timeline collapsing to reduce event noise
+
+No-op detection prevents duplicate status events
+
+Guarantees
+
+Impossible states are blocked by DB constraints
+
+Every status change produces a matching audit event
+
+Technicians can update progress statuses only
+
+Only office roles can close/reopen/escalate jobs
+
+2️⃣ Client & Location Model Validation
+Result
+
+No structural changes required
+
+UI and backend already correctly model:
+
+customer_companies (billing entity)
+
+client_locations (service locations)
+
+Fix Applied
+
+Resolved schema mismatch:
+
+client_locations.updated_at added + trigger
+
+/api/clients no longer throws 500 errors
+
+3️⃣ Invoice System Overhaul (Phases 18–19)
+Unified Invoice Status Model
+
+Canonical statuses:
+
+draft → sent → partial_paid → paid
+                  ↘ voided
+
+
+Removed:
+
+pending, viewed, cancelled, overdue, void (duplicates / ambiguity)
+
+Backend Enforcement
+
+Draft-only edits enforced
+
+Terminal states locked
+
+Explicit endpoints:
+
+POST /send
+
+POST /void
+
+DELETE (draft only)
+
+Payments System
+
+Introduced payments repository + routes
+
+Payments auto-recalculate:
+
+amountPaid
+
+balance
+
+Invoice status auto-updates based on payments
+
+Guarantees
+
+No paid/voided invoice can be mutated
+
+Payments are source of truth for balances
+
+Status transitions are enforced server-side
+
+4️⃣ Invoice Detail Reliability Fix
+Problems Found & Fixed
+
+Broken React Query usage (/api/invoices vs /api/invoices/:id)
+
+Missing composite invoice endpoint
+
+customerCompanyId not set on invoice creation
+
+Fixes Implemented
+
+Added GET /api/invoices/:id/details
+
+Invoice creation now always sets customerCompanyId
+
+Legacy invoices audited (0 issues found)
+
+5️⃣ QBO Sync Architecture (Phases 19–29)
+Core Design Principles
+
+One-way sync only (App → QuickBooks)
+
+No auto-sync
+
+No background cron jobs
+
+No silent retries
+
+Admin-only control
+
+Everything auditable
+
+6️⃣ QBO Sync Foundations
+Schema Additions
+
+qboSyncStatus, qboSyncError on:
+
+customer companies
+
+invoices
+
+items
+
+Full audit table: qbo_sync_events
+
+Sync queue: qbo_sync_queue
+
+Webhook storage: qbo_webhook_events
+
+Sync Statuses
+
+NOT_SYNCED
+
+PENDING
+
+SYNCED
+
+ERROR
+
+7️⃣ QBO Sync Orchestration & Queue
+Orchestrator
+
+Coordinates correct dependency order:
+
+CustomerCompany → ClientLocation → Invoice
+
+Batch and full sync supported
+
+Idempotent — already-synced entities are skipped
+
+Queue Processor
+
+Explicit enqueue + admin-triggered processing
+
+Retry logic with:
+
+Validation errors → no retry
+
+Transient errors → exponential backoff
+
+Replay supported for failed jobs
+
+8️⃣ QBO Preflight, Safety Gates & Dry-Run
+Go-Live Safety
+
+qboEnabled flag (default: false)
+
+Cannot enable sync unless preflight passes
+
+Preflight Checks
+
+OAuth tokens configured
+
+Connectivity test
+
+Item/tax mapping configured
+
+Queue health
+
+Environment (sandbox / production)
+
+Dry-Run Support
+
+Preview invoice sync payload
+
+Preview queue processing
+
+No QBO API calls made
+
+9️⃣ QBO Item & Tax Mapping
+Mapping System
+
+Company-level defaults:
+
+Service, material, labor, misc items
+
+Taxable / non-taxable codes
+
+Invoice lines resolve mappings in priority order:
+
+Explicit line mapping
+
+Product → QBO item
+
+Company defaults
+
+Fallback
+
+Preflight Validation
+
+Invoice sync blocked if mappings missing
+
+Actionable errors returned to UI
+
+🔟 QBO Item Catalog Sync
+Capabilities
+
+List QBO items
+
+Create QBO items from local items
+
+Link local items to existing QBO items
+
+Bulk enqueue item sync
+
+Invoice Integration
+
+Invoice lines now support productId
+
+Item QBO IDs automatically injected into invoice payloads
+
+1️⃣1️⃣ QBO Webhooks & Drift Detection
+Webhook Handling
+
+Signature verified (HMAC)
+
+Idempotent via dedupe keys
+
+Payloads redacted for safety
+
+Drift Alerts
+
+Detects changes in QBO invoices/payments
+
+Admin can enqueue reconciliation jobs
+
+No automatic writes back to local system
+
+1️⃣2️⃣ QBO Observability & Runs
+Sync Runs
+
+Every sync generates a syncRunId
+
+All events, queue jobs, and webhooks correlate to a run
+
+Admin Console Visibility
+
+Recent sync runs dashboard
+
+Error categorization with suggested actions:
+
+Auth
+
+Rate limit
+
+Mapping
+
+Validation
+
+Conflict
+
+1️⃣3️⃣ QBO Admin Console UI
+Console Features
+
+Go-Live status panel
+
+Preflight checklist
+
+Mapping configuration
+
+Sync queue management
+
+Item sync UI
+
+Webhook & drift alert views
+
+Dry-run preview tools
+
+UX Decisions
+
+Clear one-way sync messaging
+
+No Jobber wording reuse
+
+Explicit action naming
+
+Shadcn Select runtime errors resolved ("" → "all" pattern)
+
+1️⃣4️⃣ Intentional Non-Features (By Design)
+
+We explicitly did not add:
+
+Two-way sync
+
+Automatic paid status back-sync
+
+Credit memo auto-generation
+
+Cron jobs
+
+Silent retries
+
+Webhook auto-apply
+
+Background magic
+
+This is intentional to:
+
+Avoid accounting drift
+
+Prevent hard-to-debug states
+
+Keep admins in control
+
+✅ Final State
+
+System is safe by default
+
+All critical operations are explicit
+
+Every sync action is observable
+
+Failures are actionable, not hidden
+
+Architecture matches real-world accounting workflows

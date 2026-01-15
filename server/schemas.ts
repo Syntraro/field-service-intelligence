@@ -3,7 +3,7 @@ import { z } from "zod";
 export const moneyNumber = z.coerce.number().min(0).finite();
 export const optionalMoneyNumber = moneyNumber.nullable().optional();
 
-// NOTE: "completed" is LEGACY - kept for backward compatibility
+// NOTE: "completed" is LEGACY - kept for backward compatibility with existing data
 // New code should use "requires_invoicing" for jobs awaiting invoicing
 export const jobStatusEnum = z.enum([
   "draft",
@@ -12,8 +12,7 @@ export const jobStatusEnum = z.enum([
   "en_route",
   "on_site",
   "in_progress",
-  "needs_parts",
-  "on_hold",
+  "action_required",    // Unified hold state - requires actionRequiredReason
   "completed",          // LEGACY: Use "requires_invoicing" for new jobs
   "requires_invoicing", // Job closed, needs invoice created
   "invoiced",
@@ -22,14 +21,13 @@ export const jobStatusEnum = z.enum([
   "cancelled"
 ]);
 
+// Invoice statuses - Canonical lifecycle: draft → sent → partial_paid/paid (with void from any non-terminal)
 export const invoiceStatusEnum = z.enum([
   "draft",
-  "pending",
   "sent",
-  "paid",
   "partial_paid",
-  "voided",
-  "cancelled"
+  "paid",
+  "voided"
 ]);
 
 export type JobStatus = z.infer<typeof jobStatusEnum>;
@@ -67,6 +65,10 @@ export type JobCreateInput = z.infer<typeof jobCreateSchema>;
 
 export const jobUpdateStatusSchema = z.object({
   status: jobStatusEnum,
+  // Action required fields (required when status === "action_required")
+  actionRequiredReason: z.string().nullable().optional(),
+  actionRequiredNotes: z.string().nullable().optional(),
+  nextActionDate: z.string().nullable().optional(), // ISO date string (YYYY-MM-DD)
 });
 
 export type JobUpdateStatusInput = z.infer<typeof jobUpdateStatusSchema>;

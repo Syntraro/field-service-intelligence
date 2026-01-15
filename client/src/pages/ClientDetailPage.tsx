@@ -138,9 +138,16 @@ export default function ClientDetailPage() {
   const invoices: Invoice[] = overview?.invoices ?? [];
 
   const { data: notes = [] } = useQuery<ClientNote[]>({
-  queryKey: ["/api/clients", clientId, "notes"],
-  enabled: Boolean(clientId),
-});
+    queryKey: ["/api/clients", clientId, "notes"],
+    queryFn: async () => {
+      const res = await fetch(`/api/clients/${clientId}/notes`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch notes");
+      const raw = await res.json();
+      // Normalize: backend may return array directly or { data: [...] } for paginated response
+      return Array.isArray(raw) ? raw : Array.isArray(raw?.data) ? raw.data : [];
+    },
+    enabled: Boolean(clientId),
+  });
 
 
   /**

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, boolean, timestamp, date, numeric, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, boolean, timestamp, date, numeric, uniqueIndex, jsonb, index, check } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -25,6 +25,13 @@ export const companies = pgTable("companies", {
   // Tax settings
   taxName: text("tax_name").notNull().default("HST"), // Default tax name (e.g., HST, GST, PST, VAT)
   defaultTaxRate: numeric("default_tax_rate", { precision: 5, scale: 2 }).notNull().default("13.00"), // Default tax rate as percentage (e.g., 13.00 for 13%)
+  // QBO item/tax mapping configuration
+  // JSON structure: { laborItemId, materialItemId, serviceItemId, feeItemId, discountItemId, miscItemId, taxableCode, nonTaxableCode }
+  qboMappingConfig: jsonb("qbo_mapping_config"),
+  // QBO Go-Live Safety Gate
+  qboEnabled: boolean("qbo_enabled").notNull().default(false),
+  qboEnvironment: text("qbo_environment").notNull().default("sandbox"), // "sandbox" | "production"
+  qboRealmId: text("qbo_realm_id"), // QBO company ID for webhook mapping
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
@@ -35,6 +42,26 @@ export const insertCompanySchema = createInsertSchema(companies).omit({
 
 export type InsertCompany = z.infer<typeof insertCompanySchema>;
 export type Company = typeof companies.$inferSelect;
+
+// QBO Mapping Configuration Schema
+export const qboMappingConfigSchema = z.object({
+  // Item mappings by line item type
+  serviceItemId: z.string().optional(),   // QBO Item ID for "service" line items
+  materialItemId: z.string().optional(),  // QBO Item ID for "material" line items
+  feeItemId: z.string().optional(),       // QBO Item ID for "fee" line items
+  discountItemId: z.string().optional(),  // QBO Item ID for "discount" line items
+  laborItemId: z.string().optional(),     // QBO Item ID for labor (alias for service)
+  miscItemId: z.string().optional(),      // QBO Item ID for misc/uncategorized items
+  // Tax code mappings
+  taxableCode: z.string().optional(),     // QBO TaxCode for taxable items (e.g., "TAX" or "1")
+  nonTaxableCode: z.string().optional(),  // QBO TaxCode for non-taxable items (e.g., "NON" or "0")
+}).strict();
+
+export type QboMappingConfig = z.infer<typeof qboMappingConfigSchema>;
+
+// QBO Environment enum
+export const qboEnvironmentEnum = ["sandbox", "production"] as const;
+export type QboEnvironment = typeof qboEnvironmentEnum[number];
 
 export const userStatusEnum = ["active", "invited", "deactivated"] as const;
 
@@ -142,6 +169,8 @@ export const customerCompanies = pgTable("customer_companies", {
   qboCustomerId: text("qbo_customer_id"), // QBO Customer.Id
   qboSyncToken: text("qbo_sync_token"), // QBO Customer.SyncToken (required for updates)
   qboLastSyncedAt: timestamp("qbo_last_synced_at"),
+  qboSyncStatus: text("qbo_sync_status").notNull().default("NOT_SYNCED"), // NOT_SYNCED | SYNCED | PENDING | ERROR
+  qboSyncError: text("qbo_sync_error"), // Last sync error message if any
   // Soft delete
   deletedAt: timestamp("deleted_at"),
   // Metadata
@@ -203,7 +232,7 @@ export const clientLocations = pgTable("client_locations", {
   deletedAt: timestamp("deleted_at"),
   // Metadata
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: timestamp("updated_at"),
+  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const insertClientLocationSchema = createInsertSchema(clientLocations).omit({
@@ -249,12 +278,19 @@ export const items = pgTable("items", {
   // QBO sync fields for Items
   qboItemId: text("qbo_item_id"), // QBO Item id if/when synced
   qboSyncToken: text("qbo_sync_token"), // QBO sync token if needed
+  qboSyncStatus: text("qbo_sync_status").notNull().default("NOT_SYNCED"), // NOT_SYNCED, SYNCED, ERROR
+  qboSyncError: text("qbo_sync_error"), // Last sync error message if any
   // Soft delete
   deletedAt: timestamp("deleted_at"),
   // Metadata
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
-});
+}, (table) => ({
+  // Index for looking up items by QBO ID
+  qboItemIdIdx: index("items_qbo_item_id_idx").on(table.companyId, table.qboItemId),
+  // Index for filtering items by sync status
+  qboSyncStatusIdx: index("items_qbo_sync_status_idx").on(table.companyId, table.qboSyncStatus),
+}));
 
 export const insertItemSchema = createInsertSchema(items).omit({
   id: true,
@@ -336,11 +372,13 @@ export const companyCounters = pgTable("company_counters", {
   companyId: varchar("company_id").notNull().unique().references(() => companies.id, { onDelete: "cascade" }),
   nextJobNumber: integer("next_job_number").notNull().default(10000),
   nextInvoiceNumber: integer("next_invoice_number").notNull().default(1001),
+  nextQuoteNumber: integer("next_quote_number").notNull().default(1001),
 });
 
 export const updateCompanyCountersSchema = z.object({
   nextJobNumber: z.number().int().positive().optional(),
   nextInvoiceNumber: z.number().int().positive().optional(),
+  nextQuoteNumber: z.number().int().positive().optional(),
 });
 
 export type UpdateCompanyCounters = z.infer<typeof updateCompanyCountersSchema>;
@@ -657,8 +695,8 @@ export type InsertClientNote = z.infer<typeof insertClientNoteSchema>;
 export type UpdateClientNote = z.infer<typeof updateClientNoteSchema>;
 export type ClientNote = typeof clientNotes.$inferSelect;
 
-// Invoice statuses
-export const invoiceStatusEnum = ["draft", "sent", "viewed", "partial_paid", "paid", "voided"] as const;
+// Invoice statuses - Canonical lifecycle: draft → sent → partial_paid/paid (with void from any non-terminal)
+export const invoiceStatusEnum = ["draft", "sent", "partial_paid", "paid", "voided"] as const;
 export type InvoiceStatus = typeof invoiceStatusEnum[number];
 
 // Invoice line item types
@@ -713,6 +751,8 @@ export const invoices = pgTable("invoices", {
   qboSyncToken: text("qbo_sync_token"), // QBO Invoice.SyncToken (required for updates)
   qboLastSyncedAt: timestamp("qbo_last_synced_at"),
   qboDocNumber: text("qbo_doc_number"), // QBO DocNumber
+  qboSyncStatus: text("qbo_sync_status").notNull().default("NOT_SYNCED"), // NOT_SYNCED | SYNCED | PENDING | ERROR
+  qboSyncError: text("qbo_sync_error"), // Last sync error message if any
   // Status
   dirty: boolean("dirty").notNull().default(false), // True if edited after last sync
   isActive: boolean("is_active").notNull().default(true), // Legacy soft delete (use deletedAt)
@@ -800,6 +840,8 @@ export const invoiceLines = pgTable("invoice_lines", {
   taxCode: text("tax_code"), // Tax code name/identifier
   // Job reference (if converted from job)
   jobLineItemId: varchar("job_line_item_id"), // Reference to original job part
+  // Product reference (links to items table for QBO sync)
+  productId: varchar("product_id").references(() => items.id, { onDelete: "set null" }), // Optional link to items
   // QBO mapping fields
   qboItemRefId: text("qbo_item_ref_id"), // Maps to QBO ItemRef (product/service)
   qboTaxCodeRefId: text("qbo_tax_code_ref_id"), // Maps to QBO TaxCodeRef
@@ -835,6 +877,7 @@ export const updateInvoiceLineSchema = z.object({
   lineSubtotal: z.string().optional(),
   taxCode: z.string().nullable().optional(),
   jobLineItemId: z.string().nullable().optional(),
+  productId: z.string().nullable().optional(), // Link to items table for QBO sync
   qboItemRefId: z.string().nullable().optional(),
   qboTaxCodeRefId: z.string().nullable().optional(),
   metadata: z.string().nullable().optional(),
@@ -892,9 +935,8 @@ export const jobStatusEnum = [
   "en_route",
   "on_site",
   "in_progress",
-  "needs_parts",
-  "on_hold",
-  "completed",        // LEGACY: Use "requires_invoicing" for new jobs
+  "action_required",   // Unified hold state - requires actionRequiredReason
+  "completed",         // LEGACY: Use "requires_invoicing" for new jobs
   "requires_invoicing", // Job closed, needs invoice created
   "invoiced",
   "closed",
@@ -1009,6 +1051,16 @@ export const jobs = pgTable("jobs", {
   recurringSeriesId: varchar("recurring_series_id").references(() => recurringJobSeries.id, { onDelete: "set null" }),
   // Calendar assignment linkage (for backward compatibility during migration)
   calendarAssignmentId: varchar("calendar_assignment_id").references(() => calendarAssignments.id, { onDelete: "set null" }),
+  // Action required fields (unified hold state)
+  actionRequiredReason: text("action_required_reason"), // Required when status = "action_required"
+  actionRequiredNotes: text("action_required_notes"),   // Optional additional notes
+  nextActionDate: date("next_action_date"),             // Optional follow-up date
+  actionRequiredAt: timestamp("action_required_at"),    // When job entered action_required status (for aging)
+  actionRequiredEscalatedAt: timestamp("action_required_escalated_at"), // When job was escalated (one-time, manual)
+  // Undo close support (20-second window)
+  previousStatus: text("previous_status"),              // Status before close, for undo
+  closedAt: timestamp("closed_at"),                     // When job was closed, for undo window
+  closedBy: text("closed_by"),                          // User ID who closed the job
   // Soft deletion / state
   isActive: boolean("is_active").notNull().default(true), // Legacy (use deletedAt)
   // Soft delete (canonical)
@@ -1020,6 +1072,16 @@ export const jobs = pgTable("jobs", {
   updatedAt: timestamp("updated_at"),
 }, (table) => ({
   jobNumberPerCompany: uniqueIndex("jobs_company_job_number_uq").on(table.companyId, table.jobNumber),
+  // CHECK: action_required status requires a reason
+  actionRequiredReasonCheck: check(
+    "jobs_action_required_reason_check",
+    sql`${table.status} <> 'action_required' OR ${table.actionRequiredReason} IS NOT NULL`
+  ),
+  // CHECK: if closed_at is set, previous_status must also be set (for undo support)
+  undoPreviousStatusCheck: check(
+    "jobs_undo_previous_status_check",
+    sql`${table.closedAt} IS NULL OR ${table.previousStatus} IS NOT NULL`
+  ),
 }));
 
 export const insertJobSchema = createInsertSchema(jobs).omit({
@@ -1034,6 +1096,10 @@ export const insertJobSchema = createInsertSchema(jobs).omit({
   jobType: z.enum(jobTypeEnum).default("maintenance"),
   scheduledStart: z.string().nullable().optional(), // Accept ISO string
   scheduledEnd: z.string().nullable().optional(),
+  // Action required fields
+  actionRequiredReason: z.string().nullable().optional(),
+  actionRequiredNotes: z.string().nullable().optional(),
+  nextActionDate: z.string().nullable().optional(), // Accept ISO date string (YYYY-MM-DD)
 });
 
 export const updateJobSchema = z.object({
@@ -1053,12 +1119,50 @@ export const updateJobSchema = z.object({
   invoiceId: z.string().nullable().optional(),
   qboInvoiceId: z.string().nullable().optional(),
   billingNotes: z.string().nullable().optional(),
+  // Action required fields
+  actionRequiredReason: z.string().nullable().optional(),
+  actionRequiredNotes: z.string().nullable().optional(),
+  nextActionDate: z.string().nullable().optional(), // Accept ISO date string (YYYY-MM-DD)
+  actionRequiredAt: z.string().nullable().optional(), // Accept ISO timestamp string (for aging)
+  actionRequiredEscalatedAt: z.string().nullable().optional(), // Accept ISO timestamp string (for escalation)
+  // Undo close support
+  previousStatus: z.string().nullable().optional(),
+  closedAt: z.string().nullable().optional(), // Accept ISO timestamp string
+  closedBy: z.string().nullable().optional(),
   isActive: z.boolean().optional(),
 });
 
 export type InsertJob = z.infer<typeof insertJobSchema>;
 export type UpdateJob = z.infer<typeof updateJobSchema>;
 export type Job = typeof jobs.$inferSelect;
+
+// ============================================================================
+// JOB STATUS EVENTS - Audit trail for job status changes
+// ============================================================================
+export const jobStatusEvents = pgTable("job_status_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  jobId: varchar("job_id").notNull().references(() => jobs.id, { onDelete: "cascade" }),
+  changedAt: timestamp("changed_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  changedBy: text("changed_by"), // User ID who made the change
+  fromStatus: text("from_status").notNull(),
+  toStatus: text("to_status").notNull(),
+  note: text("note"), // Optional note about the change
+  meta: jsonb("meta"), // Additional context: { reason, mode, invoiceId, etc. }
+}, (table) => ({
+  companyIdx: index("job_status_events_company_idx").on(table.companyId),
+  jobIdx: index("job_status_events_job_idx").on(table.jobId),
+  changedAtIdx: index("job_status_events_changed_at_idx").on(table.changedAt),
+}));
+
+export const insertJobStatusEventSchema = createInsertSchema(jobStatusEvents).omit({
+  id: true,
+  companyId: true,
+  changedAt: true,
+});
+
+export type InsertJobStatusEvent = z.infer<typeof insertJobStatusEventSchema>;
+export type JobStatusEvent = typeof jobStatusEvents.$inferSelect;
 
 // ============================================================================
 // LOCATION PM PLAN - Preventative Maintenance schedule per location
@@ -1669,14 +1773,14 @@ export const tasks = pgTable("tasks", {
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
 }, (table) => ({
-  // Indexes for common queries
-  companyAssignedIdx: uniqueIndex("tasks_company_assigned_idx").on(table.companyId, table.assignedToUserId),
-  companyStatusIdx: uniqueIndex("tasks_company_status_idx").on(table.companyId, table.status),
-  companyJobIdx: uniqueIndex("tasks_company_job_idx").on(table.companyId, table.jobId),
+  // Indexes for common queries (non-unique, multiple tasks per company/status/etc)
+  companyAssignedIdx: index("tasks_company_assigned_idx").on(table.companyId, table.assignedToUserId),
+  companyStatusIdx: index("tasks_company_status_idx").on(table.companyId, table.status),
+  companyJobIdx: index("tasks_company_job_idx").on(table.companyId, table.jobId),
   // DEPRECATED: companyClientIdx - use companyLocationIdx instead
-  companyClientIdx: uniqueIndex("tasks_company_client_idx").on(table.companyId, table.clientId),
+  companyClientIdx: index("tasks_company_client_idx").on(table.companyId, table.clientId),
   // Canonical location index
-  companyLocationIdx: uniqueIndex("tasks_company_location_idx").on(table.companyId, table.locationId),
+  companyLocationIdx: index("tasks_company_location_idx").on(table.companyId, table.locationId),
 }));
 
 export const insertTaskSchema = createInsertSchema(tasks).omit({
@@ -1857,6 +1961,393 @@ export const insertSupplierVisitDetailsSchema = createInsertSchema(supplierVisit
 
 export type InsertSupplierVisitDetails = z.infer<typeof insertSupplierVisitDetailsSchema>;
 export type SupplierVisitDetails = typeof supplierVisitDetails.$inferSelect;
+
+// ============================================================================
+// QBO SYNC EVENTS (audit log for QuickBooks Online sync operations)
+// ============================================================================
+
+export const qboSyncEventTypeEnum = [
+  // Outbound sync events
+  "CUSTOMER_CREATE",
+  "CUSTOMER_UPDATE",
+  "INVOICE_CREATE",
+  "INVOICE_UPDATE",
+  // Item sync events
+  "ITEM_READ",
+  "ITEM_CREATE",
+  "ITEM_LINK",
+  // Inbound read events
+  "INVOICE_READ",
+  "PAYMENT_READ",
+  // Reconciliation events
+  "RECONCILE_DRY_RUN",
+  "RECONCILE_APPLY",
+  "PAYMENT_CREATED_FROM_QBO",
+  // Go-live and preflight events
+  "QBO_ENABLED",
+  "QBO_DISABLED",
+  "INVOICE_DRY_RUN",
+] as const;
+export type QboSyncEventType = typeof qboSyncEventTypeEnum[number];
+
+export const qboSyncResultEnum = ["SUCCESS", "FAILURE", "SKIPPED", "NO_CHANGES"] as const;
+export type QboSyncResult = typeof qboSyncResultEnum[number];
+
+export const qboSyncEvents = pgTable("qbo_sync_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  // Event type and result
+  eventType: text("event_type").notNull(), // CUSTOMER_CREATE, CUSTOMER_UPDATE, INVOICE_CREATE, INVOICE_UPDATE
+  result: text("result").notNull(), // SUCCESS, FAILURE, SKIPPED
+  // Entity references (nullable - one will be set based on event type)
+  customerCompanyId: varchar("customer_company_id").references(() => customerCompanies.id, { onDelete: "set null" }),
+  clientLocationId: varchar("client_location_id").references(() => clientLocations.id, { onDelete: "set null" }),
+  invoiceId: varchar("invoice_id").references(() => invoices.id, { onDelete: "set null" }),
+  itemId: varchar("item_id").references(() => items.id, { onDelete: "set null" }),
+  // QBO references (captured at sync time)
+  qboEntityId: text("qbo_entity_id"), // QBO Customer.Id or Invoice.Id
+  qboSyncToken: text("qbo_sync_token"), // QBO SyncToken at time of operation
+  // Request/response data for debugging
+  requestPayload: text("request_payload"), // JSON string of request sent to QBO
+  responsePayload: text("response_payload"), // JSON string of QBO response
+  errorMessage: text("error_message"), // Error message if result is FAILURE
+  errorCode: text("error_code"), // QBO error code if available
+  // User who triggered the sync (nullable for system-triggered syncs)
+  triggeredBy: varchar("triggered_by").references(() => users.id, { onDelete: "set null" }),
+  // Run correlation
+  syncRunId: varchar("sync_run_id"), // Groups events from a single admin-triggered run
+  // Timing
+  durationMs: integer("duration_ms"), // How long the sync operation took
+  // Metadata
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  // Index for run queries
+  syncRunIdIdx: index("qbo_sync_events_sync_run_id_idx").on(table.syncRunId),
+}));
+
+export const insertQboSyncEventSchema = createInsertSchema(qboSyncEvents).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertQboSyncEvent = z.infer<typeof insertQboSyncEventSchema>;
+export type QboSyncEvent = typeof qboSyncEvents.$inferSelect;
+
+// ============================================================================
+// QBO SYNC QUEUE - Admin-triggered queue for sync operations with retry support
+// ============================================================================
+
+export const qboQueueStatusEnum = ["QUEUED", "RUNNING", "SUCCESS", "FAILED"] as const;
+export type QboQueueStatus = typeof qboQueueStatusEnum[number];
+
+export const qboQueueEntityTypeEnum = ["CUSTOMER_COMPANY", "CLIENT_LOCATION", "INVOICE", "ITEM"] as const;
+export type QboQueueEntityType = typeof qboQueueEntityTypeEnum[number];
+
+export const qboQueueActionEnum = [
+  "SYNC",                  // Standard sync via orchestrator
+  "SYNC_WITH_DEPS",        // Invoice sync with dependencies
+  "RECONCILE",             // Reconcile dry run
+  "RECONCILE_APPLY",       // Apply reconciliation
+] as const;
+export type QboQueueAction = typeof qboQueueActionEnum[number];
+
+export const qboSyncQueue = pgTable("qbo_sync_queue", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  // What to sync
+  entityType: text("entity_type").notNull(), // CUSTOMER_COMPANY, CLIENT_LOCATION, INVOICE
+  entityId: varchar("entity_id").notNull(),
+  action: text("action").notNull(), // SYNC, SYNC_WITH_DEPS, RECONCILE, RECONCILE_APPLY
+  // Queue status
+  status: text("status").notNull().default("QUEUED"), // QUEUED, RUNNING, SUCCESS, FAILED
+  // Retry tracking
+  attempts: integer("attempts").notNull().default(0),
+  maxAttempts: integer("max_attempts").notNull().default(3),
+  nextRunAt: timestamp("next_run_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  // Error tracking
+  lastError: text("last_error"),
+  lastErrorCode: text("last_error_code"),
+  // Result tracking
+  qboEntityId: text("qbo_entity_id"), // QBO ID if sync succeeded
+  // User who enqueued the job
+  enqueuedBy: varchar("enqueued_by").references(() => users.id, { onDelete: "set null" }),
+  // Run correlation
+  syncRunId: varchar("sync_run_id"), // Groups jobs from a single admin-triggered run
+  // Timestamps
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+  completedAt: timestamp("completed_at"),
+}, (table) => ({
+  // Index for idempotency check - prevents duplicate active jobs
+  activeJobIdx: index("qbo_sync_queue_active_job_idx").on(
+    table.companyId, table.entityType, table.entityId, table.action, table.status
+  ),
+  // Index for run queries
+  syncRunIdIdx: index("qbo_sync_queue_sync_run_id_idx").on(table.syncRunId),
+}));
+
+export const insertQboSyncQueueSchema = createInsertSchema(qboSyncQueue).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  completedAt: true,
+}).extend({
+  entityType: z.enum(qboQueueEntityTypeEnum),
+  action: z.enum(qboQueueActionEnum),
+  status: z.enum(qboQueueStatusEnum).default("QUEUED"),
+});
+
+export type InsertQboSyncQueue = z.infer<typeof insertQboSyncQueueSchema>;
+export type QboSyncQueue = typeof qboSyncQueue.$inferSelect;
+
+// ============================================================================
+// QBO WEBHOOK EVENTS (inbound webhook deliveries from QuickBooks Online)
+// ============================================================================
+
+export const qboWebhookStatusEnum = ["RECEIVED", "VERIFIED", "REJECTED", "PROCESSED", "IGNORED"] as const;
+export type QboWebhookStatus = typeof qboWebhookStatusEnum[number];
+
+export const qboWebhookEntityTypeEnum = ["Invoice", "Payment", "Customer", "Estimate", "SalesReceipt", "CreditMemo", "Other"] as const;
+export type QboWebhookEntityType = typeof qboWebhookEntityTypeEnum[number];
+
+export const qboWebhookOperationEnum = ["Create", "Update", "Delete", "Merge", "Void"] as const;
+export type QboWebhookOperation = typeof qboWebhookOperationEnum[number];
+
+export const qboWebhookEvents = pgTable("qbo_webhook_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  // Webhook identification
+  realmId: text("realm_id").notNull(), // QBO company ID from webhook
+  companyId: varchar("company_id").references(() => companies.id, { onDelete: "set null" }), // Resolved from realmId
+  // Deduplication key - hash of (realmId, entityType, entityId, operation, lastUpdated)
+  dedupeKey: text("dedupe_key"), // SHA-256 hash for idempotency
+  // Event details from QBO
+  qboEntityType: text("qbo_entity_type").notNull(), // Invoice, Payment, Customer, etc.
+  qboEntityId: text("qbo_entity_id").notNull(), // QBO entity ID
+  operation: text("operation").notNull(), // Create, Update, Delete, Merge, Void
+  lastUpdated: timestamp("last_updated"), // Timestamp from QBO
+  // Processing status
+  status: text("status").notNull().default("RECEIVED"), // RECEIVED, VERIFIED, REJECTED, PROCESSED, IGNORED
+  verificationError: text("verification_error"), // Error if signature verification failed
+  processingError: text("processing_error"), // Error if processing failed
+  // What was done with this event
+  actionTaken: text("action_taken"), // e.g., "DRIFT_ALERT_CREATED", "RECONCILE_ENQUEUED"
+  relatedInvoiceId: varchar("related_invoice_id"), // Local invoice ID if resolved
+  queueJobId: varchar("queue_job_id"), // If a queue job was created
+  // Run correlation
+  processedRunId: varchar("processed_run_id"), // Links to the processing run that handled this event
+  // Raw payload (redacted of sensitive info)
+  eventPayload: jsonb("event_payload"), // Entire notification payload (redacted)
+  // Timestamps
+  receivedAt: timestamp("received_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  processedAt: timestamp("processed_at"),
+}, (table) => ({
+  // Unique constraint on dedupeKey for idempotency - only one event per unique combination
+  dedupeKeyIdx: uniqueIndex("qbo_webhook_events_dedupe_key_idx").on(table.dedupeKey),
+}));
+
+export type QboWebhookEvent = typeof qboWebhookEvents.$inferSelect;
+
+// ============================================================================
+// QUOTES
+// ============================================================================
+
+export const quoteStatusEnum = ["draft", "sent", "approved", "declined", "expired", "converted"] as const;
+export type QuoteStatus = typeof quoteStatusEnum[number];
+
+export const quotes = pgTable("quotes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  // Location where work will be performed
+  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }),
+  // Parent company reference (for easier querying when billing parent)
+  customerCompanyId: varchar("customer_company_id").references(() => customerCompanies.id, { onDelete: "set null" }),
+  // Quote details
+  quoteNumber: text("quote_number"), // App-generated quote number
+  title: text("title"), // Optional quote title/summary
+  status: text("status").notNull().default("draft"),
+  issueDate: date("issue_date").notNull(),
+  expiryDate: date("expiry_date"),
+  currency: text("currency").notNull().default("CAD"),
+  // Totals
+  subtotal: numeric("subtotal", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  taxTotal: numeric("tax_total", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  total: numeric("total", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  // Conversion tracking
+  convertedToJobId: varchar("converted_to_job_id"), // Link to job if converted
+  convertedAt: timestamp("converted_at"),
+  // Tracking
+  sentAt: timestamp("sent_at"),
+  viewedAt: timestamp("viewed_at"),
+  approvedAt: timestamp("approved_at"),
+  declinedAt: timestamp("declined_at"),
+  // Notes
+  notesInternal: text("notes_internal"),
+  notesCustomer: text("notes_customer"),
+  // Soft delete
+  isActive: boolean("is_active").notNull().default(true),
+  deletedAt: timestamp("deleted_at"),
+  // Optimistic locking
+  version: integer("version").notNull().default(0),
+  // Metadata
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+}, (table) => ({
+  // Unique quote numbers per company when set
+  quoteNumberPerCompany: uniqueIndex("quotes_company_quote_number_uq")
+    .on(table.companyId, table.quoteNumber)
+    .where(sql`quote_number is not null`),
+}));
+
+export const insertQuoteSchema = createInsertSchema(quotes).omit({
+  id: true,
+  companyId: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  status: z.enum(quoteStatusEnum).default("draft"),
+  issueDate: z.string(),
+});
+
+export const updateQuoteSchema = z.object({
+  locationId: z.string().optional(),
+  customerCompanyId: z.string().nullable().optional(),
+  quoteNumber: z.string().nullable().optional(),
+  title: z.string().nullable().optional(),
+  status: z.enum(quoteStatusEnum).optional(),
+  issueDate: z.string().optional(),
+  expiryDate: z.string().nullable().optional(),
+  currency: z.string().optional(),
+  subtotal: z.string().optional(),
+  taxTotal: z.string().optional(),
+  total: z.string().optional(),
+  convertedToJobId: z.string().nullable().optional(),
+  convertedAt: z.date().nullable().optional(),
+  sentAt: z.date().nullable().optional(),
+  viewedAt: z.date().nullable().optional(),
+  approvedAt: z.date().nullable().optional(),
+  declinedAt: z.date().nullable().optional(),
+  notesInternal: z.string().nullable().optional(),
+  notesCustomer: z.string().nullable().optional(),
+  isActive: z.boolean().optional(),
+});
+
+export type InsertQuote = z.infer<typeof insertQuoteSchema>;
+export type UpdateQuote = z.infer<typeof updateQuoteSchema>;
+export type Quote = typeof quotes.$inferSelect;
+
+// Quote line items table
+export const quoteLines = pgTable("quote_lines", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  quoteId: varchar("quote_id").notNull().references(() => quotes.id, { onDelete: "cascade" }),
+  lineNumber: integer("line_number").notNull(),
+  lineItemType: text("line_item_type").notNull().default("service"),
+  description: text("description").notNull(),
+  quantity: text("quantity").notNull().default("1"),
+  unitPrice: numeric("unit_price", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  taxRate: numeric("tax_rate", { precision: 5, scale: 4 }).notNull().default("0.0000"),
+  lineSubtotal: numeric("line_subtotal", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  taxAmount: numeric("tax_amount", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  lineTotal: numeric("line_total", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  // Product reference
+  productId: varchar("product_id").references(() => items.id, { onDelete: "set null" }),
+  // Timestamps
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+});
+
+export const insertQuoteLineSchema = createInsertSchema(quoteLines).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  lineItemType: z.enum(lineItemTypeEnum).default("service"),
+});
+
+export const updateQuoteLineSchema = z.object({
+  lineNumber: z.number().int().optional(),
+  lineItemType: z.enum(lineItemTypeEnum).optional(),
+  description: z.string().optional(),
+  quantity: z.string().optional(),
+  unitPrice: z.string().optional(),
+  taxRate: z.string().optional(),
+  lineSubtotal: z.string().optional(),
+  taxAmount: z.string().optional(),
+  lineTotal: z.string().optional(),
+  productId: z.string().nullable().optional(),
+});
+
+export type InsertQuoteLine = z.infer<typeof insertQuoteLineSchema>;
+export type UpdateQuoteLine = z.infer<typeof updateQuoteLineSchema>;
+export type QuoteLine = typeof quoteLines.$inferSelect;
+
+// ============================================================================
+// QUOTE TEMPLATES
+// ============================================================================
+
+export const quoteTemplates = pgTable("quote_templates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  description: text("description"),
+  isDefault: boolean("is_default").notNull().default(false),
+  isActive: boolean("is_active").notNull().default(true),
+  deletedAt: timestamp("deleted_at"),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+});
+
+export const insertQuoteTemplateSchema = createInsertSchema(quoteTemplates).omit({
+  id: true,
+  companyId: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  name: z.string().min(1, "Name is required"),
+});
+
+export const updateQuoteTemplateSchema = z.object({
+  name: z.string().min(1).optional(),
+  description: z.string().nullable().optional(),
+  isDefault: z.boolean().optional(),
+  isActive: z.boolean().optional(),
+});
+
+export type InsertQuoteTemplate = z.infer<typeof insertQuoteTemplateSchema>;
+export type UpdateQuoteTemplate = z.infer<typeof updateQuoteTemplateSchema>;
+export type QuoteTemplate = typeof quoteTemplates.$inferSelect;
+
+// Quote Template Line Items
+export const quoteTemplateLines = pgTable("quote_template_lines", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  templateId: varchar("template_id").notNull().references(() => quoteTemplates.id, { onDelete: "cascade" }),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  productId: varchar("product_id").references(() => items.id, { onDelete: "set null" }),
+  description: text("description").notNull(),
+  quantity: text("quantity").notNull().default("1"),
+  unitPrice: numeric("unit_price", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const insertQuoteTemplateLineSchema = createInsertSchema(quoteTemplateLines).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  description: z.string().min(1, "Description is required"),
+});
+
+export const updateQuoteTemplateLineSchema = z.object({
+  productId: z.string().nullable().optional(),
+  description: z.string().min(1).optional(),
+  quantity: z.string().optional(),
+  unitPrice: z.string().optional(),
+  sortOrder: z.number().int().optional(),
+});
+
+export type InsertQuoteTemplateLine = z.infer<typeof insertQuoteTemplateLineSchema>;
+export type UpdateQuoteTemplateLine = z.infer<typeof updateQuoteTemplateLineSchema>;
+export type QuoteTemplateLine = typeof quoteTemplateLines.$inferSelect;
 
 // ============================================================================
 // SESSION TABLE (used by express-session / passport store)

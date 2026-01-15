@@ -227,7 +227,9 @@ export default function Calendar() {
       const useYear = targetYear ?? year;
       const useMonth = targetMonth ?? month;
       return apiRequest(`/api/calendar/assign`, { method: "POST", body: JSON.stringify({
-        // Send BOTH for backward compatibility during migration
+        // DUAL-SEND: locationId is canonical, clientId is legacy fallback.
+        // Both are sent during migration period. Remove clientId after schema migration completes.
+        // See: calendarUtils.ts getLocationKey() for canonical identity resolution.
         locationId,
         clientId: locationId,
         year: useYear,
@@ -817,6 +819,20 @@ export default function Calendar() {
     [normalizedEvents]
   );
 
+  // Map of events by day number (for monthly view) - uses normalized events
+  // Must be called unconditionally (before early returns) to satisfy React hooks rules
+  const eventsByDayNumber = useMemo(() => {
+    if (view !== "monthly") return {};
+    const map: Record<number, CalendarEvent[]> = {};
+    for (const event of normalizedEvents) {
+      if (event.year === year && event.month === month) {
+        if (!map[event.day]) map[event.day] = [];
+        map[event.day].push(event);
+      }
+    }
+    return map;
+  }, [normalizedEvents, year, month, view]);
+
   // Configure sensors for drag-and-drop
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -872,18 +888,6 @@ export default function Calendar() {
       </div>
     );
   }
-
-  // Map of events by day number (for monthly view) - uses normalized events
-  const eventsByDayNumber = useMemo(() => {
-    const map: Record<number, CalendarEvent[]> = {};
-    for (const event of normalizedEvents) {
-      if (event.year === year && event.month === month) {
-        if (!map[event.day]) map[event.day] = [];
-        map[event.day].push(event);
-      }
-    }
-    return map;
-  }, [normalizedEvents, year, month]);
 
   // Get active dragging item
   const activeClient = activeId ?

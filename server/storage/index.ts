@@ -28,6 +28,8 @@ import { customerCompanyRepository } from "./customerCompanies";
 import { taskRepository } from "./tasks";
 import { permissionRepository } from "./permissions";
 import { clientNotesRepository } from "./clientNotes";
+import { quoteRepository } from "./quotes";
+import { quoteTemplateRepository } from "./quoteTemplates";
 import type { PaginationOptions, PaginatedResult } from "./clients";
 
 /**
@@ -91,6 +93,11 @@ export interface IStorage {
   reconcileJobInvoiceLinks: typeof jobRepository.reconcileJobInvoiceLinks;
   createRecurringJobSeries: typeof jobRepository.createRecurringJobSeries;
   createRecurringJobPhase: typeof jobRepository.createRecurringJobPhase;
+  createJobStatusEvent: typeof jobRepository.createJobStatusEvent;
+  getJobStatusEvents: typeof jobRepository.getJobStatusEvents;
+  getActionRequiredJobs: typeof jobRepository.getActionRequiredJobs;
+  updateJobStatusWithEvent: typeof jobRepository.updateJobStatusWithEvent;
+  updateJobStatusWithMultipleEvents: typeof jobRepository.updateJobStatusWithMultipleEvents;
 
   // Invoice operations
   getInvoices: typeof invoiceRepository.getInvoices;
@@ -161,8 +168,21 @@ updateInvitation: (id: string, data: { status: string }) => Promise<any>;
   upsertCompanySettings: (companyId: string, userId: string, settings: any) => Promise<any>;
   getImpersonationStatus: typeof companyRepository.getImpersonationStatus;
 
-  // Customer company operations (if needed)
-  getCustomerCompany?: (companyId: string, customerCompanyId: string) => Promise<any>;
+  // Customer company operations
+  getCustomerCompany: typeof customerCompanyRepository.getCustomerCompany;
+
+  // Quote operations
+  getQuotes: typeof quoteRepository.getQuotes;
+  getQuote: typeof quoteRepository.getQuote;
+  getQuoteDetails: typeof quoteRepository.getQuoteDetails;
+  getQuoteLines: typeof quoteRepository.getQuoteLines;
+  getQuoteStats: typeof quoteRepository.getQuoteStats;
+  createQuote: typeof quoteRepository.createQuote;
+  updateQuote: typeof quoteRepository.updateQuote;
+  deleteQuote: typeof quoteRepository.deleteQuote;
+  createQuoteLine: typeof quoteRepository.createQuoteLine;
+  updateQuoteLine: typeof quoteRepository.updateQuoteLine;
+  deleteQuoteLine: typeof quoteRepository.deleteQuoteLine;
 }
 
 /**
@@ -225,6 +245,11 @@ export const storage: IStorage = {
   reconcileJobInvoiceLinks: jobRepository.reconcileJobInvoiceLinks.bind(jobRepository),
   createRecurringJobSeries: jobRepository.createRecurringJobSeries.bind(jobRepository),
   createRecurringJobPhase: jobRepository.createRecurringJobPhase.bind(jobRepository),
+  createJobStatusEvent: jobRepository.createJobStatusEvent.bind(jobRepository),
+  getJobStatusEvents: jobRepository.getJobStatusEvents.bind(jobRepository),
+  getActionRequiredJobs: jobRepository.getActionRequiredJobs.bind(jobRepository),
+  updateJobStatusWithEvent: jobRepository.updateJobStatusWithEvent.bind(jobRepository),
+  updateJobStatusWithMultipleEvents: jobRepository.updateJobStatusWithMultipleEvents.bind(jobRepository),
 
   // Invoice operations
   getInvoices: invoiceRepository.getInvoices.bind(invoiceRepository),
@@ -334,11 +359,21 @@ export const storage: IStorage = {
     return updated;
   },
   
-  // Placeholder for customer company operations
-  getCustomerCompany: async (companyId: string, customerCompanyId: string) => {
-    // TODO: Implement when customer companies are needed
-    return null;
-  },
+  // Customer company operations
+  getCustomerCompany: customerCompanyRepository.getCustomerCompany.bind(customerCompanyRepository),
+
+  // Quote operations
+  getQuotes: quoteRepository.getQuotes.bind(quoteRepository),
+  getQuote: quoteRepository.getQuote.bind(quoteRepository),
+  getQuoteDetails: quoteRepository.getQuoteDetails.bind(quoteRepository),
+  getQuoteLines: quoteRepository.getQuoteLines.bind(quoteRepository),
+  getQuoteStats: quoteRepository.getQuoteStats.bind(quoteRepository),
+  createQuote: quoteRepository.createQuote.bind(quoteRepository),
+  updateQuote: quoteRepository.updateQuote.bind(quoteRepository),
+  deleteQuote: quoteRepository.deleteQuote.bind(quoteRepository),
+  createQuoteLine: quoteRepository.createQuoteLine.bind(quoteRepository),
+  updateQuoteLine: quoteRepository.updateQuoteLine.bind(quoteRepository),
+  deleteQuoteLine: quoteRepository.deleteQuoteLine.bind(quoteRepository),
 };
 
 // Export individual repositories for advanced use cases
@@ -358,6 +393,8 @@ export {
   taskRepository,
   permissionRepository,
   clientNotesRepository,
+  quoteRepository,
+  quoteTemplateRepository,
 };
 
 // Default export for convenience

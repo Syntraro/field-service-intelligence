@@ -8,6 +8,8 @@ import { paginated } from "../utils/paginatedResponse";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
+import { assertInvoiceStatusTransition } from "../statusRules";
+import type { InvoiceStatus } from "@shared/schema";
 
 const router = Router();
 
@@ -32,7 +34,8 @@ const createInvoiceFromJobSchema = z.object({
 }).strict();
 
 const updateInvoiceSchema = z.object({
-  status: z.enum(["draft", "sent", "paid", "void", "overdue"]).optional(),
+  // Status changes should use dedicated endpoints (send, void) - this allows notes-only updates
+  status: z.enum(["draft", "sent", "partial_paid", "paid", "voided"]).optional(),
   issueDate: z.string().datetime().optional(),
   dueDate: z.string().datetime().optional(),
   notesInternal: z.string().max(2000).optional(),
@@ -52,6 +55,30 @@ const updateInvoiceSchema = z.object({
 // MIDDLEWARE
 // ========================================
 
+/**
+ * Middleware: Invoice must be in draft status for full editing
+ * Use for: adding/removing lines, refresh from job, general edits
+ */
+function requireDraftStatus() {
+  return asyncHandler(async (req: AuthedRequest, res: Response, next: any) => {
+    const invoice = await storage.getInvoice(req.companyId!, req.params.id);
+
+    if (!invoice) {
+      throw createError(404, "Invoice not found");
+    }
+
+    if (invoice.status !== "draft") {
+      throw createError(409, "Invoice cannot be edited after sending. Only notes can be updated.");
+    }
+
+    next();
+  });
+}
+
+/**
+ * Middleware: Invoice must exist and not be in terminal state
+ * Use for: notes-only updates on sent invoices
+ */
 function requireInvoiceEditable() {
   return asyncHandler(async (req: AuthedRequest, res: Response, next: any) => {
     const invoice = await storage.getInvoice(req.companyId!, req.params.id);
@@ -60,12 +87,28 @@ function requireInvoiceEditable() {
       throw createError(404, "Invoice not found");
     }
 
-    if ((invoice as any).status === "Sent") {
-      throw createError(409, "Invoice is locked after being sent");
+    const terminalStates = ["paid", "voided"];
+    if (terminalStates.includes(invoice.status)) {
+      throw createError(409, `Invoice is ${invoice.status} and cannot be modified`);
     }
 
     next();
   });
+}
+
+/**
+ * Validate that invoice has required fields for sending
+ */
+function validateSendRequirements(invoice: any): string[] {
+  const errors: string[] = [];
+  if (!invoice.invoiceNumber) {
+    errors.push("Invoice number is required");
+  }
+  if (!invoice.locationId) {
+    errors.push("Location is required");
+  }
+  // customerCompanyId is optional - invoice can be billed to location directly
+  return errors;
 }
 
 // ========================================
@@ -94,28 +137,70 @@ router.get("/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
   res.json(invoice);
 }));
 
+// GET /api/invoices/:id/details - Get full invoice details (composite endpoint)
+router.get("/:id/details", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const invoiceId = req.params.id;
+
+  // 1. Get the invoice with basic client data
+  const invoice = await storage.getInvoice(companyId, invoiceId);
+  if (!invoice) {
+    throw createError(404, "Invoice not found");
+  }
+
+  // 2. Get invoice lines
+  const lines = await storage.getInvoiceLines(companyId, invoiceId);
+
+  // 3. Get the client location (via invoice.locationId)
+  const location = await storage.getClient(companyId, invoice.locationId);
+  if (!location) {
+    throw createError(400, "Invoice has invalid location reference");
+  }
+
+  // 4. Get the customer company (via location.parentCompanyId or invoice.customerCompanyId)
+  let customerCompany = null;
+  const customerCompanyId = invoice.customerCompanyId || location.parentCompanyId;
+  if (customerCompanyId) {
+    customerCompany = await storage.getCustomerCompany(companyId, customerCompanyId);
+  }
+
+  // 5. Get the job (if invoice.jobId exists)
+  let job = null;
+  if (invoice.jobId) {
+    job = await storage.getJob(companyId, invoice.jobId);
+  }
+
+  res.json({
+    invoice,
+    lines,
+    location,
+    customerCompany,
+    job,
+  });
+}));
+
 // GET /api/invoices/:id/lines - Get invoice lines
 router.get("/:id/lines", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const lines = await storage.getInvoiceLines(req.companyId!, req.params.id);
   res.json(lines);
 }));
 
-// POST /api/invoices/:id/lines - Add line to invoice
-router.post("/:id/lines", requireRole(MANAGER_ROLES), requireInvoiceEditable(), asyncHandler(async (req: AuthedRequest, res: Response) => {
+// POST /api/invoices/:id/lines - Add line to invoice (draft only)
+router.post("/:id/lines", requireRole(MANAGER_ROLES), requireDraftStatus(), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const validated = validateSchema(createInvoiceLineSchema, req.body);
   const created = await storage.createInvoiceLine(req.companyId!, req.params.id, validated);
 
   res.json(created);
 }));
 
-// DELETE /api/invoices/:id/lines/:lineId - Remove line from invoice
-router.delete("/:id/lines/:lineId", requireRole(MANAGER_ROLES), requireInvoiceEditable(), asyncHandler(async (req: AuthedRequest, res: Response) => {
+// DELETE /api/invoices/:id/lines/:lineId - Remove line from invoice (draft only)
+router.delete("/:id/lines/:lineId", requireRole(MANAGER_ROLES), requireDraftStatus(), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const result = await storage.deleteInvoiceLine(req.companyId!, req.params.id, req.params.lineId);
   res.json(result);
 }));
 
-// POST /api/invoices/:id/refresh-from-job - Refresh invoice lines from job
-router.post("/:id/refresh-from-job", requireRole(MANAGER_ROLES), requireInvoiceEditable(), asyncHandler(async (req: AuthedRequest, res: Response) => {
+// POST /api/invoices/:id/refresh-from-job - Refresh invoice lines from job (draft only)
+router.post("/:id/refresh-from-job", requireRole(MANAGER_ROLES), requireDraftStatus(), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const result = await storage.refreshInvoiceFromJob(req.companyId!, req.params.id);
   res.json(result);
 }));
@@ -147,9 +232,28 @@ router.post("/from-job/:jobId", requireRole(MANAGER_ROLES), asyncHandler(async (
 }));
 
 // PATCH /api/invoices/:id - Update invoice with optimistic locking
+// Draft invoices: all fields editable
+// Sent/partial_paid invoices: only notes fields editable
+// Paid/voided invoices: blocked by middleware
 router.patch("/:id", requireRole(MANAGER_ROLES), requireInvoiceEditable(), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const invoice = await storage.getInvoice(req.companyId!, req.params.id);
+  if (!invoice) {
+    throw createError(404, "Invoice not found");
+  }
+
   const validated = validateSchema(updateInvoiceSchema, req.body);
   const { version, ...patch } = validated;
+
+  // If invoice is not draft, only allow notes updates
+  if (invoice.status !== "draft") {
+    const allowedFields = ["notesInternal", "notesCustomer", "clientMessage", "version"];
+    const attemptedFields = Object.keys(patch);
+    const disallowedFields = attemptedFields.filter(f => !allowedFields.includes(f));
+
+    if (disallowedFields.length > 0) {
+      throw createError(409, `Invoice is ${invoice.status}. Only notes can be updated. Cannot change: ${disallowedFields.join(", ")}`);
+    }
+  }
 
   try {
     // Version is optional for backward compatibility
@@ -175,6 +279,86 @@ router.patch("/:id", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async
     }
     throw error;
   }
+}));
+
+// ========================================
+// STATUS TRANSITION ENDPOINTS
+// ========================================
+
+// POST /api/invoices/:id/send - Send invoice (draft -> sent)
+router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const invoice = await storage.getInvoice(req.companyId!, req.params.id);
+  if (!invoice) {
+    throw createError(404, "Invoice not found");
+  }
+
+  // Validate transition
+  try {
+    assertInvoiceStatusTransition(invoice.status as InvoiceStatus, "sent");
+  } catch (error: any) {
+    throw createError(400, error.message);
+  }
+
+  // Validate send requirements
+  const errors = validateSendRequirements(invoice);
+  if (errors.length > 0) {
+    throw createError(400, `Cannot send invoice: ${errors.join(", ")}`);
+  }
+
+  const updated = await storage.updateInvoice(
+    req.companyId!,
+    req.params.id,
+    undefined,
+    { status: "sent", sentAt: new Date() }
+  );
+
+  res.json(updated);
+}));
+
+// POST /api/invoices/:id/void - Void invoice
+router.post("/:id/void", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const invoice = await storage.getInvoice(req.companyId!, req.params.id);
+  if (!invoice) {
+    throw createError(404, "Invoice not found");
+  }
+
+  // Validate transition (can void from draft, sent, or partial_paid)
+  try {
+    assertInvoiceStatusTransition(invoice.status as InvoiceStatus, "voided");
+  } catch (error: any) {
+    throw createError(400, error.message);
+  }
+
+  const updated = await storage.updateInvoice(
+    req.companyId!,
+    req.params.id,
+    undefined,
+    { status: "voided" }
+  );
+
+  res.json(updated);
+}));
+
+// DELETE /api/invoices/:id - Delete invoice (draft only)
+router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const invoice = await storage.getInvoice(req.companyId!, req.params.id);
+  if (!invoice) {
+    throw createError(404, "Invoice not found");
+  }
+
+  if (invoice.status !== "draft") {
+    throw createError(409, "Only draft invoices can be deleted. Void the invoice instead.");
+  }
+
+  // Soft delete via isActive flag
+  await storage.updateInvoice(
+    req.companyId!,
+    req.params.id,
+    undefined,
+    { isActive: false, deletedAt: new Date() }
+  );
+
+  res.json({ success: true });
 }));
 
 export default router;

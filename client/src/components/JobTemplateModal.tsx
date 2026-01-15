@@ -108,7 +108,7 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
     unitPrice: "",
   });
 
-  const { data: catalogData } = useQuery<{ items: Item[] }>({
+  const { data: catalogData } = useQuery<{ data: Item[] }>({
     queryKey: ["/api/items", { limit: 200 }],
     queryFn: async () => {
       const res = await fetch("/api/items?limit=200", { credentials: "include" });
@@ -117,7 +117,7 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
     },
     enabled: open,
   });
-  const catalogParts = catalogData?.items?.filter((p) => p.isActive !== false) || [];
+  const catalogParts = catalogData?.data?.filter((p) => p.isActive !== false) || [];
 
   const { data: templateDetails, isLoading: isLoadingDetails } = useQuery<
     JobTemplate & { lines: any[] }
@@ -234,18 +234,10 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
         : "/api/job-templates";
       const method = isEditing ? "PATCH" : "POST";
 
-      const res = await fetch(url, {
+      return apiRequest(url, {
         method,
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify(data),
       });
-
-      if (!res.ok) {
-        const error = await res.json().catch(() => ({}));
-        throw new Error(error.error || "Failed to save template");
-      }
-      return res.json();
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/job-templates"] });

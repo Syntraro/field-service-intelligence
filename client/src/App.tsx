@@ -11,7 +11,10 @@ import Jobs from "@/pages/Jobs";
 import JobDetailPage from "@/pages/JobDetailPage";
 import InvoicesListPage from "@/pages/InvoicesListPage";
 import InvoiceDetailPage from "@/pages/InvoiceDetailPage";
+import Quotes from "@/pages/Quotes";
+import QuoteDetailPage from "@/pages/QuoteDetailPage";
 import Reports from "@/pages/Reports";
+import AccountsReceivablePage from "@/pages/AccountsReceivablePage";
 import Admin from "@/pages/Admin";
 import SupportConsole from "@/pages/SupportConsole";
 import AddClientPage from "@/pages/AddClientPage";
@@ -31,8 +34,10 @@ import SettingsPage from "@/pages/SettingsPage";
 import CustomFieldsPage from "@/pages/CustomFieldsPage";
 import TaxBillingRulesPage from "@/pages/TaxBillingRulesPage";
 import IntegrationsPage from "@/pages/IntegrationsPage";
+import QboConsolePage from "@/pages/QboConsolePage";
 import CategoryManagementPage from "@/pages/CategoryManagementPage";
 import JobTemplatesPage from "@/pages/JobTemplatesPage";
+import QuoteTemplatesPage from "@/pages/QuoteTemplatesPage";
 import JobStatusesPage from "@/pages/JobStatusesPage";
 import Login from "@/pages/Login";
 import Signup from "@/pages/Signup";
@@ -97,9 +102,24 @@ function Router() {
           <InvoiceDetailPage />
         </ProtectedRoute>
       </Route>
+      <Route path="/quotes">
+        <ProtectedRoute requireAdmin>
+          <Quotes />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/quotes/:id">
+        <ProtectedRoute requireAdmin>
+          <QuoteDetailPage />
+        </ProtectedRoute>
+      </Route>
       <Route path="/reports">
         <ProtectedRoute requireAdmin>
           <Reports />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/reports/accounts-receivable">
+        <ProtectedRoute requireAdmin>
+          <AccountsReceivablePage />
         </ProtectedRoute>
       </Route>
       <Route path="/admin">
@@ -157,6 +177,11 @@ function Router() {
           <IntegrationsPage />
         </ProtectedRoute>
       </Route>
+      <Route path="/settings/integrations/qbo">
+        <ProtectedRoute requireAdmin>
+          <QboConsolePage />
+        </ProtectedRoute>
+      </Route>
       <Route path="/settings/categories">
         <ProtectedRoute requireAdmin>
           <CategoryManagementPage />
@@ -165,6 +190,11 @@ function Router() {
       <Route path="/settings/job-templates">
         <ProtectedRoute requireAdmin>
           <JobTemplatesPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/settings/quote-templates">
+        <ProtectedRoute requireAdmin>
+          <QuoteTemplatesPage />
         </ProtectedRoute>
       </Route>
       <Route path="/settings/job-statuses">

@@ -1,0 +1,420 @@
+Job Lifecycle, Action Required, SLA, Audit Trail & UX Hardening
+
+Implementation Report (Steps 1–17B)
+
+Executive Summary
+
+We fully rebuilt the job lifecycle into a single canonical, production-grade state machine with:
+
+Strict status transitions (no invalid jumps)
+
+Unified Action Required state with required reason
+
+Atomic close / reopen / undo flows
+
+Database-enforced integrity constraints
+
+Full audit trail with timeline
+
+SLA tracking, escalation, KPIs, and in-app alerts
+
+Role-based permissions (tech vs office)
+
+Inline dispatch actions
+
+Event noise suppression + clean timeline rendering
+
+The result is a dispatch operating system, not just CRUD.
+
+1. Canonical Job Status Model
+Canonical Work Statuses
+open
+scheduled
+dispatched
+en_route
+on_site / in_progress
+action_required
+completed
+cancelled
+archived
+
+Removed (fully deprecated)
+needs_parts
+on_hold
+
+2. Action Required Data Model
+Job Fields
+
+actionRequiredReason (required when status = action_required)
+
+actionRequiredNotes (optional)
+
+nextActionDate (optional)
+
+actionRequiredAt (timestamp when entered)
+
+actionRequiredEscalatedAt (timestamp when escalated)
+
+Enforcement
+
+Backend validation (API)
+
+DB CHECK constraint:
+
+status <> 'action_required'
+OR action_required_reason IS NOT NULL
+
+3. Status Transitions & Close Logic
+Problem Fixed
+
+Invalid transitions like:
+
+scheduled → archived
+scheduled → invoiced
+
+Solution
+
+New atomic endpoint:
+
+POST /api/jobs/:id/close
+{ mode: archive | invoice_later | invoice_now }
+
+Behavior
+
+Internally performs:
+
+current → completed → final_state
+
+
+Validated by assertJobStatusTransition.
+
+For invoice_now, invoice creation + job update occur atomically.
+
+4. Reopen + Undo Close
+Reopen
+POST /api/jobs/:id/reopen
+
+
+Allowed from:
+
+completed
+
+requires_invoicing
+
+archived
+
+Blocked from:
+
+invoiced (must void/credit invoice)
+
+Undo Close (20s window)
+
+Fields:
+
+previousStatus
+
+closedAt
+
+closedBy
+
+Endpoint:
+
+POST /api/jobs/:id/undo-close
+
+
+Rules:
+
+≤ 20 seconds
+
+Not invoiced
+
+Restores previous status
+
+Clears undo fields
+
+UI shows Undo toast for archive / invoice_later.
+
+5. Atomic Status + Event Logging (Step 11)
+New Helpers (Transactional)
+
+updateJobStatusWithEvent()
+
+updateJobStatusWithMultipleEvents()
+
+Guarantees
+
+Job update + event insert occur in same transaction
+
+Rollback on failure
+
+Timeline is always consistent
+
+Used by:
+
+status
+
+close
+
+reopen
+
+undo-close
+
+escalation
+
+action_required field updates
+
+6. Job Status Timeline (Audit Trail)
+Table: job_status_events
+
+Tracks:
+
+from_status → to_status
+
+who changed it
+
+when
+
+meta (JSON)
+
+UI
+
+Collapsible timeline on Job Detail
+
+Human-readable descriptions
+
+Relative timestamps
+
+Context from meta (close mode, escalation, updates)
+
+7. Legacy Status Removal (Steps 7, 13, 14)
+What was done
+
+Blocked API writes to legacy statuses
+
+Migrated legacy DB records → action_required
+
+Logged migration events
+
+Removed legacy statuses from:
+
+enums
+
+Zod schemas
+
+status rules
+
+UI filters
+
+Removed now-unreachable backend legacy guards
+
+Result
+
+✅ Only action_required exists as the blocked state.
+
+8. Role-Based Permissions (Step 8 + 8.1)
+Technicians
+
+Allowed statuses:
+
+en_route
+on_site
+in_progress
+action_required
+completed
+
+
+Blocked from:
+
+billing
+
+close / reopen / undo
+
+archive / invoice / cancel
+
+Office / Manager
+
+Full access
+
+Enforcement
+
+requireAuth + role checks inside handlers
+
+UI hides restricted actions for techs
+
+9. Action Required Queue + Aging (Step 9)
+Endpoint
+GET /api/jobs/action-required
+
+
+Sorted by:
+
+nextActionDate (ASC, NULLS LAST)
+
+actionRequiredAt (oldest first)
+
+UI
+
+“Action Required” filter
+
+Count badge
+
+Unified view for all AR jobs
+
+10. SLA + Escalation (Step 10)
+SLA Thresholds
+
+Warning: 24h
+
+Escalation: 72h
+
+Backend
+POST /api/jobs/:id/mark-action-required-escalated
+
+UI Indicators
+
+Aging badge (hours / days)
+
+SLA badge (24h+)
+
+Escalate button (72h+)
+
+Escalated badge
+
+11. Reporting & KPIs (Step 15)
+Endpoint
+GET /api/reports/action-required-kpis?days=30
+
+Metrics
+
+Current
+
+total AR jobs
+
+SLA breached (24h+)
+
+escalated
+
+age buckets
+
+top reasons
+
+Historical
+
+resolved count
+
+avg / median resolution time
+
+breakdown by reason
+
+UI
+
+Office-only KPI card
+
+5-minute cache
+
+Non-blocking if unavailable
+
+12. In-App SLA Notifications (Step 16)
+Jobs Page Banners (Office Only)
+
+🔴 Urgent (72h+)
+
+🟠 Warning (24h+)
+
+Dismissible per session
+
+Filter Badge
+
+Red badge on “Action Required” showing SLA-breached count
+
+13. Inline Dispatch Actions (Step 17A)
+Endpoint
+PATCH /api/jobs/:id/action-required
+
+
+Allows updating (only if status = action_required):
+
+reason
+
+notes
+
+nextActionDate
+
+Logs event with:
+
+meta: {
+  action: "update_action_required_fields",
+  changedFields: [...]
+}
+
+UI
+
+Inline “Next Action” date picker
+
+Inline “Add/Edit Note” popover
+
+stopPropagation preserves row navigation
+
+No status change required
+
+14. Event Noise Reduction & Timeline Collapsing (Step 17B)
+Backend
+
+No-op detection in /status
+
+Same status + no field changes → early return
+
+Prevents duplicate events from repeated clicks
+
+Improved close meta:
+
+Auto step: { system: true, via: "close", step: "auto_completed", mode }
+
+Final step: { via: "close", mode, invoiceId? }
+
+Frontend (Timeline)
+
+Collapses:
+
+current → completed (system)
+completed → final (close)
+
+
+into:
+
+Closed job (mode: invoice_now / invoice_later / archive)
+
+
+Raw DB events unchanged
+
+Display-only collapse via useMemo
+
+Result
+
+✅ Clean, readable timeline
+✅ No audit spam
+✅ Full fidelity preserved in DB
+
+Final State (What You Now Have)
+
+You now have a fully hardened, real-world job lifecycle:
+
+One canonical blocked state (Action Required)
+
+Required reason + SLA tracking
+
+Atomic close / reopen / undo
+
+Guaranteed audit trail
+
+DB-level integrity enforcement
+
+Role-safe operations
+
+Dispatch-friendly UX
+
+Reporting + alerts
+
+Clean, noise-free timeline
+
+This is production-ready SaaS behavior, not a prototype.

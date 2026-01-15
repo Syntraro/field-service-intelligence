@@ -29,14 +29,17 @@ export interface PaginatedResult<T> {
 export class ClientRepository extends BaseRepository {
   /**
    * Get all clients for a company
+   * Returns only active, non-deleted clients
    */
- async getAllClients(companyId: string): Promise<Client[]> {
+  async getAllClients(companyId: string): Promise<Client[]> {
     return await db
       .select()
       .from(clients)
       .where(and(
         eq(clients.companyId, companyId),
-        isNull(clients.deletedAt) // Soft delete: only show non-deleted records
+        isNull(clients.deletedAt), // Soft delete: only show non-deleted records
+        // Active filter: treat NULL as active (legacy data compatibility)
+        or(eq(clients.inactive, false), isNull(clients.inactive))
       ))
       .orderBy(
         clients.companyName,              // Primary: company name
@@ -66,8 +69,15 @@ export class ClientRepository extends BaseRepository {
     ];
 
     // Add inactive filter (for active/inactive tabs)
-    if (options.inactive !== undefined) {
-      whereConditions.push(eq(clients.inactive, options.inactive));
+    // IMPORTANT: NULL inactive values are treated as active (legacy data compatibility)
+    if (options.inactive === true) {
+      // Explicitly requesting inactive clients
+      whereConditions.push(eq(clients.inactive, true));
+    } else {
+      // Default: show active clients (inactive = false OR inactive IS NULL)
+      whereConditions.push(
+        or(eq(clients.inactive, false), isNull(clients.inactive))!
+      );
     }
 
     // Add search filter

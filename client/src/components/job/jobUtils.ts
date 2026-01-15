@@ -10,6 +10,7 @@ import {
   XCircle,
   Pause,
   AlertTriangle,
+  AlertCircle,
 } from "lucide-react";
 
 export const JOB_STATUS_FLOW = [
@@ -20,11 +21,15 @@ export const JOB_STATUS_FLOW = [
   { key: "invoiced", label: "Invoiced", icon: Receipt },
 ] as const;
 
+// Status transitions for UI dropdowns (excludes legacy statuses)
 export const STATUS_TRANSITIONS: Record<string, string[]> = {
   draft: ["scheduled", "cancelled"],
-  scheduled: ["in_progress", "on_hold", "cancelled"],
-  in_progress: ["requires_invoicing", "invoiced", "on_hold", "cancelled"],
-  on_hold: ["in_progress", "cancelled"],
+  scheduled: ["in_progress", "action_required", "cancelled"],
+  in_progress: ["requires_invoicing", "invoiced", "action_required", "cancelled"],
+  action_required: ["scheduled", "in_progress", "cancelled"],
+  // LEGACY statuses can transition to action_required or active states (read-only, cannot be set)
+  on_hold: ["in_progress", "action_required", "cancelled"],
+  needs_parts: ["in_progress", "action_required", "cancelled"],
   // LEGACY: "completed" treated same as "requires_invoicing"
   completed: ["invoiced", "requires_invoicing"],
   requires_invoicing: ["invoiced"],
@@ -58,8 +63,15 @@ export function getJobStatusDisplay(
   if (status === "cancelled") {
     return { label: "Cancelled", variant: "outline", icon: XCircle };
   }
+  // LEGACY: needs_parts and on_hold display as Action Required variants
+  if (status === "needs_parts") {
+    return { label: "Action Required (Needs Parts)", variant: "destructive", icon: AlertCircle };
+  }
   if (status === "on_hold") {
-    return { label: "On Hold", variant: "outline", icon: Pause };
+    return { label: "Action Required (On Hold)", variant: "destructive", icon: AlertCircle };
+  }
+  if (status === "action_required") {
+    return { label: "Action Required", variant: "destructive", icon: AlertCircle };
   }
   if (status === "in_progress") {
     return { label: "In Progress", variant: "default", icon: Play };

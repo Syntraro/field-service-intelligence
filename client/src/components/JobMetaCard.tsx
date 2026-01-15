@@ -1,6 +1,6 @@
 import { format } from "date-fns";
 import { useLocation } from "wouter";
-import { Calendar, Briefcase, Receipt } from "lucide-react";
+import { Calendar, Briefcase, Receipt, AlertCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -10,12 +10,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { getActionRequiredReasonLabel } from "@/components/ActionRequiredModal";
 import type { Job, Invoice } from "@shared/schema";
 
 interface JobMetaCardProps {
   job: Job;
   invoice: Invoice | null;
   onStatusChange: (status: string) => void;
+  onActionRequiredSelect?: () => void; // Called when user selects "action_required" to open modal
   statusChangePending?: boolean;
 }
 
@@ -37,6 +39,7 @@ function getJobStatusDisplay(status: string, scheduledStart: Date | null): {
     case "in_progress": return { label: "In Progress", variant: "default", isOverdue };
     case "needs_parts": return { label: "Needs Parts", variant: "secondary", isOverdue };
     case "on_hold": return { label: "On Hold", variant: "secondary", isOverdue };
+    case "action_required": return { label: "Action Required", variant: "destructive", isOverdue };
     case "completed": return { label: "Completed", variant: "default", isOverdue: false }; // LEGACY
     case "requires_invoicing": return { label: "Requires Invoicing", variant: "secondary", isOverdue: false };
     case "invoiced": return { label: "Invoiced", variant: "default", isOverdue: false };
@@ -51,10 +54,21 @@ export function JobMetaCard({
   job,
   invoice,
   onStatusChange,
+  onActionRequiredSelect,
   statusChangePending,
 }: JobMetaCardProps) {
   const [, setLocation] = useLocation();
   const statusInfo = getJobStatusDisplay(job.status, job.scheduledStart);
+
+  // Handle status change - intercept action_required to open modal
+  const handleStatusChange = (newStatus: string) => {
+    if (newStatus === "action_required") {
+      // Open the modal instead of directly changing status
+      onActionRequiredSelect?.();
+    } else {
+      onStatusChange(newStatus);
+    }
+  };
 
   return (
     <Card className="min-w-[200px]" data-testid="card-job-meta">
@@ -103,7 +117,7 @@ export function JobMetaCard({
             )}
             <Select
               value={job.status}
-              onValueChange={onStatusChange}
+              onValueChange={handleStatusChange}
               disabled={statusChangePending}
             >
               <SelectTrigger className="h-6 w-auto min-w-[100px] text-[11px]" data-testid="select-status">
@@ -116,8 +130,8 @@ export function JobMetaCard({
                 <SelectItem value="en_route">En Route</SelectItem>
                 <SelectItem value="on_site">On Site</SelectItem>
                 <SelectItem value="in_progress">In Progress</SelectItem>
-                <SelectItem value="needs_parts">Needs Parts</SelectItem>
-                <SelectItem value="on_hold">On Hold</SelectItem>
+                <SelectItem value="action_required">Action Required</SelectItem>
+                {/* LEGACY: needs_parts and on_hold removed - use action_required instead */}
                 <SelectItem value="completed">Completed</SelectItem>
                 <SelectItem value="invoiced">Invoiced</SelectItem>
                 <SelectItem value="cancelled">Cancelled</SelectItem>
@@ -136,6 +150,38 @@ export function JobMetaCard({
             </span>
           </div>
         </div>
+
+        {/* Action Required Info - only show when status is action_required */}
+        {job.status === "action_required" && job.actionRequiredReason && (
+          <div className="pt-2 border-t mt-2 space-y-1.5">
+            <div className="flex items-center gap-1 text-[11px] text-destructive font-medium">
+              <AlertCircle className="h-3 w-3" />
+              <span>Action Required</span>
+            </div>
+            <div className="flex items-start justify-between gap-2">
+              <span className="text-muted-foreground text-[11px]">Reason:</span>
+              <span className="text-[11px] text-right" data-testid="text-action-reason">
+                {getActionRequiredReasonLabel(job.actionRequiredReason)}
+              </span>
+            </div>
+            {job.actionRequiredNotes && (
+              <div className="flex items-start justify-between gap-2">
+                <span className="text-muted-foreground text-[11px]">Notes:</span>
+                <span className="text-[11px] text-right max-w-[120px] truncate" title={job.actionRequiredNotes} data-testid="text-action-notes">
+                  {job.actionRequiredNotes}
+                </span>
+              </div>
+            )}
+            {job.nextActionDate && (
+              <div className="flex items-start justify-between gap-2">
+                <span className="text-muted-foreground text-[11px]">Next action:</span>
+                <span className="text-[11px]" data-testid="text-next-action-date">
+                  {format(new Date(job.nextActionDate), "MMM d, yyyy")}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

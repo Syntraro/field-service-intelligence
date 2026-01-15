@@ -137,14 +137,15 @@ router.post("/:id/set-default", requireRole(MANAGER_ROLES), asyncHandler(async (
 const applyToJobSchema = z.object({
   jobId: z.string().min(1),
   templateId: z.string().min(1),
+  mode: z.enum(["replace", "merge"]).optional().default("replace"),
 }).strict();
 
 router.post("/apply-to-job", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
-  const { jobId, templateId } = validateSchema(applyToJobSchema, req.body);
+  const { jobId, templateId, mode } = validateSchema(applyToJobSchema, req.body);
 
-  const createdParts = await storage.applyJobTemplateToJob(companyId, jobId, templateId);
-  res.status(201).json(createdParts);
+  const result = await storage.applyJobTemplateToJob(companyId, jobId, templateId, mode);
+  res.status(201).json(result);
 }));
 
 router.get("/default/:jobType", asyncHandler(async (req: AuthedRequest, res: Response) => {

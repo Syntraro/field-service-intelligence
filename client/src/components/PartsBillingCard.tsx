@@ -50,6 +50,10 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { JobPart, Item, JobTemplate } from "@shared/schema";
+import { useAuth } from "@/lib/auth";
+
+// Office roles that can apply templates
+const OFFICE_ROLES = ["owner", "admin", "manager", "dispatcher"];
 
 interface PartsBillingCardProps {
   jobId: string;
@@ -88,6 +92,9 @@ function formatCurrency(value: number): string {
 
 export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const isOfficeUser = Boolean(user?.role && OFFICE_ROLES.includes(user.role));
+
   const [items, setItems] = useState<LocalLineItem[]>([]);
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
   const [savingRowId, setSavingRowId] = useState<string | null>(null);
@@ -101,7 +108,8 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
     open: boolean;
     templateId: string | null;
     templateName: string;
-  }>({ open: false, templateId: null, templateName: "" });
+    mode: "replace" | "merge";
+  }>({ open: false, templateId: null, templateName: "", mode: "replace" });
   const lastSyncedPartsRef = useRef<string>("");
 
   const { data: jobParts = [], isLoading: partsLoading } = useQuery<JobPart[]>({
@@ -123,30 +131,32 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
   });
 
   const applyTemplateMutation = useMutation({
-    mutationFn: async ({ templateId, replaceExisting }: { templateId: string; replaceExisting: boolean }) => {
-      if (replaceExisting && jobParts.length > 0) {
+    mutationFn: async ({ templateId, mode }: { templateId: string; mode: "replace" | "merge" }) => {
+      if (mode === "replace" && jobParts.length > 0) {
+        // Delete all existing line items before applying template
         for (const part of jobParts) {
           await apiRequest(`/api/jobs/${jobId}/parts/${part.id}`, {
             method: "DELETE",
           });
         }
       }
-      const res = await fetch("/api/job-templates/apply-to-job", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ jobId, templateId }),
-      });
-      if (!res.ok) {
-        const error = await res.json().catch(() => ({ error: "Failed to apply template" }));
-        throw new Error(error.error || "Failed to apply template");
-      }
-      return res.json();
+      return apiRequest<{ appliedCount: number; skippedCount: number; parts: any[] }>(
+        "/api/job-templates/apply-to-job",
+        {
+          method: "POST",
+          body: JSON.stringify({ jobId, templateId, mode }),
+        }
+      );
     },
-    onSuccess: () => {
+    onSuccess: (data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
-      toast({ title: "Template applied", description: "Line items have been replaced with the template." });
+      const modeLabel = variables.mode === "replace" ? "replaced" : "merged";
+      const skipMsg = data.skippedCount > 0 ? ` (${data.skippedCount} duplicates skipped)` : "";
+      toast({
+        title: "Template applied",
+        description: `${data.appliedCount} items ${modeLabel}${skipMsg}`,
+      });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -156,19 +166,24 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
   const handleApplyTemplate = (templateId: string) => {
     const template = jobTemplates.find(t => t.id === templateId);
     const templateName = template?.name || "selected template";
-    
-    if (items.filter(i => !i.isNew).length > 0) {
-      setTemplateConfirmState({ open: true, templateId, templateName });
+
+    // If no existing items, apply directly as replace
+    if (items.filter(i => !i.isNew).length === 0) {
+      applyTemplateMutation.mutate({ templateId, mode: "replace" });
     } else {
-      applyTemplateMutation.mutate({ templateId, replaceExisting: false });
+      // Show dialog to choose between Replace and Merge
+      setTemplateConfirmState({ open: true, templateId, templateName, mode: "replace" });
     }
   };
 
-  const handleConfirmTemplateReplace = () => {
+  const handleConfirmTemplateApply = () => {
     if (templateConfirmState.templateId) {
-      applyTemplateMutation.mutate({ templateId: templateConfirmState.templateId, replaceExisting: true });
+      applyTemplateMutation.mutate({
+        templateId: templateConfirmState.templateId,
+        mode: templateConfirmState.mode,
+      });
     }
-    setTemplateConfirmState({ open: false, templateId: null, templateName: "" });
+    setTemplateConfirmState({ open: false, templateId: null, templateName: "", mode: "replace" });
   };
 
   const { data: catalogData } = useQuery<{ items: Item[] }>({
@@ -549,7 +564,7 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
               <Plus className="h-3 w-3 mr-1" />
               Add Line Item
             </Button>
-            {jobTemplates.length > 0 && (
+            {isOfficeUser && jobTemplates.length > 0 && (
               <Select
                 onValueChange={(templateId) => {
                   if (templateId) {
@@ -558,8 +573,8 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
                 }}
                 disabled={applyTemplateMutation.isPending}
               >
-                <SelectTrigger 
-                  className="h-8 w-auto min-w-[160px]" 
+                <SelectTrigger
+                  className="h-8 w-auto min-w-[160px]"
                   data-testid="select-apply-template"
                 >
                   <FileText className="h-3 w-3 mr-1" />
@@ -584,28 +599,84 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
         </CardContent>
       </Card>
 
-      <AlertDialog 
-        open={templateConfirmState.open} 
-        onOpenChange={(open) => !open && setTemplateConfirmState({ open: false, templateId: null, templateName: "" })}
+      <Dialog
+        open={templateConfirmState.open}
+        onOpenChange={(open) => !open && setTemplateConfirmState({ open: false, templateId: null, templateName: "", mode: "replace" })}
       >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Replace Line Items?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This job already has line items. Applying the "{templateConfirmState.templateName}" template will remove all existing line items and replace them with the template items. This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-cancel-template-replace">Cancel</AlertDialogCancel>
-            <AlertDialogAction 
-              onClick={handleConfirmTemplateReplace}
-              data-testid="button-confirm-template-replace"
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Apply Template</DialogTitle>
+            <DialogDescription>
+              How would you like to apply the "{templateConfirmState.templateName}" template to this job?
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4 space-y-3">
+            <div
+              className={`p-3 rounded-lg border cursor-pointer transition-colors ${
+                templateConfirmState.mode === "replace"
+                  ? "border-primary bg-primary/5"
+                  : "border-border hover:border-muted-foreground/50"
+              }`}
+              onClick={() => setTemplateConfirmState((prev) => ({ ...prev, mode: "replace" }))}
+              data-testid="option-replace"
             >
-              Replace Items
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+              <div className="flex items-center gap-2">
+                <div className={`h-4 w-4 rounded-full border-2 flex items-center justify-center ${
+                  templateConfirmState.mode === "replace" ? "border-primary" : "border-muted-foreground/50"
+                }`}>
+                  {templateConfirmState.mode === "replace" && (
+                    <div className="h-2 w-2 rounded-full bg-primary" />
+                  )}
+                </div>
+                <span className="font-medium text-sm">Replace existing items</span>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground ml-6">
+                Remove all current line items and replace with template items.
+              </p>
+            </div>
+            <div
+              className={`p-3 rounded-lg border cursor-pointer transition-colors ${
+                templateConfirmState.mode === "merge"
+                  ? "border-primary bg-primary/5"
+                  : "border-border hover:border-muted-foreground/50"
+              }`}
+              onClick={() => setTemplateConfirmState((prev) => ({ ...prev, mode: "merge" }))}
+              data-testid="option-merge"
+            >
+              <div className="flex items-center gap-2">
+                <div className={`h-4 w-4 rounded-full border-2 flex items-center justify-center ${
+                  templateConfirmState.mode === "merge" ? "border-primary" : "border-muted-foreground/50"
+                }`}>
+                  {templateConfirmState.mode === "merge" && (
+                    <div className="h-2 w-2 rounded-full bg-primary" />
+                  )}
+                </div>
+                <span className="font-medium text-sm">Merge with existing items</span>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground ml-6">
+                Add template items without removing existing ones. Duplicates (same product) will be skipped.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setTemplateConfirmState({ open: false, templateId: null, templateName: "", mode: "replace" })}
+              data-testid="button-cancel-template"
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleConfirmTemplateApply}
+              disabled={applyTemplateMutation.isPending}
+              data-testid="button-confirm-template"
+            >
+              {applyTemplateMutation.isPending && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
+              Apply Template
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AddProductModal
         open={productModalState.open}

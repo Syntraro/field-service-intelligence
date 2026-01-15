@@ -38,6 +38,8 @@ import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import { JobHeaderCard } from "@/components/JobHeaderCard";
 import { JobAssignmentsCard } from "@/components/JobAssignmentsCard";
 import { JobMetaCard } from "@/components/JobMetaCard";
+import { ActionRequiredModal } from "@/components/ActionRequiredModal";
+import { JobStatusTimeline } from "@/components/job/JobStatusTimeline";
 import { StatusProgressBar, getJobStatusDisplay, getPriorityDisplay } from "@/components/job";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -357,12 +359,21 @@ export default function JobDetailPage() {
   const [showCreateInvoiceDialog, setShowCreateInvoiceDialog] = useState(false);
   const [showAssignTech, setShowAssignTech] = useState(false);
   const [showEditDialog, setShowEditDialog] = useState(false);
+  const [showActionRequiredModal, setShowActionRequiredModal] = useState(false);
   const [notesOpen, setNotesOpen] = useState(true);
   const [activityOpen, setActivityOpen] = useState(false);
   const jobId = params?.id;
 
   const { data: job, isLoading, error } = useQuery<JobDetailResponse>({
     queryKey: ["/api/jobs", jobId],
+    queryFn: async () => {
+      const res = await fetch(`/api/jobs/${jobId}`, { credentials: "include" });
+      if (!res.ok) {
+        if (res.status === 404) throw new Error("Job not found");
+        throw new Error("Failed to fetch job");
+      }
+      return res.json();
+    },
     enabled: !!jobId,
   });
 
@@ -524,6 +535,7 @@ export default function JobDetailPage() {
           job={job}
           invoice={jobInvoices.length > 0 ? jobInvoices[0] : null}
           onStatusChange={handleStatusChange}
+          onActionRequiredSelect={() => setShowActionRequiredModal(true)}
           statusChangePending={updateStatusMutation.isPending}
         />
       </div>
@@ -611,6 +623,9 @@ export default function JobDetailPage() {
 
           {/* Visits - collapsed by default */}
           <JobVisitsSection jobId={job.id} defaultOpen={false} />
+
+          {/* Status Timeline - collapsed by default */}
+          <JobStatusTimeline jobId={job.id} defaultOpen={false} />
 
           {/* Activity - Collapsible */}
           <Collapsible open={activityOpen} onOpenChange={setActivityOpen}>
@@ -705,6 +720,12 @@ export default function JobDetailPage() {
         onSuccess={() => {
           queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
         }}
+      />
+
+      <ActionRequiredModal
+        jobId={job.id}
+        open={showActionRequiredModal}
+        onOpenChange={setShowActionRequiredModal}
       />
 
       <Dialog open={showCreateInvoiceDialog} onOpenChange={setShowCreateInvoiceDialog}>

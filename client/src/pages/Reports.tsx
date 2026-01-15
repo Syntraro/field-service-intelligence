@@ -9,7 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { FileText, Package, Calendar, Printer } from "lucide-react";
+import { FileText, Package, Calendar, Printer, DollarSign } from "lucide-react";
 
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
@@ -182,7 +182,13 @@ export default function Reports() {
           </div>
         </div>
 
-        <Tabs defaultValue="parts" value={activeTab} onValueChange={setActiveTab} className="space-y-6">
+        <Tabs defaultValue="parts" value={activeTab} onValueChange={(value) => {
+          if (value === "ar-aging") {
+            setLocation("/reports/accounts-receivable");
+          } else {
+            setActiveTab(value);
+          }
+        }} className="space-y-6">
           <TabsList data-testid="tabs-reports">
             <TabsTrigger value="parts" data-testid="tab-parts-report">
               <Package className="h-4 w-4 mr-2" />
@@ -191,6 +197,10 @@ export default function Reports() {
             <TabsTrigger value="schedule" data-testid="tab-schedule-report">
               <Calendar className="h-4 w-4 mr-2" />
               PM Schedule
+            </TabsTrigger>
+            <TabsTrigger value="ar-aging" data-testid="tab-ar-aging-report">
+              <DollarSign className="h-4 w-4 mr-2" />
+              AR Aging
             </TabsTrigger>
           </TabsList>
 

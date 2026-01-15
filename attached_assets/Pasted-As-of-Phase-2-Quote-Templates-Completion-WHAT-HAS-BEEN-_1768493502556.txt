@@ -1,0 +1,219 @@
+As of Phase 2 Quote Templates Completion
+
+✅ WHAT HAS BEEN COMPLETED
+1️⃣ Job Status System (Fully Complete)
+
+Unified job status model with:
+
+action_required + reason + notes + SLA tracking
+
+Undo close, reopen, escalation, timeline, audit logging
+
+Atomic status updates with guaranteed event logging
+
+Technician vs office permissions enforced
+
+Legacy statuses removed (needs_parts, on_hold)
+
+Action Required queue, KPIs, SLA alerts, inline editing
+
+Timeline noise reduction + collapsed events
+
+Fully schema-enforced with DB constraints
+
+2️⃣ Job Templates (Fully Fixed + Integrated)
+
+Job Templates CRUD in Settings
+
+Apply template to job with:
+
+Replace vs Merge
+
+Duplicate skipping by productId
+
+Role-based access
+
+Apply Template modal
+
+Fixed all CSRF issues (converted all mutations to apiRequest)
+
+Fixed item catalog API shape mismatch
+
+Added toast feedback with applied/skipped counts
+
+3️⃣ Invoicing System (Production-Ready)
+
+Unified invoice status enum:
+
+draft → sent → partial_paid → paid → voided
+
+Status enforcement at backend level
+
+Payments system:
+
+Auto balance + status recalculation
+
+Composite invoice detail endpoint
+
+Fixed broken InvoiceDetailPage queries
+
+Legacy invoice audit tool (safe, read-only)
+
+Invoice → Job linkage solid
+
+QBO-ready invoice model
+
+4️⃣ Quotes — Phase 1 & 2 (Complete)
+Phase 1 — Quotes Core
+
+Quotes CRUD + line items
+
+Status flow:
+
+draft → sent → approved / declined → converted
+
+Auto quote numbering
+
+Quote detail page + list page
+
+CSRF-safe mutations
+
+Phase 2 — Quote Templates + Conversion
+
+Quote Templates:
+
+Full CRUD
+
+Default template support
+
+Active/inactive
+
+Apply Template to Quote:
+
+Replace / Merge
+
+Convert Quote → Job:
+
+Approved quotes only
+
+Copies quote lines → job parts
+
+Stores convertedToJobId
+
+Redirects to job on success
+
+All schema + routes + UI complete
+
+5️⃣ QuickBooks Online (QBO) Integration (Enterprise-Grade)
+
+Phases 19 → 29 COMPLETE
+
+Sync Architecture
+
+One-way sync (App → QBO)
+
+Explicit manual triggers only (no auto cron)
+
+Draft invoices never sync
+
+Safe retry queue with backoff
+
+Idempotent operations everywhere
+
+Features
+
+Customer, Location, Invoice sync
+
+Item catalog sync (create/link/retry)
+
+Mapping config UI (items + tax codes)
+
+Preflight checks + Go-Live safety gate
+
+Dry-run previews
+
+Admin console UI
+
+Queue management + replay
+
+Reconciliation (QBO → local payments)
+
+Webhooks (read-only) + drift alerts
+
+Observability:
+
+Sync runs
+
+Error categories
+
+Suggested actions
+
+6️⃣ Security & Stability Fixes
+
+All CSRF errors fixed (apiRequest everywhere)
+
+Zod validation alignment
+
+Strict schema enforcement
+
+Pagination + API shape mismatches fixed
+
+No broken routes
+
+TypeScript clean
+
+🔧 WHAT’S LEFT (NEXT PHASES)
+🔜 NEXT PRIORITY (Recommended Order)
+1️⃣ Fix Remaining Quote UX Polish
+
+Quote PDF generation
+
+Quote email/send UI
+
+Expiry handling
+
+Optional: Quote → Invoice flow
+
+2️⃣ Team / Technician Management
+
+Roles & permissions UI polish
+
+Technician profiles
+
+Working hours / availability
+
+Permissions visibility
+
+3️⃣ Calendar (Last Major Module)
+
+Calendar refactor
+
+Job ↔ technician scheduling
+
+Drag/drop
+
+Availability + conflicts
+
+4️⃣ Admin Control Panel (Owner-Only)
+
+Impersonation (support mode)
+
+Subscription management
+
+Tenant health / usage
+
+QBO connection oversight
+
+Billing state visibility
+
+🧭 ARCHITECTURAL NOTES
+
+Backend is ahead of frontend (good)
+
+Core domain is stable
+
+QBO layer is isolated and safe
+
+Remaining work is primarily UI + workflow polish
+
+No migrations currently blocking progress

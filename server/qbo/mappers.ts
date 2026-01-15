@@ -1,4 +1,4 @@
-import type { CustomerCompany, Client, Invoice, InvoiceLine } from "@shared/schema";
+import type { CustomerCompany, Client, Invoice, InvoiceLine, QboMappingConfig } from "@shared/schema";
 
 // QBO Customer/Sub-Customer JSON payload interfaces
 export interface QBOAddress {
@@ -392,13 +392,18 @@ export interface QBOInvoiceResponse {
  * The CustomerRef depends on the location's billWithParent flag:
  * - If billWithParent = true: CustomerRef points to parent Company's qboCustomerId
  * - If billWithParent = false: CustomerRef points to Location's qboCustomerId
+ *
+ * @param mappingConfig - Optional QBO mapping config for resolving item/tax refs
+ * @param itemQboIds - Optional map of local item IDs to QBO item IDs (productId -> qboItemId)
  */
 export function toQboInvoicePayload(
   invoice: Invoice,
   location: Client,
   customerCompany: CustomerCompany | undefined,
   lines: InvoiceLine[],
-  forUpdate: boolean = false
+  forUpdate: boolean = false,
+  mappingConfig?: QboMappingConfig | null,
+  itemQboIds?: Map<string, string> | null
 ): QBOInvoicePayload {
   // Determine CustomerRef based on billWithParent flag
   // If billWithParent is true, bill to the parent company
@@ -488,7 +493,7 @@ export function toQboInvoicePayload(
     payload.PrivateNote = invoice.notesInternal;
   }
 
-  // Map line items
+  // Map line items with resolved mappings
   payload.Line = lines.map((line, index) => {
     const qboLine: QBOInvoiceLine = {
       LineNum: line.lineNumber || (index + 1),
@@ -501,14 +506,42 @@ export function toQboInvoicePayload(
       },
     };
 
-    // Add ItemRef if we have a QBO item ID
-    if (line.qboItemRefId) {
-      qboLine.SalesItemLineDetail!.ItemRef = { value: line.qboItemRefId };
+    // Resolve ItemRef priority: explicit -> product's qboItemId -> company default -> none
+    let itemRefId = line.qboItemRefId;
+
+    // If no explicit mapping, check if line has productId with linked qboItemId
+    if (!itemRefId && line.productId && itemQboIds?.has(line.productId)) {
+      itemRefId = itemQboIds.get(line.productId) || null;
     }
 
-    // Add TaxCodeRef if set
-    if (line.qboTaxCodeRefId) {
-      qboLine.SalesItemLineDetail!.TaxCodeRef = { value: line.qboTaxCodeRefId };
+    // Fall back to company default mapping config
+    if (!itemRefId && mappingConfig) {
+      // Resolve from mapping config based on line type
+      const lineType = line.lineItemType as "service" | "material" | "fee" | "discount";
+      const typeMap: Record<string, string | undefined> = {
+        service: mappingConfig.serviceItemId || mappingConfig.laborItemId,
+        material: mappingConfig.materialItemId,
+        fee: mappingConfig.feeItemId,
+        discount: mappingConfig.discountItemId,
+      };
+      itemRefId = typeMap[lineType] || mappingConfig.miscItemId || null;
+    }
+    if (itemRefId) {
+      qboLine.SalesItemLineDetail!.ItemRef = { value: itemRefId };
+    }
+
+    // Resolve TaxCodeRef: explicit -> company default based on taxRate -> none
+    let taxCodeRefId = line.qboTaxCodeRefId;
+    if (!taxCodeRefId && mappingConfig) {
+      const taxRate = parseFloat(line.taxRate);
+      if (taxRate > 0) {
+        taxCodeRefId = mappingConfig.taxableCode || null;
+      } else {
+        taxCodeRefId = mappingConfig.nonTaxableCode || null;
+      }
+    }
+    if (taxCodeRefId) {
+      qboLine.SalesItemLineDetail!.TaxCodeRef = { value: taxCodeRefId };
     }
 
     return qboLine;

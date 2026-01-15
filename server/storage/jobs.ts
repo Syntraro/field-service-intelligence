@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { eq, and, gte, lte, sql, desc, or, lt } from "drizzle-orm";
+import { eq, and, gte, lte, sql, desc, asc, or, lt } from "drizzle-orm";
 import { validate as isUUID } from "uuid";
 import {
   jobs,
@@ -10,9 +10,10 @@ import {
   recurringJobPhases,
   companyCounters,
   clients,
-  customerCompanies
+  customerCompanies,
+  jobStatusEvents
 } from "@shared/schema";
-import type { InsertJob, Job, InsertJobPart, JobPart } from "@shared/schema";
+import type { InsertJob, Job, InsertJobPart, JobPart, InsertJobStatusEvent, JobStatusEvent } from "@shared/schema";
 import { BaseRepository } from "./base";
 import { encodeCursor, decodeCursor } from "../utils/cursor";
 import type { PaginationParams } from "../utils/pagination";
@@ -246,6 +247,16 @@ export class JobRepository extends BaseRepository {
         billingNotes: jobs.billingNotes,
         recurringSeriesId: jobs.recurringSeriesId,
         calendarAssignmentId: jobs.calendarAssignmentId,
+        // Action required fields
+        actionRequiredReason: jobs.actionRequiredReason,
+        actionRequiredNotes: jobs.actionRequiredNotes,
+        nextActionDate: jobs.nextActionDate,
+        actionRequiredAt: jobs.actionRequiredAt,
+        actionRequiredEscalatedAt: jobs.actionRequiredEscalatedAt,
+        // Undo close support
+        previousStatus: jobs.previousStatus,
+        closedAt: jobs.closedAt,
+        closedBy: jobs.closedBy,
         isActive: jobs.isActive,
         version: jobs.version,
         createdAt: jobs.createdAt,
@@ -740,6 +751,244 @@ export class JobRepository extends BaseRepository {
       invoiceId: job.invoiceId,
       reconciled: true,
     };
+  }
+
+  /**
+   * Create a job status event for audit trail
+   */
+  async createJobStatusEvent(
+    companyId: string,
+    jobId: string,
+    event: InsertJobStatusEvent
+  ): Promise<JobStatusEvent> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(jobId, "jobId");
+
+    const [inserted] = await db
+      .insert(jobStatusEvents)
+      .values({
+        ...event,
+        companyId,
+        jobId,
+      })
+      .returning();
+
+    return inserted;
+  }
+
+  /**
+   * Atomically update job status and create a status event in a single transaction.
+   * This ensures that if either operation fails, both are rolled back.
+   *
+   * @param companyId - Company ID for tenant isolation
+   * @param jobId - Job ID to update
+   * @param params - Status change parameters
+   * @returns Updated job
+   */
+  async updateJobStatusWithEvent(
+    companyId: string,
+    jobId: string,
+    params: {
+      fromStatus: string;
+      toStatus: string;
+      changedBy: string | null;
+      note?: string | null;
+      meta?: Record<string, unknown> | null;
+      additionalUpdates?: Record<string, unknown>;
+    }
+  ): Promise<Job> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(jobId, "jobId");
+
+    const { fromStatus, toStatus, changedBy, note, meta, additionalUpdates } = params;
+
+    return await db.transaction(async (tx) => {
+      // Step 1: Update job status and any additional fields
+      const updatePayload: Record<string, unknown> = {
+        status: toStatus,
+        ...additionalUpdates,
+      };
+
+      // Normalize date fields if any
+      const normalizedPayload = this.normalizeDateFields(updatePayload);
+
+      const [updatedJob] = await tx
+        .update(jobs)
+        .set({
+          ...normalizedPayload,
+          version: sql`${jobs.version} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+        .returning();
+
+      if (!updatedJob) {
+        throw this.notFoundError("Job");
+      }
+
+      // Step 2: Create status event
+      await tx
+        .insert(jobStatusEvents)
+        .values({
+          companyId,
+          jobId,
+          changedBy,
+          fromStatus,
+          toStatus,
+          note: note || null,
+          meta: meta || null,
+        });
+
+      return updatedJob;
+    });
+  }
+
+  /**
+   * Atomically perform multiple status transitions and log events for each.
+   * Used by the close endpoint which may have intermediate states.
+   *
+   * @param companyId - Company ID for tenant isolation
+   * @param jobId - Job ID to update
+   * @param transitions - Array of status transitions to perform
+   * @param changedBy - User ID who triggered the change
+   * @returns Updated job after all transitions
+   */
+  async updateJobStatusWithMultipleEvents(
+    companyId: string,
+    jobId: string,
+    transitions: Array<{
+      fromStatus: string;
+      toStatus: string;
+      note?: string | null;
+      meta?: Record<string, unknown> | null;
+      additionalUpdates?: Record<string, unknown>;
+    }>,
+    changedBy: string | null
+  ): Promise<Job> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(jobId, "jobId");
+
+    if (transitions.length === 0) {
+      throw new Error("At least one transition is required");
+    }
+
+    return await db.transaction(async (tx) => {
+      let updatedJob: Job | null = null;
+
+      for (const transition of transitions) {
+        const { fromStatus, toStatus, note, meta, additionalUpdates } = transition;
+
+        // Update job with the current transition
+        const updatePayload: Record<string, unknown> = {
+          status: toStatus,
+          ...additionalUpdates,
+        };
+
+        const normalizedPayload = this.normalizeDateFields(updatePayload);
+
+        const [job] = await tx
+          .update(jobs)
+          .set({
+            ...normalizedPayload,
+            version: sql`${jobs.version} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+          .returning();
+
+        if (!job) {
+          throw this.notFoundError("Job");
+        }
+
+        updatedJob = job;
+
+        // Create status event for this transition
+        await tx
+          .insert(jobStatusEvents)
+          .values({
+            companyId,
+            jobId,
+            changedBy,
+            fromStatus,
+            toStatus,
+            note: note || null,
+            meta: meta || null,
+          });
+      }
+
+      return updatedJob!;
+    });
+  }
+
+  /**
+   * Get job status events for audit trail, sorted by changedAt desc
+   */
+  async getJobStatusEvents(
+    companyId: string,
+    jobId: string
+  ): Promise<JobStatusEvent[]> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(jobId, "jobId");
+
+    return db
+      .select()
+      .from(jobStatusEvents)
+      .where(
+        and(
+          eq(jobStatusEvents.companyId, companyId),
+          eq(jobStatusEvents.jobId, jobId)
+        )
+      )
+      .orderBy(desc(jobStatusEvents.changedAt));
+  }
+
+  /**
+   * Get action required jobs queue for office/dispatch view
+   * Sorted by: nextActionDate ASC NULLS LAST, actionRequiredAt ASC (oldest first)
+   */
+  async getActionRequiredJobs(companyId: string) {
+    this.assertCompanyId(companyId);
+
+    return db
+      .select({
+        id: jobs.id,
+        companyId: jobs.companyId,
+        locationId: jobs.locationId,
+        jobNumber: jobs.jobNumber,
+        status: jobs.status,
+        priority: jobs.priority,
+        jobType: jobs.jobType,
+        summary: jobs.summary,
+        scheduledStart: jobs.scheduledStart,
+        scheduledEnd: jobs.scheduledEnd,
+        actionRequiredReason: jobs.actionRequiredReason,
+        actionRequiredNotes: jobs.actionRequiredNotes,
+        nextActionDate: jobs.nextActionDate,
+        actionRequiredAt: jobs.actionRequiredAt,
+        actionRequiredEscalatedAt: jobs.actionRequiredEscalatedAt,
+        primaryTechnicianId: jobs.primaryTechnicianId,
+        createdAt: jobs.createdAt,
+        // Location info
+        locationName: clients.location,
+        locationCompanyName: sql<string>`COALESCE(${customerCompanies.name}, ${clients.companyName})`,
+        locationAddress: clients.address,
+        locationCity: clients.city,
+      })
+      .from(jobs)
+      .leftJoin(clients, eq(jobs.locationId, clients.id))
+      .leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))
+      .where(
+        and(
+          eq(jobs.companyId, companyId),
+          eq(jobs.status, "action_required")
+        )
+      )
+      .orderBy(
+        // nextActionDate ASC NULLS LAST
+        sql`${jobs.nextActionDate} ASC NULLS LAST`,
+        // actionRequiredAt ASC (oldest first)
+        asc(jobs.actionRequiredAt)
+      );
   }
 }
 

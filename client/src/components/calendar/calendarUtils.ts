@@ -49,17 +49,50 @@ export type CalendarEvent = {
 };
 
 /**
- * Get location key from entity (prefers locationId, falls back to clientId)
+ * Get the canonical location identifier from an entity.
+ *
+ * CANONICAL FIELD: `locationId` is the authoritative identifier for client locations.
+ *
+ * TEMPORARY FALLBACK: `clientId` is a legacy field that will be removed after the
+ * schema migration completes. The fallback exists only to support data created
+ * before the migration and should NOT be relied upon for new code.
+ *
+ * MIGRATION PLAN:
+ * 1. All new writes use `locationId`
+ * 2. Once all existing records are backfilled, the `clientId` column will be dropped
+ * 3. This fallback will be removed at that time
+ *
+ * @param entity - Object containing locationId and/or clientId
+ * @returns The location identifier string, or empty string if neither exists
  */
 export function getLocationKey(entity: { locationId?: string; clientId?: string }): string {
-  return entity.locationId ?? entity.clientId ?? '';
+  const key = entity.locationId ?? entity.clientId ?? '';
+
+  // DEV-ONLY: Warn if using legacy fallback (helps track migration progress)
+  if (process.env.NODE_ENV === 'development' && !entity.locationId && entity.clientId) {
+    console.warn(
+      '[Calendar] Using legacy clientId fallback. Entity should have locationId:',
+      { locationId: entity.locationId, clientId: entity.clientId }
+    );
+  }
+
+  return key;
 }
 
 /**
- * Normalize raw assignments into CalendarEvent objects
+ * Normalize raw assignments into CalendarEvent objects.
+ * Transforms raw API data into a consistent shape for all calendar views.
  */
 export function normalizeAssignments(rawAssignments: any[]): CalendarEvent[] {
   return rawAssignments.map((a): CalendarEvent => {
+    // DEV-ONLY: Warn if assignment has no location identifier
+    if (process.env.NODE_ENV === 'development' && !a.locationId && !a.clientId) {
+      console.warn(
+        '[Calendar] Assignment missing location identifier (no locationId or clientId):',
+        { id: a.id, jobNumber: a.jobNumber }
+      );
+    }
+
     const isAllDay = a.scheduledHour === null || a.scheduledHour === undefined;
     const startMinutes = isAllDay ? null : (a.scheduledHour * 60 + (a.scheduledStartMinutes ?? 0));
     const techIds = a.assignedTechnicianIds || [];
@@ -69,9 +102,19 @@ export function normalizeAssignments(rawAssignments: any[]): CalendarEvent[] {
     // Build date key (YYYY-MM-DD)
     const dateKey = `${a.year}-${String(a.month).padStart(2, '0')}-${String(a.day).padStart(2, '0')}`;
 
+    const locationKey = getLocationKey(a);
+
+    // DEV-ONLY: Warn if locationKey resolved to empty string
+    if (process.env.NODE_ENV === 'development' && !locationKey) {
+      console.warn(
+        '[Calendar] CalendarEvent has null/empty locationKey:',
+        { assignmentId: a.id, jobNumber: a.jobNumber }
+      );
+    }
+
     return {
       assignmentId: a.id,
-      locationKey: getLocationKey(a),
+      locationKey,
       technicianId,
       technicianIds: techIds.length > 0 ? techIds : (legacyTechId ? [legacyTechId] : []),
       year: a.year,
@@ -92,7 +135,29 @@ export function normalizeAssignments(rawAssignments: any[]): CalendarEvent[] {
 }
 
 /**
- * Build indexes for efficient event lookup
+ * Compare function for stable event ordering.
+ * Sort order: all-day events first, then by startMinutes, then by assignmentId (tie-breaker).
+ * This ensures deterministic rendering across re-renders and React reconciliation.
+ */
+function compareEventsForStableOrder(a: CalendarEvent, b: CalendarEvent): number {
+  // All-day events sort first
+  if (a.isAllDay !== b.isAllDay) {
+    return a.isAllDay ? -1 : 1;
+  }
+
+  // For timed events, sort by start time
+  if (!a.isAllDay && !b.isAllDay) {
+    const startDiff = (a.startMinutes ?? 0) - (b.startMinutes ?? 0);
+    if (startDiff !== 0) return startDiff;
+  }
+
+  // Tie-breaker: sort by assignmentId for determinism
+  return a.assignmentId.localeCompare(b.assignmentId);
+}
+
+/**
+ * Build indexes for efficient event lookup.
+ * All arrays are sorted for stable, deterministic rendering.
  */
 export function buildEventIndexes(events: CalendarEvent[]) {
   const eventsByDateKey = new Map<string, CalendarEvent[]>();
@@ -123,6 +188,13 @@ export function buildEventIndexes(events: CalendarEvent[]) {
       timedEventsByDateKey.set(event.dateKey, timedEvents);
     }
   }
+
+  // Sort all arrays for stable, deterministic rendering
+  // Using Array.from() for TypeScript compatibility with Map.values()
+  Array.from(eventsByDateKey.values()).forEach(arr => arr.sort(compareEventsForStableOrder));
+  Array.from(eventsByTechnician.values()).forEach(arr => arr.sort(compareEventsForStableOrder));
+  Array.from(allDayEventsByDateKey.values()).forEach(arr => arr.sort(compareEventsForStableOrder));
+  Array.from(timedEventsByDateKey.values()).forEach(arr => arr.sort(compareEventsForStableOrder));
 
   return {
     eventsByDateKey,
