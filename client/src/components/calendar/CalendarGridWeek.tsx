@@ -1,3 +1,4 @@
+import { memo, useMemo } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { Button } from "@/components/ui/button";
 import { DraggableClient } from "./DraggableClient";
@@ -307,7 +308,7 @@ export function CalendarGridWeek({
             {h.display}
           </div>
           {weekDaysData.map((dayData) => (
-            <HourlyDropZone
+            <MemoizedHourlyDropZone
               key={`${dayData.dayName}-${h.hour}`}
               dayName={dayData.dayName}
               hour={h.hour}
@@ -326,3 +327,9 @@ export function CalendarGridWeek({
     </div>
   );
 }
+
+// Memoized version of HourlyDropZone to reduce rerenders during drag
+const MemoizedHourlyDropZone = memo(HourlyDropZone);
+
+// Export memoized version of CalendarGridWeek
+export const MemoizedCalendarGridWeek = memo(CalendarGridWeek);

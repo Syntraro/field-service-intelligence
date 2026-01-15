@@ -1,7 +1,7 @@
 import { useDraggable } from "@dnd-kit/core";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Info } from "lucide-react";
+import { Info, CheckCircle2, Clock, AlertCircle } from "lucide-react";
 import { DRAG_ENABLED, getAssignmentStartMinutes, formatTimeFromMinutes, TechnicianColor } from "./calendarUtils";
 
 interface DraggableClientProps {
@@ -92,44 +92,47 @@ export function DraggableClient({
         {...listeners}
         className={inCalendar ? (DRAG_ENABLED ? "cursor-grab active:cursor-grabbing" : "cursor-default") : ""}
       >
-        {/* In Calendar: Clean layout - no status badges, job info only */}
+        {/* In Calendar: Enhanced layout with job #, client, time, status */}
         {inCalendar ? (
           <div className="space-y-0.5">
-            {/* Line 1: Client + Location */}
-            <div className="flex items-start gap-1">
-              <div className="flex-1 min-w-0">
-                <div
-                  className={`font-semibold text-[12px] leading-[1.2] truncate ${
-                    isCompleted ? "line-through opacity-60" : ""
-                  }`}
-                >
-                  {client.companyName}
-                  {client.location && (
-                    <span className="font-normal text-muted-foreground"> - {client.location}</span>
-                  )}
+            {/* Line 1: Job # + Status indicator */}
+            <div className="flex items-center gap-1">
+              {assignment?.jobNumber && (
+                <span className={`font-mono font-bold text-[11px] ${isCompleted ? "opacity-60" : "text-primary"}`}>
+                  #{assignment.jobNumber}
+                </span>
+              )}
+              {/* Status chip */}
+              {isCompleted ? (
+                <CheckCircle2 className="h-3 w-3 text-green-600 flex-shrink-0" />
+              ) : isOverdue ? (
+                <AlertCircle className="h-3 w-3 text-amber-500 flex-shrink-0" />
+              ) : null}
+              {/* Time range inline */}
+              {assignment && assignment.scheduledHour !== null && assignment.scheduledHour !== undefined && (
+                <div className={`text-[10px] text-muted-foreground flex items-center gap-0.5 ml-auto ${isCompleted ? "opacity-60" : ""}`}>
+                  <Clock className="h-2.5 w-2.5" />
+                  {(() => {
+                    const startM = getAssignmentStartMinutes(assignment);
+                    const dur = (assignment.durationMinutes || 60) as number;
+                    const endM = startM + dur;
+                    return `${formatTimeFromMinutes(startM)}–${formatTimeFromMinutes(endM)}`;
+                  })()}
                 </div>
-              </div>
+              )}
             </div>
-            {/* Line 2: Time range (shows 15-min starts/ends when present) */}
-            {assignment && assignment.scheduledHour !== null && assignment.scheduledHour !== undefined && (
-              <div className={`text-[11px] text-muted-foreground leading-[1.2] ${isCompleted ? "opacity-60" : ""}`}>
-                {(() => {
-                  const startM = getAssignmentStartMinutes(assignment);
-                  const dur = (assignment.durationMinutes || 60) as number;
-                  const endM = startM + dur;
-                  return `${formatTimeFromMinutes(startM)}–${formatTimeFromMinutes(endM)}`;
-                })()}
-              </div>
-            )}
-            {/* Line 2: Job description */}
-            <div className={`text-[12px] text-foreground/80 leading-[1.2] ${isCompleted ? "line-through opacity-60" : ""}`}>
-              Preventive Maintenance
-              {assignment?.jobNumber && <span className="text-muted-foreground ml-1">#{assignment.jobNumber}</span>}
+            {/* Line 2: Client name */}
+            <div
+              className={`font-semibold text-[12px] leading-[1.2] truncate ${
+                isCompleted ? "line-through opacity-60" : ""
+              }`}
+            >
+              {client.companyName}
             </div>
-            {/* Line 3: City */}
-            {client.city && (
-              <div className={`text-[12px] text-muted-foreground leading-[1.2] ${isCompleted ? "opacity-60" : ""}`}>
-                {client.city}
+            {/* Line 3: Location or summary */}
+            {(client.location || assignment?.summary) && (
+              <div className={`text-[11px] text-muted-foreground leading-[1.2] truncate ${isCompleted ? "opacity-60" : ""}`}>
+                {assignment?.summary || client.location}
               </div>
             )}
           </div>

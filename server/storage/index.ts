@@ -30,6 +30,7 @@ import { permissionRepository } from "./permissions";
 import { clientNotesRepository } from "./clientNotes";
 import { quoteRepository } from "./quotes";
 import { quoteTemplateRepository } from "./quoteTemplates";
+import { calendarRepository } from "./calendar";
 import type { PaginationOptions, PaginatedResult } from "./clients";
 
 /**
@@ -183,6 +184,16 @@ updateInvitation: (id: string, data: { status: string }) => Promise<any>;
   createQuoteLine: typeof quoteRepository.createQuoteLine;
   updateQuoteLine: typeof quoteRepository.updateQuoteLine;
   deleteQuoteLine: typeof quoteRepository.deleteQuoteLine;
+
+  // Calendar operations
+  getCalendarAssignmentsInDateRange: typeof calendarRepository.getAssignmentsInRange;
+  getCalendarAssignment: typeof calendarRepository.getAssignmentById;
+  createCalendarAssignment: typeof calendarRepository.createAssignment;
+  updateCalendarAssignment: typeof calendarRepository.updateAssignment;
+  deleteCalendarAssignment: typeof calendarRepository.deleteAssignment;
+  completeCalendarAssignment: typeof calendarRepository.completeAssignment;
+  validateCalendarTechnician: typeof calendarRepository.validateTechnicianBelongsToTenant;
+  validateCalendarJob: typeof calendarRepository.validateJobBelongsToTenant;
 }
 
 /**
@@ -374,6 +385,16 @@ export const storage: IStorage = {
   createQuoteLine: quoteRepository.createQuoteLine.bind(quoteRepository),
   updateQuoteLine: quoteRepository.updateQuoteLine.bind(quoteRepository),
   deleteQuoteLine: quoteRepository.deleteQuoteLine.bind(quoteRepository),
+
+  // Calendar operations
+  getCalendarAssignmentsInDateRange: calendarRepository.getAssignmentsInRange.bind(calendarRepository),
+  getCalendarAssignment: calendarRepository.getAssignmentById.bind(calendarRepository),
+  createCalendarAssignment: calendarRepository.createAssignment.bind(calendarRepository),
+  updateCalendarAssignment: calendarRepository.updateAssignment.bind(calendarRepository),
+  deleteCalendarAssignment: calendarRepository.deleteAssignment.bind(calendarRepository),
+  completeCalendarAssignment: calendarRepository.completeAssignment.bind(calendarRepository),
+  validateCalendarTechnician: calendarRepository.validateTechnicianBelongsToTenant.bind(calendarRepository),
+  validateCalendarJob: calendarRepository.validateJobBelongsToTenant.bind(calendarRepository),
 };
 
 // Export individual repositories for advanced use cases
@@ -395,6 +416,7 @@ export {
   clientNotesRepository,
   quoteRepository,
   quoteTemplateRepository,
+  calendarRepository,
 };
 
 // Default export for convenience

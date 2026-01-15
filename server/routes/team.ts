@@ -46,13 +46,35 @@ const updateTechnicianProfileSchema = z.object({
   note: z.string().max(1000).transform(v => v === "" ? null : v).nullable().optional(),
 });
 
+const workingHourEntrySchema = z.object({
+  dayOfWeek: z.number().int().min(0).max(6),
+  startTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/).optional().nullable(),
+  endTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/).optional().nullable(),
+  isWorking: z.boolean(),
+}).refine(
+  (data) => {
+    // If working, both start and end times must be provided and end > start
+    if (data.isWorking) {
+      if (!data.startTime || !data.endTime) {
+        return false; // Working days require both times
+      }
+      // Compare times as strings (HH:MM format sorts correctly)
+      return data.endTime > data.startTime;
+    }
+    return true;
+  },
+  { message: "Working days require valid start and end times, with end time after start time" }
+);
+
 const setWorkingHoursSchema = z.object({
-  hours: z.array(z.object({
-    dayOfWeek: z.number().int().min(0).max(6),
-    startTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/).optional().nullable(),
-    endTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/).optional().nullable(),
-    isWorking: z.boolean(),
-  })),
+  hours: z.array(workingHourEntrySchema).refine(
+    (hours) => {
+      // Check for duplicate dayOfWeek entries
+      const days = hours.map((h) => h.dayOfWeek);
+      return new Set(days).size === days.length;
+    },
+    { message: "Duplicate days of week are not allowed" }
+  ),
 });
 
 const setPermissionOverridesSchema = z.object({

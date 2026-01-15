@@ -1,12 +1,13 @@
 import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, useLocation, Link } from "wouter";
-import { format, isValid, parseISO } from "date-fns";
+import { format, isValid, parseISO, isPast } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
   ArrowLeft, Send, MoreHorizontal, Plus, Trash2,
-  FileText, Check, X, Phone, Mail, MapPin, Clock, Edit, Loader2, Info, ClipboardList
+  FileText, Check, X, Phone, Mail, MapPin, Clock, Edit, Loader2, Info, ClipboardList,
+  Download, Eye, AlertTriangle, ExternalLink
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -50,6 +51,7 @@ interface QuoteDetails {
   lines: QuoteLine[];
   location: Client;
   customerCompany?: CustomerCompany;
+  isExpired?: boolean;
 }
 
 function formatCurrency(amount: string | number): string {
@@ -84,7 +86,7 @@ export default function QuoteDetailPage() {
   const { toast } = useToast();
   const quoteId = params?.id;
 
-  const [showSendConfirm, setShowSendConfirm] = useState(false);
+  const [showSendModal, setShowSendModal] = useState(false);
   const [showApproveConfirm, setShowApproveConfirm] = useState(false);
   const [showDeclineConfirm, setShowDeclineConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -94,6 +96,11 @@ export default function QuoteDetailPage() {
   const [newLineDescription, setNewLineDescription] = useState("");
   const [newLineQuantity, setNewLineQuantity] = useState("1");
   const [newLinePrice, setNewLinePrice] = useState("");
+
+  // Send quote modal state
+  const [sendRecipients, setSendRecipients] = useState("");
+  const [sendSubject, setSendSubject] = useState("");
+  const [sendMessage, setSendMessage] = useState("");
 
   const { data: details, isLoading } = useQuery<QuoteDetails>({
     queryKey: ["quote", quoteId, "details"],
@@ -106,11 +113,27 @@ export default function QuoteDetailPage() {
   });
 
   const sendMutation = useMutation({
-    mutationFn: () => apiRequest(`/api/quotes/${quoteId}/send`, { method: "POST" }),
+    mutationFn: () => {
+      const recipients = sendRecipients
+        .split(",")
+        .map((e) => e.trim())
+        .filter((e) => e.length > 0);
+      return apiRequest(`/api/quotes/${quoteId}/send`, {
+        method: "POST",
+        body: JSON.stringify({
+          recipients: recipients.length > 0 ? recipients : undefined,
+          subject: sendSubject || undefined,
+          message: sendMessage || undefined,
+        }),
+      });
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
-      setShowSendConfirm(false);
+      setShowSendModal(false);
+      setSendRecipients("");
+      setSendSubject("");
+      setSendMessage("");
       toast({ title: "Quote sent" });
     },
     onError: (error: Error) => {
@@ -234,12 +257,20 @@ export default function QuoteDetailPage() {
     return <div className="p-6">Quote not found</div>;
   }
 
-  const { quote, lines, location, customerCompany } = details;
+  const { quote, lines, location, customerCompany, isExpired } = details;
   const statusInfo = getStatusBadge(quote.status);
   const clientName = customerCompany?.name || location.companyName;
   const isDraft = quote.status === "draft";
   const isSent = quote.status === "sent";
   const isApproved = quote.status === "approved";
+
+  // PDF handlers
+  const handleDownloadPdf = () => {
+    window.open(`/api/quotes/${quoteId}/pdf`, "_blank");
+  };
+  const handlePreviewPdf = () => {
+    window.open(`/api/quotes/${quoteId}/pdf/preview`, "_blank");
+  };
 
   return (
     <div className="flex flex-col h-full">
@@ -265,6 +296,24 @@ export default function QuoteDetailPage() {
             </div>
 
             <div className="flex items-center gap-2">
+              {/* PDF Actions */}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="outline" size="icon" onClick={handlePreviewPdf} data-testid="button-preview-pdf">
+                    <Eye className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Preview PDF</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button variant="outline" size="icon" onClick={handleDownloadPdf} data-testid="button-download-pdf">
+                    <Download className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Download PDF</TooltipContent>
+              </Tooltip>
+
               {/* Apply Quote Template */}
               {isDraft && (
                 <Button
@@ -279,12 +328,12 @@ export default function QuoteDetailPage() {
               )}
 
               {isDraft && (
-                <Button onClick={() => setShowSendConfirm(true)} data-testid="button-send-quote">
+                <Button onClick={() => setShowSendModal(true)} data-testid="button-send-quote">
                   <Send className="h-4 w-4 mr-1" />
                   Send Quote
                 </Button>
               )}
-              {isSent && (
+              {isSent && !isExpired && (
                 <>
                   <Button variant="outline" onClick={() => setShowApproveConfirm(true)} data-testid="button-approve-quote">
                     <Check className="h-4 w-4 mr-1" />
@@ -310,6 +359,15 @@ export default function QuoteDetailPage() {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={handlePreviewPdf}>
+                    <Eye className="h-4 w-4 mr-2" />
+                    Preview PDF
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleDownloadPdf}>
+                    <Download className="h-4 w-4 mr-2" />
+                    Download PDF
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
                   <DropdownMenuItem onClick={() => toast({ title: "Edit coming soon" })}>
                     <Edit className="h-4 w-4 mr-2" />
                     Edit Quote
@@ -334,6 +392,19 @@ export default function QuoteDetailPage() {
               </DropdownMenu>
             </div>
           </div>
+
+          {/* Expiry Warning Banner */}
+          {isExpired && isSent && (
+            <div className="flex items-center gap-3 p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800">
+              <AlertTriangle className="h-5 w-5 flex-shrink-0" />
+              <div>
+                <p className="font-medium">This quote has expired</p>
+                <p className="text-sm text-amber-700">
+                  The expiry date ({safeFormatDate(quote.expiryDate)}) has passed. This quote can no longer be approved.
+                </p>
+              </div>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
             {/* Main Content */}
@@ -528,19 +599,84 @@ export default function QuoteDetailPage() {
         </div>
       </div>
 
-      {/* Send Confirmation */}
-      <Dialog open={showSendConfirm} onOpenChange={setShowSendConfirm}>
-        <DialogContent>
+      {/* Send Quote Modal */}
+      <Dialog
+        open={showSendModal}
+        onOpenChange={(open) => {
+          if (!sendMutation.isPending) {
+            setShowSendModal(open);
+            if (!open) {
+              setSendRecipients("");
+              setSendSubject("");
+              setSendMessage("");
+            }
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Send Quote</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              <Send className="h-5 w-5" />
+              Send Quote
+            </DialogTitle>
             <DialogDescription>
-              Mark this quote as sent to {clientName}?
+              Send {quote.quoteNumber || "this quote"} to {clientName}. Optional: add recipients and a personalized message.
             </DialogDescription>
           </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label htmlFor="send-recipients">Recipients (optional)</Label>
+              <Input
+                id="send-recipients"
+                placeholder="email@example.com, another@example.com"
+                value={sendRecipients}
+                onChange={(e) => setSendRecipients(e.target.value)}
+                disabled={sendMutation.isPending}
+                data-testid="input-send-recipients"
+              />
+              <p className="text-xs text-muted-foreground">Separate multiple emails with commas</p>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="send-subject">Subject (optional)</Label>
+              <Input
+                id="send-subject"
+                placeholder={`Quote ${quote.quoteNumber || ""} from Your Company`}
+                value={sendSubject}
+                onChange={(e) => setSendSubject(e.target.value)}
+                disabled={sendMutation.isPending}
+                data-testid="input-send-subject"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="send-message">Message (optional)</Label>
+              <Textarea
+                id="send-message"
+                placeholder="Please find attached our quote for your review..."
+                value={sendMessage}
+                onChange={(e) => setSendMessage(e.target.value)}
+                disabled={sendMutation.isPending}
+                rows={4}
+                data-testid="input-send-message"
+              />
+            </div>
+            <div className="p-3 bg-muted/50 rounded-lg text-sm flex items-start gap-2">
+              <Info className="h-4 w-4 mt-0.5 flex-shrink-0 text-muted-foreground" />
+              <span className="text-muted-foreground">
+                A PDF copy of the quote will be attached when sending to recipients.
+              </span>
+            </div>
+          </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowSendConfirm(false)}>Cancel</Button>
-            <Button onClick={() => sendMutation.mutate()} disabled={sendMutation.isPending}>
+            <Button
+              variant="outline"
+              onClick={() => setShowSendModal(false)}
+              disabled={sendMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button onClick={() => sendMutation.mutate()} disabled={sendMutation.isPending} data-testid="button-confirm-send">
               {sendMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              <Send className="h-4 w-4 mr-2" />
               Send Quote
             </Button>
           </DialogFooter>

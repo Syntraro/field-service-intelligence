@@ -1,5 +1,6 @@
 import { Router, Response } from "express";
 import { z } from "zod";
+import { parseISO, isPast, isValid } from "date-fns";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
 import { parsePagination } from "../utils/pagination";
@@ -11,6 +12,8 @@ import { quoteRepository } from "../storage/quotes";
 import { jobRepository } from "../storage/jobs";
 import { clientRepository } from "../storage/clients";
 import { customerCompanyRepository } from "../storage/customerCompanies";
+import { storage } from "../storage";
+import { generateQuotePdf } from "../services/quotePdfService";
 import type { QuoteStatus } from "@shared/schema";
 
 const router = Router();
@@ -96,7 +99,14 @@ router.get("/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
 router.get("/:id/details", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const details = await quoteRepository.getQuoteDetails(req.companyId!, req.params.id);
   if (!details) throw createError(404, "Quote not found");
-  res.json(details);
+
+  // Add computed expiry status
+  const expired = isQuoteExpired(details.quote);
+
+  res.json({
+    ...details,
+    isExpired: expired,
+  });
 }));
 
 // GET /api/quotes/:id/lines - Get quote line items
@@ -253,13 +263,135 @@ router.delete("/:id/lines/:lineId", requireRole(MANAGER_ROLES), asyncHandler(asy
 }));
 
 // ========================================
+// HELPER: Check if quote is expired
+// ========================================
+
+function isQuoteExpired(quote: { expiryDate?: string | Date | null; status: string }): boolean {
+  // Only sent quotes can expire
+  if (quote.status !== "sent") return false;
+  if (!quote.expiryDate) return false;
+
+  const expiryDate = typeof quote.expiryDate === "string"
+    ? parseISO(quote.expiryDate)
+    : quote.expiryDate;
+
+  if (!isValid(expiryDate)) return false;
+  return isPast(expiryDate);
+}
+
+// ========================================
+// PDF ROUTES
+// ========================================
+
+// GET /api/quotes/:id/pdf - Download PDF
+router.get("/:id/pdf", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const quoteId = req.params.id;
+
+  // Get quote details
+  const details = await quoteRepository.getQuoteDetails(companyId, quoteId);
+  if (!details) {
+    throw createError(404, "Quote not found");
+  }
+
+  // Get company info for branding
+  const company = await storage.getCompanyById(companyId);
+  if (!company) {
+    throw createError(500, "Company not found");
+  }
+
+  // Location is required for PDF generation
+  if (!details.location) {
+    throw createError(400, "Quote has no associated location");
+  }
+
+  // Generate PDF
+  const pdfBuffer = await generateQuotePdf({
+    quote: details.quote,
+    lines: details.lines,
+    company,
+    location: {
+      companyName: details.location.companyName,
+      address: details.location.address,
+      city: details.location.city,
+      provinceState: details.location.province,
+      postalCode: details.location.postalCode,
+      phone: details.location.phone,
+      email: details.location.email,
+    },
+    customerCompany: details.customerCompany,
+  });
+
+  const filename = `Quote-${details.quote.quoteNumber || details.quote.id.slice(0, 8)}.pdf`;
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.setHeader("Content-Length", pdfBuffer.length);
+  res.send(pdfBuffer);
+}));
+
+// GET /api/quotes/:id/pdf/preview - Preview PDF (inline)
+router.get("/:id/pdf/preview", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const quoteId = req.params.id;
+
+  // Get quote details
+  const details = await quoteRepository.getQuoteDetails(companyId, quoteId);
+  if (!details) {
+    throw createError(404, "Quote not found");
+  }
+
+  // Get company info for branding
+  const company = await storage.getCompanyById(companyId);
+  if (!company) {
+    throw createError(500, "Company not found");
+  }
+
+  // Location is required for PDF generation
+  if (!details.location) {
+    throw createError(400, "Quote has no associated location");
+  }
+
+  // Generate PDF
+  const pdfBuffer = await generateQuotePdf({
+    quote: details.quote,
+    lines: details.lines,
+    company,
+    location: {
+      companyName: details.location.companyName,
+      address: details.location.address,
+      city: details.location.city,
+      provinceState: details.location.province,
+      postalCode: details.location.postalCode,
+      phone: details.location.phone,
+      email: details.location.email,
+    },
+    customerCompany: details.customerCompany,
+  });
+
+  const filename = `Quote-${details.quote.quoteNumber || details.quote.id.slice(0, 8)}.pdf`;
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+  res.setHeader("Content-Length", pdfBuffer.length);
+  res.send(pdfBuffer);
+}));
+
+// ========================================
 // STATUS TRANSITION ROUTES
 // ========================================
+
+const sendQuoteSchema = z.object({
+  recipients: z.array(z.string().email()).min(1).max(10).optional(),
+  subject: z.string().max(200).optional(),
+  message: z.string().max(2000).optional(),
+}).strict();
 
 // POST /api/quotes/:id/send - Send quote (draft -> sent)
 router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
   const quoteId = req.params.id;
+  const validated = validateSchema(sendQuoteSchema, req.body);
 
   const quote = await quoteRepository.getQuote(companyId, quoteId);
   if (!quote) {
@@ -270,12 +402,22 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
     throw createError(400, "Only draft quotes can be sent");
   }
 
+  // Update quote status to sent
   const updated = await quoteRepository.updateQuote(companyId, quoteId, {
     status: "sent",
     sentAt: new Date(),
   });
 
-  res.json(updated);
+  // TODO: If recipients provided, send email with PDF attachment
+  // For now, we just record the metadata
+  const sendInfo = {
+    recipients: validated.recipients,
+    subject: validated.subject,
+    message: validated.message,
+    sentBy: req.user?.id,
+  };
+
+  res.json({ quote: updated, sendInfo });
 }));
 
 // POST /api/quotes/:id/approve - Approve quote
@@ -290,6 +432,11 @@ router.post("/:id/approve", requireRole(MANAGER_ROLES), asyncHandler(async (req:
 
   if (quote.status !== "sent") {
     throw createError(400, "Only sent quotes can be approved");
+  }
+
+  // Check if quote has expired
+  if (isQuoteExpired(quote)) {
+    throw createError(400, "This quote has expired and cannot be approved");
   }
 
   const updated = await quoteRepository.updateQuote(companyId, quoteId, {

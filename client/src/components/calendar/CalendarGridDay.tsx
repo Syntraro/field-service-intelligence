@@ -1,3 +1,4 @@
+import { memo, useMemo } from "react";
 import { format } from "date-fns";
 import { useDroppable } from "@dnd-kit/core";
 import { DraggableClient } from "./DraggableClient";
@@ -292,7 +293,7 @@ export function CalendarGridDay({
             const slotEvents = getEventsForSlot(tech.id, h.hour);
             const techLaneMap = getLaneMapForTechnician(tech.id);
             return (
-              <DailyDropZone
+              <MemoizedDailyDropZone
                 key={`daily-${tech.id}-${h.hour}`}
                 technicianId={tech.id}
                 hour={h.hour}
@@ -308,7 +309,7 @@ export function CalendarGridDay({
             );
           })}
           {showUnassigned && (
-            <DailyDropZone
+            <MemoizedDailyDropZone
               technicianId="unassigned"
               hour={h.hour}
               events={getEventsForSlot(null, h.hour)}
@@ -326,3 +327,9 @@ export function CalendarGridDay({
     </div>
   );
 }
+
+// Memoized version of DailyDropZone to reduce rerenders during drag
+const MemoizedDailyDropZone = memo(DailyDropZone);
+
+// Export memoized version of CalendarGridDay
+export const MemoizedCalendarGridDay = memo(CalendarGridDay);

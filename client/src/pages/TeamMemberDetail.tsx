@@ -836,12 +836,66 @@ export default function TeamMemberDetail() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="p-4 bg-muted rounded-lg mb-4">
-                  <p className="font-medium">Role: {currentRole?.displayName || member.role}</p>
-                  <p className="text-sm text-muted-foreground mt-1">
-                    This member inherits permissions from their role. You can optionally override specific permissions below.
-                  </p>
-                </div>
+                {/* Role Capabilities Summary */}
+                <Collapsible className="mb-4">
+                  <div className="p-4 bg-muted rounded-lg">
+                    <CollapsibleTrigger className="flex items-center justify-between w-full">
+                      <div className="flex items-center gap-3">
+                        <Shield className="h-5 w-5 text-primary" />
+                        <div className="text-left">
+                          <p className="font-medium">Role: {currentRole?.displayName || member.role}</p>
+                          <p className="text-sm text-muted-foreground">
+                            {rolePermissions.length} permissions inherited from role
+                          </p>
+                        </div>
+                      </div>
+                      <ChevronsUpDown className="h-4 w-4 text-muted-foreground" />
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="pt-3 mt-3 border-t">
+                      <p className="text-sm font-medium mb-2">Role Capabilities Summary</p>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                        {Object.entries(permissionsByCategory).map(([category, categoryPerms]) => {
+                          const grantedInCategory = categoryPerms.filter((p) =>
+                            rolePermissions.includes(p.name)
+                          );
+                          if (grantedInCategory.length === 0) return null;
+                          return (
+                            <div key={category} className="text-sm">
+                              <span className="font-medium text-muted-foreground uppercase text-xs">
+                                {category}:
+                              </span>
+                              <span className="ml-1">
+                                {grantedInCategory.length}/{categoryPerms.length} permissions
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {rolePermissions.length > 0 && (
+                        <div className="mt-3 pt-3 border-t">
+                          <p className="text-xs text-muted-foreground mb-2">
+                            Key capabilities for this role:
+                          </p>
+                          <div className="flex flex-wrap gap-1">
+                            {rolePermissions.slice(0, 8).map((permName) => {
+                              const perm = permissions.find((p) => p.name === permName);
+                              return perm ? (
+                                <Badge key={perm.id} variant="secondary" className="text-xs">
+                                  {perm.displayName}
+                                </Badge>
+                              ) : null;
+                            })}
+                            {rolePermissions.length > 8 && (
+                              <Badge variant="outline" className="text-xs">
+                                +{rolePermissions.length - 8} more
+                              </Badge>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </CollapsibleContent>
+                  </div>
+                </Collapsible>
 
                 <div className="flex items-center justify-between mb-4 pb-4 border-b">
                   <div>

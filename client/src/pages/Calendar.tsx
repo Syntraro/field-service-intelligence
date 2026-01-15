@@ -6,8 +6,9 @@ import { JobDetailDialog } from "@/components/JobDetailDialog";
 import { PartsDialog } from "@/components/PartsDialog";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { X, AlertTriangle, Trash2, Archive } from "lucide-react";
+import { X, AlertTriangle, Trash2, Archive, Loader2, Search } from "lucide-react";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
@@ -27,7 +28,10 @@ import {
   CalendarHeader,
   CalendarGridMonth,
   CalendarGridWeek,
+  CalendarGridWeekTechnicians,
   CalendarGridDay,
+  ScheduleJobModal,
+  handleCalendarMutationError,
 } from "@/components/calendar";
 import { DraggableClient } from "@/components/calendar/DraggableClient";
 
@@ -67,6 +71,17 @@ export default function Calendar() {
   const [partsDialogTitle, setPartsDialogTitle] = useState("");
   const [partsDialogParts, setPartsDialogParts] = useState<Array<{ description: string; quantity: number; date?: string }>>([]);
   const [partsDialogWeekDays, setPartsDialogWeekDays] = useState<Array<{ dayName: string; dateLabel: string; date: Date }>>([]);
+  // Schedule Job Modal state (Slice 3)
+  const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
+  const [scheduleModalDate, setScheduleModalDate] = useState<Date | undefined>();
+  const [scheduleModalTechnicianId, setScheduleModalTechnicianId] = useState<string | undefined>();
+  const [scheduleModalEdit, setScheduleModalEdit] = useState<any>(null);
+  // Weekly view mode: "time" (hourly rows) or "technician" (technician rows)
+  const [weeklyViewMode, setWeeklyViewMode] = useState<"time" | "technician">("time");
+  // Drag/drop saving state for UI feedback
+  const [isSavingDrag, setIsSavingDrag] = useState(false);
+  // Unscheduled jobs search filter
+  const [unscheduledSearch, setUnscheduledSearch] = useState("");
   const { toast } = useToast();
   const [location, setLocation] = useLocation();
   const [addClientDialogOpen, setAddClientDialogOpen] = useState(false);
@@ -138,6 +153,43 @@ export default function Calendar() {
     queryKey: ['/api/client-parts/bulk'],
     staleTime: 60 * 1000,
   });
+
+  // Prefetch next/prev week data for smoother navigation
+  useEffect(() => {
+    if (view === "weekly") {
+      const currentWeekStart = getMondayOfWeek(currentDate);
+
+      // Prefetch previous week
+      const prevWeekStart = new Date(currentWeekStart);
+      prevWeekStart.setDate(prevWeekStart.getDate() - 7);
+      const prevMonth = prevWeekStart.getMonth() + 1;
+      const prevYear = prevWeekStart.getFullYear();
+      queryClient.prefetchQuery({
+        queryKey: ["/api/calendar", "weekly", prevYear, prevMonth, prevWeekStart.getTime()],
+        queryFn: async () => {
+          const res = await fetch(`/api/calendar?year=${prevYear}&month=${prevMonth}`);
+          if (!res.ok) throw new Error("Failed to prefetch");
+          return res.json();
+        },
+        staleTime: 60000,
+      });
+
+      // Prefetch next week
+      const nextWeekStart = new Date(currentWeekStart);
+      nextWeekStart.setDate(nextWeekStart.getDate() + 7);
+      const nextMonth = nextWeekStart.getMonth() + 1;
+      const nextYear = nextWeekStart.getFullYear();
+      queryClient.prefetchQuery({
+        queryKey: ["/api/calendar", "weekly", nextYear, nextMonth, nextWeekStart.getTime()],
+        queryFn: async () => {
+          const res = await fetch(`/api/calendar?year=${nextYear}&month=${nextMonth}`);
+          if (!res.ok) throw new Error("Failed to prefetch");
+          return res.json();
+        },
+        staleTime: 60000,
+      });
+    }
+  }, [view, currentDate]);
 
   // Helper to calculate parts from assignments with optional date tagging
   const calculatePartsWithDates = (assignments: any[]) => {
@@ -241,6 +293,9 @@ export default function Calendar() {
         autoDueDate: false,
       }) });
     },
+    onMutate: async () => {
+      setIsSavingDrag(true);
+    },
     onSuccess: async () => {
       await refetchCalendar();
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
@@ -250,12 +305,18 @@ export default function Calendar() {
         description: "The client has been added to the calendar",
       });
     },
-    onError: (error: any) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to schedule client",
-        variant: "destructive",
-      });
+    onError: async (error: any) => {
+      const handled = await handleCalendarMutationError(error);
+      if (!handled) {
+        toast({
+          title: "Error",
+          description: error.message || "Failed to schedule client",
+          variant: "destructive",
+        });
+      }
+    },
+    onSettled: () => {
+      setIsSavingDrag(false);
     },
   });
 
@@ -287,23 +348,34 @@ export default function Calendar() {
         scheduledStartMinutes: scheduledStartMinutes !== undefined ? scheduledStartMinutes : undefined,
       }) });
     },
+    onMutate: async () => {
+      setIsSavingDrag(true);
+    },
     onSuccess: async () => {
       await refetchCalendar();
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/overdue"], exact: false });
-
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
       toast({
         title: "Updated",
         description: "The assignment has been moved",
       });
     },
-    onError: (error: any) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to update assignment",
-        variant: "destructive",
-      });
+    onError: async (error: any) => {
+      // Refetch to rollback optimistic UI changes
+      await refetchCalendar();
+      // Try to show detailed validation error toast
+      const handled = await handleCalendarMutationError(error);
+      if (!handled) {
+        toast({
+          title: "Error",
+          description: error.message || "Failed to update assignment",
+          variant: "destructive",
+        });
+      }
+    },
+    onSettled: () => {
+      setIsSavingDrag(false);
     },
   });
 
@@ -833,6 +905,25 @@ export default function Calendar() {
     return map;
   }, [normalizedEvents, year, month, view]);
 
+  // Filter unscheduled clients by search query
+  const filteredUnscheduledClients = useMemo(() => {
+    if (!unscheduledSearch.trim()) {
+      return unscheduledClients;
+    }
+    const query = unscheduledSearch.toLowerCase().trim();
+    return unscheduledClients.filter((item: any) => {
+      // Search by company name
+      if (item.companyName?.toLowerCase().includes(query)) return true;
+      // Search by location
+      if (item.location?.toLowerCase().includes(query)) return true;
+      // Search by job number (if available)
+      if (item.jobNumber && String(item.jobNumber).includes(query)) return true;
+      // Search by assignmentId
+      if (item.assignmentId?.toLowerCase().includes(query)) return true;
+      return false;
+    });
+  }, [unscheduledClients, unscheduledSearch]);
+
   // Configure sensors for drag-and-drop
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -952,6 +1043,34 @@ export default function Calendar() {
   const handleStartHourChange = (newStartHour: number) => {
     updateCompanySettings.mutate({ calendarStartHour: newStartHour });
     scrollDoneRef.current = false; // Reset scroll flag to trigger re-scroll
+  };
+
+  // Handler for opening schedule modal (Slice 3)
+  const handleOpenScheduleModal = (date?: Date, technicianId?: string, editAssignment?: any) => {
+    setScheduleModalDate(date);
+    setScheduleModalTechnicianId(technicianId);
+    setScheduleModalEdit(editAssignment);
+    setScheduleModalOpen(true);
+  };
+
+  // Handler for technician week view job click
+  const handleTechWeekJobClick = (event: CalendarEvent, technician: any) => {
+    const client = clients.find((c: any) => c.id === event.locationKey);
+    if (client) {
+      setSelectedClient(client);
+      setSelectedAssignment(event.raw);
+      setClientDetailOpen(true);
+    }
+  };
+
+  // Handler for technician week view slot click
+  const handleTechWeekSlotClick = (date: Date, technician: any) => {
+    handleOpenScheduleModal(date, technician?.id);
+  };
+
+  // Handler for "Schedule New" button
+  const handleScheduleNew = (date: Date, technicianId?: string) => {
+    handleOpenScheduleModal(date, technicianId);
   };
 
   return (
@@ -1090,20 +1209,56 @@ export default function Calendar() {
                   )}
                   {view === "weekly" && (
                     <div className="h-full flex flex-col min-h-0 max-h-full">
-                      <CalendarGridWeek
-                        currentDate={currentDate}
-                        density={density}
-                        companySettings={companySettings}
-                        clients={clients}
-                        eventIndexes={eventIndexes}
-                        selectedTechnicianId={selectedTechnicianId}
-                        expandedAllDaySlots={expandedAllDaySlots}
-                        setExpandedAllDaySlots={setExpandedAllDaySlots}
-                        getTechnicianColor={getTechnicianColor}
-                        handleClientClick={handleClientClick}
-                        handleResize={handleResize}
-                        weeklyScrollContainerRef={weeklyScrollContainerRef}
-                      />
+                      {/* Weekly view mode toggle */}
+                      <div className="flex items-center gap-2 p-2 border-b bg-muted/30">
+                        <span className="text-xs font-medium text-muted-foreground">View:</span>
+                        <div className="flex rounded-md border bg-background">
+                          <Button
+                            variant={weeklyViewMode === "time" ? "secondary" : "ghost"}
+                            size="sm"
+                            className="h-7 px-3 text-xs rounded-r-none"
+                            onClick={() => setWeeklyViewMode("time")}
+                          >
+                            Hourly
+                          </Button>
+                          <Button
+                            variant={weeklyViewMode === "technician" ? "secondary" : "ghost"}
+                            size="sm"
+                            className="h-7 px-3 text-xs rounded-l-none border-l"
+                            onClick={() => setWeeklyViewMode("technician")}
+                          >
+                            By Technician
+                          </Button>
+                        </div>
+                      </div>
+
+                      {weeklyViewMode === "time" ? (
+                        <CalendarGridWeek
+                          currentDate={currentDate}
+                          density={density}
+                          companySettings={companySettings}
+                          clients={clients}
+                          eventIndexes={eventIndexes}
+                          selectedTechnicianId={selectedTechnicianId}
+                          expandedAllDaySlots={expandedAllDaySlots}
+                          setExpandedAllDaySlots={setExpandedAllDaySlots}
+                          getTechnicianColor={getTechnicianColor}
+                          handleClientClick={handleClientClick}
+                          handleResize={handleResize}
+                          weeklyScrollContainerRef={weeklyScrollContainerRef}
+                        />
+                      ) : (
+                        <CalendarGridWeekTechnicians
+                          currentDate={currentDate}
+                          density={density}
+                          technicians={technicians}
+                          eventIndexes={eventIndexes}
+                          hiddenTechnicianIds={hiddenTechnicianIds}
+                          onJobClick={handleTechWeekJobClick}
+                          onSlotClick={handleTechWeekSlotClick}
+                          onScheduleNew={handleScheduleNew}
+                        />
+                      )}
                     </div>
                   )}
                   {view === "daily" && (
@@ -1130,7 +1285,10 @@ export default function Calendar() {
               <UnscheduledJobsSidebar
                 collapsed={isUnscheduledMinimized}
                 onToggleCollapsed={() => setIsUnscheduledMinimized((v) => !v)}
-                items={unscheduledClients}
+                items={filteredUnscheduledClients}
+                searchQuery={unscheduledSearch}
+                onSearchChange={setUnscheduledSearch}
+                isSaving={isSavingDrag}
                 renderItem={(item: any) => {
                   const monthLabel = `${MONTH_ABBREV[item.month - 1]} '${String(item.year).slice(-2)}`;
 
@@ -1206,6 +1364,19 @@ export default function Calendar() {
         title={partsDialogTitle}
         parts={partsDialogParts}
         weekDays={partsDialogWeekDays}
+      />
+
+      {/* Schedule Job Modal (Slice 3) */}
+      <ScheduleJobModal
+        open={scheduleModalOpen}
+        onOpenChange={setScheduleModalOpen}
+        initialDate={scheduleModalDate}
+        initialTechnicianId={scheduleModalTechnicianId}
+        editAssignment={scheduleModalEdit}
+        onSuccess={() => {
+          refetchCalendar();
+          queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+        }}
       />
     </DndContext>
   );
