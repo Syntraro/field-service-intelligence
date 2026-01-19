@@ -213,7 +213,8 @@ export class CustomerCompanyRepository extends BaseRepository {
       .where(
         and(
           eq(clients.companyId, companyId),
-          eq(clients.parentCompanyId, customerCompanyId)
+          eq(clients.parentCompanyId, customerCompanyId),
+          isNull(clients.deletedAt)
         )
       )
       .orderBy(desc(clients.createdAt));
@@ -234,7 +235,8 @@ export class CustomerCompanyRepository extends BaseRepository {
       .where(
         and(
           eq(clients.companyId, companyId),
-          eq(clients.companyName, companyName)
+          eq(clients.companyName, companyName),
+          isNull(clients.deletedAt)
         )
       )
       .orderBy(desc(clients.createdAt));
@@ -261,7 +263,8 @@ export class CustomerCompanyRepository extends BaseRepository {
           eq(clients.companyId, companyId),
           eq(clients.companyName, companyName),
           // CRITICAL: Must use isNull() for NULL comparison, not eq(col, null)
-          isNull(clients.parentCompanyId)
+          isNull(clients.parentCompanyId),
+          isNull(clients.deletedAt)
         )
       );
 
