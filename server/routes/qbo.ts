@@ -13,6 +13,7 @@
 import { Router, Request, Response } from "express";
 import crypto from "crypto";
 import { requireRole } from "../auth/requireRole";
+import { requireFeature } from "../auth/requireFeature";
 import { ADMIN_ROLES } from "../auth/roles";
 import { asyncHandler } from "../middleware/errorHandler";
 import { AuthedRequest } from "../auth/tenantIsolation";
@@ -26,6 +27,9 @@ import { items } from "@shared/schema";
 import { z } from "zod";
 
 const router = Router();
+
+// Feature gate: require qboEnabled for all QBO routes
+router.use(requireFeature("qboEnabled"));
 
 /**
  * Generate a unique syncRunId for correlating events in a single admin-triggered operation
@@ -1420,9 +1424,10 @@ router.post(
     const companyId = req.companyId;
     const userId = req.user?.id;
 
+    // PHASE A.1: Strict schema - only itemIds allowed, reject unknown keys
     const bulkSchema = z.object({
       itemIds: z.array(z.string().min(1)).min(1).max(100),
-    });
+    }).strict();
 
     const { itemIds } = bulkSchema.parse(req.body);
 

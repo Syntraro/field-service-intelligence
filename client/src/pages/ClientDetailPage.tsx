@@ -32,6 +32,8 @@ import {
   ChevronRight,
   ChevronDown,
   Settings,
+  Link as LinkIcon,
+  AlertTriangle,
 } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
@@ -62,6 +64,28 @@ type CompanyOverview = {
     totalLocations: number;
     openJobs: number;
     openInvoices: number;
+  };
+};
+
+// Orphan location suggestion type
+type UnlinkedSuggestion = {
+  id: string;
+  companyName: string;
+  location: string | null;
+  address: string | null;
+  city: string | null;
+  province: string | null;
+  createdAt: string;
+  suggestedCustomerCompanyId: string | null;
+  suggestedCustomerCompanyName: string | null;
+};
+
+type UnlinkedSuggestionsResponse = {
+  suggestions: UnlinkedSuggestion[];
+  count: number;
+  customerCompany: {
+    id: string;
+    name: string;
   };
 };
 
@@ -268,6 +292,57 @@ const deleteNoteMutation = useMutation({
     },
   });
 
+  // Query for unlinked location suggestions (orphan locations that match this company)
+  const { data: unlinkedData, isLoading: unlinkedLoading } = useQuery<UnlinkedSuggestionsResponse>({
+    queryKey: ["/api/customer-companies", companyId, "unlinked-suggestions"],
+    queryFn: async () => {
+      const res = await fetch(`/api/customer-companies/${companyId}/unlinked-suggestions`, {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error("Failed to fetch unlinked suggestions");
+      return res.json();
+    },
+    enabled: Boolean(companyId),
+  });
+
+  const unlinkedSuggestions = unlinkedData?.suggestions ?? [];
+
+  // Mutation to link an orphan location to this customer company
+  const linkLocationMutation = useMutation({
+    mutationFn: async (locationId: string) => {
+      if (!companyId) {
+        throw new Error("Company not loaded yet");
+      }
+      return await apiRequest(`/api/customer-companies/${companyId}/link-location`, {
+        method: "POST",
+        body: JSON.stringify({ locationId }),
+      });
+    },
+    onSuccess: () => {
+      // Invalidate all relevant queries
+      queryClient.invalidateQueries({ queryKey: ["/api/clients", clientId, "overview"] });
+      if (companyId) {
+        queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", companyId, "locations"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", companyId, "overview"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", companyId, "unlinked-suggestions"] });
+      }
+      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/orphan-locations"] });
+
+      toast({
+        title: "Location linked",
+        description: "The location has been linked to this client successfully.",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error?.message || "Failed to link location.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleCreateJob = (locationId?: string) => {
     setPreselectedLocationId(locationId || clientId);
     setJobDialogOpen(true);
@@ -444,6 +519,52 @@ const deleteNoteMutation = useMutation({
               </div>
             </CardContent>
           </Card>
+
+          {/* Unlinked Locations Section - Only show if there are suggestions */}
+          {unlinkedSuggestions.length > 0 && (
+            <Card className="border-amber-200 bg-amber-50/50 dark:border-amber-900 dark:bg-amber-950/20">
+              <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 text-amber-600" />
+                  <CardTitle className="text-sm font-semibold text-amber-800 dark:text-amber-400">
+                    Unlinked Locations ({unlinkedSuggestions.length})
+                  </CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent className="p-0">
+                <p className="px-4 pb-2 text-xs text-amber-700 dark:text-amber-500">
+                  These locations appear to belong to this client but are not linked. Click "Link" to connect them.
+                </p>
+                <div className="divide-y">
+                  {unlinkedSuggestions.map((orphan) => (
+                    <div
+                      key={orphan.id}
+                      className="flex items-center justify-between px-4 py-2"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-sm truncate">
+                          {orphan.location || orphan.companyName}
+                        </p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {orphan.address || `${orphan.city || ""}, ${orphan.province || ""}`.trim().replace(/^,|,$/g, "")}
+                        </p>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="ml-2 shrink-0"
+                        onClick={() => linkLocationMutation.mutate(orphan.id)}
+                        disabled={linkLocationMutation.isPending}
+                      >
+                        <LinkIcon className="h-3 w-3 mr-1" />
+                        Link
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Overview */}
           <Card>

@@ -28,6 +28,22 @@ interface JobFilters {
   search?: string;
 }
 
+/**
+ * Options for operations that can be overridden by manager/admin
+ */
+export interface JobMutationOptions {
+  /**
+   * If true, allows mutation even if job is invoiced.
+   * Only manager/admin routes should pass this option.
+   */
+  overrideInvoiceLock?: boolean;
+}
+
+/**
+ * Status values that indicate a job is locked for billing-related edits
+ */
+const INVOICED_STATUSES = ["invoiced"] as const;
+
 export class JobRepository extends BaseRepository {
 
   /**
@@ -48,7 +64,54 @@ export class JobRepository extends BaseRepository {
 
     return result;
   }
-  
+
+  /**
+   * POST-INVOICE IMMUTABILITY GUARD
+   *
+   * Checks if a job is in an invoiced state and throws a 409 Conflict error
+   * if mutations are attempted without override permission.
+   *
+   * @param companyId - Company ID for tenant isolation
+   * @param jobId - Job ID to check
+   * @param options - Mutation options (may include override flag)
+   * @throws 409 Conflict if job is invoiced and override not set
+   */
+  private async assertJobNotInvoiced(
+    companyId: string,
+    jobId: string,
+    options?: JobMutationOptions
+  ): Promise<void> {
+    // If override is set (manager/admin), skip the check
+    if (options?.overrideInvoiceLock) {
+      return;
+    }
+
+    const job = await this.getJob(companyId, jobId);
+    if (!job) {
+      throw this.notFoundError("Job");
+    }
+
+    if (INVOICED_STATUSES.includes(job.status as any)) {
+      const err = new Error("Job is invoiced; edits are locked. Contact a manager to unlock.");
+      (err as any).statusCode = 409;
+      (err as any).code = "JOB_INVOICED_LOCKED";
+      throw err;
+    }
+  }
+
+  /**
+   * Check if a job is invoiced (without throwing)
+   */
+  async isJobInvoiced(companyId: string, jobId: string): Promise<boolean> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(jobId, "jobId");
+
+    const job = await this.getJob(companyId, jobId);
+    if (!job) return false;
+
+    return INVOICED_STATUSES.includes(job.status as any);
+  }
+
   /**
    * Get next job number for company
    */
@@ -82,7 +145,7 @@ export class JobRepository extends BaseRepository {
 
 
 
-  
+
   /**
    * Get jobs with optional filters (paginated)
    * Supports cursor-based or offset-based pagination
@@ -285,9 +348,9 @@ export class JobRepository extends BaseRepository {
    */
   async createJob(companyId: string, jobData: InsertJob): Promise<Job> {
     this.assertCompanyId(companyId);
-    
+
     const jobNumber = await this.getNextJobNumber(companyId);
-    
+
     // Normalize date strings to Date objects
     const normalizedData = this.normalizeDateFields(jobData);
 
@@ -306,15 +369,29 @@ export class JobRepository extends BaseRepository {
  /**
    * Update job with optimistic locking
    * @param currentVersion - Current version from client (for optimistic locking)
+   * @param options - Mutation options (can include override for invoiced jobs)
    */
   async updateJob(
     companyId: string,
     jobId: string,
     currentVersion: number | undefined,
-    patch: Partial<InsertJob>
+    patch: Partial<InsertJob>,
+    options?: JobMutationOptions
   ): Promise<Job | null> {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
+
+    // POST-INVOICE GUARD: Check if job is invoiced and block certain field changes
+    // Status changes to/from invoiced are always allowed for workflow purposes
+    const isBillingRelatedUpdate =
+      patch.hasOwnProperty('billingNotes') ||
+      patch.hasOwnProperty('invoiceId') ||
+      patch.hasOwnProperty('qboInvoiceId');
+
+    // Only guard billing-related updates when job is invoiced
+    if (isBillingRelatedUpdate) {
+      await this.assertJobNotInvoiced(companyId, jobId, options);
+    }
 
     // Normalize date strings to Date objects
     const normalizedPatch = this.normalizeDateFields(patch);
@@ -323,10 +400,10 @@ export class JobRepository extends BaseRepository {
     if (currentVersion === undefined) {
       const rows = await db
         .update(jobs)
-        .set({ 
-          ...normalizedPatch, 
+        .set({
+          ...normalizedPatch,
           version: sql`${jobs.version} + 1`,
-          updatedAt: new Date() 
+          updatedAt: new Date()
         })
         .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
         .returning();
@@ -357,7 +434,7 @@ export class JobRepository extends BaseRepository {
       if (!existing) {
         throw this.notFoundError("Job");
       }
-      
+
       // Version mismatch
       throw new Error(
         `Job was modified by another user. Please reload and try again. ` +
@@ -378,10 +455,10 @@ export class JobRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
-    const updates: any = { 
-      status, 
+    const updates: any = {
+      status,
       version: sql`${jobs.version} + 1`, // Increment version
-      updatedAt: new Date() 
+      updatedAt: new Date()
     };
 
     // Set timestamps based on status
@@ -437,8 +514,17 @@ export class JobRepository extends BaseRepository {
 
   /**
    * Create job part
+   *
+   * POST-INVOICE GUARD: Blocked for invoiced jobs unless override is set.
+   *
+   * @param options - Mutation options (can include override for invoiced jobs)
    */
-  async createJobPart(companyId: string, jobId: string, partData: InsertJobPart): Promise<JobPart> {
+  async createJobPart(
+    companyId: string,
+    jobId: string,
+    partData: InsertJobPart,
+    options?: JobMutationOptions
+  ): Promise<JobPart> {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
@@ -447,6 +533,9 @@ export class JobRepository extends BaseRepository {
     if (!job) {
       throw this.notFoundError("Job");
     }
+
+    // POST-INVOICE GUARD: Check if job is invoiced
+    await this.assertJobNotInvoiced(companyId, jobId, options);
 
     const rows = await db
       .insert(jobParts)
@@ -462,10 +551,36 @@ export class JobRepository extends BaseRepository {
 
   /**
    * Update job part
+   *
+   * POST-INVOICE GUARD: Blocked for invoiced jobs unless override is set.
+   *
+   * @param options - Mutation options (can include override for invoiced jobs)
    */
-  async updateJobPart(companyId: string, partId: string, patch: Partial<InsertJobPart>): Promise<JobPart | null> {
+  async updateJobPart(
+    companyId: string,
+    partId: string,
+    patch: Partial<InsertJobPart>,
+    options?: JobMutationOptions
+  ): Promise<JobPart | null> {
     this.assertCompanyId(companyId);
     this.validateUUID(partId, "partId");
+
+    // First, get the part to find its jobId for the invoice lock check
+    const [existingPart] = await db
+      .select()
+      .from(jobParts)
+      .where(and(
+        eq(jobParts.companyId, companyId),
+        eq(jobParts.id, partId)
+      ))
+      .limit(1);
+
+    if (!existingPart) {
+      return null;
+    }
+
+    // POST-INVOICE GUARD: Check if job is invoiced
+    await this.assertJobNotInvoiced(companyId, existingPart.jobId, options);
 
     // Direct tenant isolation via companyId column
     const rows = await db
@@ -482,10 +597,35 @@ export class JobRepository extends BaseRepository {
 
   /**
    * Delete job part (soft delete)
+   *
+   * POST-INVOICE GUARD: Blocked for invoiced jobs unless override is set.
+   *
+   * @param options - Mutation options (can include override for invoiced jobs)
    */
-  async deleteJobPart(companyId: string, partId: string): Promise<boolean> {
+  async deleteJobPart(
+    companyId: string,
+    partId: string,
+    options?: JobMutationOptions
+  ): Promise<boolean> {
     this.assertCompanyId(companyId);
     this.validateUUID(partId, "partId");
+
+    // First, get the part to find its jobId for the invoice lock check
+    const [existingPart] = await db
+      .select()
+      .from(jobParts)
+      .where(and(
+        eq(jobParts.companyId, companyId),
+        eq(jobParts.id, partId)
+      ))
+      .limit(1);
+
+    if (!existingPart) {
+      return false;
+    }
+
+    // POST-INVOICE GUARD: Check if job is invoiced
+    await this.assertJobNotInvoiced(companyId, existingPart.jobId, options);
 
     // Direct tenant isolation via companyId column
     const rows = await db
@@ -502,14 +642,22 @@ export class JobRepository extends BaseRepository {
 
   /**
    * Reorder job parts
+   *
+   * POST-INVOICE GUARD: Blocked for invoiced jobs unless override is set.
+   *
+   * @param options - Mutation options (can include override for invoiced jobs)
    */
   async reorderJobParts(
     companyId: string,
     jobId: string,
-    parts: Array<{ id: string; sortOrder: number }>
+    parts: Array<{ id: string; sortOrder: number }>,
+    options?: JobMutationOptions
   ): Promise<void> {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
+
+    // POST-INVOICE GUARD: Check if job is invoiced
+    await this.assertJobNotInvoiced(companyId, jobId, options);
 
     await db.transaction(async (tx) => {
       for (const part of parts) {
@@ -611,7 +759,7 @@ export class JobRepository extends BaseRepository {
 
 
 
-  
+
   /**
    * Get job equipment
    */
@@ -630,11 +778,14 @@ export class JobRepository extends BaseRepository {
 
   /**
    * Create job equipment link
+   *
+   * POST-INVOICE GUARD: Blocked for invoiced jobs unless override is set.
    */
   async createJobEquipment(
     companyId: string,
     jobId: string,
-    data: { equipmentId: string; notes?: string | null }
+    data: { equipmentId: string; notes?: string | null },
+    options?: JobMutationOptions
   ) {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
@@ -644,6 +795,9 @@ export class JobRepository extends BaseRepository {
     if (!job) {
       throw this.notFoundError("Job");
     }
+
+    // POST-INVOICE GUARD: Check if job is invoiced
+    await this.assertJobNotInvoiced(companyId, jobId, options);
 
     const rows = await db
       .insert(jobEquipment)
@@ -659,10 +813,34 @@ export class JobRepository extends BaseRepository {
 
   /**
    * Update job equipment
+   *
+   * POST-INVOICE GUARD: Blocked for invoiced jobs unless override is set.
    */
-  async updateJobEquipment(companyId: string, jobEquipmentId: string, patch: any) {
+  async updateJobEquipment(
+    companyId: string,
+    jobEquipmentId: string,
+    patch: any,
+    options?: JobMutationOptions
+  ) {
     this.assertCompanyId(companyId);
     this.validateUUID(jobEquipmentId, "jobEquipmentId");
+
+    // First, get the job equipment to find its jobId for the invoice lock check
+    const [existing] = await db
+      .select()
+      .from(jobEquipment)
+      .where(and(
+        eq(jobEquipment.companyId, companyId),
+        eq(jobEquipment.id, jobEquipmentId)
+      ))
+      .limit(1);
+
+    if (!existing) {
+      return null;
+    }
+
+    // POST-INVOICE GUARD: Check if job is invoiced
+    await this.assertJobNotInvoiced(companyId, existing.jobId, options);
 
     // Direct tenant isolation via companyId column
     const rows = await db
@@ -679,10 +857,33 @@ export class JobRepository extends BaseRepository {
 
   /**
    * Delete job equipment link
+   *
+   * POST-INVOICE GUARD: Blocked for invoiced jobs unless override is set.
    */
-  async deleteJobEquipment(companyId: string, jobEquipmentId: string): Promise<boolean> {
+  async deleteJobEquipment(
+    companyId: string,
+    jobEquipmentId: string,
+    options?: JobMutationOptions
+  ): Promise<boolean> {
     this.assertCompanyId(companyId);
     this.validateUUID(jobEquipmentId, "jobEquipmentId");
+
+    // First, get the job equipment to find its jobId for the invoice lock check
+    const [existing] = await db
+      .select()
+      .from(jobEquipment)
+      .where(and(
+        eq(jobEquipment.companyId, companyId),
+        eq(jobEquipment.id, jobEquipmentId)
+      ))
+      .limit(1);
+
+    if (!existing) {
+      return false;
+    }
+
+    // POST-INVOICE GUARD: Check if job is invoiced
+    await this.assertJobNotInvoiced(companyId, existing.jobId, options);
 
     // Direct tenant isolation via companyId column
     const result = await db

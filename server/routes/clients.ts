@@ -13,6 +13,51 @@ import { AuthedRequest } from "../auth/tenantIsolation";
 const router = Router();
 
 // ========================================
+// PHASE A.1: STRICT IMPORT SCHEMAS
+// Explicit allowlists for bulk import operations
+// ========================================
+
+/**
+ * Schema for simple import request body - only accepts clients array
+ */
+const importSimpleRequestSchema = z.object({
+  clients: z.array(insertClientSchema).min(1).max(500),
+}).strict();
+
+/**
+ * Schema for equipment in full import
+ */
+const importEquipmentSchema = z.object({
+  name: z.string().min(1).max(200),
+  modelNumber: z.string().max(100).optional(),
+  serialNumber: z.string().max(100).optional(),
+}).strict();
+
+/**
+ * Schema for parts in full import
+ */
+const importPartSchema = z.object({
+  name: z.string().min(1).max(200),
+  quantity: z.number().int().positive().optional().default(1),
+}).strict();
+
+/**
+ * Schema for a single client in full import (with nested parts/equipment)
+ * Uses insertClientSchema for client fields (already omits id, companyId, userId, etc.)
+ */
+const importFullClientSchema = insertClientSchema.extend({
+  parts: z.array(importPartSchema).optional().default([]),
+  equipment: z.array(importEquipmentSchema).optional().default([]),
+});
+
+/**
+ * Schema for full import request body
+ */
+const importFullRequestSchema = z.object({
+  clients: z.array(importFullClientSchema).min(1).max(200),
+}).strict();
+
+// ========================================
 // HELPER FUNCTIONS
 // ========================================
 
@@ -277,7 +322,17 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
   });
 }));
 
-// POST /api/clients/quick-create - Quick create with minimal info (sets needsDetails=true)
+/**
+ * POST /api/clients/quick-create
+ * Quick create with minimal info (sets needsDetails=true)
+ *
+ * NOTE: This creates a STANDALONE location (parentCompanyId = null).
+ * To create a location under an existing customer company, use:
+ *   POST /api/customer-companies/:companyId/locations
+ *
+ * Orphan locations can later be linked using:
+ *   POST /api/customer-companies/:companyId/link-location
+ */
 router.post("/quick-create", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   const userId = req.user.id;
@@ -319,18 +374,14 @@ router.post("/quick-create", requireRole(MANAGER_ROLES), asyncHandler(async (req
   res.json({ client });
 }));
 
-// POST /api/clients/import-simple - Simple import
+/**
+ * POST /api/clients/import-simple - Simple bulk import
+ * PHASE A.1: Uses strict schema to reject unknown/forbidden fields
+ */
 router.post("/import-simple", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const { clients } = req.body;
-
-  if (!Array.isArray(clients) || clients.length === 0) {
-    throw createError(400, "Invalid import data: clients array is required");
-  }
-
-  // Request size validation - max 500 clients per import
-  if (clients.length > 500) {
-    throw createError(400, `Import limit exceeded: maximum 500 clients per request (received ${clients.length})`);
-  }
+  // PHASE A.1: Strict validation - rejects unknown keys at any level
+  const validated = validateSchema(importSimpleRequestSchema, req.body);
+  const clients = validated.clients;
 
   // Check if user can import this many clients
   const usage = await storage.getSubscriptionUsage(req.companyId!) as any;
@@ -346,28 +397,15 @@ router.post("/import-simple", requireRole(MANAGER_ROLES), asyncHandler(async (re
     throw error;
   }
 
-  // Phase 1: Validate all clients upfront
-  const validatedClients: any[] = [];
+  // Bulk insert all validated clients (single INSERT statement)
   const errors: string[] = [];
-
-  for (const clientData of clients) {
-    try {
-      const validated = insertClientSchema.parse(clientData);
-      validatedClients.push(validated);
-    } catch (error) {
-      errors.push(`Validation failed for ${clientData.companyName || 'unknown client'}`);
-    }
-  }
-
-  // Phase 2: Bulk insert all valid clients (single INSERT statement)
   let imported = 0;
-  if (validatedClients.length > 0) {
-    try {
-      const created = await storage.bulkCreateClients(req.companyId!, req.user!.id, validatedClients);
-      imported = created.length;
-    } catch (error: any) {
-      errors.push(`Bulk insert failed: ${error.message || 'Unknown error'}`);
-    }
+
+  try {
+    const created = await storage.bulkCreateClients(req.companyId!, req.user!.id, clients);
+    imported = created.length;
+  } catch (error: any) {
+    errors.push(`Bulk insert failed: ${error.message || 'Unknown error'}`);
   }
 
   res.json({
@@ -377,45 +415,30 @@ router.post("/import-simple", requireRole(MANAGER_ROLES), asyncHandler(async (re
   });
 }));
 
-// POST /api/clients/import - Full import with equipment and parts
+/**
+ * POST /api/clients/import - Full import with equipment and parts
+ * PHASE A.1: Uses strict schema to reject unknown/forbidden fields at all levels
+ */
 router.post("/import", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const { clients: clientsToImport } = req.body;
-
-  if (!Array.isArray(clientsToImport) || clientsToImport.length === 0) {
-    throw createError(400, "Invalid import data: clients array is required");
-  }
-
-  // Request size validation - max 200 clients for full import (has nested parts/equipment)
-  if (clientsToImport.length > 200) {
-    throw createError(400, `Import limit exceeded: maximum 200 clients per full import (received ${clientsToImport.length}). Use /import-simple for larger batches.`);
-  }
+  // PHASE A.1: Strict validation - rejects unknown keys at any level
+  const validated = validateSchema(importFullRequestSchema, req.body);
+  const clientsToImport = validated.clients;
 
   let imported = 0;
   const errors: string[] = [];
 
-  // Phase 1: Validate all clients upfront
-  const validatedClients: Array<{
-    clientInfo: any;
-    parts: Array<{ name: string; quantity?: number }>;
-    equipment: Array<{ name: string; modelNumber?: string; serialNumber?: string }>;
-  }> = [];
-
-  for (const clientData of clientsToImport) {
-    try {
-      const { parts, equipment, ...clientInfo } = clientData;
-      const validated = insertClientSchema.parse(clientInfo);
-      validatedClients.push({
-        clientInfo: validated,
-        parts: Array.isArray(parts) ? parts : [],
-        equipment: Array.isArray(equipment) ? equipment : [],
-      });
-    } catch (error) {
-      errors.push(`Validation failed for ${clientData.companyName || 'unknown client'}`);
-    }
-  }
+  // Extract client info from validated data (parts/equipment already validated)
+  const validatedClients = clientsToImport.map(c => {
+    const { parts, equipment, ...clientInfo } = c;
+    return {
+      clientInfo,
+      parts: parts || [],
+      equipment: equipment || [],
+    };
+  });
 
   // Phase 2: Bulk create all clients (single INSERT)
-  const createdClients: Array<{ client: any; parts: any[]; equipment: any[] }> = [];
+  const createdClients: Array<{ client: any; parts: typeof validatedClients[0]['parts']; equipment: typeof validatedClients[0]['equipment'] }> = [];
   if (validatedClients.length > 0) {
     try {
       const clientInfos = validatedClients.map(v => v.clientInfo);

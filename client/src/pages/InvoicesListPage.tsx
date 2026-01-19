@@ -2,7 +2,8 @@ import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { format, isValid, parseISO } from "date-fns";
 import { useLocation, Link } from "wouter";
-import { Search, Plus, FileText, DollarSign, Clock, AlertTriangle, LayoutGrid, List, MoreHorizontal } from "lucide-react";
+import { Search, Plus, FileText, DollarSign, Clock, AlertTriangle, LayoutGrid, List, MoreHorizontal, RefreshCw } from "lucide-react";
+import { QboSyncBadge, isQboSynced } from "@/components/invoice/QboSyncBanner";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -42,7 +43,7 @@ interface InvoiceStats {
   overdue: { amount: number; count: number };
 }
 
-type InvoiceStatusFilter = "all" | "draft" | "sent" | "viewed" | "partial_paid" | "paid" | "voided" | "overdue";
+type InvoiceStatusFilter = "all" | "draft" | "sent" | "viewed" | "partial_paid" | "paid" | "voided" | "overdue" | "qbo_synced" | "qbo_out_of_sync";
 type ViewDensity = "comfortable" | "compact";
 
 function getStatusBadge(status: string, dueDate: string | null, balance: string): { 
@@ -133,6 +134,13 @@ export default function InvoicesListPage() {
         if (activeFilter === "overdue") {
           return inv.statusInfo.isOverdue;
         }
+        // Phase 10A: QBO sync filters
+        if (activeFilter === "qbo_synced") {
+          return isQboSynced(inv) && !inv.qboOutOfSync;
+        }
+        if (activeFilter === "qbo_out_of_sync") {
+          return inv.qboOutOfSync === true;
+        }
         return inv.status === activeFilter;
       });
     }
@@ -143,8 +151,8 @@ export default function InvoicesListPage() {
         const invoiceNumber = inv.invoiceNumber?.toLowerCase() || "";
         const locationName = inv.locationName?.toLowerCase() || "";
         const customerName = inv.customerCompanyName?.toLowerCase() || "";
-        return invoiceNumber.includes(query) || 
-               locationName.includes(query) || 
+        return invoiceNumber.includes(query) ||
+               locationName.includes(query) ||
                customerName.includes(query);
       });
     }
@@ -159,6 +167,14 @@ export default function InvoicesListPage() {
       counts[inv.status] = (counts[inv.status] || 0) + 1;
       if (statusInfo.isOverdue) {
         counts["overdue"] = (counts["overdue"] || 0) + 1;
+      }
+      // Phase 10A: Count QBO sync states
+      if (isQboSynced(inv)) {
+        if (inv.qboOutOfSync) {
+          counts["qbo_out_of_sync"] = (counts["qbo_out_of_sync"] || 0) + 1;
+        } else {
+          counts["qbo_synced"] = (counts["qbo_synced"] || 0) + 1;
+        }
       }
     }
     return counts;
@@ -271,13 +287,42 @@ export default function InvoicesListPage() {
               onClick={() => setActiveFilter(filter)}
               data-testid={`button-filter-${filter}`}
             >
-              {filter === "all" ? "All" : 
+              {filter === "all" ? "All" :
                filter === "partial_paid" ? "Partial" :
                filter === "overdue" ? "Overdue" :
                filter.charAt(0).toUpperCase() + filter.slice(1)}
               {statusCounts[filter] ? ` (${statusCounts[filter]})` : ""}
             </Button>
           ))}
+          {/* Phase 10A: QBO sync filter buttons (only show if there are synced invoices) */}
+          {(statusCounts["qbo_synced"] || statusCounts["qbo_out_of_sync"]) && (
+            <>
+              <span className="text-muted-foreground mx-1">|</span>
+              <Button
+                variant={activeFilter === "qbo_synced" ? "default" : "outline"}
+                size="sm"
+                onClick={() => setActiveFilter("qbo_synced")}
+                data-testid="button-filter-qbo-synced"
+                className="gap-1"
+              >
+                <RefreshCw className="h-3 w-3" />
+                Synced
+                {statusCounts["qbo_synced"] ? ` (${statusCounts["qbo_synced"]})` : ""}
+              </Button>
+              {statusCounts["qbo_out_of_sync"] > 0 && (
+                <Button
+                  variant={activeFilter === "qbo_out_of_sync" ? "destructive" : "outline"}
+                  size="sm"
+                  onClick={() => setActiveFilter("qbo_out_of_sync")}
+                  data-testid="button-filter-qbo-out-of-sync"
+                  className={activeFilter !== "qbo_out_of_sync" ? "text-destructive border-destructive/50" : ""}
+                >
+                  <AlertTriangle className="h-3 w-3 mr-1" />
+                  Out of Sync ({statusCounts["qbo_out_of_sync"]})
+                </Button>
+              )}
+            </>
+          )}
         </div>
         
         <div className="flex items-center gap-2">
@@ -369,9 +414,12 @@ export default function InvoicesListPage() {
                       {safeFormatDate(invoice.dueDate)}
                     </TableCell>
                     <TableCell className={isCompact ? "py-1" : ""}>
-                      <Badge variant={invoice.statusInfo.variant}>
-                        {invoice.statusInfo.label}
-                      </Badge>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Badge variant={invoice.statusInfo.variant}>
+                          {invoice.statusInfo.label}
+                        </Badge>
+                        <QboSyncBadge invoice={invoice} />
+                      </div>
                     </TableCell>
                     <TableCell className={`text-right ${isCompact ? "py-1" : ""}`}>
                       {formatCurrency(invoice.total)}

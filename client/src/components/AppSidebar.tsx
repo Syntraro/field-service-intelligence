@@ -183,13 +183,13 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       });
     }
     
-    // Only global admin gets the Admin menu
-    if (user?.email === "service@samcor.ca") {
+    // Owner role gets the Admin (Tenant Health Dashboard) menu
+    if (user?.role === "owner") {
       menuItems.push({
         title: "Admin",
         icon: Shield,
-        href: "/admin",
-        isActive: location === "/admin",
+        href: "/admin/tenants",
+        isActive: location.startsWith("/admin/tenants"),
         testId: "nav-admin"
       });
     }

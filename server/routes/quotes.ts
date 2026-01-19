@@ -2,7 +2,9 @@ import { Router, Response } from "express";
 import { z } from "zod";
 import { parseISO, isPast, isValid } from "date-fns";
 import { requireRole } from "../auth/requireRole";
+import { requireFeature } from "../auth/requireFeature";
 import { MANAGER_ROLES } from "../auth/roles";
+import { notificationService } from "../services/notificationService";
 import { parsePagination } from "../utils/pagination";
 import { paginated } from "../utils/paginatedResponse";
 import { asyncHandler, createError } from "../middleware/errorHandler";
@@ -17,6 +19,9 @@ import { generateQuotePdf } from "../services/quotePdfService";
 import type { QuoteStatus } from "@shared/schema";
 
 const router = Router();
+
+// Feature gate: require quotesEnabled for all quotes routes
+router.use(requireFeature("quotesEnabled"));
 
 // ========================================
 // VALIDATION SCHEMAS
@@ -425,10 +430,12 @@ router.post("/:id/approve", requireRole(MANAGER_ROLES), asyncHandler(async (req:
   const companyId = req.companyId!;
   const quoteId = req.params.id;
 
-  const quote = await quoteRepository.getQuote(companyId, quoteId);
-  if (!quote) {
+  const quoteDetails = await quoteRepository.getQuoteDetails(companyId, quoteId);
+  if (!quoteDetails) {
     throw createError(404, "Quote not found");
   }
+
+  const quote = quoteDetails.quote;
 
   if (quote.status !== "sent") {
     throw createError(400, "Only sent quotes can be approved");
@@ -444,6 +451,16 @@ router.post("/:id/approve", requireRole(MANAGER_ROLES), asyncHandler(async (req:
     approvedAt: new Date(),
   });
 
+  // Emit notification for quote approval
+  const customerName = quoteDetails.customerCompany?.name || quoteDetails.location?.companyName || "Customer";
+  notificationService.emitQuoteStatusChange({
+    companyId,
+    quoteId,
+    quoteNumber: quote.quoteNumber || "N/A",
+    customerName,
+    action: "approved",
+  }).catch((err) => console.error("Failed to emit quote approved notification:", err));
+
   res.json(updated);
 }));
 
@@ -452,10 +469,12 @@ router.post("/:id/decline", requireRole(MANAGER_ROLES), asyncHandler(async (req:
   const companyId = req.companyId!;
   const quoteId = req.params.id;
 
-  const quote = await quoteRepository.getQuote(companyId, quoteId);
-  if (!quote) {
+  const quoteDetails = await quoteRepository.getQuoteDetails(companyId, quoteId);
+  if (!quoteDetails) {
     throw createError(404, "Quote not found");
   }
+
+  const quote = quoteDetails.quote;
 
   if (quote.status !== "sent") {
     throw createError(400, "Only sent quotes can be declined");
@@ -465,6 +484,16 @@ router.post("/:id/decline", requireRole(MANAGER_ROLES), asyncHandler(async (req:
     status: "declined",
     declinedAt: new Date(),
   });
+
+  // Emit notification for quote decline
+  const customerName = quoteDetails.customerCompany?.name || quoteDetails.location?.companyName || "Customer";
+  notificationService.emitQuoteStatusChange({
+    companyId,
+    quoteId,
+    quoteNumber: quote.quoteNumber || "N/A",
+    customerName,
+    action: "declined",
+  }).catch((err) => console.error("Failed to emit quote declined notification:", err));
 
   res.json(updated);
 }));

@@ -1,55 +1,66 @@
 import type { Request, Response, NextFunction } from "express";
 import { impersonationService } from "./impersonationService";
-import { auditService } from "./auditService";
+import { userRepository } from "./storage/users";
 import type { IStorage } from "./storage";
 import type { AuthenticatedUser } from "@shared/schema";
 
+// Extend Express Request type to include impersonation context
+declare global {
+  namespace Express {
+    interface Request {
+      realUser?: AuthenticatedUser;
+      isImpersonating?: boolean;
+      impersonationSessionId?: string;
+    }
+  }
+}
+
 /**
- * Middleware that checks for active impersonation and merges impersonated user context.
- * Keeps tenant-scoped validation working automatically.
+ * Middleware that checks for active impersonation and switches user context.
  *
- * NOTE:
- * - This intentionally uses runtime feature detection (service method existence)
- *   to stay compatible during refactors.
+ * When impersonation is active:
+ * - req.user is set to the TARGET user (impersonated user)
+ * - req.realUser preserves the ORIGINAL user (owner/admin who is impersonating)
+ * - req.isImpersonating is set to true
+ * - req.impersonationSessionId holds the session ID
+ *
+ * This allows tenant isolation to work seamlessly while preserving
+ * the ability to identify the real user for audit purposes.
+ *
+ * Session validation:
+ * - Loads session from httpOnly cookie
+ * - Checks expiry and idle timeout
+ * - Automatically ends expired/idle sessions
+ * - Updates lastSeenAt on active sessions
  */
-export function impersonationMiddleware(storage: IStorage) {
+export function impersonationMiddleware(_storage: IStorage) {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
       // Only process if user is authenticated
       if (!req.isAuthenticated?.() || !req.user) return next();
 
-      const svc: any = impersonationService as any;
+      // Check for active impersonation session (includes expiry/idle validation)
+      // Pass res so the service can clear cookies if session is invalid
+      const session = await impersonationService.checkImpersonation(req, res);
 
-      // Some versions expose: checkImpersonation(req, storage)
-      if (typeof svc.checkImpersonation === "function") {
-        const result = await svc.checkImpersonation(req, storage);
-        // If it returns an impersonated user context, ensure req.user is updated.
-        if (result && typeof result === "object" && (result as any).id) {
-          (req as any).user = result as AuthenticatedUser;
-        }
-      } else if (typeof svc.getActiveImpersonation === "function") {
-        // Alternative API: getActiveImpersonation(userId)
-        const active = await svc.getActiveImpersonation((req.user as any).id);
-        if (active?.impersonatedUser) {
-          (req as any).user = active.impersonatedUser as AuthenticatedUser;
-        }
-      }
+      if (session) {
+        // Store the real user (owner) for audit purposes
+        (req as any).realUser = req.user;
+        (req as any).isImpersonating = true;
+        (req as any).impersonationSessionId = session.id;
 
-      // Audit impersonation access if applicable
-      const user: any = req.user;
-      if (user?.impersonatedById) {
-        const audit: any = auditService as any;
-        if (typeof audit.log === "function") {
-          await audit.log({
-            action: "impersonation.request",
-            userId: user.id,
-            companyId: user.companyId,
-            metadata: { 
-              impersonatedById: user.impersonatedById, 
-              path: req.path, 
-              method: req.method 
-            },
-          });
+        // Get the target user's authenticated context
+        const targetUser = await userRepository.getAuthenticatedUser(session.targetUserId);
+
+        if (targetUser) {
+          // Switch req.user to the target user
+          // This makes tenant isolation work seamlessly
+          (req as any).user = {
+            ...targetUser,
+            // Add impersonation markers for audit
+            impersonatedById: session.ownerUserId,
+            impersonationSessionId: session.id,
+          } as AuthenticatedUser;
         }
       }
 

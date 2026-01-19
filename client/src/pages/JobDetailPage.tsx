@@ -28,6 +28,7 @@ import {
   Send,
   Check,
   Plus,
+  Lock,
 } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import JobEquipmentSection from "@/components/JobEquipmentSection";
@@ -41,6 +42,7 @@ import { JobMetaCard } from "@/components/JobMetaCard";
 import { ActionRequiredModal } from "@/components/ActionRequiredModal";
 import { JobStatusTimeline } from "@/components/job/JobStatusTimeline";
 import { StatusProgressBar, getJobStatusDisplay, getPriorityDisplay } from "@/components/job";
+import { AddTimeEntryModal, EditTimeEntryModal, type TimeEntryForEdit } from "@/components/time";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -73,11 +75,11 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import type { Job, Client, CustomerCompany, User as UserType, RecurringJobSeries, Invoice } from "@shared/schema";
+import type { Job, Client, CustomerCompany, User as UserType, RecurringJobSeries, Invoice, JobTimeSummary, TimeEntryType } from "@shared/schema";
 
-function JobDescriptionCard({ jobId, description, onDescriptionChange }: { 
-  jobId: string; 
-  description: string | null; 
+function JobDescriptionCard({ jobId, description, onDescriptionChange }: {
+  jobId: string;
+  description: string | null;
   onDescriptionChange: () => void;
 }) {
   const { toast } = useToast();
@@ -126,9 +128,9 @@ function JobDescriptionCard({ jobId, description, onDescriptionChange }: {
             </div>
           </CollapsibleTrigger>
           {hasDescription && !isEditing && (
-            <Button 
-              variant="ghost" 
-              size="sm" 
+            <Button
+              variant="ghost"
+              size="sm"
               className="text-xs h-auto p-0 text-primary"
               onClick={() => setIsEditing(true)}
               data-testid="button-edit-description"
@@ -150,18 +152,18 @@ function JobDescriptionCard({ jobId, description, onDescriptionChange }: {
                   data-testid="textarea-job-description"
                 />
                 <div className="flex items-center gap-2">
-                  <Button 
-                    size="sm" 
-                    onClick={handleSave} 
+                  <Button
+                    size="sm"
+                    onClick={handleSave}
                     disabled={isSaving}
                     data-testid="button-save-description"
                   >
                     {isSaving && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
                     Save
                   </Button>
-                  <Button 
-                    size="sm" 
-                    variant="outline" 
+                  <Button
+                    size="sm"
+                    variant="outline"
                     onClick={handleCancel}
                     disabled={isSaving}
                     data-testid="button-cancel-description"
@@ -177,9 +179,9 @@ function JobDescriptionCard({ jobId, description, onDescriptionChange }: {
             ) : (
               <div className="text-center py-4">
                 <p className="text-sm text-muted-foreground mb-2">No job description added yet.</p>
-                <Button 
-                  variant="outline" 
-                  size="sm" 
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={() => setIsEditing(true)}
                   data-testid="button-add-description"
                 >
@@ -202,9 +204,9 @@ interface JobDetailResponse extends Job {
   recurringSeries?: RecurringJobSeries;
 }
 
-function AssignTechnicianDialog({ 
-  open, 
-  onOpenChange, 
+function AssignTechnicianDialog({
+  open,
+  onOpenChange,
   jobId,
   currentTechnicianIds,
   primaryTechnicianId
@@ -259,8 +261,8 @@ function AssignTechnicianDialog({
   });
 
   const handleToggle = (techId: string) => {
-    setSelectedIds(prev => 
-      prev.includes(techId) 
+    setSelectedIds(prev =>
+      prev.includes(techId)
         ? prev.filter(id => id !== techId)
         : [...prev, techId]
     );
@@ -296,8 +298,8 @@ function AssignTechnicianDialog({
             </p>
           ) : (
             technicians.map(tech => (
-              <div 
-                key={tech.id} 
+              <div
+                key={tech.id}
                 className="flex items-center justify-between p-2 rounded-lg hover-elevate"
                 data-testid={`technician-option-${tech.id}`}
               >
@@ -312,7 +314,7 @@ function AssignTechnicianDialog({
                   </div>
                   <div>
                     <p className="font-medium text-sm">
-                      {tech.firstName && tech.lastName 
+                      {tech.firstName && tech.lastName
                         ? `${tech.firstName} ${tech.lastName}`
                         : tech.email}
                     </p>
@@ -337,7 +339,7 @@ function AssignTechnicianDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button 
+          <Button
             onClick={() => assignMutation.mutate()}
             disabled={assignMutation.isPending}
             data-testid="button-save-technicians"
@@ -348,6 +350,248 @@ function AssignTechnicianDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// Helper to format minutes as hours and minutes
+function formatMinutes(minutes: number): string {
+  if (minutes === 0) return "0m";
+  const hrs = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (hrs === 0) return `${mins}m`;
+  if (mins === 0) return `${hrs}h`;
+  return `${hrs}h ${mins}m`;
+}
+
+// Get running status display text
+function getRunningStatusText(runningType: TimeEntryType | null): string {
+  if (!runningType) return "";
+  switch (runningType) {
+    case "travel_to_job":
+    case "travel_between_jobs":
+      return "Technician en route";
+    case "on_site":
+      return "Technician on site";
+    case "travel_to_supplier":
+    case "supplier_run":
+      return "At supplier";
+    default:
+      return "Timer running";
+  }
+}
+
+// Time Entry type for display
+interface TimeEntryDisplay {
+  id: string;
+  technicianId: string;
+  technicianName: string | null;
+  type: TimeEntryType;
+  startAt: string;
+  endAt: string | null;
+  durationMinutes: number | null;
+  billable: boolean;
+  notes: string | null;
+  invoiceId: string | null;
+  invoicedAt: string | null;
+  lockedAt: string | null;
+  lockedByInvoiceId: string | null;
+  lockReason: string | null;
+}
+
+// Format time entry type for display
+function formatTimeEntryType(type: TimeEntryType): string {
+  const typeLabels: Record<TimeEntryType, string> = {
+    travel_to_job: "Travel",
+    on_site: "On Site",
+    travel_to_supplier: "To Supplier",
+    supplier_run: "Supplier",
+    travel_between_jobs: "Between Jobs",
+    admin: "Admin",
+    break: "Break",
+    other: "Other",
+  };
+  return typeLabels[type] || type;
+}
+
+// Labour Card Content Component
+function LabourCardContent({
+  jobId,
+  onEditEntry,
+}: {
+  jobId: string;
+  onEditEntry: (entry: TimeEntryDisplay) => void;
+}) {
+  const [showEntries, setShowEntries] = useState(false);
+
+  const { data: timeSummary, isLoading, error } = useQuery<JobTimeSummary>({
+    queryKey: ["/api/jobs", jobId, "time-summary"],
+    queryFn: async () => {
+      const res = await fetch(`/api/jobs/${jobId}/time-summary`, { credentials: "include" });
+      if (!res.ok) {
+        if (res.status === 404) return null;
+        throw new Error("Failed to fetch time summary");
+      }
+      return res.json();
+    },
+    enabled: !!jobId,
+  });
+
+  const { data: timeEntries = [] } = useQuery<TimeEntryDisplay[]>({
+    queryKey: ["/api/jobs", jobId, "time-entries"],
+    queryFn: async () => {
+      const res = await fetch(`/api/jobs/${jobId}/time-entries`, { credentials: "include" });
+      if (!res.ok) return [];
+      return res.json();
+    },
+    enabled: !!jobId && showEntries,
+  });
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <Loader2 className="h-3 w-3 animate-spin" />
+        Loading time...
+      </div>
+    );
+  }
+
+  if (error || !timeSummary) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        No labour entries yet. Track time against this job here.
+      </p>
+    );
+  }
+
+  if (timeSummary.totalMinutes === 0) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        No labour entries yet. Track time against this job here.
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {/* Running indicator */}
+      {timeSummary.isRunning && (
+        <div className="flex items-center gap-2 text-xs text-green-600 bg-green-50 dark:bg-green-950 rounded px-2 py-1">
+          <Clock className="h-3 w-3 animate-pulse" />
+          <span className="font-medium">{getRunningStatusText(timeSummary.runningType)}</span>
+        </div>
+      )}
+
+      {/* Time summary */}
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Travel:</span>
+          <span className="font-medium">{formatMinutes(timeSummary.travelMinutes)}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">On-site:</span>
+          <span className="font-medium">{formatMinutes(timeSummary.onSiteMinutes)}</span>
+        </div>
+        {timeSummary.otherMinutes > 0 && (
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Other:</span>
+            <span className="font-medium">{formatMinutes(timeSummary.otherMinutes)}</span>
+          </div>
+        )}
+        <div className="flex justify-between">
+          <span className="text-muted-foreground">Billable:</span>
+          <span className="font-medium text-primary">{formatMinutes(timeSummary.billableMinutes)}</span>
+        </div>
+      </div>
+
+      {/* Total */}
+      <Separator className="my-2" />
+      <div className="flex justify-between text-xs">
+        <span className="text-muted-foreground">Total:</span>
+        <span className="font-semibold">{formatMinutes(timeSummary.totalMinutes)}</span>
+      </div>
+
+      {/* Collapsible time entries list */}
+      <Collapsible open={showEntries} onOpenChange={setShowEntries}>
+        <CollapsibleTrigger asChild>
+          <button
+            className="flex items-center gap-1 text-xs text-primary hover:underline mt-2"
+            data-testid="toggle-time-entries"
+          >
+            {showEntries ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            {showEntries ? "Hide entries" : "Show entries"}
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="mt-2 space-y-1" data-testid="time-entries-list">
+            {timeEntries.length === 0 ? (
+              <p className="text-xs text-muted-foreground italic">Loading...</p>
+            ) : (
+              timeEntries.map((entry) => {
+                const isLocked = !!(entry.lockedAt || entry.invoicedAt);
+                return (
+                  <div
+                    key={entry.id}
+                    className={cn(
+                      "flex items-center justify-between text-xs py-1 px-2 rounded group",
+                      entry.invoicedAt ? "bg-muted/50" : "bg-background"
+                    )}
+                    data-testid={`time-entry-${entry.id}`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className={cn(
+                        "px-1.5 py-0.5 rounded text-[10px] font-medium",
+                        entry.type === "on_site" ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300" :
+                        entry.type.startsWith("travel") ? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300" :
+                        entry.type === "break" ? "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300" :
+                        "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+                      )}>
+                        {formatTimeEntryType(entry.type)}
+                      </span>
+                      <span className="text-muted-foreground">
+                        {entry.technicianName || "Unknown"}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">
+                        {entry.durationMinutes !== null ? formatMinutes(entry.durationMinutes) : (
+                          <span className="text-green-600 flex items-center gap-1">
+                            <Clock className="h-3 w-3 animate-pulse" />
+                            Running
+                          </span>
+                        )}
+                      </span>
+                      {entry.billable && (
+                        <span title="Billable">
+                          <DollarSign className="h-3 w-3 text-primary" />
+                        </span>
+                      )}
+                      {isLocked && (
+                        <span title="Locked (invoiced)">
+                          <Lock className="h-3 w-3 text-amber-500" />
+                        </span>
+                      )}
+                      {entry.invoicedAt && (
+                        <Badge variant="outline" className="text-[10px] px-1 py-0">
+                          Invoiced
+                        </Badge>
+                      )}
+                      <button
+                        onClick={() => onEditEntry(entry)}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 hover:bg-muted rounded"
+                        title={isLocked ? "Edit (locked - requires override)" : "Edit"}
+                        data-testid={`edit-entry-${entry.id}`}
+                      >
+                        <Pencil className="h-3 w-3 text-muted-foreground hover:text-foreground" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+    </div>
   );
 }
 
@@ -362,6 +606,10 @@ export default function JobDetailPage() {
   const [showActionRequiredModal, setShowActionRequiredModal] = useState(false);
   const [notesOpen, setNotesOpen] = useState(true);
   const [activityOpen, setActivityOpen] = useState(false);
+  // Time entry modals
+  const [showAddTimeEntry, setShowAddTimeEntry] = useState(false);
+  const [showEditTimeEntry, setShowEditTimeEntry] = useState(false);
+  const [editingTimeEntry, setEditingTimeEntry] = useState<TimeEntryDisplay | null>(null);
   const jobId = params?.id;
 
   const { data: job, isLoading, error } = useQuery<JobDetailResponse>({
@@ -377,26 +625,30 @@ export default function JobDetailPage() {
     enabled: !!jobId,
   });
 
-  const { data: jobInvoices = [] } = useQuery<Invoice[]>({
-    queryKey: ["/api/invoices", { jobId }],
+  // Phase 11: Fixed job/invoice cross-linking - use correct endpoint
+  const { data: jobInvoice } = useQuery<Invoice | null>({
+    queryKey: ["/api/invoices/by-job", jobId],
     queryFn: async () => {
-      const res = await fetch(`/api/invoices?jobId=${jobId}`, { credentials: "include" });
-      if (!res.ok) return [];
+      const res = await fetch(`/api/invoices/by-job/${jobId}`, { credentials: "include" });
+      if (!res.ok) return null;
       return res.json();
     },
     enabled: !!jobId,
   });
 
+  // Status update mutation - uses POST to match Time Tracking V1 backend
   const updateStatusMutation = useMutation({
     mutationFn: async (status: string) => {
       return apiRequest(`/api/jobs/${jobId}/status`, {
-        method: "PATCH",
-        body: JSON.stringify({ status })
+        method: "POST",
+        body: JSON.stringify({ status, source: "web" })
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      // Also invalidate time summary so Labour card updates immediately
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-summary"] });
       toast({
         title: "Status Updated",
         description: "Job status has been updated.",
@@ -518,22 +770,22 @@ export default function JobDetailPage() {
         {/* LEFT: Client / Job info */}
         <JobHeaderCard
           job={job}
-          jobInvoices={jobInvoices}
+          jobInvoice={jobInvoice ?? null}
           onEdit={() => setShowEditDialog(true)}
           onDelete={() => deleteJobMutation.mutate()}
         />
-        
+
         {/* MIDDLE: Technicians & Visits */}
         <JobAssignmentsCard
           technicians={job.technicians || []}
           primaryTechnicianId={job.primaryTechnicianId}
           onAssignTechnician={() => setShowAssignTech(true)}
         />
-        
+
         {/* RIGHT: Job Meta (Job #, Invoice, Status, Scheduled) */}
         <JobMetaCard
           job={job}
-          invoice={jobInvoices.length > 0 ? jobInvoices[0] : null}
+          invoice={jobInvoice ?? null}
           onStatusChange={handleStatusChange}
           onActionRequiredSelect={() => setShowActionRequiredModal(true)}
           statusChangePending={updateStatusMutation.isPending}
@@ -541,9 +793,9 @@ export default function JobDetailPage() {
       </div>
 
       {/* JOB DESCRIPTION CARD - Full Width Above Main Layout */}
-      <JobDescriptionCard 
-        jobId={jobId!} 
-        description={job.description} 
+      <JobDescriptionCard
+        jobId={jobId!}
+        description={job.description}
         onDescriptionChange={() => {
           queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
         }}
@@ -560,9 +812,9 @@ export default function JobDetailPage() {
           <Card data-testid="card-expenses">
             <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
               <CardTitle className="text-sm font-semibold">Expenses</CardTitle>
-              <Button 
-                variant="ghost" 
-                size="sm" 
+              <Button
+                variant="ghost"
+                size="sm"
                 className="text-xs h-auto p-0 text-primary"
                 onClick={() => toast({ title: "Coming Soon", description: "Expense tracking coming soon." })}
                 data-testid="button-new-expense"
@@ -597,24 +849,29 @@ export default function JobDetailPage() {
           {/* Notes – collapsible */}
           <JobNotesSection jobId={job.id} defaultOpen={notesOpen} />
 
-          {/* Labour */}
+          {/* Labour - now shows time summary from backend */}
           <Card data-testid="card-labour">
             <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
               <CardTitle className="text-sm font-semibold">Labour</CardTitle>
-              <Button 
-                variant="ghost" 
-                size="sm" 
+              <Button
+                variant="ghost"
+                size="sm"
                 className="text-xs h-auto p-0 text-primary"
-                onClick={() => toast({ title: "Coming Soon", description: "Time tracking coming soon." })}
+                onClick={() => setShowAddTimeEntry(true)}
                 data-testid="button-new-time-entry"
               >
+                <Plus className="h-3 w-3 mr-1" />
                 New Time Entry
               </Button>
             </CardHeader>
             <CardContent>
-              <p className="text-xs text-muted-foreground">
-                No labour entries yet. Track time against this job here.
-              </p>
+              <LabourCardContent
+                jobId={jobId!}
+                onEditEntry={(entry) => {
+                  setEditingTimeEntry(entry);
+                  setShowEditTimeEntry(true);
+                }}
+              />
             </CardContent>
           </Card>
 
@@ -749,7 +1006,7 @@ export default function JobDetailPage() {
               Cancel
             </Button>
             {job.status !== "completed" && (
-              <Button 
+              <Button
                 variant="outline"
                 onClick={() => handleCreateInvoice(true)}
                 disabled={createInvoiceMutation.isPending}
@@ -758,7 +1015,7 @@ export default function JobDetailPage() {
                 {createInvoiceMutation.isPending ? "Creating..." : "Close Job & Create Invoice"}
               </Button>
             )}
-            <Button 
+            <Button
               onClick={() => handleCreateInvoice(false)}
               disabled={createInvoiceMutation.isPending}
               data-testid="button-confirm-create-invoice"
@@ -768,6 +1025,32 @@ export default function JobDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Time Entry Modals */}
+      <AddTimeEntryModal
+        open={showAddTimeEntry}
+        onOpenChange={setShowAddTimeEntry}
+        jobId={job.id}
+        assignedTechnicianIds={job.assignedTechnicianIds || []}
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-summary"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-entries"] });
+        }}
+      />
+
+      <EditTimeEntryModal
+        open={showEditTimeEntry}
+        onOpenChange={(open) => {
+          setShowEditTimeEntry(open);
+          if (!open) setEditingTimeEntry(null);
+        }}
+        jobId={job.id}
+        entry={editingTimeEntry}
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-summary"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-entries"] });
+        }}
+      />
     </div>
   );
 }

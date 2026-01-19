@@ -289,6 +289,26 @@ export async function validateSchedule(options: ValidateScheduleOptions): Promis
 }
 
 /**
+ * Validate that an assignment does not span multiple days.
+ * This is called for ALL assignments, regardless of technician assignment.
+ *
+ * @throws ScheduleValidationError with CROSS_DAY_NOT_ALLOWED code
+ */
+export function validateNoCrossDay(startAt: Date, endAt: Date): void {
+  if (!isSameDay(startAt, endAt)) {
+    throw new ScheduleValidationError(
+      400,
+      "Assignments cannot span multiple days",
+      ScheduleErrorCodes.CROSS_DAY_NOT_ALLOWED,
+      {
+        dayOfWeek: startAt.getDay(),
+        dayName: DAY_NAMES[startAt.getDay()],
+      }
+    );
+  }
+}
+
+/**
  * Validate schedule with optional bypass (for future "manager override" feature)
  * For now, always validates. Returns validation result instead of throwing.
  */

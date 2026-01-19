@@ -1,8 +1,22 @@
 import { db } from "../db";
-import { eq, and, desc, inArray } from "drizzle-orm";
+import { eq, and, desc, inArray, isNull, sql } from "drizzle-orm";
 import { customerCompanies, clients, jobs, invoices } from "@shared/schema";
 import type { Client } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset } from "./base";
+
+// Orphan location info for admin linking
+export interface OrphanLocation {
+  id: string;
+  companyName: string;
+  location: string | null;
+  address: string | null;
+  city: string | null;
+  province: string | null;
+  createdAt: Date;
+  // Suggested match (if exactly one customer company with same name exists)
+  suggestedCustomerCompanyId: string | null;
+  suggestedCustomerCompanyName: string | null;
+}
 
 export interface CustomerCompanyOverview {
   company: typeof customerCompanies.$inferSelect;
@@ -218,7 +232,10 @@ export class CustomerCompanyRepository extends BaseRepository {
       .select()
       .from(clients)
       .where(
-        and(eq(clients.companyId, companyId), eq(clients.companyName, companyName))
+        and(
+          eq(clients.companyId, companyId),
+          eq(clients.companyName, companyName)
+        )
       )
       .orderBy(desc(clients.createdAt));
   }
@@ -243,7 +260,8 @@ export class CustomerCompanyRepository extends BaseRepository {
         and(
           eq(clients.companyId, companyId),
           eq(clients.companyName, companyName),
-          eq(clients.parentCompanyId, null as any)
+          // CRITICAL: Must use isNull() for NULL comparison, not eq(col, null)
+          isNull(clients.parentCompanyId)
         )
       );
 
@@ -485,6 +503,166 @@ export class CustomerCompanyRepository extends BaseRepository {
     ]);
 
     return { jobs: jobsList, invoices: invoicesList };
+  }
+
+  // ========================================
+  // ORPHAN LOCATION MANAGEMENT
+  // ========================================
+
+  /**
+   * Get all orphan locations (parentCompanyId IS NULL) for a tenant
+   * Includes suggested matches when exactly one customer company matches by name
+   */
+  async getOrphanLocations(companyId: string): Promise<OrphanLocation[]> {
+    this.assertCompanyId(companyId);
+
+    // Get all locations with parentCompanyId IS NULL
+    const orphans = await db
+      .select({
+        id: clients.id,
+        companyName: clients.companyName,
+        location: clients.location,
+        address: clients.address,
+        city: clients.city,
+        province: clients.province,
+        createdAt: clients.createdAt,
+      })
+      .from(clients)
+      .where(
+        and(
+          eq(clients.companyId, companyId),
+          isNull(clients.parentCompanyId)
+        )
+      )
+      .orderBy(desc(clients.createdAt));
+
+    if (orphans.length === 0) return [];
+
+    // Get all customer companies for potential matching
+    const allCustomerCompanies = await db
+      .select({
+        id: customerCompanies.id,
+        name: customerCompanies.name,
+      })
+      .from(customerCompanies)
+      .where(
+        and(
+          eq(customerCompanies.companyId, companyId),
+          isNull(customerCompanies.deletedAt)
+        )
+      );
+
+    // Build name -> companies map for exact matching
+    const nameToCompanies = new Map<string, { id: string; name: string }[]>();
+    for (const cc of allCustomerCompanies) {
+      const key = cc.name.toLowerCase().trim();
+      if (!nameToCompanies.has(key)) {
+        nameToCompanies.set(key, []);
+      }
+      nameToCompanies.get(key)!.push(cc);
+    }
+
+    // Map orphans with suggested matches (only if exactly one match)
+    return orphans.map((orphan) => {
+      const key = orphan.companyName.toLowerCase().trim();
+      const matches = nameToCompanies.get(key) || [];
+
+      // Only suggest if exactly ONE match (avoid ambiguity)
+      const suggestion = matches.length === 1 ? matches[0] : null;
+
+      return {
+        id: orphan.id,
+        companyName: orphan.companyName,
+        location: orphan.location,
+        address: orphan.address,
+        city: orphan.city,
+        province: orphan.province,
+        createdAt: orphan.createdAt,
+        suggestedCustomerCompanyId: suggestion?.id ?? null,
+        suggestedCustomerCompanyName: suggestion?.name ?? null,
+      };
+    });
+  }
+
+  /**
+   * Link a single location to a customer company
+   * Safe: validates both records belong to the same tenant
+   */
+  async linkLocationToCustomerCompany(
+    companyId: string,
+    locationId: string,
+    customerCompanyId: string
+  ): Promise<Client> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(locationId, "locationId");
+    this.validateUUID(customerCompanyId, "customerCompanyId");
+
+    // Verify customer company exists and belongs to tenant
+    const company = await this.getCustomerCompany(companyId, customerCompanyId);
+    if (!company) {
+      throw this.notFoundError("Customer company");
+    }
+
+    // Verify location exists and belongs to tenant
+    const [existingLocation] = await db
+      .select()
+      .from(clients)
+      .where(
+        and(
+          eq(clients.id, locationId),
+          eq(clients.companyId, companyId)
+        )
+      )
+      .limit(1);
+
+    if (!existingLocation) {
+      throw this.notFoundError("Location");
+    }
+
+    // Check if already linked to a different company
+    if (existingLocation.parentCompanyId && existingLocation.parentCompanyId !== customerCompanyId) {
+      throw this.validationError(
+        "Location is already linked to a different customer company"
+      );
+    }
+
+    // Link the location (set parentCompanyId and optionally update companyName to match)
+    const [updated] = await db
+      .update(clients)
+      .set({
+        parentCompanyId: customerCompanyId,
+        // Sync companyName to match customer company name for consistency
+        companyName: company.name,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(clients.id, locationId),
+          eq(clients.companyId, companyId)
+        )
+      )
+      .returning();
+
+    return updated;
+  }
+
+  /**
+   * Get count of orphan locations for a tenant (for admin dashboard)
+   */
+  async getOrphanLocationCount(companyId: string): Promise<number> {
+    this.assertCompanyId(companyId);
+
+    const [result] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(clients)
+      .where(
+        and(
+          eq(clients.companyId, companyId),
+          isNull(clients.parentCompanyId)
+        )
+      );
+
+    return Number(result?.count || 0);
   }
 }
 

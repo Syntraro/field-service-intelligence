@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { eq, and, sql, inArray, gt } from "drizzle-orm";
+import { eq, and, sql, inArray, gt, or, isNull } from "drizzle-orm";
 import { invoices, clientLocations, customerCompanies } from "@shared/schema";
 import { BaseRepository } from "./base";
 
@@ -77,7 +77,8 @@ export class ReportsRepository extends BaseRepository {
       .where(
         and(
           eq(invoices.companyId, companyId),
-          eq(invoices.isActive, true),
+          // Legacy data compatibility: treat NULL isActive as active
+          or(eq(invoices.isActive, true), isNull(invoices.isActive)),
           inArray(invoices.status, ["sent", "partial_paid"]),
           gt(sql`CAST(${invoices.balance} AS DECIMAL)`, 0)
         )

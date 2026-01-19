@@ -147,6 +147,31 @@ export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({
 export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
 export type AuditLog = typeof auditLogs.$inferSelect;
 
+// Impersonation sessions - Persistent storage for support mode sessions
+export const impersonationSessions = pgTable("impersonation_sessions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  ownerUserId: varchar("owner_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  targetUserId: varchar("target_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  reason: text("reason"),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  expiresAt: timestamp("expires_at").notNull(),
+  lastSeenAt: timestamp("last_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  endedAt: timestamp("ended_at"),
+  endedReason: text("ended_reason"), // "manual", "expired", "idle", "logout"
+});
+
+export const insertImpersonationSessionSchema = createInsertSchema(impersonationSessions).omit({
+  id: true,
+  createdAt: true,
+  lastSeenAt: true,
+  endedAt: true,
+  endedReason: true,
+});
+
+export type InsertImpersonationSession = z.infer<typeof insertImpersonationSessionSchema>;
+export type ImpersonationSession = typeof impersonationSessions.$inferSelect;
+
 // Customer Companies - Parent entities that map to QBO Customers
 // These represent the corporate entity (e.g. "ABC Holdings Inc")
 export const customerCompanies = pgTable("customer_companies", {
@@ -753,8 +778,21 @@ export const invoices = pgTable("invoices", {
   qboDocNumber: text("qbo_doc_number"), // QBO DocNumber
   qboSyncStatus: text("qbo_sync_status").notNull().default("NOT_SYNCED"), // NOT_SYNCED | SYNCED | PENDING | ERROR
   qboSyncError: text("qbo_sync_error"), // Last sync error message if any
+  // Phase 10A: QBO Billing Lock + Out-of-Sync tracking
+  billingLockedAt: timestamp("billing_locked_at"), // When billing was locked (typically on QBO sync)
+  billingLockReason: text("billing_lock_reason"), // "QBO_SYNCED" or other reason
+  qboOutOfSync: boolean("qbo_out_of_sync").notNull().default(false), // True if edited after QBO sync
+  qboOutOfSyncAt: timestamp("qbo_out_of_sync_at"), // When invoice went out of sync
+  qboOutOfSyncReason: text("qbo_out_of_sync_reason"), // "Edited after QBO sync: <reason>"
+  lastBillingEditAt: timestamp("last_billing_edit_at"), // Last time billing fields were modified
+  lastBillingEditBy: varchar("last_billing_edit_by"), // User who made last billing edit
+  // Discount fields (Phase 11: Invoice Corrections + Discount Support)
+  discountType: text("discount_type"), // "PERCENT" | "AMOUNT" | null (no discount)
+  discountPercent: numeric("discount_percent", { precision: 5, scale: 2 }), // e.g., 10.00 for 10%
+  discountAmount: numeric("discount_amount", { precision: 12, scale: 2 }), // Currency amount
+  discountNotes: text("discount_notes"), // Optional reason/description for discount
   // Status
-  dirty: boolean("dirty").notNull().default(false), // True if edited after last sync
+  dirty: boolean("dirty").notNull().default(false), // True if edited after last sync (legacy)
   isActive: boolean("is_active").notNull().default(true), // Legacy soft delete (use deletedAt)
   // Soft delete (canonical)
   deletedAt: timestamp("deleted_at"), // NULL = active, NOT NULL = soft-deleted
@@ -772,6 +810,13 @@ export const invoices = pgTable("invoices", {
   invoiceNumberPerCompany: uniqueIndex("invoices_company_invoice_number_uq")
     .on(table.companyId, table.invoiceNumber)
     .where(sql`invoice_number is not null`),
+  // Phase 10A: Indexes for QBO sync lock lookups
+  qboOutOfSyncIdx: index("invoices_company_qbo_out_of_sync_idx")
+    .on(table.companyId, table.qboOutOfSync),
+  qboSyncedAtIdx: index("invoices_company_qbo_synced_at_idx")
+    .on(table.companyId, table.qboLastSyncedAt),
+  qboInvoiceIdIdx: index("invoices_qbo_invoice_id_idx")
+    .on(table.qboInvoiceId),
 }));
 
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({
@@ -813,7 +858,24 @@ export const updateInvoiceSchema = z.object({
   qboSyncToken: z.string().nullable().optional(),
   qboLastSyncedAt: z.date().nullable().optional(),
   qboDocNumber: z.string().nullable().optional(),
+  qboSyncStatus: z.string().optional(),
+  qboSyncError: z.string().nullable().optional(),
+  // Phase 10A: QBO lock fields
+  billingLockedAt: z.date().nullable().optional(),
+  billingLockReason: z.string().nullable().optional(),
+  qboOutOfSync: z.boolean().optional(),
+  qboOutOfSyncAt: z.date().nullable().optional(),
+  qboOutOfSyncReason: z.string().nullable().optional(),
+  lastBillingEditAt: z.date().nullable().optional(),
+  lastBillingEditBy: z.string().nullable().optional(),
+  dirty: z.boolean().optional(),
   isActive: z.boolean().optional(),
+  deletedAt: z.date().nullable().optional(),
+  // Discount fields (Phase 11)
+  discountType: z.enum(["PERCENT", "AMOUNT"]).nullable().optional(),
+  discountPercent: z.string().nullable().optional(), // numeric as string
+  discountAmount: z.string().nullable().optional(), // numeric as string
+  discountNotes: z.string().nullable().optional(),
 });
 
 export type InsertInvoice = z.infer<typeof insertInvoiceSchema>;
@@ -2358,3 +2420,864 @@ export const session = pgTable("session", {
   sess: jsonb("sess").notNull(),
   expire: timestamp("expire").notNull(),
 });
+
+// ============================================================================
+// TENANT FEATURE FLAGS
+// Feature gates for tenant-level functionality enablement
+// ============================================================================
+export const tenantFeatures = pgTable("tenant_features", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }).unique(),
+  // Core feature flags
+  quotesEnabled: boolean("quotes_enabled").notNull().default(true),
+  invoicesEnabled: boolean("invoices_enabled").notNull().default(true),
+  calendarEnabled: boolean("calendar_enabled").notNull().default(true),
+  qboEnabled: boolean("qbo_enabled").notNull().default(true),
+  // Future feature flags (placeholders)
+  routeOptimizationEnabled: boolean("route_optimization_enabled").notNull().default(true),
+  multiTechEnabled: boolean("multi_tech_enabled").notNull().default(true),
+  // Metadata
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+});
+
+export const insertTenantFeaturesSchema = createInsertSchema(tenantFeatures).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateTenantFeaturesSchema = z.object({
+  quotesEnabled: z.boolean().optional(),
+  invoicesEnabled: z.boolean().optional(),
+  calendarEnabled: z.boolean().optional(),
+  qboEnabled: z.boolean().optional(),
+  routeOptimizationEnabled: z.boolean().optional(),
+  multiTechEnabled: z.boolean().optional(),
+});
+
+export type InsertTenantFeatures = z.infer<typeof insertTenantFeaturesSchema>;
+export type UpdateTenantFeatures = z.infer<typeof updateTenantFeaturesSchema>;
+export type TenantFeatures = typeof tenantFeatures.$inferSelect;
+
+// Feature key type for type-safe feature checks
+export const featureKeys = [
+  "quotesEnabled",
+  "invoicesEnabled",
+  "calendarEnabled",
+  "qboEnabled",
+  "routeOptimizationEnabled",
+  "multiTechEnabled",
+] as const;
+export type FeatureKey = typeof featureKeys[number];
+
+// ============================================================================
+// NOTIFICATIONS
+// In-app notification system for event-driven alerts
+// ============================================================================
+
+export const notificationTypeEnum = [
+  "quote_approved",
+  "quote_declined",
+  "job_scheduled",
+  "job_rescheduled",
+  "sla_breach",
+  "qbo_failure",
+  "system",
+  "subscription_renewal_30",
+  "subscription_renewal_7",
+  "subscription_renewed",
+  "subscription_reverted",
+  "subscription_cancelled",
+  // Time tracking alerts (Phase 6)
+  "unassigned_time",
+  "untracked_time",
+  "long_running_entry",
+  "missing_clock_out",
+  // Time tracking digest (Phase 7)
+  "weekly_time_digest",
+] as const;
+export type NotificationType = typeof notificationTypeEnum[number];
+
+export const notificationStatusEnum = ["unread", "read"] as const;
+export type NotificationStatus = typeof notificationStatusEnum[number];
+
+export const notifications = pgTable("notifications", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  type: text("type").notNull(), // NotificationType
+  title: text("title").notNull(),
+  body: text("body"),
+  linkUrl: text("link_url"),
+  status: text("status").notNull().default("unread"), // NotificationStatus
+  // Dedupe key to prevent duplicate notifications for the same event
+  dedupeKey: text("dedupe_key"),
+  // Related entity references for context
+  relatedEntityType: text("related_entity_type"), // "quote", "job", "invoice", etc.
+  relatedEntityId: varchar("related_entity_id"),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  readAt: timestamp("read_at"),
+}, (table) => ({
+  // Unique constraint on dedupe key per user to prevent duplicates
+  dedupeIdx: uniqueIndex("notifications_dedupe_idx").on(table.userId, table.dedupeKey),
+  // Index for efficient user notification queries
+  userStatusIdx: index("notifications_user_status_idx").on(table.userId, table.status),
+  companyIdx: index("notifications_company_idx").on(table.companyId),
+}));
+
+export const insertNotificationSchema = createInsertSchema(notifications).omit({
+  id: true,
+  createdAt: true,
+  readAt: true,
+});
+
+export type InsertNotification = z.infer<typeof insertNotificationSchema>;
+export type Notification = typeof notifications.$inferSelect;
+
+// ============================================================================
+// TENANT SUBSCRIPTIONS - Billing cycle management (Monthly/Annual)
+// ============================================================================
+
+export const billingCycleEnum = ["monthly", "annual"] as const;
+export type BillingCycle = typeof billingCycleEnum[number];
+
+export const subscriptionStatusEnum = ["active", "pending_renewal", "cancelled"] as const;
+export type SubscriptionStatus = typeof subscriptionStatusEnum[number];
+
+export const tenantSubscriptions = pgTable("tenant_subscriptions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().unique().references(() => companies.id, { onDelete: "cascade" }),
+  planId: varchar("plan_id").references(() => subscriptionPlans.id, { onDelete: "set null" }),
+  // Billing cycle configuration
+  billingCycle: text("billing_cycle").notNull().default("monthly"), // "monthly" | "annual"
+  status: text("status").notNull().default("active"), // "active" | "pending_renewal" | "cancelled"
+  autoRenewAnnual: boolean("auto_renew_annual").notNull().default(true), // Only meaningful for annual
+  // Date tracking
+  startDate: timestamp("start_date").notNull().default(sql`CURRENT_TIMESTAMP`),
+  endDate: timestamp("end_date"), // Required for annual, null for monthly
+  cancelledAt: timestamp("cancelled_at"), // When the user cancelled
+  // Audit/pricing guard
+  revertedFromAnnual: boolean("reverted_from_annual").notNull().default(false), // True if was annual and auto-reverted to monthly
+  // Metadata
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+}, (table) => ({
+  companyIdx: index("tenant_subscriptions_company_idx").on(table.companyId),
+  statusIdx: index("tenant_subscriptions_status_idx").on(table.status),
+  endDateIdx: index("tenant_subscriptions_end_date_idx").on(table.endDate),
+}));
+
+export const insertTenantSubscriptionSchema = createInsertSchema(tenantSubscriptions).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  billingCycle: z.enum(billingCycleEnum).default("monthly"),
+  status: z.enum(subscriptionStatusEnum).default("active"),
+});
+
+export const updateTenantSubscriptionSchema = z.object({
+  planId: z.string().nullable().optional(),
+  billingCycle: z.enum(billingCycleEnum).optional(),
+  status: z.enum(subscriptionStatusEnum).optional(),
+  autoRenewAnnual: z.boolean().optional(),
+  startDate: z.date().optional(),
+  endDate: z.date().nullable().optional(),
+  cancelledAt: z.date().nullable().optional(),
+  revertedFromAnnual: z.boolean().optional(),
+});
+
+export type InsertTenantSubscription = z.infer<typeof insertTenantSubscriptionSchema>;
+export type UpdateTenantSubscription = z.infer<typeof updateTenantSubscriptionSchema>;
+export type TenantSubscription = typeof tenantSubscriptions.$inferSelect;
+
+// ============================================================================
+// SUBSCRIPTION EVENTS - Idempotency + Audit Trail
+// ============================================================================
+
+export const subscriptionEventTypeEnum = [
+  "renewal_notice_30",
+  "renewal_notice_7",
+  "annual_renewed",
+  "reverted_to_monthly",
+  "cancelled",
+  "signup",
+  "manual_renewal",
+] as const;
+export type SubscriptionEventType = typeof subscriptionEventTypeEnum[number];
+
+export const subscriptionEvents = pgTable("subscription_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  subscriptionId: varchar("subscription_id").notNull().references(() => tenantSubscriptions.id, { onDelete: "cascade" }),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }), // Denormalized for tenant queries
+  type: text("type").notNull(), // SubscriptionEventType
+  // Term end date that this event applies to (for idempotency)
+  termEndDate: timestamp("term_end_date"), // Should be set for annual-related events
+  // Additional context
+  metadata: jsonb("metadata"), // JSON for additional context (e.g., old endDate, new endDate, reason)
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  // UNIQUE constraint for idempotency: prevent duplicate events for the same term
+  idempotencyIdx: uniqueIndex("subscription_events_idempotency_idx")
+    .on(table.subscriptionId, table.type, table.termEndDate),
+  subscriptionIdx: index("subscription_events_subscription_idx").on(table.subscriptionId),
+  companyIdx: index("subscription_events_company_idx").on(table.companyId),
+  typeIdx: index("subscription_events_type_idx").on(table.type),
+}));
+
+export const insertSubscriptionEventSchema = createInsertSchema(subscriptionEvents).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  type: z.enum(subscriptionEventTypeEnum),
+});
+
+export type InsertSubscriptionEvent = z.infer<typeof insertSubscriptionEventSchema>;
+export type SubscriptionEvent = typeof subscriptionEvents.$inferSelect;
+
+// ============================================================================
+// TIME TRACKING V1 - Work Sessions, Time Entries, Technician Job Status Events
+// ============================================================================
+
+// Time entry type enum - categorizes different types of time entries
+export const timeEntryTypeEnum = [
+  "travel_to_job",
+  "on_site",
+  "travel_to_supplier",
+  "supplier_run",
+  "travel_between_jobs",
+  "admin",
+  "break",
+  "other"
+] as const;
+export type TimeEntryType = typeof timeEntryTypeEnum[number];
+
+// Work session source - how the session was created
+export const workSessionSourceEnum = ["mobile", "web", "import"] as const;
+export type WorkSessionSource = typeof workSessionSourceEnum[number];
+
+// Technician job status - for mobile status updates that drive time tracking
+export const technicianJobStatusEnum = ["dispatched", "en_route", "arrived", "paused", "completed"] as const;
+export type TechnicianJobStatus = typeof technicianJobStatusEnum[number];
+
+// ============================================================================
+// WORK SESSIONS - Daily clock in/out for payroll
+// ============================================================================
+export const workSessions = pgTable("work_sessions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  technicianId: varchar("technician_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  // Work date (YYYY-MM-DD format stored as text for consistency with codebase patterns)
+  workDate: text("work_date").notNull(),
+  // Time tracking
+  clockInAt: timestamp("clock_in_at").notNull(),
+  clockOutAt: timestamp("clock_out_at"),
+  breakMinutes: integer("break_minutes"),
+  // Metadata
+  notes: text("notes"),
+  source: text("source").notNull().default("web"), // mobile | web | import
+  // Timestamps
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+}, (table) => ({
+  // Index for finding sessions by technician and date
+  techDateIdx: index("work_sessions_tech_date_idx").on(table.companyId, table.technicianId, table.workDate),
+  // Index for finding open sessions (clock_out_at IS NULL)
+  openSessionIdx: index("work_sessions_open_idx").on(table.companyId, table.technicianId),
+}));
+
+export const insertWorkSessionSchema = createInsertSchema(workSessions).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  source: z.enum(workSessionSourceEnum).default("web"),
+  clockInAt: z.string().datetime().optional(), // Accept ISO string, defaults to now
+  workDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Work date must be in YYYY-MM-DD format"),
+});
+
+export const updateWorkSessionSchema = z.object({
+  clockOutAt: z.string().datetime().nullable().optional(),
+  breakMinutes: z.number().int().min(0).nullable().optional(),
+  notes: z.string().nullable().optional(),
+});
+
+export type InsertWorkSession = z.infer<typeof insertWorkSessionSchema>;
+export type UpdateWorkSession = z.infer<typeof updateWorkSessionSchema>;
+export type WorkSession = typeof workSessions.$inferSelect;
+
+// ============================================================================
+// TIME ENTRIES - Granular time tracking for billing and operations
+// ============================================================================
+export const timeEntries = pgTable("time_entries", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  technicianId: varchar("technician_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  // Optional links
+  workSessionId: varchar("work_session_id").references(() => workSessions.id, { onDelete: "set null" }),
+  jobId: varchar("job_id").references(() => jobs.id, { onDelete: "set null" }),
+  // Entry type
+  type: text("type").notNull(), // TimeEntryType
+  // Time tracking
+  startAt: timestamp("start_at").notNull(),
+  endAt: timestamp("end_at"), // NULL = currently running
+  durationMinutes: integer("duration_minutes"), // Computed on stop
+  // Billing
+  billable: boolean("billable").notNull().default(true),
+  billableRateSnapshot: text("billable_rate_snapshot"), // Snapshot of hourly rate at entry start (stored as string decimal)
+  costRateSnapshot: text("cost_rate_snapshot"), // Optional: cost rate snapshot
+  // Notes
+  notes: text("notes"),
+  // Invoice linkage (prevents double-invoicing)
+  invoiceId: varchar("invoice_id").references(() => invoices.id, { onDelete: "set null" }),
+  invoiceLineId: varchar("invoice_line_id"), // Reference to specific line item
+  invoicedAt: timestamp("invoiced_at"), // When this entry was invoiced
+  // Billing rule snapshots (captured at invoice time for audit trail)
+  billedMinutesSnapshot: integer("billed_minutes_snapshot"), // Final minutes after rules applied
+  billedRateSnapshot: text("billed_rate_snapshot"), // Final hourly rate after multipliers
+  billingRulesHash: text("billing_rules_hash"), // Hash of rules used for audit/debugging
+  // Locking (Phase 9: prevents edits once invoiced)
+  lockedAt: timestamp("locked_at"), // When the entry was locked
+  lockedByInvoiceId: varchar("locked_by_invoice_id"), // Which invoice locked it (app-managed, no FK for safety)
+  lockReason: text("lock_reason"), // e.g., "INVOICED"
+  // Timestamps
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+}, (table) => ({
+  // Index for finding entries by technician and time
+  techStartIdx: index("time_entries_tech_start_idx").on(table.companyId, table.technicianId, table.startAt),
+  // Index for finding entries by job
+  jobIdx: index("time_entries_job_idx").on(table.companyId, table.jobId),
+  // Index for finding uninvoiced entries
+  invoiceIdx: index("time_entries_invoice_idx").on(table.companyId, table.invoiceId),
+  // Partial index for finding running entries (endAt IS NULL) - enforced in code
+  runningIdx: index("time_entries_running_idx").on(table.companyId, table.technicianId),
+  // Index for finding locked entries by invoice
+  lockedByInvoiceIdx: index("time_entries_locked_by_invoice_idx").on(table.lockedByInvoiceId),
+}));
+
+export const insertTimeEntrySchema = createInsertSchema(timeEntries).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  durationMinutes: true, // Computed on stop
+  invoiceId: true,
+  invoiceLineId: true,
+  invoicedAt: true,
+  // Lock fields are server-managed only
+  lockedAt: true,
+  lockedByInvoiceId: true,
+  lockReason: true,
+}).extend({
+  type: z.enum(timeEntryTypeEnum),
+  startAt: z.string().datetime().optional(), // Accept ISO string, defaults to now
+  endAt: z.string().datetime().nullable().optional(),
+  billable: z.boolean().default(true),
+});
+
+export const updateTimeEntrySchema = z.object({
+  jobId: z.string().nullable().optional(),
+  type: z.enum(timeEntryTypeEnum).optional(),
+  startAt: z.string().datetime().optional(),
+  endAt: z.string().datetime().nullable().optional(),
+  billable: z.boolean().optional(),
+  notes: z.string().nullable().optional(),
+});
+
+export type InsertTimeEntry = z.infer<typeof insertTimeEntrySchema>;
+export type UpdateTimeEntry = z.infer<typeof updateTimeEntrySchema>;
+export type TimeEntry = typeof timeEntries.$inferSelect;
+
+// ============================================================================
+// TIME ENTRY LOCK OVERRIDES - Audit trail for manager lock overrides
+// Phase 9: Tracks when managers override invoice locks on time entries
+// ============================================================================
+
+export const timeEntryLockOverrides = pgTable("time_entry_lock_overrides", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  timeEntryId: varchar("time_entry_id").notNull().references(() => timeEntries.id, { onDelete: "cascade" }),
+  invoiceId: varchar("invoice_id"), // The invoice that had locked the entry (if applicable)
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }), // Manager who performed override
+  reason: text("reason").notNull(), // Required reason for override
+  beforeJson: text("before_json"), // Snapshot of entry before change (minimal fields)
+  afterJson: text("after_json"), // Snapshot of entry after change (minimal fields)
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  companyIdx: index("time_entry_lock_overrides_company_idx").on(table.companyId),
+  timeEntryIdx: index("time_entry_lock_overrides_entry_idx").on(table.timeEntryId),
+  createdAtIdx: index("time_entry_lock_overrides_created_idx").on(table.createdAt),
+}));
+
+export type TimeEntryLockOverride = typeof timeEntryLockOverrides.$inferSelect;
+
+// ============================================================================
+// TECHNICIAN JOB STATUS EVENTS - Mobile status updates that drive time entries
+// Note: This is SEPARATE from jobStatusEvents which tracks status CHANGE audit trail
+// This table records technician-initiated status updates (en_route, arrived, etc.)
+// that trigger automatic time entry creation/stopping
+// ============================================================================
+export const technicianJobStatusEvents = pgTable("technician_job_status_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  jobId: varchar("job_id").notNull().references(() => jobs.id, { onDelete: "cascade" }),
+  technicianId: varchar("technician_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  // Status reported by technician
+  status: text("status").notNull(), // TechnicianJobStatus: dispatched, en_route, arrived, paused, completed
+  // When the status was reported (may differ from createdAt if backfilled)
+  at: timestamp("at").notNull(),
+  // Source and notes
+  source: text("source").notNull().default("mobile"), // mobile | web
+  notes: text("notes"),
+  // Link to time entry created/stopped by this event
+  timeEntryId: varchar("time_entry_id").references(() => timeEntries.id, { onDelete: "set null" }),
+  // Timestamp
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  // Index for finding events by job
+  jobAtIdx: index("technician_job_status_events_job_at_idx").on(table.companyId, table.jobId, table.at),
+  // Index for finding events by technician
+  techAtIdx: index("technician_job_status_events_tech_at_idx").on(table.companyId, table.technicianId, table.at),
+}));
+
+export const insertTechnicianJobStatusEventSchema = createInsertSchema(technicianJobStatusEvents).omit({
+  id: true,
+  createdAt: true,
+}).extend({
+  status: z.enum(technicianJobStatusEnum),
+  at: z.string().datetime().optional(), // Accept ISO string, defaults to now
+  source: z.enum(["mobile", "web"]).default("mobile"),
+});
+
+export type InsertTechnicianJobStatusEvent = z.infer<typeof insertTechnicianJobStatusEventSchema>;
+export type TechnicianJobStatusEvent = typeof technicianJobStatusEvents.$inferSelect;
+
+// ============================================================================
+// TIME TRACKING SCHEMAS FOR API VALIDATION
+// ============================================================================
+
+// Clock in request
+export const clockInRequestSchema = z.object({
+  at: z.string().datetime().optional(), // Defaults to now
+  source: z.enum(workSessionSourceEnum).default("web"),
+  notes: z.string().nullable().optional(),
+});
+export type ClockInRequest = z.infer<typeof clockInRequestSchema>;
+
+// Clock out request
+export const clockOutRequestSchema = z.object({
+  at: z.string().datetime().optional(), // Defaults to now
+  breakMinutes: z.number().int().min(0).optional(),
+  notes: z.string().nullable().optional(),
+});
+export type ClockOutRequest = z.infer<typeof clockOutRequestSchema>;
+
+// Start time entry request
+export const startTimeEntryRequestSchema = z.object({
+  type: z.enum(timeEntryTypeEnum),
+  jobId: z.string().nullable().optional(),
+  at: z.string().datetime().optional(), // Defaults to now
+  notes: z.string().nullable().optional(),
+  billable: z.boolean().default(true),
+});
+export type StartTimeEntryRequest = z.infer<typeof startTimeEntryRequestSchema>;
+
+// Stop time entry request
+export const stopTimeEntryRequestSchema = z.object({
+  timeEntryId: z.string().optional(), // If not provided, stops current running entry
+  at: z.string().datetime().optional(), // Defaults to now
+  notes: z.string().nullable().optional(),
+});
+export type StopTimeEntryRequest = z.infer<typeof stopTimeEntryRequestSchema>;
+
+// Create finished time entry request (for manual entry)
+export const createFinishedTimeEntryRequestSchema = z.object({
+  type: z.enum(timeEntryTypeEnum),
+  jobId: z.string().nullable().optional(),
+  startAt: z.string().datetime(),
+  endAt: z.string().datetime(),
+  notes: z.string().nullable().optional(),
+  billable: z.boolean().default(true),
+});
+export type CreateFinishedTimeEntryRequest = z.infer<typeof createFinishedTimeEntryRequestSchema>;
+
+// Job status update request (mobile flow)
+export const jobStatusUpdateRequestSchema = z.object({
+  status: z.enum(technicianJobStatusEnum),
+  at: z.string().datetime().optional(), // Defaults to now
+  notes: z.string().nullable().optional(),
+  source: z.enum(["mobile", "web"]).default("mobile"),
+});
+export type JobStatusUpdateRequest = z.infer<typeof jobStatusUpdateRequestSchema>;
+
+// ============================================================================
+// PHASE 3: MANAGER UPDATE SCHEMAS
+// ============================================================================
+
+// Manager update for time entries (with invoice override support)
+export const managerUpdateTimeEntrySchema = z.object({
+  billable: z.boolean().optional(),
+  notes: z.string().nullable().optional(),
+  type: z.enum(timeEntryTypeEnum).optional(),
+  startAt: z.string().datetime().optional(),
+  endAt: z.string().datetime().nullable().optional(),
+  overrideInvoiceLock: z.boolean().optional(),
+  overrideReason: z.string().optional(), // Required if overrideInvoiceLock is true for invoiced entries
+});
+export type ManagerUpdateTimeEntry = z.infer<typeof managerUpdateTimeEntrySchema>;
+
+// Unassigned time entry response type
+export interface UnassignedTimeEntry {
+  id: string;
+  technicianId: string;
+  technicianName: string | null;
+  type: TimeEntryType;
+  startAt: Date;
+  endAt: Date | null;
+  durationMinutes: number | null;
+  billable: boolean;
+  billableRateSnapshot: string | null;
+  notes: string | null;
+  invoiced: boolean;
+  // Phase 9: Lock fields
+  lockedAt: Date | null;
+  lockedByInvoiceId: string | null;
+  lockReason: string | null;
+  createdAt: Date;
+}
+
+// Job time summary response type
+export interface JobTimeSummary {
+  jobId: string;
+  travelMinutes: number;
+  onSiteMinutes: number;
+  otherMinutes: number;
+  billableMinutes: number;
+  totalMinutes: number;
+  isRunning: boolean;
+  runningType: TimeEntryType | null;
+  technicianBreakdown: Array<{
+    technicianId: string;
+    technicianName: string | null;
+    travelMinutes: number;
+    onSiteMinutes: number;
+    otherMinutes: number;
+    billableMinutes: number;
+    isRunning: boolean;
+  }>;
+  entries: Array<{
+    id: string;
+    technicianId: string;
+    type: TimeEntryType;
+    startAt: Date;
+    endAt: Date | null;
+    durationMinutes: number | null;
+    billable: boolean;
+    invoiced: boolean;
+  }>;
+}
+
+// ============================================================================
+// PHASE 4: TIME APPROVALS (Payroll Approval)
+// ============================================================================
+
+export const timeApprovals = pgTable("time_approvals", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  technicianId: varchar("technician_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  // Week boundaries (Monday to Sunday in company timezone)
+  weekStart: text("week_start").notNull(), // YYYY-MM-DD (Monday)
+  weekEnd: text("week_end").notNull(), // YYYY-MM-DD (Sunday)
+  // Approval info
+  approvedByUserId: varchar("approved_by_user_id").notNull().references(() => users.id, { onDelete: "restrict" }),
+  approvedAt: timestamp("approved_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  notes: text("notes"),
+  // Timestamps
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  // Unique constraint: one approval per technician per week
+  uniqueTechWeek: sql`UNIQUE(${table.companyId}, ${table.technicianId}, ${table.weekStart})`,
+  // Index for fetching approvals by week
+  weekIdx: index("time_approvals_week_idx").on(table.companyId, table.weekStart),
+  // Index for fetching approvals by technician
+  techWeekIdx: index("time_approvals_tech_week_idx").on(table.companyId, table.technicianId, table.weekStart),
+}));
+
+export const insertTimeApprovalSchema = createInsertSchema(timeApprovals).omit({
+  id: true,
+  createdAt: true,
+  approvedAt: true,
+});
+
+export type InsertTimeApproval = z.infer<typeof insertTimeApprovalSchema>;
+export type TimeApproval = typeof timeApprovals.$inferSelect;
+
+// ============================================================================
+// PHASE 4: PAYROLL SCHEMAS FOR API VALIDATION
+// ============================================================================
+
+// Approve week request
+export const approveWeekRequestSchema = z.object({
+  technicianId: z.string().uuid(),
+  weekStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD format"),
+  notes: z.string().nullable().optional(),
+});
+export type ApproveWeekRequest = z.infer<typeof approveWeekRequestSchema>;
+
+// Daily payroll breakdown
+export interface DailyPayrollBreakdown {
+  date: string; // YYYY-MM-DD
+  dayOfWeek: string; // Mon, Tue, etc.
+  workedMinutes: number;
+  trackedMinutes: number;
+  billableMinutes: number;
+}
+
+// Technician weekly payroll summary
+export interface TechnicianWeeklySummary {
+  technicianId: string;
+  technicianName: string | null;
+  weekStart: string;
+  weekEnd: string;
+  totals: {
+    workedMinutes: number;
+    trackedMinutes: number;
+    billableMinutes: number;
+    untrackedMinutesRaw: number; // Can be negative
+  };
+  daily: DailyPayrollBreakdown[];
+  approved: boolean;
+  approvedAt: Date | null;
+  approvedByName: string | null;
+}
+
+// Weekly payroll summary response
+export interface WeeklyPayrollSummary {
+  weekStart: string;
+  weekEnd: string;
+  summaries: TechnicianWeeklySummary[];
+}
+
+// ============================================================================
+// TIME ANALYTICS (Phase 5)
+// ============================================================================
+
+// Time breakdown by type
+export interface TimeByTypeBreakdown {
+  travel_to_job: number;
+  on_site: number;
+  travel_to_supplier: number;
+  supplier_run: number;
+  travel_between_jobs: number;
+  admin: number;
+  break: number;
+  other: number;
+}
+
+// Weekly analytics data point
+export interface WeeklyAnalyticsData {
+  weekStart: string; // YYYY-MM-DD (Monday)
+  weekEnd: string;   // YYYY-MM-DD (Sunday)
+  workedMinutes: number;      // From work_sessions
+  trackedMinutes: number;     // From time_entries (endAt not null)
+  billableMinutes: number;    // From time_entries where billable = true
+  untrackedMinutesRaw: number; // worked - tracked (can be negative)
+  unassignedMinutes: number;  // time_entries where jobId IS NULL
+  byTypeMinutes: TimeByTypeBreakdown;
+  // Derived convenience fields
+  travelMinutes: number;      // travel_to_job + travel_to_supplier + travel_between_jobs
+  onSiteMinutes: number;
+  supplierMinutes: number;    // travel_to_supplier + supplier_run
+  adminMinutes: number;
+  breakMinutes: number;
+  otherMinutes: number;
+}
+
+// Weekly analytics response
+export interface WeeklyAnalyticsResponse {
+  weeks: WeeklyAnalyticsData[];
+  // Summary totals across all weeks
+  totals: {
+    workedMinutes: number;
+    trackedMinutes: number;
+    billableMinutes: number;
+    untrackedMinutesRaw: number;
+    unassignedMinutes: number;
+  };
+}
+
+// Technician analytics for a single week
+export interface TechnicianAnalytics {
+  technicianId: string;
+  technicianName: string | null;
+  workedMinutes: number;
+  trackedMinutes: number;
+  billableMinutes: number;
+  untrackedMinutesRaw: number;
+  unassignedMinutes: number;
+  billablePct: number; // billable / tracked (0 if tracked is 0)
+  // Simplified type breakdown
+  travelMinutes: number;
+  onSiteMinutes: number;
+  supplierMinutes: number;
+  adminMinutes: number;
+  breakMinutes: number;
+  otherMinutes: number;
+}
+
+// Technician analytics response
+export interface TechnicianAnalyticsResponse {
+  weekStart: string;
+  weekEnd: string;
+  technicians: TechnicianAnalytics[];
+}
+
+// ============================================================================
+// PHASE 7: TIME ALERT SETTINGS (Configurable Thresholds)
+// ============================================================================
+
+export const timeAlertSettings = pgTable("time_alert_settings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().unique().references(() => companies.id, { onDelete: "cascade" }),
+  // Threshold settings (in minutes)
+  unassignedThresholdMinutes: integer("unassigned_threshold_minutes").notNull().default(30),
+  untrackedThresholdMinutes: integer("untracked_threshold_minutes").notNull().default(60),
+  longRunningThresholdMinutes: integer("long_running_threshold_minutes").notNull().default(360), // 6 hours
+  missingClockOutThresholdMinutes: integer("missing_clock_out_threshold_minutes").notNull().default(720), // 12 hours
+  // Escalation settings
+  repeatDaysToEscalate: integer("repeat_days_to_escalate").notNull().default(3),
+  // Digest settings
+  digestDayOfWeek: integer("digest_day_of_week").notNull().default(1), // 1=Monday, 7=Sunday
+  digestEnabled: boolean("digest_enabled").notNull().default(true),
+  // Timestamps
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const insertTimeAlertSettingsSchema = createInsertSchema(timeAlertSettings).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateTimeAlertSettingsSchema = insertTimeAlertSettingsSchema.partial().omit({
+  companyId: true,
+});
+
+export type InsertTimeAlertSettings = z.infer<typeof insertTimeAlertSettingsSchema>;
+export type UpdateTimeAlertSettings = z.infer<typeof updateTimeAlertSettingsSchema>;
+export type TimeAlertSettings = typeof timeAlertSettings.$inferSelect;
+
+// Default settings values
+export const DEFAULT_TIME_ALERT_SETTINGS = {
+  unassignedThresholdMinutes: 30,
+  untrackedThresholdMinutes: 60,
+  longRunningThresholdMinutes: 360, // 6 hours
+  missingClockOutThresholdMinutes: 720, // 12 hours
+  repeatDaysToEscalate: 3,
+  digestDayOfWeek: 1, // Monday
+  digestEnabled: true,
+} as const;
+
+// ============================================================================
+// PHASE 7: NOTIFICATION SNOOZES
+// ============================================================================
+
+export const notificationSnoozes = pgTable("notification_snoozes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  type: text("type").notNull(), // NotificationType being snoozed
+  snoozeUntil: timestamp("snooze_until").notNull(),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  // Unique constraint: one snooze per user per type
+  uniqueUserType: uniqueIndex("notification_snoozes_user_type_idx").on(table.companyId, table.userId, table.type),
+}));
+
+export const insertNotificationSnoozeSchema = createInsertSchema(notificationSnoozes).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertNotificationSnooze = z.infer<typeof insertNotificationSnoozeSchema>;
+export type NotificationSnooze = typeof notificationSnoozes.$inferSelect;
+
+// Snooze request schema for API
+export const snoozeRequestSchema = z.object({
+  type: z.enum(notificationTypeEnum),
+  snoozeUntil: z.string().datetime().or(z.date()),
+});
+export type SnoozeRequest = z.infer<typeof snoozeRequestSchema>;
+
+// Clear snooze request schema
+export const clearSnoozeRequestSchema = z.object({
+  type: z.enum(notificationTypeEnum),
+});
+export type ClearSnoozeRequest = z.infer<typeof clearSnoozeRequestSchema>;
+
+// ============================================================================
+// TIME BILLING RULES - Company-configurable rules for time-to-invoice conversion
+// ============================================================================
+
+export const roundingModeEnum = ["up", "nearest", "down"] as const;
+export type RoundingMode = (typeof roundingModeEnum)[number];
+
+export const timeBillingRules = pgTable("time_billing_rules", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().unique().references(() => companies.id, { onDelete: "cascade" }),
+  // Rounding settings
+  roundingIncrementMinutes: integer("rounding_increment_minutes").notNull().default(15), // 1, 5, or 15
+  roundingMode: text("rounding_mode").notNull().default("up"), // up | nearest | down
+  minimumBillableMinutes: integer("minimum_billable_minutes").notNull().default(15),
+  // Type-specific billing toggles
+  billTravel: boolean("bill_travel").notNull().default(true),
+  billSupplierRun: boolean("bill_supplier_run").notNull().default(true),
+  billAdmin: boolean("bill_admin").notNull().default(false),
+  // Rate multipliers (stored as decimal strings for precision)
+  travelRateMultiplier: text("travel_rate_multiplier").notNull().default("1.0"),
+  onSiteRateMultiplier: text("on_site_rate_multiplier").notNull().default("1.0"),
+  // Optional caps
+  maxTravelMinutesPerJobPerDay: integer("max_travel_minutes_per_job_per_day"), // NULL = no cap
+  // Timestamps
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+});
+
+// Default billing rules values for companies without explicit settings
+export const DEFAULT_TIME_BILLING_RULES = {
+  roundingIncrementMinutes: 15,
+  roundingMode: "up" as RoundingMode,
+  minimumBillableMinutes: 15,
+  billTravel: true,
+  billSupplierRun: true,
+  billAdmin: false,
+  travelRateMultiplier: "1.0",
+  onSiteRateMultiplier: "1.0",
+  maxTravelMinutesPerJobPerDay: null as number | null,
+};
+
+export const insertTimeBillingRulesSchema = createInsertSchema(timeBillingRules).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateTimeBillingRulesSchema = z.object({
+  roundingIncrementMinutes: z.number().int().min(1).max(60).optional(),
+  roundingMode: z.enum(roundingModeEnum).optional(),
+  minimumBillableMinutes: z.number().int().min(0).max(120).optional(),
+  billTravel: z.boolean().optional(),
+  billSupplierRun: z.boolean().optional(),
+  billAdmin: z.boolean().optional(),
+  travelRateMultiplier: z.string().regex(/^\d+(\.\d+)?$/).optional(),
+  onSiteRateMultiplier: z.string().regex(/^\d+(\.\d+)?$/).optional(),
+  maxTravelMinutesPerJobPerDay: z.number().int().min(0).nullable().optional(),
+});
+
+export type InsertTimeBillingRules = z.infer<typeof insertTimeBillingRulesSchema>;
+export type UpdateTimeBillingRules = z.infer<typeof updateTimeBillingRulesSchema>;
+export type TimeBillingRules = typeof timeBillingRules.$inferSelect;

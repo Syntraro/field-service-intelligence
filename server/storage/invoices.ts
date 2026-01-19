@@ -1,11 +1,79 @@
 import { db } from "../db";
-import { eq, and, sql, desc, or, lt, isNull } from "drizzle-orm";
-import { invoices, invoiceLines, clients, payments } from "@shared/schema";
+import { eq, and, sql, desc, or, lt, isNull, isNotNull, asc } from "drizzle-orm";
+import { invoices, invoiceLines, clients, payments, jobs, jobParts, laborEntries, technicians, timeEntries, users } from "@shared/schema";
 import { BaseRepository, parseDecimal } from "./base";
 import { encodeCursor, decodeCursor } from "../utils/cursor";
 import type { PaginationParams } from "../utils/pagination";
 import type { PaginatedResult } from "./types";
+import {
+  timeBillingRulesRepository,
+  applyBillingRulesToEntries,
+  type TimeBillingRulesWithDefaults,
+} from "./timeBillingRules";
 
+// ============================================================================
+// PHASE A.1.1: INVOICE CREATION SOURCE GUARD (COMPILE-TIME + RUNTIME)
+// ============================================================================
+/**
+ * Authoritative list of allowed invoice creation sources.
+ * Adding a new source requires intentional edit here and documentation update.
+ *
+ * INVOICE_ROUTE: POST /api/invoices/from-job/:jobId
+ * JOB_CLOSE_ROUTE: POST /api/jobs/:id/close (mode=invoice_now)
+ */
+export const INVOICE_CREATION_SOURCES = [
+  "INVOICE_ROUTE",
+  "JOB_CLOSE_ROUTE",
+] as const;
+
+/**
+ * Type for invoice creation source - compile-time enforcement.
+ * Any call to createInvoiceFromJob() MUST pass one of these values.
+ */
+export type InvoiceCreationSource = (typeof INVOICE_CREATION_SOURCES)[number];
+
+/**
+ * Result from idempotent invoice creation
+ */
+export interface CreateInvoiceResult {
+  invoice: any;
+  created: boolean; // true if newly created, false if already existed
+  lines?: any[];
+}
+
+/**
+ * Invoice pre-validation result
+ */
+export interface InvoiceValidationResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  billableItems: {
+    partsCount: number;
+    laborMinutes: number;
+    timeEntriesCount: number;
+    estimatedTotal: number;
+  };
+}
+
+/**
+ * InvoiceRepository - Handles all invoice database operations
+ *
+ * PHASE A.1 INVOICE CREATION SAFETY:
+ * ================================
+ * ALL invoice creation MUST go through createInvoiceFromJob() which provides:
+ * - SELECT FOR UPDATE locking to prevent race conditions
+ * - Idempotency guarantees (same job = same invoice)
+ * - Proper invoice number sequencing
+ * - Job status transition to 'invoiced'
+ *
+ * There is NO public createInvoice() method by design.
+ * Direct db.insert(invoices) outside of createInvoiceFromJob() is PROHIBITED.
+ *
+ * Routes that create invoices:
+ * - POST /api/invoices/from-job/:jobId -> calls createInvoiceFromJob()
+ * - POST /api/jobs/:id/close (mode=invoice_now) -> calls createInvoiceFromJob()
+ */
 export class InvoiceRepository extends BaseRepository {
   /**
    * Get invoices for a company with client data (paginated)
@@ -49,6 +117,12 @@ export class InvoiceRepository extends BaseRepository {
       qboSyncToken: invoices.qboSyncToken,
       qboLastSyncedAt: invoices.qboLastSyncedAt,
       qboDocNumber: invoices.qboDocNumber,
+      qboOutOfSync: invoices.qboOutOfSync,
+      // Phase 11: Discount fields
+      discountType: invoices.discountType,
+      discountPercent: invoices.discountPercent,
+      discountAmount: invoices.discountAmount,
+      discountNotes: invoices.discountNotes,
       dirty: invoices.dirty,
       isActive: invoices.isActive,
       version: invoices.version,
@@ -65,7 +139,11 @@ export class InvoiceRepository extends BaseRepository {
       .select(selectFields)
       .from(invoices)
       .leftJoin(clients, eq(invoices.locationId, clients.id))
-      .where(and(eq(invoices.companyId, companyId), eq(invoices.isActive, true)))
+      .where(and(
+        eq(invoices.companyId, companyId),
+        // Legacy data compatibility: treat NULL isActive as active
+        or(eq(invoices.isActive, true), isNull(invoices.isActive))
+      ))
       .$dynamic();
 
     if (cursor) {
@@ -89,7 +167,16 @@ export class InvoiceRepository extends BaseRepository {
 
     const rows = await query;
     const hasMore = rows.length > limit;
-    const items = hasMore ? rows.slice(0, limit) : rows;
+    const rawItems = hasMore ? rows.slice(0, limit) : rows;
+
+    // Transform items to add computed display names for client
+    const items = rawItems.map(row => ({
+      ...row,
+      // Computed: locationName = location site name OR fallback to company name + address
+      locationName: row.client?.location || row.client?.companyName || null,
+      // Computed: customerCompanyName = the parent company name (stored in companyName)
+      customerCompanyName: row.client?.companyName || null,
+    }));
 
     const meta: PaginatedResult<any>["meta"] = { limit, hasMore };
 
@@ -145,6 +232,21 @@ export class InvoiceRepository extends BaseRepository {
         qboSyncToken: invoices.qboSyncToken,
         qboLastSyncedAt: invoices.qboLastSyncedAt,
         qboDocNumber: invoices.qboDocNumber,
+        qboSyncStatus: invoices.qboSyncStatus,
+        qboSyncError: invoices.qboSyncError,
+        // Phase 10A: QBO lock fields
+        billingLockedAt: invoices.billingLockedAt,
+        billingLockReason: invoices.billingLockReason,
+        qboOutOfSync: invoices.qboOutOfSync,
+        qboOutOfSyncAt: invoices.qboOutOfSyncAt,
+        qboOutOfSyncReason: invoices.qboOutOfSyncReason,
+        lastBillingEditAt: invoices.lastBillingEditAt,
+        lastBillingEditBy: invoices.lastBillingEditBy,
+        // Phase 11: Discount fields
+        discountType: invoices.discountType,
+        discountPercent: invoices.discountPercent,
+        discountAmount: invoices.discountAmount,
+        discountNotes: invoices.discountNotes,
         dirty: invoices.dirty,
         isActive: invoices.isActive,
         version: invoices.version,
@@ -170,6 +272,29 @@ export class InvoiceRepository extends BaseRepository {
   }
 
   /**
+   * Get invoice by job ID (for idempotency checks)
+   */
+  async getInvoiceByJobId(companyId: string, jobId: string) {
+    this.assertCompanyId(companyId);
+    this.validateUUID(jobId, "jobId");
+
+    const rows = await db
+      .select()
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.companyId, companyId),
+          eq(invoices.jobId, jobId),
+          // Legacy data compatibility: treat NULL isActive as active
+          or(eq(invoices.isActive, true), isNull(invoices.isActive))
+        )
+      )
+      .limit(1);
+
+    return rows[0] ?? null;
+  }
+
+  /**
    * Get invoice statistics
    */
   async getInvoiceStats(companyId: string) {
@@ -180,7 +305,11 @@ export class InvoiceRepository extends BaseRepository {
         totalAmount: sql<number>`COALESCE(sum(${invoices.total}), 0)`,
       })
       .from(invoices)
-      .where(and(eq(invoices.companyId, companyId), eq(invoices.isActive, true)))
+      .where(and(
+        eq(invoices.companyId, companyId),
+        // Legacy data compatibility: treat NULL isActive as active
+        or(eq(invoices.isActive, true), isNull(invoices.isActive))
+      ))
       .groupBy(invoices.status);
 
     return result;
@@ -203,10 +332,10 @@ export class InvoiceRepository extends BaseRepository {
     if (currentVersion === undefined) {
       const rows = await db
         .update(invoices)
-        .set({ 
-          ...patch, 
+        .set({
+          ...patch,
           version: sql`${invoices.version} + 1`,
-          updatedAt: new Date() 
+          updatedAt: new Date()
         })
         .where(and(eq(invoices.id, invoiceId), eq(invoices.companyId, companyId)))
         .returning();
@@ -237,7 +366,7 @@ export class InvoiceRepository extends BaseRepository {
       if (!existing) {
         throw this.notFoundError("Invoice");
       }
-      
+
       // Version mismatch
       throw new Error(
         `Invoice was modified by another user. Please reload and try again. ` +
@@ -330,43 +459,35 @@ export class InvoiceRepository extends BaseRepository {
   }
 
   /**
-   * Recalculate invoice totals from line items
+   * Recalculate invoice totals (delegates to transaction version)
+   * Phase 11: Now handles discounts
    */
   private async recalculateInvoiceTotals(companyId: string, invoiceId: string): Promise<void> {
-    const rows = await db
-      .select({
-        subtotal: sql<number>`COALESCE(SUM(${invoiceLines.lineSubtotal}), 0)`,
-        taxTotal: sql<number>`COALESCE(SUM(${invoiceLines.lineSubtotal} * ${invoiceLines.taxRate}), 0)`,
-        total: sql<number>`COALESCE(SUM(${invoiceLines.lineSubtotal} * (1 + ${invoiceLines.taxRate})), 0)`,
-      })
-      .from(invoiceLines)
-      .where(and(
-        eq(invoiceLines.companyId, companyId), // Tenant isolation
-        eq(invoiceLines.invoiceId, invoiceId)
-      ));
-
-    const totals = rows[0] ?? { subtotal: 0, taxTotal: 0, total: 0 };
-
-    await db
-      .update(invoices)
-      .set({
-        subtotal: String(totals.subtotal),
-        taxTotal: String(totals.taxTotal),
-        total: String(totals.total),
-        updatedAt: new Date(),
-      })
-      .where(and(eq(invoices.companyId, companyId), eq(invoices.id, invoiceId)));
+    await db.transaction(async (tx) => {
+      await this.recalculateInvoiceTotalsInTx(tx, companyId, invoiceId);
+    });
   }
 
   /**
    * Recalculate invoice totals within a transaction
    */
   private async recalculateInvoiceTotalsInTx(tx: any, companyId: string, invoiceId: string): Promise<void> {
+    // Get current invoice to read discount settings
+    const [invoice] = await tx
+      .select({
+        discountType: invoices.discountType,
+        discountPercent: invoices.discountPercent,
+        discountAmount: invoices.discountAmount,
+        amountPaid: invoices.amountPaid,
+      })
+      .from(invoices)
+      .where(and(eq(invoices.companyId, companyId), eq(invoices.id, invoiceId)));
+
+    // Sum line items
     const rows = await tx
       .select({
         subtotal: sql<number>`COALESCE(SUM(${invoiceLines.lineSubtotal}), 0)`,
         taxTotal: sql<number>`COALESCE(SUM(${invoiceLines.lineSubtotal} * ${invoiceLines.taxRate}), 0)`,
-        total: sql<number>`COALESCE(SUM(${invoiceLines.lineSubtotal} * (1 + ${invoiceLines.taxRate})), 0)`,
       })
       .from(invoiceLines)
       .where(and(
@@ -374,22 +495,192 @@ export class InvoiceRepository extends BaseRepository {
         eq(invoiceLines.invoiceId, invoiceId)
       ));
 
-    const totals = rows[0] ?? { subtotal: 0, taxTotal: 0, total: 0 };
+    const lineTotals = rows[0] ?? { subtotal: 0, taxTotal: 0 };
+    const subtotal = parseFloat(String(lineTotals.subtotal)) || 0;
+
+    // Phase 11: Calculate discount
+    let discountAmountComputed = 0;
+    let discountPercentComputed = 0;
+    const discountType = invoice?.discountType;
+
+    if (discountType === "PERCENT" && invoice?.discountPercent) {
+      discountPercentComputed = parseFloat(invoice.discountPercent) || 0;
+      discountAmountComputed = this.roundCurrency(subtotal * (discountPercentComputed / 100));
+    } else if (discountType === "AMOUNT" && invoice?.discountAmount) {
+      discountAmountComputed = Math.min(parseFloat(invoice.discountAmount) || 0, subtotal);
+      discountPercentComputed = subtotal > 0
+        ? this.roundPercent((discountAmountComputed / subtotal) * 100)
+        : 0;
+    }
+
+    // Discounted subtotal (never negative)
+    const discountedSubtotal = Math.max(0, subtotal - discountAmountComputed);
+
+    // Recalculate tax on discounted subtotal
+    // Note: We calculate proportional tax reduction based on discount
+    const originalTax = parseFloat(String(lineTotals.taxTotal)) || 0;
+    const taxRatio = subtotal > 0 ? discountedSubtotal / subtotal : 0;
+    const adjustedTax = this.roundCurrency(originalTax * taxRatio);
+
+    // Final total
+    const total = this.roundCurrency(discountedSubtotal + adjustedTax);
+
+    // Balance = total - amountPaid
+    const amountPaid = parseFloat(invoice?.amountPaid || "0") || 0;
+    const balance = this.roundCurrency(total - amountPaid);
 
     await tx
       .update(invoices)
       .set({
-        subtotal: String(totals.subtotal),
-        taxTotal: String(totals.taxTotal),
-        total: String(totals.total),
+        subtotal: String(subtotal.toFixed(2)),
+        taxTotal: String(adjustedTax.toFixed(2)),
+        total: String(total.toFixed(2)),
+        balance: String(balance.toFixed(2)),
+        // Update computed discount values (keep original type, update complementary value)
+        discountPercent: discountType ? String(discountPercentComputed.toFixed(2)) : null,
+        discountAmount: discountType ? String(discountAmountComputed.toFixed(2)) : null,
         updatedAt: new Date(),
       })
       .where(and(eq(invoices.companyId, companyId), eq(invoices.id, invoiceId)));
   }
 
+  /** Round to 2 decimal places for currency */
+  private roundCurrency(value: number): number {
+    return Math.round(value * 100) / 100;
+  }
+
+  /** Round to 2 decimal places for percentage */
+  private roundPercent(value: number): number {
+    return Math.round(value * 100) / 100;
+  }
+
   /**
-   * Refresh invoice from job (IDEMPOTENT)
-   * Replaces all invoice lines with current job parts
+   * Pre-invoice validation: Check if job has billable items
+   * Returns validation result with errors, warnings, and billable item counts
+   */
+  async validateJobForInvoice(companyId: string, jobId: string): Promise<InvoiceValidationResult> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(jobId, "jobId");
+
+    const errors: string[] = [];
+    const warnings: string[] = [];
+
+    // Get the job
+    const [job] = await db
+      .select()
+      .from(jobs)
+      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+      .limit(1);
+
+    if (!job) {
+      return {
+        valid: false,
+        errors: ["Job not found"],
+        warnings: [],
+        billableItems: { partsCount: 0, laborMinutes: 0, timeEntriesCount: 0, estimatedTotal: 0 },
+      };
+    }
+
+    // Check required fields
+    if (!job.locationId) {
+      errors.push("Job is missing location reference");
+    }
+
+    // Get job parts (billable items)
+    const parts = await db
+      .select()
+      .from(jobParts)
+      .where(
+        and(
+          eq(jobParts.companyId, companyId),
+          eq(jobParts.jobId, jobId),
+          eq(jobParts.isActive, true)
+        )
+      );
+
+    // Get legacy labor entries
+    const labor = await db
+      .select({
+        minutes: laborEntries.minutes,
+        technicianId: laborEntries.technicianId,
+      })
+      .from(laborEntries)
+      .where(
+        and(
+          eq(laborEntries.companyId, companyId),
+          eq(laborEntries.jobId, jobId)
+        )
+      );
+
+    // Get time entries (V1 time tracking)
+    const timeTrackingEntries = await db
+      .select({
+        durationMinutes: timeEntries.durationMinutes,
+        billable: timeEntries.billable,
+        billableRateSnapshot: timeEntries.billableRateSnapshot,
+      })
+      .from(timeEntries)
+      .where(
+        and(
+          eq(timeEntries.companyId, companyId),
+          eq(timeEntries.jobId, jobId),
+          eq(timeEntries.billable, true),
+          isNotNull(timeEntries.endAt), // Only completed entries
+          isNull(timeEntries.invoicedAt) // Not yet invoiced
+        )
+      );
+
+    // Calculate totals
+    let partsTotal = 0;
+    for (const part of parts) {
+      const qty = parseFloat(part.quantity?.toString() || "1");
+      const price = parseFloat(String(part.unitPrice || "0"));
+      partsTotal += qty * price;
+    }
+
+    const totalLegacyLaborMinutes = labor.reduce((sum, l) => sum + l.minutes, 0);
+    const totalTimeTrackingMinutes = timeTrackingEntries.reduce(
+      (sum, e) => sum + (e.durationMinutes ?? 0),
+      0
+    );
+    const totalLaborMinutes = totalLegacyLaborMinutes + totalTimeTrackingMinutes;
+
+    // Calculate estimated labor total from time entries
+    let laborTotal = 0;
+    for (const entry of timeTrackingEntries) {
+      const hours = (entry.durationMinutes ?? 0) / 60;
+      const rate = parseFloat(entry.billableRateSnapshot || "0");
+      laborTotal += hours * rate;
+    }
+
+    // Validation checks
+    const hasLegacyLabor = labor.length > 0;
+    const hasTimeEntries = timeTrackingEntries.length > 0;
+    if (parts.length === 0 && !hasLegacyLabor && !hasTimeEntries) {
+      errors.push("Cannot create invoice: no billable items (parts or labor)");
+    }
+
+    if (partsTotal === 0 && parts.length > 0) {
+      warnings.push("All parts have $0 price");
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors,
+      warnings,
+      billableItems: {
+        partsCount: parts.length,
+        laborMinutes: totalLaborMinutes,
+        timeEntriesCount: timeTrackingEntries.length,
+        estimatedTotal: partsTotal + laborTotal,
+      },
+    };
+  }
+
+  /**
+   * Refresh invoice from job with SNAPSHOTTED pricing (IDEMPOTENT)
+   * Replaces all job-sourced invoice lines with current job parts
+   * Prices are snapshotted at the time of invoicing
    * Can be called multiple times safely - always produces same result
    */
   async refreshInvoiceFromJob(companyId: string, invoiceId: string) {
@@ -402,12 +693,9 @@ export class InvoiceRepository extends BaseRepository {
       throw this.validationError("Invoice is not linked to a job");
     }
 
-    // Import jobParts for querying
-    const { jobParts } = await import("@shared/schema");
-
     // Use transaction for idempotency - delete then insert
     return await db.transaction(async (tx) => {
-      // Step 1: Delete ALL existing invoice lines (idempotent - always start fresh)
+      // Step 1: Delete ALL existing job-sourced invoice lines (idempotent - always start fresh)
       await tx
         .delete(invoiceLines)
         .where(and(
@@ -415,8 +703,6 @@ export class InvoiceRepository extends BaseRepository {
           eq(invoiceLines.invoiceId, invoiceId),
           eq(invoiceLines.source, "job")
         ));
-
-      // Step 2: Get current job parts
 
       // Step 1b: Find next lineNumber after remaining manual lines
       const [{ maxLine }] = await tx
@@ -428,7 +714,7 @@ export class InvoiceRepository extends BaseRepository {
         ));
       const baseLineNumber = Number(maxLine || 0);
 
-      // Step 2: Get current job parts
+      // Step 2: Get current job parts with their CURRENT prices (snapshot)
       const parts = await tx
         .select()
         .from(jobParts)
@@ -439,13 +725,15 @@ export class InvoiceRepository extends BaseRepository {
         ))
         .orderBy(jobParts.sortOrder);
 
-      // Step 3: Insert fresh invoice lines from job parts
+      // Step 3: Insert fresh invoice lines from job parts with SNAPSHOTTED prices
       let linesCreated = 0;
       if (parts.length > 0) {
         const newLines = parts.map((part, index) => {
           const qty = parseFloat(part.quantity?.toString() || "1");
-          const price = parseFloat(String(part.unitPrice || "0"));
-          const lineSubtotal = qty * price;
+          // SNAPSHOT: Use the price from jobPart at this moment
+          const unitPrice = parseFloat(String(part.unitPrice || "0"));
+          const unitCost = part.unitCost ? parseFloat(String(part.unitCost)) : null;
+          const lineSubtotal = qty * unitPrice;
 
           return {
             companyId, // Add tenant isolation
@@ -454,11 +742,16 @@ export class InvoiceRepository extends BaseRepository {
             description: part.description,
             quantity: part.quantity?.toString() || "1",
             source: "job" as const,
-            unitPrice: String(price),
+            // SNAPSHOTTED prices - stored at invoice creation time
+            unitPrice: String(unitPrice),
+            unitCost: unitCost !== null ? String(unitCost) : null,
             lineSubtotal: String(lineSubtotal),
             taxRate: "0",
             taxAmount: "0",
             lineTotal: String(lineSubtotal),
+            // Link back to source for audit trail
+            jobLineItemId: part.id,
+            productId: part.productId,
           };
         });
 
@@ -466,116 +759,448 @@ export class InvoiceRepository extends BaseRepository {
         linesCreated = newLines.length;
       }
 
+      // Step 3b: Add labor lines from uninvoiced billable time entries
+      // Group by technician + type for cleaner invoice presentation
+      const laborLinesCreated = await this.addLaborLinesFromTimeEntries(
+        tx,
+        companyId,
+        invoiceId,
+        invoice.jobId!,
+        baseLineNumber + linesCreated
+      );
+
       // Step 4: Recalculate invoice totals
       await this.recalculateInvoiceTotalsInTx(tx, companyId, invoiceId);
 
       return {
         invoiceId,
         jobId: invoice.jobId,
-        linesRefreshed: linesCreated,
+        linesRefreshed: linesCreated + laborLinesCreated,
       };
     });
   }
 
   /**
-   * Create a new invoice from an existing job
-   * Handles counter increment, invoice creation, and line population
+   * Add labor lines from time entries to an invoice (within transaction)
+   * Applies company billing rules (rounding, minimums, multipliers, caps)
+   * Groups entries by technician + type for cleaner presentation
+   * Marks time entries as invoiced with billing snapshots
+   *
+   * Phase 8: Now applies billing rules before creating invoice lines
+   */
+  private async addLaborLinesFromTimeEntries(
+    tx: any,
+    companyId: string,
+    invoiceId: string,
+    jobId: string,
+    startLineNumber: number
+  ): Promise<number> {
+    // Get company billing rules (or defaults)
+    const rules = await timeBillingRulesRepository.getRules(companyId);
+
+    // Get uninvoiced billable time entries for this job
+    const entries = await tx
+      .select({
+        id: timeEntries.id,
+        technicianId: timeEntries.technicianId,
+        technicianName: users.fullName,
+        type: timeEntries.type,
+        durationMinutes: timeEntries.durationMinutes,
+        billableRateSnapshot: timeEntries.billableRateSnapshot,
+        costRateSnapshot: timeEntries.costRateSnapshot,
+        jobId: timeEntries.jobId,
+        startAt: timeEntries.startAt,
+        // Phase 9: Include lock fields for validation
+        lockedAt: timeEntries.lockedAt,
+        lockedByInvoiceId: timeEntries.lockedByInvoiceId,
+      })
+      .from(timeEntries)
+      .leftJoin(users, eq(timeEntries.technicianId, users.id))
+      .where(
+        and(
+          eq(timeEntries.companyId, companyId),
+          eq(timeEntries.jobId, jobId),
+          eq(timeEntries.billable, true),
+          isNotNull(timeEntries.endAt), // Only completed entries
+          isNull(timeEntries.invoicedAt) // Not yet invoiced
+        )
+      )
+      .orderBy(asc(timeEntries.startAt)); // Oldest first for deterministic capping
+
+    if (entries.length === 0) {
+      return 0;
+    }
+
+    // Phase 9: Check for already-locked entries and abort if found
+    const alreadyLocked = entries.filter((e: typeof entries[number]) => e.lockedAt !== null || e.lockedByInvoiceId !== null);
+    if (alreadyLocked.length > 0) {
+      const lockedIds = alreadyLocked.map((e: typeof entries[number]) => e.id).join(", ");
+      const lockingInvoice = alreadyLocked[0].lockedByInvoiceId;
+      throw this.conflictError(
+        `Cannot invoice: ${alreadyLocked.length} time entries are already locked` +
+        (lockingInvoice ? ` by invoice ${lockingInvoice}` : "") +
+        `. Entry IDs: ${lockedIds}`
+      );
+    }
+
+    // Apply billing rules to compute final billed minutes and rates
+    const rulesResult = applyBillingRulesToEntries(
+      rules,
+      entries.map((e: typeof entries[number]) => ({
+        id: e.id,
+        type: e.type,
+        durationMinutes: e.durationMinutes ?? 0,
+        billableRateSnapshot: e.billableRateSnapshot,
+        jobId: e.jobId,
+        startAt: e.startAt,
+      }))
+    );
+
+    // Create a lookup map for billed entries
+    const billedMap = new Map(
+      rulesResult.entries.map((be) => [be.entryId, be])
+    );
+
+    // Group entries by technician + type (only include non-excluded entries)
+    const grouped = new Map<
+      string,
+      {
+        technicianId: string;
+        technicianName: string | null;
+        type: string;
+        totalBilledMinutes: number;
+        billedRate: number;
+        costRate: number;
+        entrySnapshots: Array<{
+          id: string;
+          billedMinutes: number;
+          billedRate: number;
+        }>;
+      }
+    >();
+
+    for (const entry of entries) {
+      const billed = billedMap.get(entry.id);
+      if (!billed || billed.wasExcluded || billed.billedMinutes === 0) {
+        // Still mark as invoiced but with 0 billed minutes
+        continue;
+      }
+
+      const key = `${entry.technicianId}:${entry.type}`;
+      const costRate = parseFloat(entry.costRateSnapshot || "0");
+
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          technicianId: entry.technicianId,
+          technicianName: entry.technicianName,
+          type: entry.type,
+          totalBilledMinutes: 0,
+          billedRate: billed.billedRate,
+          costRate,
+          entrySnapshots: [],
+        });
+      }
+
+      const group = grouped.get(key)!;
+      group.totalBilledMinutes += billed.billedMinutes;
+      group.entrySnapshots.push({
+        id: entry.id,
+        billedMinutes: billed.billedMinutes,
+        billedRate: billed.billedRate,
+      });
+    }
+
+    // Create invoice lines from grouped entries
+    const newLines = [];
+    let lineNumber = startLineNumber;
+
+    for (const group of Array.from(grouped.values())) {
+      if (group.totalBilledMinutes === 0) continue;
+
+      // Convert minutes to decimal hours with 2 decimal places
+      const hours = group.totalBilledMinutes / 60;
+      const unitPrice = group.billedRate || 0;
+      const unitCost = group.costRate || 0;
+      const lineSubtotal = hours * unitPrice;
+
+      // Format type for display
+      const typeDisplay = group.type
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (c: string) => c.toUpperCase());
+
+      const description = group.technicianName
+        ? `Labor - ${typeDisplay} (${group.technicianName})`
+        : `Labor - ${typeDisplay}`;
+
+      const [insertedLine] = await tx
+        .insert(invoiceLines)
+        .values({
+          companyId,
+          invoiceId,
+          lineNumber: ++lineNumber,
+          lineItemType: "service" as const,
+          description,
+          quantity: hours.toFixed(2),
+          source: "job" as const,
+          unitPrice: String(unitPrice.toFixed(2)),
+          unitCost: unitCost > 0 ? String(unitCost.toFixed(2)) : null,
+          lineSubtotal: String(lineSubtotal.toFixed(2)),
+          taxRate: "0",
+          taxAmount: "0",
+          lineTotal: String(lineSubtotal.toFixed(2)),
+          technicianId: group.technicianId,
+        })
+        .returning({ id: invoiceLines.id });
+
+      // Mark time entries as invoiced with billing snapshots and LOCK them
+      const now = new Date();
+      for (const snapshot of group.entrySnapshots) {
+        await tx
+          .update(timeEntries)
+          .set({
+            invoiceId,
+            invoiceLineId: insertedLine.id,
+            invoicedAt: now,
+            billedMinutesSnapshot: snapshot.billedMinutes,
+            billedRateSnapshot: String(snapshot.billedRate.toFixed(2)),
+            billingRulesHash: rulesResult.rulesHash,
+            // Phase 9: Lock entries to prevent edits
+            lockedAt: now,
+            lockedByInvoiceId: invoiceId,
+            lockReason: "INVOICED",
+            updatedAt: now,
+          })
+          .where(eq(timeEntries.id, snapshot.id));
+      }
+
+      newLines.push(insertedLine);
+    }
+
+    // Also mark excluded entries as processed (with 0 billed) and LOCK them
+    const lockTime = new Date();
+    for (const entry of entries) {
+      const billed = billedMap.get(entry.id);
+      if (billed && (billed.wasExcluded || billed.billedMinutes === 0)) {
+        await tx
+          .update(timeEntries)
+          .set({
+            invoiceId,
+            invoicedAt: lockTime,
+            billedMinutesSnapshot: 0,
+            billedRateSnapshot: "0.00",
+            billingRulesHash: rulesResult.rulesHash,
+            // Phase 9: Lock entries to prevent edits
+            lockedAt: lockTime,
+            lockedByInvoiceId: invoiceId,
+            lockReason: "INVOICED",
+            updatedAt: lockTime,
+          })
+          .where(eq(timeEntries.id, entry.id));
+      }
+    }
+
+    return newLines.length;
+  }
+
+  /**
+   * Create a new invoice from an existing job (IDEMPOTENT)
+   *
+   * PHASE A SECURITY FIX: Uses SELECT FOR UPDATE to prevent race conditions
+   * PHASE A.1.1 GUARD: Requires creationSource (COMPILE-TIME + RUNTIME enforced)
+   *
+   * IDEMPOTENCY GUARANTEE:
+   * - If job already has an invoice, returns the existing invoice (created: false)
+   * - Uses SELECT FOR UPDATE on job row to prevent concurrent invoice creation
+   * - Falls back to unique constraint handling for extra safety
+   *
+   * CONCURRENCY PROTECTION:
+   * - Job row is locked with FOR UPDATE at the start of transaction
+   * - Idempotency check happens INSIDE the transaction under lock
+   * - This prevents invoice number waste and race condition window
+   *
+   * PRICING SNAPSHOT:
+   * - Job parts prices are snapshotted when refreshInvoiceFromJob is called
+   * - Changes to product catalog after invoicing do NOT affect existing invoices
+   *
+   * STATUS TRANSITION:
+   * - Always sets job.status to 'invoiced' (deterministic)
+   *
+   * AUTHORIZED CALLERS (defined in INVOICE_CREATION_SOURCES):
+   * - POST /api/invoices/from-job/:jobId (invoices.ts) -> "INVOICE_ROUTE"
+   * - POST /api/jobs/:id/close with mode=invoice_now (jobs.ts) -> "JOB_CLOSE_ROUTE"
    */
   async createInvoiceFromJob(
     companyId: string,
     jobId: string,
-    options?: { markJobCompleted?: boolean }
-  ) {
+    options: { markJobCompleted?: boolean; skipValidation?: boolean } | undefined,
+    creationSource: InvoiceCreationSource
+  ): Promise<CreateInvoiceResult> {
+    // PHASE A.1.1 GUARD: Runtime check (complements compile-time enforcement)
+    // Protects against dynamic calls or miscompiled code
+    if (!creationSource) {
+      throw new Error(
+        "INVOICE_CREATION_GUARD: createInvoiceFromJob() requires an explicit creationSource. " +
+        "Valid sources are defined in INVOICE_CREATION_SOURCES. " +
+        "All invoice creation paths must be documented and audited."
+      );
+    }
+
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
-    const { jobs, companyCounters } = await import("@shared/schema");
+    const { companyCounters } = await import("@shared/schema");
 
-    return await db.transaction(async (tx) => {
-      // 1. Get the job
-      const [job] = await tx
-        .select()
-        .from(jobs)
-        .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
-        .limit(1);
+    // PRE-TRANSACTION VALIDATION: Get job and validate (avoids holding lock during validation)
+    const [jobPreCheck] = await db
+      .select()
+      .from(jobs)
+      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+      .limit(1);
 
-      if (!job) {
-        throw this.notFoundError("Job");
+    if (!jobPreCheck) {
+      throw this.notFoundError("Job");
+    }
+
+    // PRE-INVOICE VALIDATION (unless skipped) - before acquiring lock
+    if (!options?.skipValidation) {
+      const validation = await this.validateJobForInvoice(companyId, jobId);
+      if (!validation.valid) {
+        throw this.validationError(validation.errors.join("; "));
       }
+    }
 
-      if (job.invoiceId) {
-        throw this.validationError("Job already has an invoice");
-      }
+    // Get client location to resolve customerCompanyId (before transaction)
+    const [location] = await db
+      .select()
+      .from(clients)
+      .where(and(eq(clients.id, jobPreCheck.locationId), eq(clients.companyId, companyId)))
+      .limit(1);
 
-      // 1b. Get client location to resolve customerCompanyId
-      const [location] = await tx
-        .select()
-        .from(clients)
-        .where(and(eq(clients.id, job.locationId), eq(clients.companyId, companyId)))
-        .limit(1);
+    if (!location) {
+      throw this.validationError("Job has invalid location reference");
+    }
 
-      if (!location) {
-        throw this.validationError("Job has invalid location reference");
-      }
+    try {
+      return await db.transaction(async (tx) => {
+        // PHASE A FIX: Lock the job row with SELECT FOR UPDATE
+        // This prevents concurrent invoice creation for the same job
+        const [job] = await tx
+          .select()
+          .from(jobs)
+          .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+          .for("update") // Lock the row
+          .limit(1);
 
-      // 2. Get or create counter and increment
-      let [counter] = await tx
-        .select()
-        .from(companyCounters)
-        .where(eq(companyCounters.companyId, companyId))
-        .limit(1);
+        if (!job) {
+          throw this.notFoundError("Job");
+        }
 
-      let invoiceNumber = 1001;
-      if (counter) {
-        invoiceNumber = counter.nextInvoiceNumber;
-        await tx
-          .update(companyCounters)
-          .set({ nextInvoiceNumber: invoiceNumber + 1 })
-          .where(eq(companyCounters.companyId, companyId));
-      } else {
-        await tx.insert(companyCounters).values({
-          companyId,
-          nextJobNumber: 10000,
-          nextInvoiceNumber: 1002,
-        });
-      }
+        // IDEMPOTENCY CHECK: Now check under lock if invoice already exists
+        // This is the key fix - checking INSIDE the transaction after acquiring lock
+        const [existingInvoice] = await tx
+          .select()
+          .from(invoices)
+          .where(
+            and(
+              eq(invoices.companyId, companyId),
+              eq(invoices.jobId, jobId),
+              // Legacy data compatibility: treat NULL isActive as active
+              or(eq(invoices.isActive, true), isNull(invoices.isActive))
+            )
+          )
+          .limit(1);
 
-      // 3. Create invoice
-      const [invoice] = await tx
-        .insert(invoices)
-        .values({
-          companyId,
-          locationId: job.locationId,
-          customerCompanyId: location.parentCompanyId, // Link to billing entity
-          jobId: jobId,
-          invoiceNumber: String(invoiceNumber),
-          status: "draft",
-          issueDate: new Date().toISOString().split("T")[0], // 'YYYY-MM-DD' format
-          subtotal: "0",
-          taxTotal: "0",
-          total: "0",
-          amountPaid: "0",
-          balance: "0",
-        })
-        .returning();
+        if (existingInvoice) {
+          // Invoice already exists - return it (idempotent behavior)
+          // Fetch lines outside transaction since we're returning early
+          const existingLines = await this.getInvoiceLines(companyId, existingInvoice.id);
+          return {
+            invoice: existingInvoice,
+            created: false,
+            lines: existingLines,
+          };
+        }
 
-      // 4. Update job with invoice reference
-      await tx
-        .update(jobs)
-        .set({ invoiceId: invoice.id })
-        .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
+        // Get or create counter and increment (now protected by job lock)
+        let [counter] = await tx
+          .select()
+          .from(companyCounters)
+          .where(eq(companyCounters.companyId, companyId))
+          .for("update") // Also lock counter to prevent race
+          .limit(1);
 
-      // 5. Mark job as invoiced if requested
-      // NOTE: This sets status to "invoiced" since an invoice was just created
-      if (options?.markJobCompleted) {
+        let invoiceNumber = 1001;
+        if (counter) {
+          invoiceNumber = counter.nextInvoiceNumber;
+          await tx
+            .update(companyCounters)
+            .set({ nextInvoiceNumber: invoiceNumber + 1 })
+            .where(eq(companyCounters.companyId, companyId));
+        } else {
+          await tx.insert(companyCounters).values({
+            companyId,
+            nextJobNumber: 10000,
+            nextInvoiceNumber: 1002,
+          });
+        }
+
+        // Create invoice (unique constraint on companyId+jobId prevents duplicates as extra safety)
+        const [invoice] = await tx
+          .insert(invoices)
+          .values({
+            companyId,
+            locationId: job.locationId,
+            customerCompanyId: location.parentCompanyId, // Link to billing entity
+            jobId: jobId,
+            invoiceNumber: String(invoiceNumber),
+            status: "draft",
+            issueDate: new Date().toISOString().split("T")[0], // 'YYYY-MM-DD' format
+            subtotal: "0",
+            taxTotal: "0",
+            total: "0",
+            amountPaid: "0",
+            balance: "0",
+            // Copy work description from job for audit trail
+            workDescription: job.description || job.summary || null,
+          })
+          .returning();
+
+        // Update job: set invoiceId AND status to 'invoiced' (DETERMINISTIC)
+        // This ensures job is always marked as invoiced when invoice is created
+        const jobUpdate: any = {
+          invoiceId: invoice.id,
+          status: "invoiced", // ALWAYS set to invoiced
+          updatedAt: new Date(),
+        };
+
         await tx
           .update(jobs)
-          .set({ status: "invoiced" })
+          .set(jobUpdate)
           .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
-      }
 
-      return invoice;
-    });
+        return {
+          invoice,
+          created: true,
+        };
+      });
+    } catch (error: any) {
+      // FALLBACK RACE CONDITION HANDLING: Unique constraint violation
+      // This should rarely trigger now with FOR UPDATE, but kept as safety net
+      // PostgreSQL error code 23505 = unique_violation
+      if (error.code === "23505" && error.constraint?.includes("invoices_company_job")) {
+        // Re-fetch the invoice that was created by the other request
+        const existingInvoice = await this.getInvoiceByJobId(companyId, jobId);
+        if (existingInvoice) {
+          const existingLines = await this.getInvoiceLines(companyId, existingInvoice.id);
+          return {
+            invoice: existingInvoice,
+            created: false,
+            lines: existingLines,
+          };
+        }
+      }
+      throw error;
+    }
   }
 }
 

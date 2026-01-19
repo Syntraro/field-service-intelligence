@@ -2,7 +2,7 @@ import { Router, Response } from "express";
 import { z } from "zod";
 import { storage } from "../storage/index";
 import { requireRole } from "../auth/requireRole";
-import { RESTRICTED_MANAGER_ROLES } from "../auth/roles";
+import { RESTRICTED_MANAGER_ROLES, canAssignRole, type Role } from "../auth/roles";
 import { parsePaginationLenient, applyOffsetPagination } from "../utils/pagination";
 import { paginatedCompat } from "../utils/paginatedResponse";
 import { asyncHandler, createError } from "../middleware/errorHandler";
@@ -242,14 +242,21 @@ router.post(
 );
 
 // PATCH /api/team/:userId/role - Change user role (with last-owner safeguard)
+// Phase A Security Fix: Enforce role hierarchy to prevent privilege escalation
 router.patch(
   "/:userId/role",
   requireRole(["owner", "admin"]),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const { userId } = req.params;
     const companyId = req.companyId!;
+    const changerRole = req.user!.role as Role;
 
     const { role: newRole } = validateSchema(updateRoleSchema, req.body);
+
+    // Phase A Security Fix: Enforce role hierarchy
+    if (!canAssignRole(changerRole, newRole as Role)) {
+      throw createError(403, `Insufficient permissions to assign role: ${newRole}`);
+    }
 
     const member = await storage.getTeamMember(companyId, userId);
     if (!member) {

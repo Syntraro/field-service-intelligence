@@ -18,6 +18,12 @@ const MANAGER_ROLES = RESTRICTED_MANAGER_ROLES;
 
 const updateCompanySettingsSchema = z.object({
   companyName: z.string().min(1).max(200).optional(),
+  address: z.string().max(500).optional(),
+  city: z.string().max(100).optional(),
+  provinceState: z.string().max(100).optional(),
+  postalCode: z.string().max(20).optional(),
+  email: z.string().email().max(255).optional().or(z.literal("")),
+  phone: z.string().max(30).optional(),
   timezone: z.string().max(100).optional(),
   currency: z.string().length(3).optional(),
   defaultTaxRate: z.number().min(0).max(1).optional(),
@@ -35,7 +41,8 @@ const updateCompanySettingsSchema = z.object({
     showCompanyLogo: z.boolean().optional(),
     footer: z.string().max(500).optional(),
   }).optional(),
-}).strict(); // Allow other settings fields
+  calendarStartHour: z.number().int().min(0).max(23).optional(),
+});
 
 router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
@@ -44,18 +51,23 @@ router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
   res.json(settings ?? {});
 }));
 
-router.put("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+// Handler for both PUT and POST (upsert)
+const handleUpsertSettings = asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   const userId = req.user?.id;
   if (!companyId || !userId) throw createError(401, "Unauthorized");
 
   const validation = updateCompanySettingsSchema.safeParse(req.body);
   if (!validation.success) {
-    throw createError(400, "Validation failed");
+    const errors = validation.error.errors.map(e => `${e.path.join('.')}: ${e.message}`).join(', ');
+    throw createError(400, `Validation failed: ${errors}`);
   }
 
   const settings = await storage.upsertCompanySettings(companyId, userId, validation.data ?? {});
   res.json(settings ?? {});
-}));
+});
+
+router.put("/", requireRole(MANAGER_ROLES), handleUpsertSettings);
+router.post("/", requireRole(MANAGER_ROLES), handleUpsertSettings);
 
 export default router;

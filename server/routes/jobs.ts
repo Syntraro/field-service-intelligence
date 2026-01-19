@@ -245,13 +245,16 @@ router.post("/:id/status", requireAuth, asyncHandler(async (req: AuthedRequest, 
  * Handles closing a job from any "active" state by:
  * 1. Transitioning to "completed" first (if needed)
  * 2. Then performing the final action (archive/invoice_later/invoice_now)
+ *
+ * PHASE A.1: Invoice creation (mode=invoice_now) uses createInvoiceFromJob()
+ * which provides SELECT FOR UPDATE locking and idempotency guarantees.
  */
 
 import { CLOSEABLE_STATES } from "../statusRules";
 
 const closeJobSchema = z.object({
   mode: z.enum(["archive", "invoice_later", "invoice_now"]),
-});
+}).strict(); // PHASE A.1: Reject unknown keys
 
 // POST /api/jobs/:id/close - Close job with specified mode
 router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
@@ -294,9 +297,14 @@ router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
     case "invoice_now":
       // Create invoice BEFORE status transitions (separate from status transaction)
       try {
-        createdInvoice = await storage.createInvoiceFromJob(companyId, jobId, {
-          markJobCompleted: false
-        });
+        // PHASE A.1: Pass creation source to satisfy invoice creation guard
+        const invoiceResult = await storage.createInvoiceFromJob(
+          companyId,
+          jobId,
+          { markJobCompleted: false },
+          "JOB_CLOSE_ROUTE"
+        );
+        createdInvoice = invoiceResult.invoice;
         await storage.refreshInvoiceFromJob(companyId, createdInvoice.id);
       } catch (error: any) {
         if (error.message?.includes("already has an invoice")) {
@@ -907,6 +915,172 @@ router.delete("/:jobId/notes/:noteId", requireRole(MANAGER_ROLES), asyncHandler(
 
   const result = await jobNotesService.deleteJobNote(companyId, req.params.noteId, userId);
   res.json(result);
+}));
+
+/**
+ * ----------------------------
+ * Admin Override for Invoiced Jobs
+ * ----------------------------
+ * These endpoints allow managers to modify jobs that are locked due to invoicing.
+ * All operations are logged with a reason for audit purposes.
+ * Returns 409 if job is not invoiced (use regular endpoints instead).
+ */
+
+const adminOverrideSchema = z.object({
+  reason: z.string().min(1, "Reason is required for admin override"),
+});
+
+// Helper to verify job is invoiced (for admin override endpoints)
+async function requireInvoicedJob(companyId: string, jobId: string): Promise<void> {
+  const job = await storage.getJob(companyId, jobId);
+  if (!job) {
+    const err = new Error("Job not found");
+    (err as any).statusCode = 404;
+    throw err;
+  }
+  const INVOICED_STATUSES = ["invoiced", "paid", "payment_pending"];
+  if (!INVOICED_STATUSES.includes(job.status)) {
+    const err = new Error("Job is not invoiced. Use regular endpoints for unlocked jobs.");
+    (err as any).statusCode = 409;
+    (err as any).code = "JOB_NOT_LOCKED";
+    throw err;
+  }
+}
+
+// POST /api/jobs/:jobId/admin/parts - Add part to invoiced job (manager override)
+router.post("/:jobId/admin/parts", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const jobId = req.params.jobId;
+  const userId = req.user?.id;
+
+  // Extract reason from body
+  const { reason, ...partData } = req.body;
+  validateSchema(adminOverrideSchema, { reason });
+
+  await requireInvoicedJob(companyId, jobId);
+
+  const validated = validateSchema(createJobPartSchema, partData);
+
+  const jobPart = await storage.createJobPart(
+    companyId,
+    jobId,
+    {
+      description: validated.description,
+      companyId,
+      jobId,
+      productId: validated.productId ?? null,
+      quantity: String(validated.quantity),
+      unitCost: validated.unitCost !== undefined ? String(validated.unitCost) : null,
+      unitPrice: validated.unitPrice !== undefined ? String(validated.unitPrice) : null,
+    },
+    { overrideInvoiceLock: true }
+  );
+
+  // Log the admin override action
+  console.log(`[AdminOverride] User ${userId} added part to invoiced job ${jobId}: ${reason}`);
+
+  res.status(201).json({ ...jobPart, _adminOverride: true, _reason: reason });
+}));
+
+// PUT /api/jobs/:jobId/admin/parts/:id - Update part on invoiced job (manager override)
+router.put("/:jobId/admin/parts/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const jobId = req.params.jobId;
+  const partId = req.params.id;
+  const userId = req.user?.id;
+
+  const { reason, ...partData } = req.body;
+  validateSchema(adminOverrideSchema, { reason });
+
+  await requireInvoicedJob(companyId, jobId);
+
+  const validated = validateSchema(updateJobPartSchema, partData);
+  const jobPart = await storage.updateJobPart(
+    companyId,
+    partId,
+    {
+      description: validated.description,
+      productId: validated.productId,
+      quantity: validated.quantity !== undefined ? String(validated.quantity) : undefined,
+      unitCost: validated.unitCost !== undefined ? String(validated.unitCost) : undefined,
+      unitPrice: validated.unitPrice !== undefined ? String(validated.unitPrice) : undefined,
+    },
+    { overrideInvoiceLock: true }
+  );
+
+  if (!jobPart) throw createError(404, "Job part not found");
+
+  console.log(`[AdminOverride] User ${userId} updated part ${partId} on invoiced job ${jobId}: ${reason}`);
+
+  res.json({ ...jobPart, _adminOverride: true, _reason: reason });
+}));
+
+// DELETE /api/jobs/:jobId/admin/parts/:id - Delete part from invoiced job (manager override)
+router.delete("/:jobId/admin/parts/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const jobId = req.params.jobId;
+  const partId = req.params.id;
+  const userId = req.user?.id;
+
+  const { reason } = validateSchema(adminOverrideSchema, req.body);
+
+  await requireInvoicedJob(companyId, jobId);
+
+  const deleted = await storage.deleteJobPart(companyId, partId, { overrideInvoiceLock: true });
+  if (!deleted) throw createError(404, "Job part not found");
+
+  console.log(`[AdminOverride] User ${userId} deleted part ${partId} from invoiced job ${jobId}: ${reason}`);
+
+  res.json({ success: true, _adminOverride: true, _reason: reason });
+}));
+
+// POST /api/jobs/:jobId/admin/equipment - Add equipment to invoiced job (manager override)
+router.post("/:jobId/admin/equipment", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const jobId = req.params.jobId;
+  const userId = req.user?.id;
+
+  const { reason, ...equipmentData } = req.body;
+  validateSchema(adminOverrideSchema, { reason });
+
+  await requireInvoicedJob(companyId, jobId);
+
+  const { equipmentId, notes } = validateSchema(createJobEquipmentSchema, equipmentData);
+
+  const existingEquipment = await storage.getLocationEquipmentItem(companyId, equipmentId);
+  if (!existingEquipment) {
+    throw createError(404, "Equipment not found");
+  }
+
+  const jobEquipment = await storage.createJobEquipment(
+    companyId,
+    jobId,
+    { equipmentId, notes },
+    { overrideInvoiceLock: true }
+  );
+
+  console.log(`[AdminOverride] User ${userId} added equipment to invoiced job ${jobId}: ${reason}`);
+
+  res.status(201).json({ ...jobEquipment, _adminOverride: true, _reason: reason });
+}));
+
+// DELETE /api/jobs/:jobId/admin/equipment/:jobEquipmentId - Delete equipment from invoiced job (manager override)
+router.delete("/:jobId/admin/equipment/:jobEquipmentId", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const jobId = req.params.jobId;
+  const jobEquipmentId = req.params.jobEquipmentId;
+  const userId = req.user?.id;
+
+  const { reason } = validateSchema(adminOverrideSchema, req.body);
+
+  await requireInvoicedJob(companyId, jobId);
+
+  const deleted = await storage.deleteJobEquipment(companyId, jobEquipmentId, { overrideInvoiceLock: true });
+  if (!deleted) throw createError(404, "Job equipment not found");
+
+  console.log(`[AdminOverride] User ${userId} deleted equipment ${jobEquipmentId} from invoiced job ${jobId}: ${reason}`);
+
+  res.json({ success: true, _adminOverride: true, _reason: reason });
 }));
 
 export default router;

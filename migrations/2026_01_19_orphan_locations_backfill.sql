@@ -1,0 +1,128 @@
+-- Migration: Orphan Locations Analysis & Linking Helper
+-- Date: 2026-01-19
+-- Purpose: Help identify and manually link orphan locations to customer companies
+--
+-- IMPORTANT: This migration contains READ-ONLY analysis queries.
+-- Actual updates should be done through the admin UI or the link-location API.
+-- DO NOT auto-update without manual review.
+
+-- ============================================================================
+-- Part 1: Identify All Orphan Locations
+-- Locations with parent_company_id IS NULL (not linked to any customer company)
+-- ============================================================================
+
+-- Run this per-tenant by replacing :tenant_company_id with the actual company UUID
+-- SELECT
+--     cl.id AS location_id,
+--     cl.company_name,
+--     cl.location,
+--     cl.address,
+--     cl.city,
+--     cl.province,
+--     cl.created_at
+-- FROM client_locations cl
+-- WHERE cl.company_id = :tenant_company_id
+--   AND cl.parent_company_id IS NULL
+--   AND cl.deleted_at IS NULL
+-- ORDER BY cl.company_name, cl.created_at;
+
+-- ============================================================================
+-- Part 2: Find Exact Match Suggestions
+-- Orphan locations where company_name exactly matches a customer company name
+-- ============================================================================
+
+-- Run this per-tenant by replacing :tenant_company_id with the actual company UUID
+-- SELECT
+--     cl.id AS location_id,
+--     cl.company_name AS location_company_name,
+--     cl.location,
+--     cc.id AS suggested_customer_company_id,
+--     cc.name AS customer_company_name,
+--     CASE
+--         WHEN COUNT(*) OVER (PARTITION BY cl.id) > 1 THEN 'AMBIGUOUS - multiple matches'
+--         ELSE 'UNIQUE MATCH'
+--     END AS match_status
+-- FROM client_locations cl
+-- INNER JOIN customer_companies cc
+--     ON cc.company_id = cl.company_id
+--     AND LOWER(TRIM(cc.name)) = LOWER(TRIM(cl.company_name))
+--     AND cc.deleted_at IS NULL
+-- WHERE cl.company_id = :tenant_company_id
+--   AND cl.parent_company_id IS NULL
+--   AND cl.deleted_at IS NULL
+-- ORDER BY cl.company_name, cl.created_at;
+
+-- ============================================================================
+-- Part 3: Summary Statistics (Per Tenant)
+-- ============================================================================
+
+-- Run this per-tenant by replacing :tenant_company_id with the actual company UUID
+-- SELECT
+--     'Total locations' AS metric,
+--     COUNT(*) AS count
+-- FROM client_locations
+-- WHERE company_id = :tenant_company_id AND deleted_at IS NULL
+-- UNION ALL
+-- SELECT
+--     'Linked locations (has parent_company_id)' AS metric,
+--     COUNT(*) AS count
+-- FROM client_locations
+-- WHERE company_id = :tenant_company_id
+--   AND parent_company_id IS NOT NULL
+--   AND deleted_at IS NULL
+-- UNION ALL
+-- SELECT
+--     'Orphan locations (no parent_company_id)' AS metric,
+--     COUNT(*) AS count
+-- FROM client_locations
+-- WHERE company_id = :tenant_company_id
+--   AND parent_company_id IS NULL
+--   AND deleted_at IS NULL;
+
+-- ============================================================================
+-- Part 4: MANUAL LINKING (Use with caution!)
+-- Only run these after reviewing the suggestions above
+-- ============================================================================
+
+-- Example: Link a specific orphan location to a specific customer company
+-- UPDATE client_locations
+-- SET parent_company_id = '<customer_company_uuid>',
+--     company_name = (SELECT name FROM customer_companies WHERE id = '<customer_company_uuid>'),
+--     updated_at = NOW()
+-- WHERE id = '<location_uuid>'
+--   AND company_id = '<tenant_company_uuid>'
+--   AND parent_company_id IS NULL;
+
+-- Example: Link ALL orphan locations with exact name match (SINGLE match only)
+-- Use extreme caution - this should only be run after careful review
+--
+-- WITH unique_matches AS (
+--     SELECT
+--         cl.id AS location_id,
+--         cc.id AS customer_company_id,
+--         cc.name AS customer_company_name
+--     FROM client_locations cl
+--     INNER JOIN customer_companies cc
+--         ON cc.company_id = cl.company_id
+--         AND LOWER(TRIM(cc.name)) = LOWER(TRIM(cl.company_name))
+--         AND cc.deleted_at IS NULL
+--     WHERE cl.company_id = :tenant_company_id
+--       AND cl.parent_company_id IS NULL
+--       AND cl.deleted_at IS NULL
+--     GROUP BY cl.id, cc.id, cc.name
+--     HAVING COUNT(*) = 1  -- Only unique matches
+-- )
+-- UPDATE client_locations cl
+-- SET parent_company_id = um.customer_company_id,
+--     company_name = um.customer_company_name,
+--     updated_at = NOW()
+-- FROM unique_matches um
+-- WHERE cl.id = um.location_id;
+
+-- ============================================================================
+-- RECOMMENDED APPROACH:
+-- 1. Use the admin UI at GET /api/admin/orphan-locations to see all orphans
+-- 2. Go to each customer company detail page to see suggested links
+-- 3. Click "Link" to link individual locations through the UI
+-- 4. The API POST /api/customer-companies/:id/link-location handles the update safely
+-- ============================================================================

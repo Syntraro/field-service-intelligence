@@ -1,6 +1,6 @@
 import { Link } from "wouter";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Package, ChevronRight, Users, FormInput, Receipt, Plug, FileText, ListChecks, FileCheck } from "lucide-react";
+import { Package, ChevronRight, Users, FormInput, Receipt, Plug, FileText, ListChecks, FileCheck, CreditCard, Clock, Wallet, BarChart3 } from "lucide-react";
 
 interface SettingsCardProps {
   href: string;
@@ -102,6 +102,38 @@ export default function SettingsPage() {
       description: "Customize workflow statuses",
       detail: "Configure job statuses like En Route, On Site, Needs Parts for technician tracking.",
       testId: "card-job-statuses-settings",
+    },
+    {
+      href: "/settings/subscription",
+      icon: CreditCard,
+      title: "Subscription",
+      description: "Manage billing and subscription",
+      detail: "View your plan, change billing cycle, manage auto-renewal, or cancel subscription.",
+      testId: "card-subscription-settings",
+    },
+    {
+      href: "/settings/unassigned-time",
+      icon: Clock,
+      title: "Unassigned Time",
+      description: "Review unlinked time entries",
+      detail: "Review time entries not linked to jobs, toggle billable status, and assign to jobs.",
+      testId: "card-unassigned-time-settings",
+    },
+    {
+      href: "/settings/payroll",
+      icon: Wallet,
+      title: "Payroll",
+      description: "Weekly time summaries & approvals",
+      detail: "View weekly payroll summaries per technician, approve weeks to lock time entries, and export to CSV.",
+      testId: "card-payroll-settings",
+    },
+    {
+      href: "/settings/time-analytics",
+      icon: BarChart3,
+      title: "Time Analytics",
+      description: "Utilization & leakage dashboard",
+      detail: "Analyze time utilization trends, identify leakage from untracked or unassigned time, and view technician breakdowns.",
+      testId: "card-time-analytics-settings",
     },
   ];
 

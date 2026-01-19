@@ -16,12 +16,58 @@ interface UsageInfo {
   locations: number;
 }
 
+// Entitlement reasons - explains WHY tenant is/isn't entitled
+export type EntitlementReason =
+  | "PAID_ACTIVE"       // Has active paid subscription
+  | "TRIAL_ACTIVE"      // In valid trial period
+  | "TRIAL_EXPIRED"     // Trial has expired
+  | "SUBSCRIPTION_INACTIVE" // Subscription not active (cancelled, paused, etc.)
+  | "NO_PLAN";          // No plan configured
+
 interface SubscriptionUsage {
   plan: PlanInfo | null;
   usage: UsageInfo;
   percentUsed: number;
   trialEndsAt: string | null;
   subscriptionStatus: string | null;
+  // Entitlement fields - single source of truth for "is tenant allowed to use the app"
+  entitled: boolean;
+  entitlementReason: EntitlementReason;
+}
+
+/**
+ * Compute entitlement status for a tenant
+ * IMPORTANT: ACTIVE status ALWAYS means entitled, regardless of trialEndsAt
+ * Trial expiration only matters if status is "trial" or "trialing"
+ */
+function computeEntitlement(subscriptionStatus: string | null, trialEndsAt: Date | null): { entitled: boolean; reason: EntitlementReason } {
+  // Active paid subscriptions are always entitled
+  if (subscriptionStatus === "active") {
+    return { entitled: true, reason: "PAID_ACTIVE" };
+  }
+
+  // Trial status - check expiration
+  if (subscriptionStatus === "trial" || subscriptionStatus === "trialing") {
+    if (!trialEndsAt) {
+      // No trial end date set = trial active indefinitely (unlikely but handle gracefully)
+      return { entitled: true, reason: "TRIAL_ACTIVE" };
+    }
+
+    const now = new Date();
+    if (trialEndsAt >= now) {
+      return { entitled: true, reason: "TRIAL_ACTIVE" };
+    } else {
+      return { entitled: false, reason: "TRIAL_EXPIRED" };
+    }
+  }
+
+  // Other statuses (past_due, cancelled, paused) - not entitled
+  if (subscriptionStatus === "past_due" || subscriptionStatus === "cancelled" || subscriptionStatus === "paused") {
+    return { entitled: false, reason: "SUBSCRIPTION_INACTIVE" };
+  }
+
+  // No status or unknown - treat as no plan
+  return { entitled: false, reason: "NO_PLAN" };
 }
 
 export class SubscriptionRepository extends BaseRepository {
@@ -90,7 +136,13 @@ export class SubscriptionRepository extends BaseRepository {
         ? Math.round((locations / plan.locationLimit) * 100)
         : 0;
 
-    const result = {
+    // Compute entitlement (canonical single source of truth)
+    const { entitled, reason: entitlementReason } = computeEntitlement(
+      company[0].subscriptionStatus,
+      company[0].trialEndsAt
+    );
+
+    const result: SubscriptionUsage = {
       plan: plan
         ? {
             name: plan.name,
@@ -105,6 +157,8 @@ export class SubscriptionRepository extends BaseRepository {
       percentUsed,
       trialEndsAt: company[0].trialEndsAt?.toISOString() || null,
       subscriptionStatus: company[0].subscriptionStatus || null,
+      entitled,
+      entitlementReason,
     };
 
     // Cache for 1 minute (subscription data checked frequently)

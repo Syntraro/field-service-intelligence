@@ -57,7 +57,8 @@
       "Bash(npx drizzle-kit push:*)",
       "Bash(npm run db:check:*)",
       "Bash(npx tsx:*)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(du:*)"
     ]
   }
 }

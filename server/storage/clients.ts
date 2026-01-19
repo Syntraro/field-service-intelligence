@@ -204,6 +204,9 @@ export class ClientRepository extends BaseRepository {
   /**
    * Bulk create clients (single INSERT with multiple values)
    * Returns array of created clients
+   *
+   * PHASE A.1 GUARD: Uses explicit allowlisted fields - no spread from input
+   * This prevents mass assignment even if schema validation is bypassed
    */
   async bulkCreateClients(
     companyId: string,
@@ -212,10 +215,37 @@ export class ClientRepository extends BaseRepository {
   ): Promise<Client[]> {
     if (clientDataArray.length === 0) return [];
 
-    // Single INSERT with multiple values - much faster than N individual inserts
+    // PHASE A.1: Explicit allowlist - only these fields can be set from input
+    // Forbidden fields blocked: id, companyId, userId, createdAt, updatedAt, version,
+    // qboCustomerId, qboParentCustomerId, qboSyncToken, qboLastSyncedAt, deletedAt
     const rows = await db
       .insert(clients)
-      .values(clientDataArray.map(data => ({ ...data, companyId, userId })))
+      .values(clientDataArray.map(data => ({
+        // System fields (from session/server)
+        companyId,
+        userId,
+        // Allowed user-provided fields (explicit allowlist)
+        parentCompanyId: data.parentCompanyId ?? null,
+        companyName: data.companyName,
+        location: data.location ?? null,
+        address: data.address ?? null,
+        city: data.city ?? null,
+        province: data.province ?? null,
+        postalCode: data.postalCode ?? null,
+        contactName: data.contactName ?? null,
+        email: data.email ?? null,
+        phone: data.phone ?? null,
+        roofLadderCode: data.roofLadderCode ?? null,
+        notes: data.notes ?? null,
+        selectedMonths: data.selectedMonths ?? [],
+        inactive: data.inactive ?? false,
+        nextDue: data.nextDue ?? null,
+        isPrimary: data.isPrimary ?? false,
+        needsDetails: data.needsDetails ?? false,
+        billWithParent: data.billWithParent ?? true,
+        // QBO fields intentionally NOT copied from input - must be set via QBO sync
+        // version, deletedAt, createdAt, updatedAt handled by DB defaults
+      })))
       .returning();
 
     return rows;

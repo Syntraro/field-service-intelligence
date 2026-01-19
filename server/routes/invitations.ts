@@ -1,5 +1,6 @@
 import express, { Request, Response } from "express";
 import { requireRole } from "../auth/requireRole";
+import { canAssignRole, type Role } from "../auth/roles";
 import { createInvitation, acceptInvitation, resendInvitation } from "../services/invitations";
 import { writeAuditLog } from "../services/audit";
 import { asyncHandler, createError } from "../middleware/errorHandler";
@@ -26,6 +27,7 @@ const acceptInvitationSchema = z.object({
 });
 
 // Admin/dispatcher create invite (protected by requireAuth upstream)
+// Role hierarchy enforced: dispatchers can only invite technicians
 router.post("/", requireRole(["admin", "dispatcher"]), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const validation = createInvitationSchema.safeParse(req.body);
   if (!validation.success) {
@@ -34,6 +36,13 @@ router.post("/", requireRole(["admin", "dispatcher"]), asyncHandler(async (req: 
 
   const { email, role } = validation.data;
   const companyId = req.companyId!;
+  const inviterRole = req.user!.role as Role;
+
+  // Phase A Security Fix: Enforce role hierarchy to prevent privilege escalation
+  if (!canAssignRole(inviterRole, role as Role)) {
+    throw createError(403, `Insufficient permissions to assign role: ${role}`);
+  }
+
   const { token, expiresAt } = await createInvitation(companyId, email, role);
 
   await writeAuditLog({

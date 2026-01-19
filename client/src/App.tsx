@@ -16,6 +16,12 @@ import QuoteDetailPage from "@/pages/QuoteDetailPage";
 import Reports from "@/pages/Reports";
 import AccountsReceivablePage from "@/pages/AccountsReceivablePage";
 import Admin from "@/pages/Admin";
+import AdminTenants from "@/pages/AdminTenants";
+import AdminTenantDetail from "@/pages/AdminTenantDetail";
+import AdminQboOverview from "@/pages/AdminQboOverview";
+import AdminQboRuns from "@/pages/AdminQboRuns";
+import AdminQboRunDetail from "@/pages/AdminQboRunDetail";
+import AdminQboQueue from "@/pages/AdminQboQueue";
 import SupportConsole from "@/pages/SupportConsole";
 import AddClientPage from "@/pages/AddClientPage";
 import NewClientPage from "@/pages/NewClientPage";
@@ -39,6 +45,13 @@ import CategoryManagementPage from "@/pages/CategoryManagementPage";
 import JobTemplatesPage from "@/pages/JobTemplatesPage";
 import QuoteTemplatesPage from "@/pages/QuoteTemplatesPage";
 import JobStatusesPage from "@/pages/JobStatusesPage";
+import SubscriptionSettings from "@/pages/SubscriptionSettings";
+import UnassignedTimePage from "@/pages/UnassignedTimePage";
+import PayrollPage from "@/pages/PayrollPage";
+import TimeAnalyticsPage from "@/pages/TimeAnalyticsPage";
+import NotificationsPage from "@/pages/NotificationsPage";
+import TimeAlertSettingsPage from "@/pages/TimeAlertSettingsPage";
+import TimeBillingRulesPage from "@/pages/TimeBillingRulesPage";
 import Login from "@/pages/Login";
 import Signup from "@/pages/Signup";
 import RequestReset from "@/pages/RequestReset";
@@ -127,6 +140,36 @@ function Router() {
           <Admin />
         </ProtectedRoute>
       </Route>
+      <Route path="/admin/tenants">
+        <ProtectedRoute requireAdmin>
+          <AdminTenants />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/admin/tenants/:companyId">
+        <ProtectedRoute requireAdmin>
+          <AdminTenantDetail />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/admin/qbo">
+        <ProtectedRoute requireAdmin>
+          <AdminQboOverview />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/admin/qbo/runs">
+        <ProtectedRoute requireAdmin>
+          <AdminQboRuns />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/admin/qbo/runs/:runId">
+        <ProtectedRoute requireAdmin>
+          <AdminQboRunDetail />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/admin/qbo/queue">
+        <ProtectedRoute requireAdmin>
+          <AdminQboQueue />
+        </ProtectedRoute>
+      </Route>
       <Route path="/support-console">
         <ProtectedRoute requirePlatformAdmin>
           <SupportConsole />
@@ -200,6 +243,41 @@ function Router() {
       <Route path="/settings/job-statuses">
         <ProtectedRoute requireAdmin>
           <JobStatusesPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/settings/subscription">
+        <ProtectedRoute requireAdmin>
+          <SubscriptionSettings />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/settings/unassigned-time">
+        <ProtectedRoute requireAdmin>
+          <UnassignedTimePage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/settings/payroll">
+        <ProtectedRoute requireAdmin>
+          <PayrollPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/settings/time-analytics">
+        <ProtectedRoute requireAdmin>
+          <TimeAnalyticsPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/notifications">
+        <ProtectedRoute requireAdmin>
+          <NotificationsPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/settings/time-alerts">
+        <ProtectedRoute requireAdmin>
+          <TimeAlertSettingsPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/settings/time-billing">
+        <ProtectedRoute requireAdmin>
+          <TimeBillingRulesPage />
         </ProtectedRoute>
       </Route>
       <Route path="/company-settings">

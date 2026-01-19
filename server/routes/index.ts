@@ -36,6 +36,12 @@ import paymentsRouter from "./payments";
 import qboRouter from "./qbo";
 import quotesRouter from "./quotes";
 import quoteTemplatesRouter from "./quoteTemplates";
+import notificationsRouter from "./notifications";
+import adminRouter from "./admin";
+import { timeRouter as timeTrackingRouter, jobTimeRouter, payrollRouter } from "./timeTracking";
+import analyticsRouter from "./analytics";
+import timeAlertsRouter from "./timeAlerts";
+import timeBillingRulesRouter from "./timeBillingRules";
 
 /**
  * Register all API routes in a single place.
@@ -88,6 +94,7 @@ export function registerRoutes(app: Express): Server {
 
   app.use("/api/jobs", jobsRouter);
   app.use("/api/jobs", jobVisitsRoutes);
+  app.use("/api/jobs", jobTimeRouter); // Time tracking: status updates + time summaries
   app.use("/api/invoices", invoicesRouter);
   app.use("/api", paymentsRouter); // Payment routes: /api/invoices/:id/payments, /api/payments/:id
   app.use("/api/team", teamRouter);
@@ -111,6 +118,12 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/qbo", qboRouter);
   app.use("/api/quotes", quotesRouter);
   app.use("/api/quote-templates", quoteTemplatesRouter);
+  app.use("/api/notifications", notificationsRouter);
+  app.use("/api/time", timeTrackingRouter); // Time tracking: clock in/out + time entries
+  app.use("/api/payroll", payrollRouter); // Payroll: weekly summaries + approval + CSV export
+  app.use("/api/analytics", analyticsRouter); // Analytics: time utilization + leakage dashboard
+  app.use("/api/time-alerts", timeAlertsRouter); // Time alerts: settings + snoozes + worker triggers
+  app.use("/api/time-billing", timeBillingRulesRouter); // Time billing: rules for rounding, minimums, multipliers
 
   // ✅ NEW ROUTES (company rollups + notes API)
   // Company/Client (parent) endpoints: /api/customer-companies/:id/overview, /locations, etc.
@@ -121,6 +134,11 @@ export function registerRoutes(app: Express): Server {
   // ⚠️ Legacy alias (/api/client-notes) may still exist for backward compatibility.
   // Mounted at /api so the router can expose multiple paths.
   app.use("/api", clientNotesRouter);
+
+  // ========================================
+  // ADMIN ROUTES (owner-only)
+  // ========================================
+  app.use("/api/admin", adminRouter);
 
   // Create and return HTTP server
   const httpServer = createServer(app);

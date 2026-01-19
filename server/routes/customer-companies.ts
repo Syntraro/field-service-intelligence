@@ -1,9 +1,11 @@
 import { Router, Response, NextFunction } from "express";
+import { z } from "zod";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
 import { parsePaginationLenient } from "../utils/pagination";
 import { paginatedCompat } from "../utils/paginatedResponse";
 import { asyncHandler, createError } from "../middleware/errorHandler";
+import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { customerCompanyRepository } from "../storage/customerCompanies";
 
@@ -102,6 +104,93 @@ router.get("/:companyId/overview", asyncHandler(async (req: AuthedRequest, res: 
   if (!overview) throw createError(404, "Customer company not found");
 
   res.json(overview);
+}));
+
+// ============================================================================
+// Location Linking (Orphan Management)
+// ============================================================================
+
+// Validation schema for link-location request
+const linkLocationSchema = z.object({
+  locationId: z.string().uuid("Invalid location ID"),
+});
+
+/**
+ * POST /api/customer-companies/:companyId/link-location
+ * Link an orphan location to a customer company
+ *
+ * Body: { locationId: string }
+ *
+ * This is for linking existing locations that have parentCompanyId = NULL
+ * to a customer company. Both location and customer company must belong
+ * to the same tenant.
+ */
+router.post("/:companyId/link-location", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId: tenantCompanyId } = req;
+  const { companyId: customerCompanyId } = req.params;
+
+  if (!tenantCompanyId) {
+    throw createError(401, "Missing company context");
+  }
+
+  const data = validateSchema(linkLocationSchema, req.body);
+
+  const updatedLocation = await customerCompanyRepository.linkLocationToCustomerCompany(
+    tenantCompanyId,
+    data.locationId,
+    customerCompanyId
+  );
+
+  res.json({
+    success: true,
+    location: updatedLocation,
+    message: "Location linked successfully",
+  });
+}));
+
+/**
+ * GET /api/customer-companies/:companyId/unlinked-suggestions
+ * Get orphan locations that might belong to this customer company
+ * (locations with matching companyName but parentCompanyId = NULL)
+ *
+ * This helps users find locations that should be linked to this company.
+ */
+router.get("/:companyId/unlinked-suggestions", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId: tenantCompanyId } = req;
+  const { companyId: customerCompanyId } = req.params;
+
+  if (!tenantCompanyId) {
+    throw createError(401, "Missing company context");
+  }
+
+  // Get the customer company to find its name
+  const customerCompany = await customerCompanyRepository.getCustomerCompany(
+    tenantCompanyId,
+    customerCompanyId
+  );
+
+  if (!customerCompany) {
+    throw createError(404, "Customer company not found");
+  }
+
+  // Get all orphan locations for this tenant
+  const allOrphans = await customerCompanyRepository.getOrphanLocations(tenantCompanyId);
+
+  // Filter to locations that have this customer company as their suggested match
+  // OR have matching companyName (case-insensitive)
+  const suggestions = allOrphans.filter(orphan =>
+    orphan.suggestedCustomerCompanyId === customerCompanyId ||
+    orphan.companyName.toLowerCase().trim() === customerCompany.name.toLowerCase().trim()
+  );
+
+  res.json({
+    suggestions,
+    count: suggestions.length,
+    customerCompany: {
+      id: customerCompany.id,
+      name: customerCompany.name,
+    },
+  });
 }));
 
 export default router;

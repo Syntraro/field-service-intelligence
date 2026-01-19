@@ -2,11 +2,14 @@ import express, { Response } from "express";
 import { z } from "zod";
 import { resizeJobTime } from "../services/calendarService";
 import { requireRole } from "../auth/requireRole";
+import { requireFeature } from "../auth/requireFeature";
 import { MANAGER_ROLES } from "../auth/roles";
+import { notificationService } from "../services/notificationService";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { calendarRepository } from "../storage/calendar";
-import { validateSchedule, ScheduleValidationError } from "../services/calendarValidation";
+import { jobRepository } from "../storage/jobs";
+import { validateSchedule, validateNoCrossDay, ScheduleValidationError } from "../services/calendarValidation";
 import type { AuthedRequest } from "../auth/tenantIsolation";
 import type { CalendarAssignmentWithDetails } from "../storage/calendar";
 
@@ -54,6 +57,9 @@ function filterAssignmentsByRole(
  * - Overlap/conflict detection
  */
 const router = express.Router();
+
+// Feature gate: require calendarEnabled for all calendar routes
+router.use(requireFeature("calendarEnabled"));
 
 // ============================================================================
 // Validation Schemas
@@ -296,6 +302,17 @@ router.post(
       throw createError(404, "Job not found or does not belong to this company");
     }
 
+    // Validate cross-day constraint (always enforced)
+    try {
+      validateNoCrossDay(new Date(data.startAt), new Date(data.endAt));
+    } catch (error) {
+      if (error instanceof ScheduleValidationError) {
+        res.status(error.statusCode).json(error.toJSON());
+        return;
+      }
+      throw error;
+    }
+
     // Validate technician if provided
     if (data.technicianUserId) {
       const techValid = await calendarRepository.validateTechnicianBelongsToTenant(
@@ -333,6 +350,24 @@ router.post(
 
     if (!result) {
       throw createError(500, "Failed to create assignment");
+    }
+
+    // Emit notification to assigned technician
+    if (data.technicianUserId) {
+      // Get job details for the notification
+      const jobDetails = await jobRepository.getJob(companyId, data.jobId);
+      if (jobDetails) {
+        const clientName = jobDetails.location?.companyName || jobDetails.location?.location || "Client";
+        notificationService.emitJobScheduled({
+          companyId,
+          jobId: data.jobId,
+          jobNumber: String(jobDetails.jobNumber),
+          clientName,
+          scheduledDate: data.startAt,
+          technicianUserId: data.technicianUserId,
+          isReschedule: false,
+        }).catch((err) => console.error("Failed to emit job scheduled notification:", err));
+      }
     }
 
     res.status(201).json(result);
@@ -396,6 +431,19 @@ router.patch(
       }
     }
 
+    // Validate cross-day constraint (always enforced when times are set)
+    if (finalStartAt && finalEndAt) {
+      try {
+        validateNoCrossDay(finalStartAt, finalEndAt);
+      } catch (error) {
+        if (error instanceof ScheduleValidationError) {
+          res.status(error.statusCode).json(error.toJSON());
+          return;
+        }
+        throw error;
+      }
+    }
+
     // Slice 2: Validate working hours and conflicts (if technician and times are set)
     if (finalTechnicianId && finalStartAt && finalEndAt) {
       try {
@@ -424,6 +472,26 @@ router.patch(
 
     if (!result) {
       throw createError(500, "Failed to update assignment");
+    }
+
+    // Emit notification if schedule or technician changed
+    const scheduleChanged = data.startAt || data.endAt;
+    const technicianToNotify = finalTechnicianId;
+
+    if (scheduleChanged && technicianToNotify) {
+      const jobDetails = await jobRepository.getJob(companyId, assignmentId);
+      if (jobDetails) {
+        const clientName = jobDetails.location?.companyName || jobDetails.location?.location || "Client";
+        notificationService.emitJobScheduled({
+          companyId,
+          jobId: assignmentId,
+          jobNumber: String(jobDetails.jobNumber),
+          clientName,
+          scheduledDate: (finalStartAt || new Date()).toISOString(),
+          technicianUserId: technicianToNotify,
+          isReschedule: true,
+        }).catch((err) => console.error("Failed to emit job rescheduled notification:", err));
+      }
     }
 
     res.json(result);

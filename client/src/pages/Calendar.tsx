@@ -6,17 +6,17 @@ import { JobDetailDialog } from "@/components/JobDetailDialog";
 import { PartsDialog } from "@/components/PartsDialog";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { X, AlertTriangle, Trash2, Archive, Loader2, Search } from "lucide-react";
+import { X, AlertTriangle, Trash2, Archive } from "lucide-react";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 import { UnscheduledJobsSidebar } from "@/components/UnscheduledJobsSidebar";
+import { useCalendarState } from "@/hooks/useCalendarState";
+import { useCalendarDnD } from "@/hooks/useCalendarDnD";
 import {
   MONTH_ABBREV,
   DENSITY_STYLES,
-  CalendarDensity,
   CalendarEvent,
   getMondayOfWeek,
   createTechnicianColorMap,
@@ -31,7 +31,6 @@ import {
   CalendarGridWeekTechnicians,
   CalendarGridDay,
   ScheduleJobModal,
-  handleCalendarMutationError,
 } from "@/components/calendar";
 import { DraggableClient } from "@/components/calendar/DraggableClient";
 
@@ -53,20 +52,41 @@ function findClientByLocationId(clients: any[], locationId: string): any | undef
 // ============================================================================
 
 export default function Calendar() {
-  const [currentDate, setCurrentDate] = useState(new Date());
-  const [view, setView] = useState<"monthly" | "weekly" | "daily">("weekly");
+  // ========================================
+  // State Management Hook (with localStorage persistence)
+  // ========================================
+  const {
+    view,
+    setView,
+    weeklyViewMode,
+    setWeeklyViewMode,
+    density,
+    setDensity,
+    sidebarCollapsed: isUnscheduledMinimized,
+    toggleSidebarCollapsed,
+    showFullDay,
+    toggleShowFullDay,
+    visibleHours,
+    hiddenTechnicianIds,
+    toggleTechnicianVisibility,
+    currentDate,
+    setCurrentDate,
+    year,
+    month,
+    unscheduledSearch,
+    setUnscheduledSearch,
+    selectedTechnicianId,
+    setSelectedTechnicianId,
+    expandedAllDaySlots,
+    setExpandedAllDaySlots,
+  } = useCalendarState();
+
+  // Local UI state (not persisted)
   const [activeId, setActiveId] = useState<string | null>(null);
   const [selectedClient, setSelectedClient] = useState<any | null>(null);
   const [selectedAssignment, setSelectedAssignment] = useState<any | null>(null);
   const [reportDialogClientId, setReportDialogClientId] = useState<string | null>(null);
-  const [isUnscheduledMinimized, setIsUnscheduledMinimized] = useState(false);
-  const [density, setDensity] = useState<CalendarDensity>('comfortable');
-  const [showOnlyOutstanding, setShowOnlyOutstanding] = useState(false);
-  const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clientDetailOpen, setClientDetailOpen] = useState(false);
-  const [selectedTechnicianId, setSelectedTechnicianId] = useState<string | null>(null);
-  const [hiddenTechnicianIds, setHiddenTechnicianIds] = useState<Set<string>>(new Set());
-  const [expandedAllDaySlots, setExpandedAllDaySlots] = useState<Set<string>>(new Set());
   const [partsDialogOpen, setPartsDialogOpen] = useState(false);
   const [partsDialogTitle, setPartsDialogTitle] = useState("");
   const [partsDialogParts, setPartsDialogParts] = useState<Array<{ description: string; quantity: number; date?: string }>>([]);
@@ -76,20 +96,12 @@ export default function Calendar() {
   const [scheduleModalDate, setScheduleModalDate] = useState<Date | undefined>();
   const [scheduleModalTechnicianId, setScheduleModalTechnicianId] = useState<string | undefined>();
   const [scheduleModalEdit, setScheduleModalEdit] = useState<any>(null);
-  // Weekly view mode: "time" (hourly rows) or "technician" (technician rows)
-  const [weeklyViewMode, setWeeklyViewMode] = useState<"time" | "technician">("time");
-  // Drag/drop saving state for UI feedback
-  const [isSavingDrag, setIsSavingDrag] = useState(false);
-  // Unscheduled jobs search filter
-  const [unscheduledSearch, setUnscheduledSearch] = useState("");
+
   const { toast } = useToast();
   const [location, setLocation] = useLocation();
   const [addClientDialogOpen, setAddClientDialogOpen] = useState(false);
   const weeklyScrollContainerRef = useRef<HTMLDivElement>(null);
   const scrollDoneRef = useRef(false);
-
-  const year = currentDate.getFullYear();
-  const month = currentDate.getMonth() + 1;
 
   // Calculate which months to fetch based on view
   const getMonthsToFetch = () => {
@@ -240,6 +252,22 @@ export default function Calendar() {
     queryKey: ['/api/company-settings'],
   });
 
+  // ========================================
+  // Drag/Drop Mutations Hook (with optimistic UI)
+  // ========================================
+  const dndMutations = useCalendarDnD(year, month, currentDate, view, refetchCalendar);
+  const {
+    createAssignment: createAssignmentMutation,
+    updateAssignment: updateAssignmentMutation,
+    updateDuration,
+    deleteAssignment: deleteAssignmentMutation,
+    assignTechnicians,
+    clearSchedule,
+    clearDay,
+    toggleComplete,
+    isSavingDrag,
+  } = dndMutations;
+
   const updateCompanySettings = useMutation({
     mutationFn: async (settings: any) => {
       return apiRequest("/api/company-settings", { method: "POST", body: JSON.stringify(settings) });
@@ -260,239 +288,10 @@ export default function Calendar() {
     },
   });
 
-  const createAssignment = useMutation({
-    mutationFn: async ({
-      locationId,
-      day,
-      scheduledHour,
-      scheduledStartMinutes,
-      targetYear,
-      targetMonth,
-    }: {
-      locationId: string;
-      day: number;
-      scheduledHour?: number;
-      scheduledStartMinutes?: number;
-      targetYear?: number;
-      targetMonth?: number;
-    }) => {
-      const useYear = targetYear ?? year;
-      const useMonth = targetMonth ?? month;
-      return apiRequest(`/api/calendar/assign`, { method: "POST", body: JSON.stringify({
-        // DUAL-SEND: locationId is canonical, clientId is legacy fallback.
-        // Both are sent during migration period. Remove clientId after schema migration completes.
-        // See: calendarUtils.ts getLocationKey() for canonical identity resolution.
-        locationId,
-        clientId: locationId,
-        year: useYear,
-        month: useMonth,
-        day,
-        scheduledDate: new Date(useYear, useMonth - 1, day).toISOString().split('T')[0],
-        scheduledHour: scheduledHour !== undefined ? scheduledHour : undefined,
-        scheduledStartMinutes: scheduledStartMinutes !== undefined ? scheduledStartMinutes : undefined,
-        autoDueDate: false,
-      }) });
-    },
-    onMutate: async () => {
-      setIsSavingDrag(true);
-    },
-    onSuccess: async () => {
-      await refetchCalendar();
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-      toast({
-        title: "Client scheduled",
-        description: "The client has been added to the calendar",
-      });
-    },
-    onError: async (error: any) => {
-      const handled = await handleCalendarMutationError(error);
-      if (!handled) {
-        toast({
-          title: "Error",
-          description: error.message || "Failed to schedule client",
-          variant: "destructive",
-        });
-      }
-    },
-    onSettled: () => {
-      setIsSavingDrag(false);
-    },
-  });
-
-  const updateAssignment = useMutation({
-    mutationFn: async ({
-      id,
-      day,
-      scheduledHour,
-      scheduledStartMinutes,
-      targetYear,
-      targetMonth,
-    }: {
-      id: string;
-      day: number;
-      scheduledHour?: number | null;
-      scheduledStartMinutes?: number | null;
-      targetYear?: number;
-      targetMonth?: number;
-    }) => {
-      const updateYear = targetYear ?? year;
-      const updateMonth = targetMonth ?? month;
-      return apiRequest(`/api/calendar/assign/${id}`, { method: "PATCH", body: JSON.stringify({
-        year: updateYear,
-        month: updateMonth,
-        day,
-        scheduledDate: new Date(updateYear, updateMonth - 1, day).toISOString().split('T')[0],
-        scheduledHour: scheduledHour !== undefined ? scheduledHour : undefined,
-        // When scheduling into timed slots, allow sub-hour starts (15-min snapping).
-        scheduledStartMinutes: scheduledStartMinutes !== undefined ? scheduledStartMinutes : undefined,
-      }) });
-    },
-    onMutate: async () => {
-      setIsSavingDrag(true);
-    },
-    onSuccess: async () => {
-      await refetchCalendar();
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/overdue"], exact: false });
-      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-      toast({
-        title: "Updated",
-        description: "The assignment has been moved",
-      });
-    },
-    onError: async (error: any) => {
-      // Refetch to rollback optimistic UI changes
-      await refetchCalendar();
-      // Try to show detailed validation error toast
-      const handled = await handleCalendarMutationError(error);
-      if (!handled) {
-        toast({
-          title: "Error",
-          description: error.message || "Failed to update assignment",
-          variant: "destructive",
-        });
-      }
-    },
-    onSettled: () => {
-      setIsSavingDrag(false);
-    },
-  });
-
-  const updateDuration = useMutation({
-    mutationFn: async ({ id, durationMinutes }: { id: string; durationMinutes: number }) => {
-      return apiRequest(`/api/calendar/assign/${id}`, { method: "PATCH", body: JSON.stringify({ durationMinutes }) });
-    },
-    onSuccess: async () => {
-      await refetchCalendar();
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to update duration",
-        variant: "destructive",
-      });
-    },
-  });
-
+  // Helper for resize handler (uses hook's mutation)
   const handleResize = useCallback((assignmentId: string, newDurationMinutes: number) => {
     updateDuration.mutate({ id: assignmentId, durationMinutes: newDurationMinutes });
   }, [updateDuration]);
-
-  const deleteAssignment = useMutation({
-    mutationFn: async (id: string) => {
-      return apiRequest(`/api/calendar/assign/${id}`, { method: "DELETE" });
-    },
-    onSuccess: async () => {
-      await refetchCalendar();
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-      toast({
-        title: "Removed",
-        description: "The client has been unscheduled",
-      });
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to remove assignment",
-        variant: "destructive",
-      });
-    },
-  });
-
-  const clearSchedule = useMutation({
-    mutationFn: async (assignmentsToDelete: any[]) => {
-      // Delete all assignments for this month
-      const deletePromises = assignmentsToDelete.map((assignment: any) =>
-        apiRequest(`/api/calendar/assign/${assignment.id}`, { method: "DELETE" })
-      );
-      return Promise.all(deletePromises);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar", year, month] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-      toast({
-        title: "Schedule cleared",
-        description: "All clients have been moved to unscheduled",
-      });
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to clear schedule",
-        variant: "destructive",
-      });
-    },
-  });
-
-  const clearDay = useMutation({
-    mutationFn: async ({ day, dayAssignments }: { day: number; dayAssignments: any[] }) => {
-      // Delete all assignments for this specific day
-      const deletePromises = dayAssignments.map((assignment: any) =>
-        apiRequest(`/api/calendar/assign/${assignment.id}`, { method: "DELETE" })
-      );
-      return Promise.all(deletePromises);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar", year, month] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-      toast({
-        title: "Day cleared",
-        description: "All clients for this day have been unscheduled",
-      });
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to clear day",
-        variant: "destructive",
-      });
-    },
-  });
-
-  const assignTechnicians = useMutation({
-    mutationFn: async ({ assignmentId, technicianIds }: { assignmentId: string; technicianIds: string[] }) => {
-      return apiRequest(`/api/calendar/assign/${assignmentId}`, { method: 'PATCH', body: JSON.stringify({ assignedTechnicianIds: technicianIds }) });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
-
-      toast({
-        title: "Updated",
-        description: "Technician assignments updated",
-      });
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to assign technicians",
-        variant: "destructive",
-      });
-    },
-  });
 
   const daysInMonth = new Date(year, month, 0).getDate();
   const firstDayOfMonth = new Date(year, month - 1, 1).getDay();
@@ -578,15 +377,15 @@ export default function Calendar() {
         // Only move if the assignment exists and day changed
         const currentAssignment = assignments.find((a: any) => a.id === activeIdValue);
         if (currentAssignment && currentAssignment.day !== day) {
-          updateAssignment.mutate({ id: activeIdValue, day });
+          updateAssignmentMutation.mutate({ id: activeIdValue, day });
         }
       } else if (unscheduledItem && hasExistingAssignment) {
         // Update existing unscheduled assignment to current view's month/day
-        updateAssignment.mutate({ id: unscheduledItem.assignmentId, day, targetMonth: month, targetYear: year });
+        updateAssignmentMutation.mutate({ id: unscheduledItem.assignmentId, day, targetMonth: month, targetYear: year });
       } else if (unscheduledItem) {
         // Create new assignment from unscheduled client (no existing assignment - "missing" status)
         // Use the ITEM's original month/year so it's scheduled for the correct PM month
-        createAssignment.mutate({
+        createAssignmentMutation.mutate({
           locationId: getLocationId(unscheduledItem),
           day,
           targetMonth: unscheduledItem.month,
@@ -602,14 +401,14 @@ export default function Calendar() {
         const currentAssignment = assignments.find((a: any) => a.id === activeIdValue);
         // Update if day changed OR if moving from a time slot to all-day (scheduledHour becomes null)
         if (currentAssignment && (currentAssignment.day !== targetDay || currentAssignment.scheduledHour !== null)) {
-          updateAssignment.mutate({ id: activeIdValue, day: targetDay, scheduledHour: null });
+          updateAssignmentMutation.mutate({ id: activeIdValue, day: targetDay, scheduledHour: null });
         }
       } else if (unscheduledItem && hasExistingAssignment) {
         // Update existing unscheduled assignment to current view's month/day
-        updateAssignment.mutate({ id: unscheduledItem.assignmentId, day: targetDay, scheduledHour: null, targetMonth: month, targetYear: year });
+        updateAssignmentMutation.mutate({ id: unscheduledItem.assignmentId, day: targetDay, scheduledHour: null, targetMonth: month, targetYear: year });
       } else if (unscheduledItem) {
         // Create new assignment from unscheduled client - use ITEM's original month/year
-        createAssignment.mutate({
+        createAssignmentMutation.mutate({
           locationId: getLocationId(unscheduledItem),
           day: targetDay,
           targetMonth: unscheduledItem.month,
@@ -632,15 +431,15 @@ export default function Calendar() {
             currentAssignment.scheduledHour !== hour ||
             currentStart !== scheduledStartMinutes
           ) {
-            updateAssignment.mutate({ id: activeIdValue, day: targetDay, scheduledHour: hour, scheduledStartMinutes });
+            updateAssignmentMutation.mutate({ id: activeIdValue, day: targetDay, scheduledHour: hour, scheduledStartMinutes });
           }
         }
       } else if (unscheduledItem && hasExistingAssignment) {
         // Update existing unscheduled assignment to current view's month/day/hour
-        updateAssignment.mutate({ id: unscheduledItem.assignmentId, day: targetDay, scheduledHour: hour, scheduledStartMinutes, targetMonth: month, targetYear: year });
+        updateAssignmentMutation.mutate({ id: unscheduledItem.assignmentId, day: targetDay, scheduledHour: hour, scheduledStartMinutes, targetMonth: month, targetYear: year });
       } else if (unscheduledItem) {
         // Create new assignment from unscheduled client - use ITEM's original month/year
-        createAssignment.mutate({
+        createAssignmentMutation.mutate({
           locationId: getLocationId(unscheduledItem),
           day: targetDay,
           scheduledHour: hour,
@@ -665,7 +464,7 @@ export default function Calendar() {
       if (isExistingCalendarAssignment) {
         const currentAssignment = assignments.find((a: any) => a.id === activeIdValue);
         if (currentAssignment) {
-          updateAssignment.mutate({
+          updateAssignmentMutation.mutate({
             id: activeIdValue,
             day: targetDay,
             scheduledHour: hour,
@@ -679,7 +478,7 @@ export default function Calendar() {
           }
         }
       } else if (unscheduledItem && hasExistingAssignment) {
-        updateAssignment.mutate({
+        updateAssignmentMutation.mutate({
           id: unscheduledItem.assignmentId,
           day: targetDay,
           scheduledHour: hour,
@@ -689,7 +488,7 @@ export default function Calendar() {
         });
       } else if (unscheduledItem) {
         // Create new assignment from unscheduled client - use ITEM's original month/year
-        createAssignment.mutate({
+        createAssignmentMutation.mutate({
           locationId: getLocationId(unscheduledItem),
           day: targetDay,
           scheduledHour: hour,
@@ -701,13 +500,13 @@ export default function Calendar() {
     } else if (overId === 'unscheduled-panel') {
       // Dropped on unscheduled panel - remove from calendar
       if (isExistingCalendarAssignment) {
-        deleteAssignment.mutate(activeIdValue);
+        deleteAssignmentMutation.mutate(activeIdValue);
       }
     }
   };
 
   const handleRemove = (assignmentId: string) => {
-    deleteAssignment.mutate(assignmentId);
+    deleteAssignmentMutation.mutate(assignmentId);
   };
 
   const handleClearDay = (day: number, dayAssignments: any[]) => {
@@ -721,37 +520,6 @@ export default function Calendar() {
     setSelectedAssignment(rawAssignment);
     setClientDetailOpen(true);
   };
-
-  const toggleComplete = useMutation({
-    mutationFn: async () => {
-      if (!selectedAssignment) return;
-      return apiRequest(`/api/calendar/assign/${selectedAssignment.id}`, { method: "PATCH", body: JSON.stringify({
-        completed: !selectedAssignment.completed
-      }) });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar", year, month] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/overdue"], exact: false });
-
-      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/maintenance/recently-completed"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/maintenance/statuses"] });
-      setSelectedClient(null);
-      setSelectedAssignment(null);
-      toast({
-        title: "Updated",
-        description: selectedAssignment?.completed ? "Marked as incomplete" : "Marked as complete",
-      });
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to update completion status",
-        variant: "destructive",
-      });
-    },
-  });
 
   const { data: allClients = [], isLoading: isLoadingClients } = useQuery<any[]>({
     queryKey: ["/api/clients"],
@@ -985,19 +753,6 @@ export default function Calendar() {
     (unscheduledClients.find((c: any) => c.id === activeId) ||
      assignments.find((a: any) => a.id === activeId)) : null;
 
-  // Handler for toggling technician visibility
-  const handleToggleTechnicianVisibility = (techId: string) => {
-    setHiddenTechnicianIds(prev => {
-      const next = new Set(prev);
-      if (next.has(techId)) {
-        next.delete(techId);
-      } else {
-        next.add(techId);
-      }
-      return next;
-    });
-  };
-
   // Handler for parts button click
   const handlePartsClick = () => {
     if (isLoadingParts) {
@@ -1184,7 +939,7 @@ export default function Calendar() {
             density={density}
             onDensityChange={setDensity}
             hiddenTechnicianIds={hiddenTechnicianIds}
-            onToggleTechnicianVisibility={handleToggleTechnicianVisibility}
+            onToggleTechnicianVisibility={toggleTechnicianVisibility}
           />
 
           <div className={`flex gap-2 flex-1 min-h-0 overflow-hidden`}>
@@ -1246,6 +1001,9 @@ export default function Calendar() {
                           handleClientClick={handleClientClick}
                           handleResize={handleResize}
                           weeklyScrollContainerRef={weeklyScrollContainerRef}
+                          visibleHours={visibleHours}
+                          showFullDay={showFullDay}
+                          onToggleFullDay={toggleShowFullDay}
                         />
                       ) : (
                         <CalendarGridWeekTechnicians
@@ -1284,7 +1042,7 @@ export default function Calendar() {
             <aside className="w-auto flex-shrink-0 h-full overflow-hidden">
               <UnscheduledJobsSidebar
                 collapsed={isUnscheduledMinimized}
-                onToggleCollapsed={() => setIsUnscheduledMinimized((v) => !v)}
+                onToggleCollapsed={toggleSidebarCollapsed}
                 items={filteredUnscheduledClients}
                 searchQuery={unscheduledSearch}
                 onSearchChange={setUnscheduledSearch}

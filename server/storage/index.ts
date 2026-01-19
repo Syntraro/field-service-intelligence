@@ -103,6 +103,7 @@ export interface IStorage {
   // Invoice operations
   getInvoices: typeof invoiceRepository.getInvoices;
   getInvoice: typeof invoiceRepository.getInvoice;
+  getInvoiceByJobId: typeof invoiceRepository.getInvoiceByJobId;
   getInvoiceStats: typeof invoiceRepository.getInvoiceStats;
   getInvoiceLines: typeof invoiceRepository.getInvoiceLines;
   createInvoiceLine: typeof invoiceRepository.createInvoiceLine;
@@ -265,6 +266,7 @@ export const storage: IStorage = {
   // Invoice operations
   getInvoices: invoiceRepository.getInvoices.bind(invoiceRepository),
   getInvoice: invoiceRepository.getInvoice.bind(invoiceRepository),
+  getInvoiceByJobId: invoiceRepository.getInvoiceByJobId.bind(invoiceRepository),
   getInvoiceStats: invoiceRepository.getInvoiceStats.bind(invoiceRepository),
   getInvoiceLines: invoiceRepository.getInvoiceLines.bind(invoiceRepository),
   createInvoiceLine: invoiceRepository.createInvoiceLine.bind(invoiceRepository),
@@ -418,6 +420,9 @@ export {
   quoteTemplateRepository,
   calendarRepository,
 };
+
+// Subscription billing (separate export due to its size and specialized nature)
+export { subscriptionBillingRepository } from "./subscriptionBilling";
 
 // Default export for convenience
 export default storage;

@@ -5,12 +5,23 @@ import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import { differenceInDays, format } from "date-fns";
 
+// Entitlement reasons from backend
+type EntitlementReason =
+  | "PAID_ACTIVE"
+  | "TRIAL_ACTIVE"
+  | "TRIAL_EXPIRED"
+  | "SUBSCRIPTION_INACTIVE"
+  | "NO_PLAN";
+
 interface Usage {
   plan: {
     name: string;
     displayName: string;
   } | null;
   trialEndsAt: string | null;
+  subscriptionStatus: string | null;
+  entitled: boolean;
+  entitlementReason: EntitlementReason;
 }
 
 export function SubscriptionBanner() {
@@ -20,24 +31,27 @@ export function SubscriptionBanner() {
     queryKey: ["/api/subscriptions/usage"]
   });
 
-  if (!usage || !usage.plan || dismissed) {
+  if (!usage || dismissed) {
     return null;
   }
 
-  const { plan, trialEndsAt } = usage;
+  const { entitled, entitlementReason, trialEndsAt } = usage;
 
-  // Only show banner for trial users
-  if (plan.name !== 'trial' || !trialEndsAt) {
+  // If entitled (PAID_ACTIVE or TRIAL_ACTIVE with valid trial), don't show expiration banner
+  // Only show banner for TRIAL_EXPIRED or TRIAL_ACTIVE with expiring soon
+  if (entitled && entitlementReason === "PAID_ACTIVE") {
+    // Paid active subscription - never show trial banner
     return null;
   }
 
-  const trialEndDate = new Date(trialEndsAt);
+  // For trial users, check if expiring soon
+  const trialEndDate = trialEndsAt ? new Date(trialEndsAt) : null;
   const now = new Date();
-  const daysRemaining = differenceInDays(trialEndDate, now);
-  const isExpired = daysRemaining < 0;
-  const isExpiringSoon = daysRemaining >= 0 && daysRemaining <= 7;
+  const daysRemaining = trialEndDate ? differenceInDays(trialEndDate, now) : 999;
+  const isExpired = entitlementReason === "TRIAL_EXPIRED" || daysRemaining < 0;
+  const isExpiringSoon = !isExpired && daysRemaining <= 7;
 
-  // Only show if expired or expiring soon
+  // Only show if expired or expiring soon (for trial users)
   if (!isExpired && !isExpiringSoon) {
     return null;
   }
@@ -52,9 +66,9 @@ export function SubscriptionBanner() {
       <AlertDescription className="flex items-center justify-between gap-4">
         <span>
           {isExpired ? (
-            <>Your trial expired on {format(trialEndDate, "MMM d, yyyy")}. Upgrade to continue adding locations.</>
+            <>Your trial expired{trialEndDate ? ` on ${format(trialEndDate, "MMM d, yyyy")}` : ""}. Upgrade to continue adding locations.</>
           ) : (
-            <>Your trial ends in {daysRemaining} {daysRemaining === 1 ? 'day' : 'days'} ({format(trialEndDate, "MMM d, yyyy")}). Upgrade to continue service.</>
+            <>Your trial ends in {daysRemaining} {daysRemaining === 1 ? 'day' : 'days'}{trialEndDate ? ` (${format(trialEndDate, "MMM d, yyyy")})` : ""}. Upgrade to continue service.</>
           )}
         </span>
         <Button

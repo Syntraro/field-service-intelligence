@@ -52,7 +52,7 @@ interface JobHeaderCardProps {
     location?: Client;
     parentCompany?: CustomerCompany;
   };
-  jobInvoices: Invoice[];
+  jobInvoice: Invoice | null;
   onEdit: () => void;
   onDelete: () => void;
 }
@@ -103,7 +103,7 @@ const OFFICE_ROLES = ["owner", "admin", "manager", "dispatcher"];
 
 export function JobHeaderCard({
   job,
-  jobInvoices,
+  jobInvoice,
   onEdit,
   onDelete
 }: JobHeaderCardProps) {
@@ -124,10 +124,10 @@ export function JobHeaderCard({
 
   const locationName = job.location?.location || job.location?.companyName || "Location";
   const clientName = job.parentCompany?.name || job.location?.companyName || "Client";
-  const fullAddress = job.location ? 
+  const fullAddress = job.location ?
     [job.location.address, job.location.city, job.location.province, job.location.postalCode].filter(Boolean).join(", ") : "";
 
-  const existingInvoice = jobInvoices.length > 0 ? jobInvoices[0] : null;
+  const existingInvoice = jobInvoice;
 
   const createInvoiceMutation = useMutation({
     mutationFn: async (markJobCompleted: boolean = false) => {

@@ -10,6 +10,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { useState, useMemo } from "react";
 import FeedbackDialog from "./FeedbackDialog";
 import QuickAddClientModal from "./QuickAddClientModal";
+import NotificationBell from "./NotificationBell";
 
 interface HeaderProps {
   onAddClient?: () => void;
@@ -216,6 +217,7 @@ export default function Header({ onAddClient, onDashboardClick, onSearch, onClie
               <Plus className="h-3.5 w-3.5" />
               <span>Add Client</span>
             </Button>
+            <NotificationBell />
             <Button
               variant="ghost"
               size="icon"

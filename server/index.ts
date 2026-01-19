@@ -5,6 +5,7 @@ import { Pool } from "pg";
 import helmet from "helmet";
 import cors from "cors";
 import csrf from "csurf";
+import cookieParser from "cookie-parser";
 import path from "path";
 
 import { registerRoutes } from "./routes";
@@ -27,6 +28,9 @@ app.set("trust proxy", 1);
 // Body parsing limits
 app.use(express.json({ limit: process.env.JSON_LIMIT ?? "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: process.env.URLENCODED_LIMIT ?? "2mb" }));
+
+// Cookie parsing (required for httpOnly impersonation cookies)
+app.use(cookieParser());
 
 // Security headers with CSP enabled
 app.use(

@@ -1,13 +1,14 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, useLocation, Link } from "wouter";
 import { format } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { 
-  ArrowLeft, Send, MoreHorizontal, Plus, Trash2, DollarSign, 
+import {
+  ArrowLeft, Send, MoreHorizontal, Plus, Trash2, DollarSign,
   FileText, GripVertical, Check, X, RefreshCw, Phone, Mail, MapPin,
-  MessageSquare, User, Clock, Edit, ChevronDown, ChevronRight, Settings
+  MessageSquare, User, Clock, Edit, ChevronDown, ChevronRight, Settings,
+  Percent, Tag, Briefcase
 } from "lucide-react";
 import {
   DndContext,
@@ -70,6 +71,8 @@ import type { Invoice, InvoiceLine, Payment, Client, CustomerCompany, Job } from
 import { InvoiceHeaderCard } from "@/components/InvoiceHeaderCard";
 import { ConfirmSendModal } from "@/components/invoice/ConfirmSendModal";
 import { ConfirmVoidModal } from "@/components/invoice/ConfirmVoidModal";
+import { QboSyncBanner, isQboSynced, isBillingLocked } from "@/components/invoice/QboSyncBanner";
+import { QboOverrideModal, useQboOverride } from "@/components/invoice/QboOverrideModal";
 
 interface JobNote {
   id: string;
@@ -198,6 +201,15 @@ export default function InvoiceDetailPage() {
   const [workDescOpen, setWorkDescOpen] = useState(true);
   const [visibilityOpen, setVisibilityOpen] = useState(false);
 
+  // Phase 11: Discount editing state
+  const [discountPercent, setDiscountPercent] = useState<string>("");
+  const [discountAmount, setDiscountAmount] = useState<string>("");
+  const [discountType, setDiscountType] = useState<"PERCENT" | "AMOUNT" | null>(null);
+
+  // Phase 10A: QBO override state
+  const qboOverride = useQboOverride();
+  const [qboOverridePending, setQboOverridePending] = useState(false);
+
   const { data: details, isLoading } = useQuery<InvoiceDetails>({
     queryKey: ["invoice", invoiceId, "details"],
     queryFn: async () => {
@@ -234,43 +246,111 @@ export default function InvoiceDetailPage() {
     staleTime: 5 * 60 * 1000,
   });
 
+  // Phase 10A: Helper to make API request with optional QBO override
+  const makeQboAwareRequest = async (
+    url: string,
+    method: string,
+    overrideReason?: string
+  ) => {
+    const body = overrideReason
+      ? JSON.stringify({ overrideQboLock: true, overrideReason })
+      : undefined;
+    const response = await apiRequest(url, { method, body });
+    // Check for QBO warning in response
+    if (response?._qboWarning) {
+      toast({
+        title: "QuickBooks Notice",
+        description: response._qboWarning,
+        variant: "default",
+      });
+    }
+    return response;
+  };
+
   const sendMutation = useMutation({
-    mutationFn: () => apiRequest(`/api/invoices/${invoiceId}/send`, { method: "POST" }),
+    mutationFn: (overrideReason?: string) =>
+      makeQboAwareRequest(`/api/invoices/${invoiceId}/send`, "POST", overrideReason),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
       setShowSendConfirm(false);
+      qboOverride.closeModal();
+      setQboOverridePending(false);
       toast({ title: "Invoice sent successfully" });
     },
     onError: (error: Error) => {
       setShowSendConfirm(false);
-      toast({ title: "Failed to send invoice", description: error.message, variant: "destructive" });
+      setQboOverridePending(false);
+      // Check if this is a QBO lock error (409)
+      if (error.message?.includes("synced to QuickBooks") || error.message?.includes("billing is locked")) {
+        qboOverride.requestOverride("send this invoice", (reason) => {
+          setQboOverridePending(true);
+          sendMutation.mutate(reason);
+        });
+      } else {
+        toast({ title: "Failed to send invoice", description: error.message, variant: "destructive" });
+      }
     },
   });
 
   const voidMutation = useMutation({
-    mutationFn: () => apiRequest(`/api/invoices/${invoiceId}/void`, { method: "POST" }),
+    mutationFn: (overrideReason?: string) =>
+      makeQboAwareRequest(`/api/invoices/${invoiceId}/void`, "POST", overrideReason),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
       setShowVoidConfirm(false);
+      qboOverride.closeModal();
+      setQboOverridePending(false);
       toast({ title: "Invoice voided" });
     },
     onError: (error: Error) => {
       setShowVoidConfirm(false);
-      toast({ title: "Failed to void invoice", description: error.message, variant: "destructive" });
+      setQboOverridePending(false);
+      // Check if this is a QBO lock error (409)
+      if (error.message?.includes("synced to QuickBooks") || error.message?.includes("billing is locked")) {
+        qboOverride.requestOverride("void this invoice", (reason) => {
+          setQboOverridePending(true);
+          voidMutation.mutate(reason);
+        });
+      } else {
+        toast({ title: "Failed to void invoice", description: error.message, variant: "destructive" });
+      }
     },
   });
 
   const refreshFromJobMutation = useMutation({
-    mutationFn: async () => {
-      return await apiRequest(`/api/invoices/${invoiceId}/refresh-from-job`, { method: "POST" });
+    mutationFn: async (overrideReason?: string) => {
+      const body = overrideReason
+        ? JSON.stringify({ overrideQboLock: true, overrideReason })
+        : undefined;
+      return await apiRequest(`/api/invoices/${invoiceId}/refresh-from-job`, { method: "POST", body });
     },
-    onSuccess: () => {
+    onSuccess: (response) => {
       queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
-      toast({ title: "Invoice refreshed from job" });
+      qboOverride.closeModal();
+      setQboOverridePending(false);
+      if (response?._qboWarning) {
+        toast({
+          title: "Invoice refreshed with warning",
+          description: response._qboWarning,
+        });
+      } else {
+        toast({ title: "Invoice refreshed from job" });
+      }
     },
-    onError: () => toast({ title: "Failed to refresh invoice", variant: "destructive" }),
+    onError: (error: Error) => {
+      setQboOverridePending(false);
+      // Check if this is a QBO lock error (409)
+      if (error.message?.includes("synced to QuickBooks") || error.message?.includes("billing is locked")) {
+        qboOverride.requestOverride("refresh invoice from job", (reason) => {
+          setQboOverridePending(true);
+          refreshFromJobMutation.mutate(reason);
+        });
+      } else {
+        toast({ title: "Failed to refresh invoice", variant: "destructive" });
+      }
+    },
   });
 
   const createPaymentMutation = useMutation({
@@ -297,6 +377,52 @@ export default function InvoiceDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
     },
     onError: () => toast({ title: "Failed to reorder items", variant: "destructive" }),
+  });
+
+  // Phase 11: Discount update mutation
+  const updateDiscountMutation = useMutation({
+    mutationFn: async (discountData: {
+      discountType: "PERCENT" | "AMOUNT" | null;
+      discountPercent: string | null;
+      discountAmount: string | null;
+      overrideQboLock?: boolean;
+      overrideReason?: string;
+    }) => {
+      return apiRequest(`/api/invoices/${invoiceId}`, {
+        method: "PATCH",
+        body: JSON.stringify(discountData),
+      });
+    },
+    onSuccess: (response: any) => {
+      queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
+      qboOverride.closeModal();
+      setQboOverridePending(false);
+      if (response?._qboWarning) {
+        toast({ title: "Discount updated", description: response._qboWarning });
+      } else if (response?._sentInvoiceWarning) {
+        toast({ title: "Discount updated", description: response._sentInvoiceWarning });
+      } else {
+        toast({ title: "Discount updated" });
+      }
+    },
+    onError: (error: Error) => {
+      setQboOverridePending(false);
+      if (error.message?.includes("synced to QuickBooks") || error.message?.includes("billing is locked")) {
+        qboOverride.requestOverride("update discount", (reason) => {
+          setQboOverridePending(true);
+          updateDiscountMutation.mutate({
+            discountType,
+            discountPercent: discountPercent || null,
+            discountAmount: discountAmount || null,
+            overrideQboLock: true,
+            overrideReason: reason,
+          });
+        });
+      } else {
+        toast({ title: "Failed to update discount", description: error.message, variant: "destructive" });
+      }
+    },
   });
 
   // DnD sensors
@@ -342,6 +468,66 @@ export default function InvoiceDetailPage() {
     return { totalPrice, totalCost, profit, margin };
   }, [details?.lines]);
 
+  // Phase 11: Sync discount state from invoice data
+  useEffect(() => {
+    if (details?.invoice) {
+      const inv = details.invoice;
+      setDiscountType(inv.discountType as "PERCENT" | "AMOUNT" | null);
+      setDiscountPercent(inv.discountPercent || "");
+      setDiscountAmount(inv.discountAmount || "");
+    }
+  }, [details?.invoice?.discountType, details?.invoice?.discountPercent, details?.invoice?.discountAmount]);
+
+  // Phase 11: Discount calculation helpers
+  const handleDiscountPercentChange = (value: string) => {
+    setDiscountPercent(value);
+    setDiscountType("PERCENT");
+    // Auto-compute amount from percent
+    if (details?.invoice && value) {
+      const subtotal = parseFloat(details.invoice.subtotal) || 0;
+      const percent = parseFloat(value) || 0;
+      const computedAmount = Math.round(subtotal * (percent / 100) * 100) / 100;
+      setDiscountAmount(computedAmount.toFixed(2));
+    } else if (!value) {
+      setDiscountAmount("");
+      setDiscountType(null);
+    }
+  };
+
+  const handleDiscountAmountChange = (value: string) => {
+    setDiscountAmount(value);
+    setDiscountType("AMOUNT");
+    // Auto-compute percent from amount
+    if (details?.invoice && value) {
+      const subtotal = parseFloat(details.invoice.subtotal) || 0;
+      const amount = parseFloat(value) || 0;
+      const computedPercent = subtotal > 0 ? Math.round((amount / subtotal) * 100 * 100) / 100 : 0;
+      setDiscountPercent(computedPercent.toFixed(2));
+    } else if (!value) {
+      setDiscountPercent("");
+      setDiscountType(null);
+    }
+  };
+
+  const handleSaveDiscount = () => {
+    updateDiscountMutation.mutate({
+      discountType,
+      discountPercent: discountPercent || null,
+      discountAmount: discountAmount || null,
+    });
+  };
+
+  const handleClearDiscount = () => {
+    setDiscountPercent("");
+    setDiscountAmount("");
+    setDiscountType(null);
+    updateDiscountMutation.mutate({
+      discountType: null,
+      discountPercent: null,
+      discountAmount: null,
+    });
+  };
+
   if (!invoiceId) {
     return <div className="p-6">Invoice not found</div>;
   }
@@ -383,6 +569,26 @@ export default function InvoiceDetailPage() {
     <div className="flex flex-col h-full">
       <div className="flex-1 overflow-auto">
         <div className="p-4 max-w-[1600px] mx-auto">
+          {/* Phase 10A: QBO Sync Status Banner */}
+          <QboSyncBanner invoice={invoice} className="mb-4" />
+
+          {/* Phase 11: Sent Invoice Warning Banner */}
+          {(invoice.status === "sent" || invoice.status === "partial_paid") && !isBillingLocked(invoice) && (
+            <div className="mb-4 p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg">
+              <div className="flex items-start gap-2">
+                <Send className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
+                    Invoice has been sent to client
+                  </p>
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                    If you edit billing details, you should re-send an updated invoice to the client.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Invoice Header Card */}
           <InvoiceHeaderCard
             invoice={invoice}
@@ -393,7 +599,7 @@ export default function InvoiceDetailPage() {
             onSend={() => setShowSendConfirm(true)}
             onCollectPayment={() => setShowPaymentDialog(true)}
             onVoid={() => setShowVoidConfirm(true)}
-            onRefreshFromJob={() => refreshFromJobMutation.mutate()}
+            onRefreshFromJob={() => refreshFromJobMutation.mutate(undefined)}
             refreshPending={refreshFromJobMutation.isPending}
             voidPending={voidMutation.isPending}
             canEdit={canEdit}
@@ -517,6 +723,79 @@ export default function InvoiceDetailPage() {
                         <span className="text-sm text-muted-foreground">Subtotal</span>
                         <span className="text-sm">{formatCurrency(invoice.subtotal)}</span>
                       </div>
+
+                      {/* Phase 11: Discount Section */}
+                      {canEdit ? (
+                        <div className="w-72 py-2 space-y-2">
+                          <div className="flex items-center gap-2">
+                            <Tag className="h-4 w-4 text-muted-foreground" />
+                            <span className="text-sm text-muted-foreground font-medium">Discount</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-1 flex-1">
+                              <Input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                max="100"
+                                placeholder="0"
+                                value={discountPercent}
+                                onChange={(e) => handleDiscountPercentChange(e.target.value)}
+                                className="h-8 w-20 text-right text-sm"
+                                data-testid="input-discount-percent"
+                              />
+                              <Percent className="h-4 w-4 text-muted-foreground" />
+                            </div>
+                            <span className="text-muted-foreground text-sm">or</span>
+                            <div className="flex items-center gap-1 flex-1">
+                              <DollarSign className="h-4 w-4 text-muted-foreground" />
+                              <Input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                placeholder="0.00"
+                                value={discountAmount}
+                                onChange={(e) => handleDiscountAmountChange(e.target.value)}
+                                className="h-8 w-24 text-right text-sm"
+                                data-testid="input-discount-amount"
+                              />
+                            </div>
+                          </div>
+                          <div className="flex justify-end gap-2">
+                            {(discountPercent || discountAmount) && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 text-xs"
+                                onClick={handleClearDiscount}
+                                disabled={updateDiscountMutation.isPending}
+                                data-testid="button-clear-discount"
+                              >
+                                <X className="h-3 w-3 mr-1" />
+                                Clear
+                              </Button>
+                            )}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 text-xs"
+                              onClick={handleSaveDiscount}
+                              disabled={updateDiscountMutation.isPending || (!discountPercent && !discountAmount)}
+                              data-testid="button-save-discount"
+                            >
+                              {updateDiscountMutation.isPending ? "Saving..." : "Apply Discount"}
+                            </Button>
+                          </div>
+                        </div>
+                      ) : invoice.discountAmount && parseFloat(invoice.discountAmount) > 0 ? (
+                        <div className="flex justify-between w-56 text-green-600">
+                          <span className="text-sm">
+                            Discount ({invoice.discountPercent}%)
+                          </span>
+                          <span className="text-sm">-{formatCurrency(invoice.discountAmount)}</span>
+                        </div>
+                      ) : null}
+
                       <div className="flex justify-between w-56">
                         <span className="text-sm text-muted-foreground">
                           {companySettings?.taxName || "Tax"} ({companySettings?.defaultTaxRate || "13"}%)
@@ -811,7 +1090,7 @@ export default function InvoiceDetailPage() {
         invoiceNumber={invoice.invoiceNumber}
         customerName={clientName}
         total={invoice.total}
-        onConfirm={() => sendMutation.mutate()}
+        onConfirm={() => sendMutation.mutate(undefined)}
         isPending={sendMutation.isPending}
       />
 
@@ -820,8 +1099,19 @@ export default function InvoiceDetailPage() {
         open={showVoidConfirm}
         onOpenChange={setShowVoidConfirm}
         invoiceNumber={invoice.invoiceNumber}
-        onConfirm={() => voidMutation.mutate()}
+        onConfirm={() => voidMutation.mutate(undefined)}
         isPending={voidMutation.isPending}
+      />
+
+      {/* Phase 10A: QBO Override Acknowledgement Modal */}
+      <QboOverrideModal
+        open={qboOverride.isOpen}
+        onOpenChange={(open) => !open && qboOverride.closeModal()}
+        invoiceNumber={invoice.invoiceNumber}
+        qboInvoiceId={invoice.qboInvoiceId}
+        operationType={qboOverride.operationType}
+        onConfirm={qboOverride.handleConfirm}
+        isPending={qboOverridePending}
       />
     </div>
   );

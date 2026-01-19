@@ -11,7 +11,9 @@ export type AuditAction =
   | "auth_failure"
   | "billing_adjustment"
   | "trial_adjustment"
-  | "company_status_change";
+  | "company_status_change"
+  | "qbo_replay_one"
+  | "qbo_replay_all_failed";
 
 interface AuditLogParams {
   platformAdminId: string;
@@ -245,6 +247,62 @@ class AuditService {
       targetCompanyId,
       req,
       details: adjustment,
+    });
+  }
+
+  /**
+   * Log QBO single job replay
+   */
+  async logQboReplayOne(
+    platformAdminId: string,
+    platformAdminEmail: string,
+    jobId: string,
+    jobCompanyId: string,
+    entityType: string,
+    entityId: string,
+    previousStatus: string,
+    req: Request
+  ): Promise<void> {
+    await this.log({
+      platformAdminId,
+      platformAdminEmail,
+      action: "qbo_replay_one",
+      targetCompanyId: jobCompanyId,
+      req,
+      details: {
+        jobId,
+        entityType,
+        entityId,
+        previousStatus,
+        newStatus: "QUEUED",
+      },
+    });
+  }
+
+  /**
+   * Log QBO bulk failed jobs replay
+   */
+  async logQboReplayAllFailed(
+    platformAdminId: string,
+    platformAdminEmail: string,
+    affectedCount: number,
+    affectedCompanyIds: string[],
+    filterCompanyId: string | undefined,
+    req: Request
+  ): Promise<void> {
+    await this.log({
+      platformAdminId,
+      platformAdminEmail,
+      action: "qbo_replay_all_failed",
+      targetCompanyId: filterCompanyId,
+      req,
+      details: {
+        affectedJobsCount: affectedCount,
+        affectedCompanyIds,
+        filterCompanyId: filterCompanyId || "all_tenants",
+        previousStatus: "FAILED",
+        newStatus: "QUEUED",
+      },
     });
   }
 

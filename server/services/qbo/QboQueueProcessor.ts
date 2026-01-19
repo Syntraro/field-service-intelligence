@@ -22,6 +22,7 @@ import { QboReconciliationService, createReconciliationService } from "./QboReco
 import { QboItemService } from "./QboItemService";
 import { QboClient } from "./QboClient";
 import type { QboTokens } from "./QboClient";
+import { notificationService } from "../notificationService";
 
 // ============================================================
 // TYPES
@@ -310,6 +311,16 @@ export class QboQueueProcessor {
           })
           .where(eq(qboSyncQueue.id, job.id));
 
+        // Emit notification for final failure (no more retries)
+        if (!canRetry) {
+          notificationService.emitQboFailureNotification({
+            companyId: this.companyId,
+            entityType: job.entityType,
+            entityId: job.entityId,
+            errorMessage: error,
+          }).catch((notifErr) => console.error("Failed to emit QBO failure notification:", notifErr));
+        }
+
         return {
           jobId: job.id,
           entityType: job.entityType,
@@ -343,6 +354,16 @@ export class QboQueueProcessor {
           updatedAt: new Date(),
         })
         .where(eq(qboSyncQueue.id, job.id));
+
+      // Emit notification for final failure (no more retries)
+      if (!canRetry) {
+        notificationService.emitQboFailureNotification({
+          companyId: this.companyId,
+          entityType: job.entityType,
+          entityId: job.entityId,
+          errorMessage: error,
+        }).catch((notifErr) => console.error("Failed to emit QBO failure notification:", notifErr));
+      }
 
       return {
         jobId: job.id,

@@ -1,5 +1,6 @@
 import express, { Response } from "express";
 import { requireRole } from "../auth/requireRole";
+import { canAssignRole, type Role } from "../auth/roles";
 import { writeAuditLog } from "../services/audit";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { AuthedRequest } from "../auth/tenantIsolation";
@@ -16,6 +17,7 @@ const updateRoleSchema = z.object({
   role: z.enum(["admin", "technician", "dispatcher"]),
 });
 
+// Phase A Security Fix: Enforce role hierarchy to prevent privilege escalation
 router.patch(
   "/:id/role",
   requireRole(["admin"]),
@@ -27,6 +29,12 @@ router.patch(
 
     const { role } = validation.data;
     const companyId = req.companyId!;
+    const changerRole = req.user!.role as Role;
+
+    // Phase A Security Fix: Enforce role hierarchy
+    if (!canAssignRole(changerRole, role as Role)) {
+      throw createError(403, `Insufficient permissions to assign role: ${role}`);
+    }
 
     await userRepository.updateUserRole(companyId, req.params.id, role);
 

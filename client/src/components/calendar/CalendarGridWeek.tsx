@@ -32,6 +32,12 @@ export interface CalendarGridWeekProps {
   handleClientClick: (client: any, event: CalendarEvent) => void;
   handleResize: (assignmentId: string, newDurationMinutes: number) => void;
   weeklyScrollContainerRef: React.RefObject<HTMLDivElement>;
+  /** Optional: hours to render (defaults to 0-23). Pass subset for business hours. */
+  visibleHours?: number[];
+  /** Whether showing full 24h day */
+  showFullDay?: boolean;
+  /** Callback to toggle full day view */
+  onToggleFullDay?: () => void;
 }
 
 interface WeekDayData {
@@ -165,6 +171,9 @@ export function CalendarGridWeek({
   handleClientClick,
   handleResize,
   weeklyScrollContainerRef,
+  visibleHours,
+  showFullDay,
+  onToggleFullDay,
 }: CalendarGridWeekProps) {
   // Get week dates based on currentDate (Monday to Sunday)
   const currentWeekStart = getMondayOfWeek(currentDate);
@@ -205,10 +214,11 @@ export function CalendarGridWeek({
     });
   }
 
-  const hours = Array.from({ length: 24 }, (_, i) => {
-    const h = i;
+  // Use visibleHours prop if provided, otherwise default to all 24 hours
+  const hoursToRender = visibleHours ?? Array.from({ length: 24 }, (_, i) => i);
+  const hours = hoursToRender.map((h) => {
     const ampm = h === 0 ? "12 AM" : h < 12 ? `${h} AM` : h === 12 ? "12 PM" : `${h - 12} PM`;
-    return { hour: i, display: ampm };
+    return { hour: h, display: ampm };
   });
 
   const gridCols = "grid-cols-[3.5rem_repeat(7,minmax(0,1fr))]";
@@ -217,7 +227,19 @@ export function CalendarGridWeek({
     <div ref={weeklyScrollContainerRef} className="overflow-y-auto flex-1 min-h-0 max-h-full">
       {/* Header Row - Sticky at top */}
       <div className={`grid ${gridCols} sticky top-0 bg-background z-30 border-b`}>
-        <div className="px-1.5 py-2 border-r flex items-center justify-center"></div>
+        <div className="px-1.5 py-2 border-r flex items-center justify-center">
+          {onToggleFullDay && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 px-1.5 text-[10px]"
+              onClick={onToggleFullDay}
+              title={showFullDay ? "Show business hours only" : "Show full 24h day"}
+            >
+              {showFullDay ? "6-20" : "24h"}
+            </Button>
+          )}
+        </div>
         {weekDaysData.map((d) => {
           const isToday = d.date.toDateString() === new Date().toDateString();
           return (
