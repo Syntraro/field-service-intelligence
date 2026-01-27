@@ -4,11 +4,14 @@ import { DndContext, DragOverlay, closestCenter, DragEndEvent, DragStartEvent, p
 import NewAddClientDialog from "@/components/NewAddClientDialog";
 import { JobDetailDialog } from "@/components/JobDetailDialog";
 import { PartsDialog } from "@/components/PartsDialog";
+import { DiagnosticsPanel } from "@/components/calendar/DiagnosticsPanel";
+import { logDrag, isDiagnosticsEnabled } from "@/lib/calendarDiagnostics";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { X, AlertTriangle, Trash2, Archive } from "lucide-react";
+import { X, AlertTriangle, Trash2, Archive, Clock } from "lucide-react";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { getMemberDisplayName } from "@/lib/displayName";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 import { UnscheduledJobsSidebar } from "@/components/UnscheduledJobsSidebar";
@@ -33,6 +36,48 @@ import {
   ScheduleJobModal,
 } from "@/components/calendar";
 import { DraggableClient } from "@/components/calendar/DraggableClient";
+import { toClientsArray, resolveClientForCalendarEvent } from "@/components/calendar/calendarClientLookup";
+
+// ============================================================================
+// Safe Array Normalization Utility
+// Converts any API response into a safe array - prevents "find is not a function" errors
+// ============================================================================
+
+/**
+ * Safely normalize any value into an array.
+ * Handles: arrays, objects with nested arrays (items/data/clients/jobs/technicians), nullish values.
+ * This MUST never throw - it is the first line of defense against malformed API responses.
+ */
+function normalizeArray<T = any>(value: unknown): T[] {
+  // Already an array - return as-is
+  if (Array.isArray(value)) return value as T[];
+
+  // Nullish - return empty array
+  if (value == null) return [];
+
+  // Object with nested array properties (common API response shapes)
+  if (typeof value === "object") {
+    const v = value as Record<string, unknown>;
+    if (Array.isArray(v.items)) return v.items as T[];
+    if (Array.isArray(v.data)) return v.data as T[];
+    if (Array.isArray(v.clients)) return v.clients as T[];
+    if (Array.isArray(v.jobs)) return v.jobs as T[];
+    if (Array.isArray(v.technicians)) return v.technicians as T[];
+    if (Array.isArray(v.events)) return v.events as T[];
+    if (Array.isArray(v.assignments)) return v.assignments as T[]; // legacy fallback
+    // Last resort: try Object.values (for object maps)
+    try {
+      const values = Object.values(v);
+      if (values.length > 0 && typeof values[0] === "object") {
+        return values as T[];
+      }
+    } catch {
+      // Ignore - return empty array
+    }
+  }
+
+  return [];
+}
 
 // ============================================================================
 // LocationId Adapter Layer (burn-in safe)
@@ -42,9 +87,43 @@ import { DraggableClient } from "@/components/calendar/DraggableClient";
 /** Alias for getLocationKey - used throughout this file */
 const getLocationId = getLocationKey;
 
-/** Find a client by location ID (checks client.id which maps to locationId) */
-function findClientByLocationId(clients: any[], locationId: string): any | undefined {
-  return clients.find((c: any) => c.id === locationId);
+/**
+ * Find a client by location ID (checks client.id which maps to locationId)
+ * SAFE: Normalizes clients to array first - never throws
+ */
+function findClientByLocationId(clients: unknown, locationId: string): any | undefined {
+  const list = normalizeArray<any>(clients);
+  return list.find((c) => c?.id === locationId);
+}
+
+// ============================================================================
+// Unscheduled Sidebar Display Helpers
+// ============================================================================
+
+/** Get company name from unscheduled item with fallbacks */
+function getUnscheduledCompanyName(item: any): string {
+  return (
+    item.companyName ||
+    item.clientName ||
+    item.client?.companyName ||
+    item.client?.name ||
+    item.locationName ||
+    item.summary ||
+    `Job #${item.jobNumber || item.id?.slice(0, 8) || "Unknown"}`
+  );
+}
+
+/** Get location label from unscheduled item with fallbacks */
+function getUnscheduledLocationLabel(item: any): string {
+  return (
+    item.location ||
+    item.locationName ||
+    item.siteAddress ||
+    item.address ||
+    item.client?.location ||
+    item.client?.address ||
+    ""
+  );
 }
 
 // ============================================================================
@@ -61,7 +140,6 @@ export default function Calendar() {
     weeklyViewMode,
     setWeeklyViewMode,
     density,
-    setDensity,
     sidebarCollapsed: isUnscheduledMinimized,
     toggleSidebarCollapsed,
     showFullDay,
@@ -87,6 +165,7 @@ export default function Calendar() {
   const [selectedAssignment, setSelectedAssignment] = useState<any | null>(null);
   const [reportDialogClientId, setReportDialogClientId] = useState<string | null>(null);
   const [clientDetailOpen, setClientDetailOpen] = useState(false);
+  const [focusScheduleSection, setFocusScheduleSection] = useState(false);
   const [partsDialogOpen, setPartsDialogOpen] = useState(false);
   const [partsDialogTitle, setPartsDialogTitle] = useState("");
   const [partsDialogParts, setPartsDialogParts] = useState<Array<{ description: string; quantity: number; date?: string }>>([]);
@@ -126,7 +205,7 @@ export default function Calendar() {
     return [{ year, month }];
   };
 
-  const { data, isLoading: isLoadingCalendar, refetch: refetchCalendar } = useQuery({
+  const { data, isLoading: isLoadingCalendar, isError: calendarError, refetch: refetchCalendar } = useQuery({
     queryKey: ["/api/calendar", view, year, month, currentDate.getTime()],
     queryFn: async () => {
       const monthsToFetch = getMonthsToFetch();
@@ -145,26 +224,26 @@ export default function Calendar() {
         return results[0];
       }
 
-      // Combine assignments and clients from all months
-      const allAssignments = results.flatMap(r => r.assignments || []);
-      const allClients = results.flatMap(r => r.clients || []);
-
-      // Deduplicate clients by ID
-      const uniqueClients = Array.from(
-        new Map(allClients.map(c => [c.id, c])).values()
+      // Combine events from all months (clients come from /api/clients, not calendar)
+      const allEvents = results.flatMap(r => r.events ?? r.assignments ?? []);
+      // Sum outsideVisibleHoursCount from all fetched months
+      const totalOutsideVisibleHoursCount = results.reduce(
+        (sum, r) => sum + (r.outsideVisibleHoursCount || 0),
+        0
       );
 
       return {
-        assignments: allAssignments,
-        clients: uniqueClients
+        events: allEvents,
+        outsideVisibleHoursCount: totalOutsideVisibleHoursCount,
       };
     }
   });
 
-  const { data: bulkParts = {}, isLoading: isLoadingParts } = useQuery<Record<string, any[]>>({
-    queryKey: ['/api/client-parts/bulk'],
-    staleTime: 60 * 1000,
-  });
+  // Note: No GET endpoint exists for /api/client-parts/bulk - parts feature disabled
+  // The bulkParts lookup is used for the parts dialog which shows parts needed per assignment
+  // For now, we return an empty object. To enable, a GET endpoint would need to be created.
+  const bulkParts: Record<string, any[]> = {};
+  const isLoadingParts = false;
 
   // Prefetch next/prev week data for smoother navigation
   useEffect(() => {
@@ -235,9 +314,24 @@ export default function Calendar() {
     return partsList;
   };
 
-  const { data: technicians = [] } = useQuery<any[]>({
-    queryKey: ['/api/technicians'],
+  // Use /api/team/technicians which returns active team members with { id, fullName, email, role }
+  const { data: techniciansQueryData, isError: techniciansError } = useQuery<any>({
+    queryKey: ['/api/team/technicians'],
   });
+
+  // SAFE: Normalize technicians to array first, then ensure displayName/fullName/name are always populated
+  const technicians = useMemo(() => {
+    const techniciansRaw = normalizeArray<any>(techniciansQueryData);
+    return techniciansRaw.map((t) => {
+      const displayName = getMemberDisplayName(t) || t.email || "(Unnamed)";
+      return {
+        ...t,
+        displayName,
+        fullName: t.fullName ?? displayName,
+        name: t.name ?? displayName,
+      };
+    });
+  }, [techniciansQueryData]);
 
   // Create technician color map for consistent coloring
   const technicianColorMap = useMemo(() => createTechnicianColorMap(technicians), [technicians]);
@@ -266,6 +360,10 @@ export default function Calendar() {
     clearDay,
     toggleComplete,
     isSavingDrag,
+    savingJobIds,
+    invalidateCalendarQueries,
+    canSchedule,
+    showViewOnlyToast,
   } = dndMutations;
 
   const updateCompanySettings = useMutation({
@@ -290,8 +388,22 @@ export default function Calendar() {
 
   // Helper for resize handler (uses hook's mutation)
   const handleResize = useCallback((assignmentId: string, newDurationMinutes: number) => {
+    // RBAC: Block resize for view-only users
+    if (!canSchedule) {
+      showViewOnlyToast();
+      return;
+    }
     updateDuration.mutate({ id: assignmentId, durationMinutes: newDurationMinutes });
-  }, [updateDuration]);
+  }, [updateDuration, canSchedule, showViewOnlyToast]);
+
+  // Quick action: unschedule (remove from calendar)
+  const handleUnschedule = useCallback((assignmentId: string, version: number) => {
+    if (!canSchedule) {
+      showViewOnlyToast();
+      return;
+    }
+    deleteAssignmentMutation.mutate({ id: assignmentId, version });
+  }, [deleteAssignmentMutation, canSchedule, showViewOnlyToast]);
 
   const daysInMonth = new Date(year, month, 0).getDate();
   const firstDayOfMonth = new Date(year, month - 1, 1).getDay();
@@ -344,7 +456,18 @@ export default function Calendar() {
 
   const handleDragStart = (event: DragStartEvent) => {
     if (!DRAG_ENABLED) return;
-    setActiveId(event.active.id as string);
+    const activeIdValue = event.active.id as string;
+    setActiveId(activeIdValue);
+
+    // Diagnostics: log drag start
+    if (isDiagnosticsEnabled()) {
+      const isExistingCalendarAssignment = events.some((a: any) => a.id === activeIdValue);
+      logDrag({
+        phase: 'start',
+        sourceId: activeIdValue,
+        sourceType: isExistingCalendarAssignment ? 'calendar-assignment' : 'unscheduled-job',
+      });
+    }
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
@@ -352,22 +475,125 @@ export default function Calendar() {
     setActiveId(null);
 
     if (!DRAG_ENABLED) return;
-    if (!over) return;
+
+    const activeIdValue = active.id as string;
+    const isExistingCalendarAssignment = events.some((a: any) => a.id === activeIdValue);
+
+    if (!over) {
+      // Diagnostics: log cancelled drag
+      if (isDiagnosticsEnabled()) {
+        logDrag({
+          phase: 'end',
+          sourceId: activeIdValue,
+          sourceType: isExistingCalendarAssignment ? 'calendar-assignment' : 'unscheduled-job',
+          result: 'cancelled',
+        });
+      }
+      return;
+    }
+
+    // RBAC: Block drag/drop for view-only users
+    if (!canSchedule) {
+      showViewOnlyToast();
+      if (isDiagnosticsEnabled()) {
+        logDrag({
+          phase: 'end',
+          sourceId: activeIdValue,
+          sourceType: isExistingCalendarAssignment ? 'calendar-assignment' : 'unscheduled-job',
+          targetId: over.id as string,
+          result: 'cancelled',
+        });
+      }
+      return;
+    }
 
     const overId = over.id as string;
-    const activeIdValue = active.id as string;
 
     // If dropping on the same container it started in (or no drop zone specified), it's just a click
     if (active.data?.current?.sortable?.index === over?.data?.current?.sortable?.index && !overId.startsWith('day-') && !overId.startsWith('allday-') && !overId.startsWith('weekly-') && !overId.startsWith('daily-') && overId !== 'unscheduled-panel') {
       return;
     }
 
-    // Check if this is an existing assignment in current month's calendar
-    const isExistingCalendarAssignment = assignments.some((a: any) => a.id === activeIdValue);
+    // Helper to determine target type from overId
+    const getTargetType = (id: string): 'month-day' | 'week-allday' | 'week-timed' | 'day-timed' | 'unscheduled-panel' | undefined => {
+      if (id.startsWith('day-')) return 'month-day';
+      if (id.startsWith('allday-')) return 'week-allday';
+      if (id.startsWith('weekly-')) return 'week-timed';
+      if (id.startsWith('daily-')) return 'day-timed';
+      if (id === 'unscheduled-panel') return 'unscheduled-panel';
+      return undefined;
+    };
 
     // Check if this is an unscheduled item from the backlog
     const unscheduledItem = unscheduledClients.find((item: any) => item.id === activeIdValue);
     const hasExistingAssignment = unscheduledItem?.status === 'existing';
+
+    // =========================================================================
+    // VERSION GUARDS - Eliminate unsafe ?? 0 fallbacks
+    // =========================================================================
+    // Using version 0 as a fallback is UNSAFE for optimistic locking. The server
+    // will reject with 409 if actual version differs. These guards validate
+    // version is present and refetch if missing.
+    //
+    // IMPORTANT: Use jobVersion for creating assignments (POST)
+    //            Use version for updating existing assignments (PATCH)
+    // =========================================================================
+
+    /**
+     * Require jobVersion for scheduling an unscheduled job (POST /api/calendar/schedule).
+     * Model A: version is required for optimistic locking on job schedule operations.
+     * Returns the version number if valid, or null if invalid (triggers refetch).
+     */
+    const requireJobVersion = (item: any): number | null => {
+      // Prefer explicit jobVersion field, fall back to version for compatibility
+      const v = item?.jobVersion ?? item?.version;
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        return v;
+      }
+      // Version missing or invalid - refetch and abort this mutation
+      if (process.env.NODE_ENV === 'development') {
+        console.warn('[Calendar] requireJobVersion: Missing or invalid jobVersion', {
+          id: item?.id,
+          jobId: item?.jobId,
+          jobVersion: item?.jobVersion,
+          version: item?.version,
+        });
+      }
+      toast({
+        title: "Refreshing data...",
+        description: "Job data was stale. Please try again.",
+        duration: 3000,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+      invalidateCalendarQueries();
+      return null;
+    };
+
+    /**
+     * Require version for updating an existing calendar assignment (PATCH).
+     * Returns the version number if valid, or null if invalid (triggers refetch).
+     */
+    const requireAssignmentVersion = (item: any): number | null => {
+      const v = item?.version;
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        return v;
+      }
+      // Version missing or invalid - refetch and abort this mutation
+      if (process.env.NODE_ENV === 'development') {
+        console.warn('[Calendar] requireAssignmentVersion: Missing or invalid version', {
+          id: item?.id,
+          assignmentId: item?.assignmentId,
+          version: item?.version,
+        });
+      }
+      toast({
+        title: "Refreshing data...",
+        description: "Calendar data was stale. Please try again.",
+        duration: 3000,
+      });
+      invalidateCalendarQueries();
+      return null;
+    };
 
     // Check if dropping on a monthly view day
     if (overId.startsWith('day-')) {
@@ -375,21 +601,40 @@ export default function Calendar() {
 
       if (isExistingCalendarAssignment) {
         // Only move if the assignment exists and day changed
-        const currentAssignment = assignments.find((a: any) => a.id === activeIdValue);
+        const currentAssignment = events.find((a: any) => a.id === activeIdValue);
         if (currentAssignment && currentAssignment.day !== day) {
-          updateAssignmentMutation.mutate({ id: activeIdValue, day });
+          const version = requireAssignmentVersion(currentAssignment);
+          if (version === null) return; // Refetch triggered, abort mutation
+          updateAssignmentMutation.mutate({
+            id: activeIdValue,
+            day,
+            version,
+            durationMinutes: currentAssignment.durationMinutes ?? 60,
+          });
         }
       } else if (unscheduledItem && hasExistingAssignment) {
         // Update existing unscheduled assignment to current view's month/day
-        updateAssignmentMutation.mutate({ id: unscheduledItem.assignmentId, day, targetMonth: month, targetYear: year });
-      } else if (unscheduledItem) {
-        // Create new assignment from unscheduled client (no existing assignment - "missing" status)
-        // Use the ITEM's original month/year so it's scheduled for the correct PM month
-        createAssignmentMutation.mutate({
-          locationId: getLocationId(unscheduledItem),
+        const version = requireAssignmentVersion(unscheduledItem);
+        if (version === null) return; // Refetch triggered, abort mutation
+        updateAssignmentMutation.mutate({
+          id: unscheduledItem.assignmentId,
           day,
-          targetMonth: unscheduledItem.month,
-          targetYear: unscheduledItem.year
+          targetMonth: month,
+          targetYear: year,
+          version,
+          durationMinutes: unscheduledItem.durationMinutes ?? 60,
+        });
+      } else if (unscheduledItem) {
+        // Create new assignment from unscheduled job (no existing schedule)
+        const jobVersion = requireJobVersion(unscheduledItem);
+        if (jobVersion === null) return; // Refetch triggered, abort mutation
+        createAssignmentMutation.mutate({
+          jobId: unscheduledItem.id || unscheduledItem.jobId,
+          day,
+          targetMonth: unscheduledItem.month ?? month,
+          targetYear: unscheduledItem.year ?? year,
+          version: jobVersion,
+          allDay: true, // Month view drops are all-day events
         });
       }
     } else if (overId.startsWith('allday-')) {
@@ -398,21 +643,43 @@ export default function Calendar() {
       const targetDay = parseInt(parts[1]);
 
       if (isExistingCalendarAssignment) {
-        const currentAssignment = assignments.find((a: any) => a.id === activeIdValue);
+        const currentAssignment = events.find((a: any) => a.id === activeIdValue);
         // Update if day changed OR if moving from a time slot to all-day (scheduledHour becomes null)
         if (currentAssignment && (currentAssignment.day !== targetDay || currentAssignment.scheduledHour !== null)) {
-          updateAssignmentMutation.mutate({ id: activeIdValue, day: targetDay, scheduledHour: null });
+          const version = requireAssignmentVersion(currentAssignment);
+          if (version === null) return; // Refetch triggered, abort mutation
+          updateAssignmentMutation.mutate({
+            id: activeIdValue,
+            day: targetDay,
+            scheduledHour: null,
+            allDay: true,
+            version,
+          });
         }
       } else if (unscheduledItem && hasExistingAssignment) {
         // Update existing unscheduled assignment to current view's month/day
-        updateAssignmentMutation.mutate({ id: unscheduledItem.assignmentId, day: targetDay, scheduledHour: null, targetMonth: month, targetYear: year });
-      } else if (unscheduledItem) {
-        // Create new assignment from unscheduled client - use ITEM's original month/year
-        createAssignmentMutation.mutate({
-          locationId: getLocationId(unscheduledItem),
+        const version = requireAssignmentVersion(unscheduledItem);
+        if (version === null) return; // Refetch triggered, abort mutation
+        updateAssignmentMutation.mutate({
+          id: unscheduledItem.assignmentId,
           day: targetDay,
-          targetMonth: unscheduledItem.month,
-          targetYear: unscheduledItem.year
+          scheduledHour: null,
+          allDay: true,
+          targetMonth: month,
+          targetYear: year,
+          version,
+        });
+      } else if (unscheduledItem) {
+        // Create new assignment from unscheduled job - use ITEM's original month/year
+        const jobVersion = requireJobVersion(unscheduledItem);
+        if (jobVersion === null) return; // Refetch triggered, abort mutation
+        createAssignmentMutation.mutate({
+          jobId: unscheduledItem.id || unscheduledItem.jobId,
+          day: targetDay,
+          targetMonth: unscheduledItem.month ?? month,
+          targetYear: unscheduledItem.year ?? year,
+          version: jobVersion,
+          allDay: true,
         });
       }
     } else if (overId.startsWith('weekly-')) {
@@ -423,7 +690,7 @@ export default function Calendar() {
       const targetDay = parseInt(parts[3]);
 
       if (isExistingCalendarAssignment) {
-        const currentAssignment = assignments.find((a: any) => a.id === activeIdValue);
+        const currentAssignment = events.find((a: any) => a.id === activeIdValue);
         if (currentAssignment) {
           const currentStart = currentAssignment.scheduledStartMinutes ?? (currentAssignment.scheduledHour != null ? currentAssignment.scheduledHour * 60 : null);
           if (
@@ -431,22 +698,53 @@ export default function Calendar() {
             currentAssignment.scheduledHour !== hour ||
             currentStart !== scheduledStartMinutes
           ) {
-            updateAssignmentMutation.mutate({ id: activeIdValue, day: targetDay, scheduledHour: hour, scheduledStartMinutes });
+            const version = requireAssignmentVersion(currentAssignment);
+            if (version === null) return; // Refetch triggered, abort mutation
+            // FIX: When transitioning from all-day to timed, use 60min default
+            // (not 1440 which would cause cross-day error)
+            const wasAllDay = currentAssignment.isAllDay || currentAssignment.allDay;
+            const duration = wasAllDay ? 60 : (currentAssignment.durationMinutes ?? 60);
+            updateAssignmentMutation.mutate({
+              id: activeIdValue,
+              day: targetDay,
+              scheduledHour: hour,
+              scheduledStartMinutes,
+              version,
+              durationMinutes: duration,
+              allDay: false, // Explicitly mark as timed event
+            });
           }
         }
       } else if (unscheduledItem && hasExistingAssignment) {
         // Update existing unscheduled assignment to current view's month/day/hour
-        updateAssignmentMutation.mutate({ id: unscheduledItem.assignmentId, day: targetDay, scheduledHour: hour, scheduledStartMinutes, targetMonth: month, targetYear: year });
-      } else if (unscheduledItem) {
-        // Create new assignment from unscheduled client - use ITEM's original month/year
-        createAssignmentMutation.mutate({
-          locationId: getLocationId(unscheduledItem),
+        const version = requireAssignmentVersion(unscheduledItem);
+        if (version === null) return; // Refetch triggered, abort mutation
+        // FIX: Don't use 1440 for timed events
+        const wasAllDay = unscheduledItem.isAllDay || unscheduledItem.allDay;
+        const duration = wasAllDay ? 60 : (unscheduledItem.durationMinutes ?? 60);
+        updateAssignmentMutation.mutate({
+          id: unscheduledItem.assignmentId,
           day: targetDay,
           scheduledHour: hour,
-          // New assignments will snap to quarter-hour based on where you drop.
           scheduledStartMinutes,
-          targetMonth: unscheduledItem.month,
-          targetYear: unscheduledItem.year
+          targetMonth: month,
+          targetYear: year,
+          version,
+          durationMinutes: duration,
+          allDay: false,
+        });
+      } else if (unscheduledItem) {
+        // Create new assignment from unscheduled job - use ITEM's original month/year
+        const jobVersion = requireJobVersion(unscheduledItem);
+        if (jobVersion === null) return; // Refetch triggered, abort mutation
+        createAssignmentMutation.mutate({
+          jobId: unscheduledItem.id || unscheduledItem.jobId,
+          day: targetDay,
+          scheduledHour: hour,
+          scheduledStartMinutes,
+          targetMonth: unscheduledItem.month ?? month,
+          targetYear: unscheduledItem.year ?? year,
+          version: jobVersion,
         });
       }
     } else if (overId.startsWith('daily-')) {
@@ -462,15 +760,23 @@ export default function Calendar() {
       const targetMo = targetMonthIdx + 1;
 
       if (isExistingCalendarAssignment) {
-        const currentAssignment = assignments.find((a: any) => a.id === activeIdValue);
+        const currentAssignment = events.find((a: any) => a.id === activeIdValue);
         if (currentAssignment) {
+          const version = requireAssignmentVersion(currentAssignment);
+          if (version === null) return; // Refetch triggered, abort mutation
+          // FIX: When transitioning from all-day to timed, use 60min default
+          const wasAllDay = currentAssignment.isAllDay || currentAssignment.allDay;
+          const duration = wasAllDay ? 60 : (currentAssignment.durationMinutes ?? 60);
           updateAssignmentMutation.mutate({
             id: activeIdValue,
             day: targetDay,
             scheduledHour: hour,
             scheduledStartMinutes,
             targetMonth: targetMo,
-            targetYear: targetYr
+            targetYear: targetYr,
+            version,
+            durationMinutes: duration,
+            allDay: false, // Explicitly mark as timed event
           });
           // Also assign technician if dropping on a technician column (not unassigned)
           if (technicianId !== 'unassigned') {
@@ -478,66 +784,174 @@ export default function Calendar() {
           }
         }
       } else if (unscheduledItem && hasExistingAssignment) {
+        const version = requireAssignmentVersion(unscheduledItem);
+        if (version === null) return; // Refetch triggered, abort mutation
+        // FIX: Don't use 1440 for timed events
+        const wasAllDay = unscheduledItem.isAllDay || unscheduledItem.allDay;
+        const duration = wasAllDay ? 60 : (unscheduledItem.durationMinutes ?? 60);
         updateAssignmentMutation.mutate({
           id: unscheduledItem.assignmentId,
           day: targetDay,
           scheduledHour: hour,
           scheduledStartMinutes,
           targetMonth: targetMo,
-          targetYear: targetYr
+          targetYear: targetYr,
+          version,
+          durationMinutes: duration,
+          allDay: false,
         });
       } else if (unscheduledItem) {
-        // Create new assignment from unscheduled client - use ITEM's original month/year
+        // Create new assignment from unscheduled job - use ITEM's original month/year
+        const jobVersion = requireJobVersion(unscheduledItem);
+        if (jobVersion === null) return; // Refetch triggered, abort mutation
         createAssignmentMutation.mutate({
-          locationId: getLocationId(unscheduledItem),
+          jobId: unscheduledItem.id || unscheduledItem.jobId,
           day: targetDay,
           scheduledHour: hour,
           scheduledStartMinutes,
-          targetMonth: unscheduledItem.month,
-          targetYear: unscheduledItem.year
+          targetMonth: unscheduledItem.month ?? month,
+          targetYear: unscheduledItem.year ?? year,
+          version: jobVersion,
         });
       }
     } else if (overId === 'unscheduled-panel') {
       // Dropped on unscheduled panel - remove from calendar
       if (isExistingCalendarAssignment) {
-        deleteAssignmentMutation.mutate(activeIdValue);
+        const currentAssignment = events.find((a: any) => a.id === activeIdValue);
+        const version = requireAssignmentVersion(currentAssignment);
+        if (version === null) return; // Refetch triggered, abort mutation
+        deleteAssignmentMutation.mutate({
+          id: activeIdValue,
+          version,
+        });
       }
+    }
+
+    // Diagnostics: log drag end (mutation result will be logged separately)
+    if (isDiagnosticsEnabled()) {
+      logDrag({
+        phase: 'end',
+        sourceId: activeIdValue,
+        sourceType: isExistingCalendarAssignment ? 'calendar-assignment' : 'unscheduled-job',
+        targetId: overId,
+        targetType: getTargetType(overId),
+        result: 'success', // Mutation initiated - actual result logged via apiRequest
+      });
     }
   };
 
-  const handleRemove = (assignmentId: string) => {
-    deleteAssignmentMutation.mutate(assignmentId);
+  const handleRemove = (assignmentId: string, version?: number) => {
+    // Find the assignment to get its version if not provided
+    const assignment = events.find((a: any) => a.id === assignmentId);
+    const resolvedVersion = version ?? assignment?.version;
+
+    // Validate version before mutation - no silent 0 fallback
+    if (typeof resolvedVersion !== 'number' || !Number.isFinite(resolvedVersion)) {
+      if (process.env.NODE_ENV === 'development') {
+        console.warn('[Calendar] handleRemove: Missing or invalid version', { assignmentId, version, assignment });
+      }
+      toast({
+        title: "Refreshing data...",
+        description: "Calendar data was stale. Please try again.",
+        duration: 3000,
+      });
+      invalidateCalendarQueries();
+      return;
+    }
+
+    deleteAssignmentMutation.mutate({
+      id: assignmentId,
+      version: resolvedVersion,
+    });
   };
 
   const handleClearDay = (day: number, dayAssignments: any[]) => {
+    // Each assignment in dayAssignments should have version for optimistic locking
     clearDay.mutate({ day, dayAssignments });
   };
 
-  const handleClientClick = (client: any, eventOrAssignment: CalendarEvent | any) => {
+  const handleClientClick = (client: any, eventOrAssignment: CalendarEvent | any, focusSchedule: boolean = false) => {
     // Handle both CalendarEvent (normalized) and raw assignment shapes
     const rawAssignment = eventOrAssignment.raw ?? eventOrAssignment;
-    setSelectedClient(client);
-    setSelectedAssignment(rawAssignment);
+
+    // Build enriched assignment with correct IDs to prevent modal from using wrong ID
+    const enrichedAssignment = {
+      ...rawAssignment,
+      // Ensure assignmentId is properly set (this is the calendar assignment ID)
+      assignmentId: rawAssignment.assignmentId ?? rawAssignment.id,
+      // Ensure jobId is properly set (this is the actual job ID for API calls)
+      jobId: rawAssignment.jobId ?? rawAssignment.job_id ?? rawAssignment.job?.id ?? rawAssignment.jobIdFromJoin ?? rawAssignment.id,
+      // Ensure locationId is properly set for client lookup
+      locationId: rawAssignment.locationId ?? getLocationId(rawAssignment),
+    };
+
+    // Harden selected client - use fallback if client is falsy or looks like placeholder
+    let selectedClientValue = client;
+    if (!client || client.companyName === "Unknown Client" || !client.companyName) {
+      const fallbackClient = findClientByLocationId(clients, enrichedAssignment.locationId);
+      if (fallbackClient) {
+        selectedClientValue = fallbackClient;
+      }
+    }
+
+    setSelectedClient(selectedClientValue);
+    setSelectedAssignment(enrichedAssignment);
+    setFocusScheduleSection(focusSchedule);
     setClientDetailOpen(true);
   };
 
-  const { data: allClients = [], isLoading: isLoadingClients } = useQuery<any[]>({
+  const { data: clientsQueryData, isLoading: isLoadingClients } = useQuery<any>({
     queryKey: ["/api/clients"],
   });
 
-  const { data: unscheduledClients = [], isLoading: isLoadingUnscheduled } = useQuery<any[]>({
+  // SAFE: Normalize clients to array immediately
+  const allClients = useMemo(() => normalizeArray<any>(clientsQueryData), [clientsQueryData]);
+
+  const { data: unscheduledQueryData, isLoading: isLoadingUnscheduled } = useQuery<any>({
     queryKey: ["/api/calendar/unscheduled"],
     queryFn: async () => {
       const res = await fetch(`/api/calendar/unscheduled`);
       if (!res.ok) throw new Error("Failed to fetch unscheduled clients");
-      return res.json();
+      const data = await res.json();
+      // SAFE: Normalize to array in query function
+      const normalized = normalizeArray<any>(data);
+      // DEV LOGGING: Log unscheduled jobs received (include version for debugging VERSION_MISMATCH)
+      console.log(`[Calendar] Received ${normalized.length} unscheduled jobs from API`);
+      if (normalized.length > 0) {
+        console.log('[Calendar] First 5 unscheduled jobs:', normalized.slice(0, 5).map((j: any) => ({
+          id: j.id,
+          jobNumber: j.jobNumber,
+          version: j.version,
+          primaryTechnicianId: j.primaryTechnicianId,
+          assignedTechnicianIds: j.assignedTechnicianIds,
+          isAssigned: !!j.primaryTechnicianId || (j.assignedTechnicianIds?.length ?? 0) > 0,
+        })));
+      }
+      return normalized;
     },
     staleTime: 0,
     refetchOnMount: 'always',
   });
 
+  // SAFE: Normalize unscheduled clients to array (double-safe in case query returns unexpected shape)
+  // Also deduplicate by jobId/id - prioritize non-optimistic (real) items over optimistic placeholders
+  const unscheduledClients = useMemo(() => {
+    const raw = normalizeArray<any>(unscheduledQueryData);
+    // Deduplicate: when both optimistic and real item exist, keep only the real one
+    const seen = new Map<string, any>();
+    for (const item of raw) {
+      const key = item.jobId || item.id;
+      const existing = seen.get(key);
+      // If no existing item, or existing is optimistic and current is real, use current
+      if (!existing || (existing._optimistic && !item._optimistic)) {
+        seen.set(key, item);
+      }
+    }
+    return Array.from(seen.values());
+  }, [unscheduledQueryData]);
+
   // Query for old unscheduled items that need user action (older than previous month)
-  const { data: oldUnscheduledItems = [] } = useQuery<any[]>({
+  const { data: oldUnscheduledQueryData } = useQuery<any>({
     queryKey: ["/api/calendar/old-unscheduled"],
     queryFn: async () => {
       const res = await fetch(`/api/calendar/old-unscheduled`);
@@ -546,49 +960,57 @@ export default function Calendar() {
     },
   });
 
+  // SAFE: Normalize old unscheduled items to array
+  const oldUnscheduledItems = useMemo(() => normalizeArray<any>(oldUnscheduledQueryData), [oldUnscheduledQueryData]);
+
   const [showOldItemsDialog, setShowOldItemsDialog] = useState(false);
 
-  // Delete old unscheduled assignment
+  // Delete old unscheduled job (soft delete)
   const deleteOldAssignment = useMutation({
-    mutationFn: async (assignmentId: string) => {
-      return apiRequest(`/api/calendar/assign/${assignmentId}`, { method: "DELETE" });
+    mutationFn: async (jobId: string) => {
+      // Model A: Delete the job directly
+      return apiRequest(`/api/jobs/${jobId}`, { method: "DELETE" });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/old-unscheduled"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       toast({
-        title: "Assignment deleted",
-        description: "The old assignment has been removed",
+        title: "Job deleted",
+        description: "The old job has been removed",
       });
     },
     onError: (error: Error) => {
       toast({
         title: "Error",
-        description: error.message || "Failed to delete assignment",
+        description: error.message || "Failed to delete job",
         variant: "destructive",
       });
     },
   });
 
-  // Mark old assignment as completed (archive it)
+  // Mark old job as completed (archive it)
   const archiveOldAssignment = useMutation({
-    mutationFn: async (assignmentId: string) => {
-      return apiRequest(`/api/calendar/assign/${assignmentId}`, { method: "PATCH", body: JSON.stringify({
-        completed: true
-      }) });
+    mutationFn: async (jobId: string) => {
+      // Model A: Use job complete endpoint
+      return apiRequest(`/api/jobs/${jobId}/complete`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/old-unscheduled"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       toast({
-        title: "Assignment archived",
-        description: "The old assignment has been marked as complete",
+        title: "Job archived",
+        description: "The old job has been marked as complete",
       });
     },
     onError: (error: Error) => {
       toast({
         title: "Error",
-        description: error.message || "Failed to archive assignment",
+        description: error.message || "Failed to archive job",
         variant: "destructive",
       });
     },
@@ -645,12 +1067,72 @@ export default function Calendar() {
     }
   }, [view, companySettings?.calendarStartHour, isLoadingCalendar, isLoadingUnscheduled, density]);
 
-  const { assignments = [], clients = [] } = data || {};
+  // Note: Backend /api/calendar returns { events, outsideVisibleHoursCount } - clients come from /api/clients
+  // DEFENSIVE PARSE: Prefer `events` (current contract), fall back to `assignments` (legacy)
+  const rawEvents = data?.events ?? data?.assignments;
+  const events = Array.isArray(rawEvents) ? rawEvents : [];
+  const outsideVisibleHoursCount = typeof data?.outsideVisibleHoursCount === 'number'
+    ? data.outsideVisibleHoursCount
+    : 0;
 
-  // Normalize assignments into canonical CalendarEvent shape
+  // DEV ASSERTION: events must be an array - catch contract regressions early
+  if (process.env.NODE_ENV === 'development' && data && !Array.isArray(rawEvents)) {
+    console.error(
+      '[Calendar] API CONTRACT VIOLATION: /api/calendar response.events is not an array:',
+      typeof rawEvents,
+      rawEvents
+    );
+    throw new Error('Calendar API contract violation: events must be an array');
+  }
+  // Use allClients (from /api/clients) as the client lookup source
+  const clients = allClients;
+
+  // DEV LOGGING: Log scheduled jobs received from API
+  if (events.length > 0 || process.env.NODE_ENV === 'development') {
+    console.log(`[Calendar] Received ${events.length} scheduled jobs from API`);
+    if (events.length > 0) {
+      console.log('[Calendar] First 5 scheduled jobs:', events.slice(0, 5).map((a: any) => ({
+        id: a.id,
+        jobNumber: a.jobNumber,
+        scheduledStart: a.scheduledStart,
+        year: a.year,
+        month: a.month,
+        day: a.day,
+      })));
+    }
+  }
+
+  // Normalize events into canonical CalendarEvent shape
   const normalizedEvents = useMemo(
-    () => normalizeAssignments(assignments),
-    [assignments]
+    () => {
+      const normalized = normalizeAssignments(events);
+
+      // MODEL A DEV ASSERTION: Calendar must receive events with assignmentId
+      // If we see scheduledStart without assignmentId, something is wrong
+      if (process.env.NODE_ENV === 'development') {
+        for (const evt of normalized) {
+          if ('scheduledStart' in evt && !('assignmentId' in evt)) {
+            console.error('[Calendar] MODEL A VIOLATION: received job instead of calendar event', evt);
+          }
+        }
+      }
+
+      // DEV LOGGING: Log normalized events
+      if (normalized.length > 0 || process.env.NODE_ENV === 'development') {
+        console.log(`[Calendar] Normalized ${normalized.length} events from ${events.length} API items`);
+        if (normalized.length > 0) {
+          console.log('[Calendar] First 5 events:', normalized.slice(0, 5).map(e => ({
+            assignmentId: e.assignmentId,
+            jobNumber: e.jobNumber,
+            dateKey: e.dateKey,
+            scheduledHour: e.scheduledHour,
+            isAllDay: e.isAllDay,
+          })));
+        }
+      }
+      return normalized;
+    },
+    [events]
   );
 
   // Build memoized indexes for efficient lookup
@@ -673,24 +1155,57 @@ export default function Calendar() {
     return map;
   }, [normalizedEvents, year, month, view]);
 
-  // Filter unscheduled clients by search query
-  const filteredUnscheduledClients = useMemo(() => {
-    if (!unscheduledSearch.trim()) {
-      return unscheduledClients;
+  // ========================================
+  // State Snapshot Diagnostics (dev or ?diag=1)
+  // ========================================
+  // Fetch state snapshot once on mount to verify invariant:
+  // Jobs = Scheduled + Unscheduled (open_equals_scheduled_plus_backlog)
+  useEffect(() => {
+    // Only run in dev or when diagnostics enabled
+    if (process.env.NODE_ENV !== 'development' && !isDiagnosticsEnabled()) {
+      return;
     }
-    const query = unscheduledSearch.toLowerCase().trim();
-    return unscheduledClients.filter((item: any) => {
-      // Search by company name
-      if (item.companyName?.toLowerCase().includes(query)) return true;
-      // Search by location
-      if (item.location?.toLowerCase().includes(query)) return true;
-      // Search by job number (if available)
-      if (item.jobNumber && String(item.jobNumber).includes(query)) return true;
-      // Search by assignmentId
-      if (item.assignmentId?.toLowerCase().includes(query)) return true;
-      return false;
-    });
-  }, [unscheduledClients, unscheduledSearch]);
+
+    // Fetch state snapshot for invariant verification
+    const fetchSnapshot = async () => {
+      try {
+        const res = await fetch('/api/calendar/state-snapshot');
+        if (!res.ok) {
+          console.warn('[Calendar] State snapshot fetch failed:', res.status);
+          return;
+        }
+        const snapshot = await res.json();
+
+        // Log snapshot for verification
+        console.log('[Calendar] State Snapshot:', snapshot);
+
+        // Warn if invariant violated
+        if (snapshot._invariants && !snapshot._invariants.open_equals_scheduled_plus_backlog) {
+          console.error(
+            '[Calendar] INVARIANT VIOLATION: open !== scheduled.open + backlog',
+            {
+              open: snapshot.jobs?.open,
+              scheduledOpen: snapshot.scheduled?.open,
+              backlog: snapshot.backlog?.total,
+            }
+          );
+        } else {
+          console.log(
+            '[Calendar] Invariant OK: open (%d) === scheduled.open (%d) + backlog (%d)',
+            snapshot.jobs?.open,
+            snapshot.scheduled?.open,
+            snapshot.backlog?.total
+          );
+        }
+      } catch (err) {
+        console.warn('[Calendar] State snapshot fetch error:', err);
+      }
+    };
+
+    fetchSnapshot();
+  }, []); // Only run once on mount
+
+  // Note: Search functionality removed per requirements - display all unscheduled jobs directly
 
   // Configure sensors for drag-and-drop
   const sensors = useSensors(
@@ -738,6 +1253,28 @@ export default function Calendar() {
     });
   }, []);
 
+  // Show error state if any critical query fails
+  if (calendarError || techniciansError) {
+    return (
+      <div className="h-screen bg-background flex flex-col">
+        <main className="flex-1 flex items-center justify-center">
+          <div className="text-center py-8 space-y-4">
+            <AlertTriangle className="h-12 w-12 text-destructive mx-auto" />
+            <div className="text-destructive font-medium">Failed to load calendar data</div>
+            <p className="text-sm text-muted-foreground">
+              {calendarError && "Calendar data could not be loaded. "}
+              {techniciansError && "Technician list could not be loaded. "}
+              Please refresh the page or try again later.
+            </p>
+            <Button variant="outline" onClick={() => window.location.reload()}>
+              Refresh Page
+            </Button>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   if (isLoadingCalendar || isLoadingClients || isLoadingUnscheduled) {
     return (
       <div className="h-screen bg-background flex flex-col">
@@ -751,7 +1288,7 @@ export default function Calendar() {
   // Get active dragging item
   const activeClient = activeId ?
     (unscheduledClients.find((c: any) => c.id === activeId) ||
-     assignments.find((a: any) => a.id === activeId)) : null;
+     events.find((a: any) => a.id === activeId)) : null;
 
   // Handler for parts button click
   const handlePartsClick = () => {
@@ -776,7 +1313,7 @@ export default function Calendar() {
       });
     }
 
-    const allWeekAssignments = assignments.filter((a: any) => {
+    const allWeekEvents = events.filter((a: any) => {
       for (let i = 0; i < 7; i++) {
         const date = weekDays[i].date;
         if (a.year === date.getFullYear() && a.month === date.getMonth() + 1 && a.day === date.getDate()) {
@@ -786,7 +1323,7 @@ export default function Calendar() {
       return false;
     });
 
-    const parts = calculatePartsWithDates(allWeekAssignments);
+    const parts = calculatePartsWithDates(allWeekEvents);
     const weekEnd = weekDays[6].date;
     setPartsDialogTitle(`Parts for ${weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`);
     setPartsDialogParts(parts);
@@ -810,21 +1347,63 @@ export default function Calendar() {
 
   // Handler for technician week view job click
   const handleTechWeekJobClick = (event: CalendarEvent, technician: any) => {
-    const client = clients.find((c: any) => c.id === event.locationKey);
-    if (client) {
+    try {
+      const rawAssignment = event.raw ?? event;
+
+      // Build enriched assignment with correct IDs
+      const enrichedAssignment = {
+        ...rawAssignment,
+        assignmentId: rawAssignment.assignmentId ?? event.assignmentId ?? rawAssignment.id,
+        jobId: rawAssignment.jobId ?? rawAssignment.job_id ?? rawAssignment.job?.id ?? rawAssignment.id,
+        locationId: rawAssignment.locationId ?? getLocationId(rawAssignment),
+      };
+
+      // SAFE client lookup using shared helper - never blocks primary action
+      const clientsArray = toClientsArray(clients);
+      let client = resolveClientForCalendarEvent(clientsArray, event);
+
+      // Use fallback if client is falsy or looks like placeholder
+      if (!client || client.companyName === "Unknown Client" || !client.companyName) {
+        const fallbackClient = findClientByLocationId(clients, enrichedAssignment.locationId);
+        if (fallbackClient) {
+          client = fallbackClient;
+        }
+      }
+
+      // PRIMARY ACTION: Always open the job dialog with assignment data
       setSelectedClient(client);
-      setSelectedAssignment(event.raw);
+      setSelectedAssignment(enrichedAssignment);
+      setClientDetailOpen(true);
+    } catch (err) {
+      console.error("handleTechWeekJobClick failed", err);
+      // Fallback: still try to open dialog with assignment
+      const rawAssignment = event.raw ?? event;
+      setSelectedAssignment({
+        ...rawAssignment,
+        assignmentId: rawAssignment.assignmentId ?? rawAssignment.id,
+        jobId: rawAssignment.jobId ?? rawAssignment.id,
+      });
       setClientDetailOpen(true);
     }
   };
 
   // Handler for technician week view slot click
   const handleTechWeekSlotClick = (date: Date, technician: any) => {
+    // RBAC: Block scheduling for view-only users
+    if (!canSchedule) {
+      showViewOnlyToast();
+      return;
+    }
     handleOpenScheduleModal(date, technician?.id);
   };
 
   // Handler for "Schedule New" button
   const handleScheduleNew = (date: Date, technicianId?: string) => {
+    // RBAC: Block scheduling for view-only users
+    if (!canSchedule) {
+      showViewOnlyToast();
+      return;
+    }
     handleOpenScheduleModal(date, technicianId);
   };
 
@@ -860,6 +1439,16 @@ export default function Calendar() {
             >
               <X className="h-4 w-4" />
             </button>
+          </div>
+        )}
+
+        {/* Info banner for jobs scheduled outside visible hours */}
+        {outsideVisibleHoursCount > 0 && (
+          <div className="bg-blue-50 dark:bg-blue-900/20 border-b border-blue-200 dark:border-blue-800 px-4 py-1.5 flex items-center justify-center gap-2">
+            <Clock className="h-3.5 w-3.5 text-blue-500 dark:text-blue-400" />
+            <span className="text-xs text-blue-700 dark:text-blue-300">
+              {outsideVisibleHoursCount} job{outsideVisibleHoursCount !== 1 ? 's' : ''} scheduled outside visible hours
+            </span>
           </div>
         )}
 
@@ -936,8 +1525,6 @@ export default function Calendar() {
             onPartsClick={handlePartsClick}
             calendarStartHour={companySettings?.calendarStartHour || 8}
             onStartHourChange={handleStartHourChange}
-            density={density}
-            onDensityChange={setDensity}
             hiddenTechnicianIds={hiddenTechnicianIds}
             onToggleTechnicianVisibility={toggleTechnicianVisibility}
           />
@@ -960,6 +1547,8 @@ export default function Calendar() {
                       getTechnicianColor={getTechnicianColor}
                       densityStyle={DENSITY_STYLES[density].card}
                       gapStyle={DENSITY_STYLES[density].gap}
+                      savingJobIds={savingJobIds}
+                      technicians={technicians}
                     />
                   )}
                   {view === "weekly" && (
@@ -993,6 +1582,7 @@ export default function Calendar() {
                           density={density}
                           companySettings={companySettings}
                           clients={clients}
+                          technicians={technicians}
                           eventIndexes={eventIndexes}
                           selectedTechnicianId={selectedTechnicianId}
                           expandedAllDaySlots={expandedAllDaySlots}
@@ -1004,6 +1594,8 @@ export default function Calendar() {
                           visibleHours={visibleHours}
                           showFullDay={showFullDay}
                           onToggleFullDay={toggleShowFullDay}
+                          savingJobIds={savingJobIds}
+                          onUnschedule={handleUnschedule}
                         />
                       ) : (
                         <CalendarGridWeekTechnicians
@@ -1032,6 +1624,8 @@ export default function Calendar() {
                         getTechnicianColor={getTechnicianColor}
                         handleClientClick={handleClientClick}
                         handleResize={handleResize}
+                        savingJobIds={savingJobIds}
+                        onUnschedule={handleUnschedule}
                       />
                     </div>
                   )}
@@ -1043,9 +1637,7 @@ export default function Calendar() {
               <UnscheduledJobsSidebar
                 collapsed={isUnscheduledMinimized}
                 onToggleCollapsed={toggleSidebarCollapsed}
-                items={filteredUnscheduledClients}
-                searchQuery={unscheduledSearch}
-                onSearchChange={setUnscheduledSearch}
+                items={unscheduledClients}
                 isSaving={isSavingDrag}
                 renderItem={(item: any) => {
                   const monthLabel = `${MONTH_ABBREV[item.month - 1]} '${String(item.year).slice(-2)}`;
@@ -1056,15 +1648,20 @@ export default function Calendar() {
                   const isPastMonth =
                     item.year < todayYear || (item.year === todayYear && item.month < todayMonth);
 
+                  // Use helper functions for resilient display
+                  const companyName = getUnscheduledCompanyName(item);
+                  const locationLabel = getUnscheduledLocationLabel(item);
+
                   return (
                     <DraggableClient
                       key={item.id}
                       id={item.id}
-                      client={{ companyName: item.companyName, location: item.location, id: getLocationId(item) }}
+                      client={{ companyName, location: locationLabel, id: getLocationId(item) }}
                       onClick={() => setReportDialogClientId(getLocationId(item))}
                       monthLabel={monthLabel}
                       isOffMonth={true}
                       isPastMonth={isPastMonth}
+                      isSaving={item._optimistic}
                     />
                   );
                 }}
@@ -1093,6 +1690,7 @@ export default function Calendar() {
             if (!open) {
               setSelectedClient(null);
               setSelectedAssignment(null);
+              setFocusScheduleSection(false);
             }
           }}
           client={selectedClient}
@@ -1101,6 +1699,7 @@ export default function Calendar() {
             assignTechnicians.mutate({ assignmentId, technicianIds });
           }}
           bulkParts={bulkParts}
+          focusSchedule={focusScheduleSection}
         />
       </div>
 
@@ -1136,6 +1735,9 @@ export default function Calendar() {
           queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
         }}
       />
+
+      {/* Diagnostics Panel - dev mode or ?diag=1 */}
+      <DiagnosticsPanel />
     </DndContext>
   );
 }

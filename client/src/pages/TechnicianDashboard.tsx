@@ -128,8 +128,8 @@ export default function TechnicianDashboard() {
   });
 
   const allAssignments: Assignment[] = [
-    ...(currentMonthData?.assignments || []),
-    ...(nextMonthData?.assignments || [])
+    ...(currentMonthData?.events ?? currentMonthData?.assignments ?? []),
+    ...(nextMonthData?.events ?? nextMonthData?.assignments ?? [])
   ];
 
   const allClients: Client[] = [

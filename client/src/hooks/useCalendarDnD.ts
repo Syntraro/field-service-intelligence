@@ -399,9 +399,11 @@ export function useCalendarDnD(
       const previousData = queryClient.getQueryData(queryKey);
       snapshotRef.current = { queryKey, data: previousData };
 
-      // Optimistic update: add a placeholder assignment
-      if (previousData && typeof previousData === 'object' && 'assignments' in previousData) {
-        const optimisticAssignment = {
+      // Optimistic update: add a placeholder event
+      const prev = previousData as any;
+      if (prev && typeof prev === 'object' && ('events' in prev || 'assignments' in prev)) {
+        const currentEvents = prev.events ?? prev.assignments ?? [];
+        const optimisticEvent = {
           id: `optimistic-${Date.now()}`,
           jobId: params.jobId,
           year: params.targetYear,
@@ -416,8 +418,8 @@ export function useCalendarDnD(
         };
 
         queryClient.setQueryData(queryKey, {
-          ...(previousData as object),
-          assignments: [...((previousData as any).assignments || []), optimisticAssignment],
+          ...prev,
+          events: [...currentEvents, optimisticEvent],
         });
       }
 
@@ -575,9 +577,11 @@ export function useCalendarDnD(
       const useYear = params.targetYear ?? year;
       const useMonth = params.targetMonth ?? month;
 
-      // Optimistic update: modify the assignment in place
-      if (previousData && typeof previousData === 'object' && 'assignments' in previousData) {
-        const updatedAssignments = ((previousData as any).assignments || []).map((a: any) => {
+      // Optimistic update: modify the event in place
+      const prev = previousData as any;
+      if (prev && typeof prev === 'object' && ('events' in prev || 'assignments' in prev)) {
+        const currentEvents = prev.events ?? prev.assignments ?? [];
+        const updatedEvents = currentEvents.map((a: any) => {
           if (a.id === params.id) {
             return {
               ...a,
@@ -595,8 +599,8 @@ export function useCalendarDnD(
         });
 
         queryClient.setQueryData(queryKey, {
-          ...(previousData as object),
-          assignments: updatedAssignments,
+          ...prev,
+          events: updatedEvents,
         });
       }
 
@@ -763,41 +767,44 @@ export function useCalendarDnD(
       const previousCalendarData = queryClient.getQueryData(queryKey);
       const previousUnscheduledData = queryClient.getQueryData(["/api/calendar/unscheduled"]);
 
-      // Find the assignment being deleted (to use for optimistic unscheduled insert)
-      let deletedAssignment: any = null;
-      if (previousCalendarData && typeof previousCalendarData === 'object' && 'assignments' in previousCalendarData) {
-        deletedAssignment = ((previousCalendarData as any).assignments || []).find((a: any) => a.id === id);
+      // Find the event being deleted (to use for optimistic unscheduled insert)
+      const prevCal = previousCalendarData as any;
+      let deletedEvent: any = null;
+      if (prevCal && typeof prevCal === 'object' && ('events' in prevCal || 'assignments' in prevCal)) {
+        const currentEvents = prevCal.events ?? prevCal.assignments ?? [];
+        deletedEvent = currentEvents.find((a: any) => a.id === id);
       }
 
       // Optimistic update: remove from calendar
-      if (previousCalendarData && typeof previousCalendarData === 'object' && 'assignments' in previousCalendarData) {
-        const filteredAssignments = ((previousCalendarData as any).assignments || []).filter(
+      if (prevCal && typeof prevCal === 'object' && ('events' in prevCal || 'assignments' in prevCal)) {
+        const currentEvents = prevCal.events ?? prevCal.assignments ?? [];
+        const filteredEvents = currentEvents.filter(
           (a: any) => a.id !== id
         );
 
         queryClient.setQueryData(queryKey, {
-          ...(previousCalendarData as object),
-          assignments: filteredAssignments,
+          ...prevCal,
+          events: filteredEvents,
         });
       }
 
       // Optimistic update: add placeholder to unscheduled list
-      if (deletedAssignment && Array.isArray(previousUnscheduledData)) {
+      if (deletedEvent && Array.isArray(previousUnscheduledData)) {
         const optimisticUnscheduledItem = {
-          id: deletedAssignment.jobId || deletedAssignment.id,
-          jobId: deletedAssignment.jobId || deletedAssignment.id,
-          jobNumber: deletedAssignment.jobNumber,
-          companyName: deletedAssignment.companyName || deletedAssignment.clientName || 'Unscheduling...',
-          locationName: deletedAssignment.locationName || deletedAssignment.location || '',
-          month: deletedAssignment.month,
-          year: deletedAssignment.year,
+          id: deletedEvent.jobId || deletedEvent.id,
+          jobId: deletedEvent.jobId || deletedEvent.id,
+          jobNumber: deletedEvent.jobNumber,
+          companyName: deletedEvent.companyName || deletedEvent.clientName || 'Unscheduling...',
+          locationName: deletedEvent.locationName || deletedEvent.location || '',
+          month: deletedEvent.month,
+          year: deletedEvent.year,
           status: 'existing',
           _optimistic: true,
         };
         queryClient.setQueryData(["/api/calendar/unscheduled"], [optimisticUnscheduledItem, ...previousUnscheduledData]);
       }
 
-      return { previousCalendarData, previousUnscheduledData, queryKey, deletedAssignment };
+      return { previousCalendarData, previousUnscheduledData, queryKey, deletedEvent };
     },
     onSuccess: async (_, params) => {
       clearJobSaving(params.id);

@@ -6,7 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### Calendar Page: Fix crash from outdated API contract
+
+- **Updated `client/src/pages/Calendar.tsx`** to read `events` field from server response
+  instead of legacy `assignments` field, matching `CalendarRangeResponseDto`.
+- Backward-compatible fallback: `data?.events ?? data?.assignments` during transition.
+- Renamed variables: `rawAssignments` → `rawEvents`, outer `assignments` → `events`,
+  inner `events` (in useMemo) → `normalized` to avoid shadowing.
+- Updated all 12+ call sites (`events.some(...)`, `events.find(...)`, `events.filter(...)`)
+  in drag handlers, active client lookup, and parts calculation.
+- Added `v.events` check to `normalizeArray` utility (before legacy `v.assignments` fallback).
+- Updated dev assertion error message to reference `events` instead of `assignments`.
+
+#### Calendar Module: Complete Model A migration (client-side)
+
+- **Canonical `assignmentId = jobId` mapping** (`client/src/components/calendar/calendarUtils.ts`):
+  - `normalizeAssignments` now sets `assignmentId: a.jobId ?? a.id` (was `a.id`)
+  - Ensures all drag/drop, grid keys, and mutations use the job ID consistently
+  - Renamed function parameter `rawAssignments` → `rawEvents`; updated all dev-only
+    log messages from "assignment" to "event" terminology
+  - Updated `CalendarEvent` type JSDoc to document MODEL A contract
+- **Optimistic cache updates** (`client/src/hooks/useCalendarDnD.ts`):
+  - All three mutation blocks (create/update/delete) now read `events` field from cache
+    (falling back to `assignments` for backward compat) and write back as `events`
+  - Renamed internal `deletedAssignment` → `deletedEvent`
+- **TechnicianDashboard** (`client/src/pages/TechnicianDashboard.tsx`):
+  - Month data merge now reads `events` field first (`?.events ?? ?.assignments`)
+
 ### Changed
+
+#### Jobs Page: Separate Schedule, Status, and Assignment Columns
+
+- **Restructured Jobs table columns** (`client/src/pages/Jobs.tsx`):
+  - **Schedule** column: shows date (e.g., "Jan 27, 2026") or "Not scheduled"
+  - **Status** column: lifecycle badge (Open/Completed/Invoiced/Archived) +
+    optional openSubStatus label (In Progress/On Route/On Hold/Needs Review) +
+    Overdue and All-day indicators. "Backlog" never appears in this column.
+  - **Assignment** column (NEW): shows primary technician name + "+N" for
+    additional technicians, or "Unassigned". Fetches names via `/api/team/technicians`.
+- Removed unused `Users` icon import
+- Backlog concept retained in filters and dev reconciliation panel only
 
 #### Eradicate Legacy "Assignment" Terminology + Regression Guard
 

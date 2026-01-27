@@ -1,5 +1,6 @@
 // Calendar constants and utility functions
 // Extracted from Calendar.tsx to reduce file size and improve maintainability
+// MODEL A: Calendar events ARE jobs — no separate "assignment" entity
 
 export const MONTH_ABBREV = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -9,10 +10,14 @@ export const MONTH_ABBREV = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'A
 
 /**
  * Normalized calendar event used by all views (monthly, weekly, daily).
- * Raw assignments are transformed into this shape for consistent handling.
+ * Raw API events are transformed into this shape for consistent handling.
+ *
+ * MODEL A: There is no separate "assignment" entity. Calendar events ARE jobs.
+ * The `assignmentId` field is always equal to the job ID.
  */
 export type CalendarEvent = {
-  /** Assignment ID (for mutations and keys) */
+  /** Job ID used as calendar event key (MODEL A: assignmentId === jobId). Kept as
+   *  `assignmentId` for backward compat with drag/drop, grid keys, and mutations. */
   assignmentId: string;
   /** Resolved location key (prefers locationId, falls back to clientId) */
   locationKey: string;
@@ -28,24 +33,26 @@ export type CalendarEvent = {
   day: number;
   /** Date key for indexing (YYYY-MM-DD) */
   dateKey: string;
-  /** Scheduled hour (null = all-day) */
+  /** Scheduled hour (0 for all-day events, actual hour for timed events) */
   scheduledHour: number | null;
   /** Scheduled start within hour in minutes (0-59) */
   scheduledStartMinutes: number | null;
-  /** True if this is an all-day event (scheduledHour is null) */
+  /** True if this is an all-day event (display flag - MODEL A) */
   isAllDay: boolean;
-  /** Absolute start minutes from midnight (hour*60 + scheduledStartMinutes), null for all-day */
+  /** Absolute start minutes from midnight (hour*60 + scheduledStartMinutes) - 0 for all-day */
   startMinutes: number | null;
   /** Duration in minutes */
   durationMinutes: number;
-  /** Whether the assignment is completed */
+  /** Whether the job is completed */
   completed: boolean;
   /** Job number if assigned */
   jobNumber: string | null;
   /** Scheduled date as ISO string */
   scheduledDate: string;
-  /** Raw assignment reference for props that need original data */
+  /** Raw API event data for props that need original fields */
   raw: any;
+  /** True if job is assigned to non-schedulable technician (for warning display) */
+  hasHiddenTechnician?: boolean;
 };
 
 /**
@@ -80,63 +87,232 @@ export function getLocationKey(entity: { locationId?: string; clientId?: string 
 }
 
 /**
- * Normalize raw assignments into CalendarEvent objects.
- * Transforms raw API data into a consistent shape for all calendar views.
+ * Parse ISO datetime to extract year, month, day, hour, minutes.
+ * Returns null if parsing fails.
  */
-export function normalizeAssignments(rawAssignments: any[]): CalendarEvent[] {
-  return rawAssignments.map((a): CalendarEvent => {
-    // DEV-ONLY: Warn if assignment has no location identifier
-    if (process.env.NODE_ENV === 'development' && !a.locationId && !a.clientId) {
-      console.warn(
-        '[Calendar] Assignment missing location identifier (no locationId or clientId):',
-        { id: a.id, jobNumber: a.jobNumber }
-      );
-    }
-
-    const isAllDay = a.scheduledHour === null || a.scheduledHour === undefined;
-    const startMinutes = isAllDay ? null : (a.scheduledHour * 60 + (a.scheduledStartMinutes ?? 0));
-    const techIds = a.assignedTechnicianIds || [];
-    const legacyTechId = a.assignedTechnicianId;
-    const technicianId = techIds.length > 0 ? techIds[0] : (legacyTechId || null);
-
-    // Build date key (YYYY-MM-DD)
-    const dateKey = `${a.year}-${String(a.month).padStart(2, '0')}-${String(a.day).padStart(2, '0')}`;
-
-    const locationKey = getLocationKey(a);
-
-    // DEV-ONLY: Warn if locationKey resolved to empty string
-    if (process.env.NODE_ENV === 'development' && !locationKey) {
-      console.warn(
-        '[Calendar] CalendarEvent has null/empty locationKey:',
-        { assignmentId: a.id, jobNumber: a.jobNumber }
-      );
-    }
-
+function parseScheduledDateTime(isoString: string | null | undefined): {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minutes: number;
+} | null {
+  if (!isoString) return null;
+  try {
+    const date = new Date(isoString);
+    if (isNaN(date.getTime())) return null;
     return {
-      assignmentId: a.id,
-      locationKey,
-      technicianId,
-      technicianIds: techIds.length > 0 ? techIds : (legacyTechId ? [legacyTechId] : []),
-      year: a.year,
-      month: a.month,
-      day: a.day,
-      dateKey,
-      scheduledHour: isAllDay ? null : a.scheduledHour,
-      scheduledStartMinutes: isAllDay ? null : (a.scheduledStartMinutes ?? 0),
-      isAllDay,
-      startMinutes,
-      durationMinutes: a.durationMinutes || 60,
-      completed: a.completed || false,
-      jobNumber: a.jobNumber || null,
-      scheduledDate: a.scheduledDate || dateKey,
-      raw: a,
+      year: date.getFullYear(),
+      month: date.getMonth() + 1, // 1-12
+      day: date.getDate(),
+      hour: date.getHours(),
+      minutes: date.getMinutes(),
     };
-  });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Normalize raw API events into CalendarEvent objects.
+ * Transforms raw calendar response data into a consistent shape for all views.
+ *
+ * MODEL A (Timestamp Canonical):
+ * - startAt: ISO 8601 datetime (midnight for all-day, actual time for timed)
+ * - endAt: ISO 8601 datetime (23:59:59 for all-day, actual time for timed)
+ * - allDay: boolean indicating if this is an all-day event (display flag)
+ * - date: YYYY-MM-DD string for the event date (always set)
+ * - version: optimistic locking version number
+ * - assignmentId is always set to jobId (no separate assignment entity)
+ *
+ * Classification rules:
+ * - allDay === true is the authoritative flag for all-day events
+ * - For all-day events, startAt is midnight (00:00:00) but we display in all-day lane
+ * - For timed events, extract hour/minutes from startAt
+ * - Fallback to legacy fields (scheduledStart, isAllDay, year/month/day/scheduledHour)
+ */
+export function normalizeAssignments(rawEvents: any[]): CalendarEvent[] {
+  // DEV-ONLY: Track stats for debug summary
+  let skippedCount = 0;
+
+  // DEV-ONLY: Check first event for field mismatch (legacy vs canonical)
+  if (process.env.NODE_ENV === 'development' && rawEvents.length > 0) {
+    const first = rawEvents[0];
+    const hasCanonical = 'startAt' in first || 'allDay' in first || 'date' in first;
+    const hasLegacy = 'scheduledStart' in first || 'isAllDay' in first;
+    if (hasLegacy && !hasCanonical) {
+      console.warn(
+        '[Calendar] API returning LEGACY field names (scheduledStart/isAllDay) instead of CANONICAL (startAt/allDay/date).',
+        'Server transformToDto may need updating. First event:',
+        { id: first.id, jobNumber: first.jobNumber, keys: Object.keys(first).slice(0, 15) }
+      );
+    }
+  }
+
+  // Filter and map with validation - skip invalid events with warning
+  const results = rawEvents
+    .map((a): CalendarEvent | null => {
+      // DEV-ONLY: Warn if event has no location identifier
+      if (process.env.NODE_ENV === 'development' && !a.locationId && !a.clientId) {
+        console.warn(
+          '[Calendar] Event missing location identifier (no locationId or clientId):',
+          { id: a.id, jobNumber: a.jobNumber }
+        );
+      }
+
+      // Parse canonical fields first (startAt/endAt), fallback to legacy (scheduledStart/scheduledEnd)
+      const startIso = a.startAt ?? a.scheduledStart;
+      const endIso = a.endAt ?? a.scheduledEnd;
+      const parsedStart = parseScheduledDateTime(startIso);
+      const parsedEnd = parseScheduledDateTime(endIso);
+
+      // Determine if all-day: canonical allDay > legacy isAllDay > infer from missing time
+      const isAllDay = a.allDay === true || a.isAllDay === true ||
+        (!parsedStart && (a.scheduledHour === null || a.scheduledHour === undefined));
+
+      // Extract date components: prefer canonical 'date' field, then parsed ISO, then legacy fields
+      let year: number | undefined, month: number | undefined, day: number | undefined;
+      let scheduledHour: number | null = null;
+      let scheduledStartMinutes: number = 0;
+
+      // Try canonical 'date' field first (YYYY-MM-DD)
+      if (a.date && typeof a.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(a.date)) {
+        const [y, m, d] = a.date.split('-').map(Number);
+        year = y;
+        month = m;
+        day = d;
+        // For timed events, extract hour/minutes from startAt
+        if (!isAllDay && parsedStart) {
+          scheduledHour = parsedStart.hour;
+          scheduledStartMinutes = parsedStart.minutes;
+        } else if (!isAllDay) {
+          // Timed event but no parsed start - try legacy scheduledHour
+          if (a.scheduledHour !== null && a.scheduledHour !== undefined) {
+            scheduledHour = a.scheduledHour;
+            scheduledStartMinutes = a.scheduledStartMinutes ?? 0;
+          } else {
+            // Default to 9 AM for timed events with missing time
+            scheduledHour = 9;
+            scheduledStartMinutes = 0;
+          }
+        }
+      } else if (parsedStart) {
+        // Fallback: extract from parsed ISO datetime
+        year = parsedStart.year;
+        month = parsedStart.month;
+        day = parsedStart.day;
+        if (!isAllDay) {
+          scheduledHour = parsedStart.hour;
+          scheduledStartMinutes = parsedStart.minutes;
+        }
+      } else {
+        // Final fallback: legacy year/month/day fields
+        year = a.year;
+        month = a.month;
+        day = a.day;
+        if (!isAllDay && a.scheduledHour !== null && a.scheduledHour !== undefined) {
+          scheduledHour = a.scheduledHour;
+          scheduledStartMinutes = a.scheduledStartMinutes ?? 0;
+        } else if (!isAllDay) {
+          // Timed event with no time info - default to 9 AM
+          scheduledHour = 9;
+          scheduledStartMinutes = 0;
+        }
+      }
+
+      // VALIDATION: Skip events with invalid/missing date components
+      if (year === undefined || month === undefined || day === undefined ||
+          isNaN(year) || isNaN(month) || isNaN(day) ||
+          year < 2000 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31) {
+        if (process.env.NODE_ENV === 'development') {
+          console.warn(
+            '[Calendar] Skipping event due to invalid/missing date:',
+            { id: a.id, jobNumber: a.jobNumber, year, month, day }
+          );
+        }
+        skippedCount++;
+        return null;
+      }
+
+      // Calculate duration: prefer durationMinutes, then compute from start/end
+      let durationMinutes = a.durationMinutes || 60;
+      if (parsedStart && parsedEnd && !isAllDay) {
+        const startDate = new Date(startIso);
+        const endDate = new Date(endIso);
+        const calcDuration = Math.round((endDate.getTime() - startDate.getTime()) / 60000);
+        if (calcDuration > 0 && calcDuration <= 1440) {
+          durationMinutes = calcDuration;
+        }
+      }
+      // Ensure minimum duration for visibility (at least 15 minutes)
+      if (durationMinutes < 15) durationMinutes = 15;
+
+      // For timed events, ensure scheduledHour is valid
+      if (!isAllDay && (scheduledHour === null || scheduledHour < 0 || scheduledHour > 23)) {
+        scheduledHour = 9; // Default to 9 AM
+      }
+
+      const startMinutes = isAllDay ? null : (scheduledHour! * 60 + scheduledStartMinutes);
+
+      const techIds = a.assignedTechnicianIds || [];
+      const legacyTechId = a.assignedTechnicianId;
+      const technicianId = techIds.length > 0 ? techIds[0] : (legacyTechId || null);
+
+      // Build date key (YYYY-MM-DD)
+      const dateKey = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+      const locationKey = getLocationKey(a);
+
+      // DEV-ONLY: Warn if locationKey resolved to empty string
+      if (process.env.NODE_ENV === 'development' && !locationKey) {
+        console.warn(
+          '[Calendar] CalendarEvent has null/empty locationKey:',
+          { jobId: a.jobId ?? a.id, jobNumber: a.jobNumber }
+        );
+      }
+
+      return {
+        // MODEL A: assignmentId === jobId (no separate assignment entity)
+        assignmentId: a.jobId ?? a.id,
+        locationKey,
+        technicianId,
+        technicianIds: techIds.length > 0 ? techIds : (legacyTechId ? [legacyTechId] : []),
+        year,
+        month,
+        day,
+        dateKey,
+        scheduledHour: isAllDay ? null : scheduledHour,
+        scheduledStartMinutes: isAllDay ? null : scheduledStartMinutes,
+        isAllDay,
+        startMinutes,
+        durationMinutes,
+        completed: a.completed || a.status === 'completed' || false,
+        jobNumber: a.jobNumber || null,
+        scheduledDate: a.scheduledDate || dateKey,
+        raw: a,
+        // Include hidden technician flag from server diagnostics
+        hasHiddenTechnician: a.hasHiddenTechnician === true,
+      };
+    })
+    .filter((event): event is CalendarEvent => event !== null);
+
+  // DEV-ONLY: Log summary on each normalization (helps diagnose data issues)
+  if (process.env.NODE_ENV === 'development' && rawEvents.length > 0) {
+    const timedCount = results.filter(e => !e.isAllDay).length;
+    const allDayCount = results.filter(e => e.isAllDay).length;
+    const first = rawEvents[0];
+    console.log(
+      `[Calendar] Loaded ${results.length} events (${timedCount} timed, ${allDayCount} all-day, ${skippedCount} skipped)`,
+      first ? { sampleKeys: Object.keys(first).slice(0, 10).join(', ') } : {}
+    );
+  }
+
+  return results;
 }
 
 /**
  * Compare function for stable event ordering.
- * Sort order: all-day events first, then by startMinutes, then by assignmentId (tie-breaker).
+ * Sort order: all-day events first, then by startMinutes, then by assignmentId (jobId) tie-breaker.
  * This ensures deterministic rendering across re-renders and React reconciliation.
  */
 function compareEventsForStableOrder(a: CalendarEvent, b: CalendarEvent): number {
@@ -222,13 +398,117 @@ export type CalendarDensity = 'compact' | 'comfortable' | 'expanded';
 
 export const DRAG_ENABLED = true;
 
+// DENSITY_STYLES - Only "expanded" is used (other modes removed for simplicity)
+// Jobber-inspired sizing: readable at a glance, sufficient padding, clear text
 export const DENSITY_STYLES = {
-  compact: { card: 'py-1 px-2', row: 'min-h-10', gap: 'gap-1', rowHeight: 40 },
-  comfortable: { card: 'py-1.5 px-2.5', row: 'min-h-12', gap: 'gap-1', rowHeight: 48 },
-  expanded: { card: 'py-2 px-3', row: 'min-h-14', gap: 'gap-1.5', rowHeight: 56 },
+  // Legacy modes kept for type compatibility but all point to expanded values
+  compact: { card: 'py-1.5 px-2.5', row: 'min-h-10', gap: 'gap-1', rowHeight: 56, monthCard: 'py-1 px-2', minCardHeight: 30 },
+  comfortable: { card: 'py-1.5 px-2.5', row: 'min-h-10', gap: 'gap-1', rowHeight: 56, monthCard: 'py-1 px-2', minCardHeight: 30 },
+  // Expanded: Jobber-like readable cards
+  // rowHeight 56px = ~1 job per hour block, comfortable 2-line cards
+  // card padding: py-1.5 px-2.5 for comfortable touch targets
+  // minCardHeight 30px ensures minimum visibility for short jobs
+  expanded: { card: 'py-1.5 px-2.5', row: 'min-h-10', gap: 'gap-1', rowHeight: 56, monthCard: 'py-1 px-2', minCardHeight: 30 },
 };
 
-export const ALLDAY_ROW_HEIGHTS: Record<string, number> = { compact: 72, comfortable: 84, roomy: 96 };
+// All-day row heights - increased for readability
+export const ALLDAY_ROW_HEIGHTS: Record<string, number> = { compact: 84, comfortable: 84, expanded: 84 };
+
+// ============================================================================
+// Safe Date Parsing Utilities
+// Prevent "Invalid time value" runtime errors from malformed date inputs
+// ============================================================================
+
+/**
+ * Safely convert any value to a valid Date object.
+ * Returns null for invalid inputs instead of throwing "Invalid time value".
+ *
+ * @param value - Date string, Date object, timestamp, or year/month/day object
+ * @param month - Optional month (1-12) if value is year
+ * @param day - Optional day (1-31) if value is year
+ * @returns Valid Date or null
+ */
+export function toValidDate(
+  value: unknown,
+  month?: number,
+  day?: number
+): Date | null {
+  try {
+    // Handle year/month/day triplet
+    if (typeof value === 'number' && month !== undefined && day !== undefined) {
+      const year = value;
+      // Validate ranges
+      if (year < 1900 || year > 2100) return null;
+      if (month < 1 || month > 12) return null;
+      if (day < 1 || day > 31) return null;
+      const date = new Date(year, month - 1, day);
+      return isNaN(date.getTime()) ? null : date;
+    }
+
+    // Handle Date object
+    if (value instanceof Date) {
+      return isNaN(value.getTime()) ? null : value;
+    }
+
+    // Handle timestamp number
+    if (typeof value === 'number') {
+      const date = new Date(value);
+      return isNaN(date.getTime()) ? null : date;
+    }
+
+    // Handle ISO string or other string formats
+    if (typeof value === 'string' && value.length > 0) {
+      const date = new Date(value);
+      return isNaN(date.getTime()) ? null : date;
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Safely convert year/month/day to ISO date string (YYYY-MM-DD).
+ * Returns empty string for invalid inputs.
+ *
+ * @param year - Year (e.g., 2024)
+ * @param month - Month (1-12)
+ * @param day - Day (1-31)
+ * @returns ISO date string or empty string
+ */
+export function toISODateString(year: unknown, month: unknown, day: unknown): string {
+  const y = typeof year === 'number' ? year : parseInt(String(year), 10);
+  const m = typeof month === 'number' ? month : parseInt(String(month), 10);
+  const d = typeof day === 'number' ? day : parseInt(String(day), 10);
+
+  // Validate ranges
+  if (isNaN(y) || isNaN(m) || isNaN(d)) return '';
+  if (y < 1900 || y > 2100) return '';
+  if (m < 1 || m > 12) return '';
+  if (d < 1 || d > 31) return '';
+
+  // Build ISO string
+  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
+/**
+ * Safely create a Date object for scheduling operations.
+ * Falls back to current date if inputs are invalid.
+ *
+ * @param year - Year (e.g., 2024)
+ * @param month - Month (1-12)
+ * @param day - Day (1-31)
+ * @returns Valid Date (falls back to today on invalid input)
+ */
+export function toScheduleDate(year: unknown, month: unknown, day: unknown): Date {
+  const date = toValidDate(
+    typeof year === 'number' ? year : parseInt(String(year), 10),
+    typeof month === 'number' ? month : parseInt(String(month), 10),
+    typeof day === 'number' ? day : parseInt(String(day), 10)
+  );
+  return date ?? new Date();
+}
 
 // Get start minutes for an assignment
 export function getAssignmentStartMinutes(a: any): number {
