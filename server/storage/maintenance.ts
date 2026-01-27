@@ -1,42 +1,57 @@
 import { db } from "../db";
-import { eq, and, isNotNull, desc, sql } from "drizzle-orm";
-import { calendarAssignments, clients } from "@shared/schema";
+import { eq, and, isNotNull, isNull, desc, sql } from "drizzle-orm";
+import { jobs, clientLocations } from "@shared/schema";
 import { BaseRepository } from "./base";
 
+/**
+ * Maintenance Repository
+ * MODEL A: All queries use jobs table (calendar_assignments removed)
+ */
 export class MaintenanceRepository extends BaseRepository {
   /**
-   * Get recently completed maintenance assignments
+   * Get recently completed jobs
+   * MODEL A: Uses jobs table with status='completed'
    */
   async getMaintenanceRecentlyCompleted(companyId: string, limit: number = 50) {
     return await db
       .select({
-        assignment: calendarAssignments,
-        client: clients,
+        job: jobs,
+        location: clientLocations,
       })
-      .from(calendarAssignments)
-      .innerJoin(clients, eq(calendarAssignments.clientId, clients.id))
+      .from(jobs)
+      .innerJoin(clientLocations, eq(jobs.locationId, clientLocations.id))
       .where(
         and(
-          eq(calendarAssignments.companyId, companyId),
-          eq(calendarAssignments.completed, true),
-          isNotNull(calendarAssignments.completionNotes)
+          eq(jobs.companyId, companyId),
+          isNull(jobs.deletedAt),
+          eq(jobs.status, 'completed'),
+          isNotNull(jobs.billingNotes) // Completion notes stored in billingNotes
         )
       )
-      // scheduledDate is now proper DATE type - no cast needed!
-      .orderBy(desc(calendarAssignments.scheduledDate))
+      .orderBy(desc(jobs.actualEnd))
       .limit(limit);
   }
 
   /**
-   * Get maintenance status summary
+   * Get job status summary
+   * MODEL A: Uses jobs table with derived scheduling state
    */
   async getMaintenanceStatuses(companyId: string) {
-    // scheduledDate is now proper DATE type - comparisons are clean!
+    // Derive status from job fields
+    // Phase 2 Step 5: Overdue = effectiveEnd < NOW
+    // effectiveEnd priority: scheduled_end > scheduled_start + estimated_duration_minutes > scheduled_start
     const statusExpr = sql<string>`
-      CASE 
-        WHEN ${calendarAssignments.completed} = true THEN 'completed'
-        WHEN ${calendarAssignments.scheduledDate} < CURRENT_DATE THEN 'overdue'
-        WHEN ${calendarAssignments.scheduledDate} = CURRENT_DATE THEN 'today'
+      CASE
+        WHEN ${jobs.status} = 'completed' THEN 'completed'
+        WHEN ${jobs.status} = 'invoiced' THEN 'invoiced'
+        WHEN ${jobs.status} = 'archived' THEN 'archived'
+        WHEN ${jobs.scheduledStart} IS NULL THEN 'unscheduled'
+        WHEN CASE
+          WHEN ${jobs.scheduledEnd} IS NOT NULL THEN ${jobs.scheduledEnd}
+          WHEN ${jobs.estimatedDurationMinutes} IS NOT NULL THEN ${jobs.scheduledStart} + (${jobs.estimatedDurationMinutes} || ' minutes')::interval
+          ELSE ${jobs.scheduledStart}
+        END < CURRENT_TIMESTAMP THEN 'overdue'
+        WHEN DATE(${jobs.scheduledStart}) = CURRENT_DATE THEN 'today'
         ELSE 'scheduled'
       END
     `;
@@ -44,10 +59,15 @@ export class MaintenanceRepository extends BaseRepository {
     const result = await db
       .select({
         status: statusExpr,
-        count: sql<number>`count(*)`,
+        count: sql<number>`count(*)::int`,
       })
-      .from(calendarAssignments)
-      .where(eq(calendarAssignments.companyId, companyId))
+      .from(jobs)
+      .where(
+        and(
+          eq(jobs.companyId, companyId),
+          isNull(jobs.deletedAt)
+        )
+      )
       .groupBy(statusExpr);
 
     return result;

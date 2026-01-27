@@ -18,6 +18,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { format } from "date-fns";
 import type { Client, CustomerCompany, ClientNote, Job, LocationPMPartTemplate, LocationEquipment } from "@shared/schema";
+import { isJobOverdue, isJobScheduled } from "@shared/schema";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -115,12 +116,13 @@ export default function LocationDetailPage() {
   });
 
   const locationJobs = jobs.filter(j => j.locationId === locationId);
-  const overdueJobs = locationJobs.filter(j => {
-    if (!j.scheduledStart) return false;
-    return new Date(j.scheduledStart) < new Date() && j.status !== "completed" && j.status !== "cancelled";
-  });
+  // Use canonical isJobOverdue predicate
+  const overdueJobs = locationJobs.filter(j => isJobOverdue(j));
   const activeJobs = locationJobs.filter(j =>
-    (j.status === "scheduled" || j.status === "in_progress") &&
+    // Active = open + (scheduled OR in_progress)
+    // Use canonical isJobScheduled predicate for scheduled check
+    j.status === "open" &&
+    (isJobScheduled(j) || j.openSubStatus === "in_progress") &&
     !overdueJobs.some(o => o.id === j.id)
   );
 
@@ -498,8 +500,8 @@ export default function LocationDetailPage() {
                                       : "Not scheduled"}
                                   </p>
                                 </div>
-                                <Badge variant={job.status === "in_progress" ? "default" : "secondary"}>
-                                  {job.status === "in_progress" ? "In Progress" : "Scheduled"}
+                                <Badge variant={job.openSubStatus === "in_progress" ? "default" : "secondary"}>
+                                  {job.openSubStatus === "in_progress" ? "In Progress" : "Scheduled"}
                                 </Badge>
                               </div>
                             ))}

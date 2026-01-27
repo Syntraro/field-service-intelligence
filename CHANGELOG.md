@@ -1,0 +1,245 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+
+## [Unreleased]
+
+### Changed
+
+#### Phase 2 Step 5: Canonical "Overdue" Derived Flag (Updated)
+
+- **AUTHORITATIVE RULE** - A job is overdue ONLY when:
+  - `status === 'open'` (completed/invoiced/archived are NEVER overdue)
+  - `scheduledStart IS NOT NULL` (backlog/unscheduled is NEVER overdue)
+  - `effectiveEnd < now` (job should have finished by now)
+
+- **effectiveEnd calculation** (priority order):
+  1. `scheduledEnd` if present (includes all-day jobs with 23:59:59 end time)
+  2. `scheduledStart + estimatedDurationMinutes` if duration exists
+  3. `scheduledStart` as fallback (point-in-time job)
+
+- **Single canonical `isJobOverdue(job, now?)` predicate** in `shared/schema.ts`:
+  - Used consistently across client and server code
+  - All-day jobs only become overdue once the entire day has passed (23:59:59 end time)
+  - Removed all duplicate inline overdue calculations
+
+- **Files updated**:
+  - `shared/schema.ts` - Updated `isJobOverdue(job, now?)` to use effectiveEnd with estimatedDurationMinutes
+  - `client/src/components/job/jobUtils.ts` - Both functions use canonical predicate, includes priority field
+  - `client/src/pages/Jobs.tsx` - Removed duplicate local `getJobStatusDisplay`, now imports from jobUtils.ts
+  - `server/storage/admin.ts` - SQL CASE expression for effectiveEnd with estimatedDurationMinutes
+  - `server/storage/dashboard.ts` - SQL CASE expression for effectiveEnd with estimatedDurationMinutes
+  - `server/storage/maintenance.ts` - SQL CASE expression for effectiveEnd with estimatedDurationMinutes
+
+- **Migration**: `migrations/2026_01_27_add_estimated_duration_minutes.sql`
+  - Adds `estimated_duration_minutes` column to jobs table
+  - Used for effectiveEnd calculation when scheduledEnd is not set
+  - `client/src/pages/ClientDetailPage.tsx` - Uses `isJobOverdue`
+  - `client/src/pages/LocationDetailPage.tsx` - Uses `isJobOverdue`
+  - `server/storage/admin.ts` - SQL uses `COALESCE(scheduled_end, scheduled_start) < NOW()`
+  - `server/storage/dashboard.ts` - SQL uses `COALESCE(scheduled_end, scheduled_start) < NOW()`
+  - `server/storage/maintenance.ts` - SQL uses `COALESCE(scheduled_end, scheduled_start) < CURRENT_TIMESTAMP`
+
+#### Phase 2 Step 6: Remove templateStatusDefaultEnum
+
+- **Removed `templateStatusDefaultEnum`** - All generated jobs now have `status = 'open'` (hardcoded)
+- **Renamed column** - `statusDefault` → `openSubStatusDefault`:
+  - Template only controls the optional `openSubStatus` (null = backlog, "on_hold" = held)
+  - Values: `null` (normal backlog) or any valid `openSubStatusEnum` value
+
+- **Files updated**:
+  - `shared/schema.ts` - Removed enum, updated table definition and schemas
+  - `server/domain/recurrence.ts` - Simplified job creation, always sets `status: 'open'`
+  - `server/storage/recurringJobs.ts` - Updated to use `openSubStatusDefault`
+  - `server/routes/recurringJobs.ts` - Updated validation
+  - `client/src/pages/RecurringJobsPage.tsx` - Updated UI to use new field
+  - `tests/recurring-jobs.test.ts` - Updated test data
+
+- **Migration**: `migrations/2026_01_27_rename_status_default_to_open_sub_status_default.sql`
+  - Renames column from `status_default` to `open_sub_status_default`
+  - Converts "open" values to NULL
+  - Removes NOT NULL constraint (sub-status is optional)
+
+### Refactored
+
+#### Code Deduplication
+- **Removed duplicate `getJobStatusDisplay` from Jobs.tsx** - The local function (63 lines) was a duplicate of the one in `jobUtils.ts`. Now imports from `@/components/job/jobUtils` instead. ([Jobs.tsx:83-145 removed])
+
+#### Optimistic Locking + Completion Desync Fix
+
+- **Removed all `version ?? 0` fallbacks** - No more silently inventing version 0:
+  - Client sends actual version (undefined if missing)
+  - Server rejects with 409 VERSION_NOT_INITIALIZED if version is null
+
+- **Added VERSION_NOT_INITIALIZED error** in `server/domain/scheduling.ts`:
+  - New `VersionNotInitializedError` class (statusCode: 409, code: VERSION_NOT_INITIALIZED)
+  - `assertVersionMatch()` now throws this error for null/undefined versions
+
+- **Version check on job completion flow**:
+  - `POST /api/jobs/:id/status` now requires `version` in request body
+  - Rejects VERSION_MISMATCH if versions don't match
+  - Rejects VERSION_NOT_INITIALIZED if job has null version
+  - On success: status updated, version incremented atomically
+
+- **Initialized all job versions in DB**:
+  - Migration sets `version = 1` for all jobs with NULL version
+  - Added NOT NULL DEFAULT 1 constraint to jobs.version column
+  - Schema updated: `version: integer("version").notNull().default(1)`
+
+- **Files updated**:
+  - `client/src/hooks/useCalendarDnD.ts` - Removed `assignment.version ?? 0` (2 occurrences)
+  - `client/src/components/JobDetailDialog.tsx` - Removed `assignment.version ?? 0` (3 occurrences)
+  - `client/src/components/ClientDetailDialog.tsx` - Removed `assignment.version ?? 0` (2 occurrences)
+  - `client/src/components/calendar/ResizableJobCard.tsx` - Removed `assignment.version ?? 1`
+  - `server/domain/scheduling.ts` - Added `VersionNotInitializedError`, updated `assertVersionMatch()`
+  - `server/routes/calendar.ts` - Response version fallback changed to 1 (post-migration safe)
+  - `server/routes/jobs.ts` - Added version to statusUpdateSchema, added version check
+  - `server/storage/calendar.ts` - Updated version checks to throw VERSION_NOT_INITIALIZED
+  - `shared/schema.ts` - Changed jobs.version default from 0 to 1
+
+- **Migration**: `migrations/2026_01_27_initialize_job_versions.sql`
+  - Sets version = 1 for all NULL versions
+  - Adds NOT NULL DEFAULT 1 constraint
+
+- **Removed ALL version response fallbacks** in `server/routes/calendar.ts`:
+  - `transformToDto()`: Changed `(job as any).version ?? 1` → `job.version`
+  - Schedule/reschedule/unschedule responses: Changed `result.version ?? 1` → `result.version`
+  - DTO type `CalendarAssignmentWithDetails` already has `version: number` (non-optional)
+  - Storage selects include `version: jobs.version` in all queries
+
+- **Removed legacy completion API surface**:
+  - Deleted `completeAssignment()` method from `server/storage/calendar.ts`
+  - Removed `completeCalendarAssignment` from `IStorage` interface and bindings in `server/storage/index.ts`
+  - Canonical completion path: `POST /api/jobs/:id/status` with version check
+  - Uses `jobRepository.updateJobStatusWithEvent()` for atomic status + audit
+
+- **Added GIN index for technician array queries** (performance):
+  - Migration: `migrations/2026_01_27_add_gin_index_assigned_technician_ids.sql`
+  - Creates `idx_jobs_assigned_technician_ids_gin` using GIN operator class
+  - Optimizes array containment queries (@>, &&) for technician-based calendar filtering
+
+- **Canonicalized `isJobScheduled` predicate**:
+  - Canonical truth: `scheduledStart IS NOT NULL` (exported from `shared/schema.ts`)
+  - Updated `client/src/pages/LocationDetailPage.tsx` to use `isJobScheduled(j)` instead of `j.scheduledStart != null`
+  - Updated `client/src/pages/ClientDetailPage.tsx` to use `isJobScheduled(job)` in all scheduled checks
+
+### Fixed
+
+#### Calendar & Scheduling
+- **VERSION_MISMATCH (409) on drag-and-drop scheduling** - Multiple fixes:
+  1. Server now returns explicit `jobVersion` field in `/api/calendar/unscheduled` response
+  2. Client eliminated all unsafe `version ?? 0` fallbacks (14 occurrences removed)
+  3. Added `requireJobVersion()` and `requireAssignmentVersion()` guard functions that validate version is a finite number, show toast and refetch if missing
+  4. Auto-retry logic fetches fresh version and retries once on 409 errors
+  5. Detailed diagnostics logging for debugging version conflicts
+  ([Calendar.tsx], [useCalendarDnD.ts], [calendar.ts])
+
+- **All-day row overlapping timed slots in week view** - Created new `AllDayRow` component with dynamic height calculation. Row now grows based on content (min 64px, max 200px) instead of fixed 84px, preventing overlap with timed grid below. ([CalendarGridWeek.tsx])
+
+#### Job Detail Dialog
+- **Split schedule UI causing confusion** - Removed view/edit mode split. Schedule editor is now always visible inline for faster scheduling. Removed conflicting header "Reschedule" popover. ([JobDetailDialog.tsx])
+
+- **Date picker flicker** - Eliminated by removing duplicate Reschedule popover that shared focus with schedule section picker.
+
+- **All-day Save button disabled** - Fixed by ensuring `selectedDate` defaults to today for unscheduled jobs.
+
+- **Delete Job deleting calendar assignment instead of job** - Fixed `deleteJobMutation` to call `DELETE /api/jobs/:jobId` instead of `/api/calendar/assignments/:id`. Job deletion now properly soft-deletes the job record. ([JobDetailDialog.tsx])
+
+- **Status mismatch between Calendar and Jobs list** - Added "jobs" to query invalidation groups for all scheduling mutations (`toggleComplete`, `updateDate`, `updateSchedule`, `unscheduleJob`, `deleteJobMutation`) so both views stay synchronized.
+
+### Changed
+
+- **Query invalidation** - Scheduling mutations now invalidate both calendar and jobs query groups for consistency.
+- **useCalendarDnD** - Now exports `invalidateCalendarQueries` helper for use in Calendar.tsx.
+
+#### Canonical Scheduling Model (MODEL A) - Phase 1 Steps 2 & 2.5 Complete
+
+- **MODEL A: Timestamp Canonical** - All scheduled jobs now have `scheduledStart IS NOT NULL`:
+  - Timed events: `scheduledStart` = actual start time, `scheduledEnd` = actual end time
+  - All-day events: `scheduledStart` = midnight (00:00:00), `scheduledEnd` = 23:59:59
+  - `isAllDay` is now a **display flag only**, NOT a scheduling determinant
+  - Canonical predicate: `isJobScheduled(job) = scheduledStart IS NOT NULL`
+
+- **Removed old null invariant** - Previously, all-day events had `scheduledStart = NULL`. This caused:
+  - All-day events missing from calendar range queries (invisible in calendar)
+  - Inconsistent scheduling predicates across codebase
+  - Now fixed: all-day events always have midnight timestamps
+
+- **New invariant helper** - `assertAllDayTimestampInvariant(job)` validates:
+  - All-day events have midnight `scheduledStart`
+  - All-day events have 23:59:59 `scheduledEnd` (or next-day 00:00:00)
+  - Timed events have `scheduledEnd > scheduledStart`
+
+- **Files updated for MODEL A**:
+  - `shared/schema.ts` - Canonical `isJobScheduled()` only checks `scheduledStart != null`
+  - `shared/types/calendar.ts` - Updated CalendarAssignmentDto documentation
+  - `server/storage/calendar.ts` - All write functions set midnight for all-day
+  - `server/routes/calendar.ts` - API returns timestamps for all-day (not null)
+  - `server/domain/scheduling.ts` - Added `assertAllDayTimestampInvariant()`
+  - `client/src/components/calendar/calendarUtils.ts` - Updated normalization docs
+  - `client/src/lib/calendarDiagnostics.ts` - Updated invariant checks
+
+#### Job Status Model (BREAKING) - Phase 1 Step 1 Complete
+
+- **Normalized job status to 4 lifecycle values** - Replaced 12+ status values with exactly 4:
+  - `open` - Active job that can be worked on
+  - `completed` - Work finished (may need invoicing)
+  - `invoiced` - Invoice created (locked for billing)
+  - `archived` - Historical archive (includes canceled jobs)
+
+- **Derived states instead of status values** - "scheduled" and "assigned" are now derived from fields:
+  - `isJobScheduled(job)` - true if `scheduledStart IS NOT NULL` (MODEL A: all-day events have midnight timestamps)
+  - `isJobAssigned(job)` - true if `primaryTechnicianId IS NOT NULL OR assignedTechnicianIds.length > 0`
+
+- **Workflow sub-status for open jobs** - New `openSubStatus` column (only valid when `status = 'open'`):
+  - `null` - Default, no special workflow state
+  - `in_progress` - Work actively being performed
+  - `on_hold` - Job is blocked (requires holdReason)
+  - `on_route` - Technician traveling to job site
+  - `needs_review` - Needs supervisor/manager review
+
+- **Migration mapping**:
+  - `assigned`, `unscheduled`, `scheduled` → `open` (now derived)
+  - `in_progress`, `on_hold` → `open` + appropriate `openSubStatus`
+  - `action_required` → `open` + `openSubStatus = 'needs_review'`
+  - `requires_invoicing` → `completed`
+  - `closed`, `canceled`, `cancelled` → `archived`
+
+- **Runtime Guard Added** - `assertNormalizedJobStatus()` function in `server/schemas.ts` throws immediately on invalid status values. Use in any code path that persists or transforms job status.
+
+- **Legacy Status Removal (13 files updated)**:
+  - `server/storage/jobs.ts` - Removed `in_progress`, `requires_invoicing`, `closed` checks
+  - `server/storage/dashboard.ts` - Replaced `CLOSED_STATUSES` array with `TERMINAL_STATUSES`
+  - `server/storage/admin.ts` - Renamed `actionRequiredCount` → `onHoldCount`
+  - `server/storage/calendar.ts` - Removed `scheduled`/`assigned` status derivation
+  - `server/storage/customerCompanies.ts` - Simplified to `status === "open"` filter
+  - `server/routes/admin.ts` - Rewrote scheduling health checks
+  - `server/routes/reports.ts` - Updated `action_required` queries to `needs_review`
+  - `server/routes/clients.ts` - Simplified open jobs filter
+  - `server/scripts/schedulingSanityCheck.ts` - Complete rewrite
+  - `client/src/components/job/jobUtils.ts` - Complete rewrite
+  - `client/src/pages/Jobs.tsx` - Updated filter types
+  - `client/src/lib/jobScheduling.ts` - Removed `scheduled` status assignment
+
+See `docs/audit/phase1_step1_legacy_status_removals.md` for detailed report.
+
+### Added
+
+- `logVersionMismatch()` function in calendarDiagnostics.ts for detailed 409 error logging
+- `fetchFreshJobVersion()` helper in useCalendarDnD.ts for auto-retry logic
+- `_isRetry` field in CreateAssignmentParams and UpdateAssignmentParams to prevent infinite retry loops
+- `AllDayRow` component in CalendarGridWeek.tsx with dynamic height calculation
+- `openSubStatus` column in jobs table with CHECK constraint enforcing invariant
+- `openSubStatusEnum` in server/schemas.ts for Zod validation
+- `normalizeJobStatus()` function in shared/schema.ts to map legacy values
+- `deriveOpenSubStatus()` function in shared/schema.ts for migration
+- `isJobScheduled()` and `isJobAssigned()` helper functions in shared/schema.ts
+- Database migration: `migrations/2026_01_26_normalize_job_status.sql`
+
+---
+
+## Version History
+
+_Previous versions were not tracked in this changelog. See git history for details._

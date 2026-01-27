@@ -6,10 +6,11 @@ import {
   updateJobSchema,
   insertRecurringJobSeriesSchema,
   insertRecurringJobPhaseSchema,
+  normalizeJobStatus,
 } from "@shared/schema";
 import { assertJobStatusTransition } from "../statusRules";
-import { jobStatusEnum } from "../schemas";
-import type { JobStatus } from "../schemas";
+import { jobStatusEnum, holdReasonEnum, openSubStatusEnum, legacyJobStatusEnum } from "../schemas";
+import type { JobStatus, OpenSubStatus } from "../schemas";
 import { requireRole } from "../auth/requireRole";
 import { requireAuth } from "../auth/requireAuth";
 import { MANAGER_ROLES, TECH_ROLES } from "../auth/roles";
@@ -18,6 +19,18 @@ import { paginated, paginatedCompat } from "../utils/paginatedResponse";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
+import {
+  applyJobSchedulingPatch,
+  isSchedulingPatch,
+  type SchedulingPatchIntent,
+} from "../domain/scheduling";
+import { assertCanEditSchedule } from "../guards/schedulingPermissions";
+import {
+  LifecycleTransitionError,
+  LIFECYCLE_ROLES,
+  type LifecycleIntent,
+  type TransitionActor,
+} from "../domain/jobLifecycle";
 
 const router = Router();
 
@@ -28,18 +41,34 @@ const router = Router();
  */
 
 // GET /api/jobs - List all jobs with pagination
+// Supports filters: status, technicianId, search, scheduledDate (YYYY-MM-DD for single day)
 router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
-  const pagination = parsePagination(req.query);
+  // Use lenient pagination to support dashboard queries that only send limit
+  const { params: pagination } = parsePaginationLenient(req.query);
 
   const status = req.query.status ? String(req.query.status) : undefined;
   const technicianId = req.query.technicianId ? String(req.query.technicianId) : undefined;
   const search = req.query.search ? String(req.query.search) : undefined;
 
+  // Support scheduledDate param (YYYY-MM-DD) for filtering jobs on a specific date
+  // Converts to startDate/endDate range for storage layer
+  let startDate: string | undefined;
+  let endDate: string | undefined;
+
+  if (req.query.scheduledDate) {
+    const dateStr = String(req.query.scheduledDate);
+    // Set startDate to beginning of day, endDate to end of day
+    startDate = `${dateStr}T00:00:00.000Z`;
+    endDate = `${dateStr}T23:59:59.999Z`;
+  }
+
   const result = await storage.getJobs(companyId, {
     status,
     technicianId,
     search,
+    startDate,
+    endDate,
   }, pagination);
 
   res.json(paginated(result.items, result.meta));
@@ -66,23 +95,73 @@ router.get("/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
 }));
 
 // POST /api/jobs - Create new job
+// SCHEDULING CONSOLIDATION: If scheduling fields provided, route through applyJobSchedulingPatch
 router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
 
   const parsed = validateSchema(insertJobSchema, req.body);
-  const job = await storage.createJob(companyId, {
+
+  // Build job data with defaults
+  const jobData: Record<string, unknown> = {
     ...parsed,
-    status: parsed.status || "draft",
     priority: parsed.priority || "medium",
     jobType: parsed.jobType || "maintenance",
-  });
+  };
+
+  // SCHEDULING CONSOLIDATION: If scheduling fields are provided, use domain logic
+  if (isSchedulingPatch(parsed)) {
+    // Build scheduling patch intent from parsed data
+    const patchIntent: SchedulingPatchIntent = {};
+
+    if (parsed.scheduledStart !== undefined) {
+      patchIntent.scheduledStart = parsed.scheduledStart ? new Date(parsed.scheduledStart) : null;
+    }
+    if (parsed.scheduledEnd !== undefined) {
+      patchIntent.scheduledEnd = parsed.scheduledEnd ? new Date(parsed.scheduledEnd) : null;
+    }
+    if (parsed.isAllDay !== undefined) {
+      patchIntent.isAllDay = parsed.isAllDay;
+    }
+    if (parsed.durationMinutes !== undefined) {
+      patchIntent.durationMinutes = parsed.durationMinutes;
+    }
+    // If status is explicitly provided, include it (will be normalized/derived)
+    if (parsed.status !== undefined) {
+      patchIntent.status = parsed.status;
+    }
+
+    // Apply consolidated scheduling patch (normalizes fields, derives status)
+    // For new jobs, existingJob is null
+    const schedulingResult = applyJobSchedulingPatch(
+      null, // No existing job
+      patchIntent,
+      "route:jobs:create"
+    );
+
+    // Merge scheduling result into job data
+    jobData.scheduledStart = schedulingResult.scheduledStart;
+    jobData.scheduledEnd = schedulingResult.scheduledEnd;
+    jobData.isAllDay = schedulingResult.isAllDay;
+    jobData.status = schedulingResult.status;
+
+    // Remove durationMinutes from job data (it's computed, not stored)
+    delete jobData.durationMinutes;
+  } else {
+    // No scheduling fields - just normalize status
+    const rawStatus = parsed.status || "open";
+    jobData.status = normalizeJobStatus(rawStatus);
+  }
+
+  const job = await storage.createJob(companyId, jobData as any);
 
   res.status(201).json(job);
 }));
 
 // PATCH /api/jobs/:id - Update job with optimistic locking
+// SCHEDULING CONSOLIDATION: All scheduling field updates route through applyJobSchedulingPatch
 router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
+  const jobId = req.params.id;
 
   // Extract version from body before validation
   const { version, ...data } = req.body;
@@ -90,23 +169,86 @@ router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authed
 
   // Convert date strings to Date objects for storage
   const updates: Record<string, unknown> = { ...parsed };
+
+  // Handle non-scheduling date fields
   if (parsed.actualStart !== undefined) {
     updates.actualStart = parsed.actualStart ? new Date(parsed.actualStart) : null;
   }
   if (parsed.actualEnd !== undefined) {
     updates.actualEnd = parsed.actualEnd ? new Date(parsed.actualEnd) : null;
   }
-  if (parsed.scheduledStart !== undefined) {
-    updates.scheduledStart = parsed.scheduledStart ? new Date(parsed.scheduledStart) : null;
-  }
-  if (parsed.scheduledEnd !== undefined) {
-    updates.scheduledEnd = parsed.scheduledEnd ? new Date(parsed.scheduledEnd) : null;
+
+  // SCHEDULING CONSOLIDATION: If patch touches scheduling fields, route through domain logic
+  if (isSchedulingPatch(parsed)) {
+    // RBAC: Check scheduling permission BEFORE any work
+    assertCanEditSchedule(req.user);
+
+    // REQUIRE VERSION for scheduling updates
+    if (version === undefined) {
+      return res.status(400).json({
+        error: "Version is required for scheduling updates. Refresh and try again.",
+        code: "VERSION_REQUIRED",
+      });
+    }
+
+    // Load existing job to check terminal status and derive status
+    const existingJob = await storage.getJob(companyId, jobId);
+    if (!existingJob) {
+      throw createError(404, "Job not found");
+    }
+
+    // Build scheduling patch intent from parsed data
+    const patchIntent: SchedulingPatchIntent = {};
+    if (parsed.scheduledStart !== undefined) {
+      patchIntent.scheduledStart = parsed.scheduledStart ? new Date(parsed.scheduledStart) : null;
+    }
+    if (parsed.scheduledEnd !== undefined) {
+      patchIntent.scheduledEnd = parsed.scheduledEnd ? new Date(parsed.scheduledEnd) : null;
+    }
+    if (parsed.isAllDay !== undefined) {
+      patchIntent.isAllDay = parsed.isAllDay;
+    }
+    if (parsed.durationMinutes !== undefined) {
+      patchIntent.durationMinutes = parsed.durationMinutes;
+    }
+    // If status is explicitly provided, include it (will be normalized)
+    if (parsed.status !== undefined) {
+      patchIntent.status = parsed.status;
+    }
+    // Include expected version for optimistic locking
+    if (version !== undefined) {
+      patchIntent.expectedVersion = version;
+    }
+
+    // Apply consolidated scheduling patch (enforces terminal immutability, normalizes, derives status)
+    const schedulingResult = applyJobSchedulingPatch(
+      existingJob,
+      patchIntent,
+      "route:jobs:update"
+    );
+
+    // Merge scheduling result into updates
+    updates.scheduledStart = schedulingResult.scheduledStart;
+    updates.scheduledEnd = schedulingResult.scheduledEnd;
+    updates.isAllDay = schedulingResult.isAllDay;
+    updates.status = schedulingResult.status;
+
+    // Remove durationMinutes from updates (it's a derived/computed field, not stored directly)
+    delete updates.durationMinutes;
+  } else {
+    // No scheduling fields - just normalize status if provided
+    if (parsed.status !== undefined) {
+      updates.status = normalizeJobStatus(parsed.status);
+    }
   }
 
   try {
-    // Pass version to storage (can be undefined)
+    // Pass version to storage with isSchedulingUpdate flag
+    // Version only increments for scheduling updates (Task D)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const updated = await storage.updateJob(companyId, req.params.id, version, updates as any);
+    const updated = await storage.updateJob(companyId, jobId, version, updates as any, {
+      isSchedulingUpdate: isSchedulingPatch(parsed),
+    });
 
     if (!updated) {
       throw createError(404, "Job not found");
@@ -119,6 +261,13 @@ router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authed
       return res.status(409).json({
         error: error.message,
         code: 'VERSION_MISMATCH'
+      });
+    }
+    // Re-throw terminal immutability errors with proper status
+    if (error.name === 'TerminalJobImmutableError') {
+      return res.status(error.statusCode || 400).json({
+        error: error.message,
+        code: error.code || 'TERMINAL_JOB_IMMUTABLE'
       });
     }
     throw error;
@@ -142,15 +291,22 @@ router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authe
  */
 
 const statusUpdateSchema = z.object({
-  status: jobStatusEnum,
-  // Action required fields (required when status === "action_required")
-  actionRequiredReason: z.string().nullable().optional(),
-  actionRequiredNotes: z.string().nullable().optional(),
+  // Accept both new lifecycle status and legacy status values
+  status: legacyJobStatusEnum,
+  // Workflow sub-status (only valid when status = 'open')
+  openSubStatus: openSubStatusEnum.nullable().optional(),
+  // Hold state fields (required when openSubStatus === "on_hold")
+  holdReason: holdReasonEnum.nullable().optional(),
+  holdNotes: z.string().nullable().optional(),
   nextActionDate: z.string().nullable().optional(), // ISO date string (YYYY-MM-DD)
+  // TASK 3: Require version for optimistic locking on status changes
+  version: z.number().int().nonnegative(),
 });
 
-// Statuses that technicians are allowed to set (field work only)
-const TECH_ALLOWED_STATUSES = ["en_route", "on_site", "in_progress", "action_required", "completed"];
+// Statuses/sub-statuses that technicians are allowed to set (field work only)
+// Technicians can: set workflow sub-statuses (in_progress, on_hold) or complete jobs
+const TECH_ALLOWED_LIFECYCLE_STATUSES: JobStatus[] = ["open", "completed"];
+const TECH_ALLOWED_SUB_STATUSES: OpenSubStatus[] = ["in_progress", "on_hold"];
 
 // POST /api/jobs/:id/status - Update job status
 // Uses requireAuth so both technicians and office users can access
@@ -168,61 +324,113 @@ router.post("/:id/status", requireAuth, asyncHandler(async (req: AuthedRequest, 
     throw createError(403, "You don't have permission to update job status.");
   }
 
-  const { status, actionRequiredReason, actionRequiredNotes, nextActionDate } = validateSchema(statusUpdateSchema, req.body);
+  const parsed = validateSchema(statusUpdateSchema, req.body);
+  const { holdReason, holdNotes, nextActionDate } = parsed;
 
-  // Restrict technicians to field work statuses only
-  if (isTechUser && !TECH_ALLOWED_STATUSES.includes(status)) {
-    throw createError(403, "You don't have permission to set this status. Technicians can only set: en_route, on_site, in_progress, action_required, or completed.");
+  // Map legacy status values to new model:
+  // - "in_progress" -> status="open", openSubStatus="in_progress"
+  // - "on_hold" -> status="open", openSubStatus="on_hold"
+  // - Other values -> normalize to 4-value lifecycle
+  let status: JobStatus;
+  let openSubStatus: OpenSubStatus | null = parsed.openSubStatus ?? null;
+
+  const rawStatus = parsed.status;
+  if (rawStatus === "in_progress") {
+    status = "open";
+    openSubStatus = "in_progress";
+  } else if (rawStatus === "on_hold") {
+    status = "open";
+    openSubStatus = "on_hold";
+  } else {
+    status = normalizeJobStatus(rawStatus);
+    // Clear openSubStatus when transitioning away from 'open'
+    if (status !== "open") {
+      openSubStatus = null;
+    }
+  }
+
+  // Restrict technicians to allowed operations
+  if (isTechUser) {
+    const isAllowedLifecycle = TECH_ALLOWED_LIFECYCLE_STATUSES.includes(status);
+    const isAllowedSubStatus = openSubStatus === null || TECH_ALLOWED_SUB_STATUSES.includes(openSubStatus);
+    if (!isAllowedLifecycle || !isAllowedSubStatus) {
+      throw createError(403, "You don't have permission to set this status. Technicians can only set: open (with in_progress/on_hold), or completed.");
+    }
   }
 
   const existing = await storage.getJob(companyId, req.params.id);
   if (!existing) throw createError(404, "Job not found");
 
-  const fromStatus = existing.status;
+  // TASK 3: Version check for optimistic locking on status changes
+  const expectedVersion = parsed.version;
+  const actualVersion = existing.version;
 
-  // NO-OP DETECTION: If status is unchanged and no fields are changing, return early without event
-  if (fromStatus === status) {
-    // For action_required, check if any fields are actually changing
-    if (status === "action_required") {
-      const reasonChanged = actionRequiredReason && actionRequiredReason.trim() !== existing.actionRequiredReason;
-      const notesChanged = actionRequiredNotes !== undefined && (actionRequiredNotes || null) !== existing.actionRequiredNotes;
+  // Reject VERSION_NOT_INITIALIZED if job has null version
+  if (actualVersion === null || actualVersion === undefined) {
+    return res.status(409).json({
+      error: `Job version is not initialized. Please refresh and try again. (Job ID: ${req.params.id})`,
+      code: "VERSION_NOT_INITIALIZED",
+    });
+  }
+
+  // Reject VERSION_MISMATCH if versions don't match
+  if (expectedVersion !== actualVersion) {
+    return res.status(409).json({
+      error: `Job was modified by another user. Please refresh and try again. (Expected version: ${expectedVersion}, Actual version: ${actualVersion})`,
+      code: "VERSION_MISMATCH",
+    });
+  }
+
+  // Normalize existing status for comparison
+  const fromStatus = normalizeJobStatus(existing.status);
+  // openSubStatus may not be in the type yet (schema migration pending), so use type assertion
+  const fromOpenSubStatus = (existing as { openSubStatus?: string | null }).openSubStatus as OpenSubStatus | null ?? null;
+
+  // NO-OP DETECTION: If status/openSubStatus unchanged and no fields changing, return early
+  const statusUnchanged = fromStatus === status && fromOpenSubStatus === openSubStatus;
+  if (statusUnchanged) {
+    // For on_hold sub-status, check if any fields are actually changing
+    if (openSubStatus === "on_hold") {
+      const reasonChanged = holdReason && holdReason !== existing.holdReason;
+      const notesChanged = holdNotes !== undefined && (holdNotes || null) !== existing.holdNotes;
       const dateChanged = nextActionDate !== undefined && nextActionDate !== existing.nextActionDate;
 
       if (!reasonChanged && !notesChanged && !dateChanged) {
-        // No actual changes - return existing job without creating event
         return res.json(existing);
       }
     } else {
-      // For non-action_required statuses, same status = no-op
       return res.json(existing);
     }
   }
 
-  assertJobStatusTransition(fromStatus as JobStatus, status as JobStatus);
+  // Validate lifecycle status transition (4-value model)
+  if (fromStatus !== status) {
+    assertJobStatusTransition(fromStatus as JobStatus, status);
+  }
 
-  // Build update payload based on status
-  const additionalUpdates: Record<string, unknown> = {};
+  // Build update payload based on target state
+  const additionalUpdates: Record<string, unknown> = {
+    openSubStatus,
+  };
 
-  if (status === "action_required") {
-    // Require actionRequiredReason when transitioning to action_required
-    if (!actionRequiredReason || actionRequiredReason.trim() === "") {
-      throw createError(400, "actionRequiredReason is required when setting status to action_required");
+  if (openSubStatus === "on_hold") {
+    // Require holdReason when transitioning to on_hold
+    if (!holdReason) {
+      throw createError(400, "holdReason is required when setting openSubStatus to on_hold");
     }
-    additionalUpdates.actionRequiredReason = actionRequiredReason.trim();
-    additionalUpdates.actionRequiredNotes = actionRequiredNotes?.trim() || null;
+    additionalUpdates.holdReason = holdReason;
+    additionalUpdates.holdNotes = holdNotes?.trim() || null;
     additionalUpdates.nextActionDate = nextActionDate || null;
-    // Set actionRequiredAt timestamp for aging (only if transitioning INTO action_required)
-    if (fromStatus !== "action_required") {
-      additionalUpdates.actionRequiredAt = new Date();
-      additionalUpdates.actionRequiredEscalatedAt = null; // Clear escalation when entering action_required fresh
+    // Set onHoldAt timestamp for aging (only if transitioning INTO on_hold)
+    if (fromOpenSubStatus !== "on_hold") {
+      additionalUpdates.onHoldAt = new Date();
     }
   } else {
-    // Clear action_required fields when transitioning away from action_required
-    additionalUpdates.actionRequiredReason = null;
-    additionalUpdates.actionRequiredNotes = null;
+    // Clear on_hold fields when transitioning away from on_hold
+    additionalUpdates.holdReason = null;
+    additionalUpdates.holdNotes = null;
     additionalUpdates.nextActionDate = null;
-    additionalUpdates.actionRequiredAt = null;
-    additionalUpdates.actionRequiredEscalatedAt = null;
+    additionalUpdates.onHoldAt = null;
   }
 
   // Atomically update job status and create event in a single transaction
@@ -230,8 +438,8 @@ router.post("/:id/status", requireAuth, asyncHandler(async (req: AuthedRequest, 
     fromStatus,
     toStatus: status,
     changedBy: userId || null,
-    note: status === "action_required" ? actionRequiredReason : null,
-    meta: status === "action_required" ? { reason: actionRequiredReason, notes: actionRequiredNotes, nextActionDate } : null,
+    note: openSubStatus === "on_hold" ? `On hold: ${holdReason}` : null,
+    meta: openSubStatus === "on_hold" ? { holdReason, holdNotes, nextActionDate, openSubStatus } : { openSubStatus },
     additionalUpdates,
   });
 
@@ -254,125 +462,85 @@ import { CLOSEABLE_STATES } from "../statusRules";
 
 const closeJobSchema = z.object({
   mode: z.enum(["archive", "invoice_later", "invoice_now"]),
+  version: z.number().int().nonnegative(),
 }).strict(); // PHASE A.1: Reject unknown keys
 
 // POST /api/jobs/:id/close - Close job with specified mode
+// LIFECYCLE HARDENING: Uses transitionJobStatus for RBAC, version check, and audit
 router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   const jobId = req.params.id;
   const userId = req.user?.id || null;
+  const userRole = req.user?.role || "unknown";
 
-  const { mode } = validateSchema(closeJobSchema, req.body);
+  const { mode, version } = validateSchema(closeJobSchema, req.body);
 
-  // Fetch the job
-  const existing = await storage.getJob(companyId, jobId);
-  if (!existing) throw createError(404, "Job not found");
+  // Build actor for RBAC check
+  const actor: TransitionActor = {
+    userId: userId || "unknown",
+    role: userRole,
+  };
 
-  // Capture original status BEFORE any transitions (for undo support)
-  const originalStatus = existing.status as JobStatus;
-
-  // Determine intermediate and final statuses based on mode
-  const needsIntermediateTransition = CLOSEABLE_STATES.includes(originalStatus);
-  const intermediateStatus: JobStatus = needsIntermediateTransition ? "completed" : originalStatus;
-
-  // Validate transitions upfront
-  if (needsIntermediateTransition) {
-    assertJobStatusTransition(originalStatus, "completed");
-  }
-
-  let finalStatus: JobStatus;
+  // For invoice_now mode, create invoice BEFORE lifecycle transition
   let createdInvoice = null;
-  const enableUndo = mode === "archive" || mode === "invoice_later";
-
-  // Determine final status and handle invoice_now mode's invoice creation first
-  switch (mode) {
-    case "archive":
-      finalStatus = "archived";
-      assertJobStatusTransition(intermediateStatus, finalStatus);
-      break;
-    case "invoice_later":
-      finalStatus = "requires_invoicing";
-      assertJobStatusTransition(intermediateStatus, finalStatus);
-      break;
-    case "invoice_now":
-      // Create invoice BEFORE status transitions (separate from status transaction)
-      try {
-        // PHASE A.1: Pass creation source to satisfy invoice creation guard
-        const invoiceResult = await storage.createInvoiceFromJob(
-          companyId,
-          jobId,
-          { markJobCompleted: false },
-          "JOB_CLOSE_ROUTE"
-        );
-        createdInvoice = invoiceResult.invoice;
-        await storage.refreshInvoiceFromJob(companyId, createdInvoice.id);
-      } catch (error: any) {
-        if (error.message?.includes("already has an invoice")) {
-          throw createError(400, "Job already has an invoice linked");
-        }
-        throw error;
+  if (mode === "invoice_now") {
+    try {
+      // PHASE A.1: Pass creation source to satisfy invoice creation guard
+      const invoiceResult = await storage.createInvoiceFromJob(
+        companyId,
+        jobId,
+        { markJobCompleted: false },
+        "JOB_CLOSE_ROUTE"
+      );
+      createdInvoice = invoiceResult.invoice;
+      await storage.refreshInvoiceFromJob(companyId, createdInvoice.id);
+    } catch (error: any) {
+      if (error.message?.includes("already has an invoice")) {
+        throw createError(400, "Job already has an invoice linked");
       }
-      finalStatus = "invoiced";
-      assertJobStatusTransition(intermediateStatus, finalStatus);
-      break;
-    default:
-      throw createError(400, `Invalid close mode: ${mode}`);
+      throw error;
+    }
   }
 
-  // Build transitions array for atomic update
-  const transitions: Array<{
-    fromStatus: string;
-    toStatus: string;
-    note?: string | null;
-    meta?: Record<string, unknown> | null;
-    additionalUpdates?: Record<string, unknown>;
-  }> = [];
+  // Build lifecycle intent based on mode
+  const intent: LifecycleIntent = {
+    type: "CLOSE_JOB",
+    mode,
+    invoiceId: createdInvoice?.id,
+  };
 
-  // First transition: original -> completed (if needed)
-  // This is an auto-step event (system-generated) that should be collapsed in timeline UI
-  if (needsIntermediateTransition) {
-    transitions.push({
-      fromStatus: originalStatus,
-      toStatus: "completed",
-      note: `Closed via ${mode}`,
-      meta: { system: true, via: "close", step: "auto_completed", mode },
-      additionalUpdates: {
-        actionRequiredReason: null,
-        actionRequiredNotes: null,
-        nextActionDate: null,
-        actionRequiredAt: null,
-        actionRequiredEscalatedAt: null,
-      },
+  try {
+    // Execute lifecycle transition via domain + storage layer
+    // This enforces: RBAC, version checking, audit logging, schedule clearing
+    const updatedJob = await storage.transitionJobStatus(
+      companyId,
+      jobId,
+      version,
+      intent,
+      actor
+    );
+
+    res.json({
+      job: updatedJob,
+      invoice: createdInvoice,
     });
+  } catch (error: any) {
+    // Handle lifecycle errors
+    if (error instanceof LifecycleTransitionError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        code: error.code,
+      });
+    }
+    // Handle version mismatch
+    if (error.code === "VERSION_MISMATCH") {
+      return res.status(409).json({
+        error: error.message,
+        code: "VERSION_MISMATCH",
+      });
+    }
+    throw error;
   }
-
-  // Second transition: intermediate -> final
-  // This is the "real" close event visible in timeline
-  transitions.push({
-    fromStatus: intermediateStatus,
-    toStatus: finalStatus,
-    note: mode === "invoice_now" ? `Invoice ${createdInvoice?.invoiceNumber || "created"}` : null,
-    meta: { via: "close", mode, invoiceId: createdInvoice?.id || null },
-    additionalUpdates: {
-      previousStatus: enableUndo ? originalStatus : null,
-      closedAt: enableUndo ? new Date() : null,
-      closedBy: enableUndo ? userId : null,
-      ...(mode === "invoice_now" ? { invoiceId: createdInvoice?.id } : {}),
-    },
-  });
-
-  // Execute all transitions atomically
-  const updatedJob = await storage.updateJobStatusWithMultipleEvents(
-    companyId,
-    jobId,
-    transitions,
-    userId
-  );
-
-  res.json({
-    job: updatedJob,
-    invoice: createdInvoice,
-  });
 }));
 
 /**
@@ -386,47 +554,63 @@ router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
 import { REOPENABLE_STATES } from "../statusRules";
 
 const reopenJobSchema = z.object({
-  target: z.enum(["scheduled", "in_progress"]).optional(),
+  // Target openSubStatus when reopening (status always becomes "open")
+  targetOpenSubStatus: openSubStatusEnum.nullable().optional(),
+  version: z.number().int().nonnegative(),
 });
 
 // POST /api/jobs/:id/reopen - Reopen a closed job
+// LIFECYCLE HARDENING: Uses transitionJobStatus for RBAC, version check, and audit
+// In the new model, reopen always transitions to status="open" with optional openSubStatus
 router.post("/:id/reopen", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   const jobId = req.params.id;
   const userId = req.user?.id || null;
+  const userRole = req.user?.role || "unknown";
 
   const validated = validateSchema(reopenJobSchema, req.body);
-  const targetStatus: JobStatus = validated.target || "in_progress";
+  const targetOpenSubStatus = validated.targetOpenSubStatus ?? null;
 
-  // Fetch the job
-  const existing = await storage.getJob(companyId, jobId);
-  if (!existing) throw createError(404, "Job not found");
+  // Build actor for RBAC check
+  const actor: TransitionActor = {
+    userId: userId || "unknown",
+    role: userRole,
+  };
 
-  const currentStatus = existing.status as JobStatus;
+  // Build lifecycle intent - target is always "open" in the new 4-value model
+  const intent: LifecycleIntent = {
+    type: "REOPEN_JOB",
+    targetOpenSubStatus: targetOpenSubStatus as OpenSubStatus | undefined,
+  };
 
-  // Block reopening invoiced jobs
-  if (currentStatus === "invoiced") {
-    throw createError(400, "Job is invoiced. Void or credit the invoice before reopening.");
+  try {
+    // Execute lifecycle transition via domain + storage layer
+    const updatedJob = await storage.transitionJobStatus(
+      companyId,
+      jobId,
+      validated.version,
+      intent,
+      actor
+    );
+
+    res.json({ job: updatedJob });
+  } catch (error: any) {
+    // Handle lifecycle errors
+    if (error instanceof LifecycleTransitionError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        code: error.code,
+      });
+    }
+    // Handle version mismatch
+    if (error.code === "VERSION_MISMATCH") {
+      return res.status(409).json({
+        error: error.message,
+        code: "VERSION_MISMATCH",
+      });
+    }
+    throw error;
   }
-
-  // Check if job is in a reopenable state
-  if (!REOPENABLE_STATES.includes(currentStatus)) {
-    throw createError(400, `Cannot reopen job with status "${currentStatus}". Job must be completed, requires_invoicing, or archived.`);
-  }
-
-  // Validate the transition
-  assertJobStatusTransition(currentStatus, targetStatus);
-
-  // Atomically update status and log event
-  const updatedJob = await storage.updateJobStatusWithEvent(companyId, jobId, {
-    fromStatus: currentStatus,
-    toStatus: targetStatus,
-    changedBy: userId,
-    note: "Reopened job",
-    meta: { action: "reopen" },
-  });
-
-  res.json({ job: updatedJob });
 }));
 
 /**
@@ -437,10 +621,74 @@ router.post("/:id/reopen", requireRole(MANAGER_ROLES), asyncHandler(async (req: 
  * Blocked if job has been invoiced.
  */
 
-const UNDO_WINDOW_MS = 20 * 1000; // 20 seconds
+const undoCloseSchema = z.object({
+  version: z.number().int().nonnegative(),
+});
 
 // POST /api/jobs/:id/undo-close - Undo a recent job close
+// LIFECYCLE HARDENING: Uses transitionJobStatus for RBAC, version check, and audit
 router.post("/:id/undo-close", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const jobId = req.params.id;
+  const userId = req.user?.id || null;
+  const userRole = req.user?.role || "unknown";
+
+  const { version } = validateSchema(undoCloseSchema, req.body);
+
+  // Build actor for RBAC check
+  const actor: TransitionActor = {
+    userId: userId || "unknown",
+    role: userRole,
+  };
+
+  // Build lifecycle intent
+  const intent: LifecycleIntent = {
+    type: "UNDO_CLOSE",
+  };
+
+  try {
+    // Execute lifecycle transition via domain + storage layer
+    // Domain module checks undo window, previous status, and invoiced state
+    const updatedJob = await storage.transitionJobStatus(
+      companyId,
+      jobId,
+      version,
+      intent,
+      actor
+    );
+
+    res.json({ job: updatedJob });
+  } catch (error: any) {
+    // Handle lifecycle errors
+    if (error instanceof LifecycleTransitionError) {
+      return res.status(error.statusCode).json({
+        error: error.message,
+        code: error.code,
+      });
+    }
+    // Handle version mismatch
+    if (error.code === "VERSION_MISMATCH") {
+      return res.status(409).json({
+        error: error.message,
+        code: "VERSION_MISMATCH",
+      });
+    }
+    throw error;
+  }
+}));
+
+/**
+ * ----------------------------
+ * Travel Tracking
+ * ----------------------------
+ * Records travel timestamps for billing drive time.
+ * Travel tracking uses openSubStatus ("on_route", "in_progress") while status stays "open".
+ */
+
+import { isJobScheduled } from "@shared/schema";
+
+// POST /api/jobs/:id/start-travel - Record when technician starts traveling to job
+router.post("/:id/start-travel", requireAuth, asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   const jobId = req.params.id;
   const userId = req.user?.id || null;
@@ -449,40 +697,66 @@ router.post("/:id/undo-close", requireRole(MANAGER_ROLES), asyncHandler(async (r
   const existing = await storage.getJob(companyId, jobId);
   if (!existing) throw createError(404, "Job not found");
 
-  // Check if there's anything to undo
-  if (!existing.closedAt || !existing.previousStatus) {
-    throw createError(400, "Nothing to undo. Job was not recently closed or undo info is missing.");
+  // Only allow starting travel for scheduled, open jobs
+  if (existing.status !== "open" || !isJobScheduled(existing)) {
+    throw createError(400, "Can only start travel for scheduled open jobs.");
   }
 
-  // Check if undo window has expired
-  const closedAtTime = new Date(existing.closedAt).getTime();
-  const now = Date.now();
-  if (now - closedAtTime > UNDO_WINDOW_MS) {
-    throw createError(400, "Undo window expired. Job was closed more than 20 seconds ago.");
+  // Check if travel already started
+  if (existing.travelStartedAt) {
+    throw createError(400, "Travel has already been started for this job.");
   }
 
-  // Block undo if job is invoiced or has an invoice linked
-  if (existing.status === "invoiced" || existing.invoiceId) {
-    throw createError(400, "Cannot undo close after invoicing. Void or credit the invoice first.");
-  }
-
-  const currentStatus = existing.status as JobStatus;
-  const previousStatus = existing.previousStatus as JobStatus;
-
-  // Validate the transition back to previous status
-  assertJobStatusTransition(currentStatus, previousStatus);
-
-  // Atomically update status, clear undo info, and log event
+  // Record travel start time and set openSubStatus to "on_route"
   const updatedJob = await storage.updateJobStatusWithEvent(companyId, jobId, {
-    fromStatus: currentStatus,
-    toStatus: previousStatus,
+    fromStatus: "open",
+    toStatus: "open",
     changedBy: userId,
-    note: "Undo close",
-    meta: { action: "undo_close" },
+    note: "Started travel to job",
+    meta: { action: "start_travel", openSubStatus: "on_route" },
     additionalUpdates: {
-      previousStatus: null,
-      closedAt: null,
-      closedBy: null,
+      travelStartedAt: new Date(),
+      openSubStatus: "on_route",
+    },
+  });
+
+  res.json({ job: updatedJob });
+}));
+
+// POST /api/jobs/:id/arrive-on-site - Record when technician arrives at job site
+router.post("/:id/arrive-on-site", requireAuth, asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const jobId = req.params.id;
+  const userId = req.user?.id || null;
+
+  // Fetch the job
+  const existing = await storage.getJob(companyId, jobId);
+  if (!existing) throw createError(404, "Job not found");
+
+  // Allow arriving on site from scheduled open jobs
+  if (existing.status !== "open" || !isJobScheduled(existing)) {
+    throw createError(400, "Can only arrive on site for scheduled open jobs.");
+  }
+
+  // Check if already arrived
+  if (existing.arrivedOnSiteAt) {
+    throw createError(400, "Already marked as arrived on site.");
+  }
+
+  // Record arrival and transition to in_progress sub-status
+  const now = new Date();
+  const updatedJob = await storage.updateJobStatusWithEvent(companyId, jobId, {
+    fromStatus: "open",
+    toStatus: "open", // Status stays "open", workflow tracked via openSubStatus
+    changedBy: userId,
+    note: "Arrived on site",
+    meta: { action: "arrive_on_site", openSubStatus: "in_progress" },
+    additionalUpdates: {
+      arrivedOnSiteAt: now,
+      openSubStatus: "in_progress",
+      actualStart: now, // Also set actual start time
+      // If travel wasn't started, set it to arrival time (tech drove without clicking start)
+      travelStartedAt: existing.travelStartedAt || now,
     },
   });
 
@@ -491,81 +765,47 @@ router.post("/:id/undo-close", requireRole(MANAGER_ROLES), asyncHandler(async (r
 
 /**
  * ----------------------------
- * Action Required Escalation
+ * On Hold Management
  * ----------------------------
- * Marks an action_required job as escalated (one-time manual action)
+ * Update on_hold fields without changing openSubStatus
  */
 
-// POST /api/jobs/:id/mark-action-required-escalated - Mark job as escalated
-router.post("/:id/mark-action-required-escalated", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const companyId = req.companyId;
-  const jobId = req.params.id;
-  const userId = req.user?.id || null;
-
-  // Fetch the job
-  const existing = await storage.getJob(companyId, jobId);
-  if (!existing) throw createError(404, "Job not found");
-
-  // Only allow escalation for jobs in action_required status
-  if (existing.status !== "action_required") {
-    throw createError(400, "Job must be in action_required status to escalate.");
-  }
-
-  // Check if already escalated
-  if (existing.actionRequiredEscalatedAt) {
-    throw createError(400, "Job has already been escalated.");
-  }
-
-  // Atomically set escalation timestamp and log event
-  // Note: fromStatus and toStatus are the same since escalation doesn't change status
-  const updatedJob = await storage.updateJobStatusWithEvent(companyId, jobId, {
-    fromStatus: "action_required",
-    toStatus: "action_required",
-    changedBy: userId,
-    note: "Job escalated",
-    meta: { action: "escalate", escalated: true },
-    additionalUpdates: {
-      actionRequiredEscalatedAt: new Date(),
-    },
-  });
-
-  res.json({ job: updatedJob });
-}));
-
-// PATCH /api/jobs/:id/action-required - Update action required fields without changing status
-const actionRequiredUpdateSchema = z.object({
-  actionRequiredReason: z.string().optional(),
-  actionRequiredNotes: z.string().nullable().optional(),
+// PATCH /api/jobs/:id/on-hold - Update on_hold fields without changing openSubStatus
+const onHoldUpdateSchema = z.object({
+  holdReason: holdReasonEnum.optional(),
+  holdNotes: z.string().nullable().optional(),
   nextActionDate: z.string().nullable().optional(), // ISO date string (YYYY-MM-DD) or null
 });
 
-router.patch("/:id/action-required", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+router.patch("/:id/on-hold", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   const jobId = req.params.id;
   const userId = req.user?.id || null;
 
   // Validate payload
-  const payload = validateSchema(actionRequiredUpdateSchema, req.body);
+  const payload = validateSchema(onHoldUpdateSchema, req.body);
 
   // Fetch the job
   const existing = await storage.getJob(companyId, jobId);
   if (!existing) throw createError(404, "Job not found");
 
-  // Only allow updates for jobs in action_required status
-  if (existing.status !== "action_required") {
-    throw createError(400, "Job must be in action_required status to update action required fields.");
+  // Only allow updates for jobs in on_hold openSubStatus
+  // openSubStatus may not be in the type yet (schema migration pending), so use type assertion
+  const currentSubStatus = (existing as { openSubStatus?: string | null }).openSubStatus;
+  if (currentSubStatus !== "on_hold") {
+    throw createError(400, "Job must have openSubStatus='on_hold' to update hold fields.");
   }
 
   // Build the updates object
   const additionalUpdates: Record<string, unknown> = {};
   const changedFields: string[] = [];
 
-  if (payload.actionRequiredReason !== undefined) {
-    additionalUpdates.actionRequiredReason = payload.actionRequiredReason;
+  if (payload.holdReason !== undefined) {
+    additionalUpdates.holdReason = payload.holdReason;
     changedFields.push("reason");
   }
-  if (payload.actionRequiredNotes !== undefined) {
-    additionalUpdates.actionRequiredNotes = payload.actionRequiredNotes;
+  if (payload.holdNotes !== undefined) {
+    additionalUpdates.holdNotes = payload.holdNotes;
     changedFields.push("notes");
   }
   if (payload.nextActionDate !== undefined) {
@@ -578,13 +818,13 @@ router.patch("/:id/action-required", requireRole(MANAGER_ROLES), asyncHandler(as
     return res.json({ job: existing });
   }
 
-  // Atomically update fields and log event
+  // Atomically update fields and log event (status stays "open", openSubStatus stays "on_hold")
   const updatedJob = await storage.updateJobStatusWithEvent(companyId, jobId, {
-    fromStatus: "action_required",
-    toStatus: "action_required",
+    fromStatus: "open",
+    toStatus: "open",
     changedBy: userId,
-    note: `Updated action required fields: ${changedFields.join(", ")}`,
-    meta: { action: "update_action_required_fields", changedFields, ...payload },
+    note: `Updated hold fields: ${changedFields.join(", ")}`,
+    meta: { action: "update_hold_fields", changedFields, openSubStatus: "on_hold", ...payload },
     additionalUpdates,
   });
 
@@ -1081,6 +1321,32 @@ router.delete("/:jobId/admin/equipment/:jobEquipmentId", requireRole(MANAGER_ROL
   console.log(`[AdminOverride] User ${userId} deleted equipment ${jobEquipmentId} from invoiced job ${jobId}: ${reason}`);
 
   res.json({ success: true, _adminOverride: true, _reason: reason });
+}));
+
+/**
+ * ----------------------------
+ * Scheduling History (Audit Trail)
+ * ----------------------------
+ */
+
+// GET /api/jobs/:id/schedule-history - Get scheduling change history
+router.get("/:id/schedule-history", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const jobId = req.params.id;
+  const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 10, 1), 50);
+
+  // Verify job exists and belongs to tenant
+  const job = await storage.getJob(companyId, jobId);
+  if (!job) throw createError(404, "Job not found");
+
+  // Fetch schedule audit history
+  const history = await storage.getJobScheduleHistory(companyId, jobId, limit);
+
+  res.json({
+    jobId,
+    jobNumber: job.jobNumber,
+    history,
+  });
 }));
 
 export default router;

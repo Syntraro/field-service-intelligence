@@ -50,7 +50,7 @@ export function ClientDetailDialog({
   }, [assignment?.id]);
 
   const { data: technicians = [] } = useQuery<any[]>({
-    queryKey: ['/api/technicians'],
+    queryKey: ['/api/team/technicians'],
     enabled: open,
   });
 
@@ -59,58 +59,77 @@ export function ClientDetailDialog({
   const toggleComplete = useMutationWithToast({
     mutationFn: async (completed: boolean) => {
       if (!assignment) return;
-      return apiRequest(`/api/calendar/assign/${assignment.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ completed }),
-      });
+      const jobId = assignment.jobId || assignment.id;
+      // Model A: Use job-centric endpoints
+      if (completed) {
+        return apiRequest(`/api/jobs/${jobId}/complete`, {
+          method: "POST",
+          body: JSON.stringify({}),
+        });
+      } else {
+        return apiRequest(`/api/jobs/${jobId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: "open" }),
+        });
+      }
     },
     successMessage: (_, completed) => completed ? "Marked as complete" : "Marked as incomplete",
     errorMessage: "Failed to update status",
-    invalidate: { groups: ["calendar", "maintenance"] },
+    invalidate: { groups: ["calendar", "maintenance", "jobs"] },
   });
 
   const updateDate = useMutationWithToast({
     mutationFn: async (newDate: Date) => {
       if (!assignment) return;
-      const year = newDate.getFullYear();
-      const month = newDate.getMonth() + 1;
-      const day = newDate.getDate();
-      return apiRequest(`/api/calendar/assign/${assignment.id}`, {
+      const jobId = assignment.jobId || assignment.id;
+      const dateStr = format(newDate, 'yyyy-MM-dd');
+      // Model A: Use job-centric schedule endpoint
+      // TASK 1: No ?? 0 fallback - server must reject VERSION_NOT_INITIALIZED
+      return apiRequest(`/api/calendar/schedule/${jobId}`, {
         method: "PATCH",
-        body: JSON.stringify({ year, month, day, scheduledDate: format(newDate, 'yyyy-MM-dd') }),
+        body: JSON.stringify({
+          date: dateStr,
+          allDay: true,
+          version: assignment.version,
+        }),
       });
     },
     successMessage: "Date updated",
     errorMessage: "Failed to update date",
-    invalidate: { groups: ["calendar", "maintenance"] },
+    invalidate: { groups: ["calendar", "maintenance", "jobs"] },
     onSuccess: () => setDatePickerOpen(false),
   });
 
   const unscheduleJob = useMutationWithToast({
     mutationFn: async () => {
       if (!assignment) return;
-      return apiRequest(`/api/calendar/assign/${assignment.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ day: null, scheduledHour: null }),
+      const jobId = assignment.jobId || assignment.id;
+      // Model A: POST to unschedule endpoint
+      // TASK 1: No ?? 0 fallback - server must reject VERSION_NOT_INITIALIZED
+      return apiRequest(`/api/calendar/unschedule/${jobId}`, {
+        method: "POST",
+        body: JSON.stringify({ version: assignment.version }),
       });
     },
     successMessage: "Job unscheduled",
     errorMessage: "Failed to unschedule job",
-    invalidate: { groups: ["calendar", "maintenance"] },
+    invalidate: { groups: ["calendar", "maintenance", "jobs"] },
     onSuccess: () => setSelectedDate(undefined),
   });
 
   const updateNotes = useMutationWithToast({
     mutationFn: async (newNotes: string) => {
       if (!assignment) return;
-      return apiRequest(`/api/calendar/assign/${assignment.id}`, {
+      const jobId = assignment.jobId || assignment.id;
+      // Update completion notes on the job
+      return apiRequest(`/api/jobs/${jobId}`, {
         method: "PATCH",
         body: JSON.stringify({ completionNotes: newNotes }),
       });
     },
     successMessage: "Notes saved",
     errorMessage: "Failed to save notes",
-    invalidate: { keys: [["/api/calendar"]] },
+    invalidate: { keys: [["/api/calendar"]], groups: ["jobs"] },
   });
 
   const handleDateSelect = (date: Date | undefined) => {

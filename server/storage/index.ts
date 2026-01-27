@@ -14,6 +14,7 @@
  */
 
 import { userRepository } from "./users";
+import { identityRepository } from "./identities";
 import { clientRepository } from "./clients";
 import { jobRepository } from "./jobs";
 import { invoiceRepository } from "./invoices";
@@ -45,6 +46,19 @@ export interface IStorage {
   createUser: typeof userRepository.createUser;
   updateUser: typeof userRepository.updateUser;
   getCompanyById: typeof userRepository.getCompanyById;
+  incrementTokenVersion: typeof userRepository.incrementTokenVersion;
+
+  // Identity operations (email + SSO login)
+  getEmailIdentity: typeof identityRepository.getEmailIdentity;
+  getUserWithEmailIdentity: typeof identityRepository.getUserWithEmailIdentity;
+  findUserByEmailGlobal: typeof identityRepository.findUserByEmailGlobal;
+  createEmailIdentity: typeof identityRepository.createEmailIdentity;
+  updateEmailIdentity: typeof identityRepository.updateEmailIdentity;
+  setEmailPassword: typeof identityRepository.setEmailPassword;
+  isEmailAvailable: typeof identityRepository.isEmailAvailable;
+  isEmailGloballyAvailable: typeof identityRepository.isEmailGloballyAvailable;
+  getUserIdentities: typeof identityRepository.getUserIdentities;
+  getPrimaryEmailForUser: typeof identityRepository.getPrimaryEmailForUser;
 
   // Client operations
   getAllClients: typeof clientRepository.getAllClients;
@@ -96,15 +110,18 @@ export interface IStorage {
   createRecurringJobPhase: typeof jobRepository.createRecurringJobPhase;
   createJobStatusEvent: typeof jobRepository.createJobStatusEvent;
   getJobStatusEvents: typeof jobRepository.getJobStatusEvents;
+  getJobScheduleHistory: typeof jobRepository.getJobScheduleHistory;
   getActionRequiredJobs: typeof jobRepository.getActionRequiredJobs;
   updateJobStatusWithEvent: typeof jobRepository.updateJobStatusWithEvent;
   updateJobStatusWithMultipleEvents: typeof jobRepository.updateJobStatusWithMultipleEvents;
+  transitionJobStatus: typeof jobRepository.transitionJobStatus;
 
   // Invoice operations
   getInvoices: typeof invoiceRepository.getInvoices;
   getInvoice: typeof invoiceRepository.getInvoice;
   getInvoiceByJobId: typeof invoiceRepository.getInvoiceByJobId;
   getInvoiceStats: typeof invoiceRepository.getInvoiceStats;
+  getDashboardInvoices: typeof invoiceRepository.getDashboardInvoices;
   getInvoiceLines: typeof invoiceRepository.getInvoiceLines;
   createInvoiceLine: typeof invoiceRepository.createInvoiceLine;
   deleteInvoiceLine: typeof invoiceRepository.deleteInvoiceLine;
@@ -128,6 +145,7 @@ export interface IStorage {
   deletePart: typeof partRepository.deletePart;
 
   // Team operations
+  createTeamMember: typeof teamRepository.createTeamMember;
   getTeamMembers: typeof teamRepository.getTeamMembers;
   getTeamMember: typeof teamRepository.getTeamMember;
   updateTeamMember: typeof teamRepository.updateTeamMember;
@@ -167,6 +185,7 @@ updateInvitation: (id: string, data: { status: string }) => Promise<any>;
   
   // Company operations
   getCompanySettings: typeof companyRepository.getCompanySettings;
+  getCompanyTimezone: typeof companyRepository.getCompanyTimezone;
   upsertCompanySettings: (companyId: string, userId: string, settings: any) => Promise<any>;
   getImpersonationStatus: typeof companyRepository.getImpersonationStatus;
 
@@ -192,7 +211,6 @@ updateInvitation: (id: string, data: { status: string }) => Promise<any>;
   createCalendarAssignment: typeof calendarRepository.createAssignment;
   updateCalendarAssignment: typeof calendarRepository.updateAssignment;
   deleteCalendarAssignment: typeof calendarRepository.deleteAssignment;
-  completeCalendarAssignment: typeof calendarRepository.completeAssignment;
   validateCalendarTechnician: typeof calendarRepository.validateTechnicianBelongsToTenant;
   validateCalendarJob: typeof calendarRepository.validateJobBelongsToTenant;
 }
@@ -208,6 +226,19 @@ export const storage: IStorage = {
   createUser: userRepository.createUser.bind(userRepository),
   updateUser: userRepository.updateUser.bind(userRepository),
   getCompanyById: userRepository.getCompanyById.bind(userRepository),
+  incrementTokenVersion: userRepository.incrementTokenVersion.bind(userRepository),
+
+  // Identity operations (email + SSO login)
+  getEmailIdentity: identityRepository.getEmailIdentity.bind(identityRepository),
+  getUserWithEmailIdentity: identityRepository.getUserWithEmailIdentity.bind(identityRepository),
+  findUserByEmailGlobal: identityRepository.findUserByEmailGlobal.bind(identityRepository),
+  createEmailIdentity: identityRepository.createEmailIdentity.bind(identityRepository),
+  updateEmailIdentity: identityRepository.updateEmailIdentity.bind(identityRepository),
+  setEmailPassword: identityRepository.setEmailPassword.bind(identityRepository),
+  isEmailAvailable: identityRepository.isEmailAvailable.bind(identityRepository),
+  isEmailGloballyAvailable: identityRepository.isEmailGloballyAvailable.bind(identityRepository),
+  getUserIdentities: identityRepository.getUserIdentities.bind(identityRepository),
+  getPrimaryEmailForUser: identityRepository.getPrimaryEmailForUser.bind(identityRepository),
 
   // Client operations
   getAllClients: clientRepository.getAllClients.bind(clientRepository),
@@ -259,15 +290,18 @@ export const storage: IStorage = {
   createRecurringJobPhase: jobRepository.createRecurringJobPhase.bind(jobRepository),
   createJobStatusEvent: jobRepository.createJobStatusEvent.bind(jobRepository),
   getJobStatusEvents: jobRepository.getJobStatusEvents.bind(jobRepository),
+  getJobScheduleHistory: jobRepository.getJobScheduleHistory.bind(jobRepository),
   getActionRequiredJobs: jobRepository.getActionRequiredJobs.bind(jobRepository),
   updateJobStatusWithEvent: jobRepository.updateJobStatusWithEvent.bind(jobRepository),
   updateJobStatusWithMultipleEvents: jobRepository.updateJobStatusWithMultipleEvents.bind(jobRepository),
+  transitionJobStatus: jobRepository.transitionJobStatus.bind(jobRepository),
 
   // Invoice operations
   getInvoices: invoiceRepository.getInvoices.bind(invoiceRepository),
   getInvoice: invoiceRepository.getInvoice.bind(invoiceRepository),
   getInvoiceByJobId: invoiceRepository.getInvoiceByJobId.bind(invoiceRepository),
   getInvoiceStats: invoiceRepository.getInvoiceStats.bind(invoiceRepository),
+  getDashboardInvoices: invoiceRepository.getDashboardInvoices.bind(invoiceRepository),
   getInvoiceLines: invoiceRepository.getInvoiceLines.bind(invoiceRepository),
   createInvoiceLine: invoiceRepository.createInvoiceLine.bind(invoiceRepository),
   deleteInvoiceLine: invoiceRepository.deleteInvoiceLine.bind(invoiceRepository),
@@ -291,6 +325,7 @@ export const storage: IStorage = {
   deletePart: partRepository.deletePart.bind(partRepository),
 
   // Team operations
+  createTeamMember: teamRepository.createTeamMember.bind(teamRepository),
   getTeamMembers: teamRepository.getTeamMembers.bind(teamRepository),
   getTeamMember: teamRepository.getTeamMember.bind(teamRepository),
   updateTeamMember: teamRepository.updateTeamMember.bind(teamRepository),
@@ -326,6 +361,7 @@ export const storage: IStorage = {
 
   // Company operations
   getCompanySettings: companyRepository.getCompanySettings.bind(companyRepository),
+  getCompanyTimezone: companyRepository.getCompanyTimezone.bind(companyRepository),
   upsertCompanySettings: companyRepository.upsertCompanySettings.bind(companyRepository),
   getImpersonationStatus: companyRepository.getImpersonationStatus.bind(companyRepository),
   createCompany: async (data: { name: string; email: string }) => {
@@ -394,7 +430,6 @@ export const storage: IStorage = {
   createCalendarAssignment: calendarRepository.createAssignment.bind(calendarRepository),
   updateCalendarAssignment: calendarRepository.updateAssignment.bind(calendarRepository),
   deleteCalendarAssignment: calendarRepository.deleteAssignment.bind(calendarRepository),
-  completeCalendarAssignment: calendarRepository.completeAssignment.bind(calendarRepository),
   validateCalendarTechnician: calendarRepository.validateTechnicianBelongsToTenant.bind(calendarRepository),
   validateCalendarJob: calendarRepository.validateJobBelongsToTenant.bind(calendarRepository),
 };
@@ -402,6 +437,7 @@ export const storage: IStorage = {
 // Export individual repositories for advanced use cases
 export {
   userRepository,
+  identityRepository,
   clientRepository,
   jobRepository,
   invoiceRepository,

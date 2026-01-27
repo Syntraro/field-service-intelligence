@@ -11,7 +11,6 @@ import {
   companies,
   users,
   jobs,
-  calendarAssignments,
   qboSyncQueue,
   qboSyncEvents,
 } from "@shared/schema";
@@ -41,7 +40,7 @@ export interface TenantHealthSummary {
   };
   jobs: {
     openCount: number;
-    actionRequiredCount: number;
+    onHoldCount: number;  // Jobs with openSubStatus = 'on_hold' or 'needs_review'
     overdueCount: number;
   };
   calendar: {
@@ -163,19 +162,27 @@ export async function getTenantHealthList(): Promise<TenantHealthSummary[]> {
   const userMetricsMap = new Map(userMetricsRows.rows.map(r => [r.company_id, r]));
 
   // BATCH QUERY 4: Get all job metrics aggregated by company
+  // Using normalized 4-status model: open, completed, invoiced, archived
   const jobMetricsRows = await db.execute<{
     company_id: string;
     open_count: string;
-    action_required_count: string;
+    on_hold_count: string;
     overdue_count: string;
   }>(sql`
     SELECT
       company_id,
-      COUNT(*) FILTER (WHERE status NOT IN ('closed', 'archived', 'cancelled', 'invoiced')) as open_count,
-      COUNT(*) FILTER (WHERE status = 'action_required') as action_required_count,
+      COUNT(*) FILTER (WHERE status = 'open') as open_count,
+      COUNT(*) FILTER (WHERE status = 'open' AND open_sub_status = 'on_hold') as on_hold_count,
+      -- Phase 2 Step 5: Overdue = effectiveEnd < NOW
+      -- effectiveEnd priority: scheduled_end > scheduled_start + estimated_duration_minutes > scheduled_start
       COUNT(*) FILTER (
-        WHERE scheduled_end < NOW()
-        AND status NOT IN ('closed', 'archived', 'cancelled', 'invoiced', 'completed', 'requires_invoicing')
+        WHERE scheduled_start IS NOT NULL
+        AND status = 'open'
+        AND CASE
+          WHEN scheduled_end IS NOT NULL THEN scheduled_end
+          WHEN estimated_duration_minutes IS NOT NULL THEN scheduled_start + (estimated_duration_minutes || ' minutes')::interval
+          ELSE scheduled_start
+        END < NOW()
       ) as overdue_count
     FROM jobs
     WHERE deleted_at IS NULL
@@ -272,7 +279,7 @@ export async function getTenantHealthList(): Promise<TenantHealthSummary[]> {
       },
       jobs: {
         openCount: parseInt(jobMetrics?.open_count || "0", 10),
-        actionRequiredCount: parseInt(jobMetrics?.action_required_count || "0", 10),
+        onHoldCount: parseInt(jobMetrics?.on_hold_count || "0", 10),
         overdueCount: parseInt(jobMetrics?.overdue_count || "0", 10),
       },
       calendar: {
@@ -352,41 +359,54 @@ export async function getTenantDetail(companyId: string): Promise<TenantDetail |
       isNull(users.deletedAt)
     ));
 
+  // Using normalized 4-status model: open, completed, invoiced, archived
   const openJobs = await db
     .select({ count: count() })
     .from(jobs)
     .where(and(
       eq(jobs.companyId, companyId),
       isNull(jobs.deletedAt),
-      sql`${jobs.status} NOT IN ('closed', 'archived', 'cancelled', 'invoiced')`
+      eq(jobs.status, "open")
     ));
 
-  const actionRequiredJobs = await db
+  // Jobs needing attention: on_hold sub-status
+  const onHoldJobs = await db
     .select({ count: count() })
     .from(jobs)
     .where(and(
       eq(jobs.companyId, companyId),
-      eq(jobs.status, "action_required"),
+      eq(jobs.status, "open"),
+      eq(jobs.openSubStatus, "on_hold"),
       isNull(jobs.deletedAt)
     ));
 
+  // Phase 2 Step 5: Overdue = effectiveEnd < NOW
+  // effectiveEnd priority: scheduled_end > scheduled_start + estimated_duration_minutes > scheduled_start
   const overdueJobs = await db
     .select({ count: count() })
     .from(jobs)
     .where(and(
       eq(jobs.companyId, companyId),
       isNull(jobs.deletedAt),
-      sql`${jobs.scheduledEnd} < NOW()`,
-      sql`${jobs.status} NOT IN ('closed', 'archived', 'cancelled', 'invoiced', 'completed', 'requires_invoicing')`
+      sql`${jobs.scheduledStart} IS NOT NULL`,
+      sql`CASE
+        WHEN ${jobs.scheduledEnd} IS NOT NULL THEN ${jobs.scheduledEnd}
+        WHEN ${jobs.estimatedDurationMinutes} IS NOT NULL THEN ${jobs.scheduledStart} + (${jobs.estimatedDurationMinutes} || ' minutes')::interval
+        ELSE ${jobs.scheduledStart}
+      END < NOW()`,
+      eq(jobs.status, "open")
     ));
 
+  // MODEL A: Query scheduled jobs from jobs table (not calendar_assignments)
   const scheduledThisWeek = await db
     .select({ count: count() })
-    .from(calendarAssignments)
+    .from(jobs)
     .where(and(
-      eq(calendarAssignments.companyId, companyId),
-      gte(calendarAssignments.scheduledDate, weekRange.start.toISOString().split('T')[0]),
-      lte(calendarAssignments.scheduledDate, weekRange.end.toISOString().split('T')[0])
+      eq(jobs.companyId, companyId),
+      isNull(jobs.deletedAt),
+      sql`${jobs.scheduledStart} IS NOT NULL`,
+      gte(jobs.scheduledStart, weekRange.start),
+      lte(jobs.scheduledStart, weekRange.end)
     ));
 
   const lastSync = await db
@@ -469,7 +489,7 @@ export async function getTenantDetail(companyId: string): Promise<TenantDetail |
     },
     jobs: {
       openCount: openJobs[0]?.count || 0,
-      actionRequiredCount: actionRequiredJobs[0]?.count || 0,
+      onHoldCount: onHoldJobs[0]?.count || 0,
       overdueCount: overdueJobs[0]?.count || 0,
     },
     calendar: {

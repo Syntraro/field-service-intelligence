@@ -7,58 +7,153 @@ import { MANAGER_ROLES } from "../auth/roles";
 import { notificationService } from "../services/notificationService";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
-import { calendarRepository } from "../storage/calendar";
+import { calendarRepository, DEFAULT_CALENDAR_START_HOUR, DEFAULT_CALENDAR_END_HOUR } from "../storage/calendar";
 import { jobRepository } from "../storage/jobs";
-import { validateSchedule, validateNoCrossDay, ScheduleValidationError } from "../services/calendarValidation";
+import { companyRepository } from "../storage/company";
+import { teamRepository } from "../storage/team";
+import { validateSchedule, ScheduleValidationError } from "../services/calendarValidation";
+import { assertCanEditSchedule } from "../guards/schedulingPermissions";
+import { filterSchedulableTechnicians, checkJobTechnicianVisibility } from "../domain/scheduling";
 import type { AuthedRequest } from "../auth/tenantIsolation";
 import type { CalendarAssignmentWithDetails } from "../storage/calendar";
+import type { CalendarEventDto, CalendarRangeResponseDto } from "@shared/types/calendar";
+
+// ============================================================================
+// MODEL A: Job-Based Calendar Architecture
+// ============================================================================
+//
+// INVARIANTS:
+// - Calendar shows scheduled JOBS (jobs with scheduledStart IS NOT NULL)
+// - Unscheduled sidebar shows BACKLOG jobs (open jobs with scheduledStart IS NULL)
+// - Events on the calendar ARE jobs, keyed by jobId only
+// - No separate "assignment" entity exists
+//
+// ENDPOINTS:
+// - GET  /api/calendar?start=ISO&end=ISO     - Get scheduled jobs in range
+// - POST /api/calendar/schedule              - Schedule a job
+// - PATCH /api/calendar/schedule/:jobId      - Reschedule a job
+// - POST /api/calendar/unschedule/:jobId     - Unschedule a job
+// - GET  /api/calendar/unscheduled           - Get backlog jobs
+// - GET  /api/calendar/state-snapshot        - Diagnostic counts
+// - POST /api/calendar/resize                - Resize job on calendar
+//
+// ============================================================================
 
 // ============================================================================
 // Role-Based Filtering Helper
 // ============================================================================
 
 /**
- * Filter assignments based on user role
- * - Technicians see only assignments where they are assigned
- * - Office/Manager roles see all assignments
+ * Filter jobs based on user role.
+ * Technicians see only their assigned jobs; office roles see all.
  */
-function filterAssignmentsByRole(
-  assignments: CalendarAssignmentWithDetails[],
+function filterJobsByRole(
+  jobs: CalendarAssignmentWithDetails[],
   userRole: string,
   userId: string
 ): CalendarAssignmentWithDetails[] {
-  // Office roles (owner, admin, manager, dispatcher) see all assignments
   if (MANAGER_ROLES.includes(userRole as any)) {
-    return assignments;
+    return jobs;
   }
-
-  // Technicians see only their own assignments
-  return assignments.filter((a) => {
-    // Check if user is the primary technician
-    if (a.primaryTechnicianId === userId) return true;
-    // Check if user is in the assigned technicians list
-    if (a.assignedTechnicianIds?.includes(userId)) return true;
+  return jobs.filter((job) => {
+    if (job.primaryTechnicianId === userId) return true;
+    if (Array.isArray(job.assignedTechnicianIds) && job.assignedTechnicianIds.includes(userId)) return true;
     return false;
   });
 }
 
 /**
- * Calendar API - Slice 1 & 2
- *
- * Slice 1: API Contract Lock + CRUD
- * - Range query (GET /api/calendar?start=ISO&end=ISO)
- * - Create assignment (POST /api/calendar/assignments)
- * - Update assignment (PATCH /api/calendar/assignments/:id)
- * - Delete assignment (DELETE /api/calendar/assignments/:id)
- * - Complete assignment (POST /api/calendar/assignments/:id/complete)
- *
- * Slice 2: Conflict + Availability Validation
- * - Working hours validation
- * - Overlap/conflict detection
+ * Transform job to CalendarEventDto
  */
-const router = express.Router();
+function transformToDto(job: CalendarAssignmentWithDetails): CalendarEventDto {
+  const isAllDay = job.isAllDay ?? false;
 
-// Feature gate: require calendarEnabled for all calendar routes
+  let dateStr: string;
+  if (job.scheduledStart) {
+    const d = job.scheduledStart;
+    dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  } else {
+    const today = new Date();
+    dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  }
+
+  const durationMinutes = isAllDay
+    ? 1440
+    : (job.scheduledStart && job.scheduledEnd
+      ? Math.round((job.scheduledEnd.getTime() - job.scheduledStart.getTime()) / 60000)
+      : 60);
+
+  const startAt = job.scheduledStart?.toISOString() || null;
+  const endAt = job.scheduledEnd?.toISOString() || null;
+
+  return {
+    id: job.id,
+    jobId: job.jobId,
+    jobNumber: job.jobNumber,
+    jobType: job.jobType,
+    summary: job.summary,
+    status: job.status,
+    locationId: job.locationId,
+    locationName: job.locationName,
+    customerCompanyId: job.customerCompanyId,
+    customerCompanyName: job.customerCompanyName,
+    startAt,
+    endAt,
+    allDay: isAllDay,
+    date: dateStr,
+    durationMinutes,
+    // Version from DB - NOT NULL DEFAULT 1 after migration, no fallback needed
+    version: job.version,
+    assignedTechnicianIds: job.assignedTechnicianIds,
+    primaryTechnicianId: job.primaryTechnicianId,
+    technicians: job.technicians,
+  };
+}
+
+/**
+ * Get server timezone (IANA format)
+ */
+function getServerTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    return "UTC";
+  }
+}
+
+/**
+ * Build CalendarRangeResponseDto
+ */
+function buildRangeResponse(
+  jobs: CalendarAssignmentWithDetails[],
+  outsideVisibleHoursCount: number,
+  hiddenTechnicianDiagnostics?: { jobId: string; hiddenTechIds: string[] }[]
+): CalendarRangeResponseDto {
+  const hiddenTechMap = new Map<string, string[]>();
+  if (hiddenTechnicianDiagnostics) {
+    for (const diag of hiddenTechnicianDiagnostics) {
+      hiddenTechMap.set(diag.jobId, diag.hiddenTechIds);
+    }
+  }
+
+  const events = jobs.map(job => {
+    const dto = transformToDto(job);
+    const hiddenTechIds = hiddenTechMap.get(job.id);
+    if (hiddenTechIds?.length) {
+      dto.hasHiddenTechnician = true;
+      dto.hiddenTechnicianIds = hiddenTechIds;
+    }
+    return dto;
+  });
+
+  return {
+    events,
+    outsideVisibleHoursCount,
+    timezone: getServerTimezone(),
+  };
+}
+
+const router = express.Router();
 router.use(requireFeature("calendarEnabled"));
 
 // ============================================================================
@@ -70,79 +165,68 @@ const rangeQuerySchema = z.object({
   end: z.string().datetime({ message: "end must be ISO 8601 datetime" }),
 });
 
-const createAssignmentSchema = z
-  .object({
-    jobId: z.string().uuid(),
-    technicianUserId: z.string().uuid().optional(),
-    startAt: z.string().datetime(),
-    endAt: z.string().datetime(),
-    notes: z.string().max(2000).optional(),
-  })
-  .refine((data) => new Date(data.startAt) < new Date(data.endAt), {
-    message: "startAt must be before endAt",
-    path: ["startAt"],
-  });
-
-const updateAssignmentSchema = z
-  .object({
-    technicianUserId: z.string().uuid().optional().nullable(),
-    startAt: z.string().datetime().optional(),
-    endAt: z.string().datetime().optional(),
-    notes: z.string().max(2000).optional().nullable(),
-    jobId: z.string().uuid().optional(),
-  })
-  .refine(
-    (data) => {
-      if (data.startAt && data.endAt) {
-        return new Date(data.startAt) < new Date(data.endAt);
-      }
-      return true;
-    },
-    {
-      message: "startAt must be before endAt",
-      path: ["startAt"],
-    }
-  );
-
-const completeAssignmentSchema = z.object({
-  completionNotes: z.string().max(2000).optional(),
+const scheduleJobSchema = z.object({
+  jobId: z.string().uuid(),
+  technicianUserId: z.string().uuid().optional(),
+  startAt: z.string().datetime().optional(),
+  endAt: z.string().datetime().optional(),
+  allDay: z.boolean().optional(),
+  date: z.string().optional(),
+  durationMinutes: z.number().int().min(15).optional(),
+  notes: z.string().max(2000).optional(),
+  version: z.number().int(),
+}).refine((data) => {
+  if (data.allDay) return true;
+  if (data.startAt && data.endAt) {
+    return new Date(data.startAt) < new Date(data.endAt);
+  }
+  return !!data.startAt || !!data.date;
+}, {
+  message: "startAt must be before endAt, or provide date for all-day event",
+  path: ["startAt"],
 });
 
-const resizeJobSchema = z
-  .object({
-    job: z
-      .object({
-        id: z.string().uuid(),
-        scheduledStart: z.string().datetime(),
-        scheduledEnd: z.string().datetime(),
-      })
-      .strict(),
-    newEndTime: z.string().datetime(),
-  });
+const rescheduleJobSchema = z.object({
+  technicianUserId: z.string().uuid().optional().nullable(),
+  startAt: z.string().datetime().optional(),
+  endAt: z.string().datetime().optional(),
+  allDay: z.boolean().optional(),
+  date: z.string().optional(),
+  notes: z.string().max(2000).optional().nullable(),
+  version: z.number().int(),
+}).refine((data) => {
+  if (data.allDay) return true;
+  if (data.startAt && data.endAt) {
+    return new Date(data.startAt) < new Date(data.endAt);
+  }
+  return true;
+}, {
+  message: "startAt must be before endAt",
+  path: ["startAt"],
+});
 
-// Legacy query params for backwards compatibility
+const unscheduleJobSchema = z.object({
+  version: z.number().int(),
+});
+
+const resizeJobSchema = z.object({
+  job: z.object({
+    id: z.string().uuid(),
+    scheduledStart: z.string().datetime(),
+    scheduledEnd: z.string().datetime(),
+  }).strict(),
+  newEndTime: z.string().datetime(),
+});
+
 const legacyQuerySchema = z.object({
   year: z.coerce.number().int().optional(),
   month: z.coerce.number().int().min(1).max(12).optional(),
 });
 
 // ============================================================================
-// Routes
+// GET /api/calendar - Range Query
 // ============================================================================
 
-/**
- * GET /api/calendar
- * Range query for calendar assignments
- *
- * Query params:
- * - start: ISO datetime (required for range query)
- * - end: ISO datetime (required for range query)
- * OR legacy params:
- * - year: number
- * - month: number (1-12)
- *
- * Returns assignments overlapping the date range with technician and job info
- */
 router.get(
   "/",
   asyncHandler(async (req: AuthedRequest, res: Response) => {
@@ -150,50 +234,40 @@ router.get(
     const userId = req.user?.id || "";
     const userRole = req.user?.role || "technician";
 
-    // Check for new range params first
+    const settings = await companyRepository.getCompanySettings(companyId) as { calendarStartHour?: number } | null;
+    const calendarStartHour = settings?.calendarStartHour ?? DEFAULT_CALENDAR_START_HOUR;
+    const calendarEndHour = DEFAULT_CALENDAR_END_HOUR;
+
     if (req.query.start && req.query.end) {
       const { start, end } = validateSchema(rangeQuerySchema, req.query);
       const startDate = new Date(start);
       const endDate = new Date(end);
 
-      const allAssignments = await calendarRepository.getAssignmentsInRange(
-        companyId,
-        startDate,
-        endDate
-      );
+      const { assignments: allJobs, outsideVisibleHoursCount } =
+        await calendarRepository.getAssignmentsInRangeWithMetadata(
+          companyId, startDate, endDate, calendarStartHour, calendarEndHour
+        );
 
-      // Apply role-based filtering
-      const assignments = filterAssignmentsByRole(allAssignments, userRole, userId);
+      const jobs = filterJobsByRole(allJobs, userRole, userId);
 
-      // Transform to expected shape for frontend
-      const transformedAssignments = assignments.map((a: CalendarAssignmentWithDetails) => ({
-        id: a.id,
-        jobId: a.jobId,
-        jobNumber: a.jobNumber,
-        jobType: a.jobType,
-        summary: a.summary,
-        status: a.status,
-        locationId: a.locationId,
-        locationName: a.locationName,
-        customerCompanyId: a.customerCompanyId,
-        customerCompanyName: a.customerCompanyName,
-        scheduledStart: a.scheduledStart?.toISOString() || null,
-        scheduledEnd: a.scheduledEnd?.toISOString() || null,
-        assignedTechnicianIds: a.assignedTechnicianIds,
-        primaryTechnicianId: a.primaryTechnicianId,
-        technicians: a.technicians,
-        // Legacy fields for backwards compatibility
-        year: a.scheduledStart ? a.scheduledStart.getFullYear() : null,
-        month: a.scheduledStart ? a.scheduledStart.getMonth() + 1 : null,
-        day: a.scheduledStart ? a.scheduledStart.getDate() : null,
-        scheduledHour: a.scheduledStart ? a.scheduledStart.getHours() : null,
-        scheduledStartMinutes: a.scheduledStart ? a.scheduledStart.getMinutes() : null,
-        durationMinutes: a.scheduledStart && a.scheduledEnd
-          ? Math.round((a.scheduledEnd.getTime() - a.scheduledStart.getTime()) / 60000)
-          : 60,
-      }));
+      let hiddenTechDiagnostics: { jobId: string; hiddenTechIds: string[] }[] = [];
+      if (process.env.NODE_ENV === 'development') {
+        const allTeamMembers = await teamRepository.getTeamMembers(companyId);
+        const { schedulable } = filterSchedulableTechnicians(allTeamMembers, "calendar:GET");
+        const schedulableTechIds = new Set(schedulable.map(t => t.id));
 
-      return res.json({ assignments: transformedAssignments });
+        for (const job of jobs) {
+          const visibility = checkJobTechnicianVisibility(job, schedulableTechIds);
+          if (visibility.hasHiddenTechnician) {
+            hiddenTechDiagnostics.push({
+              jobId: job.id,
+              hiddenTechIds: visibility.hiddenTechnicianIds,
+            });
+          }
+        }
+      }
+
+      return res.json(buildRangeResponse(jobs, outsideVisibleHoursCount, hiddenTechDiagnostics));
     }
 
     // Legacy year/month query
@@ -203,158 +277,127 @@ router.get(
       const startDate = new Date(year, month - 1, 1, 0, 0, 0);
       const endDate = new Date(year, month, 0, 23, 59, 59);
 
-      const allAssignments = await calendarRepository.getAssignmentsInRange(
-        companyId,
-        startDate,
-        endDate
-      );
+      const { assignments: allJobs, outsideVisibleHoursCount } =
+        await calendarRepository.getAssignmentsInRangeWithMetadata(
+          companyId, startDate, endDate, calendarStartHour, calendarEndHour
+        );
 
-      // Apply role-based filtering
-      const assignments = filterAssignmentsByRole(allAssignments, userRole, userId);
-
-      const transformedAssignments = assignments.map((a: CalendarAssignmentWithDetails) => ({
-        id: a.id,
-        jobId: a.jobId,
-        jobNumber: a.jobNumber,
-        jobType: a.jobType,
-        summary: a.summary,
-        status: a.status,
-        locationId: a.locationId,
-        locationName: a.locationName,
-        customerCompanyId: a.customerCompanyId,
-        customerCompanyName: a.customerCompanyName,
-        scheduledStart: a.scheduledStart?.toISOString() || null,
-        scheduledEnd: a.scheduledEnd?.toISOString() || null,
-        assignedTechnicianIds: a.assignedTechnicianIds,
-        primaryTechnicianId: a.primaryTechnicianId,
-        technicians: a.technicians,
-        year: a.scheduledStart ? a.scheduledStart.getFullYear() : null,
-        month: a.scheduledStart ? a.scheduledStart.getMonth() + 1 : null,
-        day: a.scheduledStart ? a.scheduledStart.getDate() : null,
-        scheduledHour: a.scheduledStart ? a.scheduledStart.getHours() : null,
-        scheduledStartMinutes: a.scheduledStart ? a.scheduledStart.getMinutes() : null,
-        durationMinutes: a.scheduledStart && a.scheduledEnd
-          ? Math.round((a.scheduledEnd.getTime() - a.scheduledStart.getTime()) / 60000)
-          : 60,
-      }));
-
-      return res.json({ assignments: transformedAssignments });
+      const jobs = filterJobsByRole(allJobs, userRole, userId);
+      return res.json(buildRangeResponse(jobs, outsideVisibleHoursCount));
     }
 
-    // No valid params - return empty for contract stability
-    res.json({ assignments: [] });
+    res.json(buildRangeResponse([], 0));
   })
 );
 
-/**
- * GET /api/calendar/assignments
- * Alias for main endpoint (backwards compatibility)
- */
-router.get(
-  "/assignments",
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const companyId = req.companyId!;
+// ============================================================================
+// POST /api/calendar/schedule - Schedule a Job
+// ============================================================================
 
-    if (req.query.start && req.query.end) {
-      const { start, end } = validateSchema(rangeQuerySchema, req.query);
-      const startDate = new Date(start);
-      const endDate = new Date(end);
-
-      const assignments = await calendarRepository.getAssignmentsInRange(
-        companyId,
-        startDate,
-        endDate
-      );
-
-      return res.json({ assignments });
-    }
-
-    res.json({ assignments: [] });
-  })
-);
-
-/**
- * POST /api/calendar/assignments
- * Create a calendar assignment (schedule a job)
- *
- * Body: { jobId, technicianUserId?, startAt, endAt, notes? }
- *
- * Validations:
- * - startAt < endAt
- * - technician must belong to tenant
- * - job must belong to tenant
- * - (Slice 2) Working hours validation
- * - (Slice 2) Overlap/conflict detection
- */
 router.post(
-  "/assignments",
+  "/schedule",
   requireRole(MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
-    const data = validateSchema(createAssignmentSchema, req.body);
+    assertCanEditSchedule(req.user);
 
-    // Validate job belongs to tenant
-    const jobValid = await calendarRepository.validateJobBelongsToTenant(
-      companyId,
-      data.jobId
-    );
+    const data = validateSchema(scheduleJobSchema, req.body);
+
+    const jobValid = await calendarRepository.validateJobBelongsToTenant(companyId, data.jobId);
     if (!jobValid) {
       throw createError(404, "Job not found or does not belong to this company");
     }
 
-    // Validate cross-day constraint (always enforced)
-    try {
-      validateNoCrossDay(new Date(data.startAt), new Date(data.endAt));
-    } catch (error) {
-      if (error instanceof ScheduleValidationError) {
-        res.status(error.statusCode).json(error.toJSON());
-        return;
+    let startAt: Date;
+    let endAt: Date;
+    const isAllDay = data.allDay === true;
+
+    if (isAllDay) {
+      const dateStr = data.date || (data.startAt ? data.startAt.split('T')[0] : null);
+      if (!dateStr) {
+        throw createError(400, "All-day events require a date");
       }
-      throw error;
+      startAt = new Date(dateStr + 'T00:00:00');
+      endAt = new Date(dateStr + 'T23:59:59.999');
+    } else {
+      if (!data.startAt) {
+        throw createError(400, "Start time is required for timed events");
+      }
+      startAt = new Date(data.startAt);
+      if (data.endAt) {
+        endAt = new Date(data.endAt);
+      } else if (data.durationMinutes) {
+        endAt = new Date(startAt.getTime() + data.durationMinutes * 60000);
+      } else {
+        endAt = new Date(startAt.getTime() + 60 * 60000);
+      }
+
+      // Clamp to same day
+      const startDay = startAt.toISOString().split('T')[0];
+      const endDay = endAt.toISOString().split('T')[0];
+      if (startDay !== endDay) {
+        endAt = new Date(startDay + 'T23:59:59.999Z');
+      }
     }
 
-    // Validate technician if provided
+    // Validate technician
+    let useBypassFunction = false;
     if (data.technicianUserId) {
-      const techValid = await calendarRepository.validateTechnicianBelongsToTenant(
-        companyId,
-        data.technicianUserId
-      );
+      const techValid = await calendarRepository.validateTechnicianBelongsToTenant(companyId, data.technicianUserId);
       if (!techValid) {
         throw createError(404, "Technician not found or does not belong to this company");
       }
 
-      // Slice 2: Validate working hours and conflicts
-      try {
-        await validateSchedule({
-          companyId,
-          technicianUserId: data.technicianUserId,
-          startAt: new Date(data.startAt),
-          endAt: new Date(data.endAt),
-        });
-      } catch (error) {
-        if (error instanceof ScheduleValidationError) {
-          res.status(error.statusCode).json(error.toJSON());
-          return;
+      if (!isAllDay) {
+        try {
+          await validateSchedule({ companyId, technicianUserId: data.technicianUserId, startAt, endAt });
+        } catch (error: any) {
+          const errorCode = error?.code || error?.details?.code;
+          if (errorCode === 'OUTSIDE_WORKING_HOURS') {
+            useBypassFunction = true;
+          } else if (error instanceof ScheduleValidationError) {
+            return res.status(error.statusCode).json(error.toJSON());
+          } else {
+            throw error;
+          }
         }
-        throw error;
       }
     }
 
-    const result = await calendarRepository.createAssignment(companyId, {
-      jobId: data.jobId,
-      technicianUserId: data.technicianUserId,
-      startAt: new Date(data.startAt),
-      endAt: new Date(data.endAt),
-      notes: data.notes,
-    });
-
-    if (!result) {
-      throw createError(500, "Failed to create assignment");
+    let result;
+    try {
+      if (useBypassFunction) {
+        result = await calendarRepository.createAssignmentBypassWorkingHours(companyId, {
+          jobId: data.jobId,
+          technicianUserId: data.technicianUserId,
+          startAt, endAt,
+          notes: data.notes,
+          allDay: isAllDay,
+          expectedVersion: data.version,
+        });
+      } else {
+        result = await calendarRepository.createAssignment(companyId, {
+          jobId: data.jobId,
+          technicianUserId: data.technicianUserId,
+          startAt, endAt,
+          notes: data.notes,
+          allDay: isAllDay,
+          expectedVersion: data.version,
+        });
+      }
+    } catch (error: any) {
+      if (error.message?.includes('modified by another user')) {
+        return res.status(409).json({ error: error.message, code: 'VERSION_MISMATCH' });
+      }
+      throw error;
     }
 
-    // Emit notification to assigned technician
+    if (!result) {
+      throw createError(500, "Failed to schedule job");
+    }
+
+    // Notification
     if (data.technicianUserId) {
-      // Get job details for the notification
       const jobDetails = await jobRepository.getJob(companyId, data.jobId);
       if (jobDetails) {
         const clientName = jobDetails.location?.companyName || jobDetails.location?.location || "Client";
@@ -363,242 +406,213 @@ router.post(
           jobId: data.jobId,
           jobNumber: String(jobDetails.jobNumber),
           clientName,
-          scheduledDate: data.startAt,
+          scheduledDate: isAllDay ? (data.date || new Date().toISOString()) : startAt.toISOString(),
           technicianUserId: data.technicianUserId,
           isReschedule: false,
         }).catch((err) => console.error("Failed to emit job scheduled notification:", err));
       }
     }
 
-    res.status(201).json(result);
+    // Version is NOT NULL DEFAULT 1 in DB - never null after write
+    res.status(201).json({
+      id: result.id,
+      jobId: result.id,
+      scheduledStart: result.scheduledStart?.toISOString() || null,
+      scheduledEnd: result.scheduledEnd?.toISOString() || null,
+      isAllDay: result.isAllDay ?? false,
+      version: result.version,
+      status: result.status,
+    });
   })
 );
 
-/**
- * PATCH /api/calendar/assignments/:id
- * Update a calendar assignment
- *
- * Body: { technicianUserId?, startAt?, endAt?, notes?, jobId? }
- *
- * Validations:
- * - assignment must belong to tenant
- * - startAt < endAt (if both provided)
- * - technician must belong to tenant (if provided)
- * - (Slice 2) Working hours validation
- * - (Slice 2) Overlap/conflict detection (excludes current job)
- */
+// ============================================================================
+// PATCH /api/calendar/schedule/:jobId - Reschedule a Job
+// ============================================================================
+
 router.patch(
-  "/assignments/:id",
+  "/schedule/:jobId",
   requireRole(MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
-    const assignmentId = req.params.id;
-    const data = validateSchema(updateAssignmentSchema, req.body);
+    const jobId = req.params.jobId;
+    assertCanEditSchedule(req.user);
 
-    // Validate assignment belongs to tenant
-    const existing = await calendarRepository.getAssignmentById(companyId, assignmentId);
+    const data = validateSchema(rescheduleJobSchema, req.body);
+
+    const existing = await calendarRepository.getAssignmentById(companyId, jobId);
     if (!existing) {
-      throw createError(404, "Assignment not found");
+      throw createError(404, "Job not found");
     }
 
-    // Validate technician if being updated
+    // Validate technician if provided
     if (data.technicianUserId) {
-      const techValid = await calendarRepository.validateTechnicianBelongsToTenant(
-        companyId,
-        data.technicianUserId
-      );
+      const techValid = await calendarRepository.validateTechnicianBelongsToTenant(companyId, data.technicianUserId);
       if (!techValid) {
         throw createError(404, "Technician not found or does not belong to this company");
       }
     }
 
-    // Determine final values for validation
-    const finalStartAt = data.startAt ? new Date(data.startAt) : existing.scheduledStart;
-    const finalEndAt = data.endAt ? new Date(data.endAt) : existing.scheduledEnd;
-    const finalTechnicianId = data.technicianUserId !== undefined
-      ? data.technicianUserId
-      : existing.primaryTechnicianId;
+    const isAllDay = data.allDay !== undefined ? data.allDay : existing.isAllDay;
+    let computedStartAt: Date | undefined;
+    let computedEndAt: Date | undefined;
 
-    // If only one of startAt/endAt provided, validate against existing
-    if (data.startAt && !data.endAt) {
-      if (finalEndAt && new Date(data.startAt) >= finalEndAt) {
-        throw createError(400, "startAt must be before existing endAt");
+    if (data.allDay === true) {
+      const dateStr = data.date || (data.startAt ? data.startAt.split('T')[0] : null);
+      if (dateStr) {
+        computedStartAt = new Date(dateStr + 'T00:00:00');
+        computedEndAt = new Date(dateStr + 'T23:59:59.999');
       }
-    }
-    if (data.endAt && !data.startAt) {
-      if (finalStartAt && new Date(data.endAt) <= finalStartAt) {
-        throw createError(400, "endAt must be after existing startAt");
-      }
+    } else {
+      computedStartAt = data.startAt ? new Date(data.startAt) : undefined;
+      computedEndAt = data.endAt ? new Date(data.endAt) : undefined;
     }
 
-    // Validate cross-day constraint (always enforced when times are set)
-    if (finalStartAt && finalEndAt) {
-      try {
-        validateNoCrossDay(finalStartAt, finalEndAt);
-      } catch (error) {
-        if (error instanceof ScheduleValidationError) {
-          res.status(error.statusCode).json(error.toJSON());
-          return;
-        }
-        throw error;
+    let result;
+    try {
+      result = await calendarRepository.updateAssignment(companyId, jobId, {
+        technicianUserId: data.technicianUserId ?? undefined,
+        startAt: computedStartAt,
+        endAt: computedEndAt,
+        notes: data.notes ?? undefined,
+        allDay: data.allDay,
+        expectedVersion: data.version,
+      });
+    } catch (error: any) {
+      if (error.message?.includes('modified by another user')) {
+        return res.status(409).json({ error: error.message, code: 'VERSION_MISMATCH' });
       }
+      throw error;
     }
 
-    // Slice 2: Validate working hours and conflicts (if technician and times are set)
-    if (finalTechnicianId && finalStartAt && finalEndAt) {
-      try {
-        await validateSchedule({
-          companyId,
-          technicianUserId: finalTechnicianId,
-          startAt: finalStartAt,
-          endAt: finalEndAt,
-          excludeJobId: assignmentId, // Exclude current job from conflict check
-        });
-      } catch (error) {
-        if (error instanceof ScheduleValidationError) {
-          res.status(error.statusCode).json(error.toJSON());
-          return;
-        }
-        throw error;
-      }
+    if (!result) {
+      throw createError(500, "Failed to reschedule job");
     }
 
-    const result = await calendarRepository.updateAssignment(companyId, assignmentId, {
-      technicianUserId: data.technicianUserId ?? undefined,
-      startAt: data.startAt ? new Date(data.startAt) : undefined,
-      endAt: data.endAt ? new Date(data.endAt) : undefined,
-      notes: data.notes ?? undefined,
+    // Version is NOT NULL DEFAULT 1 in DB - never null after write
+    res.json({
+      id: result.id,
+      jobId: result.id,
+      scheduledStart: result.scheduledStart?.toISOString() || null,
+      scheduledEnd: result.scheduledEnd?.toISOString() || null,
+      isAllDay: result.isAllDay ?? false,
+      version: result.version,
+      status: result.status,
     });
-
-    if (!result) {
-      throw createError(500, "Failed to update assignment");
-    }
-
-    // Emit notification if schedule or technician changed
-    const scheduleChanged = data.startAt || data.endAt;
-    const technicianToNotify = finalTechnicianId;
-
-    if (scheduleChanged && technicianToNotify) {
-      const jobDetails = await jobRepository.getJob(companyId, assignmentId);
-      if (jobDetails) {
-        const clientName = jobDetails.location?.companyName || jobDetails.location?.location || "Client";
-        notificationService.emitJobScheduled({
-          companyId,
-          jobId: assignmentId,
-          jobNumber: String(jobDetails.jobNumber),
-          clientName,
-          scheduledDate: (finalStartAt || new Date()).toISOString(),
-          technicianUserId: technicianToNotify,
-          isReschedule: true,
-        }).catch((err) => console.error("Failed to emit job rescheduled notification:", err));
-      }
-    }
-
-    res.json(result);
   })
 );
 
-/**
- * DELETE /api/calendar/assignments/:id
- * Delete/unschedule an assignment (clears scheduling fields)
- */
-router.delete(
-  "/assignments/:id",
-  requireRole(MANAGER_ROLES),
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const companyId = req.companyId!;
-    const assignmentId = req.params.id;
+// ============================================================================
+// POST /api/calendar/unschedule/:jobId - Unschedule a Job
+// ============================================================================
 
-    // Validate assignment belongs to tenant
-    const existing = await calendarRepository.getAssignmentById(companyId, assignmentId);
-    if (!existing) {
-      throw createError(404, "Assignment not found");
-    }
-
-    const result = await calendarRepository.deleteAssignment(companyId, assignmentId);
-    if (!result) {
-      throw createError(500, "Failed to delete assignment");
-    }
-
-    res.json({ success: true, unscheduled: result });
-  })
-);
-
-/**
- * POST /api/calendar/assignments/:id/complete
- * Mark an assignment as complete
- *
- * Body: { completionNotes? }
- */
 router.post(
-  "/assignments/:id/complete",
+  "/unschedule/:jobId",
   requireRole(MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
-    const assignmentId = req.params.id;
-    const data = validateSchema(completeAssignmentSchema, req.body);
+    const jobId = req.params.jobId;
+    assertCanEditSchedule(req.user);
 
-    // Validate assignment belongs to tenant
-    const existing = await calendarRepository.getAssignmentById(companyId, assignmentId);
+    const data = validateSchema(unscheduleJobSchema, req.body);
+
+    const existing = await calendarRepository.getAssignmentById(companyId, jobId);
     if (!existing) {
-      throw createError(404, "Assignment not found");
+      throw createError(404, "Job not found");
     }
 
-    const result = await calendarRepository.completeAssignment(
-      companyId,
-      assignmentId,
-      data.completionNotes
-    );
+    let result;
+    try {
+      result = await calendarRepository.deleteAssignment(companyId, jobId, data.version);
+    } catch (error: any) {
+      if (error.message?.includes('modified by another user')) {
+        return res.status(409).json({ error: error.message, code: 'VERSION_MISMATCH' });
+      }
+      throw error;
+    }
 
     if (!result) {
-      throw createError(500, "Failed to complete assignment");
+      throw createError(500, "Failed to unschedule job");
     }
 
-    res.json(result);
+    // Version is NOT NULL DEFAULT 1 in DB - never null after write
+    res.json({
+      success: true,
+      id: result.id,
+      jobId: result.id,
+      scheduledStart: null,
+      scheduledEnd: null,
+      isAllDay: false,
+      version: result.version,
+      status: result.status,
+    });
   })
 );
 
 // ============================================================================
-// Legacy/Helper Endpoints (Backwards Compatibility)
+// GET /api/calendar/unscheduled - Backlog Jobs
 // ============================================================================
 
-/**
- * GET /api/calendar/unscheduled
- * Returns unscheduled jobs (stub for Slice 1)
- */
 router.get(
   "/unscheduled",
-  asyncHandler(async (_req: AuthedRequest, res: Response) => {
-    res.json([]);
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user?.id || "";
+    const userRole = req.user?.role || "technician";
+
+    const allUnscheduled = await calendarRepository.getUnscheduledJobs(companyId);
+    const unscheduled = filterJobsByRole(allUnscheduled, userRole, userId);
+
+    const transformedJobs = unscheduled.map((job) => ({
+      id: job.id,
+      jobId: job.jobId,
+      jobNumber: job.jobNumber,
+      jobType: job.jobType,
+      summary: job.summary,
+      status: job.status,
+      locationId: job.locationId,
+      locationName: job.locationName,
+      customerCompanyId: job.customerCompanyId,
+      customerCompanyName: job.customerCompanyName,
+      scheduledStart: null,
+      scheduledEnd: null,
+      assignedTechnicianIds: job.assignedTechnicianIds,
+      primaryTechnicianId: job.primaryTechnicianId,
+      technicians: job.technicians,
+      version: job.version,
+    }));
+
+    res.json(transformedJobs);
   })
 );
 
-/**
- * GET /api/calendar/overdue
- * Returns overdue assignments (stub for Slice 1)
- */
+// ============================================================================
+// GET /api/calendar/state-snapshot - Diagnostic Endpoint
+// ============================================================================
+
 router.get(
-  "/overdue",
-  asyncHandler(async (_req: AuthedRequest, res: Response) => {
-    res.json([]);
+  "/state-snapshot",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const snapshot = await calendarRepository.getStateSnapshot(companyId);
+
+    const openEqualsScheduledPlusBacklog =
+      snapshot.jobs.open === (snapshot.scheduled.open + snapshot.backlog.total);
+
+    res.json({
+      jobs: snapshot.jobs,
+      scheduled: snapshot.scheduled,
+      backlog: snapshot.backlog,
+      _invariants: { open_equals_scheduled_plus_backlog: openEqualsScheduledPlusBacklog },
+      _timestamp: new Date().toISOString(),
+    });
   })
 );
 
-/**
- * GET /api/calendar/old-unscheduled
- * Legacy endpoint (stub for Slice 1)
- */
-router.get(
-  "/old-unscheduled",
-  asyncHandler(async (_req: AuthedRequest, res: Response) => {
-    res.json([]);
-  })
-);
+// ============================================================================
+// POST /api/calendar/resize - Resize Job on Calendar
+// ============================================================================
 
-/**
- * POST /api/calendar/resize
- * Resize job block on calendar (drag-to-extend)
- */
 router.post(
   "/resize",
   requireRole(MANAGER_ROLES),

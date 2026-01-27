@@ -1,5 +1,23 @@
-// Job status utilities and constants
-// Extracted from JobDetailPage.tsx
+/**
+ * Job Status Utilities - Normalized 4-Status Model
+ *
+ * LIFECYCLE STATUSES (stored in jobs.status):
+ * - "open"      - Active job that can be worked on
+ * - "completed" - Work finished (may need invoicing)
+ * - "invoiced"  - Invoice created (locked for billing)
+ * - "archived"  - Historical archive (includes canceled jobs)
+ *
+ * DERIVED STATES (computed from fields, NOT status):
+ * - isScheduled = scheduledStart IS NOT NULL (canonical - isAllDay is display flag only)
+ * - isAssigned = assignedTechnicianIds.length > 0 OR primaryTechnicianId IS NOT NULL
+ *
+ * WORKFLOW SUB-STATUS (openSubStatus, only when status = 'open'):
+ * - null         - Default state
+ * - in_progress  - Work actively being performed
+ * - on_hold      - Job is blocked
+ * - on_route     - Technician traveling to job
+ * - needs_review - Needs supervisor review
+ */
 
 import {
   FileText,
@@ -7,88 +25,161 @@ import {
   Play,
   CheckCircle,
   Receipt,
-  XCircle,
+  Archive,
   Pause,
-  AlertTriangle,
   AlertCircle,
+  Truck,
+  Clock,
+  AlertTriangle,
 } from "lucide-react";
+import type { JobStatus, OpenSubStatus } from "@shared/schema";
+import { isJobScheduled, isJobAssigned, isJobOverdue } from "@shared/schema";
 
+// Valid lifecycle statuses - the ONLY allowed values for jobs.status
+export const VALID_JOB_STATUSES: readonly JobStatus[] = ["open", "completed", "invoiced", "archived"];
+
+// Terminal statuses - jobs cannot be rescheduled without explicit workflow transition
+export const TERMINAL_STATUSES: readonly JobStatus[] = ["invoiced", "archived"];
+
+// Status flow visualization for UI (lifecycle only)
 export const JOB_STATUS_FLOW = [
-  { key: "draft", label: "Draft", icon: FileText },
-  { key: "scheduled", label: "Scheduled", icon: Calendar },
-  { key: "in_progress", label: "In Progress", icon: Play },
-  { key: "requires_invoicing", label: "Requires Invoicing", icon: CheckCircle },
-  { key: "invoiced", label: "Invoiced", icon: Receipt },
+  { key: "open" as const, label: "Open", icon: FileText },
+  { key: "completed" as const, label: "Completed", icon: CheckCircle },
+  { key: "invoiced" as const, label: "Invoiced", icon: Receipt },
+  { key: "archived" as const, label: "Archived", icon: Archive },
 ] as const;
 
-// Status transitions for UI dropdowns (excludes legacy statuses)
-export const STATUS_TRANSITIONS: Record<string, string[]> = {
-  draft: ["scheduled", "cancelled"],
-  scheduled: ["in_progress", "action_required", "cancelled"],
-  in_progress: ["requires_invoicing", "invoiced", "action_required", "cancelled"],
-  action_required: ["scheduled", "in_progress", "cancelled"],
-  // LEGACY statuses can transition to action_required or active states (read-only, cannot be set)
-  on_hold: ["in_progress", "action_required", "cancelled"],
-  needs_parts: ["in_progress", "action_required", "cancelled"],
-  // LEGACY: "completed" treated same as "requires_invoicing"
-  completed: ["invoiced", "requires_invoicing"],
-  requires_invoicing: ["invoiced"],
-  invoiced: [],
-  cancelled: [],
+// Valid status transitions (lifecycle)
+export const STATUS_TRANSITIONS: Record<JobStatus, JobStatus[]> = {
+  open: ["completed", "invoiced", "archived"],
+  completed: ["invoiced", "archived", "open"],
+  invoiced: ["archived"],
+  archived: ["open"],
+};
+
+// Sub-status display info
+export const SUB_STATUS_INFO: Record<NonNullable<OpenSubStatus>, { label: string; icon: any }> = {
+  in_progress: { label: "In Progress", icon: Play },
+  on_hold: { label: "On Hold", icon: Pause },
+  on_route: { label: "On Route", icon: Truck },
+  needs_review: { label: "Needs Review", icon: AlertCircle },
 };
 
 export type JobStatusDisplay = {
   label: string;
   variant: "default" | "destructive" | "secondary" | "outline";
   icon: any;
+  priority: number; // Sort priority (lower = more important, shown first)
   isOverdue?: boolean;
 };
 
+/**
+ * Get display information for a job's status.
+ * Combines lifecycle status, sub-status, and derived states for UI display.
+ * Phase 2 Step 5: Overdue = effectiveEnd < now
+ * effectiveEnd priority: scheduledEnd > scheduledStart + estimatedDurationMinutes > scheduledStart
+ */
 export function getJobStatusDisplay(
-  status: string,
-  scheduledStart: Date | null
+  job: {
+    status: string;
+    openSubStatus?: string | null;
+    scheduledStart?: Date | string | null;
+    scheduledEnd?: Date | string | null;
+    estimatedDurationMinutes?: number | null;
+    isAllDay?: boolean | null;
+    primaryTechnicianId?: string | null;
+    assignedTechnicianIds?: string[] | null;
+  }
 ): JobStatusDisplay {
   const now = new Date();
+  const status = job.status as JobStatus;
 
-  // LEGACY: "completed" treated same as "requires_invoicing" for display
-  if (status === "completed") {
-    return { label: "Completed", variant: "secondary", icon: CheckCircle };
-  }
-  if (status === "requires_invoicing") {
-    return { label: "Requires Invoicing", variant: "secondary", icon: CheckCircle };
+  // Terminal statuses (priority 4-6: lowest priority for sorting)
+  if (status === "archived") {
+    return { label: "Archived", variant: "outline", icon: Archive, priority: 6 };
   }
   if (status === "invoiced") {
-    return { label: "Invoiced", variant: "default", icon: Receipt };
+    return { label: "Invoiced", variant: "default", icon: Receipt, priority: 5 };
   }
-  if (status === "cancelled") {
-    return { label: "Cancelled", variant: "outline", icon: XCircle };
-  }
-  // LEGACY: needs_parts and on_hold display as Action Required variants
-  if (status === "needs_parts") {
-    return { label: "Action Required (Needs Parts)", variant: "destructive", icon: AlertCircle };
-  }
-  if (status === "on_hold") {
-    return { label: "Action Required (On Hold)", variant: "destructive", icon: AlertCircle };
-  }
-  if (status === "action_required") {
-    return { label: "Action Required", variant: "destructive", icon: AlertCircle };
-  }
-  if (status === "in_progress") {
-    return { label: "In Progress", variant: "default", icon: Play };
-  }
-  if (status === "draft") {
-    return { label: "Draft", variant: "outline", icon: FileText };
+  if (status === "completed") {
+    return { label: "Completed", variant: "secondary", icon: CheckCircle, priority: 4 };
   }
 
-  if (status === "scheduled" && scheduledStart) {
-    const scheduled = new Date(scheduledStart);
-    if (scheduled < now) {
-      return { label: "Overdue", variant: "destructive", icon: AlertTriangle, isOverdue: true };
+  // Open status - check sub-status and derived states
+  if (status === "open") {
+    // Check sub-status first (on_hold/needs_review are high priority)
+    const subStatus = job.openSubStatus as OpenSubStatus | null;
+    if (subStatus === "on_hold") {
+      return { label: "On Hold", variant: "destructive", icon: Pause, priority: 0 };
     }
-    return { label: "Scheduled", variant: "default", icon: Calendar };
+    if (subStatus === "needs_review") {
+      return { label: "Needs Review", variant: "destructive", icon: AlertCircle, priority: 0 };
+    }
+    if (subStatus === "in_progress") {
+      return { label: "In Progress", variant: "default", icon: Play, priority: 1 };
+    }
+    if (subStatus === "on_route") {
+      return { label: "On Route", variant: "default", icon: Truck, priority: 1 };
+    }
+
+    // Check for overdue (using canonical predicate - effectiveEnd < now)
+    if (isJobOverdue(job, now)) {
+      return { label: "Overdue", variant: "destructive", icon: AlertTriangle, priority: 0, isOverdue: true };
+    }
+
+    // Check derived states for display label
+    if (isJobScheduled(job)) {
+      return { label: "Scheduled", variant: "default", icon: Calendar, priority: 2 };
+    }
+
+    const assigned = isJobAssigned(job);
+    if (assigned) {
+      return { label: "Assigned", variant: "secondary", icon: Clock, priority: 2 };
+    }
+
+    // Default open state (backlog)
+    return { label: "Open", variant: "outline", icon: FileText, priority: 3 };
   }
 
-  return { label: status, variant: "outline", icon: FileText };
+  // Fallback for any unknown status (should not happen with normalized data)
+  return { label: status, variant: "outline", icon: FileText, priority: 3 };
+}
+
+/**
+ * Simplified status display for status column (without derived state checks)
+ * Phase 2 Step 5: Overdue = effectiveEnd < now
+ * effectiveEnd priority: scheduledEnd > scheduledStart + estimatedDurationMinutes > scheduledStart
+ */
+export function getSimpleStatusDisplay(
+  status: string,
+  scheduledStart: Date | string | null,
+  scheduledEnd?: Date | string | null,
+  estimatedDurationMinutes?: number | null
+): JobStatusDisplay {
+  const now = new Date();
+  // Create minimal job object for canonical predicates (includes fields for effectiveEnd calculation)
+  const job = { status, scheduledStart, scheduledEnd, estimatedDurationMinutes };
+
+  switch (status as JobStatus) {
+    case "archived":
+      return { label: "Archived", variant: "outline", icon: Archive, priority: 6 };
+    case "invoiced":
+      return { label: "Invoiced", variant: "default", icon: Receipt, priority: 5 };
+    case "completed":
+      return { label: "Completed", variant: "secondary", icon: CheckCircle, priority: 4 };
+    case "open":
+      // Check for overdue using canonical predicate (based on effectiveEnd < now)
+      if (isJobOverdue(job, now)) {
+        return { label: "Overdue", variant: "destructive", icon: AlertTriangle, priority: 0, isOverdue: true };
+      }
+      if (scheduledStart) {
+        return { label: "Scheduled", variant: "default", icon: Calendar, priority: 2 };
+      }
+      return { label: "Open", variant: "outline", icon: FileText, priority: 3 };
+    default:
+      // Unknown status - return as-is
+      return { label: status, variant: "outline", icon: FileText, priority: 3 };
+  }
 }
 
 export type PriorityDisplay = {
@@ -109,4 +200,19 @@ export function getPriorityDisplay(priority: string): PriorityDisplay {
     default:
       return { label: priority, variant: "outline" };
   }
+}
+
+/**
+ * Check if a status is terminal (workflow complete)
+ */
+export function isTerminalStatus(status: string): boolean {
+  return TERMINAL_STATUSES.includes(status as JobStatus);
+}
+
+/**
+ * Check if a job can transition to a target status
+ */
+export function canTransitionTo(currentStatus: string, targetStatus: string): boolean {
+  const allowed = STATUS_TRANSITIONS[currentStatus as JobStatus] ?? [];
+  return allowed.includes(targetStatus as JobStatus);
 }

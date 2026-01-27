@@ -52,6 +52,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { format } from "date-fns";
 import type { Client, CustomerCompany, ClientNote, Job, Invoice } from "@shared/schema";
+import { isJobOverdue, isJobScheduled } from "@shared/schema";
 
 type OverviewTab = "activeWork" | "jobs" | "invoices";
 
@@ -182,16 +183,16 @@ export default function ClientDetailPage() {
     return job.locationId === clientId;
   });
 
-  const overdueJobs = companyJobs.filter((j) => {
-    if (!j.scheduledStart) return false;
-    const isPastDue = new Date(j.scheduledStart) < new Date();
-    const isOpenStatus = j.status !== "completed" && j.status !== "invoiced" && j.status !== "cancelled";
-    return isPastDue && isOpenStatus;
-  });
+  // Use canonical isJobOverdue predicate
+  const overdueJobs = companyJobs.filter((j) => isJobOverdue(j));
 
   const overdueJobIds = new Set(overdueJobs.map((j) => j.id));
   const activeJobs = companyJobs.filter(
-    (j) => (j.status === "in_progress" || j.status === "scheduled") && !overdueJobIds.has(j.id)
+    // Active = open + (scheduled OR in_progress)
+    // Use canonical isJobScheduled predicate for scheduled check
+    (j) => j.status === "open" &&
+           (isJobScheduled(j) || j.openSubStatus === "in_progress") &&
+           !overdueJobIds.has(j.id)
   );
 
   const createNoteMutation = useMutation({
@@ -648,8 +649,8 @@ const deleteNoteMutation = useMutation({
                                     {locations.find((l) => l.id === job.locationId)?.location || "Location"}
                                   </p>
                                 </div>
-                                <Badge variant={job.status === "in_progress" ? "default" : "secondary"}>
-                                  {job.status === "in_progress" ? "In Progress" : "Scheduled"}
+                                <Badge variant={job.openSubStatus === "in_progress" ? "default" : "secondary"}>
+                                  {job.openSubStatus === "in_progress" ? "In Progress" : "Scheduled"}
                                 </Badge>
                               </div>
                             ))}
@@ -680,16 +681,20 @@ const deleteNoteMutation = useMutation({
                         </div>
                         <Badge
                           variant={
-                            job.status === "completed"
+                            job.status === "completed" || job.status === "invoiced"
                               ? "default"
-                              : job.status === "in_progress"
+                              : job.openSubStatus === "in_progress"
                               ? "default"
-                              : job.status === "scheduled"
+                              : isJobScheduled(job)
                               ? "secondary"
                               : "outline"
                           }
                         >
-                          {job.status}
+                          {job.openSubStatus === "in_progress" ? "In Progress" :
+                           isJobScheduled(job) ? "Scheduled" :
+                           job.status === "completed" ? "Completed" :
+                           job.status === "invoiced" ? "Invoiced" :
+                           job.status === "archived" ? "Archived" : "Open"}
                         </Badge>
                       </div>
                     ))}
