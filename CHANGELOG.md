@@ -55,11 +55,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 #### Fix Scheduling Smoke Tests Schema Drift
 
-- **New `tests/ensureTestSchema.ts`** — idempotent DDL runner called from `tests/setup.ts`:
-  - Adds `open_sub_status` column to jobs table (IF NOT EXISTS)
-  - Adds `jobs_hold_reason_check` and `jobs_open_sub_status_invariant_check` constraints
-  - Runs before every test suite via vitest `setupFiles`
-  - Safe to run multiple times (fully idempotent)
+- **Renamed `tests/ensureTestSchema.ts` → `tests/ensureTestDbInvariants.ts`**:
+  - Scoped explicitly to NODE_ENV=test (throws on import outside tests)
+  - Applies idempotent DDL patches, then runs a schema-expectation audit
+  - Audit verifies required columns: `open_sub_status`, `version`,
+    `scheduled_start`, `scheduled_end`, `deleted_at`
+  - Audit verifies required constraints: `jobs_status_check`,
+    `jobs_open_sub_status_invariant_check`, `jobs_scheduled_end_requires_start_check`,
+    `jobs_all_day_start_midnight_check`, `jobs_all_day_end_2359_check`
+  - Fails hard with actionable "apply real migrations" message if any are missing
 
 - **Fixed `tests/scheduling.smoke.test.ts` Test 2 legacy status assertion**:
   - Removed `status: "scheduled"` from updateJob call (violated `jobs_status_check`)
@@ -67,7 +71,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Scheduling is now derived from `scheduledStart IS NOT NULL`, not status value
 
 - **Updated `tests/setup.ts`**:
-  - Calls `ensureTestSchema()` in `beforeAll` to sync DB schema before tests
+  - Sets `NODE_ENV=test` before importing invariants module
+  - Calls `ensureTestDbInvariants()` in `beforeAll`
 
 - **Files changed**:
   - `tests/ensureTestSchema.ts` — **NEW** — idempotent DDL patches
