@@ -1285,7 +1285,7 @@ export function isBacklogEligible(job: {
  *
  * effectiveEnd resolution order:
  * 1. scheduledEnd if present (includes all-day jobs which have 23:59:59 end time)
- * 2. scheduledStart + estimatedDurationMinutes if estimatedDurationMinutes present
+ * 2. scheduledStart + durationMinutes if durationMinutes present
  * 3. scheduledStart as fallback (point-in-time job, overdue once start time passes)
  *
  * For all-day jobs: MODEL A sets scheduledEnd to 23:59:59 of that day, so they're
@@ -1296,7 +1296,7 @@ export function isJobOverdue(
     status?: string | null;
     scheduledStart?: Date | string | null;
     scheduledEnd?: Date | string | null;
-    estimatedDurationMinutes?: number | null;
+    durationMinutes?: number | null;
   },
   now?: Date
 ): boolean {
@@ -1321,12 +1321,12 @@ export function isJobOverdue(
     effectiveEnd = job.scheduledEnd instanceof Date
       ? job.scheduledEnd
       : new Date(job.scheduledEnd);
-  } else if (job.estimatedDurationMinutes && job.estimatedDurationMinutes > 0) {
-    // Priority 2: Compute from scheduledStart + estimatedDurationMinutes
+  } else if (job.durationMinutes && job.durationMinutes > 0) {
+    // Priority 2: Compute from scheduledStart + durationMinutes
     const startDate = job.scheduledStart instanceof Date
       ? job.scheduledStart
       : new Date(job.scheduledStart!);
-    effectiveEnd = new Date(startDate.getTime() + job.estimatedDurationMinutes * 60 * 1000);
+    effectiveEnd = new Date(startDate.getTime() + job.durationMinutes * 60 * 1000);
   } else {
     // Priority 3: Fallback to scheduledStart (point-in-time job)
     effectiveEnd = job.scheduledStart instanceof Date
@@ -1452,7 +1452,7 @@ export const jobs = pgTable("jobs", {
   scheduledStart: timestamp("scheduled_start"),
   scheduledEnd: timestamp("scheduled_end"),
   isAllDay: boolean("is_all_day").notNull().default(false), // True = all-day event, appears in all-day lane
-  estimatedDurationMinutes: integer("estimated_duration_minutes"), // Estimated job duration for effectiveEnd calculation
+  durationMinutes: integer("duration_minutes"), // Scheduled job duration for effectiveEnd calculation
   actualStart: timestamp("actual_start"),
   actualEnd: timestamp("actual_end"),
   // Travel tracking (for billing drive time)

@@ -48,7 +48,7 @@ export class MaintenanceRepository extends BaseRepository {
         WHEN ${jobs.scheduledStart} IS NULL THEN 'unscheduled'
         WHEN CASE
           WHEN ${jobs.scheduledEnd} IS NOT NULL THEN ${jobs.scheduledEnd}
-          WHEN ${jobs.estimatedDurationMinutes} IS NOT NULL THEN ${jobs.scheduledStart} + (${jobs.estimatedDurationMinutes} || ' minutes')::interval
+          WHEN ${jobs.durationMinutes} IS NOT NULL THEN ${jobs.scheduledStart} + (${jobs.durationMinutes} || ' minutes')::interval
           ELSE ${jobs.scheduledStart}
         END < CURRENT_TIMESTAMP THEN 'overdue'
         WHEN DATE(${jobs.scheduledStart}) = CURRENT_DATE THEN 'today'

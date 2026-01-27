@@ -77,11 +77,21 @@ function transformToDto(job: CalendarAssignmentWithDetails): CalendarEventDto {
     dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
   }
 
-  const durationMinutes = isAllDay
-    ? 1440
-    : (job.scheduledStart && job.scheduledEnd
-      ? Math.round((job.scheduledEnd.getTime() - job.scheduledStart.getTime()) / 60000)
-      : 60);
+  // Canonical durationMinutes computation:
+  // 1. All-day events: 1440 (24 hours)
+  // 2. Timed with scheduledEnd: compute from timestamps
+  // 3. Job has durationMinutes: use it
+  // 4. Default: 60 minutes
+  let durationMinutes: number;
+  if (isAllDay) {
+    durationMinutes = 1440;
+  } else if (job.scheduledStart && job.scheduledEnd) {
+    durationMinutes = Math.round((job.scheduledEnd.getTime() - job.scheduledStart.getTime()) / 60000);
+  } else if (job.durationMinutes != null) {
+    durationMinutes = job.durationMinutes;
+  } else {
+    durationMinutes = 60;
+  }
 
   const startAt = job.scheduledStart?.toISOString() || null;
   const endAt = job.scheduledEnd?.toISOString() || null;

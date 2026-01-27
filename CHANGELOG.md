@@ -8,6 +8,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Phase 2 Step 8: Canonical Duration (Eliminate Scheduling Drift)
+
+- **Renamed `estimated_duration_minutes` → `duration_minutes`** on jobs table:
+  - Single canonical duration source for scheduled jobs
+  - Eliminates drift between "estimated" and "actual" scheduled duration
+  - Column rename via migration (no data change needed)
+
+- **Canonicalized `isJobOverdue` effectiveEnd computation**:
+  - Priority order: scheduledEnd > scheduledStart + durationMinutes > scheduledStart
+  - Removed estimatedDurationMinutes from overdue logic
+  - Updated SQL in dashboard.ts, admin.ts, maintenance.ts
+
+- **Canonicalized Calendar DTO durationMinutes**:
+  - All-day: 1440 (24 hours)
+  - Timed with scheduledEnd: computed from timestamps
+  - Job has durationMinutes: use job.durationMinutes
+  - Default fallback: 60 minutes
+  - Ensures UI uses same duration as scheduling
+
+- **Added durationMinutes to CalendarAssignmentWithDetails**:
+  - Interface now includes `durationMinutes: number | null`
+  - All calendar queries select jobs.durationMinutes
+  - Transformation objects include durationMinutes
+
+- **Files updated**:
+  - `shared/schema.ts` - Renamed column, updated isJobOverdue
+  - `server/storage/calendar.ts` - Added durationMinutes to interface and queries
+  - `server/storage/dashboard.ts` - SQL uses durationMinutes
+  - `server/storage/admin.ts` - SQL uses durationMinutes
+  - `server/storage/maintenance.ts` - SQL uses durationMinutes
+  - `server/routes/calendar.ts` - transformToDto uses job.durationMinutes
+  - `client/src/components/job/jobUtils.ts` - Updated type signatures
+
+- **Migration**: `migrations/2026_01_27_rename_estimated_to_duration_minutes.sql`
+  - Renames column from estimated_duration_minutes to duration_minutes
+
+- **Remaining estimatedDurationMinutes usages** (allowed - template/input defaults):
+  - `recurring_job_templates.estimatedDurationMinutes` - template default
+  - `job_visits.estimatedDurationMinutes` - visit duration estimate
+  - `tasks.estimatedDurationMinutes` - task duration estimate
+
 #### Phase 2 Step 7: Stability & Correctness Hardening
 
 - **DB CHECK constraints** - Added hard enforcement at database level:

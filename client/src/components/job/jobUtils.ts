@@ -77,7 +77,7 @@ export type JobStatusDisplay = {
  * Get display information for a job's status.
  * Combines lifecycle status, sub-status, and derived states for UI display.
  * Phase 2 Step 5: Overdue = effectiveEnd < now
- * effectiveEnd priority: scheduledEnd > scheduledStart + estimatedDurationMinutes > scheduledStart
+ * effectiveEnd priority: scheduledEnd > scheduledStart + durationMinutes > scheduledStart
  */
 export function getJobStatusDisplay(
   job: {
@@ -85,7 +85,7 @@ export function getJobStatusDisplay(
     openSubStatus?: string | null;
     scheduledStart?: Date | string | null;
     scheduledEnd?: Date | string | null;
-    estimatedDurationMinutes?: number | null;
+    durationMinutes?: number | null;
     isAllDay?: boolean | null;
     primaryTechnicianId?: string | null;
     assignedTechnicianIds?: string[] | null;
@@ -148,17 +148,17 @@ export function getJobStatusDisplay(
 /**
  * Simplified status display for status column (without derived state checks)
  * Phase 2 Step 5: Overdue = effectiveEnd < now
- * effectiveEnd priority: scheduledEnd > scheduledStart + estimatedDurationMinutes > scheduledStart
+ * effectiveEnd priority: scheduledEnd > scheduledStart + durationMinutes > scheduledStart
  */
 export function getSimpleStatusDisplay(
   status: string,
   scheduledStart: Date | string | null,
   scheduledEnd?: Date | string | null,
-  estimatedDurationMinutes?: number | null
+  durationMinutes?: number | null
 ): JobStatusDisplay {
   const now = new Date();
   // Create minimal job object for canonical predicates (includes fields for effectiveEnd calculation)
-  const job = { status, scheduledStart, scheduledEnd, estimatedDurationMinutes };
+  const job = { status, scheduledStart, scheduledEnd, durationMinutes };
 
   switch (status as JobStatus) {
     case "archived":

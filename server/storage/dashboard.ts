@@ -221,7 +221,7 @@ class DashboardRepository extends BaseRepository {
           // effectiveEnd < now (job should have finished)
           sql`CASE
             WHEN ${jobs.scheduledEnd} IS NOT NULL THEN ${jobs.scheduledEnd}
-            WHEN ${jobs.estimatedDurationMinutes} IS NOT NULL THEN ${jobs.scheduledStart} + (${jobs.estimatedDurationMinutes} || ' minutes')::interval
+            WHEN ${jobs.durationMinutes} IS NOT NULL THEN ${jobs.scheduledStart} + (${jobs.durationMinutes} || ' minutes')::interval
             ELSE ${jobs.scheduledStart}
           END < ${todayStart}`,
           // Only open status jobs (normalized model)

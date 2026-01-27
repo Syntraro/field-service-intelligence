@@ -391,7 +391,7 @@ export async function getTenantDetail(companyId: string): Promise<TenantDetail |
       sql`${jobs.scheduledStart} IS NOT NULL`,
       sql`CASE
         WHEN ${jobs.scheduledEnd} IS NOT NULL THEN ${jobs.scheduledEnd}
-        WHEN ${jobs.estimatedDurationMinutes} IS NOT NULL THEN ${jobs.scheduledStart} + (${jobs.estimatedDurationMinutes} || ' minutes')::interval
+        WHEN ${jobs.durationMinutes} IS NOT NULL THEN ${jobs.scheduledStart} + (${jobs.durationMinutes} || ' minutes')::interval
         ELSE ${jobs.scheduledStart}
       END < NOW()`,
       eq(jobs.status, "open")

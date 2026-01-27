@@ -81,6 +81,8 @@ export interface CalendarAssignmentWithDetails {
   scheduledStart: Date | null;
   scheduledEnd: Date | null;
   isAllDay: boolean;
+  /** Scheduled job duration in minutes (canonical) */
+  durationMinutes: number | null;
   assignedTechnicianIds: string[] | null;
   primaryTechnicianId: string | null;
   technicians: Array<{
@@ -175,6 +177,7 @@ export class CalendarRepository extends BaseRepository {
         scheduledStart: jobs.scheduledStart,
         scheduledEnd: jobs.scheduledEnd,
         isAllDay: jobs.isAllDay,
+        durationMinutes: jobs.durationMinutes,
         assignedTechnicianIds: jobs.assignedTechnicianIds,
         primaryTechnicianId: jobs.primaryTechnicianId,
         locationName: clientLocations.companyName,
@@ -295,6 +298,7 @@ export class CalendarRepository extends BaseRepository {
         scheduledStart: job.scheduledStart,
         scheduledEnd: job.scheduledEnd,
         isAllDay: job.isAllDay ?? false,
+        durationMinutes: job.durationMinutes,
         assignedTechnicianIds: job.assignedTechnicianIds,
         primaryTechnicianId: job.primaryTechnicianId,
         technicians,
@@ -371,6 +375,7 @@ export class CalendarRepository extends BaseRepository {
         scheduledStart: jobs.scheduledStart,
         scheduledEnd: jobs.scheduledEnd,
         isAllDay: jobs.isAllDay,
+        durationMinutes: jobs.durationMinutes,
         assignedTechnicianIds: jobs.assignedTechnicianIds,
         primaryTechnicianId: jobs.primaryTechnicianId,
         locationName: clientLocations.companyName,
@@ -492,6 +497,7 @@ export class CalendarRepository extends BaseRepository {
         scheduledStart: job.scheduledStart,
         scheduledEnd: job.scheduledEnd,
         isAllDay: job.isAllDay ?? false,
+        durationMinutes: job.durationMinutes,
         assignedTechnicianIds: job.assignedTechnicianIds,
         primaryTechnicianId: job.primaryTechnicianId,
         technicians,
