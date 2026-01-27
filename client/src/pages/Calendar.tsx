@@ -103,12 +103,12 @@ function findClientByLocationId(clients: unknown, locationId: string): any | und
 /** Get company name from unscheduled item with fallbacks */
 function getUnscheduledCompanyName(item: any): string {
   return (
+    item.customerCompanyName ||
     item.companyName ||
     item.clientName ||
     item.client?.companyName ||
     item.client?.name ||
     item.locationName ||
-    item.summary ||
     `Job #${item.jobNumber || item.id?.slice(0, 8) || "Unknown"}`
   );
 }
@@ -683,11 +683,19 @@ export default function Calendar() {
         });
       }
     } else if (overId.startsWith('weekly-')) {
-      // Dropped on hourly slot in weekly view (weekly-{dayName}-{hour}-{minute}-{dayNumber})
+      // Dropped on timed slot in weekly view (weekly-{dayName}-{hour}-{minute}-{dayNumber})
+      // Contract: exactly 5 segments after split → [prefix, dayName, hour, minute, dayNumber]
       const parts = overId.replace('weekly-', '').split('-');
       const hour = parseInt(parts[1]);
       const scheduledStartMinutes = parseInt(parts[2]); // 0/15/30/45
       const targetDay = parseInt(parts[3]);
+
+      // Strict: reject timed target if minute is missing or NaN
+      if (parts.length < 4 || isNaN(hour) || isNaN(scheduledStartMinutes) || isNaN(targetDay)) {
+        console.error('[Calendar] Invalid weekly timed target id (missing minute):', overId, { parts });
+        toast({ title: "Invalid drop target time. Please refresh.", variant: "destructive" });
+        return;
+      }
 
       if (isExistingCalendarAssignment) {
         const currentAssignment = events.find((a: any) => a.id === activeIdValue);
@@ -748,7 +756,8 @@ export default function Calendar() {
         });
       }
     } else if (overId.startsWith('daily-')) {
-      // Dropped on 15-min slot in daily view (daily-{technicianId}-{hour}-{minute}-{day}-{month}-{year})
+      // Dropped on timed slot in daily view (daily-{technicianId}-{hour}-{minute}-{day}-{month}-{year})
+      // Contract: exactly 6 segments after prefix strip → [techId, hour, minute, day, month, year]
       const parts = overId.replace('daily-', '').split('-');
       const technicianId = parts[0];
       const hour = parseInt(parts[1]);
@@ -756,6 +765,14 @@ export default function Calendar() {
       const targetDay = parseInt(parts[3]);
       const targetMonthIdx = parseInt(parts[4]); // 0-based month from Date.getMonth()
       const targetYr = parseInt(parts[5]);
+
+      // Strict: reject timed target if minute or any required segment is missing/NaN
+      if (parts.length < 6 || isNaN(hour) || isNaN(scheduledStartMinutes) || isNaN(targetDay) || isNaN(targetMonthIdx) || isNaN(targetYr)) {
+        console.error('[Calendar] Invalid daily timed target id (missing minute or segment):', overId, { parts });
+        toast({ title: "Invalid drop target time. Please refresh.", variant: "destructive" });
+        return;
+      }
+
       // Convert 0-based month to 1-based for API
       const targetMo = targetMonthIdx + 1;
 
@@ -1211,7 +1228,7 @@ export default function Calendar() {
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
-        distance: 8, // Require 8px of movement before activating drag
+        distance: 5, // Reduced from 8 for more responsive drag activation
       },
     })
   );
@@ -1662,6 +1679,7 @@ export default function Calendar() {
                       isOffMonth={true}
                       isPastMonth={isPastMonth}
                       isSaving={item._optimistic}
+                      summary={item.summary}
                     />
                   );
                 }}

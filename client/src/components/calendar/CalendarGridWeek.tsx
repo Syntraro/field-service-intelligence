@@ -3,6 +3,7 @@ import { useDroppable } from "@dnd-kit/core";
 import { Button } from "@/components/ui/button";
 import { DraggableClient } from "./DraggableClient";
 import { ResizableJobCard } from "./ResizableJobCard";
+import { EventPreviewPopover } from "./EventPreviewPopover";
 import {
   DENSITY_STYLES,
   ALLDAY_ROW_HEIGHTS,
@@ -11,7 +12,9 @@ import {
   getTechnicianColorForAssignment,
   calculateLanes,
   getMondayOfWeek,
+  isCalendarEventOverdue,
 } from "./calendarUtils";
+import { ensureClientsArray, findClientByEvent } from "./calendarClientLookup";
 
 // ============================================================================
 // Types
@@ -22,6 +25,7 @@ export interface CalendarGridWeekProps {
   density: CalendarDensity;
   companySettings: any;
   clients: any[];
+  technicians?: any[];
   eventIndexes: {
     eventsByDateKey: Map<string, CalendarEvent[]>;
   };
@@ -29,7 +33,7 @@ export interface CalendarGridWeekProps {
   expandedAllDaySlots: Set<string>;
   setExpandedAllDaySlots: React.Dispatch<React.SetStateAction<Set<string>>>;
   getTechnicianColor: (assignment: any) => ReturnType<typeof getTechnicianColorForAssignment>;
-  handleClientClick: (client: any, event: CalendarEvent) => void;
+  handleClientClick: (client: any, event: CalendarEvent, focusSchedule?: boolean) => void;
   handleResize: (assignmentId: string, newDurationMinutes: number) => void;
   weeklyScrollContainerRef: React.RefObject<HTMLDivElement>;
   /** Optional: hours to render (defaults to 0-23). Pass subset for business hours. */
@@ -38,6 +42,10 @@ export interface CalendarGridWeekProps {
   showFullDay?: boolean;
   /** Callback to toggle full day view */
   onToggleFullDay?: () => void;
+  /** Set of job IDs currently being saved (for visual feedback) */
+  savingJobIds?: Set<string>;
+  /** Quick action: unschedule */
+  onUnschedule?: (assignmentId: string, version: number) => void;
 }
 
 interface WeekDayData {
@@ -49,15 +57,6 @@ interface WeekDayData {
   dayEvents: CalendarEvent[];
   dayName: string;
   laneMap: Map<string, { laneIndex: number; totalLanes: number }>;
-}
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-/** Find a client by CalendarEvent's locationKey */
-function findClientByEvent(clients: any[], event: CalendarEvent): any | undefined {
-  return clients.find((c: any) => c.id === event.locationKey);
 }
 
 // ============================================================================
@@ -84,6 +83,13 @@ function AllDayDropZone({ dayName, dayNumber, children }: { dayName: string; day
 
 /** Quarter-hour drop zone (15-min increments) */
 function QuarterDropZone({ id }: { id: string }) {
+  // DEV assertion: weekly timed IDs must be exactly 5 segments (weekly-{Dow}-{HH}-{MM}-{DD})
+  if (process.env.NODE_ENV === 'development' && id.startsWith('weekly-')) {
+    const segments = id.split('-');
+    if (segments.length !== 5) {
+      throw new Error(`Timed droppable id missing minutes: ${id} (expected 5 segments, got ${segments.length})`);
+    }
+  }
   const { setNodeRef, isOver } = useDroppable({ id });
   return (
     <div
@@ -102,9 +108,12 @@ function HourlyDropZone({
   laneMap,
   density,
   clients,
+  technicians,
   getTechnicianColor,
   handleResize,
   handleClientClick,
+  savingJobIds,
+  onUnschedule,
 }: {
   dayName: string;
   hour: number;
@@ -113,9 +122,12 @@ function HourlyDropZone({
   laneMap?: Map<string, { laneIndex: number; totalLanes: number }>;
   density: CalendarDensity;
   clients: any[];
+  technicians?: any[];
   getTechnicianColor: (assignment: any) => ReturnType<typeof getTechnicianColorForAssignment>;
   handleResize: (assignmentId: string, newDurationMinutes: number) => void;
-  handleClientClick: (client: any, event: CalendarEvent) => void;
+  handleClientClick: (client: any, event: CalendarEvent, focusSchedule?: boolean) => void;
+  savingJobIds?: Set<string>;
+  onUnschedule?: (assignmentId: string, version: number) => void;
 }) {
   const rowHeight = DENSITY_STYLES[density].rowHeight;
 
@@ -133,6 +145,7 @@ function HourlyDropZone({
       {hourlyEvents.map((event) => {
         const client = findClientByEvent(clients, event);
         const lane = laneMap?.get(event.assignmentId) || { laneIndex: 0, totalLanes: 1 };
+        const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
         return client ? (
           <ResizableJobCard
             key={event.assignmentId}
@@ -143,12 +156,176 @@ function HourlyDropZone({
             getTechnicianColor={getTechnicianColor}
             densityStyle={DENSITY_STYLES[density].card}
             onClick={() => handleClientClick(client, event)}
+            onReschedule={() => handleClientClick(client, event, true)}
             isCompleted={event.completed}
-            isOverdue={!event.completed && new Date(event.scheduledDate) < new Date()}
+            isOverdue={isCalendarEventOverdue(event)}
             laneIndex={lane.laneIndex}
             totalLanes={lane.totalLanes}
+            isSaving={isSaving}
+            technicians={technicians}
+            onUnschedule={onUnschedule}
           />
         ) : null;
+      })}
+    </div>
+  );
+}
+
+// ============================================================================
+// All Day Row Component - Handles dynamic height based on content
+// ============================================================================
+//
+// REFACTORING NOTE (2026-01-26):
+// Extracted from CalendarGridWeek to fix overlap issue where all-day events
+// would overflow the fixed 84px row height and overlap timed slots below.
+// Now calculates height dynamically based on content, with min/max bounds.
+// See docs/REFACTORING_LOG.md "All-Day Row Overlap Fix".
+// ============================================================================
+
+/** Height per event item in all-day row (in px) */
+const ALLDAY_EVENT_HEIGHT = 28;
+/** Minimum height for all-day row */
+const ALLDAY_MIN_HEIGHT = 64;
+/** Maximum visible events before capping (when not expanded) */
+const ALLDAY_MAX_VISIBLE = 3;
+/** Maximum height for all-day row (prevents excessive scrolling) */
+const ALLDAY_MAX_HEIGHT = 200;
+
+interface AllDayRowProps {
+  gridCols: string;
+  density: CalendarDensity;
+  weekDaysData: WeekDayData[];
+  expandedAllDaySlots: Set<string>;
+  setExpandedAllDaySlots: React.Dispatch<React.SetStateAction<Set<string>>>;
+  clients: any[];
+  technicians?: any[];
+  getTechnicianColor: (assignment: any) => ReturnType<typeof getTechnicianColorForAssignment>;
+  handleClientClick: (client: any, event: CalendarEvent, focusSchedule?: boolean) => void;
+  savingJobIds?: Set<string>;
+}
+
+function AllDayRow({
+  gridCols,
+  density,
+  weekDaysData,
+  expandedAllDaySlots,
+  setExpandedAllDaySlots,
+  clients,
+  technicians,
+  getTechnicianColor,
+  handleClientClick,
+  savingJobIds,
+}: AllDayRowProps) {
+  // Calculate max all-day events across all days for this week
+  const maxAllDayCount = useMemo(() => {
+    return Math.max(
+      1,
+      ...weekDaysData.map(d => d.dayEvents.filter(e => e.isAllDay).length)
+    );
+  }, [weekDaysData]);
+
+  // Check if any slot is expanded
+  const anyExpanded = useMemo(() => {
+    return weekDaysData.some(d => {
+      const slotKey = `${d.dayName}-${d.dayNumber}`;
+      return expandedAllDaySlots.has(slotKey);
+    });
+  }, [weekDaysData, expandedAllDaySlots]);
+
+  // Calculate dynamic height:
+  // - If collapsed: min(maxAllDayCount, ALLDAY_MAX_VISIBLE) events + button space
+  // - If expanded: all events up to ALLDAY_MAX_HEIGHT
+  const calculatedHeight = useMemo(() => {
+    const visibleCount = anyExpanded
+      ? maxAllDayCount
+      : Math.min(maxAllDayCount, ALLDAY_MAX_VISIBLE);
+
+    // Add extra space for "show more" button if needed
+    const buttonSpace = maxAllDayCount > ALLDAY_MAX_VISIBLE ? 24 : 0;
+    const contentHeight = visibleCount * ALLDAY_EVENT_HEIGHT + 16 + buttonSpace; // 16px padding
+
+    return Math.max(ALLDAY_MIN_HEIGHT, Math.min(contentHeight, ALLDAY_MAX_HEIGHT));
+  }, [maxAllDayCount, anyExpanded]);
+
+  return (
+    <div
+      className={`grid ${gridCols} sticky top-[41px] bg-background z-20 border-b transition-all duration-200`}
+      style={{ minHeight: calculatedHeight }}
+    >
+      <div className="px-1.5 py-1 text-[10px] font-semibold border-r bg-primary/10 flex items-start">
+        All Day
+      </div>
+      {weekDaysData.map((dayData) => {
+        const allDayEvents = dayData.dayEvents.filter((e) => e.isAllDay);
+        const slotKey = `${dayData.dayName}-${dayData.dayNumber}`;
+        const isExpanded = expandedAllDaySlots.has(slotKey);
+        const visibleEvents = isExpanded ? allDayEvents : allDayEvents.slice(0, ALLDAY_MAX_VISIBLE);
+        const hiddenCount = Math.max(0, allDayEvents.length - ALLDAY_MAX_VISIBLE);
+
+        return (
+          <AllDayDropZone key={`${dayData.dayName}-allday`} dayName={dayData.dayName} dayNumber={dayData.dayNumber}>
+            <div className="p-1 space-y-1">
+              {visibleEvents.map((event) => {
+                const client = findClientByEvent(clients, event);
+                const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
+                const isOverdue = isCalendarEventOverdue(event);
+                return client ? (
+                  <EventPreviewPopover
+                    key={event.assignmentId}
+                    event={event.raw || event}
+                    client={client}
+                    technicians={technicians}
+                    isSaving={isSaving}
+                    isOverdue={isOverdue}
+                  >
+                    <DraggableClient
+                      id={event.assignmentId}
+                      client={client}
+                      inCalendar
+                      onClick={() => handleClientClick(client, event)}
+                      isCompleted={event.completed}
+                      isOverdue={isOverdue}
+                      assignment={event.raw}
+                      technicianColor={getTechnicianColor(event.raw)}
+                      densityStyle={DENSITY_STYLES[density].card}
+                      isSaving={isSaving}
+                    />
+                  </EventPreviewPopover>
+                ) : null;
+              })}
+              {hiddenCount > 0 && !isExpanded && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-1 text-[10px] w-full"
+                  onClick={() => {
+                    setExpandedAllDaySlots(prev => new Set(prev).add(slotKey));
+                  }}
+                  data-testid={`button-view-all-${dayData.dayName}`}
+                >
+                  +{hiddenCount} more
+                </Button>
+              )}
+              {isExpanded && allDayEvents.length > ALLDAY_MAX_VISIBLE && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-1 text-[10px] w-full"
+                  onClick={() => {
+                    setExpandedAllDaySlots(prev => {
+                      const next = new Set(prev);
+                      next.delete(slotKey);
+                      return next;
+                    });
+                  }}
+                  data-testid={`button-collapse-${dayData.dayName}`}
+                >
+                  Show less
+                </Button>
+              )}
+            </div>
+          </AllDayDropZone>
+        );
       })}
     </div>
   );
@@ -163,6 +340,7 @@ export function CalendarGridWeek({
   density,
   companySettings,
   clients,
+  technicians = [],
   eventIndexes,
   selectedTechnicianId,
   expandedAllDaySlots,
@@ -174,6 +352,8 @@ export function CalendarGridWeek({
   visibleHours,
   showFullDay,
   onToggleFullDay,
+  savingJobIds,
+  onUnschedule,
 }: CalendarGridWeekProps) {
   // Get week dates based on currentDate (Monday to Sunday)
   const currentWeekStart = getMondayOfWeek(currentDate);
@@ -223,6 +403,19 @@ export function CalendarGridWeek({
 
   const gridCols = "grid-cols-[3.5rem_repeat(7,minmax(0,1fr))]";
 
+  // Calculate current time position for "Now" line
+  const now = new Date();
+  const todayIndex = weekDaysData.findIndex(d => d.date.toDateString() === now.toDateString());
+  const currentHour = now.getHours();
+  const currentMinute = now.getMinutes();
+  const rowHeight = DENSITY_STYLES[density].rowHeight;
+  // Find the index of the current hour within visible hours
+  const firstVisibleHour = hoursToRender[0] ?? 0;
+  const hourIndexInGrid = currentHour - firstVisibleHour;
+  // Only show "Now" line if current hour is within visible range
+  const isCurrentHourVisible = hoursToRender.includes(currentHour);
+  const currentTimePosition = hourIndexInGrid * rowHeight + (currentMinute / 60) * rowHeight;
+
   return (
     <div ref={weeklyScrollContainerRef} className="overflow-y-auto flex-1 min-h-0 max-h-full">
       {/* Header Row - Sticky at top */}
@@ -252,100 +445,64 @@ export function CalendarGridWeek({
         })}
       </div>
 
-      {/* All Day Slot - Sticky below header */}
-      <div
-        className={`grid ${gridCols} sticky top-[41px] bg-background z-20 border-b`}
-        style={{ height: ALLDAY_ROW_HEIGHTS[density] ?? 84 }}
-      >
-        <div className="px-1.5 py-1 text-[10px] font-semibold border-r bg-primary/10 flex items-center h-full">
-          All Day
-        </div>
-        {weekDaysData.map((dayData) => {
-          const allDayEvents = dayData.dayEvents.filter((e) => e.isAllDay);
-          const slotKey = `${dayData.dayName}-${dayData.dayNumber}`;
-          const isExpanded = expandedAllDaySlots.has(slotKey);
-          const visibleEvents = isExpanded ? allDayEvents : allDayEvents.slice(0, 3);
-          const hiddenCount = Math.max(0, allDayEvents.length - 3);
+      {/* All Day Slot - Sticky below header, height grows with content to prevent overlap */}
+      <AllDayRow
+        gridCols={gridCols}
+        density={density}
+        weekDaysData={weekDaysData}
+        expandedAllDaySlots={expandedAllDaySlots}
+        setExpandedAllDaySlots={setExpandedAllDaySlots}
+        clients={clients}
+        technicians={technicians}
+        getTechnicianColor={getTechnicianColor}
+        handleClientClick={handleClientClick}
+        savingJobIds={savingJobIds}
+      />
 
-          return (
-            <AllDayDropZone key={`${dayData.dayName}-allday`} dayName={dayData.dayName} dayNumber={dayData.dayNumber}>
-              <div className="p-1">
-                {visibleEvents.map((event) => {
-                  const client = findClientByEvent(clients, event);
-                  return client ? (
-                    <DraggableClient
-                      key={event.assignmentId}
-                      id={event.assignmentId}
-                      client={client}
-                      inCalendar
-                      onClick={() => handleClientClick(client, event)}
-                      isCompleted={event.completed}
-                      isOverdue={!event.completed && new Date(event.scheduledDate) < new Date()}
-                      assignment={event.raw}
-                      technicianColor={getTechnicianColor(event.raw)}
-                      densityStyle={DENSITY_STYLES[density].card}
-                    />
-                  ) : null;
-                })}
-                {hiddenCount > 0 && !isExpanded && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 px-1 text-[10px] w-full"
-                    onClick={() => {
-                      setExpandedAllDaySlots(prev => new Set(prev).add(slotKey));
-                    }}
-                    data-testid={`button-view-all-${dayData.dayName}`}
-                  >
-                    +{hiddenCount} more
-                  </Button>
-                )}
-                {isExpanded && allDayEvents.length > 3 && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 px-1 text-[10px] w-full"
-                    onClick={() => {
-                      setExpandedAllDaySlots(prev => {
-                        const next = new Set(prev);
-                        next.delete(slotKey);
-                        return next;
-                      });
-                    }}
-                    data-testid={`button-collapse-${dayData.dayName}`}
-                  >
-                    Show less
-                  </Button>
-                )}
-              </div>
-            </AllDayDropZone>
-          );
-        })}
-      </div>
-
-      {/* Hourly Slots */}
-      {hours.map((h) => (
-        <div key={h.hour} className={`grid ${gridCols} border-b`}>
-          <div className={`px-1.5 py-1 text-[10px] font-medium border-r flex items-center justify-center ${h.hour === startHour ? 'bg-primary/30 font-bold' : 'bg-muted/20'}`}>
-            {h.display}
+      {/* Hourly Slots - wrapped in relative container for "Now" line */}
+      <div className="relative">
+        {/* Current time "Now" line indicator - positioned relative to hourly grid */}
+        {todayIndex >= 0 && isCurrentHourVisible && (
+          <div
+            className="absolute z-40 pointer-events-none"
+            style={{
+              top: `${currentTimePosition}px`,
+              left: `calc(3.5rem + ${(todayIndex / 7) * 100}% * (1 - 3.5rem / 100%))`,
+              width: `calc((100% - 3.5rem) / 7)`,
+            }}
+          >
+            <div className="flex items-center">
+              <div className="w-2 h-2 rounded-full bg-red-500 -ml-1" />
+              <div className="flex-1 h-[2px] bg-red-500" />
+            </div>
           </div>
-          {weekDaysData.map((dayData) => (
-            <MemoizedHourlyDropZone
-              key={`${dayData.dayName}-${h.hour}`}
-              dayName={dayData.dayName}
-              hour={h.hour}
-              dayNumber={dayData.dayNumber}
-              dayEvents={dayData.dayEvents}
-              laneMap={dayData.laneMap}
-              density={density}
-              clients={clients}
-              getTechnicianColor={getTechnicianColor}
-              handleResize={handleResize}
-              handleClientClick={handleClientClick}
-            />
-          ))}
-        </div>
-      ))}
+        )}
+        {hours.map((h) => (
+          <div key={h.hour} className={`grid ${gridCols} border-b`}>
+            <div className={`px-1.5 py-1 text-[10px] font-medium border-r flex items-center justify-center ${h.hour === startHour ? 'bg-primary/30 font-bold' : 'bg-muted/20'}`}>
+              {h.display}
+            </div>
+            {weekDaysData.map((dayData) => (
+              <MemoizedHourlyDropZone
+                key={`${dayData.dayName}-${h.hour}`}
+                dayName={dayData.dayName}
+                hour={h.hour}
+                dayNumber={dayData.dayNumber}
+                dayEvents={dayData.dayEvents}
+                laneMap={dayData.laneMap}
+                density={density}
+                clients={clients}
+                technicians={technicians}
+                getTechnicianColor={getTechnicianColor}
+                handleResize={handleResize}
+                handleClientClick={handleClientClick}
+                savingJobIds={savingJobIds}
+                onUnschedule={onUnschedule}
+              />
+            ))}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

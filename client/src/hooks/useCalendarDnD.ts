@@ -113,6 +113,23 @@ const DEFAULT_DURATION_MINUTES = 60;
 const MAX_DURATION_MINUTES = 1440; // 24 hours
 
 /**
+ * Canonicalize a raw or optimistic event so the React Query cache
+ * always contains `{ startAt, endAt }` regardless of which field names
+ * the server or optimistic write used.
+ *
+ * Maps `scheduledStart → startAt`, `scheduledEnd → endAt`.
+ * Safe no-op when fields already exist.
+ */
+function toCanonicalEvent(raw: any): any {
+  if (!raw || typeof raw !== 'object') return raw;
+  return {
+    ...raw,
+    startAt: raw.startAt ?? raw.scheduledStart ?? null,
+    endAt: raw.endAt ?? raw.scheduledEnd ?? null,
+  };
+}
+
+/**
  * Build a Date object from year/month/day/hour/minutes.
  * Uses local timezone. Returns null if invalid.
  */
@@ -329,6 +346,24 @@ export function useCalendarDnD(
     queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
   }, []);
 
+  /**
+   * Canonicalize all events in the current calendar query cache so every
+   * entry carries `{ startAt, endAt }`.  Must be called after
+   * `refetchCalendar()` resolves, because the fresh server response may
+   * contain `scheduledStart`/`scheduledEnd` instead of `startAt`/`endAt`.
+   */
+  const canonicalizeCalendarCache = useCallback(() => {
+    const queryKey = getCalendarQueryKey();
+    const cached = queryClient.getQueryData(queryKey) as any;
+    if (!cached || typeof cached !== 'object') return;
+    const rawEvents = cached.events ?? cached.assignments;
+    if (!Array.isArray(rawEvents)) return;
+    queryClient.setQueryData(queryKey, {
+      ...cached,
+      events: rawEvents.map(toCanonicalEvent),
+    });
+  }, [getCalendarQueryKey]);
+
   // ========================================
   // Create Assignment Mutation
   // ========================================
@@ -399,27 +434,44 @@ export function useCalendarDnD(
       const previousData = queryClient.getQueryData(queryKey);
       snapshotRef.current = { queryKey, data: previousData };
 
-      // Optimistic update: add a placeholder event
+      // Optimistic update: add a placeholder event with canonical startAt/endAt
+      // so normalizeAssignments() picks up the exact drop time (not stale cached values)
       const prev = previousData as any;
       if (prev && typeof prev === 'object' && ('events' in prev || 'assignments' in prev)) {
         const currentEvents = prev.events ?? prev.assignments ?? [];
+        const isAllDay = params.allDay ?? (params.scheduledHour === null || params.scheduledHour === undefined);
+        const dateStr = buildISODate(params.targetYear, params.targetMonth, params.day);
+        let startAt: string | null = null;
+        let endAt: string | null = null;
+        if (!isAllDay && params.scheduledHour != null) {
+          const range = computeTimedEventRange(
+            params.targetYear, params.targetMonth, params.day,
+            params.scheduledHour, params.scheduledStartMinutes ?? 0,
+            params.durationMinutes ?? DEFAULT_DURATION_MINUTES
+          );
+          if (range) { startAt = range.startAt; endAt = range.endAt; }
+        }
         const optimisticEvent = {
           id: `optimistic-${Date.now()}`,
           jobId: params.jobId,
           year: params.targetYear,
           month: params.targetMonth,
           day: params.day,
+          date: dateStr,
+          startAt,
+          endAt,
+          allDay: isAllDay,
           scheduledHour: params.scheduledHour ?? null,
           scheduledStartMinutes: params.scheduledStartMinutes ?? 0,
           durationMinutes: params.durationMinutes ?? 60,
-          isAllDay: params.allDay ?? (params.scheduledHour === null),
+          isAllDay,
           _optimistic: true,
-          _saving: true, // Mark as saving for visual feedback
+          _saving: true,
         };
 
         queryClient.setQueryData(queryKey, {
           ...prev,
-          events: [...currentEvents, optimisticEvent],
+          events: [...currentEvents, toCanonicalEvent(optimisticEvent)],
         });
       }
 
@@ -429,6 +481,7 @@ export function useCalendarDnD(
       clearJobSaving(params.jobId);
       snapshotRef.current = null;
       await refetchCalendar();
+      canonicalizeCalendarCache();
       invalidateCalendarQueries();
       toast({
         title: "Job scheduled",
@@ -577,23 +630,39 @@ export function useCalendarDnD(
       const useYear = params.targetYear ?? year;
       const useMonth = params.targetMonth ?? month;
 
-      // Optimistic update: modify the event in place
+      // Optimistic update: modify the event in place with canonical startAt/endAt
+      // Override old startAt/endAt so normalizeAssignments() uses the new drop time
       const prev = previousData as any;
       if (prev && typeof prev === 'object' && ('events' in prev || 'assignments' in prev)) {
         const currentEvents = prev.events ?? prev.assignments ?? [];
         const updatedEvents = currentEvents.map((a: any) => {
           if (a.id === params.id) {
-            return {
+            const isAllDay = params.allDay ?? (params.scheduledHour === null || params.scheduledHour === undefined);
+            const dateStr = buildISODate(useYear, useMonth, params.day);
+            let startAt: string | null = null;
+            let endAt: string | null = null;
+            if (!isAllDay) {
+              const hour = params.scheduledHour ?? a.scheduledHour ?? 9;
+              const mins = params.scheduledStartMinutes ?? a.scheduledStartMinutes ?? 0;
+              const dur = params.durationMinutes ?? a.durationMinutes ?? DEFAULT_DURATION_MINUTES;
+              const range = computeTimedEventRange(useYear, useMonth, params.day, hour, mins, dur);
+              if (range) { startAt = range.startAt; endAt = range.endAt; }
+            }
+            return toCanonicalEvent({
               ...a,
               year: useYear,
               month: useMonth,
               day: params.day,
+              date: dateStr,
+              startAt,
+              endAt,
+              allDay: isAllDay,
               scheduledHour: params.scheduledHour ?? a.scheduledHour,
               scheduledStartMinutes: params.scheduledStartMinutes ?? a.scheduledStartMinutes,
-              isAllDay: params.allDay ?? (params.scheduledHour === null),
+              isAllDay,
               _optimistic: true,
-              _saving: true, // Mark as saving for visual feedback
-            };
+              _saving: true,
+            });
           }
           return a;
         });
@@ -610,6 +679,7 @@ export function useCalendarDnD(
       clearJobSaving(params.id);
       snapshotRef.current = null;
       await refetchCalendar();
+      canonicalizeCalendarCache();
       invalidateCalendarQueries();
       toast({
         title: "Updated",
@@ -700,6 +770,7 @@ export function useCalendarDnD(
     },
     onSuccess: async () => {
       await refetchCalendar();
+      canonicalizeCalendarCache();
       invalidateCalendarQueries();
     },
     onError: async (error: any, params) => {
@@ -822,6 +893,7 @@ export function useCalendarDnD(
       // Invalidate queries BEFORE refetch to ensure fresh data
       invalidateCalendarQueries();
       await refetchCalendar();
+      canonicalizeCalendarCache();
 
       toast({
         title: "Removed",

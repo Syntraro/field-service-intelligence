@@ -127,7 +127,8 @@ export default function TechnicianDashboard() {
     enabled: !!selectedClient,
   });
 
-  const allAssignments: Assignment[] = [
+  // Model A: prefer 'events' key from calendar API response
+  const allEvents: Assignment[] = [
     ...(currentMonthData?.events ?? currentMonthData?.assignments ?? []),
     ...(nextMonthData?.events ?? nextMonthData?.assignments ?? [])
   ];
@@ -147,7 +148,7 @@ export default function TechnicianDashboard() {
   const upcomingDays = Array.from({ length: 7 }, (_, i) => addDays(today, i));
 
   const assignmentsByDate = upcomingDays.map(date => {
-    const dayAssignments = allAssignments
+    const dayAssignments = allEvents
       .filter(a => {
         const scheduledDate = parseISO(a.scheduledDate);
         return isSameDay(scheduledDate, date);

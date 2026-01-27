@@ -2,6 +2,8 @@
 // Extracted from Calendar.tsx to reduce file size and improve maintainability
 // MODEL A: Calendar events ARE jobs — no separate "assignment" entity
 
+import { isJobOverdue } from "@shared/schema";
+
 export const MONTH_ABBREV = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 // ============================================================================
@@ -271,6 +273,13 @@ export function normalizeAssignments(rawEvents: any[]): CalendarEvent[] {
         );
       }
 
+      // Ensure raw always carries canonical startAt/endAt so downstream code
+      // (e.g. new Date(event.raw.startAt)) never hits "Invalid time value".
+      // Mutation responses use scheduledStart/scheduledEnd; patch them here.
+      const patchedRaw = (a.startAt === undefined && startIso) || (a.endAt === undefined && endIso)
+        ? { ...a, startAt: a.startAt ?? startIso ?? null, endAt: a.endAt ?? endIso ?? null }
+        : a;
+
       return {
         // MODEL A: assignmentId === jobId (no separate assignment entity)
         assignmentId: a.jobId ?? a.id,
@@ -289,7 +298,7 @@ export function normalizeAssignments(rawEvents: any[]): CalendarEvent[] {
         completed: a.completed || a.status === 'completed' || false,
         jobNumber: a.jobNumber || null,
         scheduledDate: a.scheduledDate || dateKey,
-        raw: a,
+        raw: patchedRaw,
         // Include hidden technician flag from server diagnostics
         hasHiddenTechnician: a.hasHiddenTechnician === true,
       };
@@ -508,6 +517,31 @@ export function toScheduleDate(year: unknown, month: unknown, day: unknown): Dat
     typeof day === 'number' ? day : parseInt(String(day), 10)
   );
   return date ?? new Date();
+}
+
+/**
+ * Thin adapter that delegates overdue logic to the canonical shared
+ * `isJobOverdue()` predicate in `shared/schema.ts`.
+ *
+ * Maps CalendarEvent / raw fields to the shape isJobOverdue expects:
+ *   status          → raw.status ?? "open"
+ *   scheduledStart  → raw.startAt ?? raw.scheduledStart
+ *   scheduledEnd    → raw.endAt   ?? raw.scheduledEnd
+ *   durationMinutes → event.durationMinutes
+ *
+ * No local fallbacks — the single shared rule is the only source of truth.
+ */
+export function isCalendarEventOverdue(event: CalendarEvent, now: Date = new Date()): boolean {
+  const raw = event.raw ?? {};
+  return isJobOverdue(
+    {
+      status: raw.status ?? "open",
+      scheduledStart: raw.startAt ?? raw.scheduledStart ?? null,
+      scheduledEnd: raw.endAt ?? raw.scheduledEnd ?? null,
+      durationMinutes: event.durationMinutes ?? null,
+    } as any,
+    now,
+  );
 }
 
 // Get start minutes for an assignment

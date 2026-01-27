@@ -1,10 +1,15 @@
+import { useState } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { X } from "lucide-react";
-import { DraggableClient } from "./DraggableClient";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { CalendarEventChip } from "./CalendarEventChip";
+import { EventPreviewPopover } from "./EventPreviewPopover";
 import {
   CalendarEvent,
   getTechnicianColorForAssignment,
+  isCalendarEventOverdue,
 } from "./calendarUtils";
+import { findClientByEvent } from "./calendarClientLookup";
 
 // ============================================================================
 // Types
@@ -23,6 +28,10 @@ export interface CalendarGridMonthProps {
   getTechnicianColor: (assignment: any) => ReturnType<typeof getTechnicianColorForAssignment>;
   densityStyle: string;
   gapStyle: string;
+  /** Set of job IDs currently being saved (for visual feedback) */
+  savingJobIds?: Set<string>;
+  /** List of technicians for hover preview */
+  technicians?: any[];
 }
 
 interface DroppableDayProps {
@@ -38,15 +47,8 @@ interface DroppableDayProps {
   getTechnicianColor?: (assignment: any) => ReturnType<typeof getTechnicianColorForAssignment>;
   densityStyle?: string;
   gapStyle?: string;
-}
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-/** Find a client by CalendarEvent's locationKey */
-function findClientByEvent(clients: any[], event: CalendarEvent): any | undefined {
-  return clients.find((c: any) => c.id === event.locationKey);
+  savingJobIds?: Set<string>;
+  technicians?: any[];
 }
 
 // ============================================================================
@@ -66,54 +68,146 @@ function DroppableDay({
   getTechnicianColor,
   densityStyle,
   gapStyle,
+  savingJobIds,
+  technicians = [],
 }: DroppableDayProps) {
   const { setNodeRef, isOver } = useDroppable({ id: `day-${day}` });
+  const [popoverOpen, setPopoverOpen] = useState(false);
 
-  // Check if day is overdue
-  const today = new Date();
-  const dayDate = new Date(year, month - 1, day);
-  const isOverdue = dayDate < today;
+  // Show max 3 chips, then "+N more" popover trigger
+  const MAX_VISIBLE = 3;
+  const visibleEvents = events.slice(0, MAX_VISIBLE);
+  const hiddenEvents = events.slice(MAX_VISIBLE);
+  const hiddenCount = hiddenEvents.length;
 
   return (
     <div
       ref={setNodeRef}
-      className={`min-h-20 px-1 py-1 border transition-all flex flex-col ${
+      className={`min-h-[68px] px-1 py-1 border transition-all flex flex-col ${
         isOver
           ? 'bg-primary/10 border-primary border-2 ring-2 ring-primary/30 shadow-md'
           : 'bg-background'
       }`}
       data-testid={`calendar-day-${day}`}
     >
-      <div className="text-xs text-muted-foreground mb-0.5 px-0.5">{day}</div>
-      <div className={`flex-1 flex flex-col ${gapStyle || 'gap-1'}`}>
-        {events.map((event) => {
+      {/* Day number */}
+      <div className="text-[11px] text-muted-foreground leading-none px-0.5 mb-1 flex items-center justify-between">
+        <span className="font-medium">{day}</span>
+        {events.length > 0 && (
+          <span className="text-[9px] text-muted-foreground/60">{events.length}</span>
+        )}
+      </div>
+
+      {/* Event chips */}
+      <div className="flex-1 flex flex-col gap-[2px]">
+        {visibleEvents.map((event) => {
           const client = findClientByEvent(clients, event);
-          return client ? (
+          const title = client?.companyName || event.raw?.summary || "Untitled";
+          const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
+          return (
             <div key={event.assignmentId} className="relative group">
-              <DraggableClient
-                id={event.assignmentId}
+              <EventPreviewPopover
+                event={event.raw || event}
                 client={client}
-                inCalendar={true}
-                onClick={() => onClientClick(client, event)}
-                isCompleted={event.completed}
-                isOverdue={!event.completed && isOverdue}
-                assignment={event.raw}
-                technicianColor={getTechnicianColor?.(event.raw)}
-                densityStyle={densityStyle}
-              />
+                technicians={technicians}
+                isSaving={isSaving}
+                isOverdue={isCalendarEventOverdue(event)}
+              >
+                <CalendarEventChip
+                  id={event.assignmentId}
+                  jobNumber={event.jobNumber}
+                  title={title}
+                  onClick={() => onClientClick(client, event)}
+                  isCompleted={event.completed}
+                  isOverdue={isCalendarEventOverdue(event)}
+                  technicianColor={getTechnicianColor?.(event.raw)}
+                  isSaving={isSaving}
+                />
+              </EventPreviewPopover>
+              {/* Remove button on hover */}
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   onRemove(event.assignmentId);
                 }}
-                className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-destructive text-destructive-foreground opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-10"
+                className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-destructive text-destructive-foreground opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-10"
                 data-testid={`remove-assignment-${event.assignmentId}`}
               >
-                <X className="h-3 w-3" />
+                <X className="h-2 w-2" />
               </button>
             </div>
-          ) : null;
+          );
         })}
+
+        {/* +N more popover */}
+        {hiddenCount > 0 && (
+          <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+            <PopoverTrigger asChild>
+              <button
+                onClick={(e) => e.stopPropagation()}
+                className="h-[16px] text-[9px] text-primary hover:text-primary/80 hover:underline flex items-center justify-center"
+                data-testid={`show-more-${day}`}
+              >
+                +{hiddenCount} more
+              </button>
+            </PopoverTrigger>
+            <PopoverContent
+              className="w-56 p-2"
+              side="right"
+              align="start"
+              sideOffset={4}
+            >
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-muted-foreground mb-2">
+                  {month}/{day} — {hiddenCount} more job{hiddenCount > 1 ? 's' : ''}
+                </div>
+                <div className="max-h-[200px] overflow-y-auto space-y-1">
+                  {hiddenEvents.map((event) => {
+                    const client = findClientByEvent(clients, event);
+                    const title = client?.companyName || event.raw?.summary || "Untitled";
+                    const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
+                    return (
+                      <div key={event.assignmentId} className="relative group">
+                        <EventPreviewPopover
+                          event={event.raw || event}
+                          client={client}
+                          technicians={technicians}
+                          isSaving={isSaving}
+                          isOverdue={isCalendarEventOverdue(event)}
+                        >
+                          <CalendarEventChip
+                            id={event.assignmentId}
+                            jobNumber={event.jobNumber}
+                            title={title}
+                            onClick={() => {
+                              setPopoverOpen(false);
+                              onClientClick(client, event);
+                            }}
+                            isCompleted={event.completed}
+                            isOverdue={isCalendarEventOverdue(event)}
+                            technicianColor={getTechnicianColor?.(event.raw)}
+                            isSaving={isSaving}
+                          />
+                        </EventPreviewPopover>
+                        {/* Remove button on hover */}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onRemove(event.assignmentId);
+                          }}
+                          className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-destructive text-destructive-foreground opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-10"
+                          data-testid={`remove-assignment-popover-${event.assignmentId}`}
+                        >
+                          <X className="h-2 w-2" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
+        )}
       </div>
     </div>
   );
@@ -136,6 +230,8 @@ export function CalendarGridMonth({
   getTechnicianColor,
   densityStyle,
   gapStyle,
+  savingJobIds,
+  technicians = [],
 }: CalendarGridMonthProps) {
   const days = [];
   const totalCells = Math.ceil((daysInMonth + firstDayOfMonth) / 7) * 7;
@@ -161,9 +257,11 @@ export function CalendarGridMonth({
           getTechnicianColor={getTechnicianColor}
           densityStyle={densityStyle}
           gapStyle={gapStyle}
+          savingJobIds={savingJobIds}
+          technicians={technicians}
         />
       ) : (
-        <div key={i} className="min-h-20 p-1 border bg-muted/10" />
+        <div key={i} className="min-h-[52px] p-0.5 border bg-muted/10" />
       )
     );
   }
@@ -172,12 +270,12 @@ export function CalendarGridMonth({
     <div className="h-full flex flex-col">
       <div className="grid grid-cols-7">
         {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
-          <div key={day} className="text-center font-medium text-sm p-2 border bg-muted/5">
+          <div key={day} className="text-center font-medium text-xs p-1 border bg-muted/5">
             {day}
           </div>
         ))}
       </div>
-      <div className="grid grid-cols-7 auto-rows-[minmax(6rem,max-content)] content-start">
+      <div className="grid grid-cols-7 auto-rows-[minmax(52px,max-content)] content-start flex-1">
         {days}
       </div>
     </div>

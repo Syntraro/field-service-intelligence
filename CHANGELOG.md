@@ -8,6 +8,96 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### Calendar minute-precision contract: strict timed drop-target parsing
+- **Strict timed-target validation in `handleDragEnd`**: `weekly-` and `daily-`
+  target IDs now reject drops with missing/NaN minute or hour segments. On
+  invalid parse: `console.error` with full target ID, abort mutation, show
+  user toast "Invalid drop target time. Please refresh." No silent fallback to
+  minute=0. (`client/src/pages/Calendar.tsx`)
+- **DEV-only QuarterDropZone segment assertions**: In development mode,
+  `QuarterDropZone` in `CalendarGridWeek.tsx` asserts `weekly-` IDs have
+  exactly 5 segments; in `CalendarGridDay.tsx` asserts `daily-` IDs have
+  exactly 7 segments. Throws `Error("Timed droppable id missing minutes: …")`
+  on violation — catches regressions at render time before any drop occurs.
+- **Audit confirmed**: All timed slot ID generators already emit minute
+  segments via `[0, 15, 30, 45].map()` in `QuarterDropZone`. No legacy
+  hourly-only IDs exist. `CalendarGridWeekTechnicians.tsx` uses `techweek-`
+  prefix (day-level, not timed) — no change needed.
+- Files: `client/src/pages/Calendar.tsx`,
+  `client/src/components/calendar/CalendarGridWeek.tsx`,
+  `client/src/components/calendar/CalendarGridDay.tsx`
+
+#### Single canonical overdue predicate: calendar delegates to shared isJobOverdue()
+- **Deleted duplicate overdue rules**: Removed `isEventOverdue()` (local multi-
+  fallback logic) and `isOverdueDate()` (deprecated scheduledDate check) from
+  `calendarUtils.ts`. Calendar now uses one thin adapter `isCalendarEventOverdue()`
+  that maps CalendarEvent fields to the canonical `isJobOverdue()` from
+  `shared/schema.ts`. Overdue is derived from `status + scheduledStart/scheduledEnd
+  + durationMinutes` only — no `completed` flag, no `scheduledDate` fallback.
+- **CalendarGridMonth.tsx**: Removed local day-level `dayDate < today` overdue
+  variable. All 4 `!event.completed && isOverdue` checks replaced with
+  `isCalendarEventOverdue(event)`.
+- **CalendarGridWeek.tsx**: 2 overdue checks → `isCalendarEventOverdue(event)`.
+- **CalendarGridDay.tsx**: 3 overdue checks → `isCalendarEventOverdue(event)`.
+- Files: `client/src/components/calendar/calendarUtils.ts`,
+  `client/src/components/calendar/CalendarGridMonth.tsx`,
+  `client/src/components/calendar/CalendarGridWeek.tsx`,
+  `client/src/components/calendar/CalendarGridDay.tsx`
+
+#### Model A cache normalization + eliminate remaining assignments-only cache writes
+- **`canonicalizeCalendarCache()` post-refetch**: All four `onSuccess` handlers
+  that `await refetchCalendar()` (schedule, reschedule, resize, unschedule) now
+  call `canonicalizeCalendarCache()` immediately after. This ensures fresh server
+  responses (which may use `scheduledStart`/`scheduledEnd`) are patched to
+  `{ startAt, endAt }` in the React Query cache before any downstream code reads
+  them. (`client/src/hooks/useCalendarDnD.ts`)
+- **TechnicianDashboard Model A naming**: Renamed `allAssignments` → `allEvents`
+  to match Model A terminology; month merge already used
+  `events ?? assignments` fallback. (`client/src/pages/TechnicianDashboard.tsx`)
+- **`isEventOverdue()` replaced scheduledDate-based checks**: (Now superseded
+  by `isCalendarEventOverdue()` above.)
+- Files: `client/src/hooks/useCalendarDnD.ts`,
+  `client/src/pages/TechnicianDashboard.tsx`,
+  `client/src/components/calendar/calendarUtils.ts`,
+  `client/src/components/calendar/CalendarGridWeek.tsx`,
+  `client/src/components/calendar/CalendarGridDay.tsx`
+
+#### Calendar minute-precision + time-field canonicalization (finish pass)
+- **`toCanonicalEvent()` helper**: Added to `useCalendarDnD.ts` — maps
+  `scheduledStart→startAt` and `scheduledEnd→endAt` on any raw or optimistic
+  event written to React Query cache. Applied in both `createAssignment.onMutate`
+  and `updateAssignment.onMutate` optimistic writes.
+- **Defensive overdue date parsing**: Added `isOverdueDate()` helper to
+  `calendarUtils.ts` using `toValidDate()` instead of raw `new Date()`.
+  Replaced all `new Date(event.scheduledDate) < new Date()` calls in
+  `CalendarGridWeek.tsx` (2 occurrences) and `CalendarGridDay.tsx`
+  (3 occurrences) to prevent "Invalid time value" crashes.
+- **Drop-target minute parsing verified**: Weekly drop zones produce
+  `weekly-{day}-{hour}-{minute}-{dayNumber}` and daily zones produce
+  `daily-{tech}-{hour}-{minute}-{day}-{month}-{year}`, both correctly parsed
+  in `Calendar.tsx` `handleDragEnd`. No code changes needed.
+- Files: `client/src/hooks/useCalendarDnD.ts`,
+  `client/src/components/calendar/calendarUtils.ts`,
+  `client/src/components/calendar/CalendarGridWeek.tsx`,
+  `client/src/components/calendar/CalendarGridDay.tsx`
+
+#### Calendar UX + correctness hardening (Model A)
+- **Drop-time minutes preserved**: Optimistic updates in `useCalendarDnD.ts` now
+  compute and include canonical `startAt`/`endAt` ISO strings so
+  `normalizeAssignments()` picks up exact drop coordinates (12:45 stays 12:45,
+  not rounded to 12:00). Mutation responses normalized scheduledStart→startAt.
+- **"Invalid time value" eliminated**: `normalizeAssignments()` in
+  `calendarUtils.ts` now patches `raw` to always carry `startAt`/`endAt`, even
+  when the source event only has `scheduledStart`/`scheduledEnd`.
+- **Unscheduled sidebar shows client + summary**: `getUnscheduledCompanyName()`
+  now checks `customerCompanyName` (the actual API field); `DraggableClient`
+  accepts and displays `summary` prop on unscheduled cards.
+- **Drag activation improved**: `PointerSensor` distance reduced from 8→5 for
+  more responsive first-attempt drag starts.
+- Files: `client/src/hooks/useCalendarDnD.ts`, `client/src/pages/Calendar.tsx`,
+  `client/src/components/calendar/DraggableClient.tsx`,
+  `client/src/components/calendar/calendarUtils.ts`
+
 #### All-Day CHECK constraints: evaluate times in UTC (timestamptz-safe)
 - `EXTRACT(HOUR/MINUTE/SECOND FROM timestamptz)` uses session timezone, not UTC;
   UTC values (00:00:00Z / 23:59:59Z) can fail in non-UTC sessions

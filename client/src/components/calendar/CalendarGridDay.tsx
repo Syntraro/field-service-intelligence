@@ -10,7 +10,9 @@ import {
   CalendarEvent,
   getTechnicianColorForAssignment,
   calculateLanes,
+  isCalendarEventOverdue,
 } from "./calendarUtils";
+import { ensureClientsArray, findClientByEvent } from "./calendarClientLookup";
 
 // ============================================================================
 // Types
@@ -27,17 +29,12 @@ export interface CalendarGridDayProps {
   };
   hiddenTechnicianIds: Set<string>;
   getTechnicianColor: (assignment: any) => ReturnType<typeof getTechnicianColorForAssignment>;
-  handleClientClick: (client: any, event: CalendarEvent) => void;
+  handleClientClick: (client: any, event: CalendarEvent, focusSchedule?: boolean) => void;
   handleResize: (assignmentId: string, newDurationMinutes: number) => void;
-}
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-/** Find a client by CalendarEvent's locationKey */
-function findClientByEvent(clients: any[], event: CalendarEvent): any | undefined {
-  return clients.find((c: any) => c.id === event.locationKey);
+  /** Set of job IDs currently being saved (for visual feedback) */
+  savingJobIds?: Set<string>;
+  /** Quick action: unschedule */
+  onUnschedule?: (assignmentId: string, version: number) => void;
 }
 
 // ============================================================================
@@ -46,6 +43,13 @@ function findClientByEvent(clients: any[], event: CalendarEvent): any | undefine
 
 /** Quarter-hour drop zone (15-min increments) */
 function QuarterDropZone({ id }: { id: string }) {
+  // DEV assertion: daily timed IDs must be exactly 7 segments (daily-{techId}-{HH}-{MM}-{DD}-{MM2}-{YYYY})
+  if (process.env.NODE_ENV === 'development' && id.startsWith('daily-')) {
+    const segments = id.split('-');
+    if (segments.length !== 7) {
+      throw new Error(`Timed droppable id missing minutes: ${id} (expected 7 segments, got ${segments.length})`);
+    }
+  }
   const { setNodeRef, isOver } = useDroppable({ id });
   return (
     <div
@@ -63,10 +67,13 @@ function DailyDropZone({
   laneMap,
   density,
   clients,
+  technicians,
   currentDate,
   getTechnicianColor,
   handleResize,
   handleClientClick,
+  savingJobIds,
+  onUnschedule,
 }: {
   technicianId: string;
   hour: number;
@@ -74,10 +81,13 @@ function DailyDropZone({
   laneMap: Map<string, { laneIndex: number; totalLanes: number }>;
   density: CalendarDensity;
   clients: any[];
+  technicians?: any[];
   currentDate: Date;
   getTechnicianColor: (assignment: any) => ReturnType<typeof getTechnicianColorForAssignment>;
   handleResize: (assignmentId: string, newDurationMinutes: number) => void;
-  handleClientClick: (client: any, event: CalendarEvent) => void;
+  handleClientClick: (client: any, event: CalendarEvent, focusSchedule?: boolean) => void;
+  savingJobIds?: Set<string>;
+  onUnschedule?: (assignmentId: string, version: number) => void;
 }) {
   const rowHeight = DENSITY_STYLES[density].rowHeight;
 
@@ -98,6 +108,7 @@ function DailyDropZone({
       {events.map((event) => {
         const client = findClientByEvent(clients, event);
         const lane = laneMap.get(event.assignmentId) || { laneIndex: 0, totalLanes: 1 };
+        const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
         return client ? (
           <ResizableJobCard
             key={event.assignmentId}
@@ -108,10 +119,14 @@ function DailyDropZone({
             getTechnicianColor={getTechnicianColor}
             densityStyle={DENSITY_STYLES[density].card}
             onClick={() => handleClientClick(client, event)}
+            onReschedule={() => handleClientClick(client, event, true)}
             isCompleted={event.completed}
-            isOverdue={!event.completed && new Date(event.scheduledDate) < new Date()}
+            isOverdue={isCalendarEventOverdue(event)}
             laneIndex={lane.laneIndex}
             totalLanes={lane.totalLanes}
+            isSaving={isSaving}
+            technicians={technicians}
+            onUnschedule={onUnschedule}
           />
         ) : null;
       })}
@@ -134,6 +149,8 @@ export function CalendarGridDay({
   getTechnicianColor,
   handleClientClick,
   handleResize,
+  savingJobIds,
+  onUnschedule,
 }: CalendarGridDayProps) {
   // Get technicians to show as columns (filter by visibility)
   const visibleTechnicians = technicians.filter((t: any) => !hiddenTechnicianIds.has(t.id));
@@ -242,6 +259,7 @@ export function CalendarGridDay({
             <div key={`allday-${tech.id}`} className="p-1 border-r min-h-[28px]">
               {techAllDayEvents.map((event) => {
                 const client = findClientByEvent(clients, event);
+                const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
                 return client ? (
                   <DraggableClient
                     key={event.assignmentId}
@@ -250,10 +268,11 @@ export function CalendarGridDay({
                     inCalendar
                     onClick={() => handleClientClick(client, event)}
                     isCompleted={event.completed}
-                    isOverdue={!event.completed && new Date(event.scheduledDate) < new Date()}
+                    isOverdue={isCalendarEventOverdue(event)}
                     assignment={event.raw}
                     technicianColor={getTechnicianColor(event.raw)}
                     densityStyle={DENSITY_STYLES[density].card}
+                    isSaving={isSaving}
                   />
                 ) : null;
               })}
@@ -264,6 +283,7 @@ export function CalendarGridDay({
           <div className="p-1 border-r min-h-[28px]">
             {getAllDayEvents(null).map((event) => {
               const client = findClientByEvent(clients, event);
+              const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
               return client ? (
                 <DraggableClient
                   key={event.assignmentId}
@@ -272,10 +292,11 @@ export function CalendarGridDay({
                   inCalendar
                   onClick={() => handleClientClick(client, event)}
                   isCompleted={event.completed}
-                  isOverdue={!event.completed && new Date(event.scheduledDate) < new Date()}
+                  isOverdue={isCalendarEventOverdue(event)}
                   assignment={event.raw}
                   technicianColor={getTechnicianColor(event.raw)}
                   densityStyle={DENSITY_STYLES[density].card}
+                  isSaving={isSaving}
                 />
               ) : null;
             })}
@@ -301,10 +322,13 @@ export function CalendarGridDay({
                 laneMap={techLaneMap}
                 density={density}
                 clients={clients}
+                technicians={technicians}
                 currentDate={currentDate}
                 getTechnicianColor={getTechnicianColor}
                 handleResize={handleResize}
                 handleClientClick={handleClientClick}
+                savingJobIds={savingJobIds}
+                onUnschedule={onUnschedule}
               />
             );
           })}
@@ -316,10 +340,13 @@ export function CalendarGridDay({
               laneMap={getLaneMapForTechnician(null)}
               density={density}
               clients={clients}
+              technicians={technicians}
               currentDate={currentDate}
               getTechnicianColor={getTechnicianColor}
               handleResize={handleResize}
               handleClientClick={handleClientClick}
+              savingJobIds={savingJobIds}
+              onUnschedule={onUnschedule}
             />
           )}
         </div>
