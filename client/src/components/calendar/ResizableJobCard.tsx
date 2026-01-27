@@ -186,21 +186,25 @@ export function ResizableJobCard({
         {/* Quick action icons - top right, visible on hover */}
         {showQuickActions && (
           <div className="absolute top-0.5 right-0.5 flex gap-0.5 z-20">
-            {/* Reschedule - opens dialog focused on schedule section */}
+            {/* Reschedule — pointer guards prevent stealing drag */}
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 if (onReschedule) onReschedule();
                 else onClick();
               }}
+              onPointerDown={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
               className="p-0.5 rounded bg-white/90 text-muted-foreground hover:bg-blue-100 hover:text-blue-600 transition-colors"
               title="Reschedule"
             >
               <CalendarIcon className="h-3 w-3" />
             </button>
-            {/* Unschedule */}
+            {/* Unschedule — pointer guards prevent stealing drag */}
             <button
               onClick={handleUnschedule}
+              onPointerDown={(e) => e.stopPropagation()}
+              onMouseDown={(e) => e.stopPropagation()}
               className="p-0.5 rounded bg-white/90 text-muted-foreground hover:bg-orange-100 hover:text-orange-600 transition-colors"
               title="Unschedule"
             >

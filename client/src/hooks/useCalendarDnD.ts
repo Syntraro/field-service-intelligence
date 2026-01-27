@@ -477,7 +477,17 @@ export function useCalendarDnD(
 
       return { previousData, queryKey };
     },
-    onSuccess: async (_, params) => {
+    onSuccess: async (result, params) => {
+      // DEV diagnostic: log server response for minute-precision tracing
+      if (process.env.NODE_ENV === 'development') {
+        console.log('[DROP-RESULT] createAssignment:', {
+          jobId: params.jobId,
+          serverStartAt: result?.startAt ?? result?.scheduledStart,
+          serverEndAt: result?.endAt ?? result?.scheduledEnd,
+          serverVersion: result?.version,
+          allDay: result?.allDay,
+        });
+      }
       clearJobSaving(params.jobId);
       snapshotRef.current = null;
       await refetchCalendar();
@@ -675,7 +685,17 @@ export function useCalendarDnD(
 
       return { previousData, queryKey };
     },
-    onSuccess: async (_, params) => {
+    onSuccess: async (result, params) => {
+      // DEV diagnostic: log server response for minute-precision tracing
+      if (process.env.NODE_ENV === 'development') {
+        console.log('[DROP-RESULT] updateAssignment:', {
+          jobId: params.id,
+          serverStartAt: result?.startAt ?? result?.scheduledStart,
+          serverEndAt: result?.endAt ?? result?.scheduledEnd,
+          serverVersion: result?.version,
+          allDay: result?.allDay,
+        });
+      }
       clearJobSaving(params.id);
       snapshotRef.current = null;
       await refetchCalendar();

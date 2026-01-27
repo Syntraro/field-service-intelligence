@@ -8,6 +8,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### Drag-start reliability hardening (Calendar + Unscheduled sidebar)
+- **Drag listeners moved to root element**: In `DraggableClient.tsx`, moved
+  `{...listeners}` from a nested child `<div>` to the root draggable container.
+  Previously, padding around the inner div created dead zones where pointerdown
+  missed the sensor entirely. Also added `touchAction: "none"` to prevent
+  browser gestures from competing with drag.
+- **CalendarEventChip touchAction**: Added `touchAction: "none"` to the chip
+  root style to prevent mobile scroll/gesture interference.
+- **Interactive children pointer guards**: Added `onPointerDown` and
+  `onMouseDown` with `stopPropagation()` to all interactive children inside
+  draggable cards: remove buttons and "+N more" PopoverTrigger in
+  `CalendarGridMonth.tsx`, reschedule/unschedule quick-action buttons in
+  `ResizableJobCard.tsx`. Prevents these elements from swallowing the
+  pointer event before the drag sensor sees it.
+- **Sensor distance reduced to 3px**: `PointerSensor` activation constraint
+  in `Calendar.tsx` reduced from `distance: 5` to `distance: 3` for more
+  responsive first-attempt drag activation.
+- **DEV-only missed-drag diagnostic**: Calendar now monitors `pointerdown`
+  events on draggable elements and logs `[DRAG-WARN] pointerdown without
+  drag-start within 250ms` if the drag sensor doesn't fire. Timer is cleared
+  on successful `handleDragStart`. Only active in development mode.
+- Files: `client/src/components/calendar/DraggableClient.tsx`,
+  `client/src/components/calendar/CalendarEventChip.tsx`,
+  `client/src/components/calendar/CalendarGridMonth.tsx`,
+  `client/src/components/calendar/ResizableJobCard.tsx`,
+  `client/src/pages/Calendar.tsx`
+
+#### Minute-precision diagnostic logging + canonical startMinutes derivation
+- **DEV-only `[DROP]` logging**: `handleDragEnd` in `Calendar.tsx` now logs
+  intended hour:minute for weekly- and daily- timed targets before firing
+  mutations. Log format: `[DROP] weekly timed target: { intendedHour, intendedMinute, targetDay, ... }`.
+- **DEV-only `[DROP-RESULT]` logging**: `createAssignment.onSuccess` and
+  `updateAssignment.onSuccess` in `useCalendarDnD.ts` now capture and log
+  the mutation result: `[DROP-RESULT] { jobId, serverStartAt, serverEndAt, serverVersion }`.
+  Previously the result was discarded as `_`.
+- **`getAssignmentStartMinutes()` canonical derivation**: Now prefers `startAt`
+  (or `scheduledStart`) ISO datetime to derive minutes-from-midnight, falling
+  back to legacy `scheduledHour`/`scheduledStartMinutes` only when no ISO
+  field exists. Prevents stale minute values after `toCanonicalEvent()` or
+  `canonicalizeCalendarCache()` updates the raw event's `startAt` but not the
+  legacy fields. Affects time labels in `DraggableClient`, `ResizableJobCard`,
+  `EventPreviewPopover`, and lane calculation in `calculateLanes`.
+- **UI rounding audit**: Confirmed `formatTimeFromMinutes()` uses `minutes % 60`
+  with `padStart(2, '0')` — no `Math.floor`/`Math.round` on the minute value.
+  No rounding issues found in the display pipeline.
+- Files: `client/src/pages/Calendar.tsx`, `client/src/hooks/useCalendarDnD.ts`,
+  `client/src/components/calendar/calendarUtils.ts`
+
 #### Calendar minute-precision contract: strict timed drop-target parsing
 - **Strict timed-target validation in `handleDragEnd`**: `weekly-` and `daily-`
   target IDs now reject drops with missing/NaN minute or hour segments. On

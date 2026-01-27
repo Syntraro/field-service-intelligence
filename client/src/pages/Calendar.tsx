@@ -454,10 +454,45 @@ export default function Calendar() {
     scrollDoneRef.current = false; // Reset scroll to trigger re-scroll to start hour
   };
 
+  // DEV diagnostic: detect missed drag starts (pointerdown without drag-start within 250ms)
+  const missedDragTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (process.env.NODE_ENV !== 'development') return;
+    const handler = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      // Check if pointer landed inside a draggable card / chip
+      const draggable = target.closest(
+        '[data-testid^="assigned-client-"], [data-testid^="unscheduled-client-"], [data-testid^="event-chip-"]'
+      );
+      if (!draggable) return;
+      // Start a 250ms timer; if handleDragStart doesn't clear it, warn
+      if (missedDragTimerRef.current) clearTimeout(missedDragTimerRef.current);
+      missedDragTimerRef.current = setTimeout(() => {
+        console.warn('[DRAG-WARN] pointerdown without drag-start within 250ms', {
+          targetTag: target.tagName,
+          targetTestId: target.getAttribute('data-testid'),
+          draggableTestId: (draggable as HTMLElement).getAttribute('data-testid'),
+          clientX: e.clientX,
+          clientY: e.clientY,
+        });
+        missedDragTimerRef.current = null;
+      }, 250);
+    };
+    document.addEventListener('pointerdown', handler, { capture: true });
+    return () => document.removeEventListener('pointerdown', handler, { capture: true });
+  }, []);
+
   const handleDragStart = (event: DragStartEvent) => {
     if (!DRAG_ENABLED) return;
     const activeIdValue = event.active.id as string;
     setActiveId(activeIdValue);
+
+    // Clear missed-drag timer — drag started successfully
+    if (missedDragTimerRef.current) {
+      clearTimeout(missedDragTimerRef.current);
+      missedDragTimerRef.current = null;
+    }
 
     // Diagnostics: log drag start
     if (isDiagnosticsEnabled()) {
@@ -697,6 +732,18 @@ export default function Calendar() {
         return;
       }
 
+      // DEV diagnostic: log intended drop time for minute-precision tracing
+      if (process.env.NODE_ENV === 'development') {
+        console.log('[DROP] weekly timed target:', {
+          overId,
+          intendedHour: hour,
+          intendedMinute: scheduledStartMinutes,
+          targetDay,
+          sourceId: activeIdValue,
+          isExisting: isExistingCalendarAssignment,
+        });
+      }
+
       if (isExistingCalendarAssignment) {
         const currentAssignment = events.find((a: any) => a.id === activeIdValue);
         if (currentAssignment) {
@@ -771,6 +818,21 @@ export default function Calendar() {
         console.error('[Calendar] Invalid daily timed target id (missing minute or segment):', overId, { parts });
         toast({ title: "Invalid drop target time. Please refresh.", variant: "destructive" });
         return;
+      }
+
+      // DEV diagnostic: log intended drop time for minute-precision tracing
+      if (process.env.NODE_ENV === 'development') {
+        console.log('[DROP] daily timed target:', {
+          overId,
+          intendedHour: hour,
+          intendedMinute: scheduledStartMinutes,
+          targetDay,
+          targetMonth: targetMonthIdx + 1,
+          targetYear: targetYr,
+          technicianId,
+          sourceId: activeIdValue,
+          isExisting: isExistingCalendarAssignment,
+        });
       }
 
       // Convert 0-based month to 1-based for API
@@ -1228,7 +1290,7 @@ export default function Calendar() {
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
-        distance: 5, // Reduced from 8 for more responsive drag activation
+        distance: 3, // Low threshold for first-attempt drag reliability
       },
     })
   );

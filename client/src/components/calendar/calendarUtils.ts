@@ -544,9 +544,31 @@ export function isCalendarEventOverdue(event: CalendarEvent, now: Date = new Dat
   );
 }
 
-// Get start minutes for an assignment
+/**
+ * Get start minutes from midnight for an assignment.
+ *
+ * Canonical path: derives from `startAt` (or `scheduledStart`) ISO datetime
+ * so the value always matches the actual scheduled time, even after
+ * `toCanonicalEvent()` / `canonicalizeCalendarCache()` updates.
+ *
+ * Legacy fallback: uses `scheduledHour` + `scheduledStartMinutes` for events
+ * that predate the canonical timestamp fields.
+ */
 export function getAssignmentStartMinutes(a: any): number {
   if (a == null) return 0;
+
+  // Canonical path: derive from startAt ISO datetime
+  const startIso = a.startAt ?? a.scheduledStart;
+  if (startIso) {
+    try {
+      const d = new Date(startIso);
+      if (!isNaN(d.getTime())) {
+        return d.getHours() * 60 + d.getMinutes();
+      }
+    } catch { /* fall through to legacy path */ }
+  }
+
+  // Legacy path: use scheduledHour/scheduledStartMinutes
   const hour = a.scheduledHour;
   if (hour == null) return 0;
   const offset = a.scheduledStartMinutes != null ? Number(a.scheduledStartMinutes) : 0;

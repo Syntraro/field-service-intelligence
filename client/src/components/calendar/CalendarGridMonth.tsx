@@ -124,12 +124,14 @@ function DroppableDay({
                   isSaving={isSaving}
                 />
               </EventPreviewPopover>
-              {/* Remove button on hover */}
+              {/* Remove button on hover — pointer guards prevent stealing drag */}
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   onRemove(event.assignmentId);
                 }}
+                onPointerDown={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
                 className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-destructive text-destructive-foreground opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-10"
                 data-testid={`remove-assignment-${event.assignmentId}`}
               >
@@ -145,6 +147,8 @@ function DroppableDay({
             <PopoverTrigger asChild>
               <button
                 onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
                 className="h-[16px] text-[9px] text-primary hover:text-primary/80 hover:underline flex items-center justify-center"
                 data-testid={`show-more-${day}`}
               >
@@ -189,12 +193,14 @@ function DroppableDay({
                             isSaving={isSaving}
                           />
                         </EventPreviewPopover>
-                        {/* Remove button on hover */}
+                        {/* Remove button on hover — pointer guards prevent stealing drag */}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             onRemove(event.assignmentId);
                           }}
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onMouseDown={(e) => e.stopPropagation()}
                           className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-destructive text-destructive-foreground opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-10"
                           data-testid={`remove-assignment-popover-${event.assignmentId}`}
                         >

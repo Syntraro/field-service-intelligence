@@ -120,42 +120,40 @@ export function DraggableClient({
   return (
     <div
       ref={setNodeRef}
-      style={{ ...style, ...heightStyle }}
+      style={{ ...style, ...heightStyle, touchAction: "none" }}
       {...attributes}
+      {...(isSaving ? {} : listeners)} // Drag listeners on ROOT for reliable pointer capture
+      onClick={(e) => {
+        // Make entire card clickable for opening job detail modal
+        // dnd-kit only starts drag on pointer move, so quick clicks work
+        const clickAllowed = !!(inCalendar && onClick && !isSaving && !isDragging);
+
+        // Diagnostics: log click event
+        if (isDiagnosticsEnabled()) {
+          logClick({
+            jobId: assignment?.jobId || id,
+            assignmentId: id,
+            context: inCalendar ? 'calendar-card' : 'unscheduled-card',
+            isDragging: isDragging || false,
+            isSaving: isSaving || false,
+            inCalendar: inCalendar || false,
+            clickAllowed,
+          });
+        }
+
+        if (clickAllowed) {
+          e.stopPropagation();
+          onClick();
+        }
+      }}
       className={`text-xs rounded transition-all relative select-none group ${
         cardHeight ? "overflow-hidden" : ""
-      } ${densityStyle || (inCalendar ? "py-0.5 px-1.5" : "py-1.5 px-2.5")} ${getCardStyle()}`}
+      } ${densityStyle || (inCalendar ? "py-0.5 px-1.5" : "py-1.5 px-2.5")} ${getCardStyle()} ${inCalendar ? getCursorStyle() : ""}`}
       data-testid={inCalendar ? `assigned-client-${id}` : `unscheduled-client-${client.id}`}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
-      <div
-        {...(isSaving ? {} : listeners)} // Disable drag listeners while saving
-        onClick={(e) => {
-          // Make entire card clickable for opening job detail modal
-          // dnd-kit only starts drag on pointer move, so quick clicks work
-          const clickAllowed = !!(inCalendar && onClick && !isSaving && !isDragging);
-
-          // Diagnostics: log click event
-          if (isDiagnosticsEnabled()) {
-            logClick({
-              jobId: assignment?.jobId || id,
-              assignmentId: id,
-              context: inCalendar ? 'calendar-card' : 'unscheduled-card',
-              isDragging: isDragging || false,
-              isSaving: isSaving || false,
-              inCalendar: inCalendar || false,
-              clickAllowed,
-            });
-          }
-
-          if (clickAllowed) {
-            e.stopPropagation();
-            onClick();
-          }
-        }}
-        className={inCalendar ? getCursorStyle() : ""}
-      >
+      <div>
         {/* In Calendar: Jobber-style readable layout for week/day view */}
         {inCalendar ? (
           <div className="flex flex-col min-h-0 overflow-hidden">
