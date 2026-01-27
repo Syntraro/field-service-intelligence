@@ -1523,15 +1523,15 @@ export const jobs = pgTable("jobs", {
     "jobs_scheduled_end_requires_start_check",
     sql`${table.scheduledEnd} IS NULL OR ${table.scheduledStart} IS NOT NULL`
   ),
-  // CHECK: All-day events must have scheduledStart at midnight
+  // CHECK: All-day events must have scheduledStart at midnight (UTC-safe)
   allDayStartMidnightCheck: check(
     "jobs_all_day_start_midnight_check",
-    sql`${table.isAllDay} = false OR ${table.scheduledStart} IS NULL OR (EXTRACT(HOUR FROM ${table.scheduledStart}) = 0 AND EXTRACT(MINUTE FROM ${table.scheduledStart}) = 0 AND EXTRACT(SECOND FROM ${table.scheduledStart}) = 0)`
+    sql`${table.isAllDay} IS DISTINCT FROM TRUE OR (EXTRACT(HOUR FROM (${table.scheduledStart} AT TIME ZONE 'UTC')) = 0 AND EXTRACT(MINUTE FROM (${table.scheduledStart} AT TIME ZONE 'UTC')) = 0 AND EXTRACT(SECOND FROM (${table.scheduledStart} AT TIME ZONE 'UTC')) = 0)`
   ),
-  // CHECK: All-day events must have scheduledEnd at 23:59:59
+  // CHECK: All-day events must have scheduledEnd at 23:59:59 (UTC-safe)
   allDayEnd2359Check: check(
     "jobs_all_day_end_2359_check",
-    sql`${table.isAllDay} = false OR ${table.scheduledEnd} IS NULL OR (EXTRACT(HOUR FROM ${table.scheduledEnd}) = 23 AND EXTRACT(MINUTE FROM ${table.scheduledEnd}) = 59 AND EXTRACT(SECOND FROM ${table.scheduledEnd}) = 59)`
+    sql`${table.isAllDay} IS DISTINCT FROM TRUE OR (EXTRACT(HOUR FROM (${table.scheduledEnd} AT TIME ZONE 'UTC')) = 23 AND EXTRACT(MINUTE FROM (${table.scheduledEnd} AT TIME ZONE 'UTC')) = 59 AND EXTRACT(SECOND FROM (${table.scheduledEnd} AT TIME ZONE 'UTC')) = 59)`
   ),
 }));
 

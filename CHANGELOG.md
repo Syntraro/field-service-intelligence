@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### All-Day CHECK constraints: evaluate times in UTC (timestamptz-safe)
+- `EXTRACT(HOUR/MINUTE/SECOND FROM timestamptz)` uses session timezone, not UTC;
+  UTC values (00:00:00Z / 23:59:59Z) can fail in non-UTC sessions
+- Recreated `jobs_all_day_start_midnight_check` and `jobs_all_day_end_2359_check`
+  with `AT TIME ZONE 'UTC'` so EXTRACT always evaluates against UTC
+- Changed guard from `is_all_day = false OR ... IS NULL` to
+  `is_all_day IS DISTINCT FROM TRUE` (NULL-safe, same semantics via CHECK NULL pass-through)
+- Migration: `migrations/2026_01_27_fix_all_day_constraints_utc.sql`
+- Drizzle schema updated: `shared/schema.ts` (check definitions match migration)
+
 #### Calendar Diagnostics: 4xx/5xx errors now correctly classified as failures
 - `addDiagEntry()` auto-derives `isFail: true` when `type` ends with `-error`,
   `type === 'invariant-fail'`, or `data.status >= 400`
