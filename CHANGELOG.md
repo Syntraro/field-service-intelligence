@@ -8,6 +8,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Phase 2 Step 10: Jobs Page Canonical Predicate Alignment
+
+- **Fixed overdue filter/display drift in Jobs page**:
+  - Overdue filter previously used `statusInfo.isOverdue` which short-circuits on sub-status
+    (`in_progress`, `on_route`, etc.) before reaching the overdue check — missing overdue jobs
+    that have a sub-status set. Now uses canonical `isJobOverdue` predicate directly via `_overdue`.
+  - Overdue badge in table rows also switched from `statusInfo.isOverdue` to `_overdue`.
+  - Added `_overdue` to enriched job alongside `_scheduled`, `_assigned`, `_backlog`.
+
+- **Added dev-only reconciliation panel** (`import.meta.env.DEV` gated):
+  - Toggle button shows/hides a panel comparing client-side counts vs `/api/calendar/state-snapshot`.
+  - Client section: lifecycle counts, derived counts (openScheduled, backlog, overdue).
+  - Server section: state-snapshot totals, invariant checks (open = scheduled + backlog, violations).
+  - Diff section: highlights any drift between client and server counts.
+  - Sample JobIds section: up to 10 job IDs per bucket for debugging.
+  - Fetches state-snapshot only when panel is open; not loaded in production.
+
+- **Files updated**:
+  - `client/src/pages/Jobs.tsx` — canonical predicate alignment, dev reconciliation panel
+
 #### Phase 2 Step 9: Soft-Delete Enforcement (Final Audit)
 
 - **Fixed `deleteJob()` to use `deletedAt` instead of just `isActive`**:

@@ -5,7 +5,7 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
-import { Search, ChevronDown, ChevronUp, ArrowUpDown, Loader2, Plus, Calendar as CalendarIcon, Wrench, AlertTriangle, AlertCircle, Clock, X, CalendarDays, FileText, MoreHorizontal, User, Users } from "lucide-react";
+import { Search, ChevronDown, ChevronUp, ArrowUpDown, Loader2, Plus, Calendar as CalendarIcon, Wrench, AlertTriangle, AlertCircle, Clock, X, CalendarDays, FileText, MoreHorizontal, User, Users, Bug } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -227,6 +227,30 @@ export default function Jobs() {
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
 
+  // Dev-only: fetch /api/calendar/state-snapshot for reconciliation panel
+  const [showDevPanel, setShowDevPanel] = useState(false);
+  const { data: stateSnapshot } = useQuery<{
+    jobs: { total: number; open: number; completed: number; invoiced: number; archived: number };
+    scheduled: { total: number; open: number; completed: number };
+    backlog: { total: number };
+    violations: Record<string, { count: number; jobIds: string[] }>;
+    _invariants: {
+      open_equals_scheduled_plus_backlog: boolean;
+      no_violations: boolean;
+      total_violation_count: number;
+    };
+    _timestamp: string;
+  }>({
+    queryKey: ["/api/calendar/state-snapshot"],
+    queryFn: async () => {
+      const res = await fetch("/api/calendar/state-snapshot", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch state snapshot");
+      return res.json();
+    },
+    enabled: import.meta.env.DEV && showDevPanel,
+    staleTime: 10_000,
+  });
+
   const escalateMutation = useMutation({
     mutationFn: async (jobId: string) => {
       return apiRequest(`/api/jobs/${jobId}/mark-action-required-escalated`, {
@@ -270,19 +294,23 @@ export default function Jobs() {
   });
 
   const filteredAndSortedJobs = useMemo(() => {
+    const now = new Date();
     let result = jobs.map(job => {
       // Phase 2 Step 5: Use canonical getJobStatusDisplay from jobUtils
       const statusInfo = getJobStatusDisplay(job);
-      // Compute derived states using canonical predicates
+      // Compute ALL derived states using canonical predicates only.
+      // These booleans are the single source of truth for filtering and display.
       const scheduled = isJobScheduled(job);
       const assigned = isJobAssigned(job);
       const backlog = isBacklogEligible(job);
+      const overdue = isJobOverdue(job, now);
       return {
         ...job,
         statusInfo,
         _scheduled: scheduled,
         _assigned: assigned,
         _backlog: backlog,
+        _overdue: overdue,
       };
     });
 
@@ -311,9 +339,11 @@ export default function Jobs() {
       result = result.filter(job => job.isAllDay === true);
     }
 
-    // Overdue filter
+    // Overdue filter: uses canonical _overdue (isJobOverdue predicate).
+    // statusInfo.isOverdue is unreliable because getJobStatusDisplay short-circuits
+    // on sub-status before reaching the overdue check.
     if (derivedFilters.overdue) {
-      result = result.filter(job => job.statusInfo.isOverdue);
+      result = result.filter(job => job._overdue);
     }
 
     // 3. Apply openSubStatus filter (only applies when viewing open jobs)
@@ -500,6 +530,24 @@ export default function Jobs() {
     });
 
     return result;
+  }, [jobs]);
+
+  // Dev-only: client-side bucket sample for reconciliation
+  const devBuckets = useMemo(() => {
+    if (!import.meta.env.DEV) return null;
+    const openScheduled: string[] = [];
+    const openBacklog: string[] = [];
+    const overdue: string[] = [];
+    jobs.forEach(job => {
+      if (job.status === "open" && isJobScheduled(job)) openScheduled.push(job.id);
+      if (isBacklogEligible(job)) openBacklog.push(job.id);
+      if (isJobOverdue(job, new Date())) overdue.push(job.id);
+    });
+    return {
+      openScheduled: { count: openScheduled.length, sample: openScheduled.slice(0, 10) },
+      openBacklog: { count: openBacklog.length, sample: openBacklog.slice(0, 10) },
+      overdue: { count: overdue.length, sample: overdue.slice(0, 10) },
+    };
   }, [jobs]);
 
   const totalCount = jobs.length;
@@ -875,8 +923,8 @@ export default function Jobs() {
                           </Badge>
                         )}
 
-                        {/* Overdue indicator */}
-                        {job.statusInfo.isOverdue && (
+                        {/* Overdue indicator: canonical _overdue from isJobOverdue predicate */}
+                        {job._overdue && (
                           <Badge variant="destructive" className="text-xs">
                             <AlertTriangle className="h-3 w-3 mr-1" />
                             Overdue
@@ -1073,6 +1121,105 @@ export default function Jobs() {
       <div className="text-sm text-muted-foreground" data-testid="text-job-count">
         Showing {visibleJobs.length} of {filteredAndSortedJobs.length} job{filteredAndSortedJobs.length !== 1 ? 's' : ''}
       </div>
+
+      {/* Dev-only: Reconciliation panel comparing client counts vs state-snapshot */}
+      {import.meta.env.DEV && (
+        <div className="mt-4">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-xs text-muted-foreground"
+            onClick={() => setShowDevPanel(prev => !prev)}
+            data-testid="toggle-dev-panel"
+          >
+            <Bug className="h-3 w-3 mr-1" />
+            {showDevPanel ? "Hide" : "Show"} Reconciliation Panel
+          </Button>
+          {showDevPanel && (
+            <Card className="mt-2 border-dashed border-yellow-400 bg-yellow-50/50">
+              <CardContent className="p-4 space-y-3">
+                <div className="text-xs font-mono font-bold text-yellow-800">
+                  DEV: Jobs Reconciliation Panel
+                </div>
+
+                {/* Client-side counts */}
+                <div className="text-xs font-mono space-y-1">
+                  <div className="font-semibold">Client-Side Counts (from /api/jobs)</div>
+                  <div>total: {totalCount}</div>
+                  <div>open: {counts.lifecycle.open} | completed: {counts.lifecycle.completed} | invoiced: {counts.lifecycle.invoiced} | archived: {counts.lifecycle.archived}</div>
+                  <div>scheduled(open): {devBuckets?.openScheduled.count ?? "?"} | backlog: {devBuckets?.openBacklog.count ?? "?"} | overdue: {devBuckets?.overdue.count ?? "?"}</div>
+                </div>
+
+                {/* Server state-snapshot counts */}
+                <div className="text-xs font-mono space-y-1">
+                  <div className="font-semibold">Server State-Snapshot (/api/calendar/state-snapshot)</div>
+                  {stateSnapshot ? (
+                    <>
+                      <div>total: {stateSnapshot.jobs.total}</div>
+                      <div>open: {stateSnapshot.jobs.open} | completed: {stateSnapshot.jobs.completed} | invoiced: {stateSnapshot.jobs.invoiced} | archived: {stateSnapshot.jobs.archived}</div>
+                      <div>scheduled(open): {stateSnapshot.scheduled.open} | backlog: {stateSnapshot.backlog.total}</div>
+                      <div>
+                        invariants: open=sched+backlog:{" "}
+                        <span className={stateSnapshot._invariants.open_equals_scheduled_plus_backlog ? "text-green-700" : "text-red-700 font-bold"}>
+                          {stateSnapshot._invariants.open_equals_scheduled_plus_backlog ? "PASS" : "FAIL"}
+                        </span>
+                        {" | "}violations:{" "}
+                        <span className={stateSnapshot._invariants.no_violations ? "text-green-700" : "text-red-700 font-bold"}>
+                          {stateSnapshot._invariants.total_violation_count}
+                        </span>
+                      </div>
+                      <div className="text-muted-foreground">snapshot at: {stateSnapshot._timestamp}</div>
+                    </>
+                  ) : (
+                    <div className="text-muted-foreground italic">Loading snapshot...</div>
+                  )}
+                </div>
+
+                {/* Diff */}
+                {stateSnapshot && devBuckets && (
+                  <div className="text-xs font-mono space-y-1 border-t pt-2">
+                    <div className="font-semibold">Diff (client - server)</div>
+                    {(() => {
+                      const diffs = {
+                        total: totalCount - stateSnapshot.jobs.total,
+                        open: counts.lifecycle.open - stateSnapshot.jobs.open,
+                        completed: counts.lifecycle.completed - stateSnapshot.jobs.completed,
+                        invoiced: counts.lifecycle.invoiced - stateSnapshot.jobs.invoiced,
+                        archived: counts.lifecycle.archived - stateSnapshot.jobs.archived,
+                        openScheduled: devBuckets.openScheduled.count - stateSnapshot.scheduled.open,
+                        backlog: devBuckets.openBacklog.count - stateSnapshot.backlog.total,
+                      };
+                      const hasDrift = Object.values(diffs).some(d => d !== 0);
+                      return (
+                        <>
+                          <div className={hasDrift ? "text-red-700 font-bold" : "text-green-700"}>
+                            {hasDrift ? "DRIFT DETECTED" : "NO DRIFT"}
+                          </div>
+                          {Object.entries(diffs).map(([key, val]) => (
+                            <div key={key} className={val !== 0 ? "text-red-700" : ""}>
+                              {key}: {val > 0 ? `+${val}` : val}
+                            </div>
+                          ))}
+                        </>
+                      );
+                    })()}
+                  </div>
+                )}
+
+                {/* Sample job IDs per bucket */}
+                {devBuckets && (
+                  <div className="text-xs font-mono space-y-1 border-t pt-2">
+                    <div className="font-semibold">Sample JobIds (up to 10 per bucket)</div>
+                    <div>openScheduled: [{devBuckets.openScheduled.sample.join(", ")}]</div>
+                    <div>openBacklog: [{devBuckets.openBacklog.sample.join(", ")}]</div>
+                    <div>overdue: [{devBuckets.overdue.sample.join(", ")}]</div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
 
       <QuickAddJobDialog
         open={showCreateDialog}
