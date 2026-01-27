@@ -8,6 +8,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### All-Day Scheduling: Eliminate duplicate normalization causing DB constraint violations
+
+- **Symptom:** `POST /api/calendar/schedule` with `{ allDay: true, date }` sometimes
+  throws `violates check constraint "jobs_all_day_end_2359_check"`.
+- **Root cause:** Storage layer had duplicate all-day normalization blocks that
+  could diverge from the canonical `normalizeScheduleTimes()` helper. Both
+  `scheduleJob()` and `rescheduleJob()` re-derived timestamps after the domain
+  layer had already computed them, and bypass functions used inline derivation
+  instead of the shared helper.
+- **Fix: Single helper, single code path** — `normalizeScheduleTimes()` in
+  `server/domain/scheduling.ts` is now the only place that computes all-day
+  boundaries (`00:00:00.000Z` start, `23:59:59.000Z` end).
+- **Storage layer cleaned** (`server/storage/calendar.ts`):
+  - Removed duplicate all-day blocks from `scheduleJob()` and `rescheduleJob()`
+    (domain layer's `applyJobSchedulingPatch` already normalizes)
+  - Replaced inline normalization in `scheduleJobBypassWorkingHours()` and
+    `rescheduleJobBypassWorkingHours()` with `normalizeScheduleTimes()` calls
+- **Assertion tightened** (`server/domain/scheduling.ts`):
+  - `assertAllDayTimestampInvariant()` no longer accepts next-day midnight;
+    only `23:59:59` on the same day is valid, matching DB constraint exactly
+- **Client fix** (`client/src/lib/jobScheduling.ts`):
+  - `createJobWithSchedule()` now uses `T23:59:59.000Z` for all-day end
+    instead of next-day midnight (`T00:00:00.000Z` of day+1)
+
+#### All-Day Scheduling: Original normalizeScheduleTimes helper (prior session)
+
+- **Created `normalizeScheduleTimes()` helper** (`server/domain/scheduling.ts`):
+  - Single source of truth for computing scheduledStart/scheduledEnd from route input
+  - All-day: `00:00:00.000Z` start, `23:59:59.000Z` end (zero milliseconds)
+  - Timed: start from startAt, end from endAt or start + durationMinutes (default 60)
+  - Used by both POST /api/calendar/schedule and PATCH /api/calendar/schedule/:jobId
+- **Fixed `deriveScheduleFields()`** to delegate all-day computation to `normalizeScheduleTimes()`
+- **Route handlers refactored** (`server/routes/calendar.ts`):
+  - Replaced inline time computation with `normalizeScheduleTimes()` calls
+  - Both POST and PATCH endpoints now go through the same normalization
+
 #### Calendar Page: Fix crash from outdated API contract
 
 - **Updated `client/src/pages/Calendar.tsx`** to read `events` field from server response

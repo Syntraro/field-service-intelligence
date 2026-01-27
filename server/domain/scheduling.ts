@@ -176,7 +176,83 @@ export function isValidTimezone(timezone: string): boolean {
 }
 
 // ============================================================================
-// Schedule Field Derivation
+// Schedule Time Normalization — SINGLE SOURCE OF TRUTH
+// ============================================================================
+//
+// ALL code paths that compute scheduledStart/scheduledEnd MUST call
+// normalizeScheduleTimes(). This guarantees the DB invariants:
+//   jobs_all_day_start_midnight_check  →  00:00:00 (no ms)
+//   jobs_all_day_end_2359_check        →  23:59:59 (no ms)
+//
+// IMPORTANT: Use .000Z (zero milliseconds) for both boundaries.
+// PostgreSQL EXTRACT(SECOND FROM ts) returns fractional seconds, so
+// 23:59:59.999 → EXTRACT = 59.999 ≠ 59 → constraint violation.
+// ============================================================================
+
+export interface NormalizeScheduleInput {
+  allDay?: boolean;
+  date?: string;           // "YYYY-MM-DD"
+  startAt?: string | Date; // ISO datetime
+  endAt?: string | Date;   // ISO datetime
+  durationMinutes?: number;
+}
+
+export interface NormalizedScheduleTimes {
+  scheduledStart: Date | null;
+  scheduledEnd: Date | null;
+  isAllDay: boolean;
+}
+
+/**
+ * Compute canonical scheduledStart / scheduledEnd from route-level input.
+ *
+ * Rules:
+ * A) allDay=true + date → start = date 00:00:00.000Z, end = date 23:59:59.000Z
+ * B) allDay=true + startAt (no date) → derive date from startAt in UTC, then A
+ * C) allDay=false → start from startAt; end from endAt or start+duration (default 60 min)
+ *
+ * Returns null start/end when no scheduling data is provided.
+ */
+export function normalizeScheduleTimes(input: NormalizeScheduleInput): NormalizedScheduleTimes {
+  const isAllDay = input.allDay === true;
+
+  if (isAllDay) {
+    // Derive dateStr: prefer explicit date, else extract from startAt
+    let dateStr = input.date ?? null;
+    if (!dateStr && input.startAt) {
+      const d = typeof input.startAt === "string" ? input.startAt : input.startAt.toISOString();
+      dateStr = d.split("T")[0];
+    }
+    if (!dateStr) {
+      return { scheduledStart: null, scheduledEnd: null, isAllDay: true };
+    }
+    return {
+      scheduledStart: new Date(`${dateStr}T00:00:00.000Z`),
+      scheduledEnd:   new Date(`${dateStr}T23:59:59.000Z`),
+      isAllDay: true,
+    };
+  }
+
+  // Timed event
+  if (!input.startAt) {
+    return { scheduledStart: null, scheduledEnd: null, isAllDay: false };
+  }
+
+  const start = typeof input.startAt === "string" ? new Date(input.startAt) : new Date(input.startAt.getTime());
+
+  let end: Date;
+  if (input.endAt) {
+    end = typeof input.endAt === "string" ? new Date(input.endAt) : new Date(input.endAt.getTime());
+  } else {
+    const mins = input.durationMinutes ?? 60;
+    end = new Date(start.getTime() + mins * 60_000);
+  }
+
+  return { scheduledStart: start, scheduledEnd: end, isAllDay: false };
+}
+
+// ============================================================================
+// Schedule Field Derivation (storage-layer interface)
 // ============================================================================
 
 export interface DeriveScheduleParams {
@@ -195,10 +271,11 @@ export interface DerivedScheduleFields {
 }
 
 /**
- * Derive and normalize schedule fields.
+ * Derive and normalize schedule fields (storage-layer entry point).
  *
  * CANONICAL SCHEDULING RULES:
- * - If isAllDay=true: scheduledStart = midnight (00:00:00), scheduledEnd = 23:59:59
+ * - If isAllDay=true: scheduledStart = midnight (00:00:00.000Z),
+ *   scheduledEnd = 23:59:59.000Z (exact second — no fractional ms)
  * - If timed: end = start + durationMinutes (default 60)
  * - If start is null: all fields cleared (job is unscheduled)
  *
@@ -225,12 +302,11 @@ export function deriveScheduleFields(params: DeriveScheduleParams): DerivedSched
   const durationMinutes = params.durationMinutes ?? defaultDuration;
 
   if (isAllDay) {
-    // ALL-DAY CANONICAL: scheduledStart = midnight, scheduledEnd = end of day
-    // This ensures isJobScheduled() returns true (scheduledStart IS NOT NULL)
-    const dayStr = start.toISOString().split('T')[0];
+    // Delegate to normalizeScheduleTimes for exact boundary computation
+    const norm = normalizeScheduleTimes({ allDay: true, startAt: start });
     return {
-      scheduledStart: new Date(dayStr + 'T00:00:00.000Z'),
-      scheduledEnd: new Date(dayStr + 'T23:59:59.999Z'),
+      scheduledStart: norm.scheduledStart,
+      scheduledEnd: norm.scheduledEnd,
       isAllDay: true,
       durationMinutes: 1440,
     };
@@ -658,22 +734,22 @@ export function assertAllDayTimestampInvariant(
     );
   }
 
-  // If end is provided, check it's valid (23:59:59 same day OR next day 00:00:00)
+  // If end is provided, check it matches DB constraint exactly: 23:59:59 same day
+  // DB enforces: EXTRACT(HOUR)=23, EXTRACT(MINUTE)=59, EXTRACT(SECOND)=59
   if (job.scheduledEnd) {
     const end = typeof job.scheduledEnd === "string" ? new Date(job.scheduledEnd) : job.scheduledEnd;
     const startDay = start.toISOString().split("T")[0];
     const endDay = end.toISOString().split("T")[0];
 
-    // Valid patterns:
-    // 1. Same day, 23:59:59 (or close to it)
-    // 2. Next day, 00:00:00 (exclusive end)
-    const isEndOfDay = startDay === endDay && end.getUTCHours() === 23 && end.getUTCMinutes() === 59;
-    const isNextDayMidnight = endDay > startDay && end.getUTCHours() === 0 && end.getUTCMinutes() === 0;
+    const isEndOfDay = startDay === endDay
+      && end.getUTCHours() === 23
+      && end.getUTCMinutes() === 59
+      && end.getUTCSeconds() === 59;
 
-    if (!isEndOfDay && !isNextDayMidnight) {
+    if (!isEndOfDay) {
       throw new Error(
         `[${contextLabel}] INVARIANT VIOLATION: job ${jobId} isAllDay=true but scheduledEnd is invalid. ` +
-        `Expected 23:59:59 same day or next day 00:00:00. Got: ${end.toISOString()}`
+        `Expected ${startDay}T23:59:59.000Z. Got: ${end.toISOString()}`
       );
     }
   }

@@ -21,6 +21,7 @@ import {
   assertSchedulingWriteContext,
   assertVersionMatch,
   applyJobSchedulingPatch,
+  normalizeScheduleTimes,
   type SchedulingWriteIntent,
   // Technician assignment helpers
   normalizeTechnicianAssignment,
@@ -604,20 +605,8 @@ export class CalendarRepository extends BaseRepository {
       version: patchResult.writeIntent?.newVersion ?? 1,
     };
 
-    // ========================================================================
-    // CANONICAL SCHEDULING: All-day events MUST have scheduledStart set to midnight
-    // isAllDay is a DISPLAY flag; scheduledStart IS the scheduling determinant
-    // ========================================================================
-    if (updateData.isAllDay === true || data.allDay === true) {
-      updateData.isAllDay = true;
-      // For all-day events, scheduledStart = midnight of the day, scheduledEnd = end of day
-      // This ensures isJobScheduled() returns true (scheduledStart IS NOT NULL)
-      if (data.startAt) {
-        const dayStr = data.startAt.toISOString().split('T')[0];
-        updateData.scheduledStart = new Date(dayStr + 'T00:00:00.000Z');
-        updateData.scheduledEnd = new Date(dayStr + 'T23:59:59.999Z');
-      }
-    }
+    // All-day normalization handled by applyJobSchedulingPatch → normalizeScheduleTimes.
+    // No duplicate normalization here — domain layer is the single source of truth.
 
     // CANONICAL: Use normalizeTechnicianAssignment for consistent invariant enforcement
     const techAssignment = normalizeTechnicianAssignment(data.technicianUserId || null);
@@ -748,20 +737,8 @@ export class CalendarRepository extends BaseRepository {
       updateData.isAllDay = patchResult.isAllDay;
     }
 
-    // ========================================================================
-    // CANONICAL SCHEDULING: All-day events MUST have scheduledStart set to midnight
-    // isAllDay is a DISPLAY flag; scheduledStart IS the scheduling determinant
-    // ========================================================================
-    if (updateData.isAllDay === true || data.allDay === true) {
-      updateData.isAllDay = true;
-      // For all-day events, scheduledStart = midnight of the day, scheduledEnd = end of day
-      // This ensures isJobScheduled() returns true (scheduledStart IS NOT NULL)
-      if (data.startAt) {
-        const dayStr = data.startAt.toISOString().split('T')[0];
-        updateData.scheduledStart = new Date(dayStr + 'T00:00:00.000Z');
-        updateData.scheduledEnd = new Date(dayStr + 'T23:59:59.999Z');
-      }
-    }
+    // All-day normalization handled by applyJobSchedulingPatch → normalizeScheduleTimes.
+    // No duplicate normalization here — domain layer is the single source of truth.
 
     if (data.technicianUserId !== undefined) {
       // CANONICAL: Use normalizeTechnicianAssignment for consistent invariant enforcement
@@ -971,22 +948,21 @@ export class CalendarRepository extends BaseRepository {
     const newVersion = currentVersion + 1;
     const isAllDay = data.allDay === true;
 
-    // COMPUTE FINAL TIMES
-    let finalStart: Date | null = data.startAt;
-    let finalEnd: Date | null = data.endAt;
+    // COMPUTE FINAL TIMES via canonical normalizeScheduleTimes helper
+    const normalized = normalizeScheduleTimes({
+      allDay: isAllDay,
+      startAt: data.startAt,
+      endAt: data.endAt,
+    });
+    let finalStart: Date | null = normalized.scheduledStart;
+    let finalEnd: Date | null = normalized.scheduledEnd;
 
-    if (isAllDay) {
-      // MODEL A: All-day gets midnight timestamps (NOT null)
-      // This ensures isJobScheduled() returns true (scheduledStart IS NOT NULL)
-      const dayStr = data.startAt.toISOString().split('T')[0];
-      finalStart = new Date(dayStr + 'T00:00:00.000Z');
-      finalEnd = new Date(dayStr + 'T23:59:59.999Z');
-    } else {
+    if (!isAllDay && finalStart && finalEnd) {
       // TIMED: Clamp to same day (never throw, just adjust)
-      const startDay = data.startAt.toISOString().split('T')[0];
-      const endDay = data.endAt.toISOString().split('T')[0];
+      const startDay = finalStart.toISOString().split('T')[0];
+      const endDay = finalEnd.toISOString().split('T')[0];
       if (startDay !== endDay) {
-        finalEnd = new Date(startDay + 'T23:59:59.999Z');
+        finalEnd = new Date(startDay + 'T23:59:59.000Z');
       }
     }
 
@@ -1307,17 +1283,18 @@ export class CalendarRepository extends BaseRepository {
     // Determine final values (merge with existing)
     const isAllDay = data.allDay !== undefined ? data.allDay : (existingJob.isAllDay ?? false);
 
-    // COMPUTE FINAL TIMES
+    // COMPUTE FINAL TIMES via canonical normalizeScheduleTimes helper
     let finalStart: Date | null;
     let finalEnd: Date | null;
 
     if (isAllDay) {
-      // MODEL A: All-day gets midnight timestamps (NOT null)
-      // This ensures isJobScheduled() returns true (scheduledStart IS NOT NULL)
       const sourceDate = data.startAt ?? existingJob.scheduledStart ?? new Date();
-      const dayStr = sourceDate.toISOString().split('T')[0];
-      finalStart = new Date(dayStr + 'T00:00:00.000Z');
-      finalEnd = new Date(dayStr + 'T23:59:59.999Z');
+      const normalized = normalizeScheduleTimes({
+        allDay: true,
+        startAt: sourceDate,
+      });
+      finalStart = normalized.scheduledStart;
+      finalEnd = normalized.scheduledEnd;
     } else {
       // TIMED: Use provided or existing
       finalStart = data.startAt !== undefined ? data.startAt : existingJob.scheduledStart;
@@ -1328,7 +1305,7 @@ export class CalendarRepository extends BaseRepository {
         const startDay = finalStart.toISOString().split('T')[0];
         const endDay = finalEnd.toISOString().split('T')[0];
         if (startDay !== endDay) {
-          finalEnd = new Date(startDay + 'T23:59:59.999Z');
+          finalEnd = new Date(startDay + 'T23:59:59.000Z');
         }
       }
     }
