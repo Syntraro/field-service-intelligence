@@ -8,6 +8,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Phase 2 Step 9: Soft-Delete Enforcement (Final Audit)
+
+- **Fixed `deleteJob()` to use `deletedAt` instead of just `isActive`**:
+  - Sets `deletedAt = NOW()` for canonical soft delete
+  - Increments `version` for optimistic locking
+  - Also sets `isActive = false` for legacy compatibility
+  - Only deletes if not already deleted (`deletedAt IS NULL`)
+
+- **Added `deletedAt IS NULL` filter to all job queries in `server/storage/jobs.ts`**:
+  - `getJobs()` - job list query (line 226)
+  - `getJob()` - single job fetch (line 371)
+  - `updateJobStatusWithEvent()` - status update transaction (line 1245)
+  - `getActionRequiredJobs()` - on-hold/needs-review query (line 1360)
+
+- **Fixed UI query invalidation after job deletion**:
+  - `JobDetailPage.tsx` now invalidates `/api/calendar` and `/api/maintenance` queries
+  - Ensures deleted job disappears from calendar and maintenance views
+
+- **Calendar storage already had correct filters**:
+  - `getAssignmentsInRange()` - includes `isNull(jobs.deletedAt)` at line 193
+  - `getUnscheduledJobs()` - includes `isNull(jobs.deletedAt)` at line 391
+
+- **Files updated**:
+  - `server/storage/jobs.ts` - Added `isNull` import, soft-delete filters to 4 queries, fixed `deleteJob()`
+  - `client/src/pages/JobDetailPage.tsx` - Added calendar/maintenance query invalidation
+
 #### Phase 2 Step 8: Canonical Duration (Eliminate Scheduling Drift)
 
 - **Renamed `estimated_duration_minutes` → `duration_minutes`** on jobs table:

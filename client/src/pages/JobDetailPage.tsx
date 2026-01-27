@@ -41,7 +41,7 @@ import { JobAssignmentsCard } from "@/components/JobAssignmentsCard";
 import { JobMetaCard } from "@/components/JobMetaCard";
 import { ActionRequiredModal } from "@/components/ActionRequiredModal";
 import { JobStatusTimeline } from "@/components/job/JobStatusTimeline";
-import { StatusProgressBar, getJobStatusDisplay, getPriorityDisplay } from "@/components/job";
+import { StatusProgressBar, getJobStatusDisplay, getPriorityDisplay, SchedulingHistory } from "@/components/job";
 import { AddTimeEntryModal, EditTimeEntryModal, type TimeEntryForEdit } from "@/components/time";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -75,6 +75,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { getMemberDisplayName, getMemberSecondary } from "@/lib/displayName";
 import type { Job, Client, CustomerCompany, User as UserType, RecurringJobSeries, Invoice, JobTimeSummary, TimeEntryType } from "@shared/schema";
 
 function JobDescriptionCard({ jobId, description, onDescriptionChange }: {
@@ -229,8 +230,9 @@ function AssignTechnicianDialog({
     }
   }, [open, currentTechnicianIds, primaryTechnicianId]);
 
+  // Use /api/team/technicians which returns active team members
   const { data: technicians = [], isLoading } = useQuery<UserType[]>({
-    queryKey: ["/api/technicians"],
+    queryKey: ["/api/team/technicians"],
   });
 
   const assignMutation = useMutation({
@@ -314,11 +316,11 @@ function AssignTechnicianDialog({
                   </div>
                   <div>
                     <p className="font-medium text-sm">
-                      {tech.firstName && tech.lastName
-                        ? `${tech.firstName} ${tech.lastName}`
-                        : tech.email}
+                      {getMemberDisplayName(tech)}
                     </p>
-                    <p className="text-xs text-muted-foreground">{tech.email}</p>
+                    {getMemberSecondary(tech) && (
+                      <p className="text-xs text-muted-foreground">{getMemberSecondary(tech)}</p>
+                    )}
                   </div>
                 </div>
                 {selectedIds.includes(tech.id) && (
@@ -670,7 +672,10 @@ export default function JobDetailPage() {
       });
     },
     onSuccess: () => {
+      // Invalidate ALL related queries so deleted job disappears from all views
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/maintenance"] });
       toast({
         title: "Job Deleted",
         description: "Job has been deleted.",
@@ -787,7 +792,7 @@ export default function JobDetailPage() {
           job={job}
           invoice={jobInvoice ?? null}
           onStatusChange={handleStatusChange}
-          onActionRequiredSelect={() => setShowActionRequiredModal(true)}
+          onHoldSelect={() => setShowActionRequiredModal(true)}
           statusChangePending={updateStatusMutation.isPending}
         />
       </div>
@@ -883,6 +888,9 @@ export default function JobDetailPage() {
 
           {/* Status Timeline - collapsed by default */}
           <JobStatusTimeline jobId={job.id} defaultOpen={false} />
+
+          {/* Scheduling History - collapsed by default */}
+          <SchedulingHistory jobId={job.id} defaultOpen={false} />
 
           {/* Activity - Collapsible */}
           <Collapsible open={activityOpen} onOpenChange={setActivityOpen}>

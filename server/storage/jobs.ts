@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { eq, and, gte, lte, sql, desc, asc, or, lt } from "drizzle-orm";
+import { eq, and, gte, lte, sql, desc, asc, or, lt, isNull } from "drizzle-orm";
 import { validate as isUUID } from "uuid";
 import {
   jobs,
@@ -11,13 +11,21 @@ import {
   companyCounters,
   clients,
   customerCompanies,
-  jobStatusEvents
+  jobStatusEvents,
+  jobScheduleAudit,
+  users,
 } from "@shared/schema";
 import type { InsertJob, Job, InsertJobPart, JobPart, InsertJobStatusEvent, JobStatusEvent } from "@shared/schema";
 import { BaseRepository } from "./base";
 import { encodeCursor, decodeCursor } from "../utils/cursor";
 import type { PaginationParams } from "../utils/pagination";
 import type { PaginatedResult } from "./types";
+import {
+  applyLifecycleTransition,
+  LifecycleTransitionError,
+  type LifecycleIntent,
+  type TransitionActor,
+} from "../domain/jobLifecycle";
 
 interface JobFilters {
   status?: string;
@@ -37,6 +45,11 @@ export interface JobMutationOptions {
    * Only manager/admin routes should pass this option.
    */
   overrideInvoiceLock?: boolean;
+  /**
+   * If true, this is a scheduling update and version should be incremented.
+   * If false/undefined, version is not touched for non-scheduling updates.
+   */
+  isSchedulingUpdate?: boolean;
 }
 
 /**
@@ -179,7 +192,7 @@ export class JobRepository extends BaseRepository {
       qboInvoiceId: jobs.qboInvoiceId,
       billingNotes: jobs.billingNotes,
       recurringSeriesId: jobs.recurringSeriesId,
-      calendarAssignmentId: jobs.calendarAssignmentId,
+      // REMOVED: calendarAssignmentId (Model A - scheduling on jobs table)
       isActive: jobs.isActive,
       version: jobs.version,
       createdAt: jobs.createdAt,
@@ -206,7 +219,13 @@ export class JobRepository extends BaseRepository {
       .from(jobs)
       .leftJoin(clients, eq(jobs.locationId, clients.id))
       .leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))
-      .where(eq(jobs.companyId, companyId))
+      .where(
+        and(
+          eq(jobs.companyId, companyId),
+          // SOFT DELETE: Always exclude deleted jobs
+          isNull(jobs.deletedAt)
+        )
+      )
       .$dynamic();
 
     if (filters?.status) {
@@ -305,15 +324,22 @@ export class JobRepository extends BaseRepository {
         scheduledEnd: jobs.scheduledEnd,
         actualStart: jobs.actualStart,
         actualEnd: jobs.actualEnd,
+        // Travel tracking fields
+        travelStartedAt: jobs.travelStartedAt,
+        arrivedOnSiteAt: jobs.arrivedOnSiteAt,
         invoiceId: jobs.invoiceId,
         qboInvoiceId: jobs.qboInvoiceId,
         billingNotes: jobs.billingNotes,
         recurringSeriesId: jobs.recurringSeriesId,
-        calendarAssignmentId: jobs.calendarAssignmentId,
-        // Action required fields
+        // REMOVED: calendarAssignmentId (Model A - scheduling on jobs table)
+        // Hold state fields (new system)
+        holdReason: jobs.holdReason,
+        holdNotes: jobs.holdNotes,
+        nextActionDate: jobs.nextActionDate,
+        onHoldAt: jobs.onHoldAt,
+        // Legacy action required fields (kept for backward compatibility)
         actionRequiredReason: jobs.actionRequiredReason,
         actionRequiredNotes: jobs.actionRequiredNotes,
-        nextActionDate: jobs.nextActionDate,
         actionRequiredAt: jobs.actionRequiredAt,
         actionRequiredEscalatedAt: jobs.actionRequiredEscalatedAt,
         // Undo close support
@@ -337,7 +363,14 @@ export class JobRepository extends BaseRepository {
       })
       .from(jobs)
       .leftJoin(clients, eq(jobs.locationId, clients.id))
-      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+      .where(
+        and(
+          eq(jobs.id, jobId),
+          eq(jobs.companyId, companyId),
+          // SOFT DELETE: Exclude deleted jobs
+          isNull(jobs.deletedAt)
+        )
+      )
       .limit(1);
 
     return rows[0] ?? null;
@@ -396,29 +429,40 @@ export class JobRepository extends BaseRepository {
     // Normalize date strings to Date objects
     const normalizedPatch = this.normalizeDateFields(patch);
 
+    // Determine if we should increment version
+    // Version only increments for scheduling updates (Task D requirement)
+    const shouldIncrementVersion = options?.isSchedulingUpdate === true;
+
     // If no version provided, skip version check (backward compatibility)
     if (currentVersion === undefined) {
+      const updateData: Record<string, unknown> = {
+        ...normalizedPatch,
+        updatedAt: new Date(),
+      };
+      // Only increment version for scheduling updates
+      if (shouldIncrementVersion) {
+        updateData.version = sql`${jobs.version} + 1`;
+      }
+
       const rows = await db
         .update(jobs)
-        .set({
-          ...normalizedPatch,
-          version: sql`${jobs.version} + 1`,
-          updatedAt: new Date()
-        })
+        .set(updateData)
         .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
         .returning();
 
       return rows[0] ?? null;
     }
 
-    // With version check - optimistic locking
+    // With version check - optimistic locking (always increment when checking)
+    const updateData: Record<string, unknown> = {
+      ...normalizedPatch,
+      version: sql`${jobs.version} + 1`, // Increment version (required for locking)
+      updatedAt: new Date(),
+    };
+
     const rows = await db
       .update(jobs)
-      .set({
-        ...normalizedPatch,
-        version: sql`${jobs.version} + 1`, // Increment version
-        updatedAt: new Date(),
-      })
+      .set(updateData)
       .where(
         and(
           eq(jobs.id, jobId),
@@ -461,11 +505,11 @@ export class JobRepository extends BaseRepository {
       updatedAt: new Date()
     };
 
-    // Set timestamps based on status
-    if (status === "in_progress" || status === "on_site") {
-      updates.actualStart = new Date();
-    } else if (status === "completed" || status === "requires_invoicing" || status === "closed") {
-      // Set end time when job reaches a closed state
+    // Set timestamps based on status and openSubStatus
+    // "in_progress" is now an openSubStatus, not a status
+    // "completed" is the terminal status for finished work
+    if (status === "completed") {
+      // Set end time when job reaches completed state
       updates.actualEnd = new Date();
     }
 
@@ -480,15 +524,30 @@ export class JobRepository extends BaseRepository {
 
   /**
    * Delete job (soft delete)
+   * Sets deletedAt timestamp and increments version for optimistic locking.
+   * Also sets isActive = false for legacy compatibility.
    */
   async deleteJob(companyId: string, jobId: string): Promise<boolean> {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
+    const now = new Date();
     const rows = await db
       .update(jobs)
-      .set({ isActive: false, updatedAt: new Date() })
-      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+      .set({
+        deletedAt: now,
+        isActive: false,
+        version: sql`${jobs.version} + 1`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(jobs.id, jobId),
+          eq(jobs.companyId, companyId),
+          // Only delete if not already deleted
+          isNull(jobs.deletedAt)
+        )
+      )
       .returning();
 
     return rows.length > 0;
@@ -1144,8 +1203,119 @@ export class JobRepository extends BaseRepository {
   }
 
   /**
+   * Transactionally apply a lifecycle transition to a job.
+   *
+   * This is the SINGLE entry point for all lifecycle transitions (close, cancel, archive, reopen, undo).
+   * It enforces:
+   * - RBAC: Only LIFECYCLE_ROLES can perform transitions (403 FORBIDDEN if not)
+   * - Optimistic locking: Version must match (409 VERSION_MISMATCH if not)
+   * - Audit: All transitions are logged to job_status_events
+   * - Schedule clearing: Terminal transitions clear scheduling fields
+   *
+   * @param companyId - Company ID for tenant isolation
+   * @param jobId - Job ID to transition
+   * @param expectedVersion - Expected job version for optimistic locking
+   * @param intent - The lifecycle intent (CLOSE_JOB, CANCEL_JOB, etc.)
+   * @param actor - User performing the transition (for RBAC and audit)
+   * @returns Updated job after transition
+   * @throws LifecycleTransitionError with code FORBIDDEN (403) if not authorized
+   * @throws Error with code VERSION_MISMATCH (409) if version doesn't match
+   */
+  async transitionJobStatus(
+    companyId: string,
+    jobId: string,
+    expectedVersion: number,
+    intent: LifecycleIntent,
+    actor: TransitionActor
+  ): Promise<Job> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(jobId, "jobId");
+
+    // All logic is inside the transaction for atomicity
+    return await db.transaction(async (tx) => {
+      // Step 1: Load job and verify it exists (exclude deleted)
+      const [job] = await tx
+        .select()
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.id, jobId),
+            eq(jobs.companyId, companyId),
+            // SOFT DELETE: Cannot update status of deleted job
+            isNull(jobs.deletedAt)
+          )
+        )
+        .limit(1);
+
+      if (!job) {
+        throw this.notFoundError("Job");
+      }
+
+      // Step 2: Check version BEFORE applying domain logic
+      // This prevents RBAC/domain errors from affecting version checking
+      if (job.version !== expectedVersion) {
+        const err = new Error(
+          `Job was modified by another user. Expected version: ${expectedVersion}, actual: ${job.version}`
+        );
+        (err as any).code = "VERSION_MISMATCH";
+        (err as any).statusCode = 409;
+        throw err;
+      }
+
+      // Step 3: Apply domain logic (includes RBAC check)
+      // If RBAC fails, LifecycleTransitionError is thrown and transaction rolls back
+      // No version increment or audit happens on RBAC failure
+      let transitionResult;
+      try {
+        transitionResult = applyLifecycleTransition(job, intent, actor);
+      } catch (e) {
+        if (e instanceof LifecycleTransitionError) {
+          // Re-throw RBAC and domain errors as-is (no version/audit)
+          throw e;
+        }
+        throw e;
+      }
+
+      const { patch, auditEvents, finalStatus } = transitionResult;
+
+      // Step 4: Update job with patch (includes version increment)
+      const normalizedPatch = this.normalizeDateFields(patch);
+
+      const [updatedJob] = await tx
+        .update(jobs)
+        .set({
+          ...normalizedPatch,
+          version: sql`${jobs.version} + 1`,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+        .returning();
+
+      if (!updatedJob) {
+        throw this.notFoundError("Job");
+      }
+
+      // Step 5: Insert audit events
+      for (const event of auditEvents) {
+        await tx.insert(jobStatusEvents).values({
+          companyId,
+          jobId,
+          changedBy: actor.userId,
+          fromStatus: event.fromStatus,
+          toStatus: event.toStatus,
+          note: event.note || null,
+          meta: event.meta || null,
+        });
+      }
+
+      return updatedJob;
+    });
+  }
+
+  /**
    * Get action required jobs queue for office/dispatch view
-   * Sorted by: nextActionDate ASC NULLS LAST, actionRequiredAt ASC (oldest first)
+   * Sorted by: nextActionDate ASC NULLS LAST, onHoldAt ASC (oldest first)
+   * NOTE: This function is kept for backward compatibility, now queries on_hold status
    */
   async getActionRequiredJobs(companyId: string) {
     this.assertCompanyId(companyId);
@@ -1162,9 +1332,14 @@ export class JobRepository extends BaseRepository {
         summary: jobs.summary,
         scheduledStart: jobs.scheduledStart,
         scheduledEnd: jobs.scheduledEnd,
+        // New hold fields
+        holdReason: jobs.holdReason,
+        holdNotes: jobs.holdNotes,
+        nextActionDate: jobs.nextActionDate,
+        onHoldAt: jobs.onHoldAt,
+        // Legacy fields (kept for backward compatibility)
         actionRequiredReason: jobs.actionRequiredReason,
         actionRequiredNotes: jobs.actionRequiredNotes,
-        nextActionDate: jobs.nextActionDate,
         actionRequiredAt: jobs.actionRequiredAt,
         actionRequiredEscalatedAt: jobs.actionRequiredEscalatedAt,
         primaryTechnicianId: jobs.primaryTechnicianId,
@@ -1181,15 +1356,158 @@ export class JobRepository extends BaseRepository {
       .where(
         and(
           eq(jobs.companyId, companyId),
-          eq(jobs.status, "action_required")
+          // SOFT DELETE: Exclude deleted jobs
+          isNull(jobs.deletedAt),
+          eq(jobs.status, "open"),
+          sql`${jobs.openSubStatus} IN ('on_hold', 'needs_review')`
         )
       )
       .orderBy(
         // nextActionDate ASC NULLS LAST
         sql`${jobs.nextActionDate} ASC NULLS LAST`,
-        // actionRequiredAt ASC (oldest first)
-        asc(jobs.actionRequiredAt)
+        // onHoldAt ASC (oldest first)
+        asc(jobs.onHoldAt)
       );
+  }
+
+  /**
+   * Get job schedule audit history
+   * Returns recent scheduling changes with user info and change summaries
+   */
+  async getJobScheduleHistory(
+    companyId: string,
+    jobId: string,
+    limit: number = 10
+  ): Promise<Array<{
+    id: string;
+    createdAt: Date;
+    contextLabel: string;
+    userId: string | null;
+    userName: string | null;
+    userEmail: string | null;
+    oldFields: Record<string, unknown> | null;
+    newFields: Record<string, unknown>;
+    changeSummary: string;
+  }>> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(jobId, "jobId");
+
+    const rows = await db
+      .select({
+        id: jobScheduleAudit.id,
+        createdAt: jobScheduleAudit.createdAt,
+        contextLabel: jobScheduleAudit.contextLabel,
+        userId: jobScheduleAudit.userId,
+        oldFields: jobScheduleAudit.oldFields,
+        newFields: jobScheduleAudit.newFields,
+        userName: users.fullName,
+        userEmail: users.email,
+      })
+      .from(jobScheduleAudit)
+      .leftJoin(users, eq(jobScheduleAudit.userId, users.id))
+      .where(
+        and(
+          eq(jobScheduleAudit.companyId, companyId),
+          eq(jobScheduleAudit.jobId, jobId)
+        )
+      )
+      .orderBy(desc(jobScheduleAudit.createdAt))
+      .limit(limit);
+
+    // Generate change summaries
+    return rows.map((row) => {
+      const oldFields = row.oldFields as Record<string, unknown> | null;
+      const newFields = row.newFields as Record<string, unknown>;
+
+      const summary = this.generateScheduleChangeSummary(oldFields, newFields);
+
+      return {
+        id: row.id,
+        createdAt: row.createdAt,
+        contextLabel: row.contextLabel,
+        userId: row.userId,
+        userName: row.userName,
+        userEmail: row.userEmail,
+        oldFields,
+        newFields,
+        changeSummary: summary,
+      };
+    });
+  }
+
+  /**
+   * Generate a human-readable summary of schedule changes
+   */
+  private generateScheduleChangeSummary(
+    oldFields: Record<string, unknown> | null,
+    newFields: Record<string, unknown>
+  ): string {
+    const parts: string[] = [];
+
+    const formatTime = (dateStr: unknown): string | null => {
+      if (!dateStr) return null;
+      try {
+        const d = new Date(dateStr as string);
+        return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+      } catch {
+        return null;
+      }
+    };
+
+    const formatDate = (dateStr: unknown): string | null => {
+      if (!dateStr) return null;
+      try {
+        const d = new Date(dateStr as string);
+        return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+      } catch {
+        return null;
+      }
+    };
+
+    const oldIsAllDay = oldFields?.isAllDay;
+    const newIsAllDay = newFields.isAllDay;
+    const oldStart = oldFields?.scheduledStart;
+    const newStart = newFields.scheduledStart;
+
+    // Check for unschedule (clear)
+    if (oldStart && !newStart) {
+      return "Unscheduled";
+    }
+
+    // Check for initial schedule
+    if (!oldStart && newStart) {
+      if (newIsAllDay) {
+        const dateStr = formatDate(newStart);
+        return `Scheduled all-day${dateStr ? ` on ${dateStr}` : ""}`;
+      }
+      const timeStr = formatTime(newStart);
+      const dateStr = formatDate(newStart);
+      return `Scheduled${dateStr ? ` ${dateStr}` : ""}${timeStr ? ` at ${timeStr}` : ""}`;
+    }
+
+    // Check for all-day toggle
+    if (oldIsAllDay !== newIsAllDay) {
+      if (newIsAllDay) {
+        parts.push("Changed to all-day");
+      } else {
+        const timeStr = formatTime(newStart);
+        parts.push(`Changed to timed${timeStr ? ` at ${timeStr}` : ""}`);
+      }
+    } else if (oldStart && newStart) {
+      // Time/date change
+      const oldTime = formatTime(oldStart);
+      const newTime = formatTime(newStart);
+      const oldDate = formatDate(oldStart);
+      const newDate = formatDate(newStart);
+
+      if (oldDate !== newDate) {
+        parts.push(`Moved ${oldDate || ""}${newDate ? ` → ${newDate}` : ""}`);
+      } else if (oldTime !== newTime && !newIsAllDay) {
+        parts.push(`Moved ${oldTime || ""}${newTime ? ` → ${newTime}` : ""}`);
+      }
+    }
+
+    return parts.length > 0 ? parts.join(", ") : "Schedule updated";
   }
 }
 
