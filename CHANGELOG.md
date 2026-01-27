@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### Calendar Diagnostics: 4xx/5xx errors now correctly classified as failures
+- `addDiagEntry()` auto-derives `isFail: true` when `type` ends with `-error`,
+  `type === 'invariant-fail'`, or `data.status >= 400`
+- Previously `logMutationError` emitted `{ type: "mutation-error", status: 500, isFail: false }`
+- `invariantFailures` count in `generateReport()` now increments for all failures
+- File: `client/src/lib/calendarDiagnostics.ts`
+
 #### All-Day Scheduling: Eliminate duplicate normalization causing DB constraint violations
 
 - **Symptom:** `POST /api/calendar/schedule` with `{ allDay: true, date }` sometimes
