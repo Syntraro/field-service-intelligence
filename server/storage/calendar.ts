@@ -1046,6 +1046,14 @@ export class CalendarRepository extends BaseRepository {
     jobs: { total: number; open: number; completed: number; invoiced: number; archived: number };
     scheduled: { total: number; open: number; completed: number };
     backlog: { total: number };
+    violations: {
+      invalidStatus: { count: number; jobIds: string[] };
+      orphanedOpenSubStatus: { count: number; jobIds: string[] };
+      endWithoutStart: { count: number; jobIds: string[] };
+      allDayStartNotMidnight: { count: number; jobIds: string[] };
+      allDayEndNot2359: { count: number; jobIds: string[] };
+      endBeforeStart: { count: number; jobIds: string[] };
+    };
   }> {
     // Get all counts in parallel for efficiency
     const [
@@ -1053,6 +1061,13 @@ export class CalendarRepository extends BaseRepository {
       jobsByStatusResult,
       scheduledResult,
       backlogResult,
+      // Violation queries
+      invalidStatusResult,
+      orphanedOpenSubStatusResult,
+      endWithoutStartResult,
+      allDayStartNotMidnightResult,
+      allDayEndNot2359Result,
+      endBeforeStartResult,
     ] = await Promise.all([
       // Total jobs (excluding soft-deleted)
       db
@@ -1098,6 +1113,96 @@ export class CalendarRepository extends BaseRepository {
             eq(jobs.status, BACKLOG_STATUS)
           )
         ),
+
+      // VIOLATION 1: Invalid status (not in open, completed, invoiced, archived)
+      db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.companyId, companyId),
+            isNull(jobs.deletedAt),
+            sql`${jobs.status} NOT IN ('open', 'completed', 'invoiced', 'archived')`
+          )
+        )
+        .limit(100),
+
+      // VIOLATION 2: openSubStatus set but status !== 'open'
+      db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.companyId, companyId),
+            isNull(jobs.deletedAt),
+            sql`${jobs.openSubStatus} IS NOT NULL`,
+            sql`${jobs.status} <> 'open'`
+          )
+        )
+        .limit(100),
+
+      // VIOLATION 3: scheduledEnd set but scheduledStart is NULL
+      db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.companyId, companyId),
+            isNull(jobs.deletedAt),
+            sql`${jobs.scheduledEnd} IS NOT NULL`,
+            isNull(jobs.scheduledStart)
+          )
+        )
+        .limit(100),
+
+      // VIOLATION 4: All-day event with scheduledStart not at midnight
+      db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.companyId, companyId),
+            isNull(jobs.deletedAt),
+            eq(jobs.isAllDay, true),
+            sql`${jobs.scheduledStart} IS NOT NULL`,
+            sql`EXTRACT(HOUR FROM ${jobs.scheduledStart}) <> 0
+                OR EXTRACT(MINUTE FROM ${jobs.scheduledStart}) <> 0
+                OR EXTRACT(SECOND FROM ${jobs.scheduledStart}) <> 0`
+          )
+        )
+        .limit(100),
+
+      // VIOLATION 5: All-day event with scheduledEnd not at 23:59:59
+      db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.companyId, companyId),
+            isNull(jobs.deletedAt),
+            eq(jobs.isAllDay, true),
+            sql`${jobs.scheduledEnd} IS NOT NULL`,
+            sql`NOT (EXTRACT(HOUR FROM ${jobs.scheduledEnd}) = 23
+                AND EXTRACT(MINUTE FROM ${jobs.scheduledEnd}) = 59
+                AND EXTRACT(SECOND FROM ${jobs.scheduledEnd}) = 59)`
+          )
+        )
+        .limit(100),
+
+      // VIOLATION 6: scheduledEnd before scheduledStart
+      db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.companyId, companyId),
+            isNull(jobs.deletedAt),
+            sql`${jobs.scheduledStart} IS NOT NULL`,
+            sql`${jobs.scheduledEnd} IS NOT NULL`,
+            sql`${jobs.scheduledEnd} < ${jobs.scheduledStart}`
+          )
+        )
+        .limit(100),
     ]);
 
     // Parse results
@@ -1116,6 +1221,12 @@ export class CalendarRepository extends BaseRepository {
     const backlogCount = backlogResult[0]?.count ?? 0;
     const scheduledTotal = Object.values(scheduledStatusCounts).reduce((sum, c) => sum + c, 0);
 
+    // Parse violation results
+    const toViolation = (rows: { id: string }[]) => ({
+      count: rows.length,
+      jobIds: rows.map(r => r.id),
+    });
+
     return {
       jobs: {
         total: totalJobs,
@@ -1131,6 +1242,14 @@ export class CalendarRepository extends BaseRepository {
       },
       backlog: {
         total: backlogCount,
+      },
+      violations: {
+        invalidStatus: toViolation(invalidStatusResult),
+        orphanedOpenSubStatus: toViolation(orphanedOpenSubStatusResult),
+        endWithoutStart: toViolation(endWithoutStartResult),
+        allDayStartNotMidnight: toViolation(allDayStartNotMidnightResult),
+        allDayEndNot2359: toViolation(allDayEndNot2359Result),
+        endBeforeStart: toViolation(endBeforeStartResult),
       },
     };
   }

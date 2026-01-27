@@ -1086,6 +1086,104 @@ export class VersionNotInitializedError extends Error {
 }
 
 /**
+ * INVARIANT VIOLATION error - job data violates scheduling/status invariants.
+ * Used for runtime enforcement in production (not just dev mode).
+ */
+export class InvariantViolationError extends Error {
+  public readonly statusCode = 400;
+  public readonly code = "INVARIANT_VIOLATION";
+  public readonly violations: string[];
+
+  constructor(violations: string[], jobId?: string) {
+    const prefix = jobId ? `Job ${jobId}: ` : "";
+    super(`${prefix}${violations.join("; ")}`);
+    this.name = "InvariantViolationError";
+    this.violations = violations;
+  }
+}
+
+/**
+ * Validate job invariants for production use.
+ * Throws InvariantViolationError if any invariant is violated.
+ *
+ * Invariants checked:
+ * 1. status must be one of: open, completed, invoiced, archived
+ * 2. openSubStatus must be NULL unless status = 'open'
+ * 3. scheduledEnd requires scheduledStart (no end without start)
+ * 4. All-day events: scheduledStart must be at midnight (00:00:00)
+ * 5. All-day events: scheduledEnd must be at 23:59:59
+ * 6. scheduledEnd must be >= scheduledStart
+ */
+export function assertJobInvariants(
+  job: {
+    id?: string;
+    status?: string | null;
+    openSubStatus?: string | null;
+    scheduledStart?: Date | string | null;
+    scheduledEnd?: Date | string | null;
+    isAllDay?: boolean | null;
+  },
+  contextLabel = "assertJobInvariants"
+): void {
+  const violations: string[] = [];
+  const jobId = job.id || "unknown";
+
+  // Parse dates
+  const scheduledStart = job.scheduledStart
+    ? (typeof job.scheduledStart === "string" ? new Date(job.scheduledStart) : job.scheduledStart)
+    : null;
+  const scheduledEnd = job.scheduledEnd
+    ? (typeof job.scheduledEnd === "string" ? new Date(job.scheduledEnd) : job.scheduledEnd)
+    : null;
+  const isAllDay = job.isAllDay === true;
+
+  // INVARIANT 1: status must be one of the 4 lifecycle values
+  const validStatuses = ["open", "completed", "invoiced", "archived"];
+  if (job.status && !validStatuses.includes(job.status)) {
+    violations.push(`status '${job.status}' is not valid (must be: ${validStatuses.join(", ")})`);
+  }
+
+  // INVARIANT 2: openSubStatus must be NULL unless status = 'open'
+  if (job.openSubStatus && job.status !== "open") {
+    violations.push(`openSubStatus='${job.openSubStatus}' requires status='open', but status='${job.status}'`);
+  }
+
+  // INVARIANT 3: scheduledEnd requires scheduledStart
+  if (scheduledEnd && !scheduledStart) {
+    violations.push("scheduledEnd is set but scheduledStart is NULL");
+  }
+
+  // INVARIANT 4: All-day events must have scheduledStart at midnight
+  if (isAllDay && scheduledStart) {
+    const hours = scheduledStart.getUTCHours();
+    const minutes = scheduledStart.getUTCMinutes();
+    const seconds = scheduledStart.getUTCSeconds();
+    if (hours !== 0 || minutes !== 0 || seconds !== 0) {
+      violations.push(`all-day event scheduledStart must be midnight (00:00:00), got ${hours}:${minutes}:${seconds}`);
+    }
+  }
+
+  // INVARIANT 5: All-day events must have scheduledEnd at 23:59:59
+  if (isAllDay && scheduledEnd) {
+    const hours = scheduledEnd.getUTCHours();
+    const minutes = scheduledEnd.getUTCMinutes();
+    const seconds = scheduledEnd.getUTCSeconds();
+    if (hours !== 23 || minutes !== 59 || seconds !== 59) {
+      violations.push(`all-day event scheduledEnd must be 23:59:59, got ${hours}:${minutes}:${seconds}`);
+    }
+  }
+
+  // INVARIANT 6: scheduledEnd must be >= scheduledStart
+  if (scheduledStart && scheduledEnd && scheduledEnd < scheduledStart) {
+    violations.push("scheduledEnd is before scheduledStart");
+  }
+
+  if (violations.length > 0) {
+    throw new InvariantViolationError(violations, jobId);
+  }
+}
+
+/**
  * Check version and throw if mismatch or not initialized.
  * TASK 1: No ?? 0 fallback - must reject VERSION_NOT_INITIALIZED
  */

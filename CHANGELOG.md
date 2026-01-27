@@ -8,6 +8,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Phase 2 Step 7: Stability & Correctness Hardening
+
+- **DB CHECK constraints** - Added hard enforcement at database level:
+  - `jobs_status_check` - status must be one of: open, completed, invoiced, archived
+  - `jobs_scheduled_end_requires_start_check` - scheduledEnd requires scheduledStart
+  - `jobs_all_day_start_midnight_check` - all-day events must have scheduledStart at 00:00:00
+  - `jobs_all_day_end_2359_check` - all-day events must have scheduledEnd at 23:59:59
+
+- **Runtime `assertJobInvariants(job)` function** in `server/domain/scheduling.ts`:
+  - Runs in all environments (production + dev), not just dev mode
+  - Throws `InvariantViolationError` with code `INVARIANT_VIOLATION` (400 status)
+  - Checks all 6 invariants: status, openSubStatus, scheduledEnd requires start, all-day timestamps, end >= start
+
+- **Expanded `/api/calendar/state-snapshot` endpoint**:
+  - Now returns `violations` object with counts and job IDs for each invariant type
+  - Violation types: invalidStatus, orphanedOpenSubStatus, endWithoutStart, allDayStartNotMidnight, allDayEndNot2359, endBeforeStart
+  - Added `_invariants.no_violations` and `_invariants.total_violation_count` for quick health checks
+
+- **Files updated**:
+  - `shared/schema.ts` - Added 4 new CHECK constraints to jobs table
+  - `server/domain/scheduling.ts` - Added `InvariantViolationError` class and `assertJobInvariants()` function
+  - `server/storage/calendar.ts` - Expanded `getStateSnapshot()` to query for violations
+  - `server/routes/calendar.ts` - Updated state-snapshot response to include violations
+
+- **Migration**: `migrations/2026_01_27_add_job_invariant_constraints.sql`
+  - Adds 4 CHECK constraints for status, scheduling, and all-day invariants
+
 #### Phase 2 Step 5: Canonical "Overdue" Derived Flag (Updated)
 
 - **AUTHORITATIVE RULE** - A job is overdue ONLY when:

@@ -599,11 +599,25 @@ router.get(
     const openEqualsScheduledPlusBacklog =
       snapshot.jobs.open === (snapshot.scheduled.open + snapshot.backlog.total);
 
+    // Compute total violation count
+    const totalViolations = Object.values(snapshot.violations).reduce(
+      (sum, v) => sum + v.count,
+      0
+    );
+
+    // All violations should be zero for healthy state
+    const noViolations = totalViolations === 0;
+
     res.json({
       jobs: snapshot.jobs,
       scheduled: snapshot.scheduled,
       backlog: snapshot.backlog,
-      _invariants: { open_equals_scheduled_plus_backlog: openEqualsScheduledPlusBacklog },
+      violations: snapshot.violations,
+      _invariants: {
+        open_equals_scheduled_plus_backlog: openEqualsScheduledPlusBacklog,
+        no_violations: noViolations,
+        total_violation_count: totalViolations,
+      },
       _timestamp: new Date().toISOString(),
     });
   })
