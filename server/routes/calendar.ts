@@ -15,7 +15,7 @@ import { validateSchedule, ScheduleValidationError } from "../services/calendarV
 import { assertCanEditSchedule } from "../guards/schedulingPermissions";
 import { filterSchedulableTechnicians, checkJobTechnicianVisibility } from "../domain/scheduling";
 import type { AuthedRequest } from "../auth/tenantIsolation";
-import type { CalendarAssignmentWithDetails } from "../storage/calendar";
+import type { CalendarJobWithDetails } from "../storage/calendar";
 import type { CalendarEventDto, CalendarRangeResponseDto } from "@shared/types/calendar";
 
 // ============================================================================
@@ -48,10 +48,10 @@ import type { CalendarEventDto, CalendarRangeResponseDto } from "@shared/types/c
  * Technicians see only their assigned jobs; office roles see all.
  */
 function filterJobsByRole(
-  jobs: CalendarAssignmentWithDetails[],
+  jobs: CalendarJobWithDetails[],
   userRole: string,
   userId: string
-): CalendarAssignmentWithDetails[] {
+): CalendarJobWithDetails[] {
   if (MANAGER_ROLES.includes(userRole as any)) {
     return jobs;
   }
@@ -65,7 +65,7 @@ function filterJobsByRole(
 /**
  * Transform job to CalendarEventDto
  */
-function transformToDto(job: CalendarAssignmentWithDetails): CalendarEventDto {
+function transformToDto(job: CalendarJobWithDetails): CalendarEventDto {
   const isAllDay = job.isAllDay ?? false;
 
   let dateStr: string;
@@ -135,7 +135,7 @@ function getServerTimezone(): string {
  * Build CalendarRangeResponseDto
  */
 function buildRangeResponse(
-  jobs: CalendarAssignmentWithDetails[],
+  jobs: CalendarJobWithDetails[],
   outsideVisibleHoursCount: number,
   hiddenTechnicianDiagnostics?: { jobId: string; hiddenTechIds: string[] }[]
 ): CalendarRangeResponseDto {
@@ -253,8 +253,8 @@ router.get(
       const startDate = new Date(start);
       const endDate = new Date(end);
 
-      const { assignments: allJobs, outsideVisibleHoursCount } =
-        await calendarRepository.getAssignmentsInRangeWithMetadata(
+      const { jobs: allJobs, outsideVisibleHoursCount } =
+        await calendarRepository.getScheduledJobsInRangeWithMetadata(
           companyId, startDate, endDate, calendarStartHour, calendarEndHour
         );
 
@@ -287,8 +287,8 @@ router.get(
       const startDate = new Date(year, month - 1, 1, 0, 0, 0);
       const endDate = new Date(year, month, 0, 23, 59, 59);
 
-      const { assignments: allJobs, outsideVisibleHoursCount } =
-        await calendarRepository.getAssignmentsInRangeWithMetadata(
+      const { jobs: allJobs, outsideVisibleHoursCount } =
+        await calendarRepository.getScheduledJobsInRangeWithMetadata(
           companyId, startDate, endDate, calendarStartHour, calendarEndHour
         );
 
@@ -377,7 +377,7 @@ router.post(
     let result;
     try {
       if (useBypassFunction) {
-        result = await calendarRepository.createAssignmentBypassWorkingHours(companyId, {
+        result = await calendarRepository.scheduleJobBypassWorkingHours(companyId, {
           jobId: data.jobId,
           technicianUserId: data.technicianUserId,
           startAt, endAt,
@@ -386,7 +386,7 @@ router.post(
           expectedVersion: data.version,
         });
       } else {
-        result = await calendarRepository.createAssignment(companyId, {
+        result = await calendarRepository.scheduleJob(companyId, {
           jobId: data.jobId,
           technicianUserId: data.technicianUserId,
           startAt, endAt,
@@ -450,7 +450,7 @@ router.patch(
 
     const data = validateSchema(rescheduleJobSchema, req.body);
 
-    const existing = await calendarRepository.getAssignmentById(companyId, jobId);
+    const existing = await calendarRepository.getJobById(companyId, jobId);
     if (!existing) {
       throw createError(404, "Job not found");
     }
@@ -480,7 +480,7 @@ router.patch(
 
     let result;
     try {
-      result = await calendarRepository.updateAssignment(companyId, jobId, {
+      result = await calendarRepository.rescheduleJob(companyId, jobId, {
         technicianUserId: data.technicianUserId ?? undefined,
         startAt: computedStartAt,
         endAt: computedEndAt,
@@ -526,14 +526,14 @@ router.post(
 
     const data = validateSchema(unscheduleJobSchema, req.body);
 
-    const existing = await calendarRepository.getAssignmentById(companyId, jobId);
+    const existing = await calendarRepository.getJobById(companyId, jobId);
     if (!existing) {
       throw createError(404, "Job not found");
     }
 
     let result;
     try {
-      result = await calendarRepository.deleteAssignment(companyId, jobId, data.version);
+      result = await calendarRepository.unscheduleJob(companyId, jobId, data.version);
     } catch (error: any) {
       if (error.message?.includes('modified by another user')) {
         return res.status(409).json({ error: error.message, code: 'VERSION_MISMATCH' });

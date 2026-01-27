@@ -56,17 +56,18 @@ export const DEFAULT_CALENDAR_START_HOUR = 6;
 export const DEFAULT_CALENDAR_END_HOUR = 19;
 
 /**
- * Result from getAssignmentsInRange with metadata
+ * Result from getScheduledJobsInRange with metadata
  */
 export interface CalendarRangeResult {
-  assignments: CalendarAssignmentWithDetails[];
+  jobs: CalendarJobWithDetails[];
   outsideVisibleHoursCount: number;
 }
 
 /**
- * Calendar Assignment with joined technician and job info
+ * Calendar job with joined technician and location info
+ * (Renamed from CalendarJobWithDetails — no separate "assignment" entity exists)
  */
-export interface CalendarAssignmentWithDetails {
+export interface CalendarJobWithDetails {
   id: string;
   companyId: string;
   jobId: string;
@@ -95,25 +96,25 @@ export interface CalendarAssignmentWithDetails {
 }
 
 /**
- * Count assignments scheduled outside the visible calendar hours.
+ * Count scheduled jobs outside the visible calendar hours.
  * Only counts timed events (is_all_day = false).
  *
- * An assignment is counted as "outside visible hours" if:
+ * A job is counted as "outside visible hours" if:
  * - scheduledStart is before the visible window (hour < startHour)
  * - scheduledStart is at or after the visible window end (hour >= endHour)
  * - scheduledEnd extends beyond the visible window (endHour < scheduledEnd hour)
  *
- * @param assignments - Calendar assignments to check
+ * @param scheduledJobs - Calendar jobs to check
  * @param startHour - Calendar visible start hour (inclusive)
  * @param endHour - Calendar visible end hour (exclusive)
- * @returns Count of assignments outside visible hours
+ * @returns Count of jobs outside visible hours
  */
 export function countOutsideVisibleHours(
-  assignments: CalendarAssignmentWithDetails[],
+  scheduledJobs: CalendarJobWithDetails[],
   startHour: number = DEFAULT_CALENDAR_START_HOUR,
   endHour: number = DEFAULT_CALENDAR_END_HOUR
 ): number {
-  return assignments.filter((a) => {
+  return scheduledJobs.filter((a) => {
     // Skip all-day events
     if (a.isAllDay) return false;
     // Skip if no scheduled start
@@ -158,11 +159,11 @@ export class CalendarRepository extends BaseRepository {
    * @param startDate - Range start (inclusive)
    * @param endDate - Range end (EXCLUSIVE - use start of next period)
    */
-  async getAssignmentsInRange(
+  async getScheduledJobsInRange(
     companyId: string,
     startDate: Date,
     endDate: Date
-  ): Promise<CalendarAssignmentWithDetails[]> {
+  ): Promise<CalendarJobWithDetails[]> {
     // MODEL A: Filter by schedule existence, NOT by status
     // Range is [startDate, endDate) - exclusive end for clean boundaries
     const jobRows = await db
@@ -204,7 +205,7 @@ export class CalendarRepository extends BaseRepository {
     // DEV-only debug log
     if (process.env.NODE_ENV === 'development') {
       console.log(
-        `[Calendar] getAssignmentsInRange: company=${companyId} range=[${startDate.toISOString()}, ${endDate.toISOString()}) found=${jobRows.length} scheduled`
+        `[Calendar] getScheduledJobsInRange: company=${companyId} range=[${startDate.toISOString()}, ${endDate.toISOString()}) found=${jobRows.length} scheduled`
       );
     }
 
@@ -307,15 +308,15 @@ export class CalendarRepository extends BaseRepository {
     });
 
     // DEV: Assert calendar results meet Model A invariants
-    assertCalendarQueryResults(results, "storage:getAssignmentsInRange");
+    assertCalendarQueryResults(results, "storage:getScheduledJobsInRange");
 
     return results;
   }
 
   /**
-   * MODEL A: Get calendar assignments with metadata for a date range
+   * MODEL A: Get scheduled jobs with metadata for a date range
    *
-   * Same as getAssignmentsInRange but also returns:
+   * Same as getScheduledJobsInRange but also returns:
    * - outsideVisibleHoursCount: number of timed events outside visible hours
    *
    * @param companyId - Tenant ID
@@ -324,27 +325,27 @@ export class CalendarRepository extends BaseRepository {
    * @param calendarStartHour - Visible start hour (default: 6)
    * @param calendarEndHour - Visible end hour (default: 19)
    */
-  async getAssignmentsInRangeWithMetadata(
+  async getScheduledJobsInRangeWithMetadata(
     companyId: string,
     startDate: Date,
     endDate: Date,
     calendarStartHour: number = DEFAULT_CALENDAR_START_HOUR,
     calendarEndHour: number = DEFAULT_CALENDAR_END_HOUR
   ): Promise<CalendarRangeResult> {
-    const assignments = await this.getAssignmentsInRange(companyId, startDate, endDate);
+    const scheduledJobs = await this.getScheduledJobsInRange(companyId, startDate, endDate);
     const outsideVisibleHoursCount = countOutsideVisibleHours(
-      assignments,
+      scheduledJobs,
       calendarStartHour,
       calendarEndHour
     );
 
     if (process.env.NODE_ENV === 'development' && outsideVisibleHoursCount > 0) {
       console.log(
-        `[Calendar] getAssignmentsInRangeWithMetadata: ${outsideVisibleHoursCount} jobs outside visible hours (${calendarStartHour}:00-${calendarEndHour}:00)`
+        `[Calendar] getScheduledJobsInRangeWithMetadata: ${outsideVisibleHoursCount} jobs outside visible hours (${calendarStartHour}:00-${calendarEndHour}:00)`
       );
     }
 
-    return { assignments, outsideVisibleHoursCount };
+    return { jobs: scheduledJobs, outsideVisibleHoursCount };
   }
 
   /**
@@ -362,7 +363,7 @@ export class CalendarRepository extends BaseRepository {
    *
    * @param companyId - Tenant ID
    */
-  async getUnscheduledJobs(companyId: string): Promise<CalendarAssignmentWithDetails[]> {
+  async getUnscheduledJobs(companyId: string): Promise<CalendarJobWithDetails[]> {
     const jobRows = await db
       .select({
         id: jobs.id,
@@ -512,9 +513,9 @@ export class CalendarRepository extends BaseRepository {
   }
 
   /**
-   * Get a single job/assignment by ID (for update/delete validation)
+   * Get a single job by ID (for update/delete validation)
    */
-  async getAssignmentById(companyId: string, jobId: string) {
+  async getJobById(companyId: string, jobId: string) {
     const rows = await db
       .select()
       .from(jobs)
@@ -550,18 +551,17 @@ export class CalendarRepository extends BaseRepository {
   }
 
   /**
-   * MODEL A: Create a calendar assignment (schedule a job)
+   * MODEL A: Schedule a job (place it on the calendar)
    *
    * INVARIANTS (MODEL A - Timestamp Canonical):
    * - Sets scheduledStart/scheduledEnd for ALL scheduled events (timed AND all-day)
    * - All-day events: scheduledStart=midnight, scheduledEnd=end-of-day (NOT NULL)
-   * - Status is set to 'scheduled' ONLY if schedule exists
-   * - If schedule somehow missing, status is downgraded to 'assigned' or 'open'
-   * - Ensures assignedTechnicianIds is never NULL when assignment exists
+   * - Status derived from schedule presence via domain layer
+   * - Ensures assignedTechnicianIds is never NULL when technician is set
    *
    * UNIFIED PATTERN: Uses applyJobSchedulingPatch for normalization, version, and audit
    */
-  async createAssignment(
+  async scheduleJob(
     companyId: string,
     data: {
       jobId: string;
@@ -575,7 +575,7 @@ export class CalendarRepository extends BaseRepository {
     }
   ) {
     // Fetch existing job for terminal check and version
-    const existingJob = await this.getAssignmentById(companyId, data.jobId);
+    const existingJob = await this.getJobById(companyId, data.jobId);
 
     // UNIFIED: Use domain layer for normalization, version prep, and audit data
     const patchResult = applyJobSchedulingPatch(
@@ -656,13 +656,13 @@ export class CalendarRepository extends BaseRepository {
 
     // DEV: Assert result meets invariants
     if (result) {
-      assertSchedulingInvariants(result, "storage:createAssignment:result");
-      assertTechnicianAssignmentInvariant(result, "storage:createAssignment:result");
+      assertSchedulingInvariants(result, "storage:scheduleJob:result");
+      assertTechnicianAssignmentInvariant(result, "storage:scheduleJob:result");
     }
 
     if (process.env.NODE_ENV === 'development') {
       console.log(
-        `[Calendar] createAssignment: job=${data.jobId} scheduledStart=${patchResult.scheduledStart?.toISOString()} isAllDay=${patchResult.isAllDay} status=${patchResult.status} version=${patchResult.writeIntent?.newVersion}`
+        `[Calendar] scheduleJob: job=${data.jobId} scheduledStart=${patchResult.scheduledStart?.toISOString()} isAllDay=${patchResult.isAllDay} status=${patchResult.status} version=${patchResult.writeIntent?.newVersion}`
       );
     }
 
@@ -670,7 +670,7 @@ export class CalendarRepository extends BaseRepository {
   }
 
   /**
-   * MODEL A: Update a calendar assignment (reschedule/reassign)
+   * MODEL A: Reschedule a job (update schedule/reassign technician)
    *
    * INVARIANTS delegated to domain/scheduling.ts:
    * - Schedule normalization (all-day boundaries)
@@ -679,7 +679,7 @@ export class CalendarRepository extends BaseRepository {
    *
    * UNIFIED PATTERN: Uses applyJobSchedulingPatch for normalization, version, and audit
    */
-  async updateAssignment(
+  async rescheduleJob(
     companyId: string,
     jobId: string,
     data: {
@@ -693,7 +693,7 @@ export class CalendarRepository extends BaseRepository {
     }
   ) {
     // Fetch existing job for terminal check and version
-    const existingJob = await this.getAssignmentById(companyId, jobId);
+    const existingJob = await this.getJobById(companyId, jobId);
 
     // Determine if scheduling fields are being modified
     const hasSchedulingChanges = data.startAt !== undefined || data.allDay !== undefined;
@@ -785,7 +785,7 @@ export class CalendarRepository extends BaseRepository {
 
       // Assert technician invariant after write
       if (updated) {
-        assertTechnicianAssignmentInvariant(updated, "storage:updateAssignment");
+        assertTechnicianAssignmentInvariant(updated, "storage:rescheduleJob");
       }
 
       // AUDIT: Log scheduling change (only if scheduling fields changed)
@@ -805,24 +805,24 @@ export class CalendarRepository extends BaseRepository {
 
     // DEV: Assert result meets invariants
     if (result) {
-      assertSchedulingInvariants(result, "storage:updateAssignment:result");
+      assertSchedulingInvariants(result, "storage:rescheduleJob:result");
     }
 
     return result;
   }
 
   /**
-   * MODEL A: Delete/unschedule an assignment (returns job to backlog)
+   * MODEL A: Unschedule a job (returns job to backlog)
    *
    * INVARIANTS delegated to domain/scheduling.ts:
-   * - Clears scheduledStart/scheduledEnd/isAllDay (job no longer has assignment)
+   * - Clears scheduledStart/scheduledEnd/isAllDay (removes schedule)
    * - Status derived from deriveStatusFromSchedule (returns to backlog)
    *
    * UNIFIED PATTERN: Uses applyJobSchedulingPatch for normalization, version, and audit
    */
-  async deleteAssignment(companyId: string, jobId: string, expectedVersion?: number) {
+  async unscheduleJob(companyId: string, jobId: string, expectedVersion?: number) {
     // First get current job to determine appropriate status
-    const existing = await this.getAssignmentById(companyId, jobId);
+    const existing = await this.getJobById(companyId, jobId);
 
     // UNIFIED: Use domain layer for normalization, version prep, and audit data
     // Clearing schedule = setting start/end to null
@@ -876,13 +876,13 @@ export class CalendarRepository extends BaseRepository {
 
     // DEV: Assert result meets invariants
     if (result) {
-      assertSchedulingInvariants(result, "storage:deleteAssignment:result");
+      assertSchedulingInvariants(result, "storage:unscheduleJob:result");
     }
 
     if (process.env.NODE_ENV === 'development') {
       const hasTechnician = hasTechnicianAssigned(existing || {});
       console.log(
-        `[Calendar] deleteAssignment: job=${jobId} status->${patchResult.status} hasTech=${hasTechnician} version=${patchResult.writeIntent?.newVersion}`
+        `[Calendar] unscheduleJob: job=${jobId} status->${patchResult.status} hasTech=${hasTechnician} version=${patchResult.writeIntent?.newVersion}`
       );
     }
 
@@ -930,7 +930,7 @@ export class CalendarRepository extends BaseRepository {
   // ============================================================================
 
   /**
-   * Create assignment WITHOUT working hours validation.
+   * Schedule job WITHOUT working hours validation.
    *
    * GUARANTEES:
    * - NO validateSchedule() call
@@ -939,7 +939,7 @@ export class CalendarRepository extends BaseRepository {
    * - Enforces same-day clamp for timed events
    * - Handles version increment
    */
-  async createAssignmentBypassWorkingHours(
+  async scheduleJobBypassWorkingHours(
     companyId: string,
     data: {
       jobId: string;
@@ -952,7 +952,7 @@ export class CalendarRepository extends BaseRepository {
     }
   ) {
     // Fetch existing job for version check
-    const existingJob = await this.getAssignmentById(companyId, data.jobId);
+    const existingJob = await this.getJobById(companyId, data.jobId);
 
     // VERSION CHECK (if provided)
     // TASK 1: Reject VERSION_NOT_INITIALIZED instead of defaulting to 0
@@ -1024,12 +1024,12 @@ export class CalendarRepository extends BaseRepository {
 
     // Assert technician invariant after write
     if (result) {
-      assertTechnicianAssignmentInvariant(result, "storage:createAssignmentBypassWorkingHours");
+      assertTechnicianAssignmentInvariant(result, "storage:scheduleJobBypassWorkingHours");
     }
 
     if (process.env.NODE_ENV === 'development') {
       console.log(
-        `[Calendar] createAssignmentBypassWorkingHours: job=${data.jobId} ` +
+        `[Calendar] scheduleJobBypassWorkingHours: job=${data.jobId} ` +
         `scheduledStart=${finalStart?.toISOString() ?? 'null'} isAllDay=${isAllDay} ` +
         `status=${status} version=${newVersion} [BYPASS]`
       );
@@ -1261,7 +1261,7 @@ export class CalendarRepository extends BaseRepository {
   }
 
   /**
-   * Update assignment WITHOUT working hours validation.
+   * Reschedule job WITHOUT working hours validation.
    *
    * GUARANTEES:
    * - NO validateSchedule() call
@@ -1270,7 +1270,7 @@ export class CalendarRepository extends BaseRepository {
    * - Enforces same-day clamp for timed events
    * - Handles version increment
    */
-  async updateAssignmentBypassWorkingHours(
+  async rescheduleJobBypassWorkingHours(
     companyId: string,
     jobId: string,
     data: {
@@ -1283,7 +1283,7 @@ export class CalendarRepository extends BaseRepository {
     }
   ) {
     // Fetch existing job for version check and merging
-    const existingJob = await this.getAssignmentById(companyId, jobId);
+    const existingJob = await this.getJobById(companyId, jobId);
     if (!existingJob) {
       throw new Error(`Job ${jobId} not found`);
     }
@@ -1367,12 +1367,12 @@ export class CalendarRepository extends BaseRepository {
 
     // Assert technician invariant after write
     if (result) {
-      assertTechnicianAssignmentInvariant(result, "storage:updateAssignmentBypassWorkingHours");
+      assertTechnicianAssignmentInvariant(result, "storage:rescheduleJobBypassWorkingHours");
     }
 
     if (process.env.NODE_ENV === 'development') {
       console.log(
-        `[Calendar] updateAssignmentBypassWorkingHours: job=${jobId} ` +
+        `[Calendar] rescheduleJobBypassWorkingHours: job=${jobId} ` +
         `scheduledStart=${finalStart?.toISOString() ?? 'null'} isAllDay=${isAllDay} ` +
         `version=${newVersion} [BYPASS]`
       );

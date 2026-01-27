@@ -8,6 +8,72 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Eradicate Legacy "Assignment" Terminology + Regression Guard
+
+- **Renamed `CalendarAssignmentWithDetails` → `CalendarJobWithDetails`**:
+  - No separate "assignment" entity exists; calendar events ARE jobs
+  - `CalendarRangeResult.assignments` → `CalendarRangeResult.jobs`
+  - Updated all import sites and type references
+
+- **Renamed CalendarRepository methods to job-centric terminology**:
+  - `getAssignmentsInRange` → `getScheduledJobsInRange`
+  - `getAssignmentsInRangeWithMetadata` → `getScheduledJobsInRangeWithMetadata`
+  - `getAssignmentById` → `getJobById`
+  - `createAssignment` → `scheduleJob`
+  - `updateAssignment` → `rescheduleJob`
+  - `deleteAssignment` → `unscheduleJob`
+  - `createAssignmentBypassWorkingHours` → `scheduleJobBypassWorkingHours`
+  - `updateAssignmentBypassWorkingHours` → `rescheduleJobBypassWorkingHours`
+
+- **Renamed IStorage calendar bindings**:
+  - `getCalendarAssignmentsInDateRange` → `getCalendarScheduledJobsInDateRange`
+  - `getCalendarAssignment` → `getCalendarJob`
+  - `createCalendarAssignment` → `scheduleCalendarJob`
+  - `updateCalendarAssignment` → `rescheduleCalendarJob`
+  - `deleteCalendarAssignment` → `unscheduleCalendarJob`
+
+- **Audit context labels intentionally preserved** (`"storage:createAssignment"`,
+  `"storage:updateAssignment"`, `"storage:deleteAssignment"`) — these are stored
+  in the database; changing them would break historical audit data lookups.
+
+- **Files updated**:
+  - `server/storage/calendar.ts` — type rename, method renames, JSDoc updates
+  - `server/routes/calendar.ts` — import rename, call site updates, destructuring updates
+  - `server/storage/index.ts` — IStorage interface + storage bindings renamed
+  - `tests/scheduling.smoke.test.ts` — call site + destructuring updates
+
+### Added
+
+#### Regression Test: No Legacy Job Statuses
+
+- **New test `tests/no-legacy-statuses.test.ts`** — uses ripgrep to scan `server/`,
+  `client/`, `shared/` for banned legacy status strings used as job lifecycle values:
+  - Banned: `scheduled`, `assigned`, `unscheduled`, `overdue`, `in_progress`, `requires_invoicing`
+  - `in_progress` uses PCRE2 negative lookbehind to exclude valid `openSubStatus` comparisons
+  - Allowlist excludes migration scripts, status rules docs, display-only UI labels, tests, etc.
+  - Prevents accidental reintroduction of legacy status values
+
+#### Fix Scheduling Smoke Tests Schema Drift
+
+- **New `tests/ensureTestSchema.ts`** — idempotent DDL runner called from `tests/setup.ts`:
+  - Adds `open_sub_status` column to jobs table (IF NOT EXISTS)
+  - Adds `jobs_hold_reason_check` and `jobs_open_sub_status_invariant_check` constraints
+  - Runs before every test suite via vitest `setupFiles`
+  - Safe to run multiple times (fully idempotent)
+
+- **Fixed `tests/scheduling.smoke.test.ts` Test 2 legacy status assertion**:
+  - Removed `status: "scheduled"` from updateJob call (violated `jobs_status_check`)
+  - Changed assertion from `status === "scheduled"` to `status === "open"`
+  - Scheduling is now derived from `scheduledStart IS NOT NULL`, not status value
+
+- **Updated `tests/setup.ts`**:
+  - Calls `ensureTestSchema()` in `beforeAll` to sync DB schema before tests
+
+- **Files changed**:
+  - `tests/ensureTestSchema.ts` — **NEW** — idempotent DDL patches
+  - `tests/setup.ts` — calls ensureTestSchema in beforeAll
+  - `tests/scheduling.smoke.test.ts` — fixed legacy status assertion
+
 #### Phase 2 Step 10: Jobs Page Canonical Predicate Alignment
 
 - **Fixed overdue filter/display drift in Jobs page**:

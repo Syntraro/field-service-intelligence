@@ -206,11 +206,11 @@ updateInvitation: (id: string, data: { status: string }) => Promise<any>;
   deleteQuoteLine: typeof quoteRepository.deleteQuoteLine;
 
   // Calendar operations
-  getCalendarAssignmentsInDateRange: typeof calendarRepository.getAssignmentsInRange;
-  getCalendarAssignment: typeof calendarRepository.getAssignmentById;
-  createCalendarAssignment: typeof calendarRepository.createAssignment;
-  updateCalendarAssignment: typeof calendarRepository.updateAssignment;
-  deleteCalendarAssignment: typeof calendarRepository.deleteAssignment;
+  getCalendarScheduledJobsInDateRange: typeof calendarRepository.getScheduledJobsInRange;
+  getCalendarJob: typeof calendarRepository.getJobById;
+  scheduleCalendarJob: typeof calendarRepository.scheduleJob;
+  rescheduleCalendarJob: typeof calendarRepository.rescheduleJob;
+  unscheduleCalendarJob: typeof calendarRepository.unscheduleJob;
   validateCalendarTechnician: typeof calendarRepository.validateTechnicianBelongsToTenant;
   validateCalendarJob: typeof calendarRepository.validateJobBelongsToTenant;
 }
@@ -425,11 +425,11 @@ export const storage: IStorage = {
   deleteQuoteLine: quoteRepository.deleteQuoteLine.bind(quoteRepository),
 
   // Calendar operations
-  getCalendarAssignmentsInDateRange: calendarRepository.getAssignmentsInRange.bind(calendarRepository),
-  getCalendarAssignment: calendarRepository.getAssignmentById.bind(calendarRepository),
-  createCalendarAssignment: calendarRepository.createAssignment.bind(calendarRepository),
-  updateCalendarAssignment: calendarRepository.updateAssignment.bind(calendarRepository),
-  deleteCalendarAssignment: calendarRepository.deleteAssignment.bind(calendarRepository),
+  getCalendarScheduledJobsInDateRange: calendarRepository.getScheduledJobsInRange.bind(calendarRepository),
+  getCalendarJob: calendarRepository.getJobById.bind(calendarRepository),
+  scheduleCalendarJob: calendarRepository.scheduleJob.bind(calendarRepository),
+  rescheduleCalendarJob: calendarRepository.rescheduleJob.bind(calendarRepository),
+  unscheduleCalendarJob: calendarRepository.unscheduleJob.bind(calendarRepository),
   validateCalendarTechnician: calendarRepository.validateTechnicianBelongsToTenant.bind(calendarRepository),
   validateCalendarJob: calendarRepository.validateJobBelongsToTenant.bind(calendarRepository),
 };
