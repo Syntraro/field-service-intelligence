@@ -70,13 +70,21 @@ router.put("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRe
   res.json(updated);
 }));
 
-/** DELETE /api/tax/:id — Soft-delete a tax rate */
+/** DELETE /api/tax/:id — Soft-delete a tax rate; friendly message if used on invoices */
 router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const existing = await taxRepository.getTaxRate(req.companyId!, req.params.id);
   if (!existing) throw createError(404, "Tax rate not found");
 
-  await taxRepository.deleteTaxRate(req.companyId!, req.params.id);
-  res.json({ success: true });
+  const result = await taxRepository.deleteTaxRate(req.companyId!, req.params.id);
+  if (!result) throw createError(404, "Tax rate not found");
+
+  res.json({
+    success: true,
+    deactivated: true,
+    message: result.referencedByInvoices
+      ? "Deactivated because it's used on invoices. Historical invoices are unaffected."
+      : "Tax rate deleted.",
+  });
 }));
 
 // ========================================
@@ -112,13 +120,21 @@ router.put("/groups/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
   res.json(updated);
 }));
 
-/** DELETE /api/tax/groups/:id — Soft-delete a tax group */
+/** DELETE /api/tax/groups/:id — Soft-delete a tax group; friendly message if used on invoices */
 router.delete("/groups/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const existing = await taxRepository.getTaxGroup(req.companyId!, req.params.id);
   if (!existing) throw createError(404, "Tax group not found");
 
-  await taxRepository.deleteTaxGroup(req.companyId!, req.params.id);
-  res.json({ success: true });
+  const result = await taxRepository.deleteTaxGroup(req.companyId!, req.params.id);
+  if (!result) throw createError(404, "Tax group not found");
+
+  res.json({
+    success: true,
+    deactivated: true,
+    message: result.referencedByInvoices
+      ? "Deactivated because it's used on invoices. Historical invoices are unaffected."
+      : "Tax group deleted.",
+  });
 }));
 
 /** POST /api/tax/groups/:id/set-default — Set a group as default */

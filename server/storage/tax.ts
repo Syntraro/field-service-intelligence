@@ -8,6 +8,8 @@ import {
   companyTaxRates,
   companyTaxGroups,
   companyTaxGroupRates,
+  invoiceTaxLines,
+  invoices,
 } from "@shared/schema";
 import { BaseRepository } from "./base";
 
@@ -72,9 +74,26 @@ export class TaxRepository extends BaseRepository {
     return updated ?? null;
   }
 
-  /** Soft-delete a tax rate (set active=false) */
-  async deleteTaxRate(companyId: string, id: string) {
+  /**
+   * Soft-delete a tax rate (set active=false).
+   * Checks if the rate is referenced by any invoice tax snapshot.
+   * Returns { rate, referencedByInvoices } so the route can return a friendly message.
+   */
+  async deleteTaxRate(companyId: string, id: string): Promise<{ rate: any; referencedByInvoices: boolean } | null> {
     this.assertCompanyId(companyId);
+
+    // Check if this rate is referenced by any invoice tax snapshot
+    const [refCount] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(invoiceTaxLines)
+      .where(
+        and(
+          eq(invoiceTaxLines.companyId, companyId),
+          eq(invoiceTaxLines.taxRateId, id)
+        )
+      );
+    const referencedByInvoices = (refCount?.count ?? 0) > 0;
+
     const [updated] = await db
       .update(companyTaxRates)
       .set({ active: false, updatedAt: new Date() })
@@ -85,7 +104,9 @@ export class TaxRepository extends BaseRepository {
         )
       )
       .returning();
-    return updated ?? null;
+    if (!updated) return null;
+
+    return { rate: updated, referencedByInvoices };
   }
 
   // ========================================
@@ -134,7 +155,11 @@ export class TaxRepository extends BaseRepository {
     return { ...group, rates };
   }
 
-  /** Create a tax group with rate associations */
+  /**
+   * Create a tax group with rate associations.
+   * If isDefault=true, atomically unsets any existing default (SELECT FOR UPDATE)
+   * to enforce one-default-per-company at the application level.
+   */
   async createTaxGroup(
     companyId: string,
     data: { name: string; description?: string; isDefault?: boolean; rateIds: string[] }
@@ -143,8 +168,20 @@ export class TaxRepository extends BaseRepository {
     const { rateIds, ...groupData } = data;
 
     return db.transaction(async (tx) => {
-      // If setting as default, unset existing default
+      // If setting as default, lock and unset existing default to prevent races
       if (groupData.isDefault) {
+        // Lock all active groups for this company to prevent concurrent default assignment
+        await tx
+          .select()
+          .from(companyTaxGroups)
+          .where(
+            and(
+              eq(companyTaxGroups.companyId, companyId),
+              eq(companyTaxGroups.active, true)
+            )
+          )
+          .for("update");
+
         await tx
           .update(companyTaxGroups)
           .set({ isDefault: false, updatedAt: new Date() })
@@ -174,7 +211,10 @@ export class TaxRepository extends BaseRepository {
     });
   }
 
-  /** Update a tax group and sync its rate associations */
+  /**
+   * Update a tax group and sync its rate associations.
+   * If isDefault=true, atomically unsets existing default (SELECT FOR UPDATE).
+   */
   async updateTaxGroup(
     companyId: string,
     id: string,
@@ -184,8 +224,19 @@ export class TaxRepository extends BaseRepository {
     const { rateIds, ...groupData } = data;
 
     return db.transaction(async (tx) => {
-      // If setting as default, unset existing default
+      // If setting as default, lock and unset existing default to prevent races
       if (groupData.isDefault) {
+        await tx
+          .select()
+          .from(companyTaxGroups)
+          .where(
+            and(
+              eq(companyTaxGroups.companyId, companyId),
+              eq(companyTaxGroups.active, true)
+            )
+          )
+          .for("update");
+
         await tx
           .update(companyTaxGroups)
           .set({ isDefault: false, updatedAt: new Date() })
@@ -229,9 +280,36 @@ export class TaxRepository extends BaseRepository {
     });
   }
 
-  /** Soft-delete a tax group */
-  async deleteTaxGroup(companyId: string, id: string) {
+  /**
+   * Soft-delete a tax group (set active=false, isDefault=false).
+   * Checks if the group is referenced by any invoice (via taxGroupId or snapshot).
+   * Returns { group, referencedByInvoices } so the route can return a friendly message.
+   */
+  async deleteTaxGroup(companyId: string, id: string): Promise<{ group: any; referencedByInvoices: boolean } | null> {
     this.assertCompanyId(companyId);
+
+    // Check if this group is referenced by any invoice (direct FK or snapshot)
+    const [directRef] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.companyId, companyId),
+          eq(invoices.taxGroupId, id)
+        )
+      );
+    const [snapshotRef] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(invoiceTaxLines)
+      .where(
+        and(
+          eq(invoiceTaxLines.companyId, companyId),
+          eq(invoiceTaxLines.taxGroupId, id)
+        )
+      );
+    const referencedByInvoices =
+      ((directRef?.count ?? 0) > 0) || ((snapshotRef?.count ?? 0) > 0);
+
     const [updated] = await db
       .update(companyTaxGroups)
       .set({ active: false, isDefault: false, updatedAt: new Date() })
@@ -242,13 +320,30 @@ export class TaxRepository extends BaseRepository {
         )
       )
       .returning();
-    return updated ?? null;
+    if (!updated) return null;
+
+    return { group: updated, referencedByInvoices };
   }
 
-  /** Set a group as the default for its company (unsets previous default) */
+  /**
+   * Set a group as the default for its company (unsets previous default).
+   * Uses SELECT FOR UPDATE to prevent concurrent default assignment races.
+   */
   async setDefaultTaxGroup(companyId: string, groupId: string) {
     this.assertCompanyId(companyId);
     return db.transaction(async (tx) => {
+      // Lock all active groups for this company to prevent concurrent default assignment
+      await tx
+        .select()
+        .from(companyTaxGroups)
+        .where(
+          and(
+            eq(companyTaxGroups.companyId, companyId),
+            eq(companyTaxGroups.active, true)
+          )
+        )
+        .for("update");
+
       // Unset existing default
       await tx
         .update(companyTaxGroups)

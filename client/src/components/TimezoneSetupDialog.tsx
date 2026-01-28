@@ -56,6 +56,8 @@ export function TimezoneSetupDialog() {
   const { toast } = useToast();
   const { user } = useAuth();
   const [selectedTz, setSelectedTz] = useState(() => getBrowserTimezone());
+  // Guard: prevent modal from re-showing during the save → refetch window
+  const [justConfirmed, setJustConfirmed] = useState(false);
 
   const { data: settings, isLoading } = useQuery<CompanySettingsTimezone>({
     queryKey: ["/api/company-settings"],
@@ -79,7 +81,15 @@ export function TimezoneSetupDialog() {
         method: "PUT",
         body: JSON.stringify({ timezone }),
       }),
-    onSuccess: () => {
+    onSuccess: (data: any) => {
+      // Optimistically update the cache so the modal unmounts immediately
+      // instead of waiting for the background refetch to complete
+      queryClient.setQueryData(["/api/company-settings"], (old: any) => ({
+        ...old,
+        ...data,
+        timezoneConfirmed: true,
+      }));
+      setJustConfirmed(true);
       queryClient.invalidateQueries({ queryKey: ["/api/company-settings"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       toast({ title: "Timezone confirmed" });
@@ -89,9 +99,10 @@ export function TimezoneSetupDialog() {
     },
   });
 
-  // Only show for manager+ roles when timezone is not confirmed
+  // Only show for manager+ roles when timezone is not confirmed.
+  // justConfirmed guard prevents re-showing during the save → refetch window.
   const isManager = user?.role && MANAGER_ROLES.includes(user.role);
-  const shouldShow = !isLoading && settings && !settings.timezoneConfirmed && isManager;
+  const shouldShow = !justConfirmed && !isLoading && settings && !settings.timezoneConfirmed && isManager;
 
   if (!shouldShow) return null;
 

@@ -11,6 +11,8 @@ import { AuthedRequest } from "../auth/tenantIsolation";
 import { assertInvoiceStatusTransition } from "../statusRules";
 import type { InvoiceStatus } from "@shared/schema";
 import { taxRepository } from "../storage/tax";
+import { invoiceTaxLines } from "@shared/schema";
+import { db as invoiceDb } from "../db";
 import {
   isBillingLocked,
   isQboSynced,
@@ -379,6 +381,8 @@ router.post("/from-job/:jobId", requireRole(MANAGER_ROLES), asyncHandler(async (
       await storage.refreshInvoiceFromJob(req.companyId!, result.invoice.id);
 
       // v1 Tax Integration: Apply default tax group to new invoices
+      // Also snapshot the group composition into invoice_tax_lines so later
+      // edits to rates/groups do NOT affect this invoice.
       const defaultGroup = await taxRepository.getDefaultTaxGroup(req.companyId!);
       if (defaultGroup && defaultGroup.rates.length > 0) {
         const combinedRate = defaultGroup.rates.reduce(
@@ -390,8 +394,10 @@ router.post("/from-job/:jobId", requireRole(MANAGER_ROLES), asyncHandler(async (
         });
         // Apply combined rate to each line item's taxRate
         const lines = await storage.getInvoiceLines(req.companyId!, result.invoice.id);
+        let invoiceSubtotal = 0;
         for (const line of lines) {
           const lineSubtotal = parseFloat(line.lineSubtotal || "0");
+          invoiceSubtotal += lineSubtotal;
           const taxAmount = lineSubtotal * (combinedRate / 100);
           const lineTotal = lineSubtotal + taxAmount;
           await storage.updateInvoiceLine(req.companyId!, result.invoice.id, line.id, {
@@ -399,6 +405,26 @@ router.post("/from-job/:jobId", requireRole(MANAGER_ROLES), asyncHandler(async (
             taxAmount: String(taxAmount.toFixed(2)),
             lineTotal: String(lineTotal.toFixed(2)),
           });
+        }
+
+        // Snapshot: write one invoice_tax_lines row per component rate
+        const snapshotRows = defaultGroup.rates.map((r) => {
+          const pct = parseFloat(r.rate || "0");
+          const taxAmt = invoiceSubtotal * (pct / 100);
+          return {
+            companyId: req.companyId!,
+            invoiceId: result.invoice.id,
+            taxRateId: r.id,
+            taxRateName: r.name,
+            ratePercent: r.rate,
+            taxableAmount: String(invoiceSubtotal.toFixed(2)),
+            taxAmount: String(taxAmt.toFixed(2)),
+            taxGroupId: defaultGroup.id,
+            taxGroupName: defaultGroup.name,
+          };
+        });
+        if (snapshotRows.length > 0) {
+          await invoiceDb.insert(invoiceTaxLines).values(snapshotRows);
         }
       }
     }

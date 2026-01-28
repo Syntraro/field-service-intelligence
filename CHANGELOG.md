@@ -6,7 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### Timezone confirmation modal can't be dismissed (Prompt 5)
+
+- **Bug**: After confirming timezone, the modal showed "saved" toast but stayed open, blocking the app
+- **Root cause**: `invalidateQueries` triggers a background refetch; stale cache data (`timezoneConfirmed: false`) kept the modal visible during the refetch window
+- **Fix**: Optimistically update the company settings cache via `queryClient.setQueryData` immediately on mutation success, setting `timezoneConfirmed: true` before the background refetch completes. Added `justConfirmed` local guard as a belt-and-suspenders defense against any stale-data flicker.
+- Files: `client/src/components/TimezoneSetupDialog.tsx`
+
+#### Timezone banner not dismissing after Regional Settings save (Prompt 6)
+
+- **Bug**: Yellow "Set your company timezone" banner stayed visible after saving timezone in Regional Settings
+- **Root cause**: Same stale-cache pattern — `RegionalSettingsPage` mutation only called `invalidateQueries` (background refetch) without optimistically updating the cache. Banner read stale `timezoneConfirmed: false` during the refetch window.
+- **Fix**: Added `queryClient.setQueryData` in `RegionalSettingsPage` mutation `onSuccess` to immediately merge the server response (which includes `timezoneConfirmed: true`) into the cache. Banner and dialog both react instantly.
+- Files: `client/src/pages/RegionalSettingsPage.tsx`
+
 ### Added
+
+#### Taxes v1 Polish: Deletion Semantics + Invoice Consistency (Prompt 4)
+
+- **`invoice_tax_lines` snapshot table**: New table freezes tax group composition at invoice creation time. Stores one row per component rate (e.g., GST 5% + PST 7% = 2 rows) with snapshotted rate name, percentage, taxable amount, and computed tax amount. Later edits to rates/groups do NOT affect historical invoices.
+- **Tax DELETE hardening**: `DELETE /api/tax/:id` and `DELETE /api/tax/groups/:id` now check if the rate/group is referenced by any invoice (via `invoice_tax_lines` or `invoices.taxGroupId`). Always soft-deletes (sets `active=false`). Returns friendly message: "Deactivated because it's used on invoices. Historical invoices are unaffected."
+- **Default group uniqueness**: `createTaxGroup`, `updateTaxGroup`, and `setDefaultTaxGroup` now use `SELECT FOR UPDATE` locking to prevent concurrent default assignment races (complements the partial unique index in PostgreSQL)
+- **Invoice creation snapshots tax composition**: `POST /api/invoices/from-job/:jobId` now inserts `invoice_tax_lines` rows when applying the default tax group, freezing each rate's name, percentage, and computed tax amount
+- **Migration**: `migrations/2026_01_28_add_invoice_tax_lines.sql`
+- Files: `shared/schema.ts`, `server/storage/tax.ts`, `server/routes/tax.ts`, `server/routes/invoices.ts`
 
 #### Timezone Required During Onboarding (Prompt 2 — onboarding gate)
 

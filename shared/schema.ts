@@ -3915,3 +3915,44 @@ export const insertCompanyTaxGroupRateSchema = createInsertSchema(companyTaxGrou
 
 export type InsertCompanyTaxGroupRate = z.infer<typeof insertCompanyTaxGroupRateSchema>;
 export type CompanyTaxGroupRate = typeof companyTaxGroupRates.$inferSelect;
+
+// ============================================================================
+// INVOICE TAX LINES — Snapshot of tax group composition at invoice creation
+// ============================================================================
+
+/**
+ * Stores the individual tax rate breakdown applied to an invoice at creation time.
+ * Freezes the group composition so later edits to rates/groups do NOT affect
+ * historical invoices. One row per component rate (e.g., GST + PST = 2 rows).
+ */
+export const invoiceTaxLines = pgTable("invoice_tax_lines", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  invoiceId: varchar("invoice_id").notNull().references(() => invoices.id, { onDelete: "cascade" }),
+  /** FK to the original tax rate (for audit); may be deactivated later */
+  taxRateId: varchar("tax_rate_id").references(() => companyTaxRates.id, { onDelete: "set null" }),
+  /** Snapshot: rate name at time of invoice creation */
+  taxRateName: text("tax_rate_name").notNull(),
+  /** Snapshot: rate percentage at time of invoice creation (e.g., "5.0000" for 5%) */
+  ratePercent: numeric("rate_percent", { precision: 7, scale: 4 }).notNull(),
+  /** Taxable amount this rate was applied to (invoice subtotal) */
+  taxableAmount: numeric("taxable_amount", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  /** Computed tax for this rate: taxableAmount * (ratePercent / 100) */
+  taxAmount: numeric("tax_amount", { precision: 12, scale: 2 }).notNull().default("0.00"),
+  /** Snapshot: tax group ID at time of creation (for audit) */
+  taxGroupId: varchar("tax_group_id"),
+  /** Snapshot: tax group name at time of creation */
+  taxGroupName: text("tax_group_name"),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  invoiceTaxLinesInvoiceIdx: index("invoice_tax_lines_invoice_idx").on(table.invoiceId),
+  invoiceTaxLinesCompanyIdx: index("invoice_tax_lines_company_idx").on(table.companyId),
+}));
+
+export const insertInvoiceTaxLineSchema = createInsertSchema(invoiceTaxLines).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertInvoiceTaxLine = z.infer<typeof insertInvoiceTaxLineSchema>;
+export type InvoiceTaxLine = typeof invoiceTaxLines.$inferSelect;

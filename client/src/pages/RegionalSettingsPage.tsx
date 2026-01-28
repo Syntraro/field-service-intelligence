@@ -70,7 +70,13 @@ export default function RegionalSettingsPage() {
         method: "PUT",
         body: JSON.stringify(data),
       }),
-    onSuccess: () => {
+    onSuccess: (data: any) => {
+      // Optimistically update the cache so the timezone banner and dialog
+      // react immediately instead of waiting for the background refetch
+      queryClient.setQueryData(["/api/company-settings"], (old: any) => ({
+        ...old,
+        ...data,
+      }));
       queryClient.invalidateQueries({ queryKey: ["/api/company-settings"] });
       toast({ title: "Regional settings saved" });
     },
