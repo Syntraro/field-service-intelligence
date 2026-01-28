@@ -149,11 +149,17 @@ async function buildRangeResponse(
 
   // Use company timezone from settings (not server timezone)
   const timezone = await companyRepository.getCompanyTimezone(companyId);
+  // Include confirmation flag so UI can show a setup banner
+  const settings = await companyRepository.getCompanySettings(companyId);
+  const timezoneConfirmed = Boolean(
+    (settings as Record<string, unknown> | null)?.timezoneConfirmedAt
+  );
 
   return {
     events,
     outsideVisibleHoursCount,
     timezone,
+    timezoneConfirmed,
   };
 }
 

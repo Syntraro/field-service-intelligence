@@ -54,6 +54,8 @@ import NotificationsPage from "@/pages/NotificationsPage";
 import TimeAlertSettingsPage from "@/pages/TimeAlertSettingsPage";
 import TimeBillingRulesPage from "@/pages/TimeBillingRulesPage";
 import RegionalSettingsPage from "@/pages/RegionalSettingsPage";
+import { TimezoneSetupBanner } from "@/components/TimezoneSetupBanner";
+import { TimezoneSetupDialog } from "@/components/TimezoneSetupDialog";
 import Login from "@/pages/Login";
 import Signup from "@/pages/Signup";
 import RequestReset from "@/pages/RequestReset";
@@ -545,6 +547,7 @@ function AppContent() {
           </header>
           <ImpersonationBanner />
           <SubscriptionBanner />
+          <TimezoneSetupBanner />
           <main className="flex-1 overflow-auto">
             <Router />
           </main>
@@ -559,6 +562,7 @@ function AppContent() {
         open={addJobModalOpen}
         onOpenChange={setAddJobModalOpen}
       />
+      <TimezoneSetupDialog />
     </SidebarProvider>
   );
 }

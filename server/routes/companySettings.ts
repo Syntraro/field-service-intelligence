@@ -54,7 +54,12 @@ router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   if (!companyId) throw createError(401, "Unauthorized");
   const settings = await storage.getCompanySettings(companyId);
-  res.json(settings ?? {});
+  // Expose timezoneConfirmed as a boolean for the frontend onboarding gate
+  const raw = (settings ?? {}) as Record<string, unknown>;
+  res.json({
+    ...raw,
+    timezoneConfirmed: Boolean(raw.timezoneConfirmedAt),
+  });
 }));
 
 // Handler for both PUT and POST (upsert)
@@ -69,8 +74,17 @@ const handleUpsertSettings = asyncHandler(async (req: AuthedRequest, res: Respon
     throw createError(400, `Validation failed: ${errors}`);
   }
 
-  const settings = await storage.upsertCompanySettings(companyId, userId, validation.data ?? {});
-  res.json(settings ?? {});
+  const payload: Record<string, unknown> = { ...(validation.data ?? {}) };
+  // Auto-stamp timezoneConfirmedAt when timezone is explicitly set
+  if (payload.timezone) {
+    payload.timezoneConfirmedAt = new Date();
+  }
+  const settings = await storage.upsertCompanySettings(companyId, userId, payload);
+  const raw = (settings ?? {}) as Record<string, unknown>;
+  res.json({
+    ...raw,
+    timezoneConfirmed: Boolean(raw.timezoneConfirmedAt),
+  });
 });
 
 router.put("/", requireRole(MANAGER_ROLES), handleUpsertSettings);

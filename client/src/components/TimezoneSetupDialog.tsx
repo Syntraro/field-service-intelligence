@@ -1,0 +1,173 @@
+/**
+ * TimezoneSetupDialog — Modal that blocks interaction until the company
+ * timezone is explicitly confirmed. Shown once for admin/manager/owner roles
+ * when timezoneConfirmedAt is null.
+ *
+ * Prefills from browser Intl.DateTimeFormat but still requires explicit confirm.
+ */
+import { useState, useEffect } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { Globe } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useToast } from "@/hooks/use-toast";
+import { queryClient, apiRequest } from "@/lib/queryClient";
+import { useAuth } from "@/lib/auth";
+
+interface CompanySettingsTimezone {
+  timezone?: string;
+  timezoneConfirmed?: boolean;
+}
+
+const TIMEZONE_OPTIONS = [
+  { value: "America/Toronto", label: "Eastern - Toronto" },
+  { value: "America/New_York", label: "Eastern - New York" },
+  { value: "America/Chicago", label: "Central - Chicago" },
+  { value: "America/Denver", label: "Mountain - Denver" },
+  { value: "America/Los_Angeles", label: "Pacific - Los Angeles" },
+  { value: "America/Vancouver", label: "Pacific - Vancouver" },
+  { value: "America/Edmonton", label: "Mountain - Edmonton" },
+  { value: "America/Winnipeg", label: "Central - Winnipeg" },
+  { value: "America/Halifax", label: "Atlantic - Halifax" },
+  { value: "America/St_Johns", label: "Newfoundland - St. John's" },
+  { value: "America/Regina", label: "Central No DST - Regina" },
+  { value: "America/Phoenix", label: "Mountain No DST - Phoenix" },
+  { value: "Pacific/Honolulu", label: "Hawaii - Honolulu" },
+  { value: "America/Anchorage", label: "Alaska - Anchorage" },
+  { value: "Europe/London", label: "GMT - London" },
+  { value: "Europe/Paris", label: "CET - Paris" },
+  { value: "Australia/Sydney", label: "AEST - Sydney" },
+  { value: "UTC", label: "UTC" },
+];
+
+/** Roles that can configure company settings */
+const MANAGER_ROLES = ["owner", "admin", "manager"];
+
+/** Best-guess timezone from the browser */
+function getBrowserTimezone(): string {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    // Only use it if it's in our options list
+    if (TIMEZONE_OPTIONS.some((opt) => opt.value === tz)) {
+      return tz;
+    }
+  } catch {
+    // ignore
+  }
+  return "America/Toronto";
+}
+
+export function TimezoneSetupDialog() {
+  const { toast } = useToast();
+  const { user } = useAuth();
+  const [selectedTz, setSelectedTz] = useState(() => getBrowserTimezone());
+
+  const { data: settings, isLoading } = useQuery<CompanySettingsTimezone>({
+    queryKey: ["/api/company-settings"],
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Prefill from existing settings if available (but not yet confirmed)
+  useEffect(() => {
+    if (settings?.timezone && !settings.timezoneConfirmed) {
+      // Keep browser guess if the DB value is just the default
+      const dbTz = settings.timezone;
+      const browserTz = getBrowserTimezone();
+      // Prefer the browser timezone if the DB still has the default
+      setSelectedTz(dbTz === "America/Toronto" ? browserTz : dbTz);
+    }
+  }, [settings]);
+
+  const confirmMutation = useMutation({
+    mutationFn: async (timezone: string) =>
+      apiRequest("/api/company-settings", {
+        method: "PUT",
+        body: JSON.stringify({ timezone }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/company-settings"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      toast({ title: "Timezone confirmed" });
+    },
+    onError: () => {
+      toast({ title: "Failed to save timezone", variant: "destructive" });
+    },
+  });
+
+  // Only show for manager+ roles when timezone is not confirmed
+  const isManager = user?.role && MANAGER_ROLES.includes(user.role);
+  const shouldShow = !isLoading && settings && !settings.timezoneConfirmed && isManager;
+
+  if (!shouldShow) return null;
+
+  return (
+    <Dialog open modal>
+      <DialogContent
+        className="sm:max-w-md"
+        // Prevent closing via escape or outside click
+        onPointerDownOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
+        // Hide the close button by not rendering it (DialogContent renders one by default via [data-radix-close])
+        onInteractOutside={(e) => e.preventDefault()}
+      >
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Globe className="h-5 w-5" />
+            Set Your Company Timezone
+          </DialogTitle>
+          <DialogDescription>
+            Choose the timezone for your business. This is used for scheduling,
+            calendar display, and invoice dates. You can change it later in
+            Regional Settings.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 py-2">
+          <div className="space-y-2">
+            <Label htmlFor="setup-timezone">Timezone</Label>
+            <Select value={selectedTz} onValueChange={setSelectedTz}>
+              <SelectTrigger id="setup-timezone" data-testid="select-setup-timezone">
+                <SelectValue placeholder="Select timezone" />
+              </SelectTrigger>
+              <SelectContent>
+                {TIMEZONE_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Detected from your browser: {getBrowserTimezone()}
+            </p>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button
+            onClick={() => confirmMutation.mutate(selectedTz)}
+            disabled={confirmMutation.isPending || !selectedTz}
+            data-testid="button-confirm-timezone"
+          >
+            {confirmMutation.isPending ? "Saving..." : "Confirm Timezone"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

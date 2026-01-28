@@ -561,6 +561,8 @@ export const companySettings = pgTable("company_settings", {
   calendarStartHour: integer("calendar_start_hour").notNull().default(8),
   // Scheduling timezone (IANA tz string, e.g., "America/Toronto")
   timezone: text("timezone").notNull().default("America/Toronto"),
+  // Null until tenant explicitly confirms timezone (onboarding gate)
+  timezoneConfirmedAt: timestamp("timezone_confirmed_at"),
   // Regional display preferences
   dateFormat: text("date_format").notNull().default("MM/DD/YYYY"),
   timeFormat: text("time_format").notNull().default("12h"),
