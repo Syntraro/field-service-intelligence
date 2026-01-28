@@ -42,6 +42,12 @@ const updateCompanySettingsSchema = z.object({
     footer: z.string().max(500).optional(),
   }).optional(),
   calendarStartHour: z.number().int().min(0).max(23).optional(),
+  // Regional display preferences
+  dateFormat: z.enum(["MM/DD/YYYY", "DD/MM/YYYY", "YYYY-MM-DD"]).optional(),
+  timeFormat: z.enum(["12h", "24h"]).optional(),
+  weekStartsOn: z.enum(["monday", "sunday"]).optional(),
+  // Invoice payment terms default
+  defaultPaymentTermsDays: z.number().int().min(0).max(365).optional(),
 });
 
 router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {

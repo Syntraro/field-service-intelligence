@@ -6,7 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### Company Regional Settings (Prompt 2)
+
+- **Schema**: Added `dateFormat`, `timeFormat`, `weekStartsOn` columns to `companySettings` table
+  - `dateFormat`: `"MM/DD/YYYY"` | `"DD/MM/YYYY"` | `"YYYY-MM-DD"` (default: `"MM/DD/YYYY"`)
+  - `timeFormat`: `"12h"` | `"24h"` (default: `"12h"`)
+  - `weekStartsOn`: `"monday"` | `"sunday"` (default: `"monday"`)
+- **Zod validation**: Added regional fields to `updateCompanySettingsSchema` in `server/routes/companySettings.ts`
+- **Calendar timezone fix**: `buildRangeResponse()` in `server/routes/calendar.ts` now returns company timezone from settings instead of server process timezone (`getServerTimezone()` removed as dead code)
+- **Calendar utils**: `formatTimeFromMinutes()` now accepts `timeFormat` parameter for 12h/24h display; `getWeekStart()` replaces `getMondayOfWeek()` with `weekStartsOn` support (legacy `getMondayOfWeek()` retained as deprecated alias)
+- **Regional Settings page**: New `client/src/pages/RegionalSettingsPage.tsx` with Timezone, Date/Time Format, and Week Start selectors
+- **Route registered**: `/settings/regional` in `client/src/App.tsx`, accessible from Settings page via Globe icon card
+- **Migration**: `migrations/2026_01_28_add_regional_settings.sql`
+- Files: `shared/schema.ts`, `server/routes/companySettings.ts`, `server/routes/calendar.ts`, `client/src/pages/RegionalSettingsPage.tsx`, `client/src/pages/SettingsPage.tsx`, `client/src/App.tsx`, `client/src/components/calendar/calendarUtils.ts`
+
+#### Tax Settings v1: Multi-Tax Rates & Groups (Prompt 3)
+
+- **3 new DB tables**:
+  - `company_tax_rates` — Individual tax rates (e.g., GST 5%, PST 7%, HST 13%)
+  - `company_tax_groups` — Composable groups (e.g., "GST+PST" = 12%)
+  - `company_tax_group_rates` — Junction table linking groups to rates
+  - Partial unique index: one default group per company
+- **Invoice integration**: Added `taxGroupId` column to `invoices` table (nullable, FK to `company_tax_groups`)
+- **Storage layer**: `server/storage/tax.ts` — full CRUD repository for rates, groups, and default group management
+- **API routes**: `server/routes/tax.ts` mounted at `/api/tax` — CRUD endpoints for rates (`GET/POST/PUT/DELETE`) and groups (`GET/POST/PUT/DELETE /groups`, `POST /groups/:id/set-default`)
+- **Invoice line tax application**: When creating an invoice from a job, the default tax group's combined rate is automatically applied to all line items
+- **`updateInvoiceLine`**: New storage method for updating individual invoice line fields (used by tax integration)
+- **TaxBillingRulesPage**: Replaced "Coming Soon" placeholder with full CRUD UI for tax rates and tax groups, including add/edit/delete dialogs, rate composition checkboxes, combined rate display, and default group toggle
+- **Migration**: `migrations/2026_01_28_add_tax_rates_and_groups.sql`
+- Files: `shared/schema.ts`, `server/storage/tax.ts`, `server/storage/invoices.ts`, `server/storage/index.ts`, `server/routes/tax.ts`, `server/routes/index.ts`, `server/routes/invoices.ts`, `client/src/pages/TaxBillingRulesPage.tsx`
+
 ### Fixed
+
+#### All-day scheduling UTC timestamp hardening (Prompt 1 regression guard)
+- Added `assertAllDayUTCBoundaries()` DEV-only assertion in `server/storage/calendar.ts`
+  - Validates ISO start ends with `T00:00:00.000Z` and end with `T23:59:59.000Z` before SQL cast
+  - Emits `[ALLDAY ASSERT FAIL]` console error if domain layer produces bad boundaries
+  - Runs inside `sanitizeAllDayTimestamps()` before Date→SQL replacement
+- Updated DEV log to use `scheduledStartIso` / `scheduledEndIso` field names for clarity
+- Existing hardening already in place: `forceUTCTimestamp()`, `sanitizeAllDayTimestamps()`, calls in all 4 write paths (`scheduleJob`, `rescheduleJob`, `scheduleJobBypassWorkingHours`, `rescheduleJobBypassWorkingHours`)
+- Files: `server/storage/calendar.ts`
 
 #### Fix jobs_all_day_end_2359_check constraint violation on all-day scheduling
 - **Root cause**: `timestamp without time zone` columns + node-pg Date

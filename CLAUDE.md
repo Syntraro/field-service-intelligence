@@ -2,6 +2,28 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Change Tracking Requirements (MANDATORY)
+
+**Every code change MUST include:**
+
+1. **Code Comments** - Add comments explaining significant changes:
+   - For new functions/methods: JSDoc-style comments explaining purpose, params, return values
+   - For refactors: Comment noting what changed and why (e.g., `// Phase 2 Step 6: Renamed from statusDefault`)
+   - For bug fixes: Comment describing the bug that was fixed
+
+2. **CHANGELOG.md Updates** - Update `/CHANGELOG.md` under `## [Unreleased]` with:
+   - What changed (feature, fix, refactor)
+   - Files affected
+   - Migration files created (if any)
+   - Breaking changes (if any)
+
+3. **Migration Documentation** - For database changes:
+   - Create migration file in `migrations/` with descriptive name
+   - Add header comment with run instructions
+   - Document in CHANGELOG.md
+
+This applies to ALL changes, even across chat sessions. No exceptions.
+
 ## Project Overview
 
 This is an HVAC/R preventive maintenance scheduling application for contractors. The application manages client contracts, automates maintenance scheduling, tracks parts inventory, handles job dispatching, invoicing, and integrates with QuickBooks Online.
@@ -22,6 +44,17 @@ npm run db:push      # Push Drizzle schema changes to database
 ```
 
 **Important:** This project uses Drizzle ORM. Schema is defined in `shared/schema.ts`. Use `drizzle-kit push` for schema changes. Manual SQL migrations are in the `migrations/` directory but are not automatically run - they must be executed manually against the database.
+
+**Running SQL Migrations:**
+```bash
+# Standard migration (default, no transaction wrapping)
+psql "$DATABASE_URL" -f migrations/YYYY_MM_DD_migration_name.sql
+
+# NEVER use -1 or --single-transaction for migrations containing CONCURRENTLY
+# CREATE INDEX CONCURRENTLY cannot run inside a transaction block
+```
+
+Migrations containing `CREATE INDEX CONCURRENTLY` must be run without transaction wrapping. Check the migration file header for execution instructions.
 
 ### Environment Setup
 Required environment variables:

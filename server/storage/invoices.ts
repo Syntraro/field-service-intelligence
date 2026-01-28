@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { eq, and, sql, desc, or, lt, isNull, isNotNull, asc } from "drizzle-orm";
-import { invoices, invoiceLines, clients, payments, jobs, jobParts, laborEntries, technicians, timeEntries, users } from "@shared/schema";
+import { invoices, invoiceLines, clients, payments, jobs, jobParts, laborEntries, technicians, timeEntries, users, companySettings } from "@shared/schema";
 import { BaseRepository, parseDecimal } from "./base";
 import { encodeCursor, decodeCursor } from "../utils/cursor";
 import type { PaginationParams } from "../utils/pagination";
@@ -95,6 +95,9 @@ export class InvoiceRepository extends BaseRepository {
       status: invoices.status,
       issueDate: invoices.issueDate,
       dueDate: invoices.dueDate,
+      // Payment terms fields
+      paymentTermsDays: invoices.paymentTermsDays,
+      issuedAt: invoices.issuedAt,
       currency: invoices.currency,
       subtotal: invoices.subtotal,
       taxTotal: invoices.taxTotal,
@@ -103,6 +106,7 @@ export class InvoiceRepository extends BaseRepository {
       balance: invoices.balance,
       jobId: invoices.jobId,
       sentAt: invoices.sentAt,
+      sentByUserId: invoices.sentByUserId,
       viewedAt: invoices.viewedAt,
       notesInternal: invoices.notesInternal,
       notesCustomer: invoices.notesCustomer,
@@ -169,13 +173,17 @@ export class InvoiceRepository extends BaseRepository {
     const hasMore = rows.length > limit;
     const rawItems = hasMore ? rows.slice(0, limit) : rows;
 
-    // Transform items to add computed display names for client
+    // Transform items to add computed display names for client and derived isPastDue
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
     const items = rawItems.map(row => ({
       ...row,
       // Computed: locationName = location site name OR fallback to company name + address
       locationName: row.client?.location || row.client?.companyName || null,
       // Computed: customerCompanyName = the parent company name (stored in companyName)
       customerCompanyName: row.client?.companyName || null,
+      // Derived: isPastDue - true if unpaid and past due date
+      isPastDue: this.computeIsPastDue(row.status, row.dueDate, row.balance, today),
     }));
 
     const meta: PaginatedResult<any>["meta"] = { limit, hasMore };
@@ -199,6 +207,9 @@ export class InvoiceRepository extends BaseRepository {
    * Get single invoice with client data
    */
   async getInvoice(companyId: string, invoiceId: string) {
+    this.assertCompanyId(companyId);
+    this.validateUUID(invoiceId, "invoiceId");
+
     const rows = await db
       .select({
         // All invoice fields
@@ -210,6 +221,9 @@ export class InvoiceRepository extends BaseRepository {
         status: invoices.status,
         issueDate: invoices.issueDate,
         dueDate: invoices.dueDate,
+        // Payment terms fields
+        paymentTermsDays: invoices.paymentTermsDays,
+        issuedAt: invoices.issuedAt,
         currency: invoices.currency,
         subtotal: invoices.subtotal,
         taxTotal: invoices.taxTotal,
@@ -218,6 +232,7 @@ export class InvoiceRepository extends BaseRepository {
         balance: invoices.balance,
         jobId: invoices.jobId,
         sentAt: invoices.sentAt,
+        sentByUserId: invoices.sentByUserId,
         viewedAt: invoices.viewedAt,
         notesInternal: invoices.notesInternal,
         notesCustomer: invoices.notesCustomer,
@@ -265,10 +280,22 @@ export class InvoiceRepository extends BaseRepository {
       })
       .from(invoices)
       .leftJoin(clients, eq(invoices.locationId, clients.id))
-      .where(and(eq(invoices.id, invoiceId), eq(invoices.companyId, companyId)))
+      .where(and(
+        eq(invoices.id, invoiceId),
+        eq(invoices.companyId, companyId),
+        // Soft-delete filter: consistent with getInvoices
+        or(eq(invoices.isActive, true), isNull(invoices.isActive))
+      ))
       .limit(1);
 
-    return rows[0] ?? null;
+    const row = rows[0];
+    if (!row) return null;
+
+    // Add derived isPastDue
+    return {
+      ...row,
+      isPastDue: this.computeIsPastDue(row.status, row.dueDate, row.balance),
+    };
   }
 
   /**
@@ -427,6 +454,30 @@ export class InvoiceRepository extends BaseRepository {
   }
 
   /**
+   * Update an invoice line (with total recalculation).
+   * Used by tax group integration to apply per-line tax rates.
+   */
+  async updateInvoiceLine(companyId: string, invoiceId: string, lineId: string, data: Record<string, unknown>) {
+    return await db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(invoiceLines)
+        .set(data)
+        .where(and(
+          eq(invoiceLines.companyId, companyId),
+          eq(invoiceLines.id, lineId),
+          eq(invoiceLines.invoiceId, invoiceId)
+        ))
+        .returning();
+
+      if (!updated) return null;
+
+      // Recalculate totals
+      await this.recalculateInvoiceTotalsInTx(tx, companyId, invoiceId);
+      return updated;
+    });
+  }
+
+  /**
    * Delete invoice line (with transaction)
    */
   async deleteInvoiceLine(companyId: string, invoiceId: string, lineId: string) {
@@ -552,6 +603,104 @@ export class InvoiceRepository extends BaseRepository {
   /** Round to 2 decimal places for percentage */
   private roundPercent(value: number): number {
     return Math.round(value * 100) / 100;
+  }
+
+  /**
+   * Get invoices for dashboard widget:
+   * - Past due invoices first (sorted by dueDate ascending - oldest overdue first)
+   * - Then awaiting payment invoices (sorted by dueDate ascending - soonest due first)
+   * - Returns up to `limit` invoices with minimal fields
+   */
+  async getDashboardInvoices(companyId: string, limit: number = 10) {
+    this.assertCompanyId(companyId);
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Fetch unpaid invoices (awaiting_payment or sent status) with balance > 0
+    const unpaidStatuses = ["awaiting_payment", "sent", "partial_paid"];
+
+    const rows = await db
+      .select({
+        id: invoices.id,
+        invoiceNumber: invoices.invoiceNumber,
+        status: invoices.status,
+        dueDate: invoices.dueDate,
+        total: invoices.total,
+        balance: invoices.balance,
+        locationName: clients.location,
+        customerCompanyName: clients.companyName,
+      })
+      .from(invoices)
+      .leftJoin(clients, eq(invoices.locationId, clients.id))
+      .where(
+        and(
+          eq(invoices.companyId, companyId),
+          or(eq(invoices.isActive, true), isNull(invoices.isActive)),
+          isNull(invoices.deletedAt),
+          sql`CAST(${invoices.balance} AS numeric) > 0`,
+          sql`${invoices.status} IN ('awaiting_payment', 'sent', 'partial_paid')`
+        )
+      )
+      .orderBy(asc(invoices.dueDate));
+
+    // Compute isPastDue and split into two groups
+    const pastDue: typeof rows = [];
+    const awaitingPayment: typeof rows = [];
+
+    for (const row of rows) {
+      const isPastDue = this.computeIsPastDue(row.status, row.dueDate, row.balance, today);
+      if (isPastDue) {
+        pastDue.push(row);
+      } else {
+        awaitingPayment.push(row);
+      }
+    }
+
+    // Combine: past due first, then awaiting payment, limited to `limit`
+    const combined = [...pastDue, ...awaitingPayment].slice(0, limit);
+
+    // Add isPastDue flag and fallback locationName
+    return combined.map(row => ({
+      ...row,
+      isPastDue: this.computeIsPastDue(row.status, row.dueDate, row.balance, today),
+      locationName: row.locationName || row.customerCompanyName || null,
+    }));
+  }
+
+  /**
+   * Compute derived isPastDue flag for an invoice
+   * Past due = unpaid statuses + balance > 0 + due date < today
+   */
+  private computeIsPastDue(
+    status: string | null,
+    dueDate: string | Date | null,
+    balance: string | number | null,
+    today?: Date
+  ): boolean {
+    // Unpaid statuses that can be past due
+    const unpaidStatuses = ["draft", "awaiting_payment", "sent", "partial_paid"];
+    if (!status || !unpaidStatuses.includes(status)) {
+      return false;
+    }
+
+    // Must have a balance > 0
+    const balanceNum = typeof balance === "string" ? parseFloat(balance) : (balance ?? 0);
+    if (balanceNum <= 0) {
+      return false;
+    }
+
+    // Must have a due date in the past
+    if (!dueDate) {
+      return false;
+    }
+
+    const dueDateObj = typeof dueDate === "string" ? new Date(dueDate) : dueDate;
+    const compareDate = today ?? new Date();
+    compareDate.setHours(0, 0, 0, 0);
+    dueDateObj.setHours(0, 0, 0, 0);
+
+    return dueDateObj < compareDate;
   }
 
   /**
@@ -1080,6 +1229,14 @@ export class InvoiceRepository extends BaseRepository {
       throw this.validationError("Job has invalid location reference");
     }
 
+    // Get company settings for payment terms defaults
+    const [settings] = await db
+      .select({ defaultPaymentTermsDays: companySettings.defaultPaymentTermsDays })
+      .from(companySettings)
+      .where(eq(companySettings.companyId, companyId))
+      .limit(1);
+    const paymentTermsDays = settings?.defaultPaymentTermsDays ?? 30;
+
     try {
       return await db.transaction(async (tx) => {
         // PHASE A FIX: Lock the job row with SELECT FOR UPDATE
@@ -1144,6 +1301,13 @@ export class InvoiceRepository extends BaseRepository {
           });
         }
 
+        // Compute issue date and due date
+        const now = new Date();
+        const issueDate = now.toISOString().split("T")[0]; // 'YYYY-MM-DD' format
+        const dueDate = new Date(now.getTime() + paymentTermsDays * 24 * 60 * 60 * 1000)
+          .toISOString()
+          .split("T")[0];
+
         // Create invoice (unique constraint on companyId+jobId prevents duplicates as extra safety)
         const [invoice] = await tx
           .insert(invoices)
@@ -1154,7 +1318,9 @@ export class InvoiceRepository extends BaseRepository {
             jobId: jobId,
             invoiceNumber: String(invoiceNumber),
             status: "draft",
-            issueDate: new Date().toISOString().split("T")[0], // 'YYYY-MM-DD' format
+            issueDate, // 'YYYY-MM-DD' format
+            dueDate,   // Computed from issueDate + paymentTermsDays
+            paymentTermsDays, // From company settings or default
             subtotal: "0",
             taxTotal: "0",
             total: "0",

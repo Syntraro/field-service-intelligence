@@ -561,6 +561,10 @@ export const companySettings = pgTable("company_settings", {
   calendarStartHour: integer("calendar_start_hour").notNull().default(8),
   // Scheduling timezone (IANA tz string, e.g., "America/Toronto")
   timezone: text("timezone").notNull().default("America/Toronto"),
+  // Regional display preferences
+  dateFormat: text("date_format").notNull().default("MM/DD/YYYY"),
+  timeFormat: text("time_format").notNull().default("12h"),
+  weekStartsOn: text("week_starts_on").notNull().default("monday"),
   // Invoice defaults
   defaultPaymentTermsDays: integer("default_payment_terms_days").notNull().default(30),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -841,6 +845,8 @@ export const invoices = pgTable("invoices", {
   balance: numeric("balance", { precision: 12, scale: 2 }).notNull().default("0.00"), // total - amountPaid
   // Job reference (if created from a job)
   jobId: varchar("job_id"), // Will be linked after jobs table is defined
+  // Tax group reference (v1 tax system — nullable for legacy flat-rate invoices)
+  taxGroupId: varchar("tax_group_id"),
   // Payment terms
   paymentTermsDays: integer("payment_terms_days").notNull().default(30), // Net 30, Net 15, etc.
   issuedAt: timestamp("issued_at"), // When invoice was issued (set on send or creation)
@@ -3833,3 +3839,77 @@ export const insertRecurringJobInstanceSchema = createInsertSchema(recurringJobI
 
 export type InsertRecurringJobInstance = z.infer<typeof insertRecurringJobInstanceSchema>;
 export type RecurringJobInstance = typeof recurringJobInstances.$inferSelect;
+
+// ============================================================================
+// TAX RATES & TAX GROUPS (v1 multi-tax system for Canadian HVAC)
+// ============================================================================
+
+/**
+ * Individual tax rates (e.g., GST 5%, PST 7%, HST 13%).
+ * Soft-deleted via active flag. Scoped to company.
+ */
+export const companyTaxRates = pgTable("company_tax_rates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  rate: numeric("rate", { precision: 7, scale: 4 }).notNull(),
+  description: text("description"),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+});
+
+export const insertCompanyTaxRateSchema = createInsertSchema(companyTaxRates).omit({
+  id: true,
+  companyId: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertCompanyTaxRate = z.infer<typeof insertCompanyTaxRateSchema>;
+export type CompanyTaxRate = typeof companyTaxRates.$inferSelect;
+
+/**
+ * Composable tax groups (e.g., "GST+PST" = 12%).
+ * One group per company may be marked as default (partial unique index).
+ * Soft-deleted via active flag.
+ */
+export const companyTaxGroups = pgTable("company_tax_groups", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  description: text("description"),
+  isDefault: boolean("is_default").notNull().default(false),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+});
+
+export const insertCompanyTaxGroupSchema = createInsertSchema(companyTaxGroups).omit({
+  id: true,
+  companyId: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertCompanyTaxGroup = z.infer<typeof insertCompanyTaxGroupSchema>;
+export type CompanyTaxGroup = typeof companyTaxGroups.$inferSelect;
+
+/**
+ * Junction table: links tax groups to their component tax rates.
+ * Unique on (groupId, taxRateId).
+ */
+export const companyTaxGroupRates = pgTable("company_tax_group_rates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  groupId: varchar("group_id").notNull().references(() => companyTaxGroups.id, { onDelete: "cascade" }),
+  taxRateId: varchar("tax_rate_id").notNull().references(() => companyTaxRates.id, { onDelete: "cascade" }),
+}, (table) => ({
+  groupRateUniq: uniqueIndex("company_tax_group_rates_uniq").on(table.groupId, table.taxRateId),
+}));
+
+export const insertCompanyTaxGroupRateSchema = createInsertSchema(companyTaxGroupRates).omit({
+  id: true,
+});
+
+export type InsertCompanyTaxGroupRate = z.infer<typeof insertCompanyTaxGroupRateSchema>;
+export type CompanyTaxGroupRate = typeof companyTaxGroupRates.$inferSelect;

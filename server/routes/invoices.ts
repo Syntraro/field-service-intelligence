@@ -10,6 +10,7 @@ import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { assertInvoiceStatusTransition } from "../statusRules";
 import type { InvoiceStatus } from "@shared/schema";
+import { taxRepository } from "../storage/tax";
 import {
   isBillingLocked,
   isQboSynced,
@@ -21,6 +22,7 @@ import {
   getQboLockInfo,
   isBillingImpactingPatch,
 } from "../utils/qboInvoiceLock";
+import { generateInvoicePdf } from "../services/invoicePdfService";
 
 const router = Router();
 
@@ -58,6 +60,8 @@ const updateInvoiceSchema = z.object({
   status: z.enum(["draft", "sent", "partial_paid", "paid", "voided"]).optional(),
   issueDate: z.string().datetime().optional(),
   dueDate: z.string().datetime().optional(),
+  // Payment terms - when changed, dueDate is recalculated
+  paymentTermsDays: z.number().int().min(0).max(365).optional(),
   notesInternal: z.string().max(2000).optional(),
   notesCustomer: z.string().max(2000).optional(),
   workDescription: z.string().max(2000).optional(),
@@ -165,6 +169,13 @@ router.get("/stats", asyncHandler(async (req: AuthedRequest, res: Response) => {
   res.json(rows);
 }));
 
+// GET /api/invoices/dashboard - Get invoices for dashboard widget
+// Returns past due invoices first, then awaiting payment, limited to 10
+router.get("/dashboard", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const invoices = await storage.getDashboardInvoices(req.companyId!, 10);
+  res.json({ data: invoices });
+}));
+
 // GET /api/invoices/by-job/:jobId - Get invoice for a specific job (if exists)
 // Phase 11: Fix job/invoice cross-linking
 router.get("/by-job/:jobId", asyncHandler(async (req: AuthedRequest, res: Response) => {
@@ -182,7 +193,13 @@ router.get("/by-job/:jobId", asyncHandler(async (req: AuthedRequest, res: Respon
 // GET /api/invoices/:id - Get single invoice
 router.get("/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const invoice = await storage.getInvoice(req.companyId!, req.params.id);
-  if (!invoice) throw createError(404, "Invoice not found");
+  if (!invoice) {
+    // Diagnostic log for debugging 404s (no PII, just IDs)
+    console.warn(
+      `[invoices/:id] 404 Not Found - companyId=${req.companyId}, invoiceId=${req.params.id}`
+    );
+    throw createError(404, "Invoice not found");
+  }
 
   res.json(invoice);
 }));
@@ -195,6 +212,10 @@ router.get("/:id/details", asyncHandler(async (req: AuthedRequest, res: Response
   // 1. Get the invoice with basic client data
   const invoice = await storage.getInvoice(companyId, invoiceId);
   if (!invoice) {
+    // Diagnostic log for debugging 404s (no PII, just IDs)
+    console.warn(
+      `[invoices/:id/details] 404 Not Found - companyId=${companyId}, invoiceId=${invoiceId}`
+    );
     throw createError(404, "Invoice not found");
   }
 
@@ -356,6 +377,30 @@ router.post("/from-job/:jobId", requireRole(MANAGER_ROLES), asyncHandler(async (
     // Only refresh invoice lines if newly created (skip for idempotent return)
     if (result.created) {
       await storage.refreshInvoiceFromJob(req.companyId!, result.invoice.id);
+
+      // v1 Tax Integration: Apply default tax group to new invoices
+      const defaultGroup = await taxRepository.getDefaultTaxGroup(req.companyId!);
+      if (defaultGroup && defaultGroup.rates.length > 0) {
+        const combinedRate = defaultGroup.rates.reduce(
+          (sum, r) => sum + parseFloat(r.rate || "0"), 0
+        );
+        // Set taxGroupId on the invoice
+        await storage.updateInvoice(req.companyId!, result.invoice.id, undefined, {
+          taxGroupId: defaultGroup.id,
+        });
+        // Apply combined rate to each line item's taxRate
+        const lines = await storage.getInvoiceLines(req.companyId!, result.invoice.id);
+        for (const line of lines) {
+          const lineSubtotal = parseFloat(line.lineSubtotal || "0");
+          const taxAmount = lineSubtotal * (combinedRate / 100);
+          const lineTotal = lineSubtotal + taxAmount;
+          await storage.updateInvoiceLine(req.companyId!, result.invoice.id, line.id, {
+            taxRate: String(combinedRate / 100), // Decimal format (e.g., 0.13 for 13%)
+            taxAmount: String(taxAmount.toFixed(2)),
+            lineTotal: String(lineTotal.toFixed(2)),
+          });
+        }
+      }
     }
 
     // Include created flag to inform caller if this was new or existing
@@ -399,6 +444,17 @@ router.patch("/:id", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async
     // If overriding a QBO-synced invoice, merge out-of-sync flags into the update
     let finalPatch = { ...patch };
     let warning: string | undefined;
+
+    // When paymentTermsDays changes, recalculate dueDate
+    if (patch.paymentTermsDays !== undefined && !patch.dueDate) {
+      const issuedAt = invoice.issuedAt
+        ? new Date(invoice.issuedAt)
+        : invoice.issueDate
+          ? new Date(invoice.issueDate)
+          : new Date();
+      const dueDate = new Date(issuedAt.getTime() + patch.paymentTermsDays * 24 * 60 * 60 * 1000);
+      finalPatch.dueDate = dueDate.toISOString().split("T")[0];
+    }
 
     if (hasBillingChanges && isQboSynced(invoice) && overrideQboLock && overrideReason) {
       const outOfSyncUpdate = buildOutOfSyncUpdate(overrideReason, req.user?.id);
@@ -447,7 +503,7 @@ router.patch("/:id", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async
 // STATUS TRANSITION ENDPOINTS
 // ========================================
 
-// POST /api/invoices/:id/send - Send invoice (draft -> sent)
+// POST /api/invoices/:id/send - Send invoice (draft -> awaiting_payment)
 // Phase 10A: Status changes on QBO-synced invoices require override
 router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const invoice = await storage.getInvoice(req.companyId!, req.params.id);
@@ -459,9 +515,9 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
   const overrideQboLock = req.body?.overrideQboLock === true;
   const overrideReason = typeof req.body?.overrideReason === 'string' ? req.body.overrideReason : undefined;
 
-  // Validate transition
+  // Validate transition - now transitions to awaiting_payment
   try {
-    assertInvoiceStatusTransition(invoice.status as InvoiceStatus, "sent");
+    assertInvoiceStatusTransition(invoice.status as InvoiceStatus, "awaiting_payment");
   } catch (error: any) {
     throw createError(400, error.message);
   }
@@ -476,10 +532,29 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
   if (overrideQboLock) {
     requireQboOverrideReason(overrideQboLock, overrideReason);
   }
-  checkQboBillingLock(invoice, { status: 'sent' }, { overrideQboLock, overrideReason });
+  checkQboBillingLock(invoice, { status: 'awaiting_payment' }, { overrideQboLock, overrideReason });
 
-  // Build update payload
-  let updatePayload: Record<string, unknown> = { status: "sent", sentAt: new Date() };
+  // Build update payload - transition to awaiting_payment with sent tracking
+  const now = new Date();
+  let updatePayload: Record<string, unknown> = {
+    status: "awaiting_payment",
+    sentAt: now,
+    sentByUserId: req.user?.id,
+  };
+
+  // Set issuedAt if not already set
+  if (!invoice.issuedAt) {
+    updatePayload.issuedAt = now;
+  }
+
+  // Ensure dueDate is set (compute from issuedAt + paymentTermsDays if missing)
+  if (!invoice.dueDate) {
+    const issuedAt = invoice.issuedAt ? new Date(invoice.issuedAt) : now;
+    const paymentTermsDays = invoice.paymentTermsDays ?? 30;
+    const dueDate = new Date(issuedAt.getTime() + paymentTermsDays * 24 * 60 * 60 * 1000);
+    updatePayload.dueDate = dueDate.toISOString().split("T")[0];
+  }
+
   let warning: string | undefined;
 
   if (isQboSynced(invoice) && overrideQboLock && overrideReason) {
@@ -551,6 +626,136 @@ router.post("/:id/void", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
     response._qboWarning = warning;
   }
   res.json(response);
+}));
+
+// GET /api/invoices/:id/pdf - Download invoice PDF
+router.get("/:id/pdf", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const invoiceId = req.params.id;
+
+  // Get invoice details
+  const invoice = await storage.getInvoice(companyId, invoiceId);
+  if (!invoice) {
+    throw createError(404, "Invoice not found");
+  }
+
+  // Get invoice lines
+  const lines = await storage.getInvoiceLines(companyId, invoiceId);
+
+  // Get location
+  const location = await storage.getClient(companyId, invoice.locationId);
+  if (!location) {
+    throw createError(400, "Invoice has invalid location reference");
+  }
+
+  // Get customer company (if exists)
+  let customerCompany = null;
+  const customerCompanyId = invoice.customerCompanyId || location.parentCompanyId;
+  if (customerCompanyId) {
+    customerCompany = await storage.getCustomerCompany(companyId, customerCompanyId);
+  }
+
+  // Get company info for branding
+  const company = await storage.getCompanyById(companyId);
+  if (!company) {
+    throw createError(500, "Company not found");
+  }
+
+  // Generate PDF
+  const pdfBuffer = await generateInvoicePdf({
+    invoice: invoice as any,
+    lines,
+    company,
+    location: {
+      companyName: location.companyName,
+      address: location.address,
+      city: location.city,
+      provinceState: location.province,
+      postalCode: location.postalCode,
+      phone: location.phone,
+      email: location.email,
+    },
+    customerCompany: customerCompany ? { name: customerCompany.name } : null,
+  });
+
+  const filename = `Invoice-${invoice.invoiceNumber || invoice.id.slice(0, 8)}.pdf`;
+
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.setHeader("Content-Length", pdfBuffer.length);
+  res.send(pdfBuffer);
+}));
+
+// PATCH /api/invoices/:id/sent - Toggle sent status (mark as sent / undo sent)
+router.patch("/:id/sent", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const invoice = await storage.getInvoice(req.companyId!, req.params.id);
+  if (!invoice) {
+    throw createError(404, "Invoice not found");
+  }
+
+  // Parse request body
+  const isSent = req.body?.isSent === true;
+
+  // Terminal states cannot be modified
+  if (invoice.status === "paid" || invoice.status === "voided") {
+    throw createError(409, `Cannot modify sent status on ${invoice.status} invoice`);
+  }
+
+  const now = new Date();
+  let updatePayload: Record<string, unknown>;
+
+  if (isSent) {
+    // Mark as sent: draft -> awaiting_payment
+    if (invoice.status !== "draft") {
+      throw createError(400, "Only draft invoices can be marked as sent");
+    }
+
+    updatePayload = {
+      status: "awaiting_payment",
+      sentAt: now,
+      sentByUserId: req.user?.id,
+    };
+
+    // Set issuedAt if not already set
+    if (!invoice.issuedAt) {
+      updatePayload.issuedAt = now;
+    }
+
+    // Ensure dueDate is set
+    if (!invoice.dueDate) {
+      const issuedAt = invoice.issuedAt ? new Date(invoice.issuedAt) : now;
+      const paymentTermsDays = invoice.paymentTermsDays ?? 30;
+      const dueDate = new Date(issuedAt.getTime() + paymentTermsDays * 24 * 60 * 60 * 1000);
+      updatePayload.dueDate = dueDate.toISOString().split("T")[0];
+    }
+  } else {
+    // Undo sent: awaiting_payment -> draft (only if no payments)
+    if (invoice.status !== "awaiting_payment" && invoice.status !== "sent") {
+      throw createError(400, "Can only undo sent on invoices with sent/awaiting_payment status");
+    }
+
+    const amountPaid = parseFloat(invoice.amountPaid || "0");
+    if (amountPaid > 0) {
+      throw createError(409, "Cannot undo sent on invoice with payments. Void the invoice instead.");
+    }
+
+    updatePayload = {
+      status: "draft",
+      sentAt: null,
+      sentByUserId: null,
+    };
+  }
+
+  await storage.updateInvoice(
+    req.companyId!,
+    req.params.id,
+    undefined,
+    updatePayload
+  );
+
+  // Re-fetch to include derived fields like isPastDue
+  const updated = await storage.getInvoice(req.companyId!, req.params.id);
+  res.json(updated);
 }));
 
 // DELETE /api/invoices/:id - Delete invoice (draft only)

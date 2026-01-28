@@ -42,12 +42,66 @@ import { timeRouter as timeTrackingRouter, jobTimeRouter, payrollRouter } from "
 import analyticsRouter from "./analytics";
 import timeAlertsRouter from "./timeAlerts";
 import timeBillingRulesRouter from "./timeBillingRules";
+import rolesRouter, { permissionsRouter } from "./roles";
+import recurringJobsRouter from "./recurringJobs";
+import taxRouter from "./tax";
 
 /**
  * Register all API routes in a single place.
  * This is the authoritative route map for the backend.
  */
 export function registerRoutes(app: Express): Server {
+  // ========================================
+  // ROUTE REGISTRATION BANNER (dev diagnostics)
+  // ========================================
+  console.log("\n" + "=".repeat(60));
+  console.log("[ROUTES] Using CANONICAL route map: server/routes/index.ts");
+  console.log("[ROUTES] Mounting routers...");
+  console.log("=".repeat(60) + "\n");
+
+  // ========================================
+  // DEBUG ENDPOINT (dev only) - BEFORE auth middleware
+  // ========================================
+  app.get("/api/_debug/routes", (req, res) => {
+    const routes: Array<{ method: string; path: string }> = [];
+
+    // Helper to extract routes from a layer
+    const extractRoutes = (stack: any[], prefix = "") => {
+      stack.forEach((layer: any) => {
+        if (layer.route) {
+          // Direct route
+          const methods = Object.keys(layer.route.methods).map(m => m.toUpperCase());
+          methods.forEach(method => {
+            routes.push({ method, path: prefix + layer.route.path });
+          });
+        } else if (layer.name === "router" && layer.handle?.stack) {
+          // Nested router
+          let routerPath = prefix;
+          if (layer.regexp) {
+            const match = layer.regexp.toString().match(/\^\\\/([^\\]+)/);
+            if (match) routerPath = prefix + "/" + match[1];
+          }
+          extractRoutes(layer.handle.stack, routerPath);
+        }
+      });
+    };
+
+    if (app._router?.stack) {
+      extractRoutes(app._router.stack);
+    }
+
+    // Filter to /api routes and sort
+    const apiRoutes = routes
+      .filter(r => r.path.startsWith("/api"))
+      .sort((a, b) => a.path.localeCompare(b.path));
+
+    res.json({
+      total: apiRoutes.length,
+      routeMapFile: "server/routes/index.ts",
+      routes: apiRoutes,
+    });
+  });
+
   // ========================================
   // HEALTH CHECK (before auth)
   // ========================================
@@ -98,6 +152,7 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/invoices", invoicesRouter);
   app.use("/api", paymentsRouter); // Payment routes: /api/invoices/:id/payments, /api/payments/:id
   app.use("/api/team", teamRouter);
+  console.log("[ROUTES] ✓ Mounted /api/team (canonical team router)");
   app.use("/api/calendar", calendarRouter);
   app.use("/api/clients", clientsRouter);
   app.use("/api/technicians", techniciansRouter);
@@ -124,6 +179,12 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/analytics", analyticsRouter); // Analytics: time utilization + leakage dashboard
   app.use("/api/time-alerts", timeAlertsRouter); // Time alerts: settings + snoozes + worker triggers
   app.use("/api/time-billing", timeBillingRulesRouter); // Time billing: rules for rounding, minimums, multipliers
+  app.use("/api/roles", rolesRouter); // Roles: CRUD for roles and role-permissions
+  console.log("[ROUTES] ✓ Mounted /api/roles (canonical roles router)");
+  app.use("/api/permissions", permissionsRouter); // Permissions: list all permissions
+  console.log("[ROUTES] ✓ Mounted /api/permissions (canonical permissions router)");
+  app.use("/api/recurring-templates", recurringJobsRouter); // Recurring jobs: templates + generation
+  app.use("/api/tax", taxRouter); // Tax: rates + groups CRUD
 
   // ✅ NEW ROUTES (company rollups + notes API)
   // Company/Client (parent) endpoints: /api/customer-companies/:id/overview, /locations, etc.

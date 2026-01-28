@@ -676,22 +676,42 @@ export function calculateLanes(assignments: any[]): Map<string, { laneIndex: num
   return laneMap;
 }
 
-// Format time from minutes
-export function formatTimeFromMinutes(minutes: number): string {
+/**
+ * Format time from minutes since midnight.
+ * Supports 12h (default) and 24h formats based on company regional settings.
+ */
+export function formatTimeFromMinutes(minutes: number, timeFormat: "12h" | "24h" = "12h"): string {
   const h24 = Math.floor(minutes / 60) % 24;
   const min = minutes % 60;
+  if (timeFormat === "24h") {
+    return `${String(h24).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+  }
   const ampm = h24 >= 12 ? 'PM' : 'AM';
   const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
   return `${h12}:${String(min).padStart(2, '0')} ${ampm}`;
 }
 
-// Get Monday of the week for a given date
-export function getMondayOfWeek(date: Date): Date {
+/**
+ * Get the start of the week for a given date.
+ * Respects company regional setting for week start day.
+ * @param date - Reference date
+ * @param weekStartsOn - "monday" (default, ISO standard) or "sunday"
+ */
+export function getWeekStart(date: Date, weekStartsOn: "monday" | "sunday" = "monday"): Date {
   const d = new Date(date);
-  const day = d.getDay();
-  const daysToMonday = day === 0 ? 6 : day - 1;
-  d.setDate(d.getDate() - daysToMonday);
+  const day = d.getDay(); // 0=Sun, 1=Mon, ... 6=Sat
+  if (weekStartsOn === "sunday") {
+    d.setDate(d.getDate() - day);
+  } else {
+    const daysToMonday = day === 0 ? 6 : day - 1;
+    d.setDate(d.getDate() - daysToMonday);
+  }
   return d;
+}
+
+/** @deprecated Use getWeekStart() instead. Kept for backward compatibility. */
+export function getMondayOfWeek(date: Date): Date {
+  return getWeekStart(date, "monday");
 }
 
 // Create technician color map

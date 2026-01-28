@@ -121,24 +121,15 @@ function transformToDto(job: CalendarJobWithDetails): CalendarEventDto {
 }
 
 /**
- * Get server timezone (IANA format)
- */
-function getServerTimezone(): string {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone;
-  } catch {
-    return "UTC";
-  }
-}
-
-/**
  * Build CalendarRangeResponseDto
+ * Uses company timezone from settings instead of server timezone.
  */
-function buildRangeResponse(
+async function buildRangeResponse(
+  companyId: string,
   jobs: CalendarJobWithDetails[],
   outsideVisibleHoursCount: number,
   hiddenTechnicianDiagnostics?: { jobId: string; hiddenTechIds: string[] }[]
-): CalendarRangeResponseDto {
+): Promise<CalendarRangeResponseDto> {
   const hiddenTechMap = new Map<string, string[]>();
   if (hiddenTechnicianDiagnostics) {
     for (const diag of hiddenTechnicianDiagnostics) {
@@ -156,10 +147,13 @@ function buildRangeResponse(
     return dto;
   });
 
+  // Use company timezone from settings (not server timezone)
+  const timezone = await companyRepository.getCompanyTimezone(companyId);
+
   return {
     events,
     outsideVisibleHoursCount,
-    timezone: getServerTimezone(),
+    timezone,
   };
 }
 
@@ -277,7 +271,7 @@ router.get(
         }
       }
 
-      return res.json(buildRangeResponse(jobs, outsideVisibleHoursCount, hiddenTechDiagnostics));
+      return res.json(await buildRangeResponse(companyId, jobs, outsideVisibleHoursCount, hiddenTechDiagnostics));
     }
 
     // Legacy year/month query
@@ -293,10 +287,10 @@ router.get(
         );
 
       const jobs = filterJobsByRole(allJobs, userRole, userId);
-      return res.json(buildRangeResponse(jobs, outsideVisibleHoursCount));
+      return res.json(await buildRangeResponse(companyId, jobs, outsideVisibleHoursCount));
     }
 
-    res.json(buildRangeResponse([], 0));
+    res.json(await buildRangeResponse(companyId, [], 0));
   })
 );
 

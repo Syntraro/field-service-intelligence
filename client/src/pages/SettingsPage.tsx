@@ -1,6 +1,6 @@
 import { Link } from "wouter";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Package, ChevronRight, Users, FormInput, Receipt, Plug, FileText, ListChecks, FileCheck, CreditCard, Clock, Wallet, BarChart3 } from "lucide-react";
+import { Package, ChevronRight, Users, FormInput, Receipt, Plug, FileText, ListChecks, FileCheck, CreditCard, Clock, Wallet, BarChart3, Globe } from "lucide-react";
 
 interface SettingsCardProps {
   href: string;
@@ -95,14 +95,7 @@ export default function SettingsPage() {
       detail: "Create and manage templates with predefined line items for quotes.",
       testId: "card-quote-templates-settings",
     },
-    {
-      href: "/settings/job-statuses",
-      icon: ListChecks,
-      title: "Job Statuses",
-      description: "Customize workflow statuses",
-      detail: "Configure job statuses like En Route, On Site, Needs Parts for technician tracking.",
-      testId: "card-job-statuses-settings",
-    },
+    // Job Statuses setting removed - statuses are now a fixed system enum
     {
       href: "/settings/subscription",
       icon: CreditCard,
@@ -134,6 +127,14 @@ export default function SettingsPage() {
       description: "Utilization & leakage dashboard",
       detail: "Analyze time utilization trends, identify leakage from untracked or unassigned time, and view technician breakdowns.",
       testId: "card-time-analytics-settings",
+    },
+    {
+      href: "/settings/regional",
+      icon: Globe,
+      title: "Regional Settings",
+      description: "Timezone & format preferences",
+      detail: "Configure timezone, date/time display format, and calendar week start day for your company.",
+      testId: "card-regional-settings",
     },
   ];
 

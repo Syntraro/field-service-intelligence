@@ -52,17 +52,47 @@ function forceUTCTimestamp(date: Date) {
 }
 
 /**
+ * DEV-only assertion: when isAllDay, the UTC ISO strings must have
+ * exact midnight start (T00:00:00.000Z) and end-of-day end (T23:59:59.000Z).
+ * Catches domain-layer bugs before they hit the DB CHECK constraints.
+ */
+function assertAllDayUTCBoundaries(startDate: Date | null, endDate: Date | null, jobId: string): void {
+  if (process.env.NODE_ENV !== 'development') return;
+
+  if (startDate) {
+    const iso = startDate.toISOString();
+    if (!iso.endsWith('T00:00:00.000Z')) {
+      console.error(
+        `[ALLDAY ASSERT FAIL] jobId=${jobId} scheduledStart ISO does not end with T00:00:00.000Z: ${iso}`
+      );
+    }
+  }
+
+  if (endDate) {
+    const iso = endDate.toISOString();
+    if (!iso.endsWith('T23:59:59.000Z')) {
+      console.error(
+        `[ALLDAY ASSERT FAIL] jobId=${jobId} scheduledEnd ISO does not end with T23:59:59.000Z: ${iso}`
+      );
+    }
+  }
+}
+
+/**
  * Sanitize updateData in-place: replace Date objects with UTC-safe SQL
  * expressions for scheduledStart/scheduledEnd when isAllDay=true.
  *
  * MUST be called right before every DB write that may set all-day timestamps.
- * Emits a DEV log for observability.
+ * Emits a DEV log + regression assertion for observability.
  */
 function sanitizeAllDayTimestamps(updateData: any, jobId: string): void {
   if (updateData.isAllDay !== true) return;
 
   const startDate = updateData.scheduledStart instanceof Date ? updateData.scheduledStart : null;
   const endDate = updateData.scheduledEnd instanceof Date ? updateData.scheduledEnd : null;
+
+  // DEV: Assert boundaries BEFORE replacing with SQL expressions
+  assertAllDayUTCBoundaries(startDate, endDate, jobId);
 
   if (startDate) {
     updateData.scheduledStart = forceUTCTimestamp(startDate);
@@ -74,8 +104,8 @@ function sanitizeAllDayTimestamps(updateData: any, jobId: string): void {
   if (process.env.NODE_ENV === 'development') {
     console.log('[SCHEDULE ALLDAY]', {
       jobId,
-      scheduledStart: startDate?.toISOString() ?? 'null',
-      scheduledEnd: endDate?.toISOString() ?? 'null',
+      scheduledStartIso: startDate?.toISOString() ?? 'null',
+      scheduledEndIso: endDate?.toISOString() ?? 'null',
     });
   }
 }

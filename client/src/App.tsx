@@ -43,8 +43,9 @@ import IntegrationsPage from "@/pages/IntegrationsPage";
 import QboConsolePage from "@/pages/QboConsolePage";
 import CategoryManagementPage from "@/pages/CategoryManagementPage";
 import JobTemplatesPage from "@/pages/JobTemplatesPage";
+import RecurringJobsPage from "@/pages/RecurringJobsPage";
 import QuoteTemplatesPage from "@/pages/QuoteTemplatesPage";
-import JobStatusesPage from "@/pages/JobStatusesPage";
+// JobStatusesPage removed - job statuses are now a fixed system enum
 import SubscriptionSettings from "@/pages/SubscriptionSettings";
 import UnassignedTimePage from "@/pages/UnassignedTimePage";
 import PayrollPage from "@/pages/PayrollPage";
@@ -52,6 +53,7 @@ import TimeAnalyticsPage from "@/pages/TimeAnalyticsPage";
 import NotificationsPage from "@/pages/NotificationsPage";
 import TimeAlertSettingsPage from "@/pages/TimeAlertSettingsPage";
 import TimeBillingRulesPage from "@/pages/TimeBillingRulesPage";
+import RegionalSettingsPage from "@/pages/RegionalSettingsPage";
 import Login from "@/pages/Login";
 import Signup from "@/pages/Signup";
 import RequestReset from "@/pages/RequestReset";
@@ -235,16 +237,17 @@ function Router() {
           <JobTemplatesPage />
         </ProtectedRoute>
       </Route>
+      <Route path="/settings/recurring-jobs">
+        <ProtectedRoute requireAdmin>
+          <RecurringJobsPage />
+        </ProtectedRoute>
+      </Route>
       <Route path="/settings/quote-templates">
         <ProtectedRoute requireAdmin>
           <QuoteTemplatesPage />
         </ProtectedRoute>
       </Route>
-      <Route path="/settings/job-statuses">
-        <ProtectedRoute requireAdmin>
-          <JobStatusesPage />
-        </ProtectedRoute>
-      </Route>
+      {/* Job Statuses route removed - job statuses are now a fixed system enum */}
       <Route path="/settings/subscription">
         <ProtectedRoute requireAdmin>
           <SubscriptionSettings />
@@ -278,6 +281,11 @@ function Router() {
       <Route path="/settings/time-billing">
         <ProtectedRoute requireAdmin>
           <TimeBillingRulesPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/settings/regional">
+        <ProtectedRoute requireAdmin>
+          <RegionalSettingsPage />
         </ProtectedRoute>
       </Route>
       <Route path="/company-settings">

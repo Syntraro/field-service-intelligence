@@ -32,6 +32,7 @@ import { clientNotesRepository } from "./clientNotes";
 import { quoteRepository } from "./quotes";
 import { quoteTemplateRepository } from "./quoteTemplates";
 import { calendarRepository } from "./calendar";
+import { taxRepository } from "./tax";
 import type { PaginationOptions, PaginatedResult } from "./clients";
 
 /**
@@ -124,6 +125,7 @@ export interface IStorage {
   getDashboardInvoices: typeof invoiceRepository.getDashboardInvoices;
   getInvoiceLines: typeof invoiceRepository.getInvoiceLines;
   createInvoiceLine: typeof invoiceRepository.createInvoiceLine;
+  updateInvoiceLine: typeof invoiceRepository.updateInvoiceLine;
   deleteInvoiceLine: typeof invoiceRepository.deleteInvoiceLine;
   refreshInvoiceFromJob: typeof invoiceRepository.refreshInvoiceFromJob;
   updateInvoice: typeof invoiceRepository.updateInvoice;
@@ -213,6 +215,20 @@ updateInvitation: (id: string, data: { status: string }) => Promise<any>;
   unscheduleCalendarJob: typeof calendarRepository.unscheduleJob;
   validateCalendarTechnician: typeof calendarRepository.validateTechnicianBelongsToTenant;
   validateCalendarJob: typeof calendarRepository.validateJobBelongsToTenant;
+
+  // Tax operations (v1 multi-tax system)
+  getTaxRates: typeof taxRepository.getTaxRates;
+  getTaxRate: typeof taxRepository.getTaxRate;
+  createTaxRate: typeof taxRepository.createTaxRate;
+  updateTaxRate: typeof taxRepository.updateTaxRate;
+  deleteTaxRate: typeof taxRepository.deleteTaxRate;
+  getTaxGroups: typeof taxRepository.getTaxGroups;
+  getTaxGroup: typeof taxRepository.getTaxGroup;
+  createTaxGroup: typeof taxRepository.createTaxGroup;
+  updateTaxGroup: typeof taxRepository.updateTaxGroup;
+  deleteTaxGroup: typeof taxRepository.deleteTaxGroup;
+  setDefaultTaxGroup: typeof taxRepository.setDefaultTaxGroup;
+  getDefaultTaxGroup: typeof taxRepository.getDefaultTaxGroup;
 }
 
 /**
@@ -304,6 +320,7 @@ export const storage: IStorage = {
   getDashboardInvoices: invoiceRepository.getDashboardInvoices.bind(invoiceRepository),
   getInvoiceLines: invoiceRepository.getInvoiceLines.bind(invoiceRepository),
   createInvoiceLine: invoiceRepository.createInvoiceLine.bind(invoiceRepository),
+  updateInvoiceLine: invoiceRepository.updateInvoiceLine.bind(invoiceRepository),
   deleteInvoiceLine: invoiceRepository.deleteInvoiceLine.bind(invoiceRepository),
   refreshInvoiceFromJob: invoiceRepository.refreshInvoiceFromJob.bind(invoiceRepository),
   updateInvoice: invoiceRepository.updateInvoice.bind(invoiceRepository),
@@ -432,6 +449,20 @@ export const storage: IStorage = {
   unscheduleCalendarJob: calendarRepository.unscheduleJob.bind(calendarRepository),
   validateCalendarTechnician: calendarRepository.validateTechnicianBelongsToTenant.bind(calendarRepository),
   validateCalendarJob: calendarRepository.validateJobBelongsToTenant.bind(calendarRepository),
+
+  // Tax operations (v1 multi-tax system)
+  getTaxRates: taxRepository.getTaxRates.bind(taxRepository),
+  getTaxRate: taxRepository.getTaxRate.bind(taxRepository),
+  createTaxRate: taxRepository.createTaxRate.bind(taxRepository),
+  updateTaxRate: taxRepository.updateTaxRate.bind(taxRepository),
+  deleteTaxRate: taxRepository.deleteTaxRate.bind(taxRepository),
+  getTaxGroups: taxRepository.getTaxGroups.bind(taxRepository),
+  getTaxGroup: taxRepository.getTaxGroup.bind(taxRepository),
+  createTaxGroup: taxRepository.createTaxGroup.bind(taxRepository),
+  updateTaxGroup: taxRepository.updateTaxGroup.bind(taxRepository),
+  deleteTaxGroup: taxRepository.deleteTaxGroup.bind(taxRepository),
+  setDefaultTaxGroup: taxRepository.setDefaultTaxGroup.bind(taxRepository),
+  getDefaultTaxGroup: taxRepository.getDefaultTaxGroup.bind(taxRepository),
 };
 
 // Export individual repositories for advanced use cases
@@ -455,6 +486,7 @@ export {
   quoteRepository,
   quoteTemplateRepository,
   calendarRepository,
+  taxRepository,
 };
 
 // Subscription billing (separate export due to its size and specialized nature)
