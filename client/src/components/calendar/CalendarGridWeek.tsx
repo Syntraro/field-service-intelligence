@@ -11,9 +11,11 @@ import {
   CalendarEvent,
   getTechnicianColorForAssignment,
   calculateLanes,
-  getMondayOfWeek,
+  getWeekStart,
   isCalendarEventOverdue,
 } from "./calendarUtils";
+import type { RegionalSettings } from "@/hooks/useCompanyRegionalSettings";
+import { formatHourLabel, nowInTimezone } from "@/hooks/useCompanyRegionalSettings";
 import { ensureClientsArray, findClientByEvent } from "./calendarClientLookup";
 
 // ============================================================================
@@ -46,6 +48,8 @@ export interface CalendarGridWeekProps {
   savingJobIds?: Set<string>;
   /** Quick action: unschedule */
   onUnschedule?: (assignmentId: string, version: number) => void;
+  /** Regional settings (timezone, time format, week start) */
+  regional: RegionalSettings;
 }
 
 interface WeekDayData {
@@ -114,6 +118,7 @@ function HourlyDropZone({
   handleClientClick,
   savingJobIds,
   onUnschedule,
+  timeFormat,
 }: {
   dayName: string;
   hour: number;
@@ -128,6 +133,7 @@ function HourlyDropZone({
   handleClientClick: (client: any, event: CalendarEvent, focusSchedule?: boolean) => void;
   savingJobIds?: Set<string>;
   onUnschedule?: (assignmentId: string, version: number) => void;
+  timeFormat?: "12h" | "24h";
 }) {
   const rowHeight = DENSITY_STYLES[density].rowHeight;
 
@@ -164,6 +170,7 @@ function HourlyDropZone({
             isSaving={isSaving}
             technicians={technicians}
             onUnschedule={onUnschedule}
+            timeFormat={timeFormat}
           />
         ) : null;
       })}
@@ -202,6 +209,7 @@ interface AllDayRowProps {
   getTechnicianColor: (assignment: any) => ReturnType<typeof getTechnicianColorForAssignment>;
   handleClientClick: (client: any, event: CalendarEvent, focusSchedule?: boolean) => void;
   savingJobIds?: Set<string>;
+  timeFormat?: "12h" | "24h";
 }
 
 function AllDayRow({
@@ -215,6 +223,7 @@ function AllDayRow({
   getTechnicianColor,
   handleClientClick,
   savingJobIds,
+  timeFormat = "12h",
 }: AllDayRowProps) {
   // Calculate max all-day events across all days for this week
   const maxAllDayCount = useMemo(() => {
@@ -277,6 +286,7 @@ function AllDayRow({
                     technicians={technicians}
                     isSaving={isSaving}
                     isOverdue={isOverdue}
+                    timeFormat={timeFormat}
                   >
                     <DraggableClient
                       id={event.assignmentId}
@@ -289,6 +299,7 @@ function AllDayRow({
                       technicianColor={getTechnicianColor(event.raw)}
                       densityStyle={DENSITY_STYLES[density].card}
                       isSaving={isSaving}
+                      timeFormat={timeFormat}
                     />
                   </EventPreviewPopover>
                 ) : null;
@@ -354,9 +365,10 @@ export function CalendarGridWeek({
   onToggleFullDay,
   savingJobIds,
   onUnschedule,
+  regional,
 }: CalendarGridWeekProps) {
-  // Get week dates based on currentDate (Monday to Sunday)
-  const currentWeekStart = getMondayOfWeek(currentDate);
+  // Get week dates based on currentDate, respecting weekStartsOn setting
+  const currentWeekStart = getWeekStart(currentDate, regional.weekStartsOn);
 
   const startHour = companySettings?.calendarStartHour || 8;
   const weekDaysData: WeekDayData[] = [];
@@ -389,7 +401,9 @@ export function CalendarGridWeek({
       yearNumber,
       dateKey,
       dayEvents,
-      dayName: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i],
+      dayName: (regional.weekStartsOn === "sunday"
+        ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])[i],
       laneMap
     });
   }
@@ -397,14 +411,13 @@ export function CalendarGridWeek({
   // Use visibleHours prop if provided, otherwise default to all 24 hours
   const hoursToRender = visibleHours ?? Array.from({ length: 24 }, (_, i) => i);
   const hours = hoursToRender.map((h) => {
-    const ampm = h === 0 ? "12 AM" : h < 12 ? `${h} AM` : h === 12 ? "12 PM" : `${h - 12} PM`;
-    return { hour: h, display: ampm };
+    return { hour: h, display: formatHourLabel(h, regional.timeFormat) };
   });
 
   const gridCols = "grid-cols-[3.5rem_repeat(7,minmax(0,1fr))]";
 
-  // Calculate current time position for "Now" line
-  const now = new Date();
+  // Calculate current time position for "Now" line (uses company timezone)
+  const now = nowInTimezone(regional.timezone);
   const todayIndex = weekDaysData.findIndex(d => d.date.toDateString() === now.toDateString());
   const currentHour = now.getHours();
   const currentMinute = now.getMinutes();
@@ -434,7 +447,7 @@ export function CalendarGridWeek({
           )}
         </div>
         {weekDaysData.map((d) => {
-          const isToday = d.date.toDateString() === new Date().toDateString();
+          const isToday = d.date.toDateString() === now.toDateString();
           return (
             <div key={d.dayName} className="px-1 py-2 text-center border-r">
               <span className={`text-sm font-medium ${isToday ? 'bg-primary text-primary-foreground px-2 py-0.5 rounded-full' : ''}`}>
@@ -457,6 +470,7 @@ export function CalendarGridWeek({
         getTechnicianColor={getTechnicianColor}
         handleClientClick={handleClientClick}
         savingJobIds={savingJobIds}
+        timeFormat={regional.timeFormat}
       />
 
       {/* Hourly Slots - wrapped in relative container for "Now" line */}
@@ -498,6 +512,7 @@ export function CalendarGridWeek({
                 handleClientClick={handleClientClick}
                 savingJobIds={savingJobIds}
                 onUnschedule={onUnschedule}
+                timeFormat={regional.timeFormat}
               />
             ))}
           </div>

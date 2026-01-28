@@ -12,6 +12,8 @@ import {
   calculateLanes,
   isCalendarEventOverdue,
 } from "./calendarUtils";
+import type { RegionalSettings } from "@/hooks/useCompanyRegionalSettings";
+import { formatHourLabel, nowInTimezone } from "@/hooks/useCompanyRegionalSettings";
 import { ensureClientsArray, findClientByEvent } from "./calendarClientLookup";
 
 // ============================================================================
@@ -35,6 +37,8 @@ export interface CalendarGridDayProps {
   savingJobIds?: Set<string>;
   /** Quick action: unschedule */
   onUnschedule?: (assignmentId: string, version: number) => void;
+  /** Regional settings (timezone, time format, week start) */
+  regional: RegionalSettings;
 }
 
 // ============================================================================
@@ -74,6 +78,7 @@ function DailyDropZone({
   handleClientClick,
   savingJobIds,
   onUnschedule,
+  timeFormat,
 }: {
   technicianId: string;
   hour: number;
@@ -88,6 +93,7 @@ function DailyDropZone({
   handleClientClick: (client: any, event: CalendarEvent, focusSchedule?: boolean) => void;
   savingJobIds?: Set<string>;
   onUnschedule?: (assignmentId: string, version: number) => void;
+  timeFormat?: "12h" | "24h";
 }) {
   const rowHeight = DENSITY_STYLES[density].rowHeight;
 
@@ -127,6 +133,7 @@ function DailyDropZone({
             isSaving={isSaving}
             technicians={technicians}
             onUnschedule={onUnschedule}
+            timeFormat={timeFormat}
           />
         ) : null;
       })}
@@ -151,6 +158,7 @@ export function CalendarGridDay({
   handleResize,
   savingJobIds,
   onUnschedule,
+  regional,
 }: CalendarGridDayProps) {
   // Get technicians to show as columns (filter by visibility)
   const visibleTechnicians = technicians.filter((t: any) => !hiddenTechnicianIds.has(t.id));
@@ -163,13 +171,11 @@ export function CalendarGridDay({
   // Generate hours (6 AM to 6 PM by default, but use startHour from settings)
   const dailyStartHour = companySettings?.calendarStartHour ?? 7;
   const hours = Array.from({ length: 24 }, (_, i) => {
-    const h = i;
-    const ampm = h === 0 ? "12 AM" : h < 12 ? `${h} AM` : h === 12 ? "12 PM" : `${h - 12} PM`;
-    return { hour: i, display: ampm };
+    return { hour: i, display: formatHourLabel(i, regional.timeFormat) };
   });
 
-  // Calculate current time position
-  const now = new Date();
+  // Calculate current time position (uses company timezone)
+  const now = nowInTimezone(regional.timezone);
   const isToday = now.toDateString() === currentDate.toDateString();
   const currentHour = now.getHours();
   const currentMinute = now.getMinutes();
@@ -329,6 +335,7 @@ export function CalendarGridDay({
                 handleClientClick={handleClientClick}
                 savingJobIds={savingJobIds}
                 onUnschedule={onUnschedule}
+                timeFormat={regional.timeFormat}
               />
             );
           })}
@@ -347,6 +354,7 @@ export function CalendarGridDay({
               handleClientClick={handleClientClick}
               savingJobIds={savingJobIds}
               onUnschedule={onUnschedule}
+              timeFormat={regional.timeFormat}
             />
           )}
         </div>

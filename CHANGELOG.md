@@ -19,6 +19,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Migration**: `migrations/2026_01_28_add_timezone_confirmed_at.sql`
 - Files: `shared/schema.ts`, `server/routes/companySettings.ts`, `server/routes/calendar.ts`, `client/src/components/TimezoneSetupDialog.tsx`, `client/src/components/TimezoneSetupBanner.tsx`, `client/src/App.tsx`
 
+#### Regional Settings Integration into Calendar UI (Prompt 3)
+
+- **`useCompanyRegionalSettings()` hook**: New hook in `client/src/hooks/useCompanyRegionalSettings.ts` reads timezone, dateFormat, timeFormat, weekStartsOn from `/api/company-settings` with 5-minute cache; exports `nowInTimezone()` and `formatHourLabel()` helpers
+- **Shared `TIMEZONE_OPTIONS`**: Consolidated into `client/src/lib/regionalConstants.ts` (superset of both previous lists); `RegionalSettingsPage.tsx` and `TimezoneSetupDialog.tsx` now import from shared constant
+- **Calendar week/month views respect `weekStartsOn`**: `getWeekStart(date, weekStartsOn)` used in all 5 call sites (Calendar.tsx, CalendarGridWeek, CalendarGridWeekTechnicians, CalendarHeader, parts dialog); month grid day headers reorder to Mon-Sun or Sun-Sat; `firstDayOfMonth` offset adjusted for Monday-start grids
+- **Calendar hour labels respect `timeFormat`**: CalendarGridWeek, CalendarGridDay, and CalendarHeader start-hour dropdown use `formatHourLabel(hour, timeFormat)` instead of inline 12h ternaries
+- **Calendar "today" and "now" line use company timezone**: `nowInTimezone(tz)` replaces `new Date()` in CalendarGridWeek, CalendarGridDay, and CalendarGridWeekTechnicians for today highlight and current-time indicator
+- **`timeFormat` threaded to event time display**: EventPreviewPopover, DraggableClient, and ResizableJobCard pass `timeFormat` to `formatTimeFromMinutes()` calls
+- **Removed deprecated `getMondayOfWeek()`**: All callers migrated to `getWeekStart(date, weekStartsOn)`
+- Files: `client/src/lib/regionalConstants.ts` (NEW), `client/src/hooks/useCompanyRegionalSettings.ts` (NEW), `client/src/pages/Calendar.tsx`, `client/src/components/calendar/calendarUtils.ts`, `client/src/components/calendar/CalendarHeader.tsx`, `client/src/components/calendar/CalendarGridWeek.tsx`, `client/src/components/calendar/CalendarGridDay.tsx`, `client/src/components/calendar/CalendarGridWeekTechnicians.tsx`, `client/src/components/calendar/CalendarGridMonth.tsx`, `client/src/components/calendar/EventPreviewPopover.tsx`, `client/src/components/calendar/DraggableClient.tsx`, `client/src/components/calendar/ResizableJobCard.tsx`, `client/src/pages/RegionalSettingsPage.tsx`, `client/src/components/TimezoneSetupDialog.tsx`
+
 #### Company Regional Settings (Prompt 2)
 
 - **Schema**: Added `dateFormat`, `timeFormat`, `weekStartsOn` columns to `companySettings` table

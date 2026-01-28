@@ -25,6 +25,8 @@ interface ResizableJobCardProps {
   technicians?: any[];
   /** Quick action: reschedule (opens dialog focused on schedule section) */
   onReschedule?: () => void;
+  /** Time format from regional settings (12h/24h) */
+  timeFormat?: "12h" | "24h";
 }
 
 export function ResizableJobCard({
@@ -43,6 +45,7 @@ export function ResizableJobCard({
   onUnschedule,
   technicians = [],
   onReschedule,
+  timeFormat = "12h",
 }: ResizableJobCardProps) {
   const { toast } = useToast();
   const [isResizing, setIsResizing] = useState(false);
@@ -157,6 +160,7 @@ export function ResizableJobCard({
       isDragging={false}
       isSaving={isSaving}
       isOverdue={isOverdue}
+      timeFormat={timeFormat}
     >
       <div
         className="absolute z-10 group"
@@ -181,6 +185,7 @@ export function ResizableJobCard({
           densityStyle={densityStyle}
           cardHeight={Math.max(height, minHeight)}
           isSaving={isSaving}
+          timeFormat={timeFormat}
         />
 
         {/* Quick action icons - top right, visible on hover */}

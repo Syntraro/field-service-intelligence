@@ -9,6 +9,7 @@ import {
   getTechnicianColorForAssignment,
   isCalendarEventOverdue,
 } from "./calendarUtils";
+import type { RegionalSettings } from "@/hooks/useCompanyRegionalSettings";
 import { findClientByEvent } from "./calendarClientLookup";
 
 // ============================================================================
@@ -32,6 +33,8 @@ export interface CalendarGridMonthProps {
   savingJobIds?: Set<string>;
   /** List of technicians for hover preview */
   technicians?: any[];
+  /** Regional settings (week start day for grid headers) */
+  regional: RegionalSettings;
 }
 
 interface DroppableDayProps {
@@ -49,6 +52,7 @@ interface DroppableDayProps {
   gapStyle?: string;
   savingJobIds?: Set<string>;
   technicians?: any[];
+  timeFormat?: "12h" | "24h";
 }
 
 // ============================================================================
@@ -70,6 +74,7 @@ function DroppableDay({
   gapStyle,
   savingJobIds,
   technicians = [],
+  timeFormat = "12h",
 }: DroppableDayProps) {
   const { setNodeRef, isOver } = useDroppable({ id: `day-${day}` });
   const [popoverOpen, setPopoverOpen] = useState(false);
@@ -112,6 +117,7 @@ function DroppableDay({
                 technicians={technicians}
                 isSaving={isSaving}
                 isOverdue={isCalendarEventOverdue(event)}
+                timeFormat={timeFormat}
               >
                 <CalendarEventChip
                   id={event.assignmentId}
@@ -178,6 +184,7 @@ function DroppableDay({
                           technicians={technicians}
                           isSaving={isSaving}
                           isOverdue={isCalendarEventOverdue(event)}
+                          timeFormat={timeFormat}
                         >
                           <CalendarEventChip
                             id={event.assignmentId}
@@ -238,6 +245,7 @@ export function CalendarGridMonth({
   gapStyle,
   savingJobIds,
   technicians = [],
+  regional,
 }: CalendarGridMonthProps) {
   const days = [];
   const totalCells = Math.ceil((daysInMonth + firstDayOfMonth) / 7) * 7;
@@ -265,6 +273,7 @@ export function CalendarGridMonth({
           gapStyle={gapStyle}
           savingJobIds={savingJobIds}
           technicians={technicians}
+          timeFormat={regional.timeFormat}
         />
       ) : (
         <div key={i} className="min-h-[52px] p-0.5 border bg-muted/10" />
@@ -275,7 +284,10 @@ export function CalendarGridMonth({
   return (
     <div className="h-full flex flex-col">
       <div className="grid grid-cols-7">
-        {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
+        {(regional.weekStartsOn === "sunday"
+          ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+          : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        ).map((day) => (
           <div key={day} className="text-center font-medium text-xs p-1 border bg-muted/5">
             {day}
           </div>

@@ -21,8 +21,10 @@ import {
   DENSITY_STYLES,
   CalendarDensity,
   CalendarEvent,
-  getMondayOfWeek,
+  getWeekStart,
 } from "./calendarUtils";
+import type { RegionalSettings } from "@/hooks/useCompanyRegionalSettings";
+import { nowInTimezone } from "@/hooks/useCompanyRegionalSettings";
 import { Button } from "@/components/ui/button";
 import { Plus, Clock, User } from "lucide-react";
 
@@ -41,6 +43,8 @@ export interface CalendarGridWeekTechniciansProps {
   onJobClick: (event: CalendarEvent, technician: any) => void;
   onSlotClick: (date: Date, technician: any) => void;
   onScheduleNew: (date: Date, technicianId?: string) => void;
+  /** Regional settings (timezone, time format, week start) */
+  regional: RegionalSettings;
 }
 
 interface WeekDayColumn {
@@ -269,10 +273,11 @@ export function CalendarGridWeekTechnicians({
   onJobClick,
   onSlotClick,
   onScheduleNew,
+  regional,
 }: CalendarGridWeekTechniciansProps) {
-  // Get week dates (Mon-Sun)
-  const weekStart = getMondayOfWeek(currentDate);
-  const today = new Date();
+  // Get week dates, respecting weekStartsOn setting
+  const weekStart = getWeekStart(currentDate, regional.weekStartsOn);
+  const today = nowInTimezone(regional.timezone);
 
   const weekDays: WeekDayColumn[] = useMemo(() => {
     const days: WeekDayColumn[] = [];
@@ -290,7 +295,9 @@ export function CalendarGridWeekTechnicians({
         monthNumber,
         yearNumber,
         dateKey,
-        dayName: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i],
+        dayName: (regional.weekStartsOn === "sunday"
+          ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+          : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])[i],
         isToday: date.toDateString() === today.toDateString(),
       });
     }

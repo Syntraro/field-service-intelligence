@@ -709,11 +709,6 @@ export function getWeekStart(date: Date, weekStartsOn: "monday" | "sunday" = "mo
   return d;
 }
 
-/** @deprecated Use getWeekStart() instead. Kept for backward compatibility. */
-export function getMondayOfWeek(date: Date): Date {
-  return getWeekStart(date, "monday");
-}
-
 // Create technician color map
 export function createTechnicianColorMap(technicians: any[]): Map<string, TechnicianColor> {
   const map = new Map<string, TechnicianColor>();

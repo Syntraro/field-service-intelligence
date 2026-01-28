@@ -21,7 +21,7 @@ import {
   MONTH_ABBREV,
   DENSITY_STYLES,
   CalendarEvent,
-  getMondayOfWeek,
+  getWeekStart,
   createTechnicianColorMap,
   getTechnicianColorForAssignment,
   normalizeAssignments,
@@ -35,6 +35,7 @@ import {
   CalendarGridDay,
   ScheduleJobModal,
 } from "@/components/calendar";
+import { useCompanyRegionalSettings } from "@/hooks/useCompanyRegionalSettings";
 import { DraggableClient } from "@/components/calendar/DraggableClient";
 import { toClientsArray, resolveClientForCalendarEvent } from "@/components/calendar/calendarClientLookup";
 
@@ -159,6 +160,9 @@ export default function Calendar() {
     setExpandedAllDaySlots,
   } = useCalendarState();
 
+  // Regional settings (timezone, date/time format, week start) from company settings
+  const regional = useCompanyRegionalSettings();
+
   // Local UI state (not persisted)
   const [activeId, setActiveId] = useState<string | null>(null);
   const [selectedClient, setSelectedClient] = useState<any | null>(null);
@@ -186,7 +190,7 @@ export default function Calendar() {
   const getMonthsToFetch = () => {
     if (view === "weekly") {
       // Get the week range (Monday to Sunday)
-      const weekStart = getMondayOfWeek(currentDate);
+      const weekStart = getWeekStart(currentDate, regional.weekStartsOn);
       const weekEnd = new Date(weekStart);
       weekEnd.setDate(weekEnd.getDate() + 6);
 
@@ -248,7 +252,7 @@ export default function Calendar() {
   // Prefetch next/prev week data for smoother navigation
   useEffect(() => {
     if (view === "weekly") {
-      const currentWeekStart = getMondayOfWeek(currentDate);
+      const currentWeekStart = getWeekStart(currentDate, regional.weekStartsOn);
 
       // Prefetch previous week
       const prevWeekStart = new Date(currentWeekStart);
@@ -406,7 +410,11 @@ export default function Calendar() {
   }, [deleteAssignmentMutation, canSchedule, showViewOnlyToast]);
 
   const daysInMonth = new Date(year, month, 0).getDate();
-  const firstDayOfMonth = new Date(year, month - 1, 1).getDay();
+  // Adjust first day offset so the month grid aligns with the chosen week start
+  const rawFirstDay = new Date(year, month - 1, 1).getDay(); // 0=Sun
+  const firstDayOfMonth = regional.weekStartsOn === "monday"
+    ? (rawFirstDay === 0 ? 6 : rawFirstDay - 1) // shift so Mon=0
+    : rawFirstDay;
 
   const monthNames = ["January", "February", "March", "April", "May", "June",
     "July", "August", "September", "October", "November", "December"];
@@ -1379,14 +1387,17 @@ export default function Calendar() {
       return;
     }
     // Calculate parts for entire visible week with dates
-    const weekStart = getMondayOfWeek(currentDate);
+    const weekStart = getWeekStart(currentDate, regional.weekStartsOn);
+    const dayNames = regional.weekStartsOn === "sunday"
+      ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+      : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     const weekDays: Array<{ dayName: string; dateLabel: string; date: Date }> = [];
 
     for (let i = 0; i < 7; i++) {
       const date = new Date(weekStart);
       date.setDate(weekStart.getDate() + i);
       weekDays.push({
-        dayName: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i],
+        dayName: dayNames[i],
         dateLabel: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
         date: new Date(date)
       });
@@ -1606,6 +1617,7 @@ export default function Calendar() {
             onStartHourChange={handleStartHourChange}
             hiddenTechnicianIds={hiddenTechnicianIds}
             onToggleTechnicianVisibility={toggleTechnicianVisibility}
+            regional={regional}
           />
 
           <div className={`flex gap-2 flex-1 min-h-0 overflow-hidden`}>
@@ -1628,6 +1640,7 @@ export default function Calendar() {
                       gapStyle={DENSITY_STYLES[density].gap}
                       savingJobIds={savingJobIds}
                       technicians={technicians}
+                      regional={regional}
                     />
                   )}
                   {view === "weekly" && (
@@ -1675,6 +1688,7 @@ export default function Calendar() {
                           onToggleFullDay={toggleShowFullDay}
                           savingJobIds={savingJobIds}
                           onUnschedule={handleUnschedule}
+                          regional={regional}
                         />
                       ) : (
                         <CalendarGridWeekTechnicians
@@ -1686,6 +1700,7 @@ export default function Calendar() {
                           onJobClick={handleTechWeekJobClick}
                           onSlotClick={handleTechWeekSlotClick}
                           onScheduleNew={handleScheduleNew}
+                          regional={regional}
                         />
                       )}
                     </div>
@@ -1705,6 +1720,7 @@ export default function Calendar() {
                         handleResize={handleResize}
                         savingJobIds={savingJobIds}
                         onUnschedule={handleUnschedule}
+                        regional={regional}
                       />
                     </div>
                   )}

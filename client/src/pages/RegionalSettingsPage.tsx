@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { TIMEZONE_OPTIONS } from "@/lib/regionalConstants";
 
 interface CompanySettings {
   timezone?: string;
@@ -25,21 +26,6 @@ interface CompanySettings {
   timeFormat?: string;
   weekStartsOn?: string;
 }
-
-const TIMEZONE_OPTIONS = [
-  { value: "America/Toronto", label: "Eastern (Toronto)" },
-  { value: "America/New_York", label: "Eastern (New York)" },
-  { value: "America/Chicago", label: "Central (Chicago)" },
-  { value: "America/Denver", label: "Mountain (Denver)" },
-  { value: "America/Los_Angeles", label: "Pacific (Los Angeles)" },
-  { value: "America/Vancouver", label: "Pacific (Vancouver)" },
-  { value: "America/Edmonton", label: "Mountain (Edmonton)" },
-  { value: "America/Winnipeg", label: "Central (Winnipeg)" },
-  { value: "America/Halifax", label: "Atlantic (Halifax)" },
-  { value: "America/St_Johns", label: "Newfoundland (St. John's)" },
-  { value: "America/Regina", label: "Central - No DST (Regina)" },
-  { value: "UTC", label: "UTC" },
-];
 
 const DATE_FORMAT_OPTIONS = [
   { value: "MM/DD/YYYY", label: "MM/DD/YYYY (01/28/2026)" },

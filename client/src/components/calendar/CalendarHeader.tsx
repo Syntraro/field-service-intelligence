@@ -1,7 +1,9 @@
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ChevronLeft, ChevronRight, Users, Package } from "lucide-react";
-import { TECHNICIAN_COLORS, CalendarDensity, getMondayOfWeek } from "./calendarUtils";
+import { TECHNICIAN_COLORS, getWeekStart } from "./calendarUtils";
+import type { RegionalSettings } from "@/hooks/useCompanyRegionalSettings";
+import { formatHourLabel } from "@/hooks/useCompanyRegionalSettings";
 
 export interface CalendarHeaderProps {
   // View state
@@ -31,13 +33,12 @@ export interface CalendarHeaderProps {
   calendarStartHour: number;
   onStartHourChange: (hour: number) => void;
 
-  // Density
-  density: CalendarDensity;
-  onDensityChange: (density: CalendarDensity) => void;
-
   // Technician visibility chips
   hiddenTechnicianIds: Set<string>;
   onToggleTechnicianVisibility: (techId: string) => void;
+
+  // Regional settings (timezone, time format, week start)
+  regional: RegionalSettings;
 }
 
 export function CalendarHeader({
@@ -56,10 +57,9 @@ export function CalendarHeader({
   onPartsClick,
   calendarStartHour,
   onStartHourChange,
-  density,
-  onDensityChange,
   hiddenTechnicianIds,
   onToggleTechnicianVisibility,
+  regional,
 }: CalendarHeaderProps) {
   return (
     <>
@@ -76,7 +76,7 @@ export function CalendarHeader({
           <h2 className="text-2xl font-bold">
             {view === "weekly" ? (
               (() => {
-                const weekStart = getMondayOfWeek(currentDate);
+                const weekStart = getWeekStart(currentDate, regional.weekStartsOn);
                 const weekEnd = new Date(weekStart);
                 weekEnd.setDate(weekEnd.getDate() + 6);
 
@@ -155,7 +155,7 @@ export function CalendarHeader({
                   <SelectContent>
                     {Array.from({ length: 24 }, (_, i) => i).map((hour) => (
                       <SelectItem key={hour} value={String(hour)}>
-                        {hour === 0 ? '12 AM' : hour < 12 ? `${hour} AM` : hour === 12 ? '12 PM' : `${hour - 12} PM`}
+                        {formatHourLabel(hour, regional.timeFormat)}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -163,17 +163,6 @@ export function CalendarHeader({
               </div>
             </>
           )}
-          <Select value={density} onValueChange={(v) => onDensityChange(v as CalendarDensity)}>
-            <SelectTrigger className="w-28 text-xs h-8" data-testid="select-density">
-              <span className="text-muted-foreground mr-1">Density:</span>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="compact">Compact</SelectItem>
-              <SelectItem value="comfortable">Comfortable</SelectItem>
-              <SelectItem value="expanded">Expanded</SelectItem>
-            </SelectContent>
-          </Select>
           <div className="flex gap-1 bg-muted/50 p-1 rounded-full">
             <Button
               variant={view === "monthly" ? "default" : "ghost"}

@@ -25,6 +25,8 @@ interface DraggableClientProps {
   summary?: string;
   /** Raw item from API — passed through for DEV diagnostic logging */
   rawItem?: any;
+  /** Time format from regional settings (12h/24h) */
+  timeFormat?: "12h" | "24h";
 }
 
 export function DraggableClient({
@@ -45,6 +47,7 @@ export function DraggableClient({
   isSaving,
   summary,
   rawItem,
+  timeFormat = "12h",
 }: DraggableClientProps) {
   // ---------------------------------------------------------------------------
   // Drag disabled computation — Model A rules:
@@ -232,7 +235,7 @@ export function DraggableClient({
                     const startM = getAssignmentStartMinutes(assignment);
                     const dur = (assignment.durationMinutes || 60) as number;
                     const endM = startM + dur;
-                    const timeStr = `${formatTimeFromMinutes(startM)}–${formatTimeFromMinutes(endM)}`;
+                    const timeStr = `${formatTimeFromMinutes(startM, timeFormat)}–${formatTimeFromMinutes(endM, timeFormat)}`;
                     const location = client.location || assignment?.summary || "";
                     return location ? `${timeStr} · ${location}` : timeStr;
                   })()
