@@ -13,7 +13,7 @@ import { companyRepository } from "../storage/company";
 import { teamRepository } from "../storage/team";
 import { validateSchedule, ScheduleValidationError } from "../services/calendarValidation";
 import { assertCanEditSchedule } from "../guards/schedulingPermissions";
-import { filterSchedulableTechnicians, checkJobTechnicianVisibility } from "../domain/scheduling";
+import { filterSchedulableTechnicians, checkJobTechnicianVisibility, normalizeScheduleTimes } from "../domain/scheduling";
 import type { AuthedRequest } from "../auth/tenantIsolation";
 import type { CalendarJobWithDetails } from "../storage/calendar";
 import type { CalendarEventDto, CalendarRangeResponseDto } from "@shared/types/calendar";
@@ -318,36 +318,35 @@ router.post(
       throw createError(404, "Job not found or does not belong to this company");
     }
 
-    let startAt: Date;
-    let endAt: Date;
     const isAllDay = data.allDay === true;
 
-    if (isAllDay) {
-      const dateStr = data.date || (data.startAt ? data.startAt.split('T')[0] : null);
-      if (!dateStr) {
-        throw createError(400, "All-day events require a date");
-      }
-      startAt = new Date(dateStr + 'T00:00:00');
-      endAt = new Date(dateStr + 'T23:59:59.999');
-    } else {
-      if (!data.startAt) {
-        throw createError(400, "Start time is required for timed events");
-      }
-      startAt = new Date(data.startAt);
-      if (data.endAt) {
-        endAt = new Date(data.endAt);
-      } else if (data.durationMinutes) {
-        endAt = new Date(startAt.getTime() + data.durationMinutes * 60000);
-      } else {
-        endAt = new Date(startAt.getTime() + 60 * 60000);
-      }
+    // Normalize schedule times through canonical helper (enforces DB invariants)
+    const normalized = normalizeScheduleTimes({
+      allDay: isAllDay,
+      date: data.date,
+      startAt: data.startAt,
+      endAt: data.endAt,
+      durationMinutes: data.durationMinutes,
+    });
 
-      // Clamp to same day
-      const startDay = startAt.toISOString().split('T')[0];
-      const endDay = endAt.toISOString().split('T')[0];
-      if (startDay !== endDay) {
-        endAt = new Date(startDay + 'T23:59:59.999Z');
-      }
+    if (isAllDay && !normalized.scheduledStart) {
+      throw createError(400, "All-day events require a date");
+    }
+    if (!isAllDay && !normalized.scheduledStart) {
+      throw createError(400, "Start time is required for timed events");
+    }
+
+    const startAt = normalized.scheduledStart!;
+    const endAt = normalized.scheduledEnd!;
+
+    // DEV: Log all-day normalization result for diagnostics
+    if (process.env.NODE_ENV === 'development' && isAllDay) {
+      console.log('[SCHEDULE ALLDAY]', {
+        jobId: data.jobId,
+        date: data.date,
+        scheduledStart: startAt.toISOString(),
+        scheduledEnd: endAt.toISOString(),
+      });
     }
 
     // Validate technician
@@ -468,11 +467,14 @@ router.patch(
     let computedEndAt: Date | undefined;
 
     if (data.allDay === true) {
-      const dateStr = data.date || (data.startAt ? data.startAt.split('T')[0] : null);
-      if (dateStr) {
-        computedStartAt = new Date(dateStr + 'T00:00:00');
-        computedEndAt = new Date(dateStr + 'T23:59:59.999');
-      }
+      // Normalize all-day times through canonical helper (enforces DB invariants)
+      const normalized = normalizeScheduleTimes({
+        allDay: true,
+        date: data.date,
+        startAt: data.startAt,
+      });
+      computedStartAt = normalized.scheduledStart ?? undefined;
+      computedEndAt = normalized.scheduledEnd ?? undefined;
     } else {
       computedStartAt = data.startAt ? new Date(data.startAt) : undefined;
       computedEndAt = data.endAt ? new Date(data.endAt) : undefined;

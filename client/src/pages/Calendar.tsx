@@ -1742,6 +1742,7 @@ export default function Calendar() {
                       isPastMonth={isPastMonth}
                       isSaving={item._optimistic}
                       summary={item.summary}
+                      rawItem={item}
                     />
                   );
                 }}

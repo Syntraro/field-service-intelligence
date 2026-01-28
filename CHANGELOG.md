@@ -8,6 +8,72 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### Fix jobs_all_day_end_2359_check constraint violation on all-day scheduling
+- **Root cause**: `timestamp without time zone` columns + node-pg Date
+  serialization. The pg driver serializes Date objects using LOCAL time
+  (`date.getHours()`, etc.), not UTC. PostgreSQL strips the timezone offset
+  for `timestamp` columns and stores the local representation. When the
+  server process isn't in UTC, `23:59:59.000Z` gets stored as e.g.
+  `18:59:59` (EST), failing the `AT TIME ZONE 'UTC'` check constraint.
+- **Fix**: Added centralized `sanitizeAllDayTimestamps()` helper in the
+  storage layer that replaces Date objects with UTC-safe SQL expressions
+  (`date.toISOString()::timestamp`) before every DB write. PostgreSQL
+  ignores the Z suffix for `timestamp` columns, storing the literal UTC
+  time values — guaranteeing 00:00:00 start and 23:59:59 end.
+- **Coverage**: Applied to all 4 storage write paths: `scheduleJob`,
+  `scheduleJobBypassWorkingHours`, `rescheduleJob`,
+  `rescheduleJobBypassWorkingHours`.
+- **DEV log**: `[SCHEDULE ALLDAY]` emitted at both the route handler and
+  storage layer before DB write, logging jobId, date, scheduledStart, and
+  scheduledEnd ISO strings.
+- Files: `server/storage/calendar.ts`, `server/routes/calendar.ts`
+
+#### Eliminate useSortable for unscheduled cards — fix silent drag failures
+- **Root cause**: `useSortable` internally registers both a draggable AND a
+  droppable, and its SortableContext lookup silently fails for items whose IDs
+  don't match the context array (e.g., after optimistic dedup or id mutation).
+  This left specific cards (e.g., Basil Box) with inert listeners — pointerdown
+  reached the draggable root but the sensor never activated, triggering the
+  `[DRAG-WARN] pointerdown without drag-start within 250ms` diagnostic.
+- **Fix**: Replaced all `useSortable` usage with a single unconditional
+  `useDraggable` call for ALL items (both calendar and unscheduled). No sentinel
+  IDs needed. No SortableContext dependency for individual items.
+- **Drag rules (Model A)**: Draggable UNLESS `DRAG_ENABLED` is false OR
+  `isSaving` is true. No legacy overdue/assigned/status checks — server rejects
+  invalid drops.
+- **DEV `[UNSCHED-DRAG]` logging**: Every unscheduled card render logs jobId,
+  clientName, disabled state, reason, status, openSubStatus, version,
+  scheduledStart, scheduledEnd, deletedAt, and listener info.
+- **`rawItem` prop**: Calendar.tsx now passes `rawItem={item}` to DraggableClient
+  for comprehensive DEV diagnostic logging.
+- Files: `client/src/components/calendar/DraggableClient.tsx`,
+  `client/src/pages/Calendar.tsx`, `client/src/components/UnscheduledJobsSidebar.tsx`
+
+#### Fix unscheduled cards that won't drag (conditional hooks violation)
+- **Eliminated conditional hook calls**: `DraggableClient.tsx` previously used
+  `inCalendar ? useDraggable() : null` and `!inCalendar ? useSortable() : null`,
+  violating React's rules of hooks. Under StrictMode or concurrent features,
+  some card instances could get mismatched hook state, causing listeners to
+  silently vanish (explaining why cards #2 and #4 specifically failed while
+  others worked). Both hooks are now called unconditionally every render;
+  the unused hook receives a sentinel ID (`__noop_drag_` / `__noop_sort_`
+  prefix) so dnd-kit doesn't register conflicting draggable/sortable entries.
+- **Cursor-grab on unscheduled cards**: `getCursorStyle()` was previously
+  gated behind `${inCalendar ? getCursorStyle() : ""}`, giving unscheduled
+  cards no grab cursor. Now applied unconditionally to all draggable cards.
+- **DEV `onPointerDownCapture` diagnostic**: Unscheduled cards now log
+  `[UNSCHEDULED pointerdown root]` with jobId, disabled state, reason, and
+  target element info on every pointerdown in development mode.
+- **Pointer guards on unscheduled interactive children**: Saving spinner
+  (`Loader2`) and hidden-technician warning (`AlertTriangle`) now have
+  `onPointerDown`/`onMouseDown` stopPropagation to prevent stealing drag.
+- **Click handling fix**: Removed `inCalendar` gate from click predicate —
+  unscheduled cards now properly fire their `onClick` callback.
+- **data-testid consistency**: Unscheduled card testid changed from
+  `unscheduled-client-${client.id}` to `unscheduled-client-${id}` to match
+  the drag ID used by dnd-kit.
+- Files: `client/src/components/calendar/DraggableClient.tsx`
+
 #### Drag-start reliability hardening (Calendar + Unscheduled sidebar)
 - **Drag listeners moved to root element**: In `DraggableClient.tsx`, moved
   `{...listeners}` from a nested child `<div>` to the root draggable container.

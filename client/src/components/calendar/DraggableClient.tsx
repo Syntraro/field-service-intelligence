@@ -1,5 +1,4 @@
 import { useDraggable } from "@dnd-kit/core";
-import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { CheckCircle2, Loader2, AlertTriangle } from "lucide-react";
 import { DRAG_ENABLED, getAssignmentStartMinutes, formatTimeFromMinutes, TechnicianColor } from "./calendarUtils";
@@ -24,6 +23,8 @@ interface DraggableClientProps {
   isSaving?: boolean;
   /** Job summary for unscheduled sidebar display */
   summary?: string;
+  /** Raw item from API — passed through for DEV diagnostic logging */
+  rawItem?: any;
 }
 
 export function DraggableClient({
@@ -43,51 +44,81 @@ export function DraggableClient({
   cardHeight,
   isSaving,
   summary,
+  rawItem,
 }: DraggableClientProps) {
-  // Calendar items: use ONLY useDraggable for unrestricted movement
-  // Unscheduled items: use ONLY useSortable for sorting in panel
-  // Disable dragging while saving to prevent double-mutations
-  const draggableResult = inCalendar
-    ? useDraggable({
-        id,
-        disabled: !DRAG_ENABLED || isSaving,
-        data: { type: "assignment", assignmentId: id },
-      })
-    : null;
+  // ---------------------------------------------------------------------------
+  // Drag disabled computation — Model A rules:
+  //   Draggable UNLESS:  DRAG_ENABLED is false  OR  isSaving is true
+  //   No legacy overdue/assigned/status checks — server rejects invalid drops.
+  // ---------------------------------------------------------------------------
+  const dragDisabled = !DRAG_ENABLED || !!isSaving;
 
-  const sortableResult = !inCalendar ? useSortable({ id, disabled: !DRAG_ENABLED || isSaving }) : null;
-
-  const { attributes, listeners, setNodeRef, transform, isDragging } = (
-    inCalendar ? draggableResult : sortableResult
-  )!;
-
-  // useSortable has transition, useDraggable doesn't
-  const transition = sortableResult?.transition;
+  // ---------------------------------------------------------------------------
+  // Single useDraggable hook for ALL items (calendar + unscheduled).
+  // Previous code used useSortable for unscheduled items inside a
+  // SortableContext, but useSortable registers both a draggable AND a
+  // droppable, and its internal SortableContext lookup silently fails for
+  // items whose IDs don't match the context array (e.g. after optimistic
+  // dedup or id mutation), leaving specific cards with inert listeners.
+  // Using useDraggable directly is simpler and fully reliable.
+  // ---------------------------------------------------------------------------
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    isDragging,
+  } = useDraggable({
+    id,
+    disabled: dragDisabled,
+    data: {
+      type: inCalendar ? "assignment" : "unscheduled",
+      assignmentId: id,
+    },
+  });
 
   const style = {
     transform: CSS.Transform.toString(transform),
-    transition,
     opacity: isDragging ? 0.5 : isSaving ? 0.7 : 1,
   };
+
+  // DEV-only: comprehensive logging per render for every unscheduled card
+  if (process.env.NODE_ENV === 'development' && !inCalendar) {
+    const r = rawItem || {};
+    console.log('[UNSCHED-DRAG]', {
+      jobId: id,
+      clientName: client?.companyName,
+      disabled: dragDisabled,
+      reason: !DRAG_ENABLED
+        ? 'DRAG_ENABLED=false'
+        : isSaving ? 'isSaving' : 'none',
+      status: r.status,
+      openSubStatus: r.openSubStatus,
+      version: r.version,
+      scheduledStart: r.scheduledStart ?? r.startAt,
+      scheduledEnd: r.scheduledEnd ?? r.endAt,
+      deletedAt: r.deletedAt,
+      _optimistic: r._optimistic,
+      hasListeners: !!listeners,
+      listenersKeys: listeners ? Object.keys(listeners) : [],
+    });
+  }
 
   // Card styling: left border for technician color ONLY (not overdue status)
   const getCardStyle = () => {
     const baseStyle = "bg-card border border-border shadow-sm hover:shadow-md";
     if (!inCalendar) {
-      // Unscheduled drawer: neutral border
       return `${baseStyle} border-l-4 border-l-muted-foreground/40`;
     }
-    // Calendar items: technician color on left border
     const completedOpacity = isCompleted ? "opacity-60" : "";
     const savingStyle = isSaving ? "animate-pulse" : "";
     const leftBorder = technicianColor?.borderLeft || "border-l-muted-foreground/40";
     return `${baseStyle} border-l-4 ${leftBorder} ${completedOpacity} ${savingStyle}`;
   };
 
-  // When cardHeight is provided, use full height styling
   const heightStyle = cardHeight ? { height: `${cardHeight}px` } : {};
 
-  // Determine cursor style
+  // Cursor style — applied to ALL cards (calendar + unscheduled)
   const getCursorStyle = () => {
     if (isSaving) return "cursor-wait";
     if (DRAG_ENABLED) return "cursor-grab active:cursor-grabbing";
@@ -117,18 +148,36 @@ export function DraggableClient({
     }
   };
 
+  // DEV-only: log pointerdown on unscheduled cards to confirm event reaches root
+  const handlePointerDownCapture = !inCalendar && process.env.NODE_ENV === 'development'
+    ? (e: React.PointerEvent) => {
+        const target = e.target as HTMLElement;
+        console.log('[UNSCHEDULED pointerdown root]', {
+          jobId: id,
+          disabled: dragDisabled,
+          reason: !DRAG_ENABLED ? 'DRAG_ENABLED=false' : isSaving ? 'isSaving' : 'none',
+          targetTag: target.tagName,
+          targetClass: target.className?.slice?.(0, 80),
+          hasListeners: !!listeners,
+          listenersKeys: listeners ? Object.keys(listeners) : [],
+        });
+      }
+    : undefined;
+
   return (
     <div
       ref={setNodeRef}
       style={{ ...style, ...heightStyle, touchAction: "none" }}
       {...attributes}
-      {...(isSaving ? {} : listeners)} // Drag listeners on ROOT for reliable pointer capture
+      {...(isSaving ? {} : listeners)}
+      onPointerDownCapture={handlePointerDownCapture}
       onClick={(e) => {
-        // Make entire card clickable for opening job detail modal
-        // dnd-kit only starts drag on pointer move, so quick clicks work
-        const clickAllowed = !!(inCalendar && onClick && !isSaving && !isDragging);
+        if (isSaving || isDragging) return;
+        if (onClick) {
+          e.stopPropagation();
+          onClick();
+        }
 
-        // Diagnostics: log click event
         if (isDiagnosticsEnabled()) {
           logClick({
             jobId: assignment?.jobId || id,
@@ -137,19 +186,14 @@ export function DraggableClient({
             isDragging: isDragging || false,
             isSaving: isSaving || false,
             inCalendar: inCalendar || false,
-            clickAllowed,
+            clickAllowed: !!(onClick && !isSaving && !isDragging),
           });
-        }
-
-        if (clickAllowed) {
-          e.stopPropagation();
-          onClick();
         }
       }}
       className={`text-xs rounded transition-all relative select-none group ${
         cardHeight ? "overflow-hidden" : ""
-      } ${densityStyle || (inCalendar ? "py-0.5 px-1.5" : "py-1.5 px-2.5")} ${getCardStyle()} ${inCalendar ? getCursorStyle() : ""}`}
-      data-testid={inCalendar ? `assigned-client-${id}` : `unscheduled-client-${client.id}`}
+      } ${densityStyle || (inCalendar ? "py-0.5 px-1.5" : "py-1.5 px-2.5")} ${getCardStyle()} ${getCursorStyle()}`}
+      data-testid={inCalendar ? `assigned-client-${id}` : `unscheduled-client-${id}`}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
@@ -157,23 +201,22 @@ export function DraggableClient({
         {/* In Calendar: Jobber-style readable layout for week/day view */}
         {inCalendar ? (
           <div className="flex flex-col min-h-0 overflow-hidden">
-            {/* Line 1: Client name (job # removed per UX feedback - shown in popover/dialog instead) */}
             <div className="flex items-center gap-1 min-w-0">
-              {/* Saving spinner */}
               {isSaving && (
                 <Loader2 className="h-3 w-3 text-primary animate-spin flex-shrink-0" />
               )}
-              {/* Completed icon only (overdue icon removed - shown in popover/dialog instead) */}
               {!isSaving && isCompleted && (
                 <CheckCircle2 className="h-3 w-3 text-green-600 flex-shrink-0" />
               )}
-              {/* Hidden technician warning - job assigned to non-schedulable tech */}
               {!isSaving && assignment?.hasHiddenTechnician && (
-                <span title="Assigned to hidden/non-schedulable technician">
+                <span
+                  title="Assigned to hidden/non-schedulable technician"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
                   <AlertTriangle className="h-3 w-3 text-amber-500 flex-shrink-0" />
                 </span>
               )}
-              {/* Client name - fills remaining space */}
               <span
                 className={`font-medium text-[12px] leading-tight truncate min-w-0 flex-1 ${
                   isCompleted ? "line-through opacity-60" : "text-foreground"
@@ -182,7 +225,6 @@ export function DraggableClient({
                 {client.companyName}
               </span>
             </div>
-            {/* Line 2: Time range + location/summary - only if tall enough */}
             {cardHeight && cardHeight > 28 && (
               <div className={`text-[11px] leading-tight text-muted-foreground truncate mt-0.5 ${isCompleted ? "opacity-60" : ""}`}>
                 {assignment && assignment.scheduledHour !== null && assignment.scheduledHour !== undefined ? (
@@ -201,19 +243,23 @@ export function DraggableClient({
             )}
           </div>
         ) : (
-          /* Unscheduled drawer: Stacked layout - client name, summary, location */
+          /* Unscheduled drawer: Stacked layout */
           <div className="space-y-0.5">
-            {/* Line 1: Client name */}
             <div className="flex items-start gap-1">
+              {isSaving && (
+                <Loader2
+                  className="h-3 w-3 text-primary animate-spin flex-shrink-0 mt-0.5"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                />
+              )}
               <div className="font-semibold text-[12px] leading-[1.2] truncate flex-1 min-w-0">
                 {client.companyName}
               </div>
             </div>
-            {/* Line 2: Job summary (parity with scheduled card content) */}
             {summary && (
               <div className="text-[11px] text-muted-foreground/80 leading-[1.2] truncate">{summary}</div>
             )}
-            {/* Line 3: Location info */}
             {client.location && (
               <div className="text-[12px] text-muted-foreground leading-[1.2] truncate">{client.location}</div>
             )}

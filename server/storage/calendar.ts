@@ -29,6 +29,58 @@ import {
 } from "../domain/scheduling";
 
 // ============================================================================
+// All-Day UTC Timestamp Sanitization
+// ============================================================================
+//
+// node-pg serializes Date objects in LOCAL time (date.getHours(), etc.),
+// which for `timestamp without time zone` columns causes PostgreSQL to
+// store the local representation — breaking UTC-based CHECK constraints
+// (jobs_all_day_start_midnight_check, jobs_all_day_end_2359_check).
+//
+// These helpers bypass Date serialization by passing the ISO string directly.
+// PostgreSQL ignores the 'Z' suffix for `timestamp` columns and stores the
+// literal time values, guaranteeing 00:00:00 start and 23:59:59 end.
+// ============================================================================
+
+/**
+ * Convert a Date to a UTC-safe Drizzle SQL expression for timestamp columns.
+ * Uses toISOString() (always UTC) cast to ::timestamp, bypassing pg's
+ * local-timezone Date serialization.
+ */
+function forceUTCTimestamp(date: Date) {
+  return sql`${date.toISOString()}::timestamp`;
+}
+
+/**
+ * Sanitize updateData in-place: replace Date objects with UTC-safe SQL
+ * expressions for scheduledStart/scheduledEnd when isAllDay=true.
+ *
+ * MUST be called right before every DB write that may set all-day timestamps.
+ * Emits a DEV log for observability.
+ */
+function sanitizeAllDayTimestamps(updateData: any, jobId: string): void {
+  if (updateData.isAllDay !== true) return;
+
+  const startDate = updateData.scheduledStart instanceof Date ? updateData.scheduledStart : null;
+  const endDate = updateData.scheduledEnd instanceof Date ? updateData.scheduledEnd : null;
+
+  if (startDate) {
+    updateData.scheduledStart = forceUTCTimestamp(startDate);
+  }
+  if (endDate) {
+    updateData.scheduledEnd = forceUTCTimestamp(endDate);
+  }
+
+  if (process.env.NODE_ENV === 'development') {
+    console.log('[SCHEDULE ALLDAY]', {
+      jobId,
+      scheduledStart: startDate?.toISOString() ?? 'null',
+      scheduledEnd: endDate?.toISOString() ?? 'null',
+    });
+  }
+}
+
+// ============================================================================
 // CANONICAL SCHEDULING MODEL
 // ============================================================================
 //
@@ -618,6 +670,9 @@ export class CalendarRepository extends BaseRepository {
       updateData.description = data.notes;
     }
 
+    // Sanitize all-day timestamps for UTC-safe DB write
+    sanitizeAllDayTimestamps(updateData, data.jobId);
+
     // ATOMIC: Wrap update + audit in transaction
     const result = await db.transaction(async (tx) => {
       const rows = await tx
@@ -749,6 +804,9 @@ export class CalendarRepository extends BaseRepository {
     if (data.notes !== undefined) {
       updateData.description = data.notes;
     }
+
+    // Sanitize all-day timestamps for UTC-safe DB write
+    sanitizeAllDayTimestamps(updateData, jobId);
 
     // ATOMIC: Wrap update + audit in transaction
     const result = await db.transaction(async (tx) => {
@@ -988,6 +1046,9 @@ export class CalendarRepository extends BaseRepository {
     if (data.notes) {
       updateData.description = data.notes;
     }
+
+    // Sanitize all-day timestamps for UTC-safe DB write
+    sanitizeAllDayTimestamps(updateData, data.jobId);
 
     // DIRECT DB WRITE - NO VALIDATION
     const rows = await db
@@ -1332,6 +1393,9 @@ export class CalendarRepository extends BaseRepository {
     if (data.notes !== undefined) {
       updateData.description = data.notes;
     }
+
+    // Sanitize all-day timestamps for UTC-safe DB write
+    sanitizeAllDayTimestamps(updateData, jobId);
 
     // DIRECT DB WRITE - NO VALIDATION
     const rows = await db
