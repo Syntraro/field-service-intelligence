@@ -6,7 +6,264 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+#### Unscheduled Sidebar Card Styling (2026-01-29)
+
+- **Improvement**: Unified unscheduled sidebar job card styling to match calendar cards
+- **Changes**:
+  - Consistent flex layout structure (`flex flex-col min-h-0 overflow-hidden`)
+  - Font weight changed from `font-semibold` to `font-medium` (matches calendar cards)
+  - Line height changed from `leading-[1.2]` to `leading-tight` (consistent spacing)
+  - Simplified two-line layout: company name + summary/location
+- **Files Modified**:
+  - `client/src/components/calendar/DraggableClient.tsx` (unscheduled layout block)
+
 ### Fixed
+
+#### Weekly Technician View Drag-and-Drop (2026-01-29)
+
+- **Bug**: Drag-and-drop on weekly technician view was broken - jobs would automatically move to 'unscheduled' regardless of drop target
+- **Root Cause**: The `handleDragEnd` function in Calendar.tsx was missing a handler for the `techweek|` drop zone ID pattern
+- **Fixes**:
+  - Added `techweek|` handler to parse target format `techweek|{techId}|{YYYY-MM-DD}`
+  - Added `technicianUserId` field to `CreateAssignmentParams` type in useCalendarDnD.ts
+  - Added `'techweek'` to `DragLogData.targetType` union in calendarDiagnostics.ts
+  - Updated `getTargetType()` to recognize `techweek|` prefix
+- **Files Modified**:
+  - `client/src/pages/Calendar.tsx` (techweek handler in handleDragEnd, getTargetType update)
+  - `client/src/hooks/useCalendarDnD.ts` (technicianUserId in CreateAssignmentParams + mutationFn)
+  - `client/src/lib/calendarDiagnostics.ts` (techweek in DragLogData.targetType)
+
+### Added
+
+#### Jobber-style Day View Grid (CalendarGridDayJobber)
+
+- **Feature**: Replaced the Day view with a proper Jobber-style dispatch grid layout
+- **Layout**:
+  - Technician columns (Unassigned + each visible tech) with sticky headers
+  - Time rail on the left (24 hours)
+  - All-day/Anytime lane under header with proper droppable IDs
+  - Visit count badges showing number of active visits per technician
+  - Jobs positioned as blocks based on minutes-from-midnight, sized by duration
+  - Events can span multiple hours visually
+- **Drag/Drop**:
+  - 15-minute drop zones throughout the grid
+  - Drag between tech columns to reassign
+  - Drag to all-day lane to schedule as all-day event
+  - All-day lane droppable ID format: `allday|{techIdOrUnassigned}|{YYYY-MM-DD}`
+- **Business Hours**:
+  - Hours outside business hours greyed out (visual only, scheduling still allowed)
+  - Auto-scroll to business hours start on mount
+  - DEV badge showing current business hours for debugging
+- **Files**:
+  - `client/src/components/calendar/CalendarGridDayJobber.tsx` (NEW - main component)
+  - `client/src/components/calendar/index.ts` (export new component)
+  - `client/src/pages/Calendar.tsx` (wire up new component, add day-allday drop handling)
+  - `client/src/lib/calendarDiagnostics.ts` (add 'day-allday' target type)
+
+#### Calendar Drag & Drop Automated Tests
+
+- **Feature**: Added comprehensive automated tests for calendar drag & drop operations
+- **Tests cover**:
+  - Schedule job (drag from unscheduled sidebar to calendar)
+  - Reschedule job (drag to new date/time, different day)
+  - Change technician (drag to different tech column)
+  - Unassign technician (drag to "Unassigned" column)
+  - Unschedule job (drag back to unscheduled sidebar)
+  - Version mismatch handling (optimistic locking)
+  - All-day event scheduling (schedule as all-day, convert timed↔all-day)
+  - Combined operations (reschedule + reassign in single update)
+- **All-day UTC helpers**: Added `createAllDayStartUTC()` and `createAllDayEndUTC()` helper functions to construct proper UTC timestamps for all-day events (avoids timezone issues with `setHours()`)
+- **Files**:
+  - `tests/calendar-drag-drop.test.ts` (NEW - 14 tests, all passing)
+
+#### Company Business Hours (Table-backed) + Settings UI + Day View Integration
+
+- **Feature**: Company-wide business hours stored per-tenant, one row per weekday (7 rows per company)
+- **Database**: New `company_business_hours` table with columns:
+  - `id` (UUID PK)
+  - `company_id` (FK to companies)
+  - `day_of_week` (0=Sunday...6=Saturday)
+  - `is_open` (boolean)
+  - `start_minutes`, `end_minutes` (minutes from midnight, 0-1440)
+  - Constraints enforce closed days have null times, open days have valid times with end > start
+- **Migration**: `migrations/2026_01_28_add_company_business_hours.sql`
+  - Seeds defaults for existing companies: Mon-Fri 06:00-16:30, Sat-Sun closed
+  - Idempotent via `ON CONFLICT DO NOTHING`
+- **API Endpoints**:
+  - `GET /api/company/business-hours` - Returns all 7 days
+  - `PUT /api/company/business-hours` - Updates all 7 days (manager+ role required)
+- **Settings UI**: New `/settings/business-hours` page with:
+  - Open/closed toggle per day
+  - Time pickers in 15-minute increments
+  - Settings card added to main Settings page with clock icon
+- **Day View Calendar Integration**:
+  - Hours outside business hours are greyed out (subtle `bg-muted/40` background)
+  - Auto-scroll to business start on mount (30 minutes padding)
+  - Scheduling still allowed in grey hours (no enforcement)
+- Files:
+  - `migrations/2026_01_28_add_company_business_hours.sql` (NEW)
+  - `shared/schema.ts` (companyBusinessHours table + types)
+  - `server/storage/businessHours.ts` (NEW - repository)
+  - `server/storage/index.ts` (register repository)
+  - `server/routes/businessHours.ts` (NEW - API routes)
+  - `server/routes/index.ts` (mount routes)
+  - `client/src/pages/BusinessHoursSettingsPage.tsx` (NEW - settings UI)
+  - `client/src/pages/SettingsPage.tsx` (add card)
+  - `client/src/App.tsx` (add route)
+  - `client/src/pages/Calendar.tsx` (fetch + pass business hours)
+  - `client/src/components/calendar/CalendarGridDay.tsx` (grey-out + auto-scroll)
+
+### Added
+
+#### Hover preview on all calendar views
+
+- **Feature**: Added consistent hover preview across all calendar views
+- **Consistency**: Same hover preview dialog now appears everywhere:
+  - Monthly view (fixed - CalendarEventChip now forwards ref and spreads props)
+  - Weekly view (already had it)
+  - Weekly technician view (NEW - added DraggableTechJobCard component)
+  - Daily view (already had it)
+- **Files changed**:
+  - `client/src/components/calendar/CalendarGridWeekTechnicians.tsx`:
+    - Added `DraggableTechJobCard` component with `useDraggable` + `EventPreviewPopover`
+    - Job cards are now draggable (were previously static divs)
+    - Updated TechnicianDayDropZone and UnassignedDayDropZone to use new component
+  - `client/src/components/calendar/CalendarEventChip.tsx`:
+    - Convert to forwardRef to fix HoverCardTrigger compatibility
+    - Accept and spread additional HTML props (onMouseEnter, onMouseLeave, etc.)
+    - Merge external styles and className with internal ones
+
+### Changed
+
+#### Unified JobCard component for all calendar contexts
+
+- **Refactor**: Created shared `JobCard` component used across all three job card contexts:
+  - Scheduled timed jobs (via `ResizableJobCard` wrapper)
+  - All-day jobs in the all-day lane
+  - Unscheduled jobs in the sidebar
+- **Benefits**:
+  - Single source of truth for job card UI (hover preview, quick actions, styling)
+  - Future changes automatically apply to all contexts
+  - Reduced code duplication (~90 lines removed)
+- **Component hierarchy**:
+  - `JobCard` - Wraps `DraggableClient` with `EventPreviewPopover` and quick action buttons
+  - `ResizableJobCard` - Uses `JobCard` internally, adds resize handle for timed events
+  - All-day lane and unscheduled sidebar use `JobCard` directly
+- **Files**:
+  - `client/src/components/calendar/JobCard.tsx` (NEW - unified job card)
+  - `client/src/components/calendar/ResizableJobCard.tsx` (refactored to use JobCard)
+  - `client/src/components/calendar/CalendarGridDayJobber.tsx` (use JobCard for all-day lane)
+  - `client/src/components/calendar/CalendarGridWeek.tsx` (use JobCard for all-day row)
+  - `client/src/components/calendar/index.ts` (export JobCard)
+  - `client/src/pages/Calendar.tsx` (use JobCard for unscheduled sidebar)
+
+### Fixed
+
+#### All-day cards missing job description text
+
+- **Bug**: All-day job cards only showed client name, missing the job description/summary text that appears on timed job cards
+- **Root cause**: `DraggableClient` only rendered the second line (summary/location) when `cardHeight > 28`, but all-day cards didn't pass a `cardHeight` prop
+- **Fix**: Changed condition from `cardHeight && cardHeight > 28` to `cardHeight === undefined || cardHeight > 28` so the second line renders by default unless explicitly constrained by a small card height
+- **Files changed**:
+  - `client/src/components/calendar/DraggableClient.tsx` - Fix second line visibility condition
+
+#### Unscheduled jobs missing hover preview and wrong click behavior
+
+- **Bug**: Jobs in the Unscheduled sidebar didn't show the hover preview popover, and clicking them opened a different dialog instead of the Job Detail dialog
+- **Root cause**: Unscheduled job rendering was missing `EventPreviewPopover` wrapper and using `setReportDialogClientId` instead of `handleClientClick`
+- **Fix**:
+  - Wrapped unscheduled `DraggableClient` with `EventPreviewPopover` for hover preview
+  - Changed onClick handler to use `handleClientClick(clientData, item, true)` which opens JobDetailDialog focused on schedule section
+- **Files changed**:
+  - `client/src/pages/Calendar.tsx` - Import EventPreviewPopover, wrap unscheduled items, fix click handler
+
+#### All-day job cards missing quick action buttons
+
+- **Bug**: All-day job cards in the day view didn't have the reschedule/unschedule quick action buttons that timed job cards have
+- **Fix**: Created `AllDayJobCard` component that matches `ResizableJobCard` functionality (minus resize handle):
+  - Hover preview via `EventPreviewPopover`
+  - Quick action buttons on hover (reschedule, unschedule)
+  - Same visual styling as timed job cards for consistency
+- **Files changed**:
+  - `client/src/components/calendar/CalendarGridDayJobber.tsx` - Add `AllDayJobCard` component, use it in all-day lane
+
+#### Technician assignment from calendar failing with "Required at 'version'" validation error
+
+- **Bug**: Assigning a technician to a job from the calendar page failed with validation error because the API requires a `version` field for optimistic locking, but the client wasn't sending it
+- **Root cause**: The `assignTechnicians.mutate()` calls weren't including the job's version field
+- **Fix**:
+  - Added `technicianUserId` field to `UpdateAssignmentParams` interface in `useCalendarDnD.ts`
+  - Updated `updateAssignment` mutation to include `technicianUserId` in the API payload
+  - Updated drag/drop handlers to include `technicianUserId` in the update mutation (single atomic call instead of two separate calls)
+  - Updated `onAssignTechnicians` callback to pass version from `selectedAssignment`
+- **Files changed**:
+  - `client/src/hooks/useCalendarDnD.ts` - Add technicianUserId to UpdateAssignmentParams and mutation payload
+  - `client/src/pages/Calendar.tsx` - Update drag/drop handlers and JobDetailDialog callback
+
+#### Version error flash + double API call when assigning technician from JobDetailDialog
+
+- **Bug**: When assigning a technician from the job detail dialog, there was a brief flash of "Required at 'version'" error, but the assignment would then succeed
+- **Root cause**: `handleTechnicianToggle` in JobDetailDialog was making TWO API calls:
+  1. `assignTechnicianMutation.mutate()` - without version field (caused error)
+  2. `onAssignTechnicians()` callback - triggered a second call from Calendar.tsx (with version, succeeded)
+- **Fix**:
+  - Added `version` field to `assignTechnicianMutation` in JobDetailDialog (now included in API payload)
+  - Removed redundant `onAssignTechnicians` callback call - the internal mutation now handles everything
+- **Files changed**:
+  - `client/src/components/JobDetailDialog.tsx` - Add version to mutation, remove duplicate callback
+
+#### Cannot unassign technician (move job to "Unassigned" column)
+
+- **Bug**: Dragging a job to the "Unassigned" column in day view didn't actually remove the technician assignment
+- **Root cause**: When `technicianId === 'unassigned'`, the code set `technicianUserId: undefined` which meant it wasn't included in the API payload at all
+- **Fix**: Changed `undefined` to `null` when unassigning - `null` explicitly tells the server to remove the technician
+- **Files changed**:
+  - `client/src/pages/Calendar.tsx` - Change `technicianUserId: undefined` to `technicianUserId: null` for unassign case
+
+#### Calendar drag/drop feels sluggish (waiting for API response)
+
+- **Bug**: Moving jobs on the calendar felt slow because the UI waited for the API response before updating
+- **Root cause**:
+  - `onSuccess` handlers used `await refetchCalendar()` which blocked the toast until refetch completed
+  - `updateAssignment.onMutate` didn't update technician fields in optimistic update
+  - `createAssignment.onMutate` didn't remove jobs from unscheduled sidebar optimistically
+- **Fix**: Improved optimistic updates for instant visual feedback:
+  - **updateAssignment**: Now includes technician fields (`assignedTechnicianId`, `assignedTechnicianIds`) in optimistic update for instant technician changes
+  - **createAssignment**: Now removes job from unscheduled sidebar immediately when scheduling, includes client metadata for visual display
+  - **All mutations**: Show success toast immediately, refetch calendar in background without blocking
+  - Proper rollback on error restores both calendar and unscheduled sidebar state
+- **Files changed**:
+  - `client/src/hooks/useCalendarDnD.ts` - Enhanced optimistic updates and async refetch
+
+#### Remove legacy `assignment.year`/`assignment.month` fallbacks causing "Invalid time value" errors
+
+- **Bug**: JobDetailDialog and other components crashed with "Invalid time value" when using legacy fallback `${assignment.year}-${assignment.month}-01` because these fields no longer exist in canonical model
+- **Fix**: Replaced all references to `assignment.year`, `assignment.month`, `assignment.day` with canonical date fields (`scheduledDate`, `date`, or parsed from `startAt`)
+- **Files changed**:
+  - `client/src/components/JobDetailDialog.tsx` - Remove legacy fallback in "Created" display
+  - `client/src/pages/Calendar.tsx` - Update `calculatePartsWithDates`, `allWeekEvents` filter, old items dialog, unscheduled sidebar
+  - `client/src/App.tsx` - Update `totalOverdueCount` filter for unscheduled backlog
+- **Note**: The normalized `CalendarEvent` type still has `year`/`month`/`day` fields (these are derived from canonical fields during normalization and are valid)
+
+#### Day View calendar crash due to UUID delimiter collision
+
+- **Bug**: Day View calendar crashed in development mode when technicians had UUID IDs
+- **Root cause**: Droppable IDs used `-` as delimiter (e.g., `daily-a20dcc3d-d306-49a8-8b2a-c26838f43069-0-0-28-0-2026`), but UUIDs also contain dashes. When split by `-`, this produced 11 segments instead of the expected 7, triggering a validation error.
+- **Fix**: Changed delimiter from `-` to `|` for all calendar droppable IDs (daily, weekly, allday, techweek). Now IDs like `daily|a20dcc3d-d306-49a8-8b2a-c26838f43069|0|0|28|0|2026` split correctly into 7 segments.
+- **Change scope**:
+  - ID builders in `CalendarGridDay.tsx`, `CalendarGridWeek.tsx`, `CalendarGridWeekTechnicians.tsx`
+  - ID parsers in `Calendar.tsx`
+  - Collision detection and target type detection in `Calendar.tsx`
+- Files: `client/src/components/calendar/CalendarGridDay.tsx`, `client/src/components/calendar/CalendarGridWeek.tsx`, `client/src/components/calendar/CalendarGridWeekTechnicians.tsx`, `client/src/pages/Calendar.tsx`
+
+#### All-day constraint violation on Jobs API write paths
+
+- **Bug**: `POST /api/jobs` and `PATCH /api/jobs/:id` could violate the `jobs_all_day_end_2359_check` PostgreSQL CHECK constraint when creating or updating all-day jobs
+- **Root cause**: The Jobs storage layer (`createJob()`, `updateJob()`) did not call `sanitizeAllDayTimestamps()` before DB writes. The node-pg driver serializes JavaScript Date objects using local-timezone getters, which can produce incorrect timestamp values on non-UTC servers — breaking the constraint that requires `scheduledEnd` to be exactly `23:59:59` for all-day events
+- **Fix**: Extracted `sanitizeAllDayTimestamps()`, `forceUTCTimestamp()`, and `assertAllDayUTCBoundaries()` from `server/storage/calendar.ts` into a shared utility (`server/utils/allDaySanitizer.ts`). Both calendar and jobs storage layers now import from the same utility. Added sanitization calls in `createJob()` and `updateJob()` right before the DB write.
+- Files: `server/utils/allDaySanitizer.ts` (NEW), `server/storage/calendar.ts`, `server/storage/jobs.ts`
 
 #### Timezone confirmation modal can't be dismissed (Prompt 5)
 

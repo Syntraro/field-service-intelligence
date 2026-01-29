@@ -228,7 +228,8 @@ export function DraggableClient({
                 {client.companyName}
               </span>
             </div>
-            {cardHeight && cardHeight > 28 && (
+            {/* Show second line (summary/location) unless card is too short */}
+            {(cardHeight === undefined || cardHeight > 28) && (
               <div className={`text-[11px] leading-tight text-muted-foreground truncate mt-0.5 ${isCompleted ? "opacity-60" : ""}`}>
                 {assignment && assignment.scheduledHour !== null && assignment.scheduledHour !== undefined ? (
                   (() => {
@@ -246,25 +247,21 @@ export function DraggableClient({
             )}
           </div>
         ) : (
-          /* Unscheduled drawer: Stacked layout */
-          <div className="space-y-0.5">
-            <div className="flex items-start gap-1">
+          /* Unscheduled drawer: Consistent layout with calendar cards (2026-01-29) */
+          <div className="flex flex-col min-h-0 overflow-hidden">
+            <div className="flex items-center gap-1 min-w-0">
               {isSaving && (
-                <Loader2
-                  className="h-3 w-3 text-primary animate-spin flex-shrink-0 mt-0.5"
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onMouseDown={(e) => e.stopPropagation()}
-                />
+                <Loader2 className="h-3 w-3 text-primary animate-spin flex-shrink-0" />
               )}
-              <div className="font-semibold text-[12px] leading-[1.2] truncate flex-1 min-w-0">
+              <span className="font-medium text-[12px] leading-tight truncate min-w-0 flex-1 text-foreground">
                 {client.companyName}
-              </div>
+              </span>
             </div>
-            {summary && (
-              <div className="text-[11px] text-muted-foreground/80 leading-[1.2] truncate">{summary}</div>
-            )}
-            {client.location && (
-              <div className="text-[12px] text-muted-foreground leading-[1.2] truncate">{client.location}</div>
+            {/* Secondary line: summary or location */}
+            {(summary || client.location) && (
+              <div className="text-[11px] leading-tight text-muted-foreground truncate mt-0.5">
+                {summary || client.location}
+              </div>
             )}
           </div>
         )}
