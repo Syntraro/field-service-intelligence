@@ -1,0 +1,829 @@
+/**
+ * Recurring Jobs Page
+ *
+ * Manage recurring job templates and generate future job instances.
+ */
+
+import { useState } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { queryClient, apiRequest } from "@/lib/queryClient";
+import { useAuth } from "@/lib/auth";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
+import { useToast } from "@/hooks/use-toast";
+import { Plus, Pencil, Trash2, RefreshCw, Calendar, Clock, List, ExternalLink, Ban, SkipForward } from "lucide-react";
+import { Link } from "wouter";
+
+// Types
+interface RecurringTemplate {
+  id: string;
+  title: string;
+  description: string | null;
+  locationId: string | null;
+  recurrenceKind: "weekly" | "monthly";
+  interval: number;
+  daysOfWeek: number[] | null;
+  dayOfMonth: number | null;
+  startDate: string;
+  endDate: string | null;
+  openSubStatusDefault: string | null;
+  isActive: boolean;
+  createdAt: string;
+}
+
+interface Location {
+  id: string;
+  companyName: string;
+  address: string | null;
+}
+
+interface GenerationResult {
+  templatesProcessed: number;
+  instancesCreated: number;
+  jobsCreated: number;
+  errors: string[];
+}
+
+interface PreviewResult {
+  activeTemplates: number;
+  pendingInstances: number;
+  newInstancesWouldCreate: number;
+  jobsWouldCreate: number;
+  windowDays: number;
+}
+
+interface InstanceWithJob {
+  id: string;
+  instanceDate: string;
+  status: string;
+  generatedJobId: string | null;
+  claimedAt: string | null;
+  createdAt: string;
+  job: {
+    id: string;
+    jobNumber: number;
+    summary: string;
+    status: string;
+  } | null;
+}
+
+// Day of week labels
+const DAYS_OF_WEEK = [
+  { value: 0, label: "Sun" },
+  { value: 1, label: "Mon" },
+  { value: 2, label: "Tue" },
+  { value: 3, label: "Wed" },
+  { value: 4, label: "Thu" },
+  { value: 5, label: "Fri" },
+  { value: 6, label: "Sat" },
+];
+
+export default function RecurringJobsPage() {
+  const { toast } = useToast();
+  const { user } = useAuth();
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [editingTemplate, setEditingTemplate] = useState<RecurringTemplate | null>(null);
+  const [viewingTemplate, setViewingTemplate] = useState<RecurringTemplate | null>(null);
+  const [lastGenerationResult, setLastGenerationResult] = useState<GenerationResult | null>(null);
+
+  // Check if user can edit (owner, admin, dispatcher)
+  const canEdit = user?.role && ["owner", "admin", "dispatcher"].includes(user.role);
+
+  // Form state
+  const [formData, setFormData] = useState({
+    title: "",
+    description: "",
+    locationId: "",
+    recurrenceKind: "weekly" as "weekly" | "monthly",
+    interval: 1,
+    daysOfWeek: [] as number[],
+    dayOfMonth: 1,
+    startDate: new Date().toISOString().split("T")[0],
+    endDate: "",
+    openSubStatusDefault: null as string | null,
+  });
+
+  // Fetch templates
+  const { data: templates = [], isLoading } = useQuery<RecurringTemplate[]>({
+    queryKey: ["/api/recurring-templates"],
+  });
+
+  // Fetch locations for dropdown
+  const { data: locations = [] } = useQuery<Location[]>({
+    queryKey: ["/api/clients"],
+  });
+
+  // Fetch preview counts (what would be generated)
+  const { data: previewData } = useQuery<PreviewResult>({
+    queryKey: ["/api/recurring-templates/preview"],
+    refetchInterval: 60000, // Refresh every minute
+  });
+
+  // Create template mutation
+  const createMutation = useMutation({
+    mutationFn: async (data: typeof formData) => {
+      return apiRequest("/api/recurring-templates", {
+        method: "POST",
+        body: JSON.stringify({
+          ...data,
+          locationId: data.locationId || null,
+          endDate: data.endDate || null,
+          daysOfWeek: data.recurrenceKind === "weekly" ? data.daysOfWeek : null,
+          dayOfMonth: data.recurrenceKind === "monthly" ? data.dayOfMonth : null,
+        }),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
+      setShowCreateDialog(false);
+      resetForm();
+      toast({ title: "Template created", description: "Recurring job template has been created." });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to create template",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Update template mutation
+  const updateMutation = useMutation({
+    mutationFn: async ({ id, data }: { id: string; data: typeof formData }) => {
+      return apiRequest(`/api/recurring-templates/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          ...data,
+          locationId: data.locationId || null,
+          endDate: data.endDate || null,
+          daysOfWeek: data.recurrenceKind === "weekly" ? data.daysOfWeek : null,
+          dayOfMonth: data.recurrenceKind === "monthly" ? data.dayOfMonth : null,
+        }),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
+      setEditingTemplate(null);
+      resetForm();
+      toast({ title: "Template updated", description: "Recurring job template has been updated." });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to update template",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Delete template mutation
+  const deleteMutation = useMutation({
+    mutationFn: async (id: string) => {
+      return apiRequest(`/api/recurring-templates/${id}`, { method: "DELETE" });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
+      toast({ title: "Template deactivated", description: "Template has been deactivated." });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to deactivate template",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Generate jobs mutation
+  const generateMutation = useMutation({
+    mutationFn: async (windowDays: number = 45) => {
+      return apiRequest(`/api/recurring-templates/generate?windowDays=${windowDays}`, {
+        method: "POST",
+      });
+    },
+    onSuccess: (result: GenerationResult) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates/preview"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+      setLastGenerationResult(result);
+      toast({
+        title: "Jobs generated",
+        description: `Created ${result.jobsCreated} jobs from ${result.templatesProcessed} templates.`,
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to generate jobs",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Compute date range for instances (today to 60 days ahead)
+  const today = new Date().toISOString().split("T")[0];
+  const sixtyDaysAhead = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+
+  // Fetch instances for selected template
+  const { data: instances = [], isLoading: instancesLoading } = useQuery<InstanceWithJob[]>({
+    queryKey: [`/api/recurring-templates/${viewingTemplate?.id}/instances`, { from: today, to: sixtyDaysAhead }],
+    queryFn: async () => {
+      if (!viewingTemplate) return [];
+      const res = await fetch(`/api/recurring-templates/${viewingTemplate.id}/instances?from=${today}&to=${sixtyDaysAhead}`);
+      if (!res.ok) throw new Error("Failed to fetch instances");
+      return res.json();
+    },
+    enabled: !!viewingTemplate,
+  });
+
+  // Skip instance mutation
+  const skipInstanceMutation = useMutation({
+    mutationFn: async (instanceId: string) => {
+      return apiRequest(`/api/recurring-templates/instances/${instanceId}/skip`, {
+        method: "POST",
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/recurring-templates/${viewingTemplate?.id}/instances`] });
+      toast({ title: "Instance skipped", description: "The instance has been skipped." });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to skip instance",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Cancel instance mutation
+  const cancelInstanceMutation = useMutation({
+    mutationFn: async (instanceId: string) => {
+      return apiRequest(`/api/recurring-templates/instances/${instanceId}/cancel`, {
+        method: "POST",
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/recurring-templates/${viewingTemplate?.id}/instances`] });
+      toast({ title: "Instance canceled", description: "The instance has been canceled." });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to cancel instance",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const resetForm = () => {
+    setFormData({
+      title: "",
+      description: "",
+      locationId: "",
+      recurrenceKind: "weekly",
+      interval: 1,
+      daysOfWeek: [],
+      dayOfMonth: 1,
+      startDate: new Date().toISOString().split("T")[0],
+      endDate: "",
+      openSubStatusDefault: null,
+    });
+  };
+
+  const openEditDialog = (template: RecurringTemplate) => {
+    setEditingTemplate(template);
+    setFormData({
+      title: template.title,
+      description: template.description || "",
+      locationId: template.locationId || "",
+      recurrenceKind: template.recurrenceKind,
+      interval: template.interval,
+      daysOfWeek: template.daysOfWeek || [],
+      dayOfMonth: template.dayOfMonth || 1,
+      startDate: template.startDate,
+      endDate: template.endDate || "",
+      openSubStatusDefault: template.openSubStatusDefault,
+    });
+  };
+
+  const handleSubmit = () => {
+    if (editingTemplate) {
+      updateMutation.mutate({ id: editingTemplate.id, data: formData });
+    } else {
+      createMutation.mutate(formData);
+    }
+  };
+
+  const toggleDayOfWeek = (day: number) => {
+    setFormData((prev) => ({
+      ...prev,
+      daysOfWeek: prev.daysOfWeek.includes(day)
+        ? prev.daysOfWeek.filter((d) => d !== day)
+        : [...prev.daysOfWeek, day].sort(),
+    }));
+  };
+
+  const formatRecurrence = (template: RecurringTemplate) => {
+    if (template.recurrenceKind === "weekly") {
+      const days = (template.daysOfWeek || [])
+        .map((d) => DAYS_OF_WEEK.find((day) => day.value === d)?.label)
+        .filter(Boolean)
+        .join(", ");
+      return template.interval === 1
+        ? `Weekly on ${days}`
+        : `Every ${template.interval} weeks on ${days}`;
+    } else {
+      return template.interval === 1
+        ? `Monthly on day ${template.dayOfMonth}`
+        : `Every ${template.interval} months on day ${template.dayOfMonth}`;
+    }
+  };
+
+  const getInstanceStatusVariant = (status: string): "default" | "secondary" | "destructive" | "outline" => {
+    switch (status) {
+      case "generated":
+        return "default";
+      case "pending":
+        return "secondary";
+      case "claiming":
+        return "outline";
+      case "skipped":
+      case "canceled":
+        return "destructive";
+      default:
+        return "secondary";
+    }
+  };
+
+  const isDialogOpen = showCreateDialog || editingTemplate !== null;
+
+  return (
+    <div className="container mx-auto py-6 space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold">Recurring Jobs</h1>
+          <p className="text-muted-foreground">
+            Manage recurring job templates and generate backlog jobs automatically.
+          </p>
+        </div>
+        <div className="flex items-center gap-4">
+          {canEdit && previewData && previewData.jobsWouldCreate > 0 && (
+            <span className="text-sm text-muted-foreground">
+              {previewData.jobsWouldCreate} job{previewData.jobsWouldCreate !== 1 ? "s" : ""} ready to generate
+            </span>
+          )}
+          {canEdit && (
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={() => generateMutation.mutate(45)}
+                disabled={generateMutation.isPending}
+              >
+                <RefreshCw className={`h-4 w-4 mr-2 ${generateMutation.isPending ? "animate-spin" : ""}`} />
+                Generate Next 45 Days
+              </Button>
+              <Button onClick={() => setShowCreateDialog(true)}>
+                <Plus className="h-4 w-4 mr-2" />
+                New Template
+              </Button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Last generation result */}
+      {lastGenerationResult && (
+        <Card>
+          <CardContent className="py-4">
+            <div className="flex items-center gap-4 text-sm">
+              <span className="font-medium">Last Generation:</span>
+              <Badge variant="secondary">{lastGenerationResult.templatesProcessed} templates</Badge>
+              <Badge variant="secondary">{lastGenerationResult.instancesCreated} instances</Badge>
+              <Badge variant="default">{lastGenerationResult.jobsCreated} jobs created</Badge>
+              {lastGenerationResult.errors.length > 0 && (
+                <Badge variant="destructive">{lastGenerationResult.errors.length} errors</Badge>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Templates list */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Templates</CardTitle>
+          <CardDescription>
+            Active templates will generate jobs automatically when you run generation.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {isLoading ? (
+            <div className="text-center py-8 text-muted-foreground">Loading...</div>
+          ) : templates.length === 0 ? (
+            <div className="text-center py-8 text-muted-foreground">
+              No recurring job templates yet. Create one to get started.
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Title</TableHead>
+                  <TableHead>Recurrence</TableHead>
+                  <TableHead>Start Date</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Active</TableHead>
+                  {canEdit && <TableHead className="w-[100px]">Actions</TableHead>}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {templates.map((template) => (
+                  <TableRow key={template.id}>
+                    <TableCell className="font-medium">{template.title}</TableCell>
+                    <TableCell>{formatRecurrence(template)}</TableCell>
+                    <TableCell>{template.startDate}</TableCell>
+                    <TableCell>
+                      <Badge variant="outline">
+                        {template.openSubStatusDefault ?? "Backlog"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={template.isActive ? "default" : "secondary"}>
+                        {template.isActive ? "Active" : "Inactive"}
+                      </Badge>
+                    </TableCell>
+                    {canEdit && (
+                      <TableCell>
+                        <div className="flex gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            title="View Instances"
+                            onClick={() => setViewingTemplate(template)}
+                          >
+                            <List className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            title="Edit"
+                            onClick={() => openEditDialog(template)}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            title="Deactivate"
+                            onClick={() => deleteMutation.mutate(template.id)}
+                            disabled={deleteMutation.isPending}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    )}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Create/Edit Dialog */}
+      <Dialog open={isDialogOpen} onOpenChange={(open) => {
+        if (!open) {
+          setShowCreateDialog(false);
+          setEditingTemplate(null);
+          resetForm();
+        }
+      }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>
+              {editingTemplate ? "Edit Template" : "New Recurring Job Template"}
+            </DialogTitle>
+            <DialogDescription>
+              Define a recurring pattern for automatic job creation.
+              {editingTemplate && (
+                <span className="block mt-1 text-amber-600 dark:text-amber-400">
+                  Changes affect future generated jobs only; existing jobs are not modified.
+                </span>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-4">
+            {/* Title */}
+            <div className="space-y-2">
+              <Label htmlFor="title">Title *</Label>
+              <Input
+                id="title"
+                value={formData.title}
+                onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                placeholder="e.g., Monthly HVAC Maintenance"
+              />
+            </div>
+
+            {/* Description */}
+            <div className="space-y-2">
+              <Label htmlFor="description">Description</Label>
+              <Textarea
+                id="description"
+                value={formData.description}
+                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                placeholder="Job description and notes"
+              />
+            </div>
+
+            {/* Location */}
+            <div className="space-y-2">
+              <Label htmlFor="location">Location</Label>
+              <Select
+                value={formData.locationId}
+                onValueChange={(value) => setFormData({ ...formData, locationId: value })}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a location" />
+                </SelectTrigger>
+                <SelectContent>
+                  {locations.map((loc) => (
+                    <SelectItem key={loc.id} value={loc.id}>
+                      {loc.companyName} {loc.address ? `- ${loc.address}` : ""}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Recurrence Kind */}
+            <div className="space-y-2">
+              <Label>Recurrence</Label>
+              <Select
+                value={formData.recurrenceKind}
+                onValueChange={(value: "weekly" | "monthly") =>
+                  setFormData({ ...formData, recurrenceKind: value })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="weekly">Weekly</SelectItem>
+                  <SelectItem value="monthly">Monthly</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Interval */}
+            <div className="space-y-2">
+              <Label htmlFor="interval">
+                Every {formData.interval} {formData.recurrenceKind === "weekly" ? "week(s)" : "month(s)"}
+              </Label>
+              <Input
+                id="interval"
+                type="number"
+                min={1}
+                max={52}
+                value={formData.interval}
+                onChange={(e) => setFormData({ ...formData, interval: parseInt(e.target.value) || 1 })}
+              />
+            </div>
+
+            {/* Weekly: Days of week */}
+            {formData.recurrenceKind === "weekly" && (
+              <div className="space-y-2">
+                <Label>Days of Week *</Label>
+                <div className="flex gap-2 flex-wrap">
+                  {DAYS_OF_WEEK.map((day) => (
+                    <div key={day.value} className="flex items-center gap-1">
+                      <Checkbox
+                        id={`day-${day.value}`}
+                        checked={formData.daysOfWeek.includes(day.value)}
+                        onCheckedChange={() => toggleDayOfWeek(day.value)}
+                      />
+                      <Label htmlFor={`day-${day.value}`} className="text-sm">
+                        {day.label}
+                      </Label>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Monthly: Day of month */}
+            {formData.recurrenceKind === "monthly" && (
+              <div className="space-y-2">
+                <Label htmlFor="dayOfMonth">Day of Month</Label>
+                <Input
+                  id="dayOfMonth"
+                  type="number"
+                  min={1}
+                  max={31}
+                  value={formData.dayOfMonth}
+                  onChange={(e) =>
+                    setFormData({ ...formData, dayOfMonth: parseInt(e.target.value) || 1 })
+                  }
+                />
+              </div>
+            )}
+
+            {/* Start Date */}
+            <div className="space-y-2">
+              <Label htmlFor="startDate">Start Date *</Label>
+              <Input
+                id="startDate"
+                type="date"
+                value={formData.startDate}
+                onChange={(e) => setFormData({ ...formData, startDate: e.target.value })}
+              />
+            </div>
+
+            {/* End Date */}
+            <div className="space-y-2">
+              <Label htmlFor="endDate">End Date (optional)</Label>
+              <Input
+                id="endDate"
+                type="date"
+                value={formData.endDate}
+                onChange={(e) => setFormData({ ...formData, endDate: e.target.value })}
+              />
+            </div>
+
+            {/* Default Sub-Status */}
+            <div className="space-y-2">
+              <Label>Default Job Sub-Status</Label>
+              <Select
+                value={formData.openSubStatusDefault ?? "backlog"}
+                onValueChange={(value) => setFormData({ ...formData, openSubStatusDefault: value === "backlog" ? null : value })}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="backlog">Backlog (ready for scheduling)</SelectItem>
+                  <SelectItem value="on_hold">On Hold (requires reason)</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                All generated jobs have status "Open". This controls the optional sub-status.
+              </p>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowCreateDialog(false);
+                setEditingTemplate(null);
+                resetForm();
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSubmit}
+              disabled={
+                !formData.title ||
+                !formData.startDate ||
+                (formData.recurrenceKind === "weekly" && formData.daysOfWeek.length === 0) ||
+                createMutation.isPending ||
+                updateMutation.isPending
+              }
+            >
+              {editingTemplate ? "Save Changes" : "Create Template"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* View Instances Dialog */}
+      <Dialog open={viewingTemplate !== null} onOpenChange={(open) => {
+        if (!open) setViewingTemplate(null);
+      }}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle>
+              Instances: {viewingTemplate?.title}
+            </DialogTitle>
+            <DialogDescription>
+              Next 60 days of scheduled instances
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex-1 overflow-auto">
+            {instancesLoading ? (
+              <div className="text-center py-8 text-muted-foreground">Loading instances...</div>
+            ) : instances.length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground">
+                No instances scheduled for the next 60 days. Run generation to create instances.
+              </div>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Job</TableHead>
+                    <TableHead className="w-[100px]">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {instances.map((instance) => (
+                    <TableRow key={instance.id}>
+                      <TableCell className="font-medium">{instance.instanceDate}</TableCell>
+                      <TableCell>
+                        <Badge variant={getInstanceStatusVariant(instance.status)}>
+                          {instance.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        {instance.job ? (
+                          <Link
+                            href={`/jobs/${instance.job.id}`}
+                            className="inline-flex items-center gap-1 text-primary hover:underline"
+                          >
+                            #{instance.job.jobNumber}
+                            <ExternalLink className="h-3 w-3" />
+                          </Link>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {instance.status === "pending" ? (
+                          <div className="flex gap-1">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              title="Skip this instance"
+                              onClick={() => skipInstanceMutation.mutate(instance.id)}
+                              disabled={skipInstanceMutation.isPending || cancelInstanceMutation.isPending}
+                            >
+                              <SkipForward className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              title="Cancel this instance"
+                              onClick={() => cancelInstanceMutation.mutate(instance.id)}
+                              disabled={skipInstanceMutation.isPending || cancelInstanceMutation.isPending}
+                            >
+                              <Ban className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        ) : instance.status === "generated" ? (
+                          <span className="text-xs text-muted-foreground">Open job to modify</span>
+                        ) : null}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setViewingTemplate(null)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

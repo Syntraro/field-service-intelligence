@@ -489,7 +489,8 @@ export const scheduleJobSchema = z.object({
   date: z.string().optional(),               // YYYY-MM-DD - required for all-day events
   isAllDay: z.boolean().optional(),          // True = all-day event
   durationMinutes: z.number().int().min(15).max(720).optional(), // For timed events
-  technicianUserId: z.string().uuid().optional(), // Optional technician to assign
+  // 2026-01-29: Accept null for unassigned drops
+  technicianUserId: z.string().uuid().nullable().optional(), // Optional technician to assign (null = unassign)
   version: z.number().int(),                 // Required for optimistic locking
 });
 
@@ -581,6 +582,33 @@ export const insertCompanySettingsSchema = createInsertSchema(companySettings).o
 
 export type InsertCompanySettings = z.infer<typeof insertCompanySettingsSchema>;
 export type CompanySettings = typeof companySettings.$inferSelect;
+
+// ============================================================================
+// COMPANY BUSINESS HOURS - per-tenant operating hours by day of week
+// ============================================================================
+// Stores one row per day of week (7 rows per company).
+// day_of_week: 0=Sunday, 1=Monday, ..., 6=Saturday
+// times stored as minutes from midnight (0-1440)
+
+export const companyBusinessHours = pgTable("company_business_hours", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  dayOfWeek: integer("day_of_week").notNull(), // 0=Sunday, 1=Monday, ..., 6=Saturday
+  isOpen: boolean("is_open").notNull().default(true),
+  startMinutes: integer("start_minutes"), // 0-1439 (minutes from midnight)
+  endMinutes: integer("end_minutes"), // 1-1440 (1440 = midnight next day)
+  createdAt: timestamp("created_at").notNull().default(sql`NOW()`),
+  updatedAt: timestamp("updated_at").notNull().default(sql`NOW()`),
+});
+
+export const insertCompanyBusinessHoursSchema = createInsertSchema(companyBusinessHours).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertCompanyBusinessHours = z.infer<typeof insertCompanyBusinessHoursSchema>;
+export type CompanyBusinessHours = typeof companyBusinessHours.$inferSelect;
 
 // ============================================================================
 // USER INVITATIONS (dispatch software access) - single-company system

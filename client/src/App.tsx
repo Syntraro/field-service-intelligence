@@ -54,6 +54,7 @@ import NotificationsPage from "@/pages/NotificationsPage";
 import TimeAlertSettingsPage from "@/pages/TimeAlertSettingsPage";
 import TimeBillingRulesPage from "@/pages/TimeBillingRulesPage";
 import RegionalSettingsPage from "@/pages/RegionalSettingsPage";
+import BusinessHoursSettingsPage from "@/pages/BusinessHoursSettingsPage";
 import { TimezoneSetupBanner } from "@/components/TimezoneSetupBanner";
 import { TimezoneSetupDialog } from "@/components/TimezoneSetupDialog";
 import Login from "@/pages/Login";
@@ -290,6 +291,11 @@ function Router() {
           <RegionalSettingsPage />
         </ProtectedRoute>
       </Route>
+      <Route path="/settings/business-hours">
+        <ProtectedRoute requireAdmin>
+          <BusinessHoursSettingsPage />
+        </ProtectedRoute>
+      </Route>
       <Route path="/company-settings">
         <ProtectedRoute requireAdmin>
           <CompanySettingsPage />
@@ -369,11 +375,17 @@ function AppContent() {
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth() + 1;
-  
+
   // Past-month items from unscheduled backlog (previous month only, since that's in the window)
-  const totalOverdueCount = unscheduledBacklog.filter(item => 
-    item.year < currentYear || (item.year === currentYear && item.month < currentMonth)
-  ).length;
+  // Uses canonical date fields (scheduledDate/date/startAt)
+  const totalOverdueCount = unscheduledBacklog.filter(item => {
+    const dateStr = item.scheduledDate || item.date || (item.startAt ? item.startAt.split('T')[0] : null);
+    if (!dateStr) return false;
+    const itemDate = new Date(dateStr + 'T00:00:00');
+    const itemYear = itemDate.getFullYear();
+    const itemMonth = itemDate.getMonth() + 1;
+    return itemYear < currentYear || (itemYear === currentYear && itemMonth < currentMonth);
+  }).length;
   
   const { data: clientsResponse } = useQuery<{ data: any[], pagination: any }>({
     queryKey: ["/api/clients"],

@@ -15,18 +15,20 @@
 import { useMemo } from "react";
 import { format } from "date-fns";
 import { useDroppable } from "@dnd-kit/core";
-import { DraggableClient } from "./DraggableClient";
+import { JobCard } from "./JobCard";
 import {
   TECHNICIAN_COLORS,
   DENSITY_STYLES,
   CalendarDensity,
   CalendarEvent,
   getWeekStart,
+  isCalendarEventOverdue,
+  TechnicianColor,
 } from "./calendarUtils";
 import type { RegionalSettings } from "@/hooks/useCompanyRegionalSettings";
 import { nowInTimezone } from "@/hooks/useCompanyRegionalSettings";
 import { Button } from "@/components/ui/button";
-import { Plus, Clock, User } from "lucide-react";
+import { Plus, User } from "lucide-react";
 
 // ============================================================================
 // Types
@@ -58,6 +60,51 @@ interface WeekDayColumn {
 }
 
 // ============================================================================
+// Tech Job Card - Uses shared JobCard for visual consistency
+// ============================================================================
+
+interface TechJobCardProps {
+  event: CalendarEvent;
+  technician: any;
+  color: TechnicianColor;
+  allTechnicians: any[];
+  timeFormat: "12h" | "24h";
+  onJobClick: (event: CalendarEvent, technician: any) => void;
+}
+
+function TechJobCard({
+  event,
+  technician,
+  color,
+  allTechnicians,
+  timeFormat,
+  onJobClick,
+}: TechJobCardProps) {
+  // Build client object from event data
+  const client = {
+    companyName: event.raw?.companyName || event.raw?.summary || "Job",
+    location: event.raw?.locationName,
+  };
+
+  return (
+    <JobCard
+      id={event.assignmentId}
+      client={client}
+      assignment={event.raw}
+      inCalendar
+      onClick={() => onJobClick(event, technician)}
+      isCompleted={event.completed}
+      isOverdue={isCalendarEventOverdue(event)}
+      technicianColor={color}
+      densityStyle="py-1 px-1.5"
+      technicians={allTechnicians}
+      timeFormat={timeFormat}
+      showQuickActions={false}
+    />
+  );
+}
+
+// ============================================================================
 // Drop Zone Component
 // ============================================================================
 
@@ -73,6 +120,8 @@ function TechnicianDayDropZone({
   technician,
   density,
   techIndex,
+  allTechnicians,
+  timeFormat,
 }: {
   technicianId: string;
   dateKey: string;
@@ -85,9 +134,17 @@ function TechnicianDayDropZone({
   technician: any;
   density: CalendarDensity;
   techIndex: number;
+  allTechnicians: any[];
+  timeFormat: "12h" | "24h";
 }) {
-  const dropId = `techweek-${technicianId}-${dateKey}`;
+  // Note: Uses | delimiter to avoid splitting UUIDs which contain dashes
+  const dropId = `techweek|${technicianId}|${dateKey}`;
   const { setNodeRef, isOver } = useDroppable({ id: dropId });
+
+  // DEV-only: log when tech week drop zone becomes active (2026-01-29)
+  if (process.env.NODE_ENV === 'development' && isOver) {
+    console.log('[TechWeekDropZone] isOver=true:', { dropId, technicianId, dateKey });
+  }
 
   const color = TECHNICIAN_COLORS[techIndex % TECHNICIAN_COLORS.length];
 
@@ -120,40 +177,15 @@ function TechnicianDayDropZone({
       {/* Events */}
       <div className="space-y-1">
         {sortedEvents.map((event) => (
-          <div
+          <TechJobCard
             key={event.assignmentId}
-            onClick={(e) => {
-              e.stopPropagation();
-              onJobClick(event, technician);
-            }}
-            className={`
-              relative p-1.5 rounded text-xs cursor-pointer
-              transition-all hover:shadow-md
-              ${event.completed ? "opacity-60" : ""}
-              ${color.bg} ${color.border} border
-            `}
-          >
-            <div className="flex items-center gap-1">
-              <Clock className="h-3 w-3 flex-shrink-0" />
-              <span className="font-medium truncate">
-                {event.scheduledHour !== null
-                  ? format(
-                      new Date().setHours(event.scheduledHour, event.startMinutes || 0),
-                      "h:mm a"
-                    )
-                  : "All day"}
-              </span>
-            </div>
-            <div className="font-medium truncate mt-0.5">
-              {event.raw?.jobNumber ? `#${event.raw.jobNumber}` : ""}{" "}
-              {event.raw?.summary || event.raw?.companyName || "Job"}
-            </div>
-            {event.raw?.locationName && (
-              <div className="text-[10px] text-muted-foreground truncate">
-                {event.raw.locationName}
-              </div>
-            )}
-          </div>
+            event={event}
+            technician={technician}
+            color={color}
+            allTechnicians={allTechnicians}
+            timeFormat={timeFormat}
+            onJobClick={onJobClick}
+          />
         ))}
       </div>
 
@@ -180,6 +212,8 @@ function UnassignedDayDropZone({
   onJobClick,
   onSlotClick,
   density,
+  allTechnicians,
+  timeFormat,
 }: {
   dateKey: string;
   dayNumber: number;
@@ -189,9 +223,17 @@ function UnassignedDayDropZone({
   onJobClick: (event: CalendarEvent, technician: any) => void;
   onSlotClick: (date: Date, technician: any) => void;
   density: CalendarDensity;
+  allTechnicians: any[];
+  timeFormat: "12h" | "24h";
 }) {
-  const dropId = `techweek-unassigned-${dateKey}`;
+  // Note: Uses | delimiter for consistency with technician drop zones
+  const dropId = `techweek|unassigned|${dateKey}`;
   const { setNodeRef, isOver } = useDroppable({ id: dropId });
+
+  // DEV-only: log when unassigned drop zone becomes active (2026-01-29)
+  if (process.env.NODE_ENV === 'development' && isOver) {
+    console.log('[UnassignedDayDropZone] isOver=true:', { dropId, dateKey });
+  }
 
   const sortedEvents = useMemo(
     () =>
@@ -220,34 +262,15 @@ function UnassignedDayDropZone({
     >
       <div className="space-y-1">
         {sortedEvents.map((event) => (
-          <div
+          <TechJobCard
             key={event.assignmentId}
-            onClick={(e) => {
-              e.stopPropagation();
-              onJobClick(event, null);
-            }}
-            className={`
-              relative p-1.5 rounded text-xs cursor-pointer
-              transition-all hover:shadow-md bg-gray-100 border border-gray-200
-              ${event.completed ? "opacity-60" : ""}
-            `}
-          >
-            <div className="flex items-center gap-1">
-              <Clock className="h-3 w-3 flex-shrink-0" />
-              <span className="font-medium truncate">
-                {event.scheduledHour !== null
-                  ? format(
-                      new Date().setHours(event.scheduledHour, event.startMinutes || 0),
-                      "h:mm a"
-                    )
-                  : "All day"}
-              </span>
-            </div>
-            <div className="font-medium truncate mt-0.5">
-              {event.raw?.jobNumber ? `#${event.raw.jobNumber}` : ""}{" "}
-              {event.raw?.summary || event.raw?.companyName || "Job"}
-            </div>
-          </div>
+            event={event}
+            technician={null}
+            color={{ bg: "bg-muted/50", border: "border-muted-foreground/30", dot: "bg-muted-foreground/30", borderLeft: "border-l-muted-foreground/30", text: "text-muted-foreground", label: "Unassigned" }}
+            allTechnicians={allTechnicians}
+            timeFormat={timeFormat}
+            onJobClick={onJobClick}
+          />
         ))}
       </div>
 
@@ -384,6 +407,8 @@ export function CalendarGridWeekTechnicians({
                 technician={tech}
                 density={density}
                 techIndex={techIndex}
+                allTechnicians={technicians}
+                timeFormat={regional.timeFormat}
               />
             ))}
           </div>
@@ -408,6 +433,8 @@ export function CalendarGridWeekTechnicians({
               onJobClick={onJobClick}
               onSlotClick={onSlotClick}
               density={density}
+              allTechnicians={technicians}
+              timeFormat={regional.timeFormat}
             />
           ))}
         </div>

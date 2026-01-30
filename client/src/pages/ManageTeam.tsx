@@ -1,7 +1,7 @@
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -34,7 +34,9 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Search, Plus, UserCircle, Users, Shield, Clock, ChevronRight, ArrowUpDown, Mail, Settings2, LayoutGrid, List } from "lucide-react";
+import { Search, Plus, UserCircle, Users, Shield, Clock, ChevronRight, ArrowUpDown, Mail, Settings2, LayoutGrid, List, UserPlus, AlertCircle } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Switch } from "@/components/ui/switch";
 
 type ViewDensity = "comfortable" | "compact";
 
@@ -48,6 +50,7 @@ interface TeamMember {
   role: string;
   roleId: string | null;
   status: string;
+  disabled?: boolean;
   createdAt: string;
   lastLoginAt: string | null;
 }
@@ -63,11 +66,13 @@ type SortOption = "name-asc" | "name-desc" | "login-newest" | "login-oldest" | "
 
 export default function ManageTeam() {
   const { toast } = useToast();
+  const [, navigate] = useLocation();
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [roleFilter, setRoleFilter] = useState<string>("all");
   const [sortBy, setSortBy] = useState<SortOption>("name-asc");
   const [inviteDialogOpen, setInviteDialogOpen] = useState(false);
+  const [addMemberDialogOpen, setAddMemberDialogOpen] = useState(false);
   const [userDensityPreference, setUserDensityPreference] = useState<ViewDensity | null>(null);
   const [inviteForm, setInviteForm] = useState({
     fullName: "",
@@ -75,13 +80,70 @@ export default function ManageTeam() {
     roleId: "",
     notes: "",
   });
+  const [addMemberForm, setAddMemberForm] = useState({
+    fullName: "",
+    email: "",
+    phone: "",
+    roleId: "",
+    disabled: false,
+  });
+  const [addMemberError, setAddMemberError] = useState<string | null>(null);
 
-  const { data: teamMembers = [], isLoading } = useQuery<TeamMember[]>({
+  const { data: teamMembers = [], isLoading, isError, error } = useQuery<TeamMember[]>({
     queryKey: ["/api/team"],
   });
 
   const { data: roles = [] } = useQuery<Role[]>({
     queryKey: ["/api/roles"],
+  });
+
+  const roleById = new Map(roles.map((r) => [r.id, r]));
+  const getRoleNameForMember = (member: TeamMember) =>
+  (member.roleId ? roleById.get(member.roleId)?.name : undefined) ?? member.role ?? "technician";
+
+  // Create team member mutation
+  const createMemberMutation = useMutation({
+    mutationFn: async (data: typeof addMemberForm) => {
+      // Parse fullName into firstName/lastName for consistency
+      const trimmedFullName = (data.fullName || "").trim();
+      const nameParts = trimmedFullName.split(/\s+/);
+      const firstName = nameParts[0] || "";
+      const lastName = nameParts.length > 1 ? nameParts.slice(1).join(" ") : "";
+
+      return await apiRequest<TeamMember & { message?: string }>("/api/team", {
+        method: "POST",
+        body: JSON.stringify({
+          fullName: trimmedFullName,
+          firstName,
+          lastName,
+          email: data.email,
+          phone: data.phone || null,
+          roleId: data.roleId || undefined,
+          disabled: data.disabled,
+        }),
+      });
+    },
+    onSuccess: (newMember) => {
+      toast({
+        title: "Team member created",
+        description: newMember.message || `${newMember.fullName || newMember.email} has been added to the team.`,
+      });
+      setAddMemberDialogOpen(false);
+      setAddMemberForm({ fullName: "", email: "", phone: "", roleId: "", disabled: false });
+      setAddMemberError(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/team"] });
+      // Navigate to the new member's detail page
+      navigate(`/manage-team/${newMember.id}`);
+    },
+    onError: (error: any) => {
+      const message = error.message || "Failed to create team member";
+      setAddMemberError(message);
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: message,
+      });
+    },
   });
 
   // Density: auto-detect based on team size, user can override
@@ -97,11 +159,12 @@ export default function ManageTeam() {
         (member.lastName?.toLowerCase() || "").includes(searchLower) ||
         (member.email?.toLowerCase() || "").includes(searchLower) ||
         (member.fullName?.toLowerCase() || "").includes(searchLower) ||
-        (member.role?.toLowerCase() || "").includes(searchLower) ||
+        (getRoleNameForMember(member).toLowerCase() || "").includes(searchLower) ||
         (member.phone?.toLowerCase() || "").includes(searchLower);
       
       const matchesStatus = statusFilter === "all" || member.status === statusFilter;
-      const matchesRole = roleFilter === "all" || member.role === roleFilter;
+      const matchesRole =  roleFilter === "all" || getRoleNameForMember(member) === roleFilter;
+
       
       return matchesSearch && matchesStatus && matchesRole;
     })
@@ -142,12 +205,14 @@ export default function ManageTeam() {
     return member.email[0].toUpperCase();
   };
 
-  const getStatusBadge = (status: string) => {
+  const getStatusBadge = (status: string, disabled?: boolean) => {
+    // Check disabled flag first (deactivated status should also have disabled=true)
+    if (disabled || status === "deactivated") {
+      return <Badge variant="secondary">Disabled</Badge>;
+    }
     switch (status) {
       case "active":
-        return <Badge variant="default" className="bg-green-600">Active</Badge>;
-      case "deactivated":
-        return <Badge variant="secondary">Disabled</Badge>;
+        return <Badge variant="default" className="bg-green-600">Enabled</Badge>;
       case "pending":
         return <Badge variant="outline">Pending</Badge>;
       default:
@@ -188,18 +253,120 @@ export default function ManageTeam() {
             <h1 className="text-3xl font-bold" data-testid="text-team-management-title">Team Management</h1>
             <p className="text-muted-foreground mt-1">Manage your team members, roles, and permissions</p>
           </div>
-          <Dialog open={inviteDialogOpen} onOpenChange={setInviteDialogOpen}>
-            <DialogTrigger asChild>
-              <Button size="default" data-testid="button-invite-member">
-                <Plus className="h-4 w-4 mr-2" />
-                Invite Member
-              </Button>
-            </DialogTrigger>
+          <div className="flex gap-2">
+            <Dialog open={addMemberDialogOpen} onOpenChange={(open) => {
+              setAddMemberDialogOpen(open);
+              if (!open) setAddMemberError(null);
+            }}>
+              <DialogTrigger asChild>
+                <Button size="default" data-testid="button-add-member">
+                  <UserPlus className="h-4 w-4 mr-2" />
+                  Add Member
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Add Team Member</DialogTitle>
+                  <DialogDescription>
+                    Create a new team member directly. They will need to reset their password to log in.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  {addMemberError && (
+                    <Alert variant="destructive">
+                      <AlertCircle className="h-4 w-4" />
+                      <AlertDescription>{addMemberError}</AlertDescription>
+                    </Alert>
+                  )}
+                  <div className="space-y-2">
+                    <Label htmlFor="add-name">Full Name *</Label>
+                    <Input
+                      id="add-name"
+                      value={addMemberForm.fullName}
+                      onChange={(e) => setAddMemberForm(prev => ({ ...prev, fullName: e.target.value }))}
+                      placeholder="John Doe"
+                      data-testid="input-add-name"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="add-email">Email *</Label>
+                    <Input
+                      id="add-email"
+                      type="email"
+                      value={addMemberForm.email}
+                      onChange={(e) => setAddMemberForm(prev => ({ ...prev, email: e.target.value }))}
+                      placeholder="john@example.com"
+                      data-testid="input-add-email"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Each email can only belong to one company.
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="add-phone">Phone</Label>
+                    <Input
+                      id="add-phone"
+                      value={addMemberForm.phone}
+                      onChange={(e) => setAddMemberForm(prev => ({ ...prev, phone: e.target.value }))}
+                      placeholder="(555) 123-4567"
+                      data-testid="input-add-phone"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="add-role">Role *</Label>
+                    <Select
+                      value={addMemberForm.roleId}
+                      onValueChange={(value) => setAddMemberForm(prev => ({ ...prev, roleId: value }))}
+                    >
+                      <SelectTrigger data-testid="select-add-role">
+                        <SelectValue placeholder="Select a role" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {roles.map((role) => (
+                          <SelectItem key={role.id} value={role.id}>{role.displayName}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex items-center justify-between pt-2">
+                    <div>
+                      <Label htmlFor="add-enabled">Account Enabled</Label>
+                      <p className="text-xs text-muted-foreground">Disabled accounts cannot log in</p>
+                    </div>
+                    <Switch
+                      id="add-enabled"
+                      checked={!addMemberForm.disabled}
+                      onCheckedChange={(checked) => setAddMemberForm(prev => ({ ...prev, disabled: !checked }))}
+                      data-testid="switch-add-enabled"
+                    />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setAddMemberDialogOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button
+                    onClick={() => createMemberMutation.mutate(addMemberForm)}
+                    disabled={!addMemberForm.email || !addMemberForm.fullName || createMemberMutation.isPending}
+                    data-testid="button-create-member"
+                  >
+                    {createMemberMutation.isPending ? "Creating..." : "Create Member"}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+            <Dialog open={inviteDialogOpen} onOpenChange={setInviteDialogOpen}>
+              <DialogTrigger asChild>
+                <Button size="default" variant="outline" data-testid="button-invite-member">
+                  <Mail className="h-4 w-4 mr-2" />
+                  Invite Member
+                </Button>
+              </DialogTrigger>
             <DialogContent>
               <DialogHeader>
                 <DialogTitle>Invite Team Member</DialogTitle>
                 <DialogDescription>
-                  Send an invitation to add a new member to your team.
+                  Send an invitation to add a new member to your team. Each email can only belong to one company.
                 </DialogDescription>
               </DialogHeader>
               <div className="space-y-4 py-4">
@@ -223,6 +390,9 @@ export default function ManageTeam() {
                     placeholder="john@example.com"
                     data-testid="input-invite-email"
                   />
+                  <p className="text-xs text-muted-foreground">
+                    If this person works for multiple companies, they must use a different email for each.
+                  </p>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="invite-role">Role</Label>
@@ -266,6 +436,7 @@ export default function ManageTeam() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
+          </div>
         </div>
 
         {isCompact ? (
@@ -440,6 +611,14 @@ export default function ManageTeam() {
           <CardContent>
             {isLoading ? (
               <div className="text-center py-8">Loading team members...</div>
+            ) : isError ? (
+              <div className="text-center py-8">
+                <AlertCircle className="h-8 w-8 text-destructive mx-auto mb-2" />
+                <p className="text-destructive font-medium">Failed to load team members</p>
+                <p className="text-sm text-muted-foreground mt-1">
+                  {(error as any)?.message || "Please try again later"}
+                </p>
+              </div>
             ) : filteredMembers.length === 0 ? (
               <div className="text-center py-8 text-muted-foreground">
                 {searchTerm || statusFilter !== "all" || roleFilter !== "all"
@@ -482,10 +661,11 @@ export default function ManageTeam() {
                         </div>
                       </TableCell>
                       <TableCell className={isCompact ? "py-1" : ""}>
-                        {getRoleBadge(member.role)}
+                        {getRoleBadge(getRoleNameForMember(member))}
+
                       </TableCell>
                       <TableCell className={isCompact ? "py-1" : ""}>
-                        {getStatusBadge(member.status)}
+                        {getStatusBadge(member.status, member.disabled)}
                       </TableCell>
                       <TableCell className={isCompact ? "py-1" : ""}>
                         {member.lastLoginAt ? (

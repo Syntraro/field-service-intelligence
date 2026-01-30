@@ -1,7 +1,7 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { format, isValid, parseISO } from "date-fns";
-import { useLocation, Link } from "wouter";
+import { useLocation, useSearch, Link } from "wouter";
 import { Search, Plus, FileText, DollarSign, Clock, AlertTriangle, LayoutGrid, List, MoreHorizontal, RefreshCw } from "lucide-react";
 import { QboSyncBadge, isQboSynced } from "@/components/invoice/QboSyncBanner";
 import { Input } from "@/components/ui/input";
@@ -43,26 +43,28 @@ interface InvoiceStats {
   overdue: { amount: number; count: number };
 }
 
-type InvoiceStatusFilter = "all" | "draft" | "sent" | "viewed" | "partial_paid" | "paid" | "voided" | "overdue" | "qbo_synced" | "qbo_out_of_sync";
+type InvoiceStatusFilter = "all" | "draft" | "awaiting_payment" | "sent" | "viewed" | "partial_paid" | "paid" | "voided" | "overdue" | "qbo_synced" | "qbo_out_of_sync";
 type ViewDensity = "comfortable" | "compact";
 
-function getStatusBadge(status: string, dueDate: string | null, balance: string): { 
-  label: string; 
+function getStatusBadge(status: string, dueDate: string | null, balance: string): {
+  label: string;
   variant: "default" | "destructive" | "secondary" | "outline";
   isOverdue?: boolean;
 } {
   const balanceNum = parseFloat(balance);
   const isOverdue = dueDate && new Date(dueDate) < new Date() && balanceNum > 0 && status !== "paid" && status !== "voided";
-  
+
   if (isOverdue) {
     return { label: "Past Due", variant: "destructive", isOverdue: true };
   }
-  
+
   switch (status) {
     case "draft":
       return { label: "Draft", variant: "outline" };
+    case "awaiting_payment":
+      return { label: "Awaiting Payment", variant: "default" };
     case "sent":
-      return { label: "Sent", variant: "default" };
+      return { label: "Sent", variant: "default" }; // Legacy
     case "viewed":
       return { label: "Viewed", variant: "secondary" };
     case "partial_paid":
@@ -83,9 +85,20 @@ function formatCurrency(amount: string | number): string {
 
 export default function InvoicesListPage() {
   const [, setLocation] = useLocation();
+  const search = useSearch();
   const [activeFilter, setActiveFilter] = useState<InvoiceStatusFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [userDensityPreference, setUserDensityPreference] = useState<ViewDensity | null>(null);
+
+  // Parse URL filter param on mount
+  useEffect(() => {
+    const params = new URLSearchParams(search);
+    const filterParam = params.get("filter");
+    const validFilters: InvoiceStatusFilter[] = ["all", "draft", "awaiting_payment", "sent", "viewed", "partial_paid", "paid", "voided", "overdue", "qbo_synced", "qbo_out_of_sync"];
+    if (filterParam && validFilters.includes(filterParam as InvoiceStatusFilter)) {
+      setActiveFilter(filterParam as InvoiceStatusFilter);
+    }
+  }, [search]);
 
   const { data: invoices = [], isLoading } = useQuery<{ data: EnrichedInvoice[]; meta: { limit: number; hasMore: boolean; nextOffset?: number } }, Error, EnrichedInvoice[]>({
     queryKey: ["/api/invoices/list", { offset: 0, limit: 200 }],
@@ -141,6 +154,10 @@ export default function InvoicesListPage() {
         if (activeFilter === "qbo_out_of_sync") {
           return inv.qboOutOfSync === true;
         }
+        // "awaiting_payment" filter includes legacy "sent" status
+        if (activeFilter === "awaiting_payment") {
+          return inv.status === "awaiting_payment" || inv.status === "sent";
+        }
         return inv.status === activeFilter;
       });
     }
@@ -161,10 +178,17 @@ export default function InvoicesListPage() {
   }, [invoices, activeFilter, searchQuery]);
 
   const statusCounts = useMemo(() => {
-    const counts: Record<string, number> = { all: invoices.length };
+    const counts: Record<string, number> = { all: invoices.length, awaiting_payment: 0 };
     for (const inv of invoices) {
       const statusInfo = getStatusBadge(inv.status, inv.dueDate, inv.balance);
-      counts[inv.status] = (counts[inv.status] || 0) + 1;
+      // Count individual statuses (except awaiting_payment which we handle specially)
+      if (inv.status !== "awaiting_payment" && inv.status !== "sent") {
+        counts[inv.status] = (counts[inv.status] || 0) + 1;
+      }
+      // Combine awaiting_payment + sent (legacy) for the "Unpaid" filter count
+      if (inv.status === "awaiting_payment" || inv.status === "sent") {
+        counts["awaiting_payment"] = (counts["awaiting_payment"] || 0) + 1;
+      }
       if (statusInfo.isOverdue) {
         counts["overdue"] = (counts["overdue"] || 0) + 1;
       }
@@ -279,7 +303,7 @@ export default function InvoicesListPage() {
 
       <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
         <div className="flex items-center gap-2 flex-wrap">
-          {(["all", "draft", "sent", "partial_paid", "paid", "overdue", "voided"] as InvoiceStatusFilter[]).map((filter) => (
+          {(["all", "draft", "awaiting_payment", "partial_paid", "paid", "overdue", "voided"] as InvoiceStatusFilter[]).map((filter) => (
             <Button
               key={filter}
               variant={activeFilter === filter ? "default" : "outline"}
@@ -288,6 +312,7 @@ export default function InvoicesListPage() {
               data-testid={`button-filter-${filter}`}
             >
               {filter === "all" ? "All" :
+               filter === "awaiting_payment" ? "Unpaid" :
                filter === "partial_paid" ? "Partial" :
                filter === "overdue" ? "Overdue" :
                filter.charAt(0).toUpperCase() + filter.slice(1)}

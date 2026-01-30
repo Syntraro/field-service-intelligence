@@ -1,33 +1,45 @@
-import { Play, Pause, XCircle } from "lucide-react";
+import { Play, Pause, XCircle, Archive } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { JOB_STATUS_FLOW, STATUS_TRANSITIONS } from "./jobUtils";
+import type { JobStatus, OpenSubStatus } from "@shared/schema";
 
 interface StatusProgressBarProps {
   currentStatus: string;
-  onStatusChange: (status: string) => void;
+  openSubStatus?: string | null;
+  onStatusChange: (status: string, openSubStatus?: string | null) => void;
   isUpdating: boolean;
 }
 
 export function StatusProgressBar({
   currentStatus,
+  openSubStatus,
   onStatusChange,
   isUpdating,
 }: StatusProgressBarProps) {
-  const currentIndex = JOB_STATUS_FLOW.findIndex((s) => s.key === currentStatus);
-  const isCancelled = currentStatus === "cancelled";
-  const isOnHold = currentStatus === "on_hold";
-  const availableTransitions = STATUS_TRANSITIONS[currentStatus] || [];
-  const canCancel = availableTransitions.includes("cancelled");
-  const canHold = availableTransitions.includes("on_hold");
-  const canResume = currentStatus === "on_hold" && availableTransitions.includes("in_progress");
+  const status = currentStatus as JobStatus;
+  const subStatus = openSubStatus as OpenSubStatus | null;
 
-  if (isCancelled) {
+  const currentIndex = JOB_STATUS_FLOW.findIndex((s) => s.key === status);
+  const isArchived = status === "archived";
+  const isOnHold = subStatus === "on_hold";
+  const isInProgress = subStatus === "in_progress";
+
+  // Get valid transitions for current lifecycle status
+  const availableTransitions = STATUS_TRANSITIONS[status] || [];
+  const canArchive = availableTransitions.includes("archived");
+
+  // Workflow actions (only available when status = 'open')
+  const canHold = status === "open" && !isOnHold;
+  const canResume = status === "open" && isOnHold;
+  const canStartWork = status === "open" && !isInProgress && !isOnHold;
+
+  if (isArchived) {
     return (
       <div className="flex items-center gap-2 px-4 py-2 bg-muted rounded-lg">
-        <XCircle className="h-4 w-4 text-muted-foreground" />
-        <span className="text-sm font-medium text-muted-foreground">Job Cancelled</span>
+        <Archive className="h-4 w-4 text-muted-foreground" />
+        <span className="text-sm font-medium text-muted-foreground">Job Archived</span>
       </div>
     );
   }
@@ -37,10 +49,12 @@ export function StatusProgressBar({
       <div className="flex items-center gap-1">
         {JOB_STATUS_FLOW.map((step, index) => {
           const Icon = step.icon;
-          const isActive = step.key === currentStatus || (isOnHold && step.key === "in_progress");
-          const isCompleted = index < currentIndex && !isOnHold;
+          const isActive = step.key === status;
+          const isCompleted = index < currentIndex;
           const isClickable =
-            !isUpdating && index === currentIndex + 1 && STATUS_TRANSITIONS[currentStatus]?.includes(step.key);
+            !isUpdating &&
+            index === currentIndex + 1 &&
+            availableTransitions.includes(step.key);
 
           return (
             <div key={step.key} className="flex items-center">
@@ -77,13 +91,21 @@ export function StatusProgressBar({
         </Badge>
       )}
 
-      {(canHold || canCancel || canResume) && (
+      {isInProgress && (
+        <Badge variant="default" className="gap-1">
+          <Play className="h-3 w-3" />
+          In Progress
+        </Badge>
+      )}
+
+      {/* Workflow actions for open jobs */}
+      {status === "open" && (canHold || canResume || canStartWork || canArchive) && (
         <div className="flex items-center gap-1 ml-2 border-l pl-2">
           {canResume && (
             <Button
               variant="outline"
               size="sm"
-              onClick={() => onStatusChange("in_progress")}
+              onClick={() => onStatusChange("open", null)}
               disabled={isUpdating}
               data-testid="button-resume"
             >
@@ -91,11 +113,23 @@ export function StatusProgressBar({
               Resume
             </Button>
           )}
+          {canStartWork && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onStatusChange("open", "in_progress")}
+              disabled={isUpdating}
+              data-testid="button-start-work"
+            >
+              <Play className="h-3 w-3 mr-1" />
+              Start
+            </Button>
+          )}
           {canHold && (
             <Button
               variant="outline"
               size="sm"
-              onClick={() => onStatusChange("on_hold")}
+              onClick={() => onStatusChange("open", "on_hold")}
               disabled={isUpdating}
               data-testid="button-hold"
             >
@@ -103,17 +137,17 @@ export function StatusProgressBar({
               Hold
             </Button>
           )}
-          {canCancel && (
+          {canArchive && (
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => onStatusChange("cancelled")}
+              onClick={() => onStatusChange("archived")}
               disabled={isUpdating}
               className="text-destructive hover:text-destructive"
-              data-testid="button-cancel-job"
+              data-testid="button-archive-job"
             >
               <XCircle className="h-3 w-3 mr-1" />
-              Cancel
+              Archive
             </Button>
           )}
         </div>

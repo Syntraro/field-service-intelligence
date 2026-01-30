@@ -1,76 +1,73 @@
 /**
- * Calendar API Hooks - Slice 1
+ * Calendar API Hooks
  *
- * Provides client-side API functions for calendar operations:
- * - fetchCalendarRange(start, end)
- * - createAssignment(payload)
- * - updateAssignment(id, payload)
- * - deleteAssignment(id)
- * - completeAssignment(id, notes?)
+ * MODEL A: Job-Centric Scheduling
+ * - Jobs ARE calendar events (no separate "assignment" entity)
+ * - A job is scheduled iff scheduledStart IS NOT NULL
+ * - Events are keyed by jobId only
  *
- * All mutations use apiRequest for CSRF protection.
+ * API Functions:
+ * - fetchCalendarRange(start, end) - Get scheduled jobs in range
+ * - scheduleJob(payload) - Schedule a job (sets scheduledStart/End)
+ * - rescheduleJob(jobId, payload) - Update job schedule
+ * - unscheduleJob(jobId, version) - Clear job schedule
  */
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import type {
+  CalendarEventDto,
+  CalendarTechnicianDto,
+  CalendarRangeResponseDto,
+} from "@shared/types/calendar";
+import { assertCalendarRangeResponseDto } from "@shared/types/calendar";
 
 // ============================================================================
 // Types
 // ============================================================================
 
-export interface CalendarTechnician {
-  id: string;
-  name: string;
-  color: string | null;
+export type CalendarTechnician = CalendarTechnicianDto;
+export type CalendarEvent = CalendarEventDto;
+export type CalendarRangeResponse = CalendarRangeResponseDto;
+
+/**
+ * Payload for scheduling a job (POST /api/calendar/schedule)
+ */
+export interface ScheduleJobPayload {
+  jobId: string;
+  startAt?: string;      // ISO datetime (required for timed events)
+  endAt?: string;        // ISO datetime (optional - computed from duration if not provided)
+  date?: string;         // YYYY-MM-DD (required for all-day events)
+  allDay?: boolean;      // True = all-day event
+  durationMinutes?: number; // For timed events
+  technicianUserId?: string;
+  version: number;       // REQUIRED for optimistic locking
 }
 
-export interface CalendarAssignment {
+/**
+ * Payload for rescheduling a job (PATCH /api/calendar/schedule/:jobId)
+ */
+export interface RescheduleJobPayload {
+  startAt?: string;
+  endAt?: string;
+  date?: string;
+  allDay?: boolean;
+  durationMinutes?: number;
+  technicianUserId?: string | null;
+  version: number;       // REQUIRED for optimistic locking
+}
+
+/**
+ * Response from schedule/reschedule/unschedule endpoints
+ */
+export interface ScheduleJobResponse {
   id: string;
   jobId: string;
-  jobNumber: number;
-  jobType: string;
-  summary: string;
-  status: string;
-  locationId: string;
-  locationName: string;
-  customerCompanyId: string | null;
-  customerCompanyName: string | null;
   scheduledStart: string | null;
   scheduledEnd: string | null;
-  assignedTechnicianIds: string[] | null;
-  primaryTechnicianId: string | null;
-  technicians: CalendarTechnician[];
-  // Legacy fields for backwards compatibility
-  year: number | null;
-  month: number | null;
-  day: number | null;
-  scheduledHour: number | null;
-  scheduledStartMinutes: number | null;
-  durationMinutes: number;
-}
-
-export interface CalendarRangeResponse {
-  assignments: CalendarAssignment[];
-}
-
-export interface CreateAssignmentPayload {
-  jobId: string;
-  technicianUserId?: string;
-  startAt: string; // ISO datetime
-  endAt: string; // ISO datetime
-  notes?: string;
-}
-
-export interface UpdateAssignmentPayload {
-  technicianUserId?: string | null;
-  startAt?: string; // ISO datetime
-  endAt?: string; // ISO datetime
-  notes?: string | null;
-  jobId?: string;
-}
-
-export interface CompleteAssignmentPayload {
-  completionNotes?: string;
+  isAllDay: boolean;
+  version: number;
+  status: string;
 }
 
 // ============================================================================
@@ -78,7 +75,7 @@ export interface CompleteAssignmentPayload {
 // ============================================================================
 
 /**
- * Fetch calendar assignments for a date range
+ * Fetch scheduled jobs for a date range
  */
 export async function fetchCalendarRange(
   start: Date | string,
@@ -96,51 +93,62 @@ export async function fetchCalendarRange(
     throw new Error("Failed to fetch calendar range");
   }
 
-  return res.json();
+  const data = await res.json();
+
+  // DEV validation
+  if (process.env.NODE_ENV === "development") {
+    assertCalendarRangeResponseDto(data, "fetchCalendarRange");
+  }
+
+  return data;
 }
 
 /**
- * Create a calendar assignment (schedule a job)
+ * Schedule a job (sets scheduledStart/scheduledEnd/isAllDay)
  */
-export async function createAssignment(
-  payload: CreateAssignmentPayload
-): Promise<any> {
-  return apiRequest("/api/calendar/assignments", {
+export async function scheduleJob(
+  payload: ScheduleJobPayload
+): Promise<ScheduleJobResponse> {
+  return apiRequest("/api/calendar/schedule", {
     method: "POST",
     body: JSON.stringify(payload),
   });
 }
 
 /**
- * Update a calendar assignment
+ * Reschedule a job (updates scheduledStart/scheduledEnd/isAllDay)
  */
-export async function updateAssignment(
-  id: string,
-  payload: UpdateAssignmentPayload
-): Promise<any> {
-  return apiRequest(`/api/calendar/assignments/${id}`, {
+export async function rescheduleJob(
+  jobId: string,
+  payload: RescheduleJobPayload
+): Promise<ScheduleJobResponse> {
+  return apiRequest(`/api/calendar/schedule/${jobId}`, {
     method: "PATCH",
     body: JSON.stringify(payload),
   });
 }
 
 /**
- * Delete/unschedule a calendar assignment
+ * Unschedule a job (clears scheduledStart/scheduledEnd/isAllDay)
  */
-export async function deleteAssignment(id: string): Promise<any> {
-  return apiRequest(`/api/calendar/assignments/${id}`, {
-    method: "DELETE",
+export async function unscheduleJob(
+  jobId: string,
+  version: number
+): Promise<ScheduleJobResponse> {
+  return apiRequest(`/api/calendar/unschedule/${jobId}`, {
+    method: "POST",
+    body: JSON.stringify({ version }),
   });
 }
 
 /**
- * Mark a calendar assignment as complete
+ * Mark a job as complete
  */
-export async function completeAssignment(
-  id: string,
-  payload?: CompleteAssignmentPayload
+export async function completeJob(
+  jobId: string,
+  payload?: { completionNotes?: string }
 ): Promise<any> {
-  return apiRequest(`/api/calendar/assignments/${id}/complete`, {
+  return apiRequest(`/api/jobs/${jobId}/complete`, {
     method: "POST",
     body: JSON.stringify(payload || {}),
   });
@@ -151,11 +159,9 @@ export async function completeAssignment(
 // ============================================================================
 
 /**
- * Hook to fetch calendar assignments for a date range
+ * Hook to fetch scheduled jobs for a date range
  *
- * @param start - Start date of range
- * @param end - End date of range
- * @param enabled - Whether to enable the query (default: true)
+ * OPTIMIZED: 2026-01-30 - Prevent unnecessary refetches during drag operations
  */
 export function useCalendarRange(
   start: Date | string | null,
@@ -170,57 +176,45 @@ export function useCalendarRange(
     ],
     queryFn: async () => {
       if (!start || !end) {
-        return { assignments: [] };
+        return { events: [], outsideVisibleHoursCount: 0, timezone: "UTC" };
       }
       return fetchCalendarRange(start, end);
     },
     enabled: enabled && !!start && !!end,
-    staleTime: 30000, // 30 seconds
+    staleTime: 30000,
+    // OPTIMIZED: Prevent refetches during interaction - let mutations handle cache updates
+    refetchOnWindowFocus: false,
+    refetchOnMount: false,
+    refetchOnReconnect: false,
   });
 }
 
 /**
- * Hook to create a calendar assignment
+ * Hook to schedule a job
  */
-export function useCreateAssignment() {
+export function useScheduleJob() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: createAssignment,
+    mutationFn: scheduleJob,
     onSuccess: () => {
-      // Invalidate calendar queries to refetch
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
     },
   });
 }
 
 /**
- * Hook to update a calendar assignment
+ * Hook to reschedule a job
  */
-export function useUpdateAssignment() {
+export function useRescheduleJob() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ id, payload }: { id: string; payload: UpdateAssignmentPayload }) =>
-      updateAssignment(id, payload),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-    },
-  });
-}
-
-/**
- * Hook to delete/unschedule a calendar assignment
- */
-export function useDeleteAssignment() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: deleteAssignment,
+    mutationFn: ({ jobId, payload }: { jobId: string; payload: RescheduleJobPayload }) =>
+      rescheduleJob(jobId, payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
@@ -230,14 +224,32 @@ export function useDeleteAssignment() {
 }
 
 /**
- * Hook to mark an assignment as complete
+ * Hook to unschedule a job
  */
-export function useCompleteAssignment() {
+export function useUnscheduleJob() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ id, payload }: { id: string; payload?: CompleteAssignmentPayload }) =>
-      completeAssignment(id, payload),
+    mutationFn: ({ jobId, version }: { jobId: string; version: number }) =>
+      unscheduleJob(jobId, version),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+    },
+  });
+}
+
+/**
+ * Hook to mark a job as complete
+ */
+export function useCompleteJob() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ jobId, payload }: { jobId: string; payload?: { completionNotes?: string } }) =>
+      completeJob(jobId, payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });

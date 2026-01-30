@@ -126,7 +126,7 @@ export default function UnassignedTimePage() {
 
   // Fetch technicians for dropdown
   const { data: technicians = [] } = useQuery<Technician[]>({
-    queryKey: ["/api/technicians"],
+    queryKey: ["/api/team/technicians"],
     enabled: isManager,
   });
 

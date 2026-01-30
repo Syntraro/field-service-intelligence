@@ -58,7 +58,29 @@
       "Bash(npm run db:check:*)",
       "Bash(npx tsx:*)",
       "Bash(npm install:*)",
-      "Bash(du:*)"
+      "Bash(du:*)",
+      "Bash(npx drizzle-kit:*)",
+      "Bash(pkill:*)",
+      "Bash(netstat:*)",
+      "Bash(ss:*)",
+      "Bash(pgrep:*)",
+      "Bash(timeout 5 NODE_ENV=development tsx:*)",
+      "Bash(export NODE_ENV=development:*)",
+      "Bash(timeout 5s tsx:*)",
+      "Bash(ps:*)",
+      "Bash(kill:*)",
+      "Bash(npm run sanity:scheduling:*)",
+      "Bash(npm test:*)",
+      "Bash(npx vitest:*)",
+      "Bash(git -C /home/runner/workspace status server/services/calendarValidation.ts)",
+      "Bash(git -C /home/runner/workspace diff server/services/calendarValidation.ts)",
+      "Bash(rg:*)",
+      "Bash(git status:*)",
+      "Bash(npx vite build:*)",
+      "Bash(fuser:*)",
+      "Bash(killall node:*)",
+      "Bash(./scripts/ralph-loop.sh:*)",
+      "Bash(xargs:*)"
     ]
   }
 }

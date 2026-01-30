@@ -136,6 +136,14 @@ export default function SettingsPage() {
       detail: "Configure timezone, date/time display format, and calendar week start day for your company.",
       testId: "card-regional-settings",
     },
+    {
+      href: "/settings/business-hours",
+      icon: Clock,
+      title: "Business Hours",
+      description: "Set operating hours",
+      detail: "Configure your company's weekly schedule. The calendar will grey out non-business hours.",
+      testId: "card-business-hours-settings",
+    },
   ];
 
   return (

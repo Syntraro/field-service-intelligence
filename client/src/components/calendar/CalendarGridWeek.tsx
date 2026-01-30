@@ -1,9 +1,8 @@
 import { memo, useMemo } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { Button } from "@/components/ui/button";
-import { DraggableClient } from "./DraggableClient";
+import { JobCard } from "./JobCard";
 import { ResizableJobCard } from "./ResizableJobCard";
-import { EventPreviewPopover } from "./EventPreviewPopover";
 import {
   DENSITY_STYLES,
   ALLDAY_ROW_HEIGHTS,
@@ -68,8 +67,10 @@ interface WeekDayData {
 // ============================================================================
 
 /** Drop zone component for all-day slots in weekly view */
-function AllDayDropZone({ dayName, dayNumber, children }: { dayName: string; dayNumber: number; children: React.ReactNode }) {
-  const { setNodeRef, isOver } = useDroppable({ id: `allday-${dayName}-${dayNumber}` });
+function AllDayDropZone({ dateKey, children }: { dateKey: string; children: React.ReactNode }) {
+  // 2026-01-30: Use dateKey (YYYY-MM-DD) as authoritative target date
+  // Format: allday|week|YYYY-MM-DD (distinguished from daily view: allday|{techId}|YYYY-MM-DD)
+  const { setNodeRef, isOver } = useDroppable({ id: `allday|week|${dateKey}` });
 
   // Full-cell hit area: the droppable rect must match the grid cell height, not just content height.
   return (
@@ -87,11 +88,12 @@ function AllDayDropZone({ dayName, dayNumber, children }: { dayName: string; day
 
 /** Quarter-hour drop zone (15-min increments) */
 function QuarterDropZone({ id }: { id: string }) {
-  // DEV assertion: weekly timed IDs must be exactly 5 segments (weekly-{Dow}-{HH}-{MM}-{DD})
-  if (process.env.NODE_ENV === 'development' && id.startsWith('weekly-')) {
-    const segments = id.split('-');
-    if (segments.length !== 5) {
-      throw new Error(`Timed droppable id missing minutes: ${id} (expected 5 segments, got ${segments.length})`);
+  // DEV assertion: weekly timed IDs must be exactly 4 segments (weekly|{YYYY-MM-DD}|{HH}|{MM})
+  // 2026-01-30: Updated format to include full date for unambiguous month-boundary handling
+  if (process.env.NODE_ENV === 'development' && id.startsWith('weekly|')) {
+    const segments = id.split('|');
+    if (segments.length !== 4) {
+      console.warn(`Timed droppable id has unexpected format: ${id} (expected 4 segments, got ${segments.length})`);
     }
   }
   const { setNodeRef, isOver } = useDroppable({ id });
@@ -105,9 +107,8 @@ function QuarterDropZone({ id }: { id: string }) {
 
 /** Drop zone component for hourly slots in weekly view */
 function HourlyDropZone({
-  dayName,
+  dateKey,
   hour,
-  dayNumber,
   dayEvents = [],
   laneMap,
   density,
@@ -120,9 +121,8 @@ function HourlyDropZone({
   onUnschedule,
   timeFormat,
 }: {
-  dayName: string;
+  dateKey: string; // 2026-01-30: Use full date key (YYYY-MM-DD) for unambiguous targeting
   hour: number;
-  dayNumber: number;
   dayEvents?: CalendarEvent[];
   laneMap?: Map<string, { laneIndex: number; totalLanes: number }>;
   density: CalendarDensity;
@@ -144,7 +144,8 @@ function HourlyDropZone({
     <div className={`border-r ${DENSITY_STYLES[density].row} bg-background relative`} style={{ minHeight: `${rowHeight}px` }}>
       <div className="absolute inset-0 flex flex-col pointer-events-none">
         {[0, 15, 30, 45].map((m) => (
-          <QuarterDropZone key={m} id={`weekly-${dayName}-${hour}-${m}-${dayNumber}`} />
+          // 2026-01-30: Format: weekly|{YYYY-MM-DD}|{hour}|{minute}
+          <QuarterDropZone key={m} id={`weekly|${dateKey}|${hour}|${m}`} />
         ))}
       </div>
 
@@ -210,6 +211,7 @@ interface AllDayRowProps {
   handleClientClick: (client: any, event: CalendarEvent, focusSchedule?: boolean) => void;
   savingJobIds?: Set<string>;
   timeFormat?: "12h" | "24h";
+  onUnschedule?: (assignmentId: string, version: number) => void;
 }
 
 function AllDayRow({
@@ -224,6 +226,7 @@ function AllDayRow({
   handleClientClick,
   savingJobIds,
   timeFormat = "12h",
+  onUnschedule,
 }: AllDayRowProps) {
   // Calculate max all-day events across all days for this week
   const maxAllDayCount = useMemo(() => {
@@ -272,36 +275,30 @@ function AllDayRow({
         const hiddenCount = Math.max(0, allDayEvents.length - ALLDAY_MAX_VISIBLE);
 
         return (
-          <AllDayDropZone key={`${dayData.dayName}-allday`} dayName={dayData.dayName} dayNumber={dayData.dayNumber}>
+          <AllDayDropZone key={`${dayData.dayName}-allday`} dateKey={dayData.dateKey}>
             <div className="p-1 space-y-1">
               {visibleEvents.map((event) => {
                 const client = findClientByEvent(clients, event);
                 const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
                 const isOverdue = isCalendarEventOverdue(event);
                 return client ? (
-                  <EventPreviewPopover
+                  <JobCard
                     key={event.assignmentId}
-                    event={event.raw || event}
+                    id={event.assignmentId}
                     client={client}
-                    technicians={technicians}
-                    isSaving={isSaving}
+                    assignment={event.raw}
+                    inCalendar
+                    onClick={() => handleClientClick(client, event)}
+                    onReschedule={() => handleClientClick(client, event, true)}
+                    onUnschedule={onUnschedule}
+                    isCompleted={event.completed}
                     isOverdue={isOverdue}
+                    isSaving={isSaving}
+                    technicianColor={getTechnicianColor(event.raw)}
+                    densityStyle={DENSITY_STYLES[density].card}
+                    technicians={technicians}
                     timeFormat={timeFormat}
-                  >
-                    <DraggableClient
-                      id={event.assignmentId}
-                      client={client}
-                      inCalendar
-                      onClick={() => handleClientClick(client, event)}
-                      isCompleted={event.completed}
-                      isOverdue={isOverdue}
-                      assignment={event.raw}
-                      technicianColor={getTechnicianColor(event.raw)}
-                      densityStyle={DENSITY_STYLES[density].card}
-                      isSaving={isSaving}
-                      timeFormat={timeFormat}
-                    />
-                  </EventPreviewPopover>
+                  />
                 ) : null;
               })}
               {hiddenCount > 0 && !isExpanded && (
@@ -471,6 +468,7 @@ export function CalendarGridWeek({
         handleClientClick={handleClientClick}
         savingJobIds={savingJobIds}
         timeFormat={regional.timeFormat}
+        onUnschedule={onUnschedule}
       />
 
       {/* Hourly Slots - wrapped in relative container for "Now" line */}
@@ -499,9 +497,8 @@ export function CalendarGridWeek({
             {weekDaysData.map((dayData) => (
               <MemoizedHourlyDropZone
                 key={`${dayData.dayName}-${h.hour}`}
-                dayName={dayData.dayName}
+                dateKey={dayData.dateKey}
                 hour={h.hour}
-                dayNumber={dayData.dayNumber}
                 dayEvents={dayData.dayEvents}
                 laneMap={dayData.laneMap}
                 density={density}

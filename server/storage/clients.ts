@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { eq, and, inArray, sql, or, ilike, gte, lte, isNull, isNotNull, desc } from "drizzle-orm";
-import { clients, clientParts, equipment, calendarAssignments, locationEquipment } from "@shared/schema";
+import { clients, clientParts, equipment, jobs, locationEquipment } from "@shared/schema";
 import type { InsertClient, Client, InsertLocationEquipment, UpdateLocationEquipment } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset, escapeLike } from "./base";
 
@@ -421,55 +421,67 @@ export class ClientRepository extends BaseRepository {
   }
 
   /**
-   * Get calendar assignments for a location
-   * Uses locationId as the canonical reference
+   * Get scheduled jobs for a location (replaces getAssignmentsByClient)
+   * MODEL A: Scheduling is on jobs table
    */
   async getAssignmentsByClient(companyId: string, locationId: string) {
     return await db
       .select()
-      .from(calendarAssignments)
+      .from(jobs)
       .where(
         and(
-          eq(calendarAssignments.companyId, companyId),
-          eq(calendarAssignments.locationId, locationId)
+          eq(jobs.companyId, companyId),
+          eq(jobs.locationId, locationId),
+          isNull(jobs.deletedAt),
+          isNotNull(jobs.scheduledStart)
         )
       )
-      .orderBy(calendarAssignments.scheduledDate);
+      .orderBy(jobs.scheduledStart);
   }
 
   /**
-   * Get all calendar assignments for a company
+   * Get all scheduled jobs for a company (replaces getAllCalendarAssignments)
+   * MODEL A: Scheduling is on jobs table
    */
   async getAllCalendarAssignments(companyId: string) {
     return await db
       .select()
-      .from(calendarAssignments)
-      .where(eq(calendarAssignments.companyId, companyId))
-      .orderBy(calendarAssignments.scheduledDate);
-  }
-/**
- * Get calendar assignments for a company within a date range (SAFE for list pages)
- * NOTE: scheduledDate is assumed to be stored as YYYY-MM-DD text (lexicographic compare works).
- */
-async getCalendarAssignmentsInRange(
-  companyId: string,
-  args: { start: string; end: string; limit: number }
-) {
-  const limit = clampLimit(args.limit, 5000); // hard cap (adjust if you want lower)
-
-  return await db
-    .select()
-    .from(calendarAssignments)
-    .where(
-      and(
-        eq(calendarAssignments.companyId, companyId),
-        gte(calendarAssignments.scheduledDate, args.start),
-        lte(calendarAssignments.scheduledDate, args.end)
+      .from(jobs)
+      .where(
+        and(
+          eq(jobs.companyId, companyId),
+          isNull(jobs.deletedAt),
+          isNotNull(jobs.scheduledStart)
+        )
       )
-    )
-    .orderBy(calendarAssignments.scheduledDate)
-    .limit(limit);
-}
+      .orderBy(jobs.scheduledStart);
+  }
+
+  /**
+   * Get scheduled jobs for a company within a date range
+   * MODEL A: Scheduling is on jobs table
+   */
+  async getCalendarAssignmentsInRange(
+    companyId: string,
+    args: { start: string; end: string; limit: number }
+  ) {
+    const limit = clampLimit(args.limit, 5000);
+
+    return await db
+      .select()
+      .from(jobs)
+      .where(
+        and(
+          eq(jobs.companyId, companyId),
+          isNull(jobs.deletedAt),
+          isNotNull(jobs.scheduledStart),
+          gte(jobs.scheduledStart, new Date(args.start)),
+          lte(jobs.scheduledStart, new Date(args.end))
+        )
+      )
+      .orderBy(jobs.scheduledStart)
+      .limit(limit);
+  }
 
   /**
    * Get location parts
@@ -708,21 +720,35 @@ async getCalendarAssignmentsInRange(
   }
 
   /**
-   * Cleanup invalid calendar assignments (assignments in months not in selectedMonths)
-   * Uses locationId as the canonical reference
+   * Cleanup scheduled jobs outside allowed PM months (unschedule them)
+   * MODEL A: Operates on jobs table, clears scheduling fields instead of deleting
    */
   async cleanupInvalidCalendarAssignments(
     companyId: string,
     locationId: string,
     selectedMonths: number[]
   ): Promise<{ removedCount: number }> {
+    if (selectedMonths.length === 0) {
+      return { removedCount: 0 };
+    }
+
+    // Build month check: EXTRACT(MONTH FROM scheduled_start) NOT IN (selectedMonths)
+    const monthList = selectedMonths.join(', ');
     const result = await db
-      .delete(calendarAssignments)
+      .update(jobs)
+      .set({
+        scheduledStart: null,
+        scheduledEnd: null,
+        isAllDay: false,
+        updatedAt: new Date(),
+      })
       .where(
         and(
-          eq(calendarAssignments.companyId, companyId),
-          eq(calendarAssignments.locationId, locationId),
-          sql`${calendarAssignments.month} NOT IN (${sql.join(selectedMonths.map(m => sql`${m}`), sql`, `)})`
+          eq(jobs.companyId, companyId),
+          eq(jobs.locationId, locationId),
+          isNull(jobs.deletedAt),
+          isNotNull(jobs.scheduledStart),
+          sql`EXTRACT(MONTH FROM ${jobs.scheduledStart})::int NOT IN (${sql.raw(monthList)})`
         )
       )
       .returning();

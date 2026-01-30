@@ -153,8 +153,8 @@ export function JobStatusTimeline({ jobId, defaultOpen = false }: JobStatusTimel
 }
 
 function TimelineEvent({ event }: { event: DisplayEvent }) {
-  const fromDisplay = getJobStatusDisplay(event.fromStatus, null);
-  const toDisplay = getJobStatusDisplay(event.toStatus, null);
+  const fromDisplay = getJobStatusDisplay({ status: event.fromStatus });
+  const toDisplay = getJobStatusDisplay({ status: event.toStatus });
   const changedAt = new Date(event.changedAt);
   const relativeTime = formatDistanceToNow(changedAt, { addSuffix: true });
   const exactTime = format(changedAt, "MMM d, yyyy h:mm a");

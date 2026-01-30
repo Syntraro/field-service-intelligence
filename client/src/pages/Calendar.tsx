@@ -6,6 +6,7 @@ import { JobDetailDialog } from "@/components/JobDetailDialog";
 import { PartsDialog } from "@/components/PartsDialog";
 import { DiagnosticsPanel } from "@/components/calendar/DiagnosticsPanel";
 import { logDrag, isDiagnosticsEnabled } from "@/lib/calendarDiagnostics";
+import { IS_DEV } from "@/lib/devFlags";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -33,10 +34,11 @@ import {
   CalendarGridWeek,
   CalendarGridWeekTechnicians,
   CalendarGridDay,
+  CalendarGridDayJobber, // Jobber-style day grid (2026-01-28)
   ScheduleJobModal,
 } from "@/components/calendar";
 import { useCompanyRegionalSettings } from "@/hooks/useCompanyRegionalSettings";
-import { DraggableClient } from "@/components/calendar/DraggableClient";
+import { JobCard } from "@/components/calendar/JobCard";
 import { toClientsArray, resolveClientForCalendarEvent } from "@/components/calendar/calendarClientLookup";
 
 // ============================================================================
@@ -287,13 +289,15 @@ export default function Calendar() {
   }, [view, currentDate]);
 
   // Helper to calculate parts from assignments with optional date tagging
+  // Uses canonical scheduledDate field (YYYY-MM-DD string)
   const calculatePartsWithDates = (assignments: any[]) => {
     const partsList: Array<{ description: string; quantity: number; date?: string }> = [];
 
     assignments.forEach((assignment: any) => {
       const clientPartsList = bulkParts[getLocationId(assignment)] || [];
-      const assignmentDate = new Date(assignment.year, assignment.month - 1, assignment.day);
-      const dateKey = assignmentDate.toISOString().split('T')[0];
+      // Use scheduledDate directly (canonical field), or parse from startAt/date
+      const dateKey = assignment.scheduledDate || assignment.date ||
+        (assignment.startAt ? assignment.startAt.split('T')[0] : null);
 
       clientPartsList.forEach((cp: any) => {
         const part = cp.part;
@@ -350,6 +354,17 @@ export default function Calendar() {
     queryKey: ['/api/company-settings'],
   });
 
+  // Business hours for Day View grey-out and auto-scroll
+  const { data: businessHoursData } = useQuery<{ hours: Array<{
+    dayOfWeek: number;
+    isOpen: boolean;
+    startMinutes: number | null;
+    endMinutes: number | null;
+  }> }>({
+    queryKey: ['/api/company/business-hours'],
+    staleTime: 5 * 60 * 1000, // 5 minutes
+  });
+
   // ========================================
   // Drag/Drop Mutations Hook (with optimistic UI)
   // ========================================
@@ -364,6 +379,7 @@ export default function Calendar() {
     clearDay,
     toggleComplete,
     isSavingDrag,
+    isSavingUnscheduled, // 2026-01-30: Only for schedule/unschedule ops (sidebar loading)
     savingJobIds,
     invalidateCalendarQueries,
     canSchedule,
@@ -474,18 +490,20 @@ export default function Calendar() {
         '[data-testid^="assigned-client-"], [data-testid^="unscheduled-client-"], [data-testid^="event-chip-"]'
       );
       if (!draggable) return;
-      // Start a 250ms timer; if handleDragStart doesn't clear it, warn
-      if (missedDragTimerRef.current) clearTimeout(missedDragTimerRef.current);
-      missedDragTimerRef.current = setTimeout(() => {
-        console.warn('[DRAG-WARN] pointerdown without drag-start within 250ms', {
-          targetTag: target.tagName,
-          targetTestId: target.getAttribute('data-testid'),
-          draggableTestId: (draggable as HTMLElement).getAttribute('data-testid'),
-          clientX: e.clientX,
-          clientY: e.clientY,
-        });
-        missedDragTimerRef.current = null;
-      }, 250);
+      // Start a 250ms timer; if handleDragStart doesn't clear it, warn (dev only)
+      if (IS_DEV) {
+        if (missedDragTimerRef.current) clearTimeout(missedDragTimerRef.current);
+        missedDragTimerRef.current = setTimeout(() => {
+          console.warn('[DRAG-WARN] pointerdown without drag-start within 250ms', {
+            targetTag: target.tagName,
+            targetTestId: target.getAttribute('data-testid'),
+            draggableTestId: (draggable as HTMLElement).getAttribute('data-testid'),
+            clientX: e.clientX,
+            clientY: e.clientY,
+          });
+          missedDragTimerRef.current = null;
+        }, 250);
+      }
     };
     document.addEventListener('pointerdown', handler, { capture: true });
     return () => document.removeEventListener('pointerdown', handler, { capture: true });
@@ -502,6 +520,15 @@ export default function Calendar() {
       missedDragTimerRef.current = null;
     }
 
+    // DEV-only: comprehensive drag start logging (2026-01-29)
+    if (IS_DEV) {
+      console.log('[DnD] onDragStart:', {
+        activeId: activeIdValue,
+        activeData: event.active.data?.current,
+        activeRect: event.active.rect?.current,
+      });
+    }
+
     // Diagnostics: log drag start
     if (isDiagnosticsEnabled()) {
       const isExistingCalendarAssignment = events.some((a: any) => a.id === activeIdValue);
@@ -516,6 +543,18 @@ export default function Calendar() {
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
     setActiveId(null);
+
+    // DEV-only: comprehensive drag end logging (2026-01-29)
+    if (IS_DEV) {
+      console.log('[DnD] onDragEnd:', {
+        activeId: active.id,
+        activeData: active.data?.current,
+        overId: over?.id ?? 'NULL',
+        overData: over?.data?.current ?? 'N/A',
+        overRect: over?.rect ?? 'N/A',
+        collision: event.collisions?.map(c => ({ id: c.id, data: c.data })) ?? [],
+      });
+    }
 
     if (!DRAG_ENABLED) return;
 
@@ -553,16 +592,31 @@ export default function Calendar() {
     const overId = over.id as string;
 
     // If dropping on the same container it started in (or no drop zone specified), it's just a click
-    if (active.data?.current?.sortable?.index === over?.data?.current?.sortable?.index && !overId.startsWith('day-') && !overId.startsWith('allday-') && !overId.startsWith('weekly-') && !overId.startsWith('daily-') && overId !== 'unscheduled-panel') {
+    // Note: Uses | delimiter for calendar drop zones to avoid splitting UUIDs
+    // 2026-01-29: Added techweek| to fix tech week view drops being incorrectly filtered
+    if (active.data?.current?.sortable?.index === over?.data?.current?.sortable?.index && !overId.startsWith('day-') && !overId.startsWith('allday|') && !overId.startsWith('weekly|') && !overId.startsWith('daily|') && !overId.startsWith('techweek|') && overId !== 'unscheduled-panel') {
       return;
     }
 
     // Helper to determine target type from overId
-    const getTargetType = (id: string): 'month-day' | 'week-allday' | 'week-timed' | 'day-timed' | 'unscheduled-panel' | undefined => {
+    // Note: Uses | delimiter for calendar drop zones to avoid splitting UUIDs
+    // 2026-01-28: Added 'day-allday' for Jobber-style day view all-day lane
+    // 2026-01-29: Added 'techweek' for weekly technician view
+    const getTargetType = (id: string): 'month-day' | 'week-allday' | 'day-allday' | 'week-timed' | 'day-timed' | 'techweek' | 'unscheduled-panel' | undefined => {
       if (id.startsWith('day-')) return 'month-day';
-      if (id.startsWith('allday-')) return 'week-allday';
-      if (id.startsWith('weekly-')) return 'week-timed';
-      if (id.startsWith('daily-')) return 'day-timed';
+      // Distinguish between weekly all-day (allday|{dayName}|{dayNumber}) and
+      // daily all-day (allday|{techId}|{YYYY-MM-DD}) by checking if third segment contains '-'
+      if (id.startsWith('allday|')) {
+        const parts = id.split('|');
+        if (parts.length === 3 && parts[2].includes('-')) {
+          return 'day-allday'; // Daily view: YYYY-MM-DD format
+        }
+        return 'week-allday'; // Weekly view: numeric dayNumber
+      }
+      if (id.startsWith('weekly|')) return 'week-timed';
+      if (id.startsWith('daily|')) return 'day-timed';
+      // Weekly technician view: techweek|{techId}|{YYYY-MM-DD} or techweek|unassigned|{YYYY-MM-DD}
+      if (id.startsWith('techweek|')) return 'techweek';
       if (id === 'unscheduled-panel') return 'unscheduled-panel';
       return undefined;
     };
@@ -594,7 +648,7 @@ export default function Calendar() {
         return v;
       }
       // Version missing or invalid - refetch and abort this mutation
-      if (process.env.NODE_ENV === 'development') {
+      if (IS_DEV) {
         console.warn('[Calendar] requireJobVersion: Missing or invalid jobVersion', {
           id: item?.id,
           jobId: item?.jobId,
@@ -622,7 +676,7 @@ export default function Calendar() {
         return v;
       }
       // Version missing or invalid - refetch and abort this mutation
-      if (process.env.NODE_ENV === 'development') {
+      if (IS_DEV) {
         console.warn('[Calendar] requireAssignmentVersion: Missing or invalid version', {
           id: item?.id,
           assignmentId: item?.assignmentId,
@@ -636,6 +690,42 @@ export default function Calendar() {
       });
       invalidateCalendarQueries();
       return null;
+    };
+
+    // =========================================================================
+    // WEEKLY VIEW DATE HELPER - Compute target date from dayName
+    // =========================================================================
+    // Weekly view droppable IDs encode dayName (Mon/Tue/...) but NOT month/year.
+    // When a week spans two months (e.g., Jan 27 - Feb 2), we must compute the
+    // correct target date from the weekStart + day index, not use the view's month.
+    // =========================================================================
+    /**
+     * Compute the target date for a weekly view drop.
+     * @param dayName - Day abbreviation from droppable ID (e.g., "Sun", "Mon")
+     * @returns { targetDay, targetMonth, targetYear } for the correct date
+     */
+    const getWeeklyTargetDate = (dayName: string): { targetDay: number; targetMonth: number; targetYear: number } | null => {
+      // Map dayName to week index based on weekStartsOn setting
+      const dayNames = regional.weekStartsOn === "sunday"
+        ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+      const dayIndex = dayNames.indexOf(dayName);
+      if (dayIndex === -1) {
+        console.error('[Calendar] Invalid dayName in weekly droppable ID:', dayName);
+        return null;
+      }
+
+      // Compute target date from weekStart + day index
+      const weekStartDate = getWeekStart(currentDate, regional.weekStartsOn);
+      const targetDate = new Date(weekStartDate);
+      targetDate.setDate(weekStartDate.getDate() + dayIndex);
+
+      return {
+        targetDay: targetDate.getDate(),
+        targetMonth: targetDate.getMonth() + 1, // 1-based for API
+        targetYear: targetDate.getFullYear(),
+      };
     };
 
     // Check if dropping on a monthly view day
@@ -680,73 +770,264 @@ export default function Calendar() {
           allDay: true, // Month view drops are all-day events
         });
       }
-    } else if (overId.startsWith('allday-')) {
-      // Dropped on all-day slot in weekly view (allday-{dayName}-{dayNumber})
-      const parts = overId.replace('allday-', '').split('-');
-      const targetDay = parseInt(parts[1]);
+    } else if (overId.startsWith('allday|')) {
+      // All-day drop zone - weekly or daily view
+      // 2026-01-30: Updated formats for unambiguous date handling:
+      // - Weekly format: allday|week|YYYY-MM-DD (new) or allday|{dayName}|{dayNumber} (legacy)
+      // - Daily format: allday|{techId}|YYYY-MM-DD (techId is UUID or "unassigned")
+      const parts = overId.split('|');
 
-      if (isExistingCalendarAssignment) {
-        const currentAssignment = events.find((a: any) => a.id === activeIdValue);
-        // Update if day changed OR if moving from a time slot to all-day (scheduledHour becomes null)
-        if (currentAssignment && (currentAssignment.day !== targetDay || currentAssignment.scheduledHour !== null)) {
-          const version = requireAssignmentVersion(currentAssignment);
-          if (version === null) return; // Refetch triggered, abort mutation
+      // Detect format: "week" = new weekly, UUID/unassigned = daily, dayName = legacy weekly
+      const isNewWeeklyAllDay = parts.length === 3 && parts[1] === 'week' && parts[2].includes('-');
+      const isDailyAllDay = parts.length === 3 && parts[1] !== 'week' && parts[2].includes('-');
+
+      if (isNewWeeklyAllDay) {
+        // NEW weekly view all-day: allday|week|YYYY-MM-DD
+        const dateStr = parts[2]; // YYYY-MM-DD
+        const [targetYr, targetMo, targetDay] = dateStr.split('-').map(Number);
+
+        // Validate parsed date
+        if (isNaN(targetYr) || isNaN(targetMo) || isNaN(targetDay)) {
+          console.error('[Calendar] Invalid weekly all-day target id (bad date):', overId, { parts });
+          toast({ title: "Invalid drop target. Please refresh.", variant: "destructive" });
+          return;
+        }
+
+        // DEV diagnostic
+        if (IS_DEV) {
+          console.log('[DROP] weekly all-day target (new format):', {
+            overId,
+            targetDate: dateStr,
+            sourceId: activeIdValue,
+            isExisting: isExistingCalendarAssignment,
+          });
+        }
+
+        if (isExistingCalendarAssignment) {
+          const currentAssignment = events.find((a: any) => a.id === activeIdValue);
+          if (currentAssignment && (currentAssignment.day !== targetDay || currentAssignment.scheduledHour !== null)) {
+            const version = requireAssignmentVersion(currentAssignment);
+            if (version === null) return;
+            updateAssignmentMutation.mutate({
+              id: activeIdValue,
+              day: targetDay,
+              targetMonth: targetMo,
+              targetYear: targetYr,
+              scheduledHour: null,
+              allDay: true,
+              version,
+            });
+          }
+        } else if (unscheduledItem && hasExistingAssignment) {
+          const version = requireAssignmentVersion(unscheduledItem);
+          if (version === null) return;
           updateAssignmentMutation.mutate({
-            id: activeIdValue,
+            id: unscheduledItem.assignmentId,
             day: targetDay,
+            targetMonth: targetMo,
+            targetYear: targetYr,
             scheduledHour: null,
             allDay: true,
             version,
           });
+        } else if (unscheduledItem) {
+          const jobVersion = requireJobVersion(unscheduledItem);
+          if (jobVersion === null) return;
+          createAssignmentMutation.mutate({
+            jobId: unscheduledItem.id || unscheduledItem.jobId,
+            day: targetDay,
+            targetMonth: targetMo,
+            targetYear: targetYr,
+            version: jobVersion,
+            allDay: true,
+          });
         }
-      } else if (unscheduledItem && hasExistingAssignment) {
-        // Update existing unscheduled assignment to current view's month/day
-        const version = requireAssignmentVersion(unscheduledItem);
-        if (version === null) return; // Refetch triggered, abort mutation
-        updateAssignmentMutation.mutate({
-          id: unscheduledItem.assignmentId,
-          day: targetDay,
-          scheduledHour: null,
-          allDay: true,
-          targetMonth: month,
-          targetYear: year,
-          version,
-        });
-      } else if (unscheduledItem) {
-        // Create new assignment from unscheduled job - use ITEM's original month/year
-        const jobVersion = requireJobVersion(unscheduledItem);
-        if (jobVersion === null) return; // Refetch triggered, abort mutation
-        createAssignmentMutation.mutate({
-          jobId: unscheduledItem.id || unscheduledItem.jobId,
-          day: targetDay,
-          targetMonth: unscheduledItem.month ?? month,
-          targetYear: unscheduledItem.year ?? year,
-          version: jobVersion,
-          allDay: true,
-        });
-      }
-    } else if (overId.startsWith('weekly-')) {
-      // Dropped on timed slot in weekly view (weekly-{dayName}-{hour}-{minute}-{dayNumber})
-      // Contract: exactly 5 segments after split → [prefix, dayName, hour, minute, dayNumber]
-      const parts = overId.replace('weekly-', '').split('-');
-      const hour = parseInt(parts[1]);
-      const scheduledStartMinutes = parseInt(parts[2]); // 0/15/30/45
-      const targetDay = parseInt(parts[3]);
+      } else if (isDailyAllDay) {
+        // Daily view all-day lane: allday|{techIdOrUnassigned}|{YYYY-MM-DD}
+        const technicianId = parts[1]; // UUID or "unassigned"
+        const dateStr = parts[2]; // YYYY-MM-DD
+        const [targetYr, targetMo, targetDay] = dateStr.split('-').map(Number);
 
-      // Strict: reject timed target if minute is missing or NaN
-      if (parts.length < 4 || isNaN(hour) || isNaN(scheduledStartMinutes) || isNaN(targetDay)) {
-        console.error('[Calendar] Invalid weekly timed target id (missing minute):', overId, { parts });
-        toast({ title: "Invalid drop target time. Please refresh.", variant: "destructive" });
-        return;
+        // Validate parsed date
+        if (isNaN(targetYr) || isNaN(targetMo) || isNaN(targetDay)) {
+          console.error('[Calendar] Invalid daily all-day target id (bad date):', overId, { parts });
+          toast({ title: "Invalid drop target. Please refresh.", variant: "destructive" });
+          return;
+        }
+
+        // DEV diagnostic
+        if (IS_DEV) {
+          console.log('[DROP] daily all-day target:', {
+            overId,
+            technicianId,
+            targetDate: dateStr,
+            sourceId: activeIdValue,
+            isExisting: isExistingCalendarAssignment,
+          });
+        }
+
+        if (isExistingCalendarAssignment) {
+          const currentAssignment = events.find((a: any) => a.id === activeIdValue);
+          if (currentAssignment) {
+            const version = requireAssignmentVersion(currentAssignment);
+            if (version === null) return;
+            updateAssignmentMutation.mutate({
+              id: activeIdValue,
+              day: targetDay,
+              targetMonth: targetMo,
+              targetYear: targetYr,
+              scheduledHour: null,
+              allDay: true,
+              version,
+              technicianUserId: technicianId !== 'unassigned' ? technicianId : null,
+            });
+          }
+        } else if (unscheduledItem && hasExistingAssignment) {
+          const version = requireAssignmentVersion(unscheduledItem);
+          if (version === null) return;
+          updateAssignmentMutation.mutate({
+            id: unscheduledItem.assignmentId,
+            day: targetDay,
+            targetMonth: targetMo,
+            targetYear: targetYr,
+            scheduledHour: null,
+            allDay: true,
+            version,
+            technicianUserId: technicianId !== 'unassigned' ? technicianId : null,
+          });
+        } else if (unscheduledItem) {
+          const jobVersion = requireJobVersion(unscheduledItem);
+          if (jobVersion === null) return;
+          createAssignmentMutation.mutate({
+            jobId: unscheduledItem.id || unscheduledItem.jobId,
+            day: targetDay,
+            targetMonth: targetMo,
+            targetYear: targetYr,
+            version: jobVersion,
+            allDay: true,
+            technicianUserId: technicianId !== 'unassigned' ? technicianId : null,
+          });
+        }
+      } else {
+        // LEGACY weekly view all-day lane: allday|{dayName}|{dayNumber}
+        // Backward compatibility - use getWeeklyTargetDate to compute correct date
+        const dayName = parts[1]; // e.g., "Sun", "Mon"
+        const weeklyTarget = getWeeklyTargetDate(dayName);
+        if (!weeklyTarget) {
+          toast({ title: "Invalid drop target. Please refresh.", variant: "destructive" });
+          return;
+        }
+        const { targetDay, targetMonth: correctMonth, targetYear: correctYear } = weeklyTarget;
+
+        if (isExistingCalendarAssignment) {
+          const currentAssignment = events.find((a: any) => a.id === activeIdValue);
+          if (currentAssignment && (currentAssignment.day !== targetDay || currentAssignment.scheduledHour !== null)) {
+            const version = requireAssignmentVersion(currentAssignment);
+            if (version === null) return;
+            updateAssignmentMutation.mutate({
+              id: activeIdValue,
+              day: targetDay,
+              targetMonth: correctMonth,
+              targetYear: correctYear,
+              scheduledHour: null,
+              allDay: true,
+              version,
+            });
+          }
+        } else if (unscheduledItem && hasExistingAssignment) {
+          const version = requireAssignmentVersion(unscheduledItem);
+          if (version === null) return;
+          updateAssignmentMutation.mutate({
+            id: unscheduledItem.assignmentId,
+            day: targetDay,
+            scheduledHour: null,
+            allDay: true,
+            targetMonth: correctMonth,
+            targetYear: correctYear,
+            version,
+          });
+        } else if (unscheduledItem) {
+          const jobVersion = requireJobVersion(unscheduledItem);
+          if (jobVersion === null) return;
+          createAssignmentMutation.mutate({
+            jobId: unscheduledItem.id || unscheduledItem.jobId,
+            day: targetDay,
+            targetMonth: correctMonth,
+            targetYear: correctYear,
+            version: jobVersion,
+            allDay: true,
+          });
+        }
+      }
+    } else if (overId.startsWith('weekly|')) {
+      // Dropped on timed slot in weekly view
+      // 2026-01-30: New format: weekly|YYYY-MM-DD|{hour}|{minute} (4 segments)
+      // Legacy format: weekly|{dayName}|{hour}|{minute}|{dayNumber} (5 segments)
+      const parts = overId.split('|');
+
+      let targetDay: number;
+      let correctMonth: number;
+      let correctYear: number;
+      let hour: number;
+      let scheduledStartMinutes: number;
+
+      // Detect new format (4 segments with YYYY-MM-DD) vs legacy (5 segments with dayName)
+      const isNewFormat = parts.length === 4 && parts[1].includes('-');
+
+      if (isNewFormat) {
+        // New format: weekly|YYYY-MM-DD|{hour}|{minute}
+        const dateStr = parts[1]; // YYYY-MM-DD
+        hour = parseInt(parts[2]);
+        scheduledStartMinutes = parseInt(parts[3]); // 0/15/30/45
+
+        const [yr, mo, day] = dateStr.split('-').map(Number);
+        if (isNaN(yr) || isNaN(mo) || isNaN(day) || isNaN(hour) || isNaN(scheduledStartMinutes)) {
+          console.error('[Calendar] Invalid weekly timed target id (bad date):', overId, { parts });
+          toast({ title: "Invalid drop target time. Please refresh.", variant: "destructive" });
+          return;
+        }
+        targetDay = day;
+        correctMonth = mo;
+        correctYear = yr;
+      } else {
+        // Legacy format: weekly|{dayName}|{hour}|{minute}|{dayNumber}
+        if (parts.length !== 5) {
+          console.error('[Calendar] Invalid weekly timed target id (wrong segment count):', overId, { parts });
+          toast({ title: "Invalid drop target time. Please refresh.", variant: "destructive" });
+          return;
+        }
+
+        const dayName = parts[1]; // e.g., "Sun", "Mon"
+        hour = parseInt(parts[2]);
+        scheduledStartMinutes = parseInt(parts[3]); // 0/15/30/45
+
+        if (isNaN(hour) || isNaN(scheduledStartMinutes)) {
+          console.error('[Calendar] Invalid weekly timed target id (missing segment):', overId, { parts });
+          toast({ title: "Invalid drop target time. Please refresh.", variant: "destructive" });
+          return;
+        }
+
+        // Use legacy helper to compute correct date from dayName
+        const weeklyTarget = getWeeklyTargetDate(dayName);
+        if (!weeklyTarget) {
+          toast({ title: "Invalid drop target. Please refresh.", variant: "destructive" });
+          return;
+        }
+        targetDay = weeklyTarget.targetDay;
+        correctMonth = weeklyTarget.targetMonth;
+        correctYear = weeklyTarget.targetYear;
       }
 
       // DEV diagnostic: log intended drop time for minute-precision tracing
-      if (process.env.NODE_ENV === 'development') {
+      if (IS_DEV) {
         console.log('[DROP] weekly timed target:', {
           overId,
+          format: isNewFormat ? 'new' : 'legacy',
           intendedHour: hour,
           intendedMinute: scheduledStartMinutes,
           targetDay,
+          correctMonth,
+          correctYear,
           sourceId: activeIdValue,
           isExisting: isExistingCalendarAssignment,
         });
@@ -770,6 +1051,8 @@ export default function Calendar() {
             updateAssignmentMutation.mutate({
               id: activeIdValue,
               day: targetDay,
+              targetMonth: correctMonth,
+              targetYear: correctYear,
               scheduledHour: hour,
               scheduledStartMinutes,
               version,
@@ -779,7 +1062,7 @@ export default function Calendar() {
           }
         }
       } else if (unscheduledItem && hasExistingAssignment) {
-        // Update existing unscheduled assignment to current view's month/day/hour
+        // Update existing unscheduled assignment
         const version = requireAssignmentVersion(unscheduledItem);
         if (version === null) return; // Refetch triggered, abort mutation
         // FIX: Don't use 1440 for timed events
@@ -790,14 +1073,14 @@ export default function Calendar() {
           day: targetDay,
           scheduledHour: hour,
           scheduledStartMinutes,
-          targetMonth: month,
-          targetYear: year,
+          targetMonth: correctMonth,
+          targetYear: correctYear,
           version,
           durationMinutes: duration,
           allDay: false,
         });
       } else if (unscheduledItem) {
-        // Create new assignment from unscheduled job - use ITEM's original month/year
+        // Create new assignment from unscheduled job
         const jobVersion = requireJobVersion(unscheduledItem);
         if (jobVersion === null) return; // Refetch triggered, abort mutation
         createAssignmentMutation.mutate({
@@ -805,31 +1088,32 @@ export default function Calendar() {
           day: targetDay,
           scheduledHour: hour,
           scheduledStartMinutes,
-          targetMonth: unscheduledItem.month ?? month,
-          targetYear: unscheduledItem.year ?? year,
+          targetMonth: correctMonth,
+          targetYear: correctYear,
           version: jobVersion,
         });
       }
-    } else if (overId.startsWith('daily-')) {
-      // Dropped on timed slot in daily view (daily-{technicianId}-{hour}-{minute}-{day}-{month}-{year})
-      // Contract: exactly 6 segments after prefix strip → [techId, hour, minute, day, month, year]
-      const parts = overId.replace('daily-', '').split('-');
-      const technicianId = parts[0];
-      const hour = parseInt(parts[1]);
-      const scheduledStartMinutes = parseInt(parts[2]); // 0/15/30/45
-      const targetDay = parseInt(parts[3]);
-      const targetMonthIdx = parseInt(parts[4]); // 0-based month from Date.getMonth()
-      const targetYr = parseInt(parts[5]);
+    } else if (overId.startsWith('daily|')) {
+      // Dropped on timed slot in daily view (daily|{technicianId}|{hour}|{minute}|{day}|{month}|{year})
+      // Uses | delimiter to avoid splitting UUIDs which contain dashes
+      // Contract: exactly 7 segments after split → [prefix, techId, hour, minute, day, month, year]
+      const parts = overId.split('|');
+      const technicianId = parts[1];
+      const hour = parseInt(parts[2]);
+      const scheduledStartMinutes = parseInt(parts[3]); // 0/15/30/45
+      const targetDay = parseInt(parts[4]);
+      const targetMonthIdx = parseInt(parts[5]); // 0-based month from Date.getMonth()
+      const targetYr = parseInt(parts[6]);
 
       // Strict: reject timed target if minute or any required segment is missing/NaN
-      if (parts.length < 6 || isNaN(hour) || isNaN(scheduledStartMinutes) || isNaN(targetDay) || isNaN(targetMonthIdx) || isNaN(targetYr)) {
-        console.error('[Calendar] Invalid daily timed target id (missing minute or segment):', overId, { parts });
+      if (parts.length !== 7 || isNaN(hour) || isNaN(scheduledStartMinutes) || isNaN(targetDay) || isNaN(targetMonthIdx) || isNaN(targetYr)) {
+        console.error('[Calendar] Invalid daily timed target id (missing segment):', overId, { parts });
         toast({ title: "Invalid drop target time. Please refresh.", variant: "destructive" });
         return;
       }
 
       // DEV diagnostic: log intended drop time for minute-precision tracing
-      if (process.env.NODE_ENV === 'development') {
+      if (IS_DEV) {
         console.log('[DROP] daily timed target:', {
           overId,
           intendedHour: hour,
@@ -864,11 +1148,10 @@ export default function Calendar() {
             version,
             durationMinutes: duration,
             allDay: false, // Explicitly mark as timed event
+            // Assign or unassign technician based on drop target column
+            // null = unassign, UUID = assign to that technician
+            technicianUserId: technicianId !== 'unassigned' ? technicianId : null,
           });
-          // Also assign technician if dropping on a technician column (not unassigned)
-          if (technicianId !== 'unassigned') {
-            assignTechnicians.mutate({ assignmentId: activeIdValue, technicianIds: [technicianId] });
-          }
         }
       } else if (unscheduledItem && hasExistingAssignment) {
         const version = requireAssignmentVersion(unscheduledItem);
@@ -886,9 +1169,12 @@ export default function Calendar() {
           version,
           durationMinutes: duration,
           allDay: false,
+          // 2026-01-29: Include technician assignment from drop target
+          technicianUserId: technicianId !== 'unassigned' ? technicianId : null,
         });
       } else if (unscheduledItem) {
-        // Create new assignment from unscheduled job - use ITEM's original month/year
+        // Create new assignment from unscheduled job
+        // 2026-01-30: Use target date from drop zone, NOT unscheduled item's original date
         const jobVersion = requireJobVersion(unscheduledItem);
         if (jobVersion === null) return; // Refetch triggered, abort mutation
         createAssignmentMutation.mutate({
@@ -896,8 +1182,86 @@ export default function Calendar() {
           day: targetDay,
           scheduledHour: hour,
           scheduledStartMinutes,
-          targetMonth: unscheduledItem.month ?? month,
-          targetYear: unscheduledItem.year ?? year,
+          targetMonth: targetMo,  // Fixed: use target from drop zone, not item's stored month
+          targetYear: targetYr,   // Fixed: use target from drop zone, not item's stored year
+          version: jobVersion,
+          // 2026-01-29: Include technician assignment from drop target
+          technicianUserId: technicianId !== 'unassigned' ? technicianId : null,
+        });
+      }
+    } else if (overId.startsWith('techweek|')) {
+      // Dropped on weekly technician view cell (techweek|{techId}|{dateKey})
+      // Format: techweek|{technicianId or 'unassigned'}|{YYYY-MM-DD}
+      const parts = overId.split('|');
+      if (parts.length !== 3) {
+        console.error('[Calendar] Invalid techweek target id:', overId, { parts });
+        toast({ title: "Invalid drop target. Please refresh.", variant: "destructive" });
+        return;
+      }
+
+      const techIdOrUnassigned = parts[1];
+      const dateKey = parts[2]; // YYYY-MM-DD
+      const [yearStr, monthStr, dayStr] = dateKey.split('-');
+      const targetYear = parseInt(yearStr);
+      const targetMonth = parseInt(monthStr);
+      const targetDay = parseInt(dayStr);
+
+      if (isNaN(targetYear) || isNaN(targetMonth) || isNaN(targetDay)) {
+        console.error('[Calendar] Invalid techweek date:', dateKey);
+        toast({ title: "Invalid drop target date. Please refresh.", variant: "destructive" });
+        return;
+      }
+
+      const technicianUserId = techIdOrUnassigned === 'unassigned' ? null : techIdOrUnassigned;
+
+      if (IS_DEV) {
+        console.log('[DROP] techweek target:', {
+          overId,
+          technicianUserId,
+          targetYear,
+          targetMonth,
+          targetDay,
+          sourceId: activeIdValue,
+          isExisting: isExistingCalendarAssignment,
+        });
+      }
+
+      if (isExistingCalendarAssignment) {
+        const currentAssignment = events.find((a: any) => a.id === activeIdValue);
+        if (currentAssignment) {
+          const version = requireAssignmentVersion(currentAssignment);
+          if (version === null) return; // Refetch triggered, abort mutation
+          updateAssignmentMutation.mutate({
+            id: activeIdValue,
+            day: targetDay,
+            targetMonth,
+            targetYear,
+            technicianUserId,
+            version,
+          });
+        }
+      } else if (unscheduledItem && hasExistingAssignment) {
+        // Update existing unscheduled assignment
+        const version = requireAssignmentVersion(unscheduledItem);
+        if (version === null) return; // Refetch triggered, abort mutation
+        updateAssignmentMutation.mutate({
+          id: unscheduledItem.assignmentId,
+          day: targetDay,
+          targetMonth,
+          targetYear,
+          technicianUserId,
+          version,
+        });
+      } else if (unscheduledItem) {
+        // Create new assignment from unscheduled job
+        const jobVersion = requireJobVersion(unscheduledItem);
+        if (jobVersion === null) return; // Refetch triggered, abort mutation
+        createAssignmentMutation.mutate({
+          jobId: unscheduledItem.id || unscheduledItem.jobId,
+          day: targetDay,
+          targetMonth,
+          targetYear,
+          technicianUserId,
           version: jobVersion,
         });
       }
@@ -934,7 +1298,7 @@ export default function Calendar() {
 
     // Validate version before mutation - no silent 0 fallback
     if (typeof resolvedVersion !== 'number' || !Number.isFinite(resolvedVersion)) {
-      if (process.env.NODE_ENV === 'development') {
+      if (IS_DEV) {
         console.warn('[Calendar] handleRemove: Missing or invalid version', { assignmentId, version, assignment });
       }
       toast({
@@ -1003,16 +1367,18 @@ export default function Calendar() {
       // SAFE: Normalize to array in query function
       const normalized = normalizeArray<any>(data);
       // DEV LOGGING: Log unscheduled jobs received (include version for debugging VERSION_MISMATCH)
-      console.log(`[Calendar] Received ${normalized.length} unscheduled jobs from API`);
-      if (normalized.length > 0) {
-        console.log('[Calendar] First 5 unscheduled jobs:', normalized.slice(0, 5).map((j: any) => ({
-          id: j.id,
-          jobNumber: j.jobNumber,
-          version: j.version,
-          primaryTechnicianId: j.primaryTechnicianId,
-          assignedTechnicianIds: j.assignedTechnicianIds,
-          isAssigned: !!j.primaryTechnicianId || (j.assignedTechnicianIds?.length ?? 0) > 0,
-        })));
+      if (IS_DEV) {
+        console.log(`[Calendar] Received ${normalized.length} unscheduled jobs from API`);
+        if (normalized.length > 0) {
+          console.log('[Calendar] First 5 unscheduled jobs:', normalized.slice(0, 5).map((j: any) => ({
+            id: j.id,
+            jobNumber: j.jobNumber,
+            version: j.version,
+            primaryTechnicianId: j.primaryTechnicianId,
+            assignedTechnicianIds: j.assignedTechnicianIds,
+            isAssigned: !!j.primaryTechnicianId || (j.assignedTechnicianIds?.length ?? 0) > 0,
+          })));
+        }
       }
       return normalized;
     },
@@ -1163,7 +1529,7 @@ export default function Calendar() {
     : 0;
 
   // DEV ASSERTION: events must be an array - catch contract regressions early
-  if (process.env.NODE_ENV === 'development' && data && !Array.isArray(rawEvents)) {
+  if (IS_DEV && data && !Array.isArray(rawEvents)) {
     console.error(
       '[Calendar] API CONTRACT VIOLATION: /api/calendar response.events is not an array:',
       typeof rawEvents,
@@ -1175,7 +1541,7 @@ export default function Calendar() {
   const clients = allClients;
 
   // DEV LOGGING: Log scheduled jobs received from API
-  if (events.length > 0 || process.env.NODE_ENV === 'development') {
+  if (IS_DEV) {
     console.log(`[Calendar] Received ${events.length} scheduled jobs from API`);
     if (events.length > 0) {
       console.log('[Calendar] First 5 scheduled jobs:', events.slice(0, 5).map((a: any) => ({
@@ -1196,7 +1562,7 @@ export default function Calendar() {
 
       // MODEL A DEV ASSERTION: Calendar must receive events with assignmentId
       // If we see scheduledStart without assignmentId, something is wrong
-      if (process.env.NODE_ENV === 'development') {
+      if (IS_DEV) {
         for (const evt of normalized) {
           if ('scheduledStart' in evt && !('assignmentId' in evt)) {
             console.error('[Calendar] MODEL A VIOLATION: received job instead of calendar event', evt);
@@ -1205,7 +1571,7 @@ export default function Calendar() {
       }
 
       // DEV LOGGING: Log normalized events
-      if (normalized.length > 0 || process.env.NODE_ENV === 'development') {
+      if (IS_DEV) {
         console.log(`[Calendar] Normalized ${normalized.length} events from ${events.length} API items`);
         if (normalized.length > 0) {
           console.log('[Calendar] First 5 events:', normalized.slice(0, 5).map(e => ({
@@ -1249,7 +1615,7 @@ export default function Calendar() {
   // Jobs = Scheduled + Unscheduled (open_equals_scheduled_plus_backlog)
   useEffect(() => {
     // Only run in dev or when diagnostics enabled
-    if (process.env.NODE_ENV !== 'development' && !isDiagnosticsEnabled()) {
+    if (!IS_DEV && !isDiagnosticsEnabled()) {
       return;
     }
 
@@ -1304,14 +1670,33 @@ export default function Calendar() {
   );
 
   // Custom collision detection that only checks drop zones (days, all-day, weekly), not individual items
+  // Note: Uses | delimiter for calendar drop zones to avoid splitting UUIDs
   const customCollisionDetection: CollisionDetection = useCallback((args) => {
     // Filter to only check day drop zones, all-day slots, weekly slots, and the unscheduled panel
     const dropZoneContainers = args.droppableContainers.filter(
       (container) => {
         const id = container.id as string;
-        return id.startsWith('day-') || id.startsWith('allday-') || id.startsWith('weekly-') || id.startsWith('daily-') || id === 'unscheduled-panel';
+        // 2026-01-29: Added techweek| for weekly technician view drop zones
+        return id.startsWith('day-') || id.startsWith('allday|') || id.startsWith('weekly|') || id.startsWith('daily|') || id.startsWith('techweek|') || id === 'unscheduled-panel';
       }
     );
+
+    // DEV-only: Log droppable containers summary during drag (throttled to avoid spam) (2026-01-29)
+    if (IS_DEV && activeId) {
+      // Count containers by prefix for debug summary
+      const counts: Record<string, number> = {};
+      dropZoneContainers.forEach((c) => {
+        const id = c.id as string;
+        const prefix = id.split('|')[0] || id.split('-')[0] || 'other';
+        counts[prefix] = (counts[prefix] || 0) + 1;
+      });
+      // Only log if counts changed (simple dedup)
+      const countsKey = JSON.stringify(counts);
+      if ((window as any).__lastDroppableCountsKey !== countsKey) {
+        (window as any).__lastDroppableCountsKey = countsKey;
+        console.log('[DnD] Droppable containers:', counts, 'total:', dropZoneContainers.length);
+      }
+    }
 
     // Prefer pointerWithin for small (15-min) drop zones
     const pointerCollisions = pointerWithin({
@@ -1339,6 +1724,49 @@ export default function Calendar() {
       droppableContainers: dropZoneContainers,
     });
   }, []);
+
+  // OPTIMIZED: 2026-01-30 - Memoized renderItem to prevent sidebar rerenders during drag
+  // FIX: Moved before early returns to satisfy React hooks rules (same number of hooks every render)
+  const renderUnscheduledItem = useCallback((item: any) => {
+    // Parse date from canonical fields (scheduledDate/date/startAt)
+    const dateStr = item.scheduledDate || item.date || (item.startAt ? item.startAt.split('T')[0] : null);
+    const itemDate = dateStr ? new Date(dateStr + 'T00:00:00') : null;
+    const itemYear = itemDate?.getFullYear() ?? new Date().getFullYear();
+    const itemMonth = itemDate ? itemDate.getMonth() + 1 : new Date().getMonth() + 1;
+    const monthLabel = `${MONTH_ABBREV[itemMonth - 1]} '${String(itemYear).slice(-2)}`;
+
+    const now = new Date();
+    const todayYear = now.getFullYear();
+    const todayMonth = now.getMonth() + 1;
+    const isPastMonth =
+      itemYear < todayYear || (itemYear === todayYear && itemMonth < todayMonth);
+
+    // Use helper functions for resilient display
+    const companyName = getUnscheduledCompanyName(item);
+    const locationLabel = getUnscheduledLocationLabel(item);
+
+    // Build client object for click handler and preview
+    const clientData = { companyName, location: locationLabel, id: getLocationId(item) };
+
+    return (
+      <JobCard
+        key={item.id}
+        id={item.id}
+        client={clientData}
+        assignment={item}
+        inCalendar={false}
+        onClick={() => handleClientClick(clientData, item, true)}
+        isSaving={item._optimistic}
+        technicians={technicians}
+        timeFormat={regional?.timeFormat || "12h"}
+        summary={item.summary}
+        monthLabel={monthLabel}
+        isOffMonth={true}
+        isPastMonth={isPastMonth}
+        rawItem={item}
+      />
+    );
+  }, [handleClientClick, technicians, regional?.timeFormat]);
 
   // Show error state if any critical query fails
   if (calendarError || techniciansError) {
@@ -1404,9 +1832,12 @@ export default function Calendar() {
     }
 
     const allWeekEvents = events.filter((a: any) => {
+      // Use canonical date field (scheduledDate/date/startAt)
+      const dateStr = a.scheduledDate || a.date || (a.startAt ? a.startAt.split('T')[0] : null);
+      if (!dateStr) return false;
       for (let i = 0; i < 7; i++) {
-        const date = weekDays[i].date;
-        if (a.year === date.getFullYear() && a.month === date.getMonth() + 1 && a.day === date.getDate()) {
+        const dayKey = weekDays[i].date.toISOString().split('T')[0];
+        if (dateStr === dayKey) {
           return true;
         }
       }
@@ -1502,7 +1933,24 @@ export default function Calendar() {
       sensors={sensors}
       collisionDetection={customCollisionDetection}
       onDragStart={handleDragStart}
+      onDragOver={(event) => {
+        // DEV-only: log drag over events to track what targets are being detected (2026-01-29)
+        if (IS_DEV) {
+          const overId = event.over?.id ?? 'NULL';
+          // Only log when over something (avoid console spam)
+          if (event.over) {
+            console.log('[DnD] onDragOver:', { overId, overData: event.over.data?.current });
+          }
+        }
+      }}
       onDragEnd={handleDragEnd}
+      onDragCancel={() => {
+        // 2026-01-29: Ensure activeId is always reset on drag cancel (e.g., Escape key)
+        setActiveId(null);
+        if (IS_DEV) {
+          console.log('[DnD] onDragCancel - activeId reset');
+        }
+      }}
       autoScroll={false}
     >
       <div className="h-screen bg-background flex flex-col">
@@ -1561,7 +2009,16 @@ export default function Calendar() {
                     <div className="font-medium">{item.client?.companyName || 'Unknown Client'}</div>
                     <div className="text-sm text-muted-foreground">
                       {item.client?.location && <span>{item.client.location} • </span>}
-                      {MONTH_ABBREV[item.assignment.month - 1]} '{String(item.assignment.year).slice(-2)}
+                      {(() => {
+                        // Parse date from canonical fields (scheduledDate/date/startAt)
+                        const dateStr = item.assignment.scheduledDate || item.assignment.date ||
+                          (item.assignment.startAt ? item.assignment.startAt.split('T')[0] : null);
+                        if (dateStr) {
+                          const d = new Date(dateStr + 'T00:00:00');
+                          return `${MONTH_ABBREV[d.getMonth()]} '${String(d.getFullYear()).slice(-2)}`;
+                        }
+                        return '';
+                      })()}
                       {item.assignment.jobNumber && <span> • Job #{item.assignment.jobNumber}</span>}
                     </div>
                   </div>
@@ -1707,7 +2164,8 @@ export default function Calendar() {
                   )}
                   {view === "daily" && (
                     <div className="h-full flex flex-col min-h-0 max-h-full">
-                      <CalendarGridDay
+                      {/* 2026-01-28: Jobber-style day grid with tech columns + time rows */}
+                      <CalendarGridDayJobber
                         currentDate={currentDate}
                         density={density}
                         companySettings={companySettings}
@@ -1721,6 +2179,7 @@ export default function Calendar() {
                         savingJobIds={savingJobIds}
                         onUnschedule={handleUnschedule}
                         regional={regional}
+                        businessHours={businessHoursData?.hours}
                       />
                     </div>
                   )}
@@ -1733,35 +2192,8 @@ export default function Calendar() {
                 collapsed={isUnscheduledMinimized}
                 onToggleCollapsed={toggleSidebarCollapsed}
                 items={unscheduledClients}
-                isSaving={isSavingDrag}
-                renderItem={(item: any) => {
-                  const monthLabel = `${MONTH_ABBREV[item.month - 1]} '${String(item.year).slice(-2)}`;
-
-                  const now = new Date();
-                  const todayYear = now.getFullYear();
-                  const todayMonth = now.getMonth() + 1;
-                  const isPastMonth =
-                    item.year < todayYear || (item.year === todayYear && item.month < todayMonth);
-
-                  // Use helper functions for resilient display
-                  const companyName = getUnscheduledCompanyName(item);
-                  const locationLabel = getUnscheduledLocationLabel(item);
-
-                  return (
-                    <DraggableClient
-                      key={item.id}
-                      id={item.id}
-                      client={{ companyName, location: locationLabel, id: getLocationId(item) }}
-                      onClick={() => setReportDialogClientId(getLocationId(item))}
-                      monthLabel={monthLabel}
-                      isOffMonth={true}
-                      isPastMonth={isPastMonth}
-                      isSaving={item._optimistic}
-                      summary={item.summary}
-                      rawItem={item}
-                    />
-                  );
-                }}
+                isSaving={isSavingUnscheduled}
+                renderItem={renderUnscheduledItem}
               />
             </aside>
 
@@ -1793,7 +2225,12 @@ export default function Calendar() {
           client={selectedClient}
           assignment={selectedAssignment}
           onAssignTechnicians={(assignmentId: string, technicianIds: string[]) => {
-            assignTechnicians.mutate({ assignmentId, technicianIds });
+            // Get version from selectedAssignment for optimistic locking
+            const version = selectedAssignment?.version;
+            if (IS_DEV && version === undefined) {
+              console.warn('[Calendar] onAssignTechnicians: Missing version on selectedAssignment');
+            }
+            assignTechnicians.mutate({ assignmentId, technicianIds, version });
           }}
           bulkParts={bulkParts}
           focusSchedule={focusScheduleSection}

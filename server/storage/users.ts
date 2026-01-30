@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { users, companies } from "@shared/schema";
 import type { InsertUser, User, AuthenticatedUser } from "@shared/schema";
 import { BaseRepository } from "./base";
@@ -152,6 +152,28 @@ export class UserRepository extends BaseRepository {
     }
 
     return true;
+  }
+
+  /**
+   * Increment user's tokenVersion to invalidate all existing sessions.
+   * Call this when password or email is changed.
+   */
+  async incrementTokenVersion(userId: string): Promise<number> {
+    this.validateUUID(userId, "userId");
+
+    const result = await db
+      .update(users)
+      .set({
+        tokenVersion: sql`COALESCE(${users.tokenVersion}, 0) + 1`,
+      })
+      .where(eq(users.id, userId))
+      .returning({ tokenVersion: users.tokenVersion });
+
+    if (!result || result.length === 0) {
+      throw this.notFoundError("User");
+    }
+
+    return result[0].tokenVersion ?? 1;
   }
 }
 

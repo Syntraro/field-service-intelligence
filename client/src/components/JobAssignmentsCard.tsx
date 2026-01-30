@@ -2,6 +2,7 @@ import { User as UserIcon, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { getMemberDisplayName, getMemberInitials } from "@/lib/displayName";
 import type { User } from "@shared/schema";
 
 interface JobAssignmentsCardProps {
@@ -38,18 +39,18 @@ export function JobAssignmentsCard({
         {technicians.length > 0 ? (
           <div className="flex flex-wrap gap-2">
             {technicians.map(tech => (
-              <div 
-                key={tech.id} 
+              <div
+                key={tech.id}
                 className="flex items-center gap-1.5"
                 data-testid={`badge-technician-${tech.id}`}
               >
                 <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center">
                   <span className="text-xs font-medium text-primary">
-                    {(tech.firstName?.[0] || tech.email[0]).toUpperCase()}
+                    {getMemberInitials(tech)}
                   </span>
                 </div>
                 <span className="text-sm">
-                  {tech.firstName || tech.email.split('@')[0]}
+                  {getMemberDisplayName(tech)}
                 </span>
                 {tech.id === primaryTechnicianId && (
                   <Badge variant="secondary" className="text-[10px] h-4 px-1">Primary</Badge>

@@ -23,24 +23,30 @@ import { Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 
-// Action required reason options
-export const ACTION_REQUIRED_REASONS = [
-  { value: "needs_parts", label: "Needs Parts" },
-  { value: "customer_approval", label: "Customer Approval" },
-  { value: "internal_approval", label: "Internal Approval" },
-  { value: "return_visit", label: "Return Visit" },
-  { value: "access_issue", label: "Access Issue" },
-  { value: "safety_issue", label: "Safety Issue" },
+// Hold reason options - mapped to normalized holdReason enum
+export const HOLD_REASONS = [
+  { value: "parts", label: "Waiting for Parts" },
+  { value: "customer", label: "Customer Approval" },
+  { value: "approval", label: "Internal Approval" },
+  { value: "access", label: "Access Issue" },
+  { value: "weather", label: "Weather Delay" },
   { value: "other", label: "Other" },
 ] as const;
 
-export type ActionRequiredReason = typeof ACTION_REQUIRED_REASONS[number]["value"];
+export type HoldReason = typeof HOLD_REASONS[number]["value"];
+
+// Legacy exports for backward compatibility
+export const ACTION_REQUIRED_REASONS = HOLD_REASONS;
+export type ActionRequiredReason = HoldReason;
 
 // Helper to get reason label from value
-export function getActionRequiredReasonLabel(value: string): string {
-  const reason = ACTION_REQUIRED_REASONS.find((r) => r.value === value);
+export function getHoldReasonLabel(value: string): string {
+  const reason = HOLD_REASONS.find((r) => r.value === value);
   return reason?.label || value;
 }
+
+// Legacy alias
+export const getActionRequiredReasonLabel = getHoldReasonLabel;
 
 interface ActionRequiredModalProps {
   jobId: string;
@@ -49,10 +55,12 @@ interface ActionRequiredModalProps {
   onSuccess?: () => void;
 }
 
-interface ActionRequiredPayload {
-  status: "action_required";
-  actionRequiredReason: string;
-  actionRequiredNotes?: string;
+// Normalized payload using openSubStatus
+interface HoldJobPayload {
+  status: "open";
+  openSubStatus: "on_hold";
+  holdReason: string;
+  holdNotes?: string;
   nextActionDate?: string;
 }
 
@@ -77,7 +85,7 @@ export function ActionRequiredModal({
   }, [open]);
 
   const updateStatusMutation = useMutation({
-    mutationFn: async (payload: ActionRequiredPayload) => {
+    mutationFn: async (payload: HoldJobPayload) => {
       return apiRequest(`/api/jobs/${jobId}/status`, {
         method: "PATCH",
         body: JSON.stringify(payload),
@@ -88,7 +96,7 @@ export function ActionRequiredModal({
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       toast({
         title: "Status Updated",
-        description: "Job marked as action required.",
+        description: "Job marked as on hold.",
       });
       onOpenChange(false);
       onSuccess?.();
@@ -114,15 +122,16 @@ export function ActionRequiredModal({
       return;
     }
 
-    const payload: ActionRequiredPayload = {
-      status: "action_required",
-      actionRequiredReason: reason,
+    const payload: HoldJobPayload = {
+      status: "open",
+      openSubStatus: "on_hold",
+      holdReason: reason,
     };
 
     // Only include notes if non-empty
     const trimmedNotes = notes.trim();
     if (trimmedNotes) {
-      payload.actionRequiredNotes = trimmedNotes;
+      payload.holdNotes = trimmedNotes;
     }
 
     // Only include date if set (as YYYY-MM-DD)
@@ -140,9 +149,9 @@ export function ActionRequiredModal({
       <DialogContent className="sm:max-w-md" data-testid="dialog-action-required">
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>Action Required</DialogTitle>
+            <DialogTitle>Put Job On Hold</DialogTitle>
             <DialogDescription>
-              Specify why this job requires action before it can continue.
+              Specify why this job is on hold before it can continue.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
@@ -156,7 +165,7 @@ export function ActionRequiredModal({
                   <SelectValue placeholder="Select a reason" />
                 </SelectTrigger>
                 <SelectContent>
-                  {ACTION_REQUIRED_REASONS.map((r) => (
+                  {HOLD_REASONS.map((r) => (
                     <SelectItem key={r.value} value={r.value}>
                       {r.label}
                     </SelectItem>

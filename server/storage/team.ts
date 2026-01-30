@@ -2,6 +2,7 @@ import { db } from "../db";
 import { eq, and, isNull } from "drizzle-orm";
 import {
   users,
+  userIdentities,
   technicianProfiles,
   workingHours,
   userPermissionOverrides
@@ -11,7 +12,73 @@ import { cache, CacheKeys, CacheTTL } from "../services/cache";
 
 export class TeamRepository extends BaseRepository {
   /**
+   * Create a new team member (user + email identity)
+   * This is used for direct creation (not invitation-based).
+   */
+  async createTeamMember(
+    companyId: string,
+    data: {
+      email: string;
+      fullName: string;
+      firstName?: string;
+      lastName?: string;
+      phone?: string | null;
+      roleId?: string;
+      role?: string;
+      disabled?: boolean;
+      passwordHash?: string; // Optional - if not provided, user must reset password
+    }
+  ) {
+    this.assertCompanyId(companyId);
+
+    const normalizedEmail = (data.email || "").trim().toLowerCase();
+
+    // Use provided firstName/lastName, or parse from fullName
+    let firstName: string | null = data.firstName || null;
+    let lastName: string | null = data.lastName || null;
+    if (!firstName && !lastName && data.fullName) {
+      const parts = data.fullName.trim().split(/\s+/);
+      firstName = parts[0] || null;
+      lastName = parts.length > 1 ? parts.slice(1).join(" ") : null;
+    }
+
+    return await db.transaction(async (tx) => {
+      // Create user
+      const [user] = await tx
+        .insert(users)
+        .values({
+          companyId,
+          email: normalizedEmail,
+          fullName: data.fullName,
+          firstName,
+          lastName,
+          phone: data.phone || null,
+          roleId: data.roleId || null,
+          role: data.role || "technician",
+          status: data.disabled ? "deactivated" : "active",
+          disabled: data.disabled || false,
+          password: data.passwordHash || "!NEEDS_RESET!", // Placeholder - identity has real password
+        })
+        .returning();
+
+      // Create email identity
+      await tx
+        .insert(userIdentities)
+        .values({
+          companyId,
+          userId: user.id,
+          provider: "email",
+          identifier: normalizedEmail,
+          passwordHash: data.passwordHash || null, // null = must set password
+        });
+
+      return user;
+    });
+  }
+
+  /**
    * Get team members for a company
+   * Includes disabled users (so admins can re-enable them)
    * Excludes soft-deleted users (deletedAt is not null)
    */
   async getTeamMembers(companyId: string) {
@@ -20,8 +87,7 @@ export class TeamRepository extends BaseRepository {
       .from(users)
       .where(and(
         eq(users.companyId, companyId),
-        eq(users.disabled, false),
-        isNull(users.deletedAt) // Exclude soft-deleted users
+        isNull(users.deletedAt) // Exclude soft-deleted users only
       ))
       .orderBy(users.fullName);
   }
@@ -49,11 +115,13 @@ export class TeamRepository extends BaseRepository {
       firstName?: string;
       lastName?: string;
       fullName?: string;
+      email?: string; // For backward compat - use identity.updateEmailIdentity for login
       phone?: string;
       roleId?: string;
       role?: string;
       status?: string;
       useCustomSchedule?: boolean;
+      isSchedulable?: boolean;
     }
   ) {
     const rows = await db

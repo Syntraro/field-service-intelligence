@@ -35,8 +35,15 @@ import {
 } from "@/components/ui/popover";
 import { Check, ChevronsUpDown, Loader2, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { Client, User, Job, InsertJob } from "@shared/schema";
+import type { Client, Job, InsertJob } from "@shared/schema";
 import { CommandSeparator } from "@/components/ui/command";
+import {
+  JobScheduleFields,
+  JobScheduleValue,
+  createDefaultScheduleValue,
+  parseJobToScheduleValue,
+} from "@/components/jobs/JobScheduleFields";
+import { createJobWithSchedule, applyJobSchedule } from "@/lib/jobScheduling";
 
 interface QuickAddJobDialogProps {
   open: boolean;
@@ -54,55 +61,39 @@ const JOB_TYPES = [
   { value: "emergency", label: "Emergency" },
 ];
 
-const STATUSES = [
-  { value: "draft", label: "Draft" },
-  { value: "scheduled", label: "Scheduled" },
-  { value: "in_progress", label: "In Progress" },
-];
-
 export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, editJob, onSuccess }: QuickAddJobDialogProps) {
   const { toast } = useToast();
   const [locationOpen, setLocationOpen] = useState(false);
   const [quickCreateName, setQuickCreateName] = useState("");
   const [showQuickCreate, setShowQuickCreate] = useState(false);
   const isEditMode = !!editJob;
-  
+
   const getDefaultFormData = () => ({
     locationId: preselectedLocationId || "",
     summary: "",
     description: "",
     jobType: "maintenance",
-    status: "scheduled",
-    scheduledStart: "",
-    scheduledEnd: "",
-    primaryTechnicianId: "",
     accessInstructions: "",
     billingNotes: "",
   });
-  
+
   const [formData, setFormData] = useState(getDefaultFormData());
+  const [scheduleValue, setScheduleValue] = useState<JobScheduleValue>(
+    createDefaultScheduleValue({ unscheduled: true })
+  );
 
   useEffect(() => {
     if (open && editJob) {
-      const formatDateForInput = (date: Date | string | null | undefined): string => {
-        if (!date) return "";
-        const d = typeof date === 'string' ? new Date(date) : date;
-        if (isNaN(d.getTime())) return "";
-        return d.toISOString().slice(0, 16);
-      };
-      
       setFormData({
         locationId: editJob.locationId || "",
         summary: editJob.summary || "",
         description: editJob.description || "",
         jobType: editJob.jobType || "maintenance",
-        status: editJob.status || "scheduled",
-        scheduledStart: formatDateForInput(editJob.scheduledStart),
-        scheduledEnd: formatDateForInput(editJob.scheduledEnd),
-        primaryTechnicianId: editJob.primaryTechnicianId || "",
         accessInstructions: editJob.accessInstructions || "",
         billingNotes: editJob.billingNotes || "",
       });
+      // Parse existing job schedule
+      setScheduleValue(parseJobToScheduleValue(editJob));
     } else if (open && preselectedLocationId) {
       setFormData(prev => ({ ...prev, locationId: preselectedLocationId }));
     }
@@ -111,6 +102,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
   useEffect(() => {
     if (!open) {
       setFormData(getDefaultFormData());
+      setScheduleValue(createDefaultScheduleValue({ unscheduled: true }));
     }
   }, [open]);
 
@@ -120,11 +112,6 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
   });
 
   const clients = clientsResponse?.data || [];
-
-  const { data: technicians = [] } = useQuery<User[]>({
-    queryKey: ["/api/technicians"],
-    enabled: open,
-  });
 
   const activeLocations = useMemo(() => {
     return clients.filter(c => !c.inactive).sort((a, b) => 
@@ -137,11 +124,24 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
   }, [clients, formData.locationId]);
 
   const createJobMutation = useMutation({
-    mutationFn: async (data: Partial<InsertJob>) => {
-      return apiRequest("/api/jobs", {
-        method: "POST",
-        body: JSON.stringify(data),
-      });
+    mutationFn: async () => {
+      // Use unified scheduling API for job creation
+      const result = await createJobWithSchedule(
+        {
+          locationId: formData.locationId,
+          summary: formData.summary.trim(),
+          description: formData.description.trim() || null,
+          jobType: formData.jobType,
+          priority: "medium",
+          accessInstructions: formData.accessInstructions.trim() || null,
+          billingNotes: formData.billingNotes.trim() || null,
+        },
+        scheduleValue
+      );
+      if (!result.success) {
+        throw new Error(result.error || "Failed to create job");
+      }
+      return result.job;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
@@ -149,9 +149,11 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
 
       toast({
         title: "Job Created",
-        description: `Job has been created successfully.`,
+        description: scheduleValue.unscheduled
+          ? "Job has been added to the backlog."
+          : "Job has been created and scheduled.",
       });
-      
+
       const client = clients.find(c => c.id === formData.locationId);
       if (client?.needsDetails) {
         setTimeout(() => {
@@ -161,7 +163,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
           });
         }, 1500);
       }
-      
+
       onOpenChange(false);
       onSuccess?.();
     },
@@ -176,10 +178,23 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
 
   const updateJobMutation = useMutation({
     mutationFn: async (data: Partial<InsertJob>) => {
-      return apiRequest(`/api/jobs/${editJob?.id}`, {
+      // First update the job basic info
+      const result = await apiRequest(`/api/jobs/${editJob?.id}`, {
         method: "PUT",
         body: JSON.stringify(data),
       });
+
+      // Then apply scheduling changes if needed
+      if (editJob?.id) {
+        const scheduleResult = await applyJobSchedule(editJob.id, scheduleValue, {
+          existingAssignmentId: editJob.scheduledStart ? editJob.id : undefined,
+        });
+        if (!scheduleResult.success) {
+          console.warn("[QuickAddJobDialog] Schedule update warning:", scheduleResult.error);
+        }
+      }
+
+      return result;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
@@ -236,9 +251,9 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     quickCreateClientMutation.mutate(quickCreateName.trim());
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!formData.locationId) {
       toast({
         title: "Error",
@@ -247,7 +262,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
       });
       return;
     }
-    
+
     if (!formData.summary.trim()) {
       toast({
         title: "Error",
@@ -257,24 +272,31 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
       return;
     }
 
-    const jobData: Partial<InsertJob> = {
-      locationId: formData.locationId,
-      summary: formData.summary.trim(),
-      description: formData.description.trim() || null,
-      jobType: formData.jobType as any,
-      priority: "medium" as any,
-      status: formData.status as any,
-      scheduledStart: formData.scheduledStart || null,
-      scheduledEnd: formData.scheduledEnd || null,
-      primaryTechnicianId: formData.primaryTechnicianId || null,
-      accessInstructions: formData.accessInstructions.trim() || null,
-      billingNotes: formData.billingNotes.trim() || null,
-    };
+    // Validate schedule if not unscheduled
+    if (!scheduleValue.unscheduled && !scheduleValue.date) {
+      toast({
+        title: "Error",
+        description: "Please select a date for the scheduled job",
+        variant: "destructive",
+      });
+      return;
+    }
 
     if (isEditMode) {
+      // Update existing job
+      const jobData: Partial<InsertJob> = {
+        locationId: formData.locationId,
+        summary: formData.summary.trim(),
+        description: formData.description.trim() || null,
+        jobType: formData.jobType as any,
+        priority: "medium" as any,
+        accessInstructions: formData.accessInstructions.trim() || null,
+        billingNotes: formData.billingNotes.trim() || null,
+      };
       updateJobMutation.mutate(jobData);
     } else {
-      createJobMutation.mutate(jobData);
+      // Create new job with scheduling
+      createJobMutation.mutate(undefined);
     }
   };
 
@@ -430,71 +452,12 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               </Select>
             </div>
 
-            <div>
-              <Label htmlFor="status">Status</Label>
-              <Select
-                value={formData.status}
-                onValueChange={(value) => setFormData(prev => ({ ...prev, status: value }))}
-              >
-                <SelectTrigger data-testid="select-status">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {STATUSES.map(s => (
-                    <SelectItem key={s.value} value={s.value} data-testid={`option-status-${s.value}`}>
-                      {s.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div>
-              <Label htmlFor="technician">Primary Technician</Label>
-              <Select
-                value={formData.primaryTechnicianId || "none"}
-                onValueChange={(value) => setFormData(prev => ({ 
-                  ...prev, 
-                  primaryTechnicianId: value === "none" ? "" : value 
-                }))}
-              >
-                <SelectTrigger data-testid="select-technician">
-                  <SelectValue placeholder="Select technician" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">No technician assigned</SelectItem>
-                  {technicians.map(tech => (
-                    <SelectItem key={tech.id} value={tech.id} data-testid={`option-tech-${tech.id}`}>
-                      {tech.firstName && tech.lastName 
-                        ? `${tech.firstName} ${tech.lastName}` 
-                        : tech.email}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div>
-              <Label htmlFor="scheduledStart">Scheduled Start</Label>
-              <Input
-                id="scheduledStart"
-                type="datetime-local"
-                step="900"
-                value={formData.scheduledStart}
-                onChange={(e) => setFormData(prev => ({ ...prev, scheduledStart: e.target.value }))}
-                data-testid="input-scheduled-start"
-              />
-            </div>
-
-            <div>
-              <Label htmlFor="scheduledEnd">Scheduled End</Label>
-              <Input
-                id="scheduledEnd"
-                type="datetime-local"
-                step="900"
-                value={formData.scheduledEnd}
-                onChange={(e) => setFormData(prev => ({ ...prev, scheduledEnd: e.target.value }))}
-                data-testid="input-scheduled-end"
+            {/* Scheduling Section */}
+            <div className="col-span-2 border rounded-lg p-4 bg-muted/20">
+              <Label className="text-base font-medium mb-3 block">Scheduling</Label>
+              <JobScheduleFields
+                value={scheduleValue}
+                onChange={setScheduleValue}
               />
             </div>
 

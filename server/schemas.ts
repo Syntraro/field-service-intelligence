@@ -3,28 +3,83 @@ import { z } from "zod";
 export const moneyNumber = z.coerce.number().min(0).finite();
 export const optionalMoneyNumber = moneyNumber.nullable().optional();
 
-// NOTE: "completed" is LEGACY - kept for backward compatibility with existing data
-// New code should use "requires_invoicing" for jobs awaiting invoicing
+// =============================================================================
+// JOB STATUS MODEL (4 lifecycle values + workflow sub-status)
+// =============================================================================
+//
+// LIFECYCLE STATES (stored in jobs.status):
+// - "open"      - Active job that can be worked on
+// - "completed" - Work finished (may need invoicing)
+// - "invoiced"  - Invoice created (locked for billing)
+// - "archived"  - Historical archive (includes canceled jobs)
+//
+// DERIVED STATES (NOT stored in status, computed from fields):
+// - "scheduled" is derived from: scheduledStart IS NOT NULL OR isAllDay = true
+// - "assigned" is derived from: primaryTechnicianId IS NOT NULL OR assignedTechnicianIds.length > 0
+//
+// WORKFLOW SUB-STATUS (only valid when status = 'open'):
+// - null           - Default, no special workflow state
+// - "in_progress"  - Work actively being performed
+// - "on_hold"      - Job is blocked (requires holdReason)
+// - "on_route"     - Technician traveling to job site
+// - "needs_review" - Needs supervisor/manager review
+//
+// INVARIANT: openSubStatus must be NULL when status !== 'open'
+//
+// =============================================================================
+
+// Lifecycle-only status enum (4 values)
 export const jobStatusEnum = z.enum([
-  "draft",
-  "scheduled",
-  "dispatched",
-  "en_route",
-  "on_site",
-  "in_progress",
-  "action_required",    // Unified hold state - requires actionRequiredReason
-  "completed",          // LEGACY: Use "requires_invoicing" for new jobs
-  "requires_invoicing", // Job closed, needs invoice created
-  "invoiced",
-  "closed",
-  "archived",
-  "cancelled"
+  "open",       // Active job that can be worked on
+  "completed",  // Work finished (may need invoicing)
+  "invoiced",   // Invoice created (locked for billing)
+  "archived",   // Historical archive (includes canceled jobs)
 ]);
 
-// Invoice statuses - Canonical lifecycle: draft → sent → partial_paid/paid (with void from any non-terminal)
+// Workflow sub-status (only valid when status = 'open')
+export const openSubStatusEnum = z.enum([
+  "in_progress",   // Work actively being performed
+  "on_hold",       // Job is blocked (requires holdReason)
+  "on_route",      // Technician traveling to job site
+  "needs_review",  // Needs supervisor/manager review
+]);
+
+// Hold reason enum (when openSubStatus = 'on_hold')
+// Note: holdReason is REQUIRED when openSubStatus = 'on_hold'
+export const holdReasonEnum = z.enum([
+  "parts",      // Waiting for parts
+  "customer",   // Waiting for customer response/approval
+  "access",     // Cannot access location
+  "approval",   // Waiting for internal approval
+  "weather",    // Weather-related delay
+  "other",      // Other reason (see notes)
+]);
+
+// Legacy status values accepted during migration (normalized to 4-value model)
+export const legacyJobStatusEnum = z.enum([
+  // New canonical values
+  "open",
+  "completed",
+  "invoiced",
+  "archived",
+  // Legacy values (normalized on write)
+  "assigned",           // -> "open" (assignment is derived from fields)
+  "unscheduled",        // -> "open" (scheduling is derived from fields)
+  "scheduled",          // -> "open" (scheduling is derived from fields)
+  "in_progress",        // -> "open" + openSubStatus='in_progress'
+  "on_hold",            // -> "open" + openSubStatus='on_hold'
+  "requires_invoicing", // -> "completed"
+  "closed",             // -> "archived"
+  "canceled",           // -> "archived"
+  "cancelled",          // -> "archived" (UK spelling)
+]);
+
+// Invoice statuses - Canonical lifecycle: draft → awaiting_payment → partial_paid/paid (with void from any non-terminal)
+// Note: "sent" is deprecated in favor of "awaiting_payment" but kept for backward compatibility
 export const invoiceStatusEnum = z.enum([
   "draft",
-  "sent",
+  "awaiting_payment", // Invoice has been sent, waiting for payment
+  "sent",             // LEGACY: Alias for awaiting_payment, kept for backward compatibility
   "partial_paid",
   "paid",
   "voided"
@@ -32,6 +87,29 @@ export const invoiceStatusEnum = z.enum([
 
 export type JobStatus = z.infer<typeof jobStatusEnum>;
 export type InvoiceStatus = z.infer<typeof invoiceStatusEnum>;
+export type OpenSubStatus = z.infer<typeof openSubStatusEnum>;
+
+// =============================================================================
+// RUNTIME STATUS GUARD (Fail Fast)
+// =============================================================================
+
+const VALID_JOB_STATUSES: readonly JobStatus[] = ["open", "completed", "invoiced", "archived"];
+
+/**
+ * Assert that a job status is one of the 4 normalized lifecycle values.
+ * Throws an error if a legacy status is detected.
+ * Use this in any code path that persists or transforms job status.
+ */
+export function assertNormalizedJobStatus(status: string, context?: string): asserts status is JobStatus {
+  if (!VALID_JOB_STATUSES.includes(status as JobStatus)) {
+    const ctx = context ? ` [${context}]` : "";
+    throw new Error(
+      `INVALID_JOB_STATUS${ctx}: "${status}" is not a valid lifecycle status. ` +
+      `Only ${VALID_JOB_STATUSES.join(", ")} are allowed. ` +
+      `Legacy statuses must be normalized before persisting.`
+    );
+  }
+}
 
 export const itemBaseSchema = z.object({
   type: z.enum(["product", "service", "filter", "belt", "other"]),
@@ -65,11 +143,31 @@ export type JobCreateInput = z.infer<typeof jobCreateSchema>;
 
 export const jobUpdateStatusSchema = z.object({
   status: jobStatusEnum,
-  // Action required fields (required when status === "action_required")
+  // Workflow sub-status (only valid when status = 'open')
+  openSubStatus: openSubStatusEnum.nullable().optional(),
+  // Hold reason (required when openSubStatus = 'on_hold')
+  holdReason: holdReasonEnum.nullable().optional(),
+  holdNotes: z.string().nullable().optional(),
+  nextActionDate: z.string().nullable().optional(), // ISO date string (YYYY-MM-DD)
+  // Legacy fields (deprecated, kept for backward compatibility)
   actionRequiredReason: z.string().nullable().optional(),
   actionRequiredNotes: z.string().nullable().optional(),
-  nextActionDate: z.string().nullable().optional(), // ISO date string (YYYY-MM-DD)
-});
+}).refine(
+  (data) => {
+    // INVARIANT: openSubStatus must be NULL when status !== 'open'
+    if (data.status !== 'open' && data.openSubStatus != null) {
+      return false;
+    }
+    // INVARIANT: holdReason is required when openSubStatus = 'on_hold'
+    if (data.openSubStatus === 'on_hold' && !data.holdReason) {
+      return false;
+    }
+    return true;
+  },
+  {
+    message: "openSubStatus requires status='open'; on_hold requires holdReason",
+  }
+);
 
 export type JobUpdateStatusInput = z.infer<typeof jobUpdateStatusSchema>;
 

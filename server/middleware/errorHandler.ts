@@ -24,7 +24,14 @@ export const handleApiError = (err: any, res: Response, defaultMessage = "Operat
   }
 
   if (err?.status === 403 || err?.statusCode === 403) {
-    return res.status(403).json({ error: err.message || "Forbidden" });
+    // Support custom toJSON for structured error responses (e.g., SchedulingForbiddenError)
+    if (typeof err.toJSON === "function") {
+      return res.status(403).json(err.toJSON());
+    }
+    return res.status(403).json({
+      error: err.message || "Forbidden",
+      code: err.code || "FORBIDDEN",
+    });
   }
 
   if (err?.status === 401 || err?.statusCode === 401) {

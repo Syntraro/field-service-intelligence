@@ -1,4 +1,37 @@
 import { QueryClient } from "@tanstack/react-query";
+import {
+  logMutationRequest,
+  logMutationResponse,
+  logMutationError,
+  isDiagnosticsEnabled,
+} from "./calendarDiagnostics";
+
+// ========================================
+// API ERROR CLASS
+// ========================================
+
+/**
+ * Structured API error with status, url, and message.
+ * Used for consistent error handling across the app.
+ */
+export class ApiError extends Error {
+  status: number;
+  url: string;
+
+  constructor(status: number, url: string, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.url = url;
+  }
+}
+
+/**
+ * Type guard to check if an error is an ApiError
+ */
+export function isApiError(error: unknown): error is ApiError {
+  return error instanceof ApiError;
+}
 
 // ========================================
 // CSRF TOKEN MANAGEMENT
@@ -67,6 +100,24 @@ export async function apiRequest<T = any>(
   options: RequestInit = {}
 ): Promise<T> {
   const headers = new Headers(options.headers);
+  const method = options.method?.toUpperCase() || 'GET';
+  const startTime = Date.now();
+
+  // Parse body for diagnostics logging
+  let parsedBody: unknown;
+  if (options.body && typeof options.body === 'string') {
+    try {
+      parsedBody = JSON.parse(options.body);
+    } catch {
+      parsedBody = options.body;
+    }
+  }
+
+  // Log mutation request (only for calendar-related mutations in diagnostics mode)
+  const isCalendarMutation = url.includes('/calendar') || url.includes('/jobs');
+  if (isDiagnosticsEnabled() && isCalendarMutation && method !== 'GET') {
+    logMutationRequest(method, url, parsedBody);
+  }
 
   // Ensure JSON content type for requests with body
   if (options.body && !headers.has('Content-Type')) {
@@ -74,7 +125,6 @@ export async function apiRequest<T = any>(
   }
 
   // Add CSRF token for state-changing requests
-  const method = options.method?.toUpperCase() || 'GET';
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
     // Ensure we have a token
     const token = await getCSRFToken();
@@ -112,13 +162,34 @@ export async function apiRequest<T = any>(
         });
 
         if (!retryResponse.ok) {
-          const retryError = await retryResponse.json().catch(() => ({
-            error: retryResponse.statusText
-          }));
-          throw new Error(retryError.error || `Request failed: ${retryResponse.status}`);
+          const rawText = await retryResponse.text();
+          let rawErrorBody: unknown;
+          try {
+            rawErrorBody = JSON.parse(rawText);
+          } catch {
+            rawErrorBody = { rawText };
+          }
+          const errorData = typeof rawErrorBody === 'object' && rawErrorBody !== null
+            ? rawErrorBody as Record<string, unknown>
+            : { error: rawText };
+          const clientMappedMessage = (errorData.error || errorData.message || `Request failed: ${retryResponse.status}`) as string;
+          const durationMs = Date.now() - startTime;
+          if (isDiagnosticsEnabled() && isCalendarMutation) {
+            logMutationError(method, url, retryResponse.status, rawErrorBody, clientMappedMessage, durationMs);
+          }
+          throw new ApiError(
+            retryResponse.status,
+            url,
+            clientMappedMessage
+          );
         }
 
-        return retryResponse.json();
+        const durationMs = Date.now() - startTime;
+        const retryData = await retryResponse.json();
+        if (isDiagnosticsEnabled() && isCalendarMutation) {
+          logMutationResponse(method, url, retryResponse.status, retryData, durationMs);
+        }
+        return retryData;
       }
     } catch (parseError) {
       // If we can't parse the error, throw the original response error
@@ -131,23 +202,51 @@ export async function apiRequest<T = any>(
 
   // Handle other errors
   if (!response.ok) {
-    const errorData = await response.json().catch(() => ({
-      error: response.statusText
-    }));
-    throw new Error(errorData.error || `Request failed: ${response.status}`);
+    // Read FULL raw response body for diagnostics
+    const rawText = await response.text();
+    let rawErrorBody: unknown;
+    try {
+      rawErrorBody = JSON.parse(rawText);
+    } catch {
+      rawErrorBody = { rawText };
+    }
+
+    // Extract client-facing message (this is what gets shown in toasts)
+    const errorData = typeof rawErrorBody === 'object' && rawErrorBody !== null
+      ? rawErrorBody as Record<string, unknown>
+      : { error: rawText };
+    const clientMappedMessage = (errorData.error || errorData.message || `Request failed: ${response.status}`) as string;
+
+    const durationMs = Date.now() - startTime;
+
+    // Log FULL raw error to diagnostics BEFORE any mapping
+    if (isDiagnosticsEnabled() && isCalendarMutation) {
+      logMutationError(method, url, response.status, rawErrorBody, clientMappedMessage, durationMs);
+    }
+
+    throw new ApiError(
+      response.status,
+      url,
+      clientMappedMessage
+    );
   }
 
-  // Return parsed JSON
-  return response.json();
+  // Return parsed JSON with diagnostics logging
+  const durationMs = Date.now() - startTime;
+  const data = await response.json();
+  if (isDiagnosticsEnabled() && isCalendarMutation && method !== 'GET') {
+    logMutationResponse(method, url, response.status, data, durationMs);
+  }
+  return data;
 }
 
 /**
  * Default query function for TanStack Query (GET requests)
  */
-export async function getQueryFn<T = any>({ 
-  queryKey 
-}: { 
-  queryKey: readonly unknown[] 
+export async function getQueryFn<T = any>({
+  queryKey
+}: {
+  queryKey: readonly unknown[]
 }): Promise<T> {
   const url = queryKey[0] as string;
 
@@ -163,7 +262,11 @@ export async function getQueryFn<T = any>({
     const errorData = await response.json().catch(() => ({
       error: response.statusText
     }));
-    throw new Error(errorData.error || `Request failed: ${response.status}`);
+    throw new ApiError(
+      response.status,
+      url,
+      errorData.error || errorData.message || `Request failed: ${response.status}`
+    );
   }
 
   return response.json();

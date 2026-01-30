@@ -26,7 +26,7 @@ export default function TechnicianManagementPage() {
   const [copiedInvite, setCopiedInvite] = useState<string | null>(null);
 
   const { data: technicians = [], isLoading } = useQuery<Technician[]>({
-    queryKey: ["/api/technicians"],
+    queryKey: ["/api/team/technicians"],
   });
 
   const inviteMutation = useMutation({
@@ -49,7 +49,7 @@ export default function TechnicianManagementPage() {
     },
     onSuccess: () => {
       toast({ title: "Technician deleted" });
-      queryClient.invalidateQueries({ queryKey: ["/api/technicians"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/team/technicians"] });
     },
     onError: (error: any) => {
       toast({ variant: "destructive", title: "Error", description: error.message });

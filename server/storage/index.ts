@@ -33,6 +33,7 @@ import { quoteRepository } from "./quotes";
 import { quoteTemplateRepository } from "./quoteTemplates";
 import { calendarRepository } from "./calendar";
 import { taxRepository } from "./tax";
+import { businessHoursRepository } from "./businessHours";
 import type { PaginationOptions, PaginatedResult } from "./clients";
 
 /**
@@ -190,6 +191,11 @@ updateInvitation: (id: string, data: { status: string }) => Promise<any>;
   getCompanyTimezone: typeof companyRepository.getCompanyTimezone;
   upsertCompanySettings: (companyId: string, userId: string, settings: any) => Promise<any>;
   getImpersonationStatus: typeof companyRepository.getImpersonationStatus;
+
+  // Business hours operations
+  getCompanyBusinessHours: typeof businessHoursRepository.getCompanyBusinessHours;
+  upsertCompanyBusinessHours: typeof businessHoursRepository.upsertCompanyBusinessHours;
+  getBusinessHoursForDow: typeof businessHoursRepository.getBusinessHoursForDow;
 
   // Customer company operations
   getCustomerCompany: typeof customerCompanyRepository.getCustomerCompany;
@@ -381,6 +387,12 @@ export const storage: IStorage = {
   getCompanyTimezone: companyRepository.getCompanyTimezone.bind(companyRepository),
   upsertCompanySettings: companyRepository.upsertCompanySettings.bind(companyRepository),
   getImpersonationStatus: companyRepository.getImpersonationStatus.bind(companyRepository),
+
+  // Business hours operations
+  getCompanyBusinessHours: businessHoursRepository.getCompanyBusinessHours.bind(businessHoursRepository),
+  upsertCompanyBusinessHours: businessHoursRepository.upsertCompanyBusinessHours.bind(businessHoursRepository),
+  getBusinessHoursForDow: businessHoursRepository.getBusinessHoursForDow.bind(businessHoursRepository),
+
   createCompany: async (data: { name: string; email: string }) => {
     const { companies } = await import("@shared/schema");
     const { db } = await import("../db");

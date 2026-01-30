@@ -982,6 +982,274 @@ router.get(
 );
 
 // ============================================================================
+// Scheduling Health Endpoint (Canonical Scheduling Model Checks)
+// ============================================================================
+
+/**
+ * GET /api/admin/scheduling-health
+ * Run scheduling sanity checks and return counts + samples
+ *
+ * CANONICAL SCHEDULING MODEL: A job is scheduled if scheduledStart IS NOT NULL.
+ * isAllDay is a DISPLAY flag only - all-day events MUST have scheduledStart set to midnight.
+ *
+ * Returns aggregated health status for scheduling data integrity:
+ * - A) Legacy status values
+ * - B) Terminal jobs with schedule
+ * - C) Invalid openSubStatus
+ * - D) All-day normalization violations
+ * - E) Missing scheduledEnd
+ * - F) Invalid time range
+ * - G) NULL version on scheduled jobs
+ * - H) Invalid version < 1
+ */
+router.get(
+  "/scheduling-health",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { db } = await import("../db");
+    const { sql } = await import("drizzle-orm");
+
+    const MAX_SAMPLES = 20;
+
+    // Define all checks - Normalized 4-status model: open, completed, invoiced, archived
+    const validStatuses = "'open', 'completed', 'invoiced', 'archived'";
+    const terminalStatuses = "'invoiced', 'archived'";
+
+    const checks = [
+      {
+        code: "A",
+        name: "Legacy status values",
+        description: "Jobs with status NOT IN normalized values (open, completed, invoiced, archived)",
+        query: `
+          SELECT id, job_number, status, scheduled_start, scheduled_end, is_all_day
+          FROM jobs
+          WHERE deleted_at IS NULL
+            AND status NOT IN (${validStatuses})
+          LIMIT ${MAX_SAMPLES}
+        `,
+        countQuery: `
+          SELECT count(*) as count
+          FROM jobs
+          WHERE deleted_at IS NULL
+            AND status NOT IN (${validStatuses})
+        `,
+      },
+      {
+        code: "B",
+        name: "Terminal jobs with schedule",
+        description: "Jobs with terminal status but still have schedule fields set",
+        query: `
+          SELECT id, job_number, status, scheduled_start, scheduled_end, is_all_day
+          FROM jobs
+          WHERE deleted_at IS NULL
+            AND status IN (${terminalStatuses})
+            AND (scheduled_start IS NOT NULL OR scheduled_end IS NOT NULL OR is_all_day = true)
+          LIMIT ${MAX_SAMPLES}
+        `,
+        countQuery: `
+          SELECT count(*) as count
+          FROM jobs
+          WHERE deleted_at IS NULL
+            AND status IN (${terminalStatuses})
+            AND (scheduled_start IS NOT NULL OR scheduled_end IS NOT NULL OR is_all_day = true)
+        `,
+      },
+      {
+        code: "C",
+        name: "Invalid openSubStatus",
+        description: "Jobs with openSubStatus set but status != 'open'",
+        query: `
+          SELECT id, job_number, status, open_sub_status, scheduled_start, is_all_day
+          FROM jobs
+          WHERE deleted_at IS NULL
+            AND open_sub_status IS NOT NULL
+            AND status != 'open'
+          LIMIT ${MAX_SAMPLES}
+        `,
+        countQuery: `
+          SELECT count(*) as count
+          FROM jobs
+          WHERE deleted_at IS NULL
+            AND open_sub_status IS NOT NULL
+            AND status != 'open'
+        `,
+      },
+      {
+        code: "D",
+        name: "All-day without scheduledStart (CANONICAL VIOLATION)",
+        description: "All-day events must have scheduledStart set to midnight (canonical scheduling model)",
+        query: `
+          SELECT id, job_number, status, scheduled_start, scheduled_end, is_all_day
+          FROM jobs
+          WHERE deleted_at IS NULL
+            AND is_all_day = true
+            AND scheduled_start IS NULL
+          LIMIT ${MAX_SAMPLES}
+        `,
+        countQuery: `
+          SELECT count(*) as count
+          FROM jobs
+          WHERE deleted_at IS NULL
+            AND is_all_day = true
+            AND scheduled_start IS NULL
+        `,
+      },
+      {
+        code: "D2",
+        name: "All-day normalization violations",
+        description: "All-day events with incorrect start/end times (should be midnight to 23:59:59)",
+        query: `
+          SELECT id, job_number, status, scheduled_start, scheduled_end, is_all_day
+          FROM jobs
+          WHERE deleted_at IS NULL
+            AND is_all_day = true
+            AND scheduled_start IS NOT NULL
+            AND (
+              EXTRACT(HOUR FROM scheduled_start) != 0
+              OR EXTRACT(MINUTE FROM scheduled_start) != 0
+              OR scheduled_end IS NULL
+            )
+          LIMIT ${MAX_SAMPLES}
+        `,
+        countQuery: `
+          SELECT count(*) as count
+          FROM jobs
+          WHERE deleted_at IS NULL
+            AND is_all_day = true
+            AND scheduled_start IS NOT NULL
+            AND (
+              EXTRACT(HOUR FROM scheduled_start) != 0
+              OR EXTRACT(MINUTE FROM scheduled_start) != 0
+              OR scheduled_end IS NULL
+            )
+        `,
+      },
+      {
+        code: "E",
+        name: "Missing scheduledEnd",
+        description: "Jobs with scheduledStart but no scheduledEnd",
+        query: `
+          SELECT id, job_number, status, scheduled_start, scheduled_end, is_all_day
+          FROM jobs
+          WHERE deleted_at IS NULL
+            AND scheduled_start IS NOT NULL
+            AND scheduled_end IS NULL
+          LIMIT ${MAX_SAMPLES}
+        `,
+        countQuery: `
+          SELECT count(*) as count
+          FROM jobs
+          WHERE deleted_at IS NULL
+            AND scheduled_start IS NOT NULL
+            AND scheduled_end IS NULL
+        `,
+      },
+      {
+        code: "F",
+        name: "Invalid time range (end <= start)",
+        description: "Jobs where scheduledEnd is not after scheduledStart",
+        query: `
+          SELECT id, job_number, status, scheduled_start, scheduled_end, is_all_day
+          FROM jobs
+          WHERE deleted_at IS NULL
+            AND scheduled_start IS NOT NULL
+            AND scheduled_end IS NOT NULL
+            AND scheduled_end <= scheduled_start
+          LIMIT ${MAX_SAMPLES}
+        `,
+        countQuery: `
+          SELECT count(*) as count
+          FROM jobs
+          WHERE deleted_at IS NULL
+            AND scheduled_start IS NOT NULL
+            AND scheduled_end IS NOT NULL
+            AND scheduled_end <= scheduled_start
+        `,
+      },
+      {
+        code: "G",
+        name: "NULL version on scheduled jobs",
+        description: "Scheduled jobs with NULL version (canonical: scheduledStart IS NOT NULL)",
+        query: `
+          SELECT id, job_number, status, scheduled_start, version
+          FROM jobs
+          WHERE deleted_at IS NULL
+            AND scheduled_start IS NOT NULL
+            AND version IS NULL
+          LIMIT ${MAX_SAMPLES}
+        `,
+        countQuery: `
+          SELECT count(*) as count
+          FROM jobs
+          WHERE deleted_at IS NULL
+            AND scheduled_start IS NOT NULL
+            AND version IS NULL
+        `,
+      },
+      {
+        code: "H",
+        name: "Invalid version (< 1)",
+        description: "Jobs with version < 1",
+        query: `
+          SELECT id, job_number, status, version
+          FROM jobs
+          WHERE deleted_at IS NULL
+            AND version IS NOT NULL
+            AND version < 1
+          LIMIT ${MAX_SAMPLES}
+        `,
+        countQuery: `
+          SELECT count(*) as count
+          FROM jobs
+          WHERE deleted_at IS NULL
+            AND version IS NOT NULL
+            AND version < 1
+        `,
+      },
+    ];
+
+    // Run all checks
+    const results = [];
+    let totalViolations = 0;
+
+    for (const check of checks) {
+      const countRows = await db.execute(sql.raw(check.countQuery)) as unknown as { count: string }[];
+      const count = Number(countRows[0]?.count || 0);
+      totalViolations += count;
+
+      let samples: any[] = [];
+      if (count > 0) {
+        samples = await db.execute(sql.raw(check.query)) as unknown as any[];
+      }
+
+      results.push({
+        code: check.code,
+        name: check.name,
+        description: check.description,
+        count,
+        passed: count === 0,
+        sampleIds: samples.map((r: any) => ({
+          id: r.id,
+          jobNumber: r.job_number,
+          status: r.status,
+        })),
+      });
+    }
+
+    res.json({
+      timestamp: new Date().toISOString(),
+      summary: {
+        totalChecks: checks.length,
+        passed: results.filter((r) => r.passed).length,
+        failed: results.filter((r) => !r.passed).length,
+        totalViolations,
+        status: totalViolations === 0 ? "HEALTHY" : "VIOLATIONS_FOUND",
+      },
+      checks: results,
+    });
+  })
+);
+
+// ============================================================================
 // Guardrail Tests - Regression Prevention (PERMANENT)
 // ============================================================================
 

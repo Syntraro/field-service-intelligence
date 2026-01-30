@@ -23,6 +23,12 @@ import { useAuth } from "@/lib/auth";
 import { canEditSchedule } from "@/lib/schedulingPermissions";
 import { handleCalendarMutationError, isVersionMismatchError } from "@/components/calendar/calendarErrorHandler";
 import { logVersionMismatch } from "@/lib/calendarDiagnostics";
+import {
+  startPerfSession,
+  mark as perfMark,
+  endPerfSession,
+  trackInvalidation,
+} from "@/lib/dndPerformance";
 
 // ============================================================================
 // Types
@@ -53,6 +59,8 @@ export interface CreateAssignmentParams {
    * undefined, the auto-retry logic will fetch the correct version.
    */
   version: number;
+  /** Technician to assign (UUID or null to unassign) - 2026-01-29 */
+  technicianUserId?: string | null;
   /** Internal: marks this as a retry attempt to prevent infinite loops */
   _isRetry?: boolean;
 }
@@ -76,6 +84,8 @@ export interface UpdateAssignmentParams {
   allDay?: boolean;
   /** Job version for optimistic locking */
   version: number;
+  /** Technician to assign (UUID or null to unassign) - 2026-01-28 */
+  technicianUserId?: string | null;
   /** Internal: marks this as a retry attempt to prevent infinite loops */
   _isRetry?: boolean;
 }
@@ -331,20 +341,65 @@ export function useCalendarDnD(
     return ["/api/calendar", view, year, month, currentDate.getTime()];
   }, [view, year, month, currentDate]);
 
-  // Invalidate all calendar-related queries
-  const invalidateCalendarQueries = useCallback(() => {
+  // Invalidate only calendar queries (NOT unscheduled) - for reschedule operations
+  // 2026-01-30: Split from invalidateCalendarQueries to prevent unnecessary loading spinners
+  const invalidateCalendarOnly = useCallback(() => {
+    perfMark('invalidate-start');
+
+    let invalidatedCount = 0;
+
+    // Invalidate calendar queries but NOT unscheduled
+    queryClient.invalidateQueries({
+      predicate: (query) => {
+        const key = query.queryKey;
+        const matches = Array.isArray(key) && typeof key[0] === 'string' &&
+                        key[0].startsWith('/api/calendar') &&
+                        !key[0].includes('unscheduled');
+        if (matches) {
+          invalidatedCount++;
+          trackInvalidation(key as unknown[]);
+        }
+        return matches;
+      },
+    });
+
+    perfMark('invalidate-complete', { invalidatedCount, includesUnscheduled: false });
+  }, []);
+
+  // Invalidate both calendar AND unscheduled queries - for schedule/unschedule operations
+  // 2026-01-30: Use this when jobs move between calendar and unscheduled sidebar
+  const invalidateCalendarAndUnscheduled = useCallback(() => {
+    perfMark('invalidate-start');
+
+    let invalidatedCount = 0;
+
     // Invalidate all calendar queries (any view, any date range)
     queryClient.invalidateQueries({
       predicate: (query) => {
         const key = query.queryKey;
-        return Array.isArray(key) && typeof key[0] === 'string' && key[0].startsWith('/api/calendar');
+        const matches = Array.isArray(key) && typeof key[0] === 'string' && key[0].startsWith('/api/calendar');
+        if (matches) {
+          invalidatedCount++;
+          trackInvalidation(key as unknown[]);
+        }
+        return matches;
       },
     });
     // EXPLICITLY invalidate unscheduled - this is critical for unschedule consistency
     queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+    invalidatedCount++;
+    trackInvalidation(["/api/calendar/unscheduled"]);
+
     // Also invalidate clients (may have nextDue updates)
     queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+    invalidatedCount++;
+    trackInvalidation(["/api/clients"]);
+
+    perfMark('invalidate-complete', { invalidatedCount, includesUnscheduled: true });
   }, []);
+
+  // Alias for backward compatibility - uses the full invalidation
+  const invalidateCalendarQueries = invalidateCalendarAndUnscheduled;
 
   /**
    * Canonicalize all events in the current calendar query cache so every
@@ -364,12 +419,79 @@ export function useCalendarDnD(
     });
   }, [getCalendarQueryKey]);
 
+  /**
+   * Merge server response into calendar cache without full refetch.
+   * This replaces the optimistic placeholder with real server data.
+   */
+  const mergeServerResponseIntoCache = useCallback((
+    serverResult: any,
+    jobId: string,
+    operation: 'schedule' | 'reschedule' | 'unschedule'
+  ) => {
+    if (!serverResult && operation !== 'unschedule') return;
+
+    const queryKey = getCalendarQueryKey();
+    const cached = queryClient.getQueryData(queryKey) as any;
+
+    if (!cached || typeof cached !== 'object') return;
+
+    const currentEvents = cached.events ?? cached.assignments ?? [];
+
+    if (operation === 'unschedule') {
+      // Remove the job from calendar (optimistic already did this, but confirm)
+      const filteredEvents = currentEvents.filter((e: any) =>
+        e.id !== jobId && e.jobId !== jobId
+      );
+      queryClient.setQueryData(queryKey, {
+        ...cached,
+        events: filteredEvents,
+      });
+    } else {
+      // Schedule or reschedule: merge server response into the event
+      const updatedEvents = currentEvents.map((e: any) => {
+        const isMatch = e.id === jobId || e.jobId === jobId ||
+                        e.id === serverResult?.id || e.jobId === serverResult?.jobId;
+        if (isMatch) {
+          return toCanonicalEvent({
+            ...e,
+            ...serverResult,
+            _optimistic: false,
+            _saving: false,
+          });
+        }
+        return e;
+      });
+
+      queryClient.setQueryData(queryKey, {
+        ...cached,
+        events: updatedEvents,
+      });
+    }
+  }, [getCalendarQueryKey]);
+
+  /**
+   * Narrow invalidation - only invalidate what's necessary.
+   * Called after merging server response, not instead of it.
+   */
+  const invalidateNarrow = useCallback((includeUnscheduled: boolean = false) => {
+    // Only invalidate unscheduled if this operation affects it
+    if (includeUnscheduled) {
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+    }
+    // DO NOT invalidate /api/clients or all /api/calendar queries
+    // The cache merge handles the calendar update directly
+  }, []);
+
   // ========================================
   // Create Assignment Mutation
   // ========================================
   const createAssignment = useMutation({
     mutationFn: async (params: CreateAssignmentParams) => {
-      const { jobId, day, scheduledHour, scheduledStartMinutes = 0, durationMinutes = 60, targetYear, targetMonth, allDay, version } = params;
+      // PERF: Start session for schedule operation
+      startPerfSession('schedule', params.jobId);
+      perfMark('mutation-fn-start');
+
+      const { jobId, day, scheduledHour, scheduledStartMinutes = 0, durationMinutes = 60, targetYear, targetMonth, allDay, version, technicianUserId } = params;
 
       // DEV logging
       if (process.env.NODE_ENV === 'development') {
@@ -407,6 +529,11 @@ export function useCalendarDnD(
         };
       }
 
+      // Include technicianUserId if provided (for technician assignment during scheduling)
+      if (technicianUserId !== undefined) {
+        payload.technicianUserId = technicianUserId;
+      }
+
       if (process.env.NODE_ENV === 'development') {
         console.log('[useCalendarDnD] createAssignment API payload:', payload);
       }
@@ -420,23 +547,39 @@ export function useCalendarDnD(
         console.log('[useCalendarDnD] createAssignment response:', response);
       }
 
+      perfMark('server-response-received');
       return response;
     },
     onMutate: async (params) => {
+      perfMark('on-mutate-start');
+
       // Mark job as saving for visual feedback
       markJobSaving(params.jobId);
 
-      // Cancel any outgoing refetches
+      // Cancel any outgoing refetches for both calendar and unscheduled
       await queryClient.cancelQueries({ queryKey: getCalendarQueryKey() });
+      await queryClient.cancelQueries({ queryKey: ["/api/calendar/unscheduled"] });
+
+      perfMark('queries-cancelled');
 
       // Snapshot current data for rollback
       const queryKey = getCalendarQueryKey();
-      const previousData = queryClient.getQueryData(queryKey);
-      snapshotRef.current = { queryKey, data: previousData };
+      const previousCalendarData = queryClient.getQueryData(queryKey);
+      const previousUnscheduledData = queryClient.getQueryData(["/api/calendar/unscheduled"]);
+      snapshotRef.current = { queryKey, data: previousCalendarData };
+
+      // Find the unscheduled item to use for calendar event metadata
+      let unscheduledItem: any = null;
+      if (Array.isArray(previousUnscheduledData)) {
+        unscheduledItem = previousUnscheduledData.find((item: any) =>
+          item.id === params.jobId || item.jobId === params.jobId
+        );
+      }
 
       // Optimistic update: add a placeholder event with canonical startAt/endAt
       // so normalizeAssignments() picks up the exact drop time (not stale cached values)
-      const prev = previousData as any;
+      // 2026-01-28: Also includes metadata from unscheduled item for better visual feedback
+      const prev = previousCalendarData as any;
       if (prev && typeof prev === 'object' && ('events' in prev || 'assignments' in prev)) {
         const currentEvents = prev.events ?? prev.assignments ?? [];
         const isAllDay = params.allDay ?? (params.scheduledHour === null || params.scheduledHour === undefined);
@@ -451,6 +594,23 @@ export function useCalendarDnD(
           );
           if (range) { startAt = range.startAt; endAt = range.endAt; }
         }
+        // 2026-01-29: Build technician fields for optimistic update to prevent "flash to Unassigned"
+        let optimisticTechFields: Record<string, any> = {};
+        if (params.technicianUserId !== undefined && params.technicianUserId !== null) {
+          optimisticTechFields = {
+            primaryTechnicianId: params.technicianUserId,
+            assignedTechnicianId: params.technicianUserId,
+            assignedTechnicianIds: [params.technicianUserId],
+          };
+        } else {
+          // Explicitly unassigned
+          optimisticTechFields = {
+            primaryTechnicianId: null,
+            assignedTechnicianId: null,
+            assignedTechnicianIds: [],
+          };
+        }
+
         const optimisticEvent = {
           id: `optimistic-${Date.now()}`,
           jobId: params.jobId,
@@ -465,6 +625,14 @@ export function useCalendarDnD(
           scheduledStartMinutes: params.scheduledStartMinutes ?? 0,
           durationMinutes: params.durationMinutes ?? 60,
           isAllDay,
+          // Include metadata from unscheduled item for visual display
+          companyName: unscheduledItem?.companyName || unscheduledItem?.customerCompanyName,
+          locationName: unscheduledItem?.locationName || unscheduledItem?.location,
+          jobNumber: unscheduledItem?.jobNumber,
+          clientId: unscheduledItem?.clientId || unscheduledItem?.locationId,
+          locationId: unscheduledItem?.locationId || unscheduledItem?.clientId,
+          // 2026-01-29: Include technician fields for immediate correct placement
+          ...optimisticTechFields,
           _optimistic: true,
           _saving: true,
         };
@@ -475,9 +643,20 @@ export function useCalendarDnD(
         });
       }
 
-      return { previousData, queryKey };
+      // Optimistic update: remove from unscheduled list immediately
+      if (Array.isArray(previousUnscheduledData)) {
+        const filteredUnscheduled = previousUnscheduledData.filter((item: any) =>
+          item.id !== params.jobId && item.jobId !== params.jobId
+        );
+        queryClient.setQueryData(["/api/calendar/unscheduled"], filteredUnscheduled);
+      }
+
+      perfMark('optimistic-update-complete');
+      return { previousCalendarData, previousUnscheduledData, queryKey };
     },
     onSuccess: async (result, params) => {
+      perfMark('on-success-start');
+
       // DEV diagnostic: log server response for minute-precision tracing
       if (process.env.NODE_ENV === 'development') {
         console.log('[DROP-RESULT] createAssignment:', {
@@ -488,21 +667,38 @@ export function useCalendarDnD(
           allDay: result?.allDay,
         });
       }
+
       clearJobSaving(params.jobId);
       snapshotRef.current = null;
-      await refetchCalendar();
-      canonicalizeCalendarCache();
-      invalidateCalendarQueries();
+
+      // Merge server response into cache (replaces optimistic with real data)
+      mergeServerResponseIntoCache(result, params.jobId, 'schedule');
+      perfMark('cache-merged');
+
+      // Show success toast
       toast({
         title: "Job scheduled",
         description: "The job has been added to the calendar",
       });
+
+      // Only invalidate unscheduled list (job moved from there)
+      // No full refetch needed - optimistic update + merge is sufficient
+      invalidateNarrow(true);
+      perfMark('invalidation-complete');
+
+      endPerfSession(true);
     },
     onError: async (error: any, params, context) => {
+      perfMark('on-error', { error: error.message });
+
       clearJobSaving(params.jobId);
-      // Rollback to snapshot
-      if (context?.previousData && context?.queryKey) {
-        queryClient.setQueryData(context.queryKey, context.previousData);
+      // Rollback calendar to snapshot
+      if (context?.previousCalendarData && context?.queryKey) {
+        queryClient.setQueryData(context.queryKey, context.previousCalendarData);
+      }
+      // Rollback unscheduled to snapshot (restore the item that was optimistically removed)
+      if (context?.previousUnscheduledData) {
+        queryClient.setQueryData(["/api/calendar/unscheduled"], context.previousUnscheduledData);
       }
       snapshotRef.current = null;
 
@@ -561,6 +757,7 @@ export function useCalendarDnD(
           variant: "destructive",
         });
       }
+      endPerfSession(false);
     },
   });
 
@@ -569,7 +766,11 @@ export function useCalendarDnD(
   // ========================================
   const updateAssignment = useMutation({
     mutationFn: async (params: UpdateAssignmentParams) => {
-      const { id, day, scheduledHour, scheduledStartMinutes = 0, durationMinutes = 60, allDay, version } = params;
+      // PERF: Start session for reschedule operation
+      startPerfSession('reschedule', params.id);
+      perfMark('mutation-fn-start');
+
+      const { id, day, scheduledHour, scheduledStartMinutes = 0, durationMinutes = 60, allDay, version, technicianUserId } = params;
       // Use provided values or fall back to hook's year/month
       const useYear = params.targetYear ?? year;
       const useMonth = params.targetMonth ?? month;
@@ -591,10 +792,20 @@ export function useCalendarDnD(
         };
       } else {
         // Timed event - use computeTimedEventRange for timezone safety and validation
+        // 2026-01-30: When converting from all-day (1440 min) to timed, use default duration
+        let effectiveDuration = durationMinutes;
+        if (effectiveDuration === 1440 || effectiveDuration > 480) {
+          // 1440 = all-day, anything > 8 hours is probably wrong for a timed event
+          effectiveDuration = DEFAULT_DURATION_MINUTES;
+          if (process.env.NODE_ENV === 'development') {
+            console.log('[useCalendarDnD] Clamped duration from', durationMinutes, 'to', effectiveDuration, '(all-day to timed conversion)');
+          }
+        }
+
         const timeRange = computeTimedEventRange(
           useYear, useMonth, day,
           scheduledHour, scheduledStartMinutes ?? 0,
-          durationMinutes
+          effectiveDuration
         );
 
         if (!timeRange) {
@@ -607,6 +818,11 @@ export function useCalendarDnD(
           allDay: false,
           version,
         };
+      }
+
+      // Include technicianUserId if provided (for technician assignment during drag/drop)
+      if (technicianUserId !== undefined) {
+        payload.technicianUserId = technicianUserId;
       }
 
       if (process.env.NODE_ENV === 'development') {
@@ -622,14 +838,19 @@ export function useCalendarDnD(
         console.log('[useCalendarDnD] updateAssignment response:', response);
       }
 
+      perfMark('server-response-received');
       return response;
     },
     onMutate: async (params) => {
+      perfMark('on-mutate-start');
+
       // Mark job as saving for visual feedback (id is the jobId for updates)
       markJobSaving(params.id);
 
       // Cancel any outgoing refetches
       await queryClient.cancelQueries({ queryKey: getCalendarQueryKey() });
+
+      perfMark('queries-cancelled');
 
       // Snapshot current data for rollback
       const queryKey = getCalendarQueryKey();
@@ -642,6 +863,7 @@ export function useCalendarDnD(
 
       // Optimistic update: modify the event in place with canonical startAt/endAt
       // Override old startAt/endAt so normalizeAssignments() uses the new drop time
+      // 2026-01-28: Also update technician assignment for instant visual feedback
       const prev = previousData as any;
       if (prev && typeof prev === 'object' && ('events' in prev || 'assignments' in prev)) {
         const currentEvents = prev.events ?? prev.assignments ?? [];
@@ -654,10 +876,34 @@ export function useCalendarDnD(
             if (!isAllDay) {
               const hour = params.scheduledHour ?? a.scheduledHour ?? 9;
               const mins = params.scheduledStartMinutes ?? a.scheduledStartMinutes ?? 0;
-              const dur = params.durationMinutes ?? a.durationMinutes ?? DEFAULT_DURATION_MINUTES;
+              const rawDur = params.durationMinutes ?? a.durationMinutes ?? DEFAULT_DURATION_MINUTES;
+              // 2026-01-30: When converting from all-day to timed, force default duration
+              const isConvertingFromAllDay = a.isAllDay && !isAllDay;
+              const dur = (isConvertingFromAllDay || rawDur === 1440 || rawDur > 480)
+                ? DEFAULT_DURATION_MINUTES
+                : rawDur;
               const range = computeTimedEventRange(useYear, useMonth, params.day, hour, mins, dur);
               if (range) { startAt = range.startAt; endAt = range.endAt; }
             }
+
+            // Build technician fields for optimistic update
+            let technicianFields: Record<string, any> = {};
+            if (params.technicianUserId !== undefined) {
+              if (params.technicianUserId === null) {
+                // Unassigning technician
+                technicianFields = {
+                  assignedTechnicianId: null,
+                  assignedTechnicianIds: [],
+                };
+              } else {
+                // Assigning to specific technician
+                technicianFields = {
+                  assignedTechnicianId: params.technicianUserId,
+                  assignedTechnicianIds: [params.technicianUserId],
+                };
+              }
+            }
+
             return toCanonicalEvent({
               ...a,
               year: useYear,
@@ -670,6 +916,7 @@ export function useCalendarDnD(
               scheduledHour: params.scheduledHour ?? a.scheduledHour,
               scheduledStartMinutes: params.scheduledStartMinutes ?? a.scheduledStartMinutes,
               isAllDay,
+              ...technicianFields,
               _optimistic: true,
               _saving: true,
             });
@@ -683,9 +930,12 @@ export function useCalendarDnD(
         });
       }
 
+      perfMark('optimistic-update-complete');
       return { previousData, queryKey };
     },
     onSuccess: async (result, params) => {
+      perfMark('on-success-start');
+
       // DEV diagnostic: log server response for minute-precision tracing
       if (process.env.NODE_ENV === 'development') {
         console.log('[DROP-RESULT] updateAssignment:', {
@@ -696,17 +946,29 @@ export function useCalendarDnD(
           allDay: result?.allDay,
         });
       }
+
       clearJobSaving(params.id);
       snapshotRef.current = null;
-      await refetchCalendar();
-      canonicalizeCalendarCache();
-      invalidateCalendarQueries();
+
+      // Merge server response into cache (replaces optimistic with real data)
+      mergeServerResponseIntoCache(result, params.id, 'reschedule');
+      perfMark('cache-merged');
+
+      // Show success toast
       toast({
         title: "Updated",
         description: "The job has been rescheduled",
       });
+
+      // No invalidation needed for reschedule - job stays in calendar
+      // Optimistic update + merge is sufficient
+      perfMark('invalidation-complete');
+
+      endPerfSession(true);
     },
     onError: async (error: any, params, context) => {
+      perfMark('on-error', { error: error.message });
+
       clearJobSaving(params.id);
       // Rollback to snapshot (snap-back for drag/drop)
       if (context?.previousData && context?.queryKey) {
@@ -747,9 +1009,10 @@ export function useCalendarDnD(
           }
         }
 
-        // Refetch calendar and unscheduled to get fresh versions for next attempt
+        // Refetch calendar to get fresh versions for next attempt
+        // Use invalidateCalendarOnly since reschedule doesn't affect unscheduled list
         await refetchCalendar();
-        invalidateCalendarQueries();
+        invalidateCalendarOnly();
 
         // Show toast explaining the conflict
         toast({
@@ -769,6 +1032,7 @@ export function useCalendarDnD(
           variant: "destructive",
         });
       }
+      endPerfSession(false);
     },
   });
 
@@ -791,7 +1055,8 @@ export function useCalendarDnD(
     onSuccess: async () => {
       await refetchCalendar();
       canonicalizeCalendarCache();
-      invalidateCalendarQueries();
+      // Duration change doesn't affect unscheduled list
+      invalidateCalendarOnly();
     },
     onError: async (error: any, params) => {
       // DEV logging
@@ -809,9 +1074,9 @@ export function useCalendarDnD(
           'PATCH',
           `/api/calendar/schedule/${params.id}`
         );
-        // Refetch calendar and unscheduled to get fresh versions
+        // Refetch calendar to get fresh versions (duration change doesn't affect unscheduled)
         await refetchCalendar();
-        invalidateCalendarQueries();
+        invalidateCalendarOnly();
         const handled = await handleCalendarMutationError(error);
         if (!handled) {
           toast({
@@ -835,23 +1100,33 @@ export function useCalendarDnD(
   // ========================================
   const deleteAssignment = useMutation({
     mutationFn: async ({ id, version, jobId, jobNumber }: { id: string; version: number; jobId?: string; jobNumber?: number }) => {
+      // PERF: Start session for unschedule operation
+      startPerfSession('unschedule', jobId || id);
+      perfMark('mutation-fn-start');
+
       // DEV logging
       if (process.env.NODE_ENV === 'development') {
         console.log('[useCalendarDnD] deleteAssignment (unschedule) starting:', { id, version, jobId, jobNumber });
       }
       // Use unschedule endpoint with version in body
-      return apiRequest(`/api/calendar/unschedule/${id}`, {
+      const response = await apiRequest(`/api/calendar/unschedule/${id}`, {
         method: "POST",
         body: JSON.stringify({ version }),
       });
+      perfMark('server-response-received');
+      return response;
     },
     onMutate: async ({ id }) => {
+      perfMark('on-mutate-start');
+
       // Mark job as saving for visual feedback
       markJobSaving(id);
 
       // Cancel any outgoing refetches for both calendar and unscheduled
       await queryClient.cancelQueries({ queryKey: getCalendarQueryKey() });
       await queryClient.cancelQueries({ queryKey: ["/api/calendar/unscheduled"] });
+
+      perfMark('queries-cancelled');
 
       // Snapshot current data for rollback
       const queryKey = getCalendarQueryKey();
@@ -895,9 +1170,12 @@ export function useCalendarDnD(
         queryClient.setQueryData(["/api/calendar/unscheduled"], [optimisticUnscheduledItem, ...previousUnscheduledData]);
       }
 
+      perfMark('optimistic-update-complete');
       return { previousCalendarData, previousUnscheduledData, queryKey, deletedEvent };
     },
-    onSuccess: async (_, params) => {
+    onSuccess: async (result, params) => {
+      perfMark('on-success-start');
+
       clearJobSaving(params.id);
 
       // DEV logging - critical for debugging unschedule consistency
@@ -906,21 +1184,29 @@ export function useCalendarDnD(
           assignmentId: params.id,
           jobId: params.jobId,
           version: params.version,
-          action: 'invalidated scheduled + unscheduled',
+          action: 'merged into cache',
         });
       }
 
-      // Invalidate queries BEFORE refetch to ensure fresh data
-      invalidateCalendarQueries();
-      await refetchCalendar();
-      canonicalizeCalendarCache();
+      // Merge: ensure job is removed from calendar cache
+      mergeServerResponseIntoCache(result, params.jobId || params.id, 'unschedule');
+      perfMark('cache-merged');
 
+      // Show success toast
       toast({
         title: "Removed",
         description: "The job has been unscheduled",
       });
+
+      // Only invalidate unscheduled list (job moved there)
+      invalidateNarrow(true);
+      perfMark('invalidation-complete');
+
+      endPerfSession(true);
     },
     onError: async (error: any, params, context) => {
+      perfMark('on-error', { error: error.message });
+
       clearJobSaving(params.id);
       // Rollback calendar to snapshot
       if (context?.previousCalendarData && context?.queryKey) {
@@ -965,6 +1251,7 @@ export function useCalendarDnD(
         description: error.message || "Failed to remove assignment",
         variant: "destructive",
       });
+      endPerfSession(false);
     },
   });
 
@@ -998,7 +1285,8 @@ export function useCalendarDnD(
       });
     },
     onSuccess: () => {
-      invalidateCalendarQueries();
+      // Technician assignment doesn't affect unscheduled list
+      invalidateCalendarOnly();
       toast({
         title: "Updated",
         description: "Technician assignment updated",
@@ -1032,7 +1320,8 @@ export function useCalendarDnD(
       return Promise.all(unschedulePromises);
     },
     onSuccess: () => {
-      invalidateCalendarQueries();
+      // Jobs move to unscheduled - need full invalidation
+      invalidateCalendarAndUnscheduled();
       toast({
         title: "Schedule cleared",
         description: "All jobs have been moved to unscheduled",
@@ -1059,7 +1348,8 @@ export function useCalendarDnD(
       return Promise.all(unschedulePromises);
     },
     onSuccess: () => {
-      invalidateCalendarQueries();
+      // Jobs move to unscheduled - need full invalidation
+      invalidateCalendarAndUnscheduled();
       toast({
         title: "Day cleared",
         description: "All jobs for this day have been unscheduled",
@@ -1085,7 +1375,8 @@ export function useCalendarDnD(
       });
     },
     onSuccess: (_, { currentCompleted }) => {
-      invalidateCalendarQueries();
+      // Completion status change doesn't affect unscheduled list
+      invalidateCalendarOnly();
       queryClient.invalidateQueries({ queryKey: ["/api/maintenance/recently-completed"] });
       queryClient.invalidateQueries({ queryKey: ["/api/maintenance/statuses"] });
       toast({
@@ -1102,8 +1393,11 @@ export function useCalendarDnD(
     },
   });
 
-  // Computed saving state
-  const isSavingDrag = createAssignment.isPending || updateAssignment.isPending || deleteAssignment.isPending;
+  // Computed saving states - 2026-01-30: Split for granular loading indicators
+  // Shows loading for operations that affect unscheduled panel (schedule from/unschedule to)
+  const isSavingUnscheduled = createAssignment.isPending || deleteAssignment.isPending;
+  // Shows loading for any drag operation (for calendar visual feedback)
+  const isSavingAnyDrag = createAssignment.isPending || updateAssignment.isPending || deleteAssignment.isPending;
 
   return {
     // Mutations
@@ -1116,12 +1410,15 @@ export function useCalendarDnD(
     clearDay,
     toggleComplete,
 
-    // State
-    isSavingDrag,
-    savingJobIds, // Per-job saving state for visual feedback
+    // State - 2026-01-30: Split saving states for granular loading indicators
+    isSavingDrag: isSavingAnyDrag,  // Any drag operation (calendar feedback)
+    isSavingUnscheduled,             // Only schedule/unschedule (sidebar feedback)
+    savingJobIds,                    // Per-job saving state for visual feedback
 
-    // Helpers
-    invalidateCalendarQueries,
+    // Helpers - 2026-01-30: Split invalidation for performance
+    invalidateCalendarQueries,       // Alias for invalidateCalendarAndUnscheduled (backward compat)
+    invalidateCalendarOnly,          // Use for reschedule/duration/assignment changes
+    invalidateCalendarAndUnscheduled, // Use for schedule/unschedule operations
 
     // RBAC
     canSchedule,

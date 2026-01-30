@@ -527,11 +527,11 @@ router.post("/:id/convert-to-job", requireRole(MANAGER_ROLES), asyncHandler(asyn
     throw createError(400, "Only approved quotes can be converted to jobs");
   }
 
-  // Create the job
+  // Create the job (status is "open" - scheduling is derived from scheduledStart)
   const job = await jobRepository.createJob(companyId, {
     locationId: quote.locationId,
     jobType: validated.jobType || "maintenance",
-    status: "scheduled",
+    status: "open",  // Lifecycle status; "scheduled" is derived from scheduledStart
     priority: "medium",
     scheduledStart: validated.scheduledDate || null,
     summary: `Created from Quote ${quote.quoteNumber}`,

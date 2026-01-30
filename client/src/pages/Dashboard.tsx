@@ -1,15 +1,15 @@
 import { useState, useEffect, useMemo } from "react";
 import { useLocation, useSearch } from "wouter";
 import ClientListTable from "@/components/ClientListTable";
-import { AlertCircle, Calendar, Clock, FileText, DollarSign, Briefcase, ChevronRight, Loader2, Wrench } from "lucide-react";
+import { Calendar, FileText, DollarSign, Briefcase, ChevronRight, ChevronDown, ChevronUp } from "lucide-react";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import { TasksSidebar } from "@/components/TasksSidebar";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AsyncBlock } from "@/components/AsyncBlock";
 
 // ============================================================================
 // Types
@@ -17,7 +17,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 interface WorkflowSummary {
   quotes: { approvedCount: number; draftCount: number };
-  jobs: { requiresInvoicingCount: number; activeCount: number; actionRequiredCount: number };
+  jobs: { requiresInvoicingCount: number; activeCount: number; onHoldCount: number };
   invoices: { outstandingCount: number; pastDueCount: number };
   fourth: null;
 }
@@ -40,6 +40,7 @@ interface Invoice {
   dueDate: string | null;
   status: string;
   locationName?: string;
+  isPastDue?: boolean;
 }
 
 // ============================================================================
@@ -69,8 +70,10 @@ function WorkflowStrip({ data, isLoading, isError }: {
         { label: "Approved", count: data?.quotes.approvedCount ?? 0, href: "/quotes?status=approved" },
         { label: "Draft", count: data?.quotes.draftCount ?? 0, href: "/quotes?status=draft" },
       ],
-      color: "text-blue-600",
-      bgColor: "bg-blue-50 dark:bg-blue-950/30",
+      color: "text-blue-600 dark:text-blue-400",
+      bgColor: "bg-blue-50/80 dark:bg-blue-950/40",
+      borderColor: "border-blue-200 dark:border-blue-800",
+      hoverBg: "hover:bg-blue-100/80 dark:hover:bg-blue-900/50",
     },
     {
       title: "Jobs",
@@ -78,10 +81,12 @@ function WorkflowStrip({ data, isLoading, isError }: {
       items: [
         { label: "Requires Invoicing", count: data?.jobs.requiresInvoicingCount ?? 0, href: "/jobs?status=requires_invoicing" },
         { label: "Active", count: data?.jobs.activeCount ?? 0, href: "/jobs" },
-        { label: "Action Required", count: data?.jobs.actionRequiredCount ?? 0, href: "/jobs?status=needs_parts" },
+        { label: "On Hold", count: data?.jobs.onHoldCount ?? 0, href: "/jobs?status=on_hold" },
       ],
-      color: "text-emerald-600",
-      bgColor: "bg-emerald-50 dark:bg-emerald-950/30",
+      color: "text-emerald-600 dark:text-emerald-400",
+      bgColor: "bg-emerald-50/80 dark:bg-emerald-950/40",
+      borderColor: "border-emerald-200 dark:border-emerald-800",
+      hoverBg: "hover:bg-emerald-100/80 dark:hover:bg-emerald-900/50",
     },
     {
       title: "Invoices",
@@ -90,15 +95,19 @@ function WorkflowStrip({ data, isLoading, isError }: {
         { label: "Outstanding", count: data?.invoices.outstandingCount ?? 0, href: "/invoices?filter=outstanding" },
         { label: "Past Due", count: data?.invoices.pastDueCount ?? 0, href: "/invoices?filter=pastDue" },
       ],
-      color: "text-amber-600",
-      bgColor: "bg-amber-50 dark:bg-amber-950/30",
+      color: "text-amber-600 dark:text-amber-400",
+      bgColor: "bg-amber-50/80 dark:bg-amber-950/40",
+      borderColor: "border-amber-200 dark:border-amber-800",
+      hoverBg: "hover:bg-amber-100/80 dark:hover:bg-amber-900/50",
     },
     {
       title: "Reports",
       icon: Calendar,
       items: [],
-      color: "text-slate-500",
-      bgColor: "bg-slate-50 dark:bg-slate-900/50",
+      color: "text-slate-500 dark:text-slate-400",
+      bgColor: "bg-slate-50/80 dark:bg-slate-900/40",
+      borderColor: "border-slate-200 dark:border-slate-700",
+      hoverBg: "hover:bg-slate-100/80 dark:hover:bg-slate-800/50",
       placeholder: "Coming soon",
     },
   ];
@@ -106,14 +115,17 @@ function WorkflowStrip({ data, isLoading, isError }: {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
       {sections.map((section) => (
-        <Card key={section.title} className={`${section.bgColor} border-0 shadow-sm`}>
-          <CardHeader className="pb-2 pt-3 px-4">
+        <div
+          key={section.title}
+          className={`${section.bgColor} ${section.borderColor} border rounded-lg shadow-sm transition-colors ${section.hoverBg}`}
+        >
+          <div className="px-4 pt-3 pb-2">
             <div className="flex items-center gap-2">
               <section.icon className={`h-4 w-4 ${section.color}`} />
-              <CardTitle className="text-sm font-medium">{section.title}</CardTitle>
+              <span className={`text-sm font-medium ${section.color}`}>{section.title}</span>
             </div>
-          </CardHeader>
-          <CardContent className="px-4 pb-3 pt-0">
+          </div>
+          <div className="px-4 pb-3">
             {section.placeholder ? (
               <p className="text-xs text-muted-foreground">{section.placeholder}</p>
             ) : isLoading ? (
@@ -128,7 +140,7 @@ function WorkflowStrip({ data, isLoading, isError }: {
                   <button
                     key={item.label}
                     onClick={() => setLocation(item.href)}
-                    className="flex items-center justify-between w-full text-left py-1 px-2 -mx-2 rounded hover:bg-black/5 dark:hover:bg-white/5 transition-colors group"
+                    className="flex items-center justify-between w-full text-left py-1 px-2 -mx-2 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors group"
                   >
                     <span className="text-xs text-muted-foreground group-hover:text-foreground transition-colors">
                       {item.label}
@@ -138,8 +150,8 @@ function WorkflowStrip({ data, isLoading, isError }: {
                 ))}
               </div>
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       ))}
     </div>
   );
@@ -149,112 +161,138 @@ function WorkflowStrip({ data, isLoading, isError }: {
 // Widget Components
 // ============================================================================
 
-function WidgetSkeleton({ rows = 3 }: { rows?: number }) {
-  return (
-    <div className="space-y-3">
-      {Array.from({ length: rows }).map((_, i) => (
-        <div key={i} className="flex items-center gap-3">
-          <Skeleton className="h-10 w-10 rounded" />
-          <div className="flex-1 space-y-1">
-            <Skeleton className="h-4 w-3/4" />
-            <Skeleton className="h-3 w-1/2" />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
+interface AttentionJob extends Job {
+  attentionType?: string;
+  scheduledEnd?: string | null;
 }
 
-function JobsListWidget({
-  title,
+function NeedsAttentionWidget({
   jobs,
   isLoading,
   isError,
-  viewMoreHref,
-  emptyMessage = "No jobs found"
+  error,
+  onRetry,
 }: {
-  title: string;
-  jobs: Job[];
+  jobs: AttentionJob[];
   isLoading: boolean;
   isError: boolean;
-  viewMoreHref: string;
-  emptyMessage?: string;
+  error?: unknown;
+  onRetry?: () => void;
 }) {
   const [, setLocation] = useLocation();
 
+  const getAccentClass = (attentionType?: string) => {
+    switch (attentionType) {
+      case "overdue":
+        return "border-l-red-500";
+      case "on_hold":
+        return "border-l-orange-400";
+      case "requires_invoicing":
+      default:
+        return "border-l-emerald-500";
+    }
+  };
+
+  const formatSchedule = (start: string | null, end?: string | null) => {
+    if (!start) return null;
+    const startDate = new Date(start);
+    const dateStr = startDate.toLocaleDateString("en-CA", { month: "short", day: "numeric" });
+    const startTime = startDate.toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit" });
+    if (end) {
+      const endDate = new Date(end);
+      const endTime = endDate.toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit" });
+      return `${dateStr} · ${startTime} – ${endTime}`;
+    }
+    return `${dateStr} · ${startTime}`;
+  };
+
+  const overdueCount = jobs.filter(j => j.attentionType === "overdue").length;
+
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-base font-medium">{title}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        {isError ? (
-          <div className="text-center py-4 text-sm text-destructive">
-            Failed to load jobs
-          </div>
-        ) : isLoading ? (
-          <WidgetSkeleton rows={3} />
-        ) : jobs.length === 0 ? (
-          <div className="text-center py-6 text-sm text-muted-foreground">
-            {emptyMessage}
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {jobs.slice(0, 5).map((job) => (
-              <button
-                key={job.id}
-                onClick={() => setLocation(`/jobs/${job.id}`)}
-                className="flex items-start gap-3 w-full text-left p-2 -mx-2 rounded hover:bg-muted/50 transition-colors group"
-              >
-                <div className="flex-shrink-0 h-9 w-9 rounded bg-primary/10 flex items-center justify-center">
-                  <Briefcase className="h-4 w-4 text-primary" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium truncate group-hover:text-primary transition-colors">
-                    #{job.jobNumber} - {job.summary}
+    <Card className="flex flex-col">
+      <div className="p-4 pb-3 flex-1">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-base font-medium">Needs Attention</h3>
+          {overdueCount > 0 && (
+            <span className="text-xs font-medium text-red-600 dark:text-red-400">
+              {overdueCount} overdue
+            </span>
+          )}
+        </div>
+        <AsyncBlock
+          title="attention items"
+          isLoading={isLoading}
+          isError={isError}
+          error={error}
+          onRetry={onRetry}
+          isEmpty={jobs.length === 0}
+          emptyMessage="All caught up!"
+          skeletonRows={5}
+        >
+          <div className="space-y-1.5">
+            {jobs.slice(0, 5).map((job) => {
+              const accentClass = getAccentClass(job.attentionType);
+              const schedule = formatSchedule(job.scheduledStart, job.scheduledEnd);
+              const companyName = job.location?.companyName || job.locationName || "No location";
+
+              return (
+                <button
+                  key={job.id}
+                  onClick={() => setLocation(`/jobs/${job.id}`)}
+                  className={`w-full text-left px-3 py-2 rounded border border-slate-200 dark:border-slate-700 border-l-4 ${accentClass} hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors`}
+                >
+                  <p className="text-sm font-medium text-foreground truncate">
+                    {companyName}
                   </p>
-                  <p className="text-xs text-muted-foreground truncate">
-                    {job.location?.companyName || job.location?.location || job.locationName || "No location"}
+                  <p className="text-xs text-muted-foreground truncate mt-0.5">
+                    {job.summary}
+                    {schedule && <span className="text-muted-foreground/70"> · {schedule}</span>}
+                    {job.attentionType === "overdue" && (
+                      <span className="ml-1.5 text-red-600 dark:text-red-400 font-medium">Overdue</span>
+                    )}
                   </p>
-                </div>
-                <Badge variant="outline" className="text-xs flex-shrink-0">
-                  {job.status.replace(/_/g, " ")}
-                </Badge>
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </div>
-        )}
-        {jobs.length > 0 && (
+        </AsyncBlock>
+        {!isError && !isLoading && jobs.length > 0 && (
           <Button
             variant="ghost"
             size="sm"
-            className="w-full mt-2"
-            onClick={() => setLocation(viewMoreHref)}
+            className="w-full mt-2 h-8"
+            onClick={() => setLocation("/jobs")}
           >
-            View more <ChevronRight className="h-4 w-4 ml-1" />
+            View all jobs <ChevronRight className="h-4 w-4 ml-1" />
           </Button>
         )}
-      </CardContent>
+      </div>
     </Card>
   );
 }
 
-function InvoicesListWidget({
-  title,
+function InvoicesWidget({
   invoices,
   isLoading,
   isError,
-  viewMoreHref,
-  emptyMessage = "No invoices found"
+  error,
+  onRetry,
 }: {
-  title: string;
   invoices: Invoice[];
   isLoading: boolean;
   isError: boolean;
-  viewMoreHref: string;
-  emptyMessage?: string;
+  error?: unknown;
+  onRetry?: () => void;
 }) {
   const [, setLocation] = useLocation();
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  const COLLAPSED_LIMIT = 5;
+  const EXPANDED_LIMIT = 10;
+  const displayLimit = isExpanded ? EXPANDED_LIMIT : COLLAPSED_LIMIT;
+  const displayedInvoices = invoices.slice(0, displayLimit);
+  const hasMore = invoices.length > COLLAPSED_LIMIT;
+  const pastDueCount = invoices.filter(inv => inv.isPastDue).length;
 
   const formatCurrency = (amount: string) => {
     const num = parseFloat(amount || "0");
@@ -267,152 +305,93 @@ function InvoicesListWidget({
   };
 
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-base font-medium">{title}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        {isError ? (
-          <div className="text-center py-4 text-sm text-destructive">
-            Failed to load invoices
-          </div>
-        ) : isLoading ? (
-          <WidgetSkeleton rows={3} />
-        ) : invoices.length === 0 ? (
-          <div className="text-center py-6 text-sm text-muted-foreground">
-            {emptyMessage}
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {invoices.slice(0, 5).map((invoice) => (
-              <button
-                key={invoice.id}
-                onClick={() => setLocation(`/invoices/${invoice.id}`)}
-                className="flex items-start gap-3 w-full text-left p-2 -mx-2 rounded hover:bg-muted/50 transition-colors group"
-              >
-                <div className="flex-shrink-0 h-9 w-9 rounded bg-amber-500/10 flex items-center justify-center">
-                  <DollarSign className="h-4 w-4 text-amber-600" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium truncate group-hover:text-primary transition-colors">
-                    {invoice.invoiceNumber || `Invoice`} - {formatCurrency(invoice.balance)}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Due: {formatDate(invoice.dueDate)}
-                  </p>
-                </div>
-                <Badge variant={invoice.status === "sent" ? "secondary" : "outline"} className="text-xs flex-shrink-0">
-                  {invoice.status}
-                </Badge>
-              </button>
-            ))}
-          </div>
-        )}
-        {invoices.length > 0 && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full mt-2"
-            onClick={() => setLocation(viewMoreHref)}
+    <Card className="flex flex-col">
+      <div className="p-4 pb-3 flex-1">
+        <div className="flex items-center justify-between mb-3">
+          <button
+            onClick={() => setLocation("/invoices?filter=awaiting_payment")}
+            className="text-base font-medium hover:text-primary hover:underline transition-colors text-left"
           >
-            View more <ChevronRight className="h-4 w-4 ml-1" />
-          </Button>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function NeedsAttentionWidget({
-  requiresInvoicingJobs,
-  needsPartsJobs,
-  isLoading,
-  isError,
-}: {
-  requiresInvoicingJobs: Job[];
-  needsPartsJobs: Job[];
-  isLoading: boolean;
-  isError: boolean;
-}) {
-  const [, setLocation] = useLocation();
-
-  // Combine and limit to 5
-  const combinedItems = [
-    ...needsPartsJobs.map((j) => ({ ...j, type: "needs_parts" as const })),
-    ...requiresInvoicingJobs.map((j) => ({ ...j, type: "requires_invoicing" as const })),
-  ].slice(0, 5);
-
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <div className="flex items-center gap-2">
-          <AlertCircle className="h-4 w-4 text-amber-500" />
-          <CardTitle className="text-base font-medium">Needs Attention</CardTitle>
+            Invoices
+          </button>
+          <div className="flex items-center gap-3">
+            {pastDueCount > 0 && (
+              <span className="text-xs font-medium text-red-600 dark:text-red-400">
+                {pastDueCount} past due
+              </span>
+            )}
+            {hasMore && !isLoading && !isError && invoices.length > 0 && (
+              <button
+                onClick={() => setIsExpanded(!isExpanded)}
+                className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
+              >
+                {isExpanded ? (
+                  <>Show less <ChevronUp className="h-3 w-3" /></>
+                ) : (
+                  <>Show more <ChevronDown className="h-3 w-3" /></>
+                )}
+              </button>
+            )}
+          </div>
         </div>
-      </CardHeader>
-      <CardContent>
-        {isError ? (
-          <div className="text-center py-4 text-sm text-destructive">
-            Failed to load data
-          </div>
-        ) : isLoading ? (
-          <WidgetSkeleton rows={3} />
-        ) : combinedItems.length === 0 ? (
-          <div className="text-center py-6 text-sm text-muted-foreground">
-            All caught up!
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {combinedItems.map((job) => (
-              <button
-                key={job.id}
-                onClick={() => setLocation(`/jobs/${job.id}`)}
-                className="flex items-start gap-3 w-full text-left p-2 -mx-2 rounded hover:bg-muted/50 transition-colors group"
-              >
-                <div className={`flex-shrink-0 h-9 w-9 rounded flex items-center justify-center ${
-                  job.type === "needs_parts"
-                    ? "bg-orange-500/10"
-                    : "bg-emerald-500/10"
-                }`}>
-                  {job.type === "needs_parts" ? (
-                    <Wrench className="h-4 w-4 text-orange-600" />
-                  ) : (
-                    <FileText className="h-4 w-4 text-emerald-600" />
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium truncate group-hover:text-primary transition-colors">
-                    #{job.jobNumber} - {job.summary}
-                  </p>
-                  <p className="text-xs text-muted-foreground truncate">
-                    {job.location?.companyName || job.location?.location || job.locationName || "No location"}
-                  </p>
-                </div>
-                <Badge
-                  variant="outline"
-                  className={`text-xs flex-shrink-0 ${
-                    job.type === "needs_parts"
-                      ? "border-orange-300 text-orange-700 dark:border-orange-700 dark:text-orange-400"
-                      : "border-emerald-300 text-emerald-700 dark:border-emerald-700 dark:text-emerald-400"
-                  }`}
+        <AsyncBlock
+          title="invoices"
+          isLoading={isLoading}
+          isError={isError}
+          error={error}
+          onRetry={onRetry}
+          isEmpty={invoices.length === 0}
+          emptyMessage="No unpaid invoices"
+          skeletonRows={5}
+        >
+          <div className="space-y-1.5">
+            {displayedInvoices.map((invoice) => {
+              const accentClass = invoice.isPastDue ? "border-l-red-500" : "border-l-amber-400";
+
+              return (
+                <button
+                  key={invoice.id}
+                  onClick={() => setLocation(`/invoices/${invoice.id}`)}
+                  className={`w-full text-left px-3 py-2 rounded border border-slate-200 dark:border-slate-700 border-l-4 ${accentClass} hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors`}
                 >
-                  {job.type === "needs_parts" ? "Needs Parts" : "Needs Invoice"}
-                </Badge>
-              </button>
-            ))}
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-foreground truncate">
+                        {invoice.locationName || "Invoice"}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {invoice.invoiceNumber && <span>#{invoice.invoiceNumber} · </span>}
+                        Due {formatDate(invoice.dueDate)}
+                        {invoice.isPastDue && (
+                          <span className="ml-1.5 text-red-600 dark:text-red-400 font-medium">Past due</span>
+                        )}
+                      </p>
+                    </div>
+                    <div className="text-right flex-shrink-0">
+                      <p className="text-sm font-semibold text-foreground tabular-nums">
+                        {formatCurrency(invoice.balance)}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {invoice.isPastDue ? "Outstanding" : "Awaiting"}
+                      </p>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
           </div>
-        )}
-        {combinedItems.length > 0 && (
+        </AsyncBlock>
+        {!isError && !isLoading && invoices.length > 0 && (
           <Button
             variant="ghost"
             size="sm"
-            className="w-full mt-2"
-            onClick={() => setLocation("/jobs?status=needs_parts")}
+            className="w-full mt-2 h-8"
+            onClick={() => setLocation("/invoices?filter=awaiting_payment")}
           >
-            View more <ChevronRight className="h-4 w-4 ml-1" />
+            View all invoices <ChevronRight className="h-4 w-4 ml-1" />
           </Button>
         )}
-      </CardContent>
+      </div>
     </Card>
   );
 }
@@ -422,7 +401,6 @@ function NeedsAttentionWidget({
 // ============================================================================
 
 export default function Dashboard() {
-  const [, setLocation] = useLocation();
 
   // ✅ Tasks sidebar collapse state (persisted)
   const TASKS_COLLAPSE_KEY = "dashboardTasksCollapsed";
@@ -462,82 +440,37 @@ export default function Dashboard() {
     refetchOnWindowFocus: false,
   });
 
-  // Jobs scheduled for today
+  // Jobs needing attention (dedicated dashboard endpoint)
   const today = new Date().toISOString().slice(0, 10);
+  // Includes: overdue jobs + on_hold + requires_invoicing
   const {
-    data: todayJobsResponse,
-    isLoading: todayJobsLoading,
-    isError: todayJobsError,
-  } = useQuery<{ data: Job[] }>({
-    queryKey: ["/api/jobs", { scheduledDate: today, limit: 5 }],
-    queryFn: async () => {
-      try {
-        return await apiRequest(`/api/jobs?scheduledDate=${today}&limit=5`);
-      } catch {
-        return { data: [] };
-      }
-    },
+    data: needsAttentionResponse,
+    isLoading: needsAttentionLoading,
+    isError: needsAttentionError,
+    error: needsAttentionErrorObj,
+    refetch: refetchNeedsAttention,
+  } = useQuery<{ data: (Job & { attentionType?: string })[] }>({
+    queryKey: ["/api/dashboard/needs-attention", { date: today }],
+    queryFn: () => apiRequest(`/api/dashboard/needs-attention?date=${today}&limit=5`),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
-  const todayJobs = todayJobsResponse?.data || [];
+  const needsAttentionJobs = needsAttentionResponse?.data || [];
 
-  // Jobs requiring invoicing
+  // Dashboard invoices (past due + awaiting payment, sorted appropriately)
   const {
-    data: requiresInvoicingResponse,
-    isLoading: requiresInvoicingLoading,
-    isError: requiresInvoicingError,
-  } = useQuery<{ data: Job[] }>({
-    queryKey: ["/api/jobs", { status: "requires_invoicing", limit: 5 }],
-    queryFn: async () => {
-      try {
-        return await apiRequest(`/api/jobs?status=requires_invoicing&limit=5`);
-      } catch {
-        return { data: [] };
-      }
-    },
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
-  });
-  const requiresInvoicingJobs = requiresInvoicingResponse?.data || [];
-
-  // Jobs needing parts
-  const {
-    data: needsPartsResponse,
-    isLoading: needsPartsLoading,
-    isError: needsPartsError,
-  } = useQuery<{ data: Job[] }>({
-    queryKey: ["/api/jobs", { status: "needs_parts", limit: 5 }],
-    queryFn: async () => {
-      try {
-        return await apiRequest(`/api/jobs?status=needs_parts&limit=5`);
-      } catch {
-        return { data: [] };
-      }
-    },
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
-  });
-  const needsPartsJobs = needsPartsResponse?.data || [];
-
-  // Overdue invoices
-  const {
-    data: overdueInvoicesResponse,
-    isLoading: overdueInvoicesLoading,
-    isError: overdueInvoicesError,
+    data: dashboardInvoicesResponse,
+    isLoading: dashboardInvoicesLoading,
+    isError: dashboardInvoicesError,
+    error: dashboardInvoicesErrorObj,
+    refetch: refetchDashboardInvoices,
   } = useQuery<{ data: Invoice[] }>({
-    queryKey: ["/api/invoices", { filter: "pastDue", limit: 5 }],
-    queryFn: async () => {
-      try {
-        return await apiRequest(`/api/invoices?filter=pastDue&limit=5`);
-      } catch {
-        return { data: [] };
-      }
-    },
+    queryKey: ["/api/invoices/dashboard"],
+    queryFn: () => apiRequest(`/api/invoices/dashboard`),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
-  const overdueInvoices = overdueInvoicesResponse?.data || [];
+  const dashboardInvoices = dashboardInvoicesResponse?.data || [];
 
   // ============================================================================
   // Render
@@ -545,12 +478,12 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-background">
-      <main className="mx-auto px-4 sm:px-6 lg:px-8 py-4 space-y-4">
-        <Tabs value={activeTab} className="space-y-4">
+      <main className="mx-auto px-4 sm:px-6 lg:px-8 py-3 space-y-3">
+        <Tabs value={activeTab} className="space-y-3">
           <TabsContent value="schedule" className="space-y-0 mt-0">
             <div className="flex gap-4">
               {/* Left column - main content */}
-              <div className="flex-1 min-w-0 space-y-4">
+              <div className="flex-1 min-w-0 space-y-3">
                 {/* Workflow Strip */}
                 <WorkflowStrip
                   data={workflowData}
@@ -558,58 +491,27 @@ export default function Dashboard() {
                   isError={workflowError}
                 />
 
-                {/* Two-column widget grid */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  {/* Left column widgets */}
-                  <div className="space-y-4">
-                    <JobsListWidget
-                      title="Jobs Today"
-                      jobs={todayJobs}
-                      isLoading={todayJobsLoading}
-                      isError={todayJobsError}
-                      viewMoreHref={`/jobs?scheduledDate=${today}`}
-                      emptyMessage="No jobs scheduled for today"
-                    />
-
-                    <NeedsAttentionWidget
-                      requiresInvoicingJobs={requiresInvoicingJobs}
-                      needsPartsJobs={needsPartsJobs}
-                      isLoading={requiresInvoicingLoading || needsPartsLoading}
-                      isError={requiresInvoicingError || needsPartsError}
-                    />
-                  </div>
-
-                  {/* Right column widgets */}
-                  <div className="space-y-4">
-                    <InvoicesListWidget
-                      title="Overdue Invoices"
-                      invoices={overdueInvoices}
-                      isLoading={overdueInvoicesLoading}
-                      isError={overdueInvoicesError}
-                      viewMoreHref="/invoices?filter=pastDue"
-                      emptyMessage="No overdue invoices"
-                    />
-
-                    {/* Placeholder card for future content */}
-                    <Card>
-                      <CardHeader className="pb-2">
-                        <div className="flex items-center gap-2">
-                          <Clock className="h-4 w-4 text-muted-foreground" />
-                          <CardTitle className="text-base font-medium">Recent Activity</CardTitle>
-                        </div>
-                      </CardHeader>
-                      <CardContent>
-                        <div className="text-center py-6 text-sm text-muted-foreground">
-                          Coming soon
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </div>
+                {/* Two-column grid: Needs Attention + Invoices */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
+                  <NeedsAttentionWidget
+                    jobs={needsAttentionJobs}
+                    isLoading={needsAttentionLoading}
+                    isError={needsAttentionError}
+                    error={needsAttentionErrorObj}
+                    onRetry={() => refetchNeedsAttention()}
+                  />
+                  <InvoicesWidget
+                    invoices={dashboardInvoices}
+                    isLoading={dashboardInvoicesLoading}
+                    isError={dashboardInvoicesError}
+                    error={dashboardInvoicesErrorObj}
+                    onRetry={() => refetchDashboardInvoices()}
+                  />
                 </div>
               </div>
 
               {/* Right sidebar - Tasks */}
-              <div className="h-[calc(100vh-140px)] sticky top-20 self-start">
+              <div className="h-[calc(100vh-120px)] sticky top-16 self-start">
                 <TasksSidebar
                   collapsed={tasksCollapsed}
                   onToggleCollapsed={() => setTasksCollapsed((v) => !v)}

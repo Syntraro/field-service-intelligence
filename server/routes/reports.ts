@@ -30,7 +30,8 @@ router.get("/action-required-kpis", requireRole(MANAGER_ROLES), asyncHandler(asy
   const windowStart = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
 
   // ==========================================
-  // PART A: Current Action Required Jobs
+  // PART A: Current Jobs Needing Review
+  // Using normalized model: status='open' AND openSubStatus='needs_review'
   // ==========================================
   const currentJobs = await db
     .select({
@@ -43,7 +44,8 @@ router.get("/action-required-kpis", requireRole(MANAGER_ROLES), asyncHandler(asy
     .where(
       and(
         eq(jobs.companyId, companyId),
-        eq(jobs.status, "action_required")
+        eq(jobs.status, "open"),
+        eq(jobs.openSubStatus, "needs_review")
       )
     );
 
@@ -86,7 +88,8 @@ router.get("/action-required-kpis", requireRole(MANAGER_ROLES), asyncHandler(asy
   // ==========================================
   // PART B: Historical Metrics (last N days)
   // ==========================================
-  // Find all events where jobs entered action_required in the window
+  // Find all events where jobs entered needs_review state in the window
+  // Note: Historical data may have "action_required" as legacy status
   const entryEvents = await db
     .select({
       jobId: jobStatusEvents.jobId,
@@ -97,13 +100,14 @@ router.get("/action-required-kpis", requireRole(MANAGER_ROLES), asyncHandler(asy
     .where(
       and(
         eq(jobStatusEvents.companyId, companyId),
-        eq(jobStatusEvents.toStatus, "action_required"),
+        // Include both legacy "action_required" and new "needs_review" for historical data
+        sql`(${jobStatusEvents.toStatus} = 'action_required' OR ${jobStatusEvents.meta}->>'openSubStatus' = 'needs_review')`,
         gte(jobStatusEvents.changedAt, windowStart)
       )
     )
     .orderBy(jobStatusEvents.changedAt);
 
-  // Find all events where jobs exited action_required
+  // Find all events where jobs exited needs_review/action_required
   const exitEvents = await db
     .select({
       jobId: jobStatusEvents.jobId,
@@ -114,7 +118,8 @@ router.get("/action-required-kpis", requireRole(MANAGER_ROLES), asyncHandler(asy
     .where(
       and(
         eq(jobStatusEvents.companyId, companyId),
-        eq(jobStatusEvents.fromStatus, "action_required")
+        // Include both legacy and new for historical data
+        sql`(${jobStatusEvents.fromStatus} = 'action_required' OR ${jobStatusEvents.meta}->>'previousOpenSubStatus' = 'needs_review')`
       )
     )
     .orderBy(jobStatusEvents.changedAt);

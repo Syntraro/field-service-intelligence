@@ -8,7 +8,7 @@ import {
   ArrowLeft, Send, MoreHorizontal, Plus, Trash2, DollarSign,
   FileText, GripVertical, Check, X, RefreshCw, Phone, Mail, MapPin,
   MessageSquare, User, Clock, Edit, ChevronDown, ChevronRight, Settings,
-  Percent, Tag, Briefcase
+  Percent, Tag, Briefcase, Calendar, AlertTriangle
 } from "lucide-react";
 import {
   DndContext,
@@ -83,8 +83,15 @@ interface JobNote {
   noteType?: string;
 }
 
+// Extended invoice type with derived fields from API
+interface InvoiceWithDerived extends Omit<Invoice, 'paymentTermsDays' | 'issuedAt'> {
+  isPastDue?: boolean;
+  paymentTermsDays?: number;
+  issuedAt?: string | Date | null;
+}
+
 interface InvoiceDetails {
-  invoice: Invoice;
+  invoice: InvoiceWithDerived;
   lines: InvoiceLine[];
   location: Client;
   customerCompany?: CustomerCompany;
@@ -96,19 +103,15 @@ function formatCurrency(amount: string | number): string {
   return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(num);
 }
 
-function getIsOverdue(dueDate: string | null, balance: string, status: string): boolean {
-  const balanceNum = parseFloat(balance);
-  return !!(dueDate && new Date(dueDate) < new Date() && balanceNum > 0 && status !== "paid" && status !== "voided");
-}
-
-function getStatusBadge(status: string, isOverdue: boolean): { 
-  label: string; 
+function getStatusBadge(status: string, isPastDue: boolean): {
+  label: string;
   variant: "default" | "destructive" | "secondary" | "outline";
 } {
-  if (isOverdue) return { label: "Past Due", variant: "destructive" };
+  if (isPastDue) return { label: "Past Due", variant: "destructive" };
   switch (status) {
     case "draft": return { label: "Draft", variant: "outline" };
-    case "sent": return { label: "Sent", variant: "default" };
+    case "awaiting_payment": return { label: "Awaiting Payment", variant: "default" };
+    case "sent": return { label: "Sent", variant: "default" }; // Legacy
     case "viewed": return { label: "Viewed", variant: "secondary" };
     case "partial_paid": return { label: "Partial", variant: "secondary" };
     case "paid": return { label: "Paid", variant: "default" };
@@ -117,12 +120,22 @@ function getStatusBadge(status: string, isOverdue: boolean): {
   }
 }
 
-function getBalanceColor(balance: string, isOverdue: boolean): string {
+function getBalanceColor(balance: string, isPastDue: boolean): string {
   const balanceNum = parseFloat(balance);
   if (balanceNum === 0) return "text-green-600";
-  if (isOverdue) return "text-destructive";
+  if (isPastDue) return "text-destructive";
   return "text-amber-600";
 }
+
+const PAYMENT_TERMS_OPTIONS = [
+  { value: 0, label: "Due on Receipt" },
+  { value: 7, label: "Net 7" },
+  { value: 15, label: "Net 15" },
+  { value: 30, label: "Net 30" },
+  { value: 45, label: "Net 45" },
+  { value: 60, label: "Net 60" },
+  { value: 90, label: "Net 90" },
+];
 
 // Sortable line item row component
 function SortableLineRow({ line, isEditing }: { line: InvoiceLine; isEditing: boolean }) {
@@ -183,11 +196,26 @@ function SortableLineRow({ line, isEditing }: { line: InvoiceLine; isEditing: bo
   );
 }
 
+// Helper to validate UUID format
+function isValidUUID(str: string): boolean {
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  return uuidRegex.test(str);
+}
+
 export default function InvoiceDetailPage() {
   const [, params] = useRoute("/invoices/:id");
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const invoiceId = params?.id;
+
+  // Guardrail: Detect if route param looks like invoice number instead of UUID
+  if (invoiceId && !isValidUUID(invoiceId)) {
+    console.error(
+      `[InvoiceDetailPage] Invalid route param: "${invoiceId}". ` +
+      `Invoice route must use invoice.id (UUID), not invoice_number. ` +
+      `Check navigation source - should use invoice.id, not invoice.invoiceNumber.`
+    );
+  }
   
   const [isEditing, setIsEditing] = useState(false);
   const [showPaymentDialog, setShowPaymentDialog] = useState(false);
@@ -209,6 +237,10 @@ export default function InvoiceDetailPage() {
   // Phase 10A: QBO override state
   const qboOverride = useQboOverride();
   const [qboOverridePending, setQboOverridePending] = useState(false);
+
+  // PDF and toggle sent state
+  const [pdfPending, setPdfPending] = useState(false);
+  const [toggleSentPending, setToggleSentPending] = useState(false);
 
   const { data: details, isLoading } = useQuery<InvoiceDetails>({
     queryKey: ["invoice", invoiceId, "details"],
@@ -425,6 +457,101 @@ export default function InvoiceDetailPage() {
     },
   });
 
+  // Payment terms update mutation
+  const updatePaymentTermsMutation = useMutation({
+    mutationFn: async (data: { paymentTermsDays: number }) => {
+      return apiRequest(`/api/invoices/${invoiceId}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+      toast({ title: "Payment terms updated" });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update payment terms", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // PDF download handler
+  const handleDownloadPdf = async () => {
+    if (!invoiceId) return;
+    setPdfPending(true);
+    try {
+      const res = await fetch(`/api/invoices/${invoiceId}/pdf`, { credentials: "include" });
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(errorText || "Failed to download PDF");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const invoiceNumber = details?.invoice?.invoiceNumber || invoiceId.slice(0, 8);
+      a.download = `Invoice-${invoiceNumber}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (error: any) {
+      toast({ title: "Failed to download PDF", description: error.message, variant: "destructive" });
+    } finally {
+      setPdfPending(false);
+    }
+  };
+
+  // PDF print handler
+  const handlePrintPdf = async () => {
+    if (!invoiceId) return;
+    setPdfPending(true);
+    try {
+      const res = await fetch(`/api/invoices/${invoiceId}/pdf`, { credentials: "include" });
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(errorText || "Failed to load PDF for printing");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const printWindow = window.open(url);
+      if (printWindow) {
+        printWindow.onload = () => {
+          printWindow.print();
+          // Revoke URL after a delay to ensure print dialog has the content
+          setTimeout(() => URL.revokeObjectURL(url), 60000);
+        };
+      } else {
+        // Fallback: download if popup blocked
+        handleDownloadPdf();
+        URL.revokeObjectURL(url);
+      }
+    } catch (error: any) {
+      toast({ title: "Failed to print PDF", description: error.message, variant: "destructive" });
+    } finally {
+      setPdfPending(false);
+    }
+  };
+
+  // Toggle sent status handler
+  const handleToggleSent = async (isSent: boolean) => {
+    if (!invoiceId) return;
+    setToggleSentPending(true);
+    try {
+      await apiRequest(`/api/invoices/${invoiceId}/sent`, {
+        method: "PATCH",
+        body: JSON.stringify({ isSent }),
+      });
+      // Invalidate queries to refresh data
+      queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId, "details"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
+      toast({ title: isSent ? "Invoice marked as sent" : "Sent status removed" });
+    } catch (error: any) {
+      toast({ title: "Failed to update sent status", description: error.message, variant: "destructive" });
+    } finally {
+      setToggleSentPending(false);
+    }
+  };
+
   // DnD sensors
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
@@ -545,9 +672,10 @@ export default function InvoiceDetailPage() {
   }
 
   const { invoice, lines, location, customerCompany, job } = details;
-  const isOverdue = getIsOverdue(invoice.dueDate, invoice.balance, invoice.status);
-  const statusInfo = getStatusBadge(invoice.status, isOverdue);
-  const balanceColor = getBalanceColor(invoice.balance, isOverdue);
+  // Use API-derived isPastDue flag for consistent behavior
+  const isPastDue = invoice.isPastDue ?? false;
+  const statusInfo = getStatusBadge(invoice.status, isPastDue);
+  const balanceColor = getBalanceColor(invoice.balance, isPastDue);
   const clientName = customerCompany?.name || location.companyName;
   const canEdit = invoice.status !== "paid" && invoice.status !== "voided";
   const isDraft = invoice.status === "draft";
@@ -572,8 +700,26 @@ export default function InvoiceDetailPage() {
           {/* Phase 10A: QBO Sync Status Banner */}
           <QboSyncBanner invoice={invoice} className="mb-4" />
 
-          {/* Phase 11: Sent Invoice Warning Banner */}
-          {(invoice.status === "sent" || invoice.status === "partial_paid") && !isBillingLocked(invoice) && (
+          {/* Past Due Warning Banner */}
+          {isPastDue && (
+            <div className="mb-4 p-3 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800 rounded-lg">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="h-4 w-4 text-red-600 dark:text-red-400 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium text-red-800 dark:text-red-200">
+                    Invoice is past due
+                  </p>
+                  <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+                    Due date was {invoice.dueDate ? format(new Date(invoice.dueDate), "MMM d, yyyy") : "not set"}.
+                    Consider following up with the client.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Sent Invoice Warning Banner */}
+          {(invoice.status === "awaiting_payment" || invoice.status === "sent" || invoice.status === "partial_paid") && !isBillingLocked(invoice) && !isPastDue && (
             <div className="mb-4 p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg">
               <div className="flex items-start gap-2">
                 <Send className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5" />
@@ -591,7 +737,7 @@ export default function InvoiceDetailPage() {
 
           {/* Invoice Header Card */}
           <InvoiceHeaderCard
-            invoice={invoice}
+            invoice={invoice as Invoice}
             location={location}
             customerCompany={customerCompany}
             job={job}
@@ -602,6 +748,11 @@ export default function InvoiceDetailPage() {
             onRefreshFromJob={() => refreshFromJobMutation.mutate(undefined)}
             refreshPending={refreshFromJobMutation.isPending}
             voidPending={voidMutation.isPending}
+            onDownloadPdf={handleDownloadPdf}
+            onPrintPdf={handlePrintPdf}
+            pdfPending={pdfPending}
+            onToggleSent={handleToggleSent}
+            toggleSentPending={toggleSentPending}
             canEdit={canEdit}
             isDraft={isDraft}
             sendPending={sendMutation.isPending}
@@ -823,6 +974,70 @@ export default function InvoiceDetailPage() {
             </div>
 
             <div className="lg:col-span-4 xl:col-span-4 space-y-4 order-2">
+              {/* Payment Terms & Due Date Card */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+                    <Calendar className="h-4 w-4 text-muted-foreground" />
+                    Payment Terms
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="pt-0 space-y-3">
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <span className="text-muted-foreground">Issue Date</span>
+                      <p className="font-medium">
+                        {invoice.issuedAt || invoice.issueDate
+                          ? format(new Date(invoice.issuedAt || invoice.issueDate), "MMM d, yyyy")
+                          : "Not set"}
+                      </p>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Due Date</span>
+                      <p className={`font-medium ${isPastDue ? "text-destructive" : ""}`}>
+                        {invoice.dueDate
+                          ? format(new Date(invoice.dueDate), "MMM d, yyyy")
+                          : "Not set"}
+                        {isPastDue && <span className="ml-1 text-xs">(Past due)</span>}
+                      </p>
+                    </div>
+                  </div>
+                  {canEdit && (
+                    <div className="pt-2 border-t">
+                      <Label htmlFor="payment-terms-select" className="text-xs text-muted-foreground mb-1 block">
+                        Payment Terms
+                      </Label>
+                      <div className="flex items-center gap-2">
+                        <Select
+                          value={String(invoice.paymentTermsDays ?? 30)}
+                          onValueChange={(value) => {
+                            updatePaymentTermsMutation.mutate({ paymentTermsDays: parseInt(value, 10) });
+                          }}
+                          disabled={updatePaymentTermsMutation.isPending}
+                        >
+                          <SelectTrigger id="payment-terms-select" className="h-8 text-sm" data-testid="select-invoice-payment-terms">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {PAYMENT_TERMS_OPTIONS.map((option) => (
+                              <SelectItem key={option.value} value={String(option.value)}>
+                                {option.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        {updatePaymentTermsMutation.isPending && (
+                          <span className="text-xs text-muted-foreground">Saving...</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Changing payment terms will recalculate the due date.
+                      </p>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
               {invoice.jobId && job && (
                 <Card>
                   <CardHeader className="pb-3">

@@ -17,6 +17,7 @@ import {
 } from "@shared/schema";
 import type { InsertJob, Job, InsertJobPart, JobPart, InsertJobStatusEvent, JobStatusEvent } from "@shared/schema";
 import { BaseRepository } from "./base";
+import { sanitizeAllDayTimestamps } from "../utils/allDaySanitizer";
 import { encodeCursor, decodeCursor } from "../utils/cursor";
 import type { PaginationParams } from "../utils/pagination";
 import type { PaginatedResult } from "./types";
@@ -387,6 +388,9 @@ export class JobRepository extends BaseRepository {
     // Normalize date strings to Date objects
     const normalizedData = this.normalizeDateFields(jobData);
 
+    // Sanitize all-day timestamps for UTC-safe DB write (prevents constraint violation)
+    sanitizeAllDayTimestamps(normalizedData, normalizedData.id ?? 'new-job');
+
     const rows = await db
       .insert(jobs)
       .values({
@@ -428,6 +432,9 @@ export class JobRepository extends BaseRepository {
 
     // Normalize date strings to Date objects
     const normalizedPatch = this.normalizeDateFields(patch);
+
+    // Sanitize all-day timestamps for UTC-safe DB write (prevents constraint violation)
+    sanitizeAllDayTimestamps(normalizedPatch, jobId);
 
     // Determine if we should increment version
     // Version only increments for scheduling updates (Task D requirement)

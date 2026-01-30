@@ -1,6 +1,6 @@
 import { format } from "date-fns";
 import { useLocation } from "wouter";
-import { Calendar, Briefcase, Receipt, AlertCircle } from "lucide-react";
+import { Calendar, Briefcase, Receipt, AlertCircle, Pause } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -10,65 +10,106 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { getActionRequiredReasonLabel } from "@/components/ActionRequiredModal";
-import type { Job, Invoice } from "@shared/schema";
+import { getHoldReasonLabel } from "@/components/ActionRequiredModal";
+import type { Job, Invoice, JobStatus, OpenSubStatus } from "@shared/schema";
 
 interface JobMetaCardProps {
   job: Job;
   invoice: Invoice | null;
-  onStatusChange: (status: string) => void;
-  onActionRequiredSelect?: () => void; // Called when user selects "action_required" to open modal
+  onStatusChange: (status: string, openSubStatus?: string | null) => void;
+  onHoldSelect?: () => void; // Called when user selects "on_hold" to open modal
   statusChangePending?: boolean;
 }
 
-function getJobStatusDisplay(status: string, scheduledStart: Date | null): { 
-  label: string; 
-  variant: "default" | "destructive" | "secondary" | "outline"; 
+/**
+ * Get job status display info using normalized 4-status model
+ */
+function getJobStatusDisplay(
+  status: string,
+  scheduledStart: Date | string | null,
+  openSubStatus?: string | null
+): {
+  label: string;
+  variant: "default" | "destructive" | "secondary" | "outline";
   isOverdue?: boolean;
 } {
   const now = new Date();
-  const isOverdue = !!(scheduledStart && new Date(scheduledStart) < now &&
-    !["completed", "requires_invoicing", "invoiced", "cancelled", "closed", "archived"].includes(status));
+  const isTerminal = ["completed", "invoiced", "archived"].includes(status);
+  const isOverdue = !isTerminal && scheduledStart && new Date(scheduledStart) < now;
 
-  switch (status) {
-    case "draft": return { label: "Draft", variant: "outline", isOverdue };
-    case "scheduled": return { label: "Scheduled", variant: "secondary", isOverdue };
-    case "dispatched": return { label: "Dispatched", variant: "secondary", isOverdue };
-    case "en_route": return { label: "En Route", variant: "default", isOverdue };
-    case "on_site": return { label: "On Site", variant: "default", isOverdue };
-    case "in_progress": return { label: "In Progress", variant: "default", isOverdue };
-    case "needs_parts": return { label: "Needs Parts", variant: "secondary", isOverdue };
-    case "on_hold": return { label: "On Hold", variant: "secondary", isOverdue };
-    case "action_required": return { label: "Action Required", variant: "destructive", isOverdue };
-    case "completed": return { label: "Completed", variant: "default", isOverdue: false }; // LEGACY
-    case "requires_invoicing": return { label: "Requires Invoicing", variant: "secondary", isOverdue: false };
-    case "invoiced": return { label: "Invoiced", variant: "default", isOverdue: false };
-    case "cancelled": return { label: "Cancelled", variant: "outline", isOverdue: false };
-    case "closed": return { label: "Closed", variant: "outline", isOverdue: false };
-    case "archived": return { label: "Archived", variant: "outline", isOverdue: false };
-    default: return { label: status, variant: "outline", isOverdue };
+  // Terminal statuses
+  if (status === "archived") {
+    return { label: "Archived", variant: "outline", isOverdue: false };
   }
+  if (status === "invoiced") {
+    return { label: "Invoiced", variant: "default", isOverdue: false };
+  }
+  if (status === "completed") {
+    return { label: "Completed", variant: "secondary", isOverdue: false };
+  }
+
+  // Open status - check sub-status and derived states
+  if (status === "open") {
+    // Check sub-status first
+    if (openSubStatus === "on_hold") {
+      return { label: "On Hold", variant: "destructive", isOverdue: !!isOverdue };
+    }
+    if (openSubStatus === "needs_review") {
+      return { label: "Needs Review", variant: "destructive", isOverdue: !!isOverdue };
+    }
+    if (openSubStatus === "in_progress") {
+      return { label: "In Progress", variant: "default", isOverdue: !!isOverdue };
+    }
+    if (openSubStatus === "on_route") {
+      return { label: "On Route", variant: "default", isOverdue: !!isOverdue };
+    }
+
+    // Check if scheduled
+    if (scheduledStart) {
+      return { label: "Scheduled", variant: "secondary", isOverdue: !!isOverdue };
+    }
+
+    // Default open (backlog)
+    return { label: "Open", variant: "outline", isOverdue: !!isOverdue };
+  }
+
+  // Fallback for any unknown status
+  return { label: status, variant: "outline", isOverdue: !!isOverdue };
 }
 
 export function JobMetaCard({
   job,
   invoice,
   onStatusChange,
-  onActionRequiredSelect,
+  onHoldSelect,
   statusChangePending,
 }: JobMetaCardProps) {
   const [, setLocation] = useLocation();
-  const statusInfo = getJobStatusDisplay(job.status, job.scheduledStart);
+  const statusInfo = getJobStatusDisplay(job.status, job.scheduledStart, job.openSubStatus);
 
-  // Handle status change - intercept action_required to open modal
-  const handleStatusChange = (newStatus: string) => {
-    if (newStatus === "action_required") {
-      // Open the modal instead of directly changing status
-      onActionRequiredSelect?.();
+  // Current display value combines status and sub-status
+  const currentDisplayValue = job.openSubStatus
+    ? `open:${job.openSubStatus}`
+    : job.status;
+
+  // Handle status change - intercept on_hold to open modal
+  const handleStatusChange = (newValue: string) => {
+    // Handle compound values like "open:in_progress"
+    if (newValue.startsWith("open:")) {
+      const subStatus = newValue.split(":")[1];
+      if (subStatus === "on_hold") {
+        // Open the modal instead of directly changing status
+        onHoldSelect?.();
+      } else {
+        onStatusChange("open", subStatus);
+      }
     } else {
-      onStatusChange(newStatus);
+      // Lifecycle status change (clears sub-status)
+      onStatusChange(newValue, null);
     }
   };
+
+  const isOnHold = job.status === "open" && (job.openSubStatus === "on_hold" || job.openSubStatus === "needs_review");
 
   return (
     <Card className="min-w-[200px]" data-testid="card-job-meta">
@@ -116,7 +157,7 @@ export function JobMetaCard({
               </Badge>
             )}
             <Select
-              value={job.status}
+              value={currentDisplayValue}
               onValueChange={handleStatusChange}
               disabled={statusChangePending}
             >
@@ -124,17 +165,15 @@ export function JobMetaCard({
                 <SelectValue placeholder="Change" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="draft">Draft</SelectItem>
-                <SelectItem value="scheduled">Scheduled</SelectItem>
-                <SelectItem value="dispatched">Dispatched</SelectItem>
-                <SelectItem value="en_route">En Route</SelectItem>
-                <SelectItem value="on_site">On Site</SelectItem>
-                <SelectItem value="in_progress">In Progress</SelectItem>
-                <SelectItem value="action_required">Action Required</SelectItem>
-                {/* LEGACY: needs_parts and on_hold removed - use action_required instead */}
+                {/* Open workflow states */}
+                <SelectItem value="open">Open (Backlog)</SelectItem>
+                <SelectItem value="open:in_progress">In Progress</SelectItem>
+                <SelectItem value="open:on_route">On Route</SelectItem>
+                <SelectItem value="open:on_hold">On Hold</SelectItem>
+                {/* Lifecycle transitions */}
                 <SelectItem value="completed">Completed</SelectItem>
                 <SelectItem value="invoiced">Invoiced</SelectItem>
-                <SelectItem value="cancelled">Cancelled</SelectItem>
+                <SelectItem value="archived">Archived</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -151,24 +190,35 @@ export function JobMetaCard({
           </div>
         </div>
 
-        {/* Action Required Info - only show when status is action_required */}
-        {job.status === "action_required" && job.actionRequiredReason && (
+        {/* On Hold Info - show when openSubStatus is on_hold or needs_review */}
+        {isOnHold && (
           <div className="pt-2 border-t mt-2 space-y-1.5">
             <div className="flex items-center gap-1 text-[11px] text-destructive font-medium">
-              <AlertCircle className="h-3 w-3" />
-              <span>Action Required</span>
+              {job.openSubStatus === "on_hold" ? (
+                <>
+                  <Pause className="h-3 w-3" />
+                  <span>On Hold</span>
+                </>
+              ) : (
+                <>
+                  <AlertCircle className="h-3 w-3" />
+                  <span>Needs Review</span>
+                </>
+              )}
             </div>
-            <div className="flex items-start justify-between gap-2">
-              <span className="text-muted-foreground text-[11px]">Reason:</span>
-              <span className="text-[11px] text-right" data-testid="text-action-reason">
-                {getActionRequiredReasonLabel(job.actionRequiredReason)}
-              </span>
-            </div>
-            {job.actionRequiredNotes && (
+            {job.holdReason && (
+              <div className="flex items-start justify-between gap-2">
+                <span className="text-muted-foreground text-[11px]">Reason:</span>
+                <span className="text-[11px] text-right" data-testid="text-hold-reason">
+                  {getHoldReasonLabel(job.holdReason)}
+                </span>
+              </div>
+            )}
+            {job.holdNotes && (
               <div className="flex items-start justify-between gap-2">
                 <span className="text-muted-foreground text-[11px]">Notes:</span>
-                <span className="text-[11px] text-right max-w-[120px] truncate" title={job.actionRequiredNotes} data-testid="text-action-notes">
-                  {job.actionRequiredNotes}
+                <span className="text-[11px] text-right max-w-[120px] truncate" title={job.holdNotes} data-testid="text-hold-notes">
+                  {job.holdNotes}
                 </span>
               </div>
             )}

@@ -1,0 +1,355 @@
+/**
+ * Business Hours Settings Page
+ *
+ * Configure company operating hours for each day of the week.
+ * Hours are stored as minutes from midnight (0-1440).
+ * Used by Day View to grey out non-business hours and auto-scroll.
+ */
+import { useState, useEffect } from "react";
+import { Link } from "wouter";
+import { ArrowLeft, Clock, Save } from "lucide-react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useToast } from "@/hooks/use-toast";
+import { queryClient, apiRequest } from "@/lib/queryClient";
+
+// ============================================================================
+// Types
+// ============================================================================
+
+interface BusinessHourDay {
+  dayOfWeek: number;
+  isOpen: boolean;
+  startMinutes: number | null;
+  endMinutes: number | null;
+}
+
+interface BusinessHoursResponse {
+  hours: BusinessHourDay[];
+}
+
+// Day names indexed by dayOfWeek (0=Sunday)
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+// ============================================================================
+// Time Utilities
+// ============================================================================
+
+/**
+ * Convert minutes from midnight to display time (HH:MM format).
+ */
+function minutesToTimeString(minutes: number): string {
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return `${hours.toString().padStart(2, "0")}:${mins.toString().padStart(2, "0")}`;
+}
+
+/**
+ * Generate time options in 15-minute increments.
+ * For start times: 00:00 to 23:45
+ * For end times: 00:15 to 24:00
+ */
+function generateTimeOptions(forEnd: boolean = false): { value: number; label: string }[] {
+  const options: { value: number; label: string }[] = [];
+  const startMins = forEnd ? 15 : 0;
+  const endMins = forEnd ? 1440 : 1425; // 24:00 for end, 23:45 for start
+
+  for (let mins = startMins; mins <= endMins; mins += 15) {
+    const hours = Math.floor(mins / 60);
+    const minutes = mins % 60;
+    let label: string;
+    if (mins === 1440) {
+      label = "24:00 (midnight)";
+    } else if (hours === 12) {
+      label = `12:${minutes.toString().padStart(2, "0")} PM`;
+    } else if (hours === 0) {
+      label = `12:${minutes.toString().padStart(2, "0")} AM`;
+    } else if (hours > 12) {
+      label = `${hours - 12}:${minutes.toString().padStart(2, "0")} PM`;
+    } else {
+      label = `${hours}:${minutes.toString().padStart(2, "0")} AM`;
+    }
+    options.push({ value: mins, label });
+  }
+  return options;
+}
+
+const START_TIME_OPTIONS = generateTimeOptions(false);
+const END_TIME_OPTIONS = generateTimeOptions(true);
+
+// Default business hours for new state
+const DEFAULT_HOURS: BusinessHourDay[] = [
+  { dayOfWeek: 0, isOpen: false, startMinutes: null, endMinutes: null },
+  { dayOfWeek: 1, isOpen: true, startMinutes: 360, endMinutes: 990 },
+  { dayOfWeek: 2, isOpen: true, startMinutes: 360, endMinutes: 990 },
+  { dayOfWeek: 3, isOpen: true, startMinutes: 360, endMinutes: 990 },
+  { dayOfWeek: 4, isOpen: true, startMinutes: 360, endMinutes: 990 },
+  { dayOfWeek: 5, isOpen: true, startMinutes: 360, endMinutes: 990 },
+  { dayOfWeek: 6, isOpen: false, startMinutes: null, endMinutes: null },
+];
+
+// ============================================================================
+// Component
+// ============================================================================
+
+export default function BusinessHoursSettingsPage() {
+  const { toast } = useToast();
+  const [hours, setHours] = useState<BusinessHourDay[]>(DEFAULT_HOURS);
+
+  // Fetch current business hours
+  const { data, isLoading } = useQuery<BusinessHoursResponse>({
+    queryKey: ["/api/company/business-hours"],
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Sync fetched data to local state
+  useEffect(() => {
+    if (data?.hours && data.hours.length === 7) {
+      // Sort by dayOfWeek to ensure correct order
+      const sorted = [...data.hours].sort((a, b) => a.dayOfWeek - b.dayOfWeek);
+      setHours(sorted);
+    }
+  }, [data]);
+
+  // Mutation for saving
+  const updateMutation = useMutation({
+    mutationFn: async (payload: { hours: BusinessHourDay[] }) =>
+      apiRequest("/api/company/business-hours", {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      }),
+    onSuccess: (result: any) => {
+      // Optimistically update cache
+      queryClient.setQueryData(["/api/company/business-hours"], result);
+      queryClient.invalidateQueries({ queryKey: ["/api/company/business-hours"] });
+      toast({ title: "Business hours saved" });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Failed to save",
+        description: error.message || "Please check your settings and try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Update a single day's open/closed status
+  const handleToggleOpen = (dayOfWeek: number, isOpen: boolean) => {
+    setHours((prev) =>
+      prev.map((day) => {
+        if (day.dayOfWeek === dayOfWeek) {
+          if (isOpen) {
+            // When opening, set default times (9 AM - 5 PM)
+            return { ...day, isOpen: true, startMinutes: 540, endMinutes: 1020 };
+          } else {
+            // When closing, clear times
+            return { ...day, isOpen: false, startMinutes: null, endMinutes: null };
+          }
+        }
+        return day;
+      })
+    );
+  };
+
+  // Update a single day's start time
+  const handleStartChange = (dayOfWeek: number, startMinutes: number) => {
+    setHours((prev) =>
+      prev.map((day) => {
+        if (day.dayOfWeek === dayOfWeek) {
+          // If new start is >= end, push end forward by 60 minutes (or to max)
+          let newEnd = day.endMinutes;
+          if (newEnd !== null && startMinutes >= newEnd) {
+            newEnd = Math.min(startMinutes + 60, 1440);
+          }
+          return { ...day, startMinutes, endMinutes: newEnd };
+        }
+        return day;
+      })
+    );
+  };
+
+  // Update a single day's end time
+  const handleEndChange = (dayOfWeek: number, endMinutes: number) => {
+    setHours((prev) =>
+      prev.map((day) => {
+        if (day.dayOfWeek === dayOfWeek) {
+          // If new end is <= start, push start back by 60 minutes (or to min)
+          let newStart = day.startMinutes;
+          if (newStart !== null && endMinutes <= newStart) {
+            newStart = Math.max(endMinutes - 60, 0);
+          }
+          return { ...day, startMinutes: newStart, endMinutes };
+        }
+        return day;
+      })
+    );
+  };
+
+  // Save all hours
+  const handleSave = () => {
+    // Validate before saving
+    for (const day of hours) {
+      if (day.isOpen) {
+        if (day.startMinutes === null || day.endMinutes === null) {
+          toast({
+            title: "Invalid hours",
+            description: `${DAY_NAMES[day.dayOfWeek]} is open but missing times.`,
+            variant: "destructive",
+          });
+          return;
+        }
+        if (day.endMinutes <= day.startMinutes) {
+          toast({
+            title: "Invalid hours",
+            description: `${DAY_NAMES[day.dayOfWeek]}: End time must be after start time.`,
+            variant: "destructive",
+          });
+          return;
+        }
+      }
+    }
+
+    updateMutation.mutate({ hours });
+  };
+
+  return (
+    <div className="p-4 space-y-4">
+      {/* Header with back button */}
+      <div className="flex items-center gap-3">
+        <Link href="/settings">
+          <Button variant="ghost" size="icon" data-testid="button-back-settings">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        </Link>
+        <div>
+          <h1 className="text-xl font-semibold" data-testid="text-business-hours-title">
+            Business Hours
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            Set your company's operating hours for each day of the week.
+          </p>
+        </div>
+      </div>
+
+      {/* Business Hours Card */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Clock className="h-5 w-5" />
+            Weekly Schedule
+          </CardTitle>
+          <CardDescription>
+            Configure which days you're open and your operating hours. The calendar Day View will
+            grey out hours outside these times.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            {hours.map((day) => (
+              <div
+                key={day.dayOfWeek}
+                className="flex items-center gap-4 p-3 rounded-lg border bg-card"
+                data-testid={`row-day-${day.dayOfWeek}`}
+              >
+                {/* Day name */}
+                <div className="w-28 font-medium">{DAY_NAMES[day.dayOfWeek]}</div>
+
+                {/* Open/Closed toggle */}
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={day.isOpen}
+                    onCheckedChange={(checked) => handleToggleOpen(day.dayOfWeek, checked)}
+                    disabled={isLoading}
+                    data-testid={`switch-open-${day.dayOfWeek}`}
+                  />
+                  <Label className={`text-sm ${day.isOpen ? "text-green-600" : "text-muted-foreground"}`}>
+                    {day.isOpen ? "Open" : "Closed"}
+                  </Label>
+                </div>
+
+                {/* Time pickers (only shown when open) */}
+                {day.isOpen && (
+                  <div className="flex items-center gap-2 ml-4">
+                    <Select
+                      value={day.startMinutes?.toString() ?? ""}
+                      onValueChange={(val) => handleStartChange(day.dayOfWeek, parseInt(val))}
+                      disabled={isLoading}
+                    >
+                      <SelectTrigger className="w-32" data-testid={`select-start-${day.dayOfWeek}`}>
+                        <SelectValue placeholder="Start" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {START_TIME_OPTIONS.map((opt) => (
+                          <SelectItem key={opt.value} value={opt.value.toString()}>
+                            {opt.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+
+                    <span className="text-muted-foreground">to</span>
+
+                    <Select
+                      value={day.endMinutes?.toString() ?? ""}
+                      onValueChange={(val) => handleEndChange(day.dayOfWeek, parseInt(val))}
+                      disabled={isLoading}
+                    >
+                      <SelectTrigger className="w-32" data-testid={`select-end-${day.dayOfWeek}`}>
+                        <SelectValue placeholder="End" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {END_TIME_OPTIONS.map((opt) => (
+                          <SelectItem key={opt.value} value={opt.value.toString()}>
+                            {opt.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+
+                    {/* Display formatted time range */}
+                    <span className="text-sm text-muted-foreground ml-2">
+                      ({minutesToTimeString(day.startMinutes ?? 0)} - {minutesToTimeString(day.endMinutes ?? 0)})
+                    </span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Info Card */}
+      <Card className="bg-muted/50">
+        <CardContent className="pt-4">
+          <p className="text-sm text-muted-foreground">
+            <strong>Note:</strong> Business hours affect the Day View calendar display only. Hours outside
+            business hours will be greyed out but scheduling is still allowed. This helps your team
+            focus on the workday while maintaining flexibility for after-hours jobs.
+          </p>
+        </CardContent>
+      </Card>
+
+      {/* Save Button */}
+      <div className="pt-2">
+        <Button
+          onClick={handleSave}
+          disabled={updateMutation.isPending || isLoading}
+          data-testid="button-save-business-hours"
+        >
+          <Save className="h-4 w-4 mr-2" />
+          {updateMutation.isPending ? "Saving..." : "Save Business Hours"}
+        </Button>
+      </div>
+    </div>
+  );
+}

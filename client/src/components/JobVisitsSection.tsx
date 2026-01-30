@@ -62,7 +62,7 @@ export default function JobVisitsSection({ jobId, defaultOpen = false }: JobVisi
   });
 
   const { data: technicians = [] } = useQuery<any[]>({
-    queryKey: ["/api/technicians"],
+    queryKey: ["/api/team/technicians"],
   });
 
   const deleteMutation = useMutation({

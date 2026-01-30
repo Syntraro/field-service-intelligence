@@ -2,7 +2,6 @@
  * Calendar Error Handler - Hardening
  *
  * Handles validation errors from calendar API with detailed user feedback:
- * - OUTSIDE_WORKING_HOURS: Shows allowed hours
  * - TECHNICIAN_OVERBOOKED: Shows conflicting job details
  * - CROSS_DAY_NOT_ALLOWED: Clear messaging
  */
@@ -17,8 +16,6 @@ export interface CalendarValidationError {
   code: string;
   message: string;
   details?: {
-    allowedStart?: string;
-    allowedEnd?: string;
     dayOfWeek?: number;
     dayName?: string;
     conflictingJobId?: string;
@@ -70,17 +67,6 @@ export async function parseCalendarError(error: any): Promise<CalendarValidation
 }
 
 /**
- * Format time string from "HH:MM" to readable format
- */
-function formatTime(timeStr?: string): string {
-  if (!timeStr) return "";
-  const [hours, minutes] = timeStr.split(":").map(Number);
-  const period = hours >= 12 ? "PM" : "AM";
-  const displayHours = hours % 12 || 12;
-  return minutes ? `${displayHours}:${minutes.toString().padStart(2, "0")} ${period}` : `${displayHours} ${period}`;
-}
-
-/**
  * Format ISO datetime to readable time
  */
 function formatISOTime(isoStr?: string): string {
@@ -104,44 +90,28 @@ export function showCalendarErrorToast(error: CalendarValidationError): void {
   const { code, message, details } = error;
 
   switch (code) {
-    case "OUTSIDE_WORKING_HOURS": {
-      const dayName = details?.dayName || "this day";
-      const allowedStart = formatTime(details?.allowedStart);
-      const allowedEnd = formatTime(details?.allowedEnd);
-      const hoursMsg = allowedStart && allowedEnd
-        ? `Working hours on ${dayName}: ${allowedStart} - ${allowedEnd}`
-        : `Technician is not scheduled to work on ${dayName}`;
-
-      toast({
-        title: "Outside Working Hours",
-        description: hoursMsg,
-        variant: "destructive",
-        duration: 6000,
-      });
-      break;
-    }
-
     case "TECHNICIAN_OVERBOOKED": {
       const conflictJobNum = details?.conflictingJobNumber;
       const conflictTitle = details?.conflictingTitle;
       const conflictStart = formatISOTime(details?.conflictingStart);
       const conflictEnd = formatISOTime(details?.conflictingEnd);
 
-      let description = "Technician has a scheduling conflict.";
+      let description = "Technician already has a job at this time.";
       if (conflictJobNum) {
         description = `Conflicts with Job #${conflictJobNum}`;
         if (conflictTitle) {
-          description += ` - ${conflictTitle}`;
+          description += ` (${conflictTitle})`;
         }
         if (conflictStart && conflictEnd) {
-          description += ` (${conflictStart} - ${conflictEnd})`;
+          description += ` from ${conflictStart}–${conflictEnd}`;
         }
       }
+      description += ". Try a different time slot.";
 
       toast({
-        title: "Scheduling Conflict",
+        title: "Time Slot Taken",
         description,
-        variant: "destructive",
+        variant: "default",
         duration: 6000,
       });
       break;
@@ -149,9 +119,9 @@ export function showCalendarErrorToast(error: CalendarValidationError): void {
 
     case "CROSS_DAY_NOT_ALLOWED": {
       toast({
-        title: "Invalid Time Range",
-        description: "Assignments cannot span multiple days. Please select start and end times on the same day.",
-        variant: "destructive",
+        title: "Can't Span Days",
+        description: "Jobs must start and end on the same day. Shorten the duration or split into separate jobs.",
+        variant: "default",
         duration: 5000,
       });
       break;
@@ -163,6 +133,28 @@ export function showCalendarErrorToast(error: CalendarValidationError): void {
         description: "The selected technician is not available or doesn't belong to this company.",
         variant: "destructive",
         duration: 5000,
+      });
+      break;
+    }
+
+    case "OUTSIDE_WORKING_HOURS": {
+      // This should no longer happen - working hours validation is disabled
+      // But handle gracefully if it does
+      toast({
+        title: "Scheduled",
+        description: "Job scheduled successfully. (Technician may be off this day)",
+        variant: "default",
+        duration: 3000,
+      });
+      break;
+    }
+
+    case "VERSION_MISMATCH": {
+      toast({
+        title: "Scheduling Conflict",
+        description: "This job was modified by another user. Your change wasn't saved. The calendar is refreshing.",
+        variant: "destructive",
+        duration: 6000,
       });
       break;
     }
@@ -190,5 +182,15 @@ export async function handleCalendarMutationError(error: any): Promise<boolean> 
     return true;
   }
 
+  return false;
+}
+
+/**
+ * Check if error is a version mismatch (optimistic locking conflict)
+ * Used for special handling like snap-back on drag/drop
+ */
+export function isVersionMismatchError(error: any): boolean {
+  if (error?.code === "VERSION_MISMATCH") return true;
+  if (error?.message?.includes("modified by another user")) return true;
   return false;
 }

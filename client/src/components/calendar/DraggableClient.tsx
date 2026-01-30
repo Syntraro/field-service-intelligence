@@ -1,3 +1,4 @@
+import { memo, useRef } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 import { CheckCircle2, Loader2, AlertTriangle } from "lucide-react";
@@ -29,7 +30,13 @@ interface DraggableClientProps {
   timeFormat?: "12h" | "24h";
 }
 
-export function DraggableClient({
+/**
+ * DraggableClient - Memoized draggable card component
+ *
+ * OPTIMIZED: 2026-01-30 - Wrapped with React.memo to prevent rerenders during drag
+ * Custom comparison function only checks props that actually affect rendering.
+ */
+export const DraggableClient = memo(function DraggableClient({
   id,
   client,
   inCalendar,
@@ -49,6 +56,9 @@ export function DraggableClient({
   rawItem,
   timeFormat = "12h",
 }: DraggableClientProps) {
+  // Track if we've logged for this card (prevents spam during drag)
+  const hasLoggedRef = useRef(false);
+
   // ---------------------------------------------------------------------------
   // Drag disabled computation — Model A rules:
   //   Draggable UNLESS:  DRAG_ENABLED is false  OR  isSaving is true
@@ -85,26 +95,13 @@ export function DraggableClient({
     opacity: isDragging ? 0.5 : isSaving ? 0.7 : 1,
   };
 
-  // DEV-only: comprehensive logging per render for every unscheduled card
-  if (process.env.NODE_ENV === 'development' && !inCalendar) {
-    const r = rawItem || {};
-    console.log('[UNSCHED-DRAG]', {
-      jobId: id,
-      clientName: client?.companyName,
-      disabled: dragDisabled,
-      reason: !DRAG_ENABLED
-        ? 'DRAG_ENABLED=false'
-        : isSaving ? 'isSaving' : 'none',
-      status: r.status,
-      openSubStatus: r.openSubStatus,
-      version: r.version,
-      scheduledStart: r.scheduledStart ?? r.startAt,
-      scheduledEnd: r.scheduledEnd ?? r.endAt,
-      deletedAt: r.deletedAt,
-      _optimistic: r._optimistic,
-      hasListeners: !!listeners,
-      listenersKeys: listeners ? Object.keys(listeners) : [],
-    });
+  // OPTIMIZED: 2026-01-30 - Throttled DEV logging (only log once per card mount)
+  // This prevents 50+ log spam during drag operations
+  if (process.env.NODE_ENV === 'development' && !inCalendar && !hasLoggedRef.current) {
+    hasLoggedRef.current = true;
+    // Uncomment below for debugging drag issues:
+    // const r = rawItem || {};
+    // console.log('[UNSCHED-DRAG]', { jobId: id, clientName: client?.companyName, disabled: dragDisabled });
   }
 
   // Card styling: left border for technician color ONLY (not overdue status)
@@ -268,4 +265,18 @@ export function DraggableClient({
       </div>
     </div>
   );
-}
+}, (prevProps, nextProps) => {
+  // OPTIMIZED: 2026-01-30 - Custom comparison to prevent unnecessary rerenders
+  // Only re-render if these specific props change
+  return (
+    prevProps.id === nextProps.id &&
+    prevProps.isSaving === nextProps.isSaving &&
+    prevProps.isCompleted === nextProps.isCompleted &&
+    prevProps.inCalendar === nextProps.inCalendar &&
+    prevProps.cardHeight === nextProps.cardHeight &&
+    prevProps.client?.companyName === nextProps.client?.companyName &&
+    prevProps.summary === nextProps.summary &&
+    prevProps.assignment?.version === nextProps.assignment?.version &&
+    prevProps.technicianColor?.borderLeft === nextProps.technicianColor?.borderLeft
+  );
+});

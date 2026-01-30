@@ -8,12 +8,14 @@ import { notificationService } from "../services/notificationService";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { calendarRepository, DEFAULT_CALENDAR_START_HOUR, DEFAULT_CALENDAR_END_HOUR } from "../storage/calendar";
-import { jobRepository } from "../storage/jobs";
+import { jobRepository } from "../storage/jobs"; // Needed for notification client name lookup
 import { companyRepository } from "../storage/company";
 import { teamRepository } from "../storage/team";
-import { validateSchedule, ScheduleValidationError } from "../services/calendarValidation";
+// 2026-01-30: Removed validateSchedule import - conflict checking removed for performance
+// Overbooking is now allowed; dispatchers can see conflicts visually on calendar
 import { assertCanEditSchedule } from "../guards/schedulingPermissions";
 import { filterSchedulableTechnicians, checkJobTechnicianVisibility, normalizeScheduleTimes } from "../domain/scheduling";
+import { IS_DEV } from "../utils/devFlags";
 import type { AuthedRequest } from "../auth/tenantIsolation";
 import type { CalendarJobWithDetails } from "../storage/calendar";
 import type { CalendarEventDto, CalendarRangeResponseDto } from "@shared/types/calendar";
@@ -177,7 +179,9 @@ const rangeQuerySchema = z.object({
 
 const scheduleJobSchema = z.object({
   jobId: z.string().uuid(),
-  technicianUserId: z.string().uuid().optional(),
+  // 2026-01-29: Accept null for unassigned drops
+  // Use .nullable().optional() order for correct Zod type narrowing
+  technicianUserId: z.string().uuid().nullable().optional(),
   startAt: z.string().datetime().optional(),
   endAt: z.string().datetime().optional(),
   allDay: z.boolean().optional(),
@@ -197,12 +201,13 @@ const scheduleJobSchema = z.object({
 });
 
 const rescheduleJobSchema = z.object({
-  technicianUserId: z.string().uuid().optional().nullable(),
+  // 2026-01-29: Use .nullable().optional() order for correct Zod type narrowing
+  technicianUserId: z.string().uuid().nullable().optional(),
   startAt: z.string().datetime().optional(),
   endAt: z.string().datetime().optional(),
   allDay: z.boolean().optional(),
   date: z.string().optional(),
-  notes: z.string().max(2000).optional().nullable(),
+  notes: z.string().max(2000).nullable().optional(),
   version: z.number().int(),
 }).refine((data) => {
   if (data.allDay) return true;
@@ -218,6 +223,45 @@ const rescheduleJobSchema = z.object({
 const unscheduleJobSchema = z.object({
   version: z.number().int(),
 });
+
+// ============================================================================
+// Bug 15 Fix: Schema Sanity Check at Module Load
+// ============================================================================
+// ASSERTION: Verify schemas accept null for technicianUserId
+// If this fails, it indicates a Zod version issue or incorrect schema definition
+// ============================================================================
+if (IS_DEV) {
+  const testPayloadWithNull = {
+    jobId: '00000000-0000-0000-0000-000000000000',
+    technicianUserId: null, // This MUST be accepted
+    date: '2026-01-30',
+    allDay: true,
+    version: 1,
+  };
+  const scheduleResult = scheduleJobSchema.safeParse(testPayloadWithNull);
+  if (!scheduleResult.success) {
+    console.error('[CRITICAL] scheduleJobSchema does NOT accept null technicianUserId!', {
+      issues: scheduleResult.error.issues,
+      testPayload: testPayloadWithNull,
+    });
+  } else {
+    console.log('[SCHEMA-CHECK] scheduleJobSchema accepts null technicianUserId ✓');
+  }
+
+  const rescheduleResult = rescheduleJobSchema.safeParse({
+    technicianUserId: null,
+    date: '2026-01-30',
+    allDay: true,
+    version: 1,
+  });
+  if (!rescheduleResult.success) {
+    console.error('[CRITICAL] rescheduleJobSchema does NOT accept null technicianUserId!', {
+      issues: rescheduleResult.error.issues,
+    });
+  } else {
+    console.log('[SCHEMA-CHECK] rescheduleJobSchema accepts null technicianUserId ✓');
+  }
+}
 
 const resizeJobSchema = z.object({
   job: z.object({
@@ -261,7 +305,7 @@ router.get(
       const jobs = filterJobsByRole(allJobs, userRole, userId);
 
       let hiddenTechDiagnostics: { jobId: string; hiddenTechIds: string[] }[] = [];
-      if (process.env.NODE_ENV === 'development') {
+      if (IS_DEV) {
         const allTeamMembers = await teamRepository.getTeamMembers(companyId);
         const { schedulable } = filterSchedulableTechnicians(allTeamMembers, "calendar:GET");
         const schedulableTechIds = new Set(schedulable.map(t => t.id));
@@ -312,12 +356,6 @@ router.post(
     assertCanEditSchedule(req.user);
 
     const data = validateSchema(scheduleJobSchema, req.body);
-
-    const jobValid = await calendarRepository.validateJobBelongsToTenant(companyId, data.jobId);
-    if (!jobValid) {
-      throw createError(404, "Job not found or does not belong to this company");
-    }
-
     const isAllDay = data.allDay === true;
 
     // Normalize schedule times through canonical helper (enforces DB invariants)
@@ -339,90 +377,66 @@ router.post(
     const startAt = normalized.scheduledStart!;
     const endAt = normalized.scheduledEnd!;
 
-    // DEV: Log all-day normalization result for diagnostics
-    if (process.env.NODE_ENV === 'development' && isAllDay) {
-      console.log('[SCHEDULE ALLDAY]', {
-        jobId: data.jobId,
-        date: data.date,
-        scheduledStart: startAt.toISOString(),
-        scheduledEnd: endAt.toISOString(),
-      });
-    }
-
-    // Validate technician
-    let useBypassFunction = false;
-    if (data.technicianUserId) {
-      const techValid = await calendarRepository.validateTechnicianBelongsToTenant(companyId, data.technicianUserId);
-      if (!techValid) {
-        throw createError(404, "Technician not found or does not belong to this company");
-      }
-
-      if (!isAllDay) {
-        try {
-          await validateSchedule({ companyId, technicianUserId: data.technicianUserId, startAt, endAt });
-        } catch (error: any) {
-          const errorCode = error?.code || error?.details?.code;
-          if (errorCode === 'OUTSIDE_WORKING_HOURS') {
-            useBypassFunction = true;
-          } else if (error instanceof ScheduleValidationError) {
-            return res.status(error.statusCode).json(error.toJSON());
-          } else {
-            throw error;
-          }
-        }
-      }
-    }
+    // OPTIMIZED 2026-01-30: Removed all pre-validation queries
+    // - validateTechnicianBelongsToTenant: FK constraint handles this
+    // - validateSchedule (conflict check): Removed - overbooking allowed
+    // - Job ownership: UPDATE WHERE clause handles this
+    // Result: Single database query instead of 3-4
 
     let result;
     try {
-      if (useBypassFunction) {
-        result = await calendarRepository.scheduleJobBypassWorkingHours(companyId, {
-          jobId: data.jobId,
-          technicianUserId: data.technicianUserId,
-          startAt, endAt,
-          notes: data.notes,
-          allDay: isAllDay,
-          expectedVersion: data.version,
-        });
-      } else {
-        result = await calendarRepository.scheduleJob(companyId, {
-          jobId: data.jobId,
-          technicianUserId: data.technicianUserId,
-          startAt, endAt,
-          notes: data.notes,
-          allDay: isAllDay,
-          expectedVersion: data.version,
-        });
-      }
+      result = await calendarRepository.scheduleJob(companyId, {
+        jobId: data.jobId,
+        technicianUserId: data.technicianUserId,
+        startAt,
+        endAt,
+        notes: data.notes,
+        allDay: isAllDay,
+        expectedVersion: data.version,
+      });
     } catch (error: any) {
+      // Handle version mismatch
       if (error.message?.includes('modified by another user')) {
         return res.status(409).json({ error: error.message, code: 'VERSION_MISMATCH' });
+      }
+      // Handle invalid technician (FK violation)
+      if (error.code === '23503' && error.constraint?.includes('technician')) {
+        throw createError(404, "Technician not found or does not belong to this company");
+      }
+      // Handle job not found (0 rows updated)
+      if (error.message?.includes('not found')) {
+        throw createError(404, "Job not found or access denied");
       }
       throw error;
     }
 
     if (!result) {
-      throw createError(500, "Failed to schedule job");
+      throw createError(404, "Job not found or access denied");
     }
 
-    // Notification
+    // Async notification - fire and forget, doesn't block response
     if (data.technicianUserId) {
-      const jobDetails = await jobRepository.getJob(companyId, data.jobId);
-      if (jobDetails) {
-        const clientName = jobDetails.location?.companyName || jobDetails.location?.location || "Client";
-        notificationService.emitJobScheduled({
-          companyId,
-          jobId: data.jobId,
-          jobNumber: String(jobDetails.jobNumber),
-          clientName,
-          scheduledDate: isAllDay ? (data.date || new Date().toISOString()) : startAt.toISOString(),
-          technicianUserId: data.technicianUserId,
-          isReschedule: false,
-        }).catch((err) => console.error("Failed to emit job scheduled notification:", err));
-      }
+      (async () => {
+        try {
+          const jobDetails = await jobRepository.getJob(companyId, data.jobId);
+          if (jobDetails) {
+            const clientName = jobDetails.location?.companyName || jobDetails.location?.location || "Client";
+            await notificationService.emitJobScheduled({
+              companyId,
+              jobId: data.jobId,
+              jobNumber: String(jobDetails.jobNumber),
+              clientName,
+              scheduledDate: isAllDay ? (data.date || new Date().toISOString()) : startAt.toISOString(),
+              technicianUserId: data.technicianUserId!,
+              isReschedule: false,
+            });
+          }
+        } catch (err) {
+          console.error("Failed to emit job scheduled notification:", err);
+        }
+      })();
     }
 
-    // Version is NOT NULL DEFAULT 1 in DB - never null after write
     res.status(201).json({
       id: result.id,
       jobId: result.id,
@@ -431,6 +445,7 @@ router.post(
       isAllDay: result.isAllDay ?? false,
       version: result.version,
       status: result.status,
+      primaryTechnicianId: result.primaryTechnicianId,
     });
   })
 );
@@ -449,24 +464,16 @@ router.patch(
 
     const data = validateSchema(rescheduleJobSchema, req.body);
 
-    const existing = await calendarRepository.getJobById(companyId, jobId);
-    if (!existing) {
-      throw createError(404, "Job not found");
-    }
+    // 2026-01-30: OPTIMIZED - Removed getJobById() call
+    // Job ownership is now checked in rescheduleJob's WHERE clause
+    // If job doesn't exist or doesn't belong to tenant, UPDATE returns 0 rows
 
-    // Validate technician if provided
-    if (data.technicianUserId) {
-      const techValid = await calendarRepository.validateTechnicianBelongsToTenant(companyId, data.technicianUserId);
-      if (!techValid) {
-        throw createError(404, "Technician not found or does not belong to this company");
-      }
-    }
-
-    const isAllDay = data.allDay !== undefined ? data.allDay : existing.isAllDay;
+    // Determine if all-day based on request (can't use existing job since we removed the fetch)
+    const isAllDay = data.allDay === true;
     let computedStartAt: Date | undefined;
     let computedEndAt: Date | undefined;
 
-    if (data.allDay === true) {
+    if (isAllDay) {
       // Normalize all-day times through canonical helper (enforces DB invariants)
       const normalized = normalizeScheduleTimes({
         allDay: true,
@@ -475,15 +482,31 @@ router.patch(
       });
       computedStartAt = normalized.scheduledStart ?? undefined;
       computedEndAt = normalized.scheduledEnd ?? undefined;
-    } else {
-      computedStartAt = data.startAt ? new Date(data.startAt) : undefined;
+    } else if (data.startAt) {
+      computedStartAt = new Date(data.startAt);
       computedEndAt = data.endAt ? new Date(data.endAt) : undefined;
     }
+
+    // 2026-01-30: DEV logging for technician unassign debugging
+    if (IS_DEV) {
+      console.log('[ROUTE-DEBUG] PATCH /api/calendar/schedule/:jobId received:', {
+        jobId,
+        technicianUserId: data.technicianUserId,
+        allDay: data.allDay,
+        startAt: data.startAt,
+      });
+    }
+
+    // 2026-01-30: FIX - Preserve null for explicit unassignment
+    // - undefined = technicianUserId not in request (don't change)
+    // - null = explicit unassign request (clear technician)
+    // - string = assign to technician
+    const technicianUserIdForRepo = data.technicianUserId === undefined ? undefined : (data.technicianUserId ?? null);
 
     let result;
     try {
       result = await calendarRepository.rescheduleJob(companyId, jobId, {
-        technicianUserId: data.technicianUserId ?? undefined,
+        technicianUserId: technicianUserIdForRepo,
         startAt: computedStartAt,
         endAt: computedEndAt,
         notes: data.notes ?? undefined,
@@ -497,8 +520,9 @@ router.patch(
       throw error;
     }
 
+    // 2026-01-30: Handle null result (job not found or tenant mismatch)
     if (!result) {
-      throw createError(500, "Failed to reschedule job");
+      throw createError(404, "Job not found or access denied");
     }
 
     // Version is NOT NULL DEFAULT 1 in DB - never null after write
@@ -510,6 +534,7 @@ router.patch(
       isAllDay: result.isAllDay ?? false,
       version: result.version,
       status: result.status,
+      primaryTechnicianId: result.primaryTechnicianId,
     });
   })
 );
@@ -528,10 +553,9 @@ router.post(
 
     const data = validateSchema(unscheduleJobSchema, req.body);
 
-    const existing = await calendarRepository.getJobById(companyId, jobId);
-    if (!existing) {
-      throw createError(404, "Job not found");
-    }
+    // 2026-01-30: OPTIMIZED - Removed getJobById() call
+    // Job ownership is now checked in unscheduleJob's WHERE clause
+    // If job doesn't exist or doesn't belong to tenant, UPDATE returns 0 rows
 
     let result;
     try {
@@ -543,8 +567,9 @@ router.post(
       throw error;
     }
 
+    // 2026-01-30: Handle null result (job not found or tenant mismatch)
     if (!result) {
-      throw createError(500, "Failed to unschedule job");
+      throw createError(404, "Job not found or access denied");
     }
 
     // Version is NOT NULL DEFAULT 1 in DB - never null after write

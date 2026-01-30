@@ -42,7 +42,8 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { ArrowLeft, Save, UserCircle, Clock, Shield, DollarSign, AlertTriangle, Copy, Plus, Check, X, Info, Search, ChevronDown, ChevronUp, ChevronsUpDown } from "lucide-react";
+import { ArrowLeft, Save, UserCircle, Clock, Shield, DollarSign, AlertTriangle, Copy, Plus, Check, X, Info, Search, ChevronDown, ChevronUp, ChevronsUpDown, KeyRound } from "lucide-react";
+import { getMemberDisplayName, getMemberInitials } from "@/lib/displayName";
 
 interface TeamMemberWithDetails {
   id: string;
@@ -54,7 +55,9 @@ interface TeamMemberWithDetails {
   role: string;
   roleId: string | null;
   status: string;
+  disabled?: boolean;
   useCustomSchedule: boolean;
+  isSchedulable: boolean;
   createdAt: string;
   lastLoginAt: string | null;
   profile: {
@@ -128,6 +131,11 @@ export default function TeamMemberDetail() {
     roleId: "",
   });
 
+  const [emailInput, setEmailInput] = useState("");
+  const [showResetPasswordDialog, setShowResetPasswordDialog] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+
   const [profile, setProfile] = useState({
     laborCostPerHour: "",
     billableRatePerHour: "",
@@ -137,6 +145,7 @@ export default function TeamMemberDetail() {
 
   const [workingHours, setWorkingHours] = useState(DEFAULT_HOURS);
   const [useCustomSchedule, setUseCustomSchedule] = useState(false);
+  const [isSchedulable, setIsSchedulable] = useState(true);
   const [overridePermissions, setOverridePermissions] = useState(false);
   const [permissionOverrides, setPermissionOverrides] = useState<Record<string, "grant" | "revoke" | null>>({});
   const [showDeactivateDialog, setShowDeactivateDialog] = useState(false);
@@ -148,7 +157,7 @@ export default function TeamMemberDetail() {
   const [prevSearch, setPrevSearch] = useState("");
 
   const { data: member, isLoading } = useQuery<TeamMemberWithDetails>({
-    queryKey: ["/api/team", userId],
+    queryKey: [`/api/team/${userId}`],
     enabled: !!userId,
   });
 
@@ -161,7 +170,7 @@ export default function TeamMemberDetail() {
   });
 
   const { data: effectivePermissions = [] } = useQuery<string[]>({
-    queryKey: ["/api/team", userId, "effective-permissions"],
+    queryKey: [`/api/team/${userId}/effective-permissions`],
     enabled: !!userId,
   });
 
@@ -190,15 +199,27 @@ export default function TeamMemberDetail() {
     }, {} as Record<string, Permission[]>);
   }, [permissions]);
 
+  // Effect A: Hydrate basic form fields when member changes (runs once per member)
   useEffect(() => {
     if (member) {
+      // Parse firstName/lastName from fullName if needed
+      let firstName = member.firstName || "";
+      let lastName = member.lastName || "";
+      if (!firstName && !lastName && member.fullName) {
+        const parts = member.fullName.trim().split(/\s+/);
+        firstName = parts[0] || "";
+        lastName = parts.length > 1 ? parts.slice(1).join(" ") : "";
+      }
+
       setBasicInfo({
-        firstName: member.firstName || "",
-        lastName: member.lastName || "",
+        firstName,
+        lastName,
         phone: member.phone || "",
         roleId: member.roleId || "",
       });
+      setEmailInput(member.email || "");
       setUseCustomSchedule(member.useCustomSchedule);
+      setIsSchedulable(member.isSchedulable !== false);
 
       if (member.profile) {
         setProfile({
@@ -221,36 +242,44 @@ export default function TeamMemberDetail() {
           };
         }));
       }
-
-      if (member.permissionOverrides && member.permissionOverrides.length > 0 && Object.keys(permissionNameById).length > 0) {
-        setOverridePermissions(true);
-        const overrides: Record<string, "grant" | "revoke"> = {};
-        member.permissionOverrides.forEach(o => {
-          const permName = permissionNameById[o.permissionId];
-          if (permName) {
-            overrides[permName] = o.override as "grant" | "revoke";
-          }
-        });
-        setPermissionOverrides(overrides);
-      } else if (Object.keys(permissionNameById).length > 0) {
-        setPermissionOverrides({});
-      }
     }
-  }, [member, permissionNameById]);
+  }, [member?.id]);
+
+  // Effect B: Initialize permission overrides when permissionNameById becomes available
+  useEffect(() => {
+    if (!member || Object.keys(permissionNameById).length === 0) return;
+
+    if (member.permissionOverrides && member.permissionOverrides.length > 0) {
+      setOverridePermissions(true);
+      const overrides: Record<string, "grant" | "revoke"> = {};
+      member.permissionOverrides.forEach(o => {
+        const permName = permissionNameById[o.permissionId];
+        if (permName) {
+          overrides[permName] = o.override as "grant" | "revoke";
+        }
+      });
+      setPermissionOverrides(overrides);
+    } else {
+      setPermissionOverrides({});
+    }
+  }, [member?.id, permissionNameById]);
 
   const updateBasicMutation = useMutation({
-    mutationFn: async (data: typeof basicInfo & { useCustomSchedule: boolean }) => {
+    mutationFn: async (data: typeof basicInfo & { useCustomSchedule: boolean; isSchedulable: boolean }) => {
       return await apiRequest(`/api/team/${userId}`, {
         method: "PATCH",
         body: JSON.stringify({
           ...data,
+          roleId: data.roleId || undefined,  // Convert empty string to undefined
           fullName: `${data.firstName} ${data.lastName}`.trim() || null,
         }),
       });
     },
     onSuccess: () => {
       toast({ title: "Member updated successfully" });
+      queryClient.invalidateQueries({ queryKey: [`/api/team/${userId}`] });
       queryClient.invalidateQueries({ queryKey: ["/api/team"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/team/technicians"] }); // Update calendar dropdown
     },
     onError: (error: any) => {
       toast({ variant: "destructive", title: "Error", description: error.message });
@@ -266,7 +295,7 @@ export default function TeamMemberDetail() {
     },
     onSuccess: () => {
       toast({ title: "Profile updated successfully" });
-      queryClient.invalidateQueries({ queryKey: ["/api/team", userId] });
+      queryClient.invalidateQueries({ queryKey: [`/api/team/${userId}`] });
     },
     onError: (error: any) => {
       toast({ variant: "destructive", title: "Error", description: error.message });
@@ -282,7 +311,7 @@ export default function TeamMemberDetail() {
     },
     onSuccess: () => {
       toast({ title: "Working hours updated successfully" });
-      queryClient.invalidateQueries({ queryKey: ["/api/team", userId] });
+      queryClient.invalidateQueries({ queryKey: [`/api/team/${userId}`] });
     },
     onError: (error: any) => {
       toast({ variant: "destructive", title: "Error", description: error.message });
@@ -298,8 +327,8 @@ export default function TeamMemberDetail() {
     },
     onSuccess: () => {
       toast({ title: "Permissions updated successfully" });
-      queryClient.invalidateQueries({ queryKey: ["/api/team", userId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/team", userId, "effective-permissions"] });
+      queryClient.invalidateQueries({ queryKey: [`/api/team/${userId}`] });
+      queryClient.invalidateQueries({ queryKey: [`/api/team/${userId}/effective-permissions`] });
     },
     onError: (error: any) => {
       toast({ variant: "destructive", title: "Error", description: error.message });
@@ -315,6 +344,7 @@ export default function TeamMemberDetail() {
     onSuccess: () => {
       toast({ title: "Member deactivated" });
       setShowDeactivateDialog(false);
+      queryClient.invalidateQueries({ queryKey: [`/api/team/${userId}`] });
       queryClient.invalidateQueries({ queryKey: ["/api/team"] });
     },
     onError: (error: any) => {
@@ -331,7 +361,42 @@ export default function TeamMemberDetail() {
     onSuccess: () => {
       toast({ title: "Member activated" });
       setShowActivateDialog(false);
+      queryClient.invalidateQueries({ queryKey: [`/api/team/${userId}`] });
       queryClient.invalidateQueries({ queryKey: ["/api/team"] });
+    },
+    onError: (error: any) => {
+      toast({ variant: "destructive", title: "Error", description: error.message });
+    },
+  });
+
+  const updateEmailMutation = useMutation({
+    mutationFn: async (email: string) => {
+      return await apiRequest(`/api/team/${userId}/email`, {
+        method: "PUT",
+        body: JSON.stringify({ email }),
+      });
+    },
+    onSuccess: () => {
+      toast({ title: "Email updated", description: "User will need to log in again with their new email." });
+      queryClient.invalidateQueries({ queryKey: [`/api/team/${userId}`] });
+      queryClient.invalidateQueries({ queryKey: ["/api/team"] });
+    },
+    onError: (error: any) => {
+      toast({ variant: "destructive", title: "Error", description: error.message });
+    },
+  });
+
+  const resetPasswordMutation = useMutation({
+    mutationFn: async (password: string) => {
+      return await apiRequest(`/api/team/${userId}/password`, {
+        method: "PUT",
+        body: JSON.stringify({ password }),
+      });
+    },
+    onSuccess: () => {
+      toast({ title: "Password reset", description: "User will need to log in again with their new password." });
+      setShowResetPasswordDialog(false);
+      setNewPassword("");
     },
     onError: (error: any) => {
       toast({ variant: "destructive", title: "Error", description: error.message });
@@ -461,15 +526,10 @@ export default function TeamMemberDetail() {
     );
   }
 
-  const getInitials = () => {
-    if (member.firstName && member.lastName) {
-      return `${member.firstName[0]}${member.lastName[0]}`.toUpperCase();
-    }
-    return member.email[0].toUpperCase();
-  };
-
-  const isBillableRole = BILLABLE_ROLES.includes(member.role.toLowerCase());
+  // Safely compute role name - member.role may be undefined, try roleId lookup as fallback
   const currentRole = roles.find(r => r.id === basicInfo.roleId);
+  const roleName = (member.role ?? currentRole?.name ?? "").toLowerCase();
+  const isBillableRole = BILLABLE_ROLES.includes(roleName);
 
   return (
     <div className="min-h-screen bg-background p-4">
@@ -482,19 +542,17 @@ export default function TeamMemberDetail() {
           </Link>
           <div className="flex items-center gap-4 flex-1">
             <Avatar className="h-16 w-16">
-              <AvatarFallback className="text-xl">{getInitials()}</AvatarFallback>
+              <AvatarFallback className="text-xl">{getMemberInitials(member)}</AvatarFallback>
             </Avatar>
             <div>
               <h1 className="text-2xl font-bold" data-testid="text-member-name">
-                {member.firstName && member.lastName
-                  ? `${member.firstName} ${member.lastName}`
-                  : member.fullName || member.email}
+                {getMemberDisplayName(member)}
               </h1>
-              <p className="text-muted-foreground">{member.email}</p>
+              {member.email && <p className="text-muted-foreground">{member.email}</p>}
             </div>
           </div>
-          <Badge className={member.status === "active" ? "bg-green-600" : "bg-gray-500"}>
-            {member.status === "active" ? "Active" : "Disabled"}
+          <Badge className={member.status === "active" && !member.disabled ? "bg-green-600" : "bg-gray-500"}>
+            {member.status === "active" && !member.disabled ? "Active" : "Inactive"}
           </Badge>
         </div>
 
@@ -547,14 +605,29 @@ export default function TeamMemberDetail() {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="email">Email</Label>
-                  <Input
-                    id="email"
-                    value={member.email}
-                    disabled
-                    className="bg-muted"
-                    data-testid="input-email"
-                  />
-                  <p className="text-xs text-muted-foreground">Email cannot be changed as it is used for login</p>
+                  <div className="flex gap-2">
+                    <Input
+                      id="email"
+                      type="email"
+                      value={emailInput}
+                      onChange={(e) => setEmailInput(e.target.value)}
+                      data-testid="input-email"
+                    />
+                    {emailInput !== member.email && (
+                      <Button
+                        variant="outline"
+                        onClick={() => updateEmailMutation.mutate(emailInput)}
+                        disabled={updateEmailMutation.isPending || !emailInput}
+                        data-testid="button-save-email"
+                      >
+                        {updateEmailMutation.isPending ? "Saving..." : "Save Email"}
+                      </Button>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    This email is used for login. Each email can only belong to one company.
+                    Changing the email will log the user out.
+                  </p>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="phone">Phone</Label>
@@ -582,42 +655,51 @@ export default function TeamMemberDetail() {
                         ))}
                       </SelectContent>
                     </Select>
-                    <Button 
-                      variant="outline" 
-                      size="icon"
-                      onClick={() => setShowCreateRoleDialog(true)}
-                      data-testid="button-create-role"
-                    >
-                      <Plus className="h-4 w-4" />
-                    </Button>
+{/* Create Role button hidden - roles are predetermined */}
                   </div>
                 </div>
                 <div className="flex items-center justify-between pt-4 border-t">
                   <div>
                     <p className="font-medium">Status</p>
                     <p className="text-sm text-muted-foreground">
-                      {member.status === "active" 
-                        ? "This member can access the system" 
+                      {member.status === "active"
+                        ? "This member can access the system"
                         : "This member cannot access the system"}
                     </p>
                   </div>
                   {member.status === "active" ? (
-                    <Button 
-                      variant="outline" 
+                    <Button
+                      variant="outline"
                       onClick={() => setShowDeactivateDialog(true)}
                       data-testid="button-toggle-status"
                     >
                       Disable Account
                     </Button>
                   ) : (
-                    <Button 
-                      variant="default" 
+                    <Button
+                      variant="default"
                       onClick={() => setShowActivateDialog(true)}
                       data-testid="button-toggle-status"
                     >
                       Enable Account
                     </Button>
                   )}
+                </div>
+                <div className="flex items-center justify-between pt-4 border-t">
+                  <div>
+                    <p className="font-medium">Reset Password</p>
+                    <p className="text-sm text-muted-foreground">
+                      Set a new password for this user. They will be logged out.
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    onClick={() => setShowResetPasswordDialog(true)}
+                    data-testid="button-reset-password"
+                  >
+                    <KeyRound className="h-4 w-4 mr-2" />
+                    Reset Password
+                  </Button>
                 </div>
                 <div className="flex items-center justify-between pt-4 border-t">
                   <div>
@@ -632,7 +714,7 @@ export default function TeamMemberDetail() {
                 </div>
                 <div className="flex justify-end pt-4">
                   <Button
-                    onClick={() => updateBasicMutation.mutate({ ...basicInfo, useCustomSchedule })}
+                    onClick={() => updateBasicMutation.mutate({ ...basicInfo, useCustomSchedule, isSchedulable })}
                     disabled={updateBasicMutation.isPending}
                     data-testid="button-save-basic"
                   >
@@ -645,6 +727,28 @@ export default function TeamMemberDetail() {
           </TabsContent>
 
           <TabsContent value="schedule">
+            <Card className="mb-6">
+              <CardContent className="pt-6">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="is-schedulable" className="text-base font-medium">Show on calendar</Label>
+                    <p className="text-sm text-muted-foreground">
+                      Allows this person to be scheduled and have time billed on jobs.
+                    </p>
+                  </div>
+                  <Switch
+                    id="is-schedulable"
+                    checked={isSchedulable}
+                    onCheckedChange={(checked) => {
+                      setIsSchedulable(checked);
+                      updateBasicMutation.mutate({ ...basicInfo, useCustomSchedule, isSchedulable: checked });
+                    }}
+                    data-testid="switch-is-schedulable"
+                  />
+                </div>
+              </CardContent>
+            </Card>
+
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between">
@@ -1097,6 +1201,69 @@ export default function TeamMemberDetail() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={showResetPasswordDialog} onOpenChange={(open) => {
+        setShowResetPasswordDialog(open);
+        if (!open) {
+          setNewPassword("");
+          setConfirmPassword("");
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reset Password</DialogTitle>
+            <DialogDescription>
+              Set a new password for {member.firstName || member.email}. They will be logged out of all sessions.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="new-password">New Password</Label>
+              <Input
+                id="new-password"
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="Enter new password (min 10 characters)"
+                data-testid="input-new-password"
+              />
+              {newPassword.length > 0 && newPassword.length < 10 && (
+                <p className="text-xs text-destructive">Password must be at least 10 characters</p>
+              )}
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="confirm-password">Confirm Password</Label>
+              <Input
+                id="confirm-password"
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="Confirm new password"
+                data-testid="input-confirm-password"
+              />
+              {confirmPassword.length > 0 && newPassword !== confirmPassword && (
+                <p className="text-xs text-destructive">Passwords do not match</p>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowResetPasswordDialog(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => resetPasswordMutation.mutate(newPassword)}
+              disabled={
+                newPassword.length < 10 ||
+                newPassword !== confirmPassword ||
+                resetPasswordMutation.isPending
+              }
+              data-testid="button-confirm-reset-password"
+            >
+              {resetPasswordMutation.isPending ? "Resetting..." : "Reset Password"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={showCreateRoleDialog} onOpenChange={setShowCreateRoleDialog}>
         <DialogContent>

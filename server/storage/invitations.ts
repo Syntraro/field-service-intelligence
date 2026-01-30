@@ -1,8 +1,10 @@
 import crypto from "crypto";
+import bcrypt from "bcryptjs";
 import { db } from "../db";
 import { eq, and } from "drizzle-orm";
-import { invitations, users } from "@shared/schema";
+import { invitations, users, userIdentities } from "@shared/schema";
 import { BaseRepository } from "./base";
+import { identityRepository } from "./identities";
 
 const INVITE_TTL_DAYS = 7;
 
@@ -34,7 +36,7 @@ export class InvitationRepository extends BaseRepository {
 
   /**
    * Create a new invitation
-   * @throws Error if invitation already exists
+   * @throws Error if invitation already exists or email is used in another company
    */
   async createInvitation(companyId: string, email: string, role: string) {
     this.assertCompanyId(companyId);
@@ -43,8 +45,18 @@ export class InvitationRepository extends BaseRepository {
     const token = this.generateToken();
     const expiresAt = this.getExpirationDate();
 
-    // Check for existing pending invitation
-    const [existing] = await db
+    // Check global email uniqueness - email can only belong to one company
+    const globalCheck = await identityRepository.isEmailGloballyAvailable(normalized);
+    if (!globalCheck.available) {
+      throw new Error(
+        "This email is already in use in another company. " +
+        "Each email can only belong to one company. " +
+        "If this person works for multiple companies, they must use a different email."
+      );
+    }
+
+    // Check for existing pending invitation in this company
+    const [existingInvitation] = await db
       .select()
       .from(invitations)
       .where(
@@ -56,8 +68,8 @@ export class InvitationRepository extends BaseRepository {
       )
       .limit(1);
 
-    if (existing) {
-      throw new Error("Invitation already exists");
+    if (existingInvitation) {
+      throw new Error("Invitation already exists for this email");
     }
 
     await db.insert(invitations).values({
@@ -73,8 +85,8 @@ export class InvitationRepository extends BaseRepository {
   }
 
   /**
-   * Accept an invitation and create a user
-   * @throws Error if invitation is invalid or expired
+   * Accept an invitation and create a user with email identity
+   * @throws Error if invitation is invalid, expired, or email already exists
    */
   async acceptInvitation(token: string, password: string) {
     return db.transaction(async (tx) => {
@@ -92,17 +104,45 @@ export class InvitationRepository extends BaseRepository {
         throw new Error("Invitation expired");
       }
 
+      const normalizedEmail = this.normalizeEmail(invite.email);
+
+      // Double-check global email uniqueness before proceeding
+      // (in case email was taken between invitation creation and acceptance)
+      const globalCheck = await identityRepository.isEmailGloballyAvailable(normalizedEmail);
+      if (!globalCheck.available) {
+        throw new Error(
+          "This email is already in use. " +
+          "Each email can only belong to one company. " +
+          "Please contact your administrator for assistance."
+        );
+      }
+
+      // Hash the password
+      const passwordHash = await bcrypt.hash(password, 10);
+
       // Create user bound to the company
       const [created] = await tx
         .insert(users)
         .values({
           companyId: invite.companyId,
-          email: invite.email,
-          password, // expected to be hashed by existing auth layer
+          email: normalizedEmail, // Keep email on user for display/legacy
+          password: passwordHash, // Legacy field - keep for backward compat
           role: invite.role,
           status: "active",
         } as any)
         .returning();
+
+      // Create email identity for login
+      await tx
+        .insert(userIdentities)
+        .values({
+          companyId: invite.companyId,
+          userId: created.id,
+          provider: "email",
+          identifier: normalizedEmail,
+          passwordHash, // Password stored on identity
+          verifiedAt: new Date(), // Verified by accepting invite
+        });
 
       await tx
         .update(invitations)

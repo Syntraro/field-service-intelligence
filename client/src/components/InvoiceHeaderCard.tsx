@@ -8,7 +8,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Card } from "@/components/ui/card";
-import { MoreHorizontal, Send, DollarSign, PenTool, RotateCw, Ban, Edit } from "lucide-react";
+import { MoreHorizontal, Send, DollarSign, PenTool, RotateCw, Ban, Edit, FileText, Printer, CheckCircle, Undo2 } from "lucide-react";
 import type { Invoice, Client, CustomerCompany, Job } from "@shared/schema";
 
 export interface InvoiceHeaderCardProps {
@@ -26,6 +26,15 @@ export interface InvoiceHeaderCardProps {
   onRefreshFromJob?: () => void;
   refreshPending?: boolean;
   voidPending?: boolean;
+
+  // PDF actions
+  onDownloadPdf?: () => void;
+  onPrintPdf?: () => void;
+  pdfPending?: boolean;
+
+  // Toggle sent status (Mark as sent / Undo sent)
+  onToggleSent?: (isSent: boolean) => void;
+  toggleSentPending?: boolean;
 
   canEdit?: boolean;
   isDraft?: boolean;
@@ -53,18 +62,23 @@ export function InvoiceHeaderCard({
   onRefreshFromJob,
   refreshPending,
   voidPending,
+  onDownloadPdf,
+  onPrintPdf,
+  pdfPending,
+  onToggleSent,
+  toggleSentPending,
   canEdit,
   isDraft,
   sendPending,
   statusLabel,
   statusVariant = "outline",
 }: InvoiceHeaderCardProps) {
-  // Derived status flags
-  const isSent = invoice.status === "sent";
+  // Derived status flags - awaiting_payment is the new canonical "sent" status
+  const isAwaitingPayment = invoice.status === "awaiting_payment" || invoice.status === "sent";
   const isPartialPaid = invoice.status === "partial_paid";
-  const isPayable = isSent || isPartialPaid;
+  const isPayable = isAwaitingPayment || isPartialPaid;
   const isTerminal = invoice.status === "paid" || invoice.status === "voided";
-  const canVoid = !isTerminal && (isDraft || isSent || isPartialPaid);
+  const canVoid = !isTerminal && (isDraft || isAwaitingPayment || isPartialPaid);
 
   return (
     <Card className="p-4 mb-6">
@@ -113,6 +127,20 @@ export function InvoiceHeaderCard({
           </Button>
         )}
 
+        {/* PDF Actions */}
+        {onDownloadPdf && (
+          <Button variant="outline" size="sm" onClick={onDownloadPdf} disabled={pdfPending}>
+            <FileText className="h-4 w-4 mr-1" />
+            {pdfPending ? "Loading..." : "Download PDF"}
+          </Button>
+        )}
+        {onPrintPdf && (
+          <Button variant="outline" size="sm" onClick={onPrintPdf} disabled={pdfPending}>
+            <Printer className="h-4 w-4 mr-1" />
+            Print
+          </Button>
+        )}
+
         {/* More Actions dropdown */}
         {!isTerminal && (
           <DropdownMenu>
@@ -133,6 +161,28 @@ export function InvoiceHeaderCard({
                   <RotateCw className="h-4 w-4 mr-2" />
                   Refresh from Job
                 </DropdownMenuItem>
+              )}
+
+              {onToggleSent && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onClick={() => onToggleSent(!invoice.sentAt)}
+                    disabled={toggleSentPending}
+                  >
+                    {invoice.sentAt ? (
+                      <>
+                        <Undo2 className="h-4 w-4 mr-2" />
+                        {toggleSentPending ? "Updating..." : "Undo sent"}
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle className="h-4 w-4 mr-2" />
+                        {toggleSentPending ? "Updating..." : "Mark as sent"}
+                      </>
+                    )}
+                  </DropdownMenuItem>
+                </>
               )}
 
               {canVoid && onVoid && (

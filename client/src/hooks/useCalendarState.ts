@@ -4,12 +4,13 @@
  * Handles:
  * - View mode (monthly/weekly/daily)
  * - Weekly view mode (time/technician)
- * - Density setting
  * - Sidebar collapsed state
  * - Search/filter state
  * - Hidden technician IDs
  * - Show full day toggle for business hours
  * - LocalStorage persistence
+ *
+ * NOTE: Density modes removed - always uses "expanded" for readability
  */
 
 import { useState, useEffect, useCallback, useMemo } from "react";
@@ -25,7 +26,6 @@ export type WeeklyViewMode = "time" | "technician";
 export interface CalendarPreferences {
   view: CalendarView;
   weeklyViewMode: WeeklyViewMode;
-  density: CalendarDensity;
   sidebarCollapsed: boolean;
   showFullDay: boolean;
   hiddenTechnicianIds: string[];
@@ -36,7 +36,6 @@ const STORAGE_KEY = "calendar-preferences";
 const DEFAULT_PREFERENCES: CalendarPreferences = {
   view: "weekly",
   weeklyViewMode: "time",
-  density: "comfortable",
   sidebarCollapsed: false,
   showFullDay: false,
   hiddenTechnicianIds: [],
@@ -52,22 +51,64 @@ export const BUSINESS_HOURS = {
 // LocalStorage Helpers
 // ============================================================================
 
+/** Valid view values for type safety */
+const VALID_VIEWS: CalendarView[] = ["monthly", "weekly", "daily"];
+const VALID_WEEKLY_MODES: WeeklyViewMode[] = ["time", "technician"];
+
+/**
+ * Validate and sanitize a view value from localStorage
+ * Falls back to 'weekly' if invalid to prevent crashes
+ */
+function validateView(view: unknown): CalendarView {
+  if (typeof view === 'string' && VALID_VIEWS.includes(view as CalendarView)) {
+    return view as CalendarView;
+  }
+  if (process.env.NODE_ENV === 'development' && view !== undefined) {
+    console.warn('[useCalendarState] Invalid view in localStorage, falling back to weekly:', view);
+  }
+  return 'weekly';
+}
+
+function validateWeeklyViewMode(mode: unknown): WeeklyViewMode {
+  if (typeof mode === 'string' && VALID_WEEKLY_MODES.includes(mode as WeeklyViewMode)) {
+    return mode as WeeklyViewMode;
+  }
+  return 'time';
+}
+
 function loadPreferences(): CalendarPreferences {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) return DEFAULT_PREFERENCES;
 
-    const parsed = JSON.parse(stored);
-    // Merge with defaults to handle missing keys from older versions
+    let parsed: any;
+    try {
+      parsed = JSON.parse(stored);
+    } catch (parseError) {
+      // Corrupted JSON - clear it and return defaults
+      if (process.env.NODE_ENV === 'development') {
+        console.warn('[useCalendarState] Corrupted localStorage, resetting to defaults:', parseError);
+      }
+      localStorage.removeItem(STORAGE_KEY);
+      return DEFAULT_PREFERENCES;
+    }
+
+    // Validate and sanitize all fields to prevent crashes
     return {
-      ...DEFAULT_PREFERENCES,
-      ...parsed,
+      view: validateView(parsed.view),
+      weeklyViewMode: validateWeeklyViewMode(parsed.weeklyViewMode),
+      sidebarCollapsed: typeof parsed.sidebarCollapsed === 'boolean' ? parsed.sidebarCollapsed : false,
+      showFullDay: typeof parsed.showFullDay === 'boolean' ? parsed.showFullDay : false,
       // Ensure hiddenTechnicianIds is always an array
       hiddenTechnicianIds: Array.isArray(parsed.hiddenTechnicianIds)
-        ? parsed.hiddenTechnicianIds
+        ? parsed.hiddenTechnicianIds.filter((id: unknown) => typeof id === 'string')
         : [],
     };
-  } catch {
+  } catch (error) {
+    // Any other error - return defaults
+    if (process.env.NODE_ENV === 'development') {
+      console.warn('[useCalendarState] Error loading preferences, using defaults:', error);
+    }
     return DEFAULT_PREFERENCES;
   }
 }
@@ -110,9 +151,8 @@ export function useCalendarState() {
     setPreferences(prev => ({ ...prev, weeklyViewMode }));
   }, []);
 
-  const setDensity = useCallback((density: CalendarDensity) => {
-    setPreferences(prev => ({ ...prev, density }));
-  }, []);
+  // Density is fixed to "expanded" for readability - no setter needed
+  const density: CalendarDensity = "expanded";
 
   const setSidebarCollapsed = useCallback((sidebarCollapsed: boolean) => {
     setPreferences(prev => ({ ...prev, sidebarCollapsed }));
@@ -172,9 +212,8 @@ export function useCalendarState() {
     weeklyViewMode: preferences.weeklyViewMode,
     setWeeklyViewMode,
 
-    // Density
-    density: preferences.density,
-    setDensity,
+    // Density - fixed to "expanded" for readability
+    density,
 
     // Sidebar
     sidebarCollapsed: preferences.sidebarCollapsed,

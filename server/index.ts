@@ -12,6 +12,7 @@ import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import passport from "passport";
 import "./auth";  // Register passport strategies
+import { enforceSchemaOrExit } from "./utils/schemaGuard";
 
 /**
  * Production security defaults.
@@ -170,6 +171,16 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 
 // Start listening when run directly (Replit/Node entry)
 const port = Number(process.env.PORT ?? 5000);
-server.listen(port, "0.0.0.0", () => {
-  log(`serving on port ${port}`);
-});
+
+// Validate schema before accepting requests
+(async () => {
+  try {
+    await enforceSchemaOrExit();
+    server.listen(port, "0.0.0.0", () => {
+      log(`serving on port ${port}`);
+    });
+  } catch (error) {
+    console.error("Failed to start server:", error);
+    process.exit(1);
+  }
+})();

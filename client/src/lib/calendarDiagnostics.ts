@@ -78,7 +78,9 @@ export interface DragLogData {
   sourceId: string;
   sourceType: 'calendar-assignment' | 'unscheduled-job';
   targetId?: string;
-  targetType?: 'month-day' | 'week-allday' | 'week-timed' | 'day-timed' | 'unscheduled-panel';
+  // 2026-01-28: Added 'day-allday' for Jobber-style day view all-day lane
+  // 2026-01-29: Added 'techweek' for weekly technician view
+  targetType?: 'month-day' | 'week-allday' | 'day-allday' | 'week-timed' | 'day-timed' | 'unscheduled-panel' | 'techweek';
   computedPayload?: Record<string, unknown>;
   result?: 'success' | 'error' | 'cancelled';
   [key: string]: unknown; // Index signature for Record<string, unknown> compatibility

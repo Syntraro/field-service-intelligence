@@ -520,10 +520,17 @@ export function JobDetailDialog({
   });
 
   // Direct technician assignment mutation with proper error handling
+  // 2026-01-28: Added version field for optimistic locking
   const assignTechnicianMutation = useMutationWithToast({
     mutationFn: async ({ technicianId, remove }: { technicianId: string; remove?: boolean }) => {
       if (!assignment) throw new Error("No job to update");
       const jobId = assignment.jobId || assignment.id;
+      const version = assignment.version;
+
+      // Validate version is present
+      if (version === undefined || version === null) {
+        throw new Error("Cannot update: job data is stale. Please refresh the page.");
+      }
 
       // DEV logging
       if (process.env.NODE_ENV === 'development') {
@@ -531,16 +538,18 @@ export function JobDetailDialog({
           jobId,
           technicianId,
           remove,
+          version,
           endpoint: `/api/calendar/schedule/${jobId}`,
         });
       }
 
       try {
-        // Model A: Use job-centric schedule endpoint
+        // Model A: Use job-centric schedule endpoint with version for optimistic locking
         return await apiRequest(`/api/calendar/schedule/${jobId}`, {
           method: "PATCH",
           body: JSON.stringify({
             technicianUserId: remove ? null : technicianId,
+            version,
           }),
         });
       } catch (error: any) {
@@ -678,6 +687,9 @@ export function JobDetailDialog({
     setSelectedTechs(newTechs);
 
     // Use direct mutation for proper error handling
+    // 2026-01-28: Removed redundant onAssignTechnicians callback call - the mutation
+    // already handles the API call with proper version field. The callback was causing
+    // a double API call (one without version, one with), resulting in error flashes.
     assignTechnicianMutation.mutate({
       technicianId: techId,
       remove: isRemoving,
@@ -687,11 +699,6 @@ export function JobDetailDialog({
         setSelectedTechs(selectedTechs);
       }
     });
-
-    // Also call parent callback for backward compatibility
-    if (onAssignTechnicians) {
-      onAssignTechnicians(assignment.id, newTechs);
-    }
   };
 
   const handleSaveSchedule = () => {
@@ -1290,7 +1297,7 @@ export function JobDetailDialog({
               Delete Job
             </Button>
             <p className="text-xs text-muted-foreground">
-              Created {format(parseLocalDate(assignment.scheduledDate || `${assignment.year}-${assignment.month}-01`), "MMM d, yyyy")}
+              Created {format(parseLocalDate(assignment.scheduledDate), "MMM d, yyyy")}
             </p>
           </div>
         </DialogContent>

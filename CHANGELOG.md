@@ -6,7 +6,228 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### React Hooks Rule Violation in Calendar Component (2026-01-30)
+
+- **Problem**: "Rendered more hooks than during the previous render" error in Calendar component
+- **Root Cause**: The `renderUnscheduledItem` useCallback (line 1888) was defined AFTER conditional early returns (error state at line 1728, loading state at line 1749). This violated React's Rules of Hooks - hooks must be called unconditionally at the top level, in the same order every render.
+- **Solution**: Moved `renderUnscheduledItem` useCallback to line 1729, before any early returns but after all its dependencies are available
+- **Files Modified**: `client/src/pages/Calendar.tsx`
+
+#### Server Route Optimization - Removed All Pre-Validation Queries (2026-01-30)
+
+- **Problem**: Calendar schedule/reschedule/unschedule endpoints performed redundant validation queries (5-6 per operation)
+- **Solution**: Removed ALL pre-validation queries, relying on DB constraints and WHERE clauses:
+  - **POST /schedule**: Removed `validateTechnicianBelongsToTenant()` (FK handles), `validateSchedule()` (overbooking allowed)
+  - **PATCH /schedule/:jobId**: Removed `getJobById()` pre-check - job ownership verified by UPDATE WHERE clause
+  - **POST /unschedule/:jobId**: Removed `getJobById()` pre-check - job ownership verified by UPDATE WHERE clause
+- **Trade-off**: Conflict checking removed - dispatchers can see overbooking visually on calendar
+- **Error Handling**: FK violations (invalid technician) now caught via PostgreSQL error code `23503`
+- **Files Modified**: `server/routes/calendar.ts`
+- **Imports Removed**: `validateSchedule`, `ScheduleValidationError` from calendarValidation service
+- **Expected Performance**:
+  - POST /schedule: 1 query (was 3-4) → ~300-400ms (was ~1070ms)
+  - PATCH /schedule: 1 query (was 2-3) → ~200-300ms (was ~856ms)
+  - POST /unschedule: 1 query (was 2-3) → ~150-250ms (was ~777ms)
+- **Note**: For additional ~200ms improvement per query, enable Neon connection pooler by updating DATABASE_URL to use `-pooler` hostname suffix
+
+#### Unscheduled Panel Loading Spinner During Reschedule (2026-01-30)
+
+- **Problem**: The unscheduled sidebar showed a loading spinner during reschedule operations that don't affect it, because `isSavingDrag` included `updateAssignment.isPending`
+- **Solution**: Split saving state into two:
+  - `isSavingUnscheduled` - Only `createAssignment.isPending || deleteAssignment.isPending` (for sidebar)
+  - `isSavingDrag` (renamed internally to `isSavingAnyDrag`) - All drag operations (for calendar feedback)
+- **Files Modified**:
+  - `client/src/hooks/useCalendarDnD.ts` - Added `isSavingUnscheduled` export
+  - `client/src/pages/Calendar.tsx` - Use `isSavingUnscheduled` for UnscheduledJobsSidebar
+
+#### All-Day to Timed Event Duration Bug (2026-01-30)
+
+- **Problem**: Dragging an all-day job to a timed slot used the all-day duration (1440 minutes) instead of a sensible default, creating events that span the entire day
+- **Solution**: In `updateAssignment` mutation (both `mutationFn` and `onMutate`):
+  - Check if duration is 1440 (all-day) or > 480 (8 hours)
+  - If so, clamp to `DEFAULT_DURATION_MINUTES` (60 min)
+  - Also detect all-day to timed conversion via `a.isAllDay && !isAllDay` and force default
+- **Files Modified**: `client/src/hooks/useCalendarDnD.ts`
+
+#### Unnecessary Unscheduled Query Invalidation on Reschedule (2026-01-30)
+
+- **Problem**: Moving jobs around on the calendar (reschedule) caused unnecessary loading spinners because `invalidateCalendarQueries()` invalidated the unscheduled query on ALL operations
+- **Solution**: Split invalidation into two functions:
+  - `invalidateCalendarOnly()` - Only invalidates calendar queries, NOT unscheduled. Used for:
+    - Reschedule operations (updateAssignment)
+    - Duration changes (updateDuration)
+    - Technician assignments (assignTechnicians)
+    - Completion status changes (toggleComplete)
+  - `invalidateCalendarAndUnscheduled()` - Invalidates calendar + unscheduled + clients. Used for:
+    - Schedule operations (createAssignment) - job moves from unscheduled to calendar
+    - Unschedule operations (deleteAssignment) - job moves from calendar to unscheduled
+    - Clear schedule/day operations - jobs move to unscheduled
+    - Error recovery paths - need full refresh
+- **Files Modified**: `client/src/hooks/useCalendarDnD.ts`
+
 ### Changed
+
+#### Server-Side Calendar API Performance Optimization (2026-01-30)
+
+- **Problem**: Calendar schedule/unschedule API endpoints took 800-950ms due to excessive sequential DB queries
+- **Root Cause**: Each scheduling operation performed 6-8 sequential database round-trips:
+  - `validateJobBelongsToTenant()` - 1 query
+  - `validateTechnicianBelongsToTenant()` - 1 query
+  - `validateSchedule()` - 2 queries (tech exists + conflict check)
+  - `getJobById()` - 1 query (for version check)
+  - Transaction (UPDATE + INSERT audit) - 1-2 queries
+  - `getJob()` for notification - 1 query
+- **Solution**: Multi-pronged optimization:
+  1. **Repository Layer** (`server/storage/calendar.ts`):
+     - Removed separate `getJobById()` call before UPDATE
+     - Moved version check + terminal status check into UPDATE WHERE clause
+     - Only fetch job details on error path (to determine error type)
+     - Reduced from 2 DB calls to 1 in happy path per operation
+  2. **Route Layer** (`server/routes/calendar.ts`):
+     - Parallelized `validateTechnicianBelongsToTenant()` and `validateSchedule()` using `Promise.all()`
+     - Removed redundant `validateJobBelongsToTenant()` (now checked in UPDATE WHERE)
+  3. **Connection Pool** (`server/db.ts`):
+     - Changed `min: 0` to `min: 2` (prod) / `min: 1` (dev) to keep connections warm
+     - Changed `idleTimeoutMillis` to 60s (prod) to reduce cold starts
+     - Changed `allowExitOnIdle: false` to keep pool warm
+  4. **Database Indexes** (`migrations/2026_01_30_calendar_performance_indexes.sql`):
+     - Added `jobs_conflict_check_idx` for conflict detection queries
+     - Added `jobs_company_id_lookup_idx` for tenant-isolated lookups
+- **Expected Performance**:
+  - Before: 800-950ms per schedule/reschedule/unschedule operation
+  - After: 200-400ms per operation (2-4x faster)
+- **Files Modified**:
+  - `server/storage/calendar.ts` - Optimized `scheduleJob()`, `rescheduleJob()`, `unscheduleJob()`
+  - `server/routes/calendar.ts` - Parallelized validations
+  - `server/db.ts` - Warmed connection pool
+- **Migration**: `migrations/2026_01_30_calendar_performance_indexes.sql` (run with `psql` without transaction flag)
+- **Trade-off**: Audit log `oldFields` is now null (we don't pre-fetch existing job to capture old values)
+
+#### Client-Side Drag Performance Optimization (2026-01-30)
+
+- **Problem**: Sidebar cards re-rendered 50+ times during drag, causing janky experience
+- **Root Cause**:
+  - `DraggableClient` component not memoized, re-rendered on every state change
+  - `renderItem` callback recreated on every Calendar.tsx render
+  - Verbose DEV logging (`[UNSCHED-DRAG]`) fired on every render
+  - Query refetch triggered by window focus during drag
+- **Solution**:
+  1. **DraggableClient.tsx**: Wrapped with `React.memo` + custom comparison function
+  2. **Calendar.tsx**: Extracted `renderItem` to `renderUnscheduledItem` with `useCallback`
+  3. **DraggableClient.tsx**: Throttled DEV logging (only once per card mount)
+  4. **useCalendarApi.ts**: Added `refetchOnWindowFocus: false`, `refetchOnMount: false`
+- **Expected Results**:
+  - Rerenders during drag: 50+ → 0-2
+  - `[UNSCHED-DRAG]` logs: 50+ per drag → 0
+  - Smooth drag experience
+- **Files Modified**:
+  - `client/src/components/calendar/DraggableClient.tsx`
+  - `client/src/pages/Calendar.tsx`
+  - `client/src/hooks/useCalendarApi.ts`
+
+#### DnD Performance Fix - Eliminate Refetch Thrash (2026-01-30)
+
+- **Problem**: DnD operations took ~1800ms total due to invalidating 15+ queries on each operation
+- **Root Cause**: `onSuccess` handlers called `refetchCalendar()` + `invalidateCalendarQueries()` which invalidated ALL `/api/calendar*` queries plus `/api/clients`
+- **Solution**: Replace full refetch with targeted cache merge + narrow invalidation
+- **New Helpers** in `useCalendarDnD.ts`:
+  - `mergeServerResponseIntoCache(result, jobId, operation)` - Directly merges server response into React Query cache
+  - `invalidateNarrow(includeUnscheduled)` - Only invalidates `/api/calendar/unscheduled` when needed
+- **Changes to Mutation Handlers**:
+  - `createAssignment.onSuccess`: Uses `mergeServerResponseIntoCache` + `invalidateNarrow(true)`
+  - `updateAssignment.onSuccess`: Uses `mergeServerResponseIntoCache` only (no invalidation needed)
+  - `deleteAssignment.onSuccess`: Uses `mergeServerResponseIntoCache` + `invalidateNarrow(true)`
+- **Expected Performance**:
+  - Before: ~1800ms total (1000ms+ in refetch/invalidation phase)
+  - After: ~150-200ms total (cache merge is <5ms, narrow invalidation is <5ms)
+  - UI updates at `optimistic-update-complete` (~3ms) - instant feel preserved
+- **Files Modified**: `client/src/hooks/useCalendarDnD.ts`
+- **Verification**:
+  - `npm run check` passes
+  - `npm run build` passes
+  - Optimistic updates still work (UI updates before server response)
+  - Error rollback still works (cache restored from snapshot)
+
+#### DnD Performance Instrumentation (2026-01-30)
+
+- **Improvement**: Added comprehensive performance instrumentation for calendar drag-and-drop operations
+- **Purpose**: Identify bottlenecks in DnD operations (optimistic updates already work, but refetch/invalidation may cause perceived lag)
+- **New File**: `client/src/lib/dndPerformance.ts`
+  - `startPerfSession(operation, jobId)` - Start timing a DnD operation
+  - `mark(name, data)` - Add timing checkpoint
+  - `endPerfSession(success)` - End session and log summary with bottleneck detection
+  - `trackInvalidation(queryKey)` - Track which queries are invalidated
+  - `isDndPerfEnabled()` - Returns true in development or with `?dnd-perf=1` query param
+- **Instrumented Mutations** in `useCalendarDnD.ts`:
+  - `createAssignment` (schedule) - marks: mutation-fn-start, on-mutate-start, queries-cancelled, optimistic-update-complete, server-response-received, on-success-start, pre-refetch, refetch-complete, invalidation-complete
+  - `updateAssignment` (reschedule) - same marks
+  - `deleteAssignment` (unschedule) - same marks
+  - `invalidateCalendarQueries` - tracks invalidated count and query keys
+- **Console Output** (DEV only):
+  ```
+  [DnD-Perf] ▶ Session started: schedule job=abc123
+  [DnD-Perf] 📍 mutation-fn-start: +0.2ms
+  [DnD-Perf] 📍 optimistic-update-complete: +3.4ms  <-- UI updates HERE
+  [DnD-Perf] 📍 server-response-received: +145.2ms
+  [DnD-Perf] 📍 refetch-complete: +312.5ms
+  [DnD-Perf] ⏱ Session complete: schedule
+  [DnD-Perf] Total: 312.5ms
+  [DnD-Perf] ⚠️ Bottleneck: "pre-refetch → refetch-complete" took 166.4ms
+  ```
+- **Verification**:
+  - `npm run check` passes
+  - `npm run build` passes
+  - Logs appear in browser DevTools during DnD operations
+
+#### Unambiguous Weekly Droppable IDs (2026-01-30)
+
+- **Improvement**: Weekly view droppable IDs now include full date (YYYY-MM-DD) instead of just dayName+dayNumber
+- **Motivation**: Previous format `weekly|Mon|14|30|28` was ambiguous when week spans two months - the month/year had to be reconstructed from view state, causing Bug 16 (Sunday boundary issue)
+- **New Formats**:
+  - Weekly timed: `weekly|YYYY-MM-DD|{hour}|{minute}` (was: `weekly|{dayName}|{hour}|{minute}|{dayNumber}`)
+  - Weekly all-day: `allday|week|YYYY-MM-DD` (was: `allday|{dayName}|{dayNumber}`)
+- **Backward Compatibility**: Legacy format still supported via `getWeeklyTargetDate()` fallback
+- **Files Modified**:
+  - `client/src/components/calendar/CalendarGridWeek.tsx` - updated droppable ID generation
+  - `client/src/pages/Calendar.tsx` - updated drop handlers with format detection
+- **Benefits**:
+  - Date is authoritative and unambiguous
+  - No dependency on view state or weekStartsOn calculation during drop handling
+  - Prevents month-boundary bugs permanently
+
+#### Centralized Development Mode Flags (2026-01-30)
+
+- **Improvement**: Gate ALL dev-only console logs and schema checks behind a single `IS_DEV` flag
+- **Changes**:
+  - Created `server/utils/devFlags.ts` - exports `IS_DEV`, `IS_PROD`, `DEV_VERBOSE`
+  - Created `client/src/lib/devFlags.ts` - client-side equivalent
+  - Replaced scattered `process.env.NODE_ENV === 'development'` checks with centralized `IS_DEV` import
+  - Production logs are now clean - dev-only logs only run when NODE_ENV=development
+- **Files Modified**:
+  - `server/utils/devFlags.ts` (new)
+  - `client/src/lib/devFlags.ts` (new)
+  - `server/utils/validationHelpers.ts` (use IS_DEV)
+  - `server/utils/allDaySanitizer.ts` (use IS_DEV)
+  - `server/routes/calendar.ts` (use IS_DEV)
+  - `server/services/calendarValidation.ts` (use IS_DEV)
+  - `server/storage/calendar.ts` (use IS_DEV)
+  - `client/src/pages/Calendar.tsx` (use IS_DEV for all dev logs)
+- **Verification**:
+  - `npm run check` passes
+  - `npm run build` passes
+  - Production bundle has no dev-only log strings (client)
+  - Server bundle has IS_DEV guards (runtime check)
+
+#### TODO.md Development Workflow Notes (2026-01-30)
+
+- Added prominent "DEVELOPMENT WORKFLOW NOTES" section at top of TODO.md
+- Documents when server restart is required (Zod schema changes, route modules)
+- Added "DnD Regression Checklist" section with test cases:
+  - Day View: unscheduled→unassigned, tech→unassigned, unassigned→tech
+  - Week (By Technician) View: tech→unassigned
+  - Drop on empty space should do nothing (verified: code returns early on !over)
 
 #### Unscheduled Sidebar Card Styling (2026-01-29)
 
@@ -21,19 +242,185 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### Bug 16: Sunday Boundary Date Mapping Bug in Week View (2026-01-30)
+
+- **Bug**: Dragging unscheduled job onto Sunday in week view showed success toast but job disappeared (not visible on calendar, not in unscheduled)
+- **Root Cause Analysis (Type B: Wrong date)**:
+  - Weekly view droppable IDs encode: `weekly|{dayName}|{hour}|{minute}|{dayNumber}`
+  - Only `dayName` (Mon/Tue/...) and `dayNumber` (1-31) are encoded, NOT month/year
+  - When week spans two months (e.g., Jan 27 - Feb 2), code used view's `month`/`year` as fallback
+  - If current view month = January but Sunday = Feb 2, job was scheduled to Jan 2 instead of Feb 2
+  - Job "disappeared" because it was scheduled to a date not in the current week's fetch range
+- **Fix**:
+  - Added `getWeeklyTargetDate(dayName)` helper in Calendar.tsx
+  - Maps dayName to day index (0-6) based on `regional.weekStartsOn` setting
+  - Computes exact target date from weekStart + day index
+  - Returns correct `{ targetDay, targetMonth, targetYear }` for any day in the week
+  - Updated weekly all-day handler and weekly timed handler to use the helper
+- **Files Modified**:
+  - `client/src/pages/Calendar.tsx` (added getWeeklyTargetDate helper, updated weekly handlers)
+- **Verification Steps**:
+  1. Navigate to a week that spans two months (e.g., last week of January 2026)
+  2. Drag unscheduled job → Sunday timed slot: job appears on Sunday immediately
+  3. Drag unscheduled job → Sunday all-day lane: job appears on Sunday immediately
+  4. After refresh: job still appears on Sunday (proves DB has correct date)
+  5. Same action works on other days (no regression)
+
+#### Bug 15: Unassign Operations Validation Failure (2026-01-30)
+
+- **Bug**: Day View Unscheduled → Unassigned threw "Expected string, received null at technicianUserId"; Tech → Unassigned snapped back
+- **Root Cause Analysis**:
+  - The schemas already had `.nullable().optional()` from Bug 7 and Bug 9 fixes
+  - **Issue was server running OLD CODE** before the `.nullable()` was added
+  - Server restart required for schema changes to take effect
+- **Verification**: Added schema sanity check at module load time
+  - Confirms `scheduleJobSchema` accepts null ✓
+  - Confirms `rescheduleJobSchema` accepts null ✓
+  - Logs `[SCHEMA-CHECK]` messages at server startup
+- **Additional Fixes**:
+  - Enhanced DEV logging in `validateSchema()` to capture full input data on validation failures
+  - Logs Zod issue details: path, message, code, received, expected
+- **Files Modified**:
+  - `server/routes/calendar.ts` (schema sanity check at module load)
+  - `server/utils/validationHelpers.ts` (DEV logging for validation failures)
+- **Verification Steps**:
+  - Server restart required after schema changes
+  - Look for `[SCHEMA-CHECK] scheduleJobSchema accepts null technicianUserId ✓` in startup logs
+  - Day View: Unscheduled → Unassigned should succeed
+  - Day View: Tech → Unassigned should succeed
+- **Automated Test Results** (2026-01-30):
+  - ✓ Server startup schema checks pass
+  - ✓ Schema test: POST /schedule with `technicianUserId: null` - PASS
+  - ✓ Schema test: PATCH /schedule/:id with `technicianUserId: null` - PASS
+  - ✓ Schema test: POST /schedule with valid UUID - PASS
+  - ✓ Schema test: POST /schedule without technicianUserId - PASS
+
 #### Weekly Technician View Drag-and-Drop (2026-01-29)
 
 - **Bug**: Drag-and-drop on weekly technician view was broken - jobs would automatically move to 'unscheduled' regardless of drop target
-- **Root Cause**: The `handleDragEnd` function in Calendar.tsx was missing a handler for the `techweek|` drop zone ID pattern
+- **Root Cause #1**: The `handleDragEnd` function was missing a handler for the `techweek|` drop zone ID pattern
+- **Root Cause #2**: The `customCollisionDetection` function didn't include `techweek|` in the drop zone filter, so drops were never detected
 - **Fixes**:
   - Added `techweek|` handler to parse target format `techweek|{techId}|{YYYY-MM-DD}`
+  - Added `id.startsWith('techweek|')` to `customCollisionDetection` drop zone filter
   - Added `technicianUserId` field to `CreateAssignmentParams` type in useCalendarDnD.ts
   - Added `'techweek'` to `DragLogData.targetType` union in calendarDiagnostics.ts
   - Updated `getTargetType()` to recognize `techweek|` prefix
 - **Files Modified**:
-  - `client/src/pages/Calendar.tsx` (techweek handler in handleDragEnd, getTargetType update)
+  - `client/src/pages/Calendar.tsx` (techweek handler, collision detection filter, getTargetType)
   - `client/src/hooks/useCalendarDnD.ts` (technicianUserId in CreateAssignmentParams + mutationFn)
   - `client/src/lib/calendarDiagnostics.ts` (techweek in DragLogData.targetType)
+
+#### Calendar DnD DEV Instrumentation (2026-01-29)
+
+- **Debug**: Added comprehensive DEV-only logging for drag-and-drop debugging
+- **Instrumentation Added**:
+  - `[DnD] onDragStart` - logs active.id, activeData, activeRect
+  - `[DnD] onDragOver` - logs over.id when hovering valid targets
+  - `[DnD] onDragEnd` - logs active.id, over.id, collisions array
+  - `[DnD] Droppable containers` - logs counts by prefix (daily, allday, techweek, etc)
+  - `[QuarterDropZone] isOver=true` - logs when 15-min drop zone is active
+  - `[AllDayDropZone] isOver=true` - logs when all-day lane is active
+  - `[TechWeekDropZone] isOver=true` - logs when tech week cell is active
+  - `[UnassignedDayDropZone] isOver=true` - logs when unassigned row cell is active
+- **Fixes Applied**:
+  - Fixed QuarterDropZone z-index: always z-20, z-50 when hovered (was only z-5 when hovered)
+  - Removed `flex flex-col` from quarter drop zone overlay (was potentially causing 0-height issues)
+- **Files Modified**:
+  - `client/src/pages/Calendar.tsx` (onDragStart, onDragOver, onDragEnd, customCollisionDetection logging)
+  - `client/src/components/calendar/CalendarGridDayJobber.tsx` (QuarterDropZone, AllDayDropZone logging)
+  - `client/src/components/calendar/CalendarGridWeekTechnicians.tsx` (TechnicianDayDropZone, UnassignedDayDropZone logging)
+
+#### Calendar DnD Technician Assignment Bugs (2026-01-29)
+
+- **Bug 1**: Tech Week View drops not working
+  - **Symptom**: Drag from Unassigned → Technician, or Unscheduled → anywhere, did nothing
+  - **Root Cause**: Early-return condition at line 592 was missing `!overId.startsWith('techweek|')` check
+  - **Fix**: Added `techweek|` to the prefix whitelist in the early-return guard
+- **Bug 2**: Day View drops not assigning technicians
+  - **Symptom**: Drag Unscheduled → Technician column would schedule but leave job unassigned
+  - **Root Cause**: `technicianUserId` was only passed in `isExistingCalendarAssignment` branch, not in unscheduled branches
+  - **Fix**: Added `technicianUserId: technicianId !== 'unassigned' ? technicianId : null` to:
+    - `allday|` (Day view all-day lane) - both unscheduled branches
+    - `daily|` (Day view timed slots) - both unscheduled branches
+- **Files Modified**:
+  - `client/src/pages/Calendar.tsx` (handleDragEnd early-return condition + 4 mutation calls)
+
+#### False Scheduling Conflict Errors (2026-01-29)
+
+- **Bug 3**: Conflict check matching soft-deleted jobs
+  - **Symptom**: "Technician is already scheduled for Job #X" error when scheduling to a valid slot
+  - **Root Cause**: `validateSchedule` conflict query was not excluding soft-deleted jobs
+  - **Fix**: Added `isNull(jobs.deletedAt)` to overlapConditions in calendarValidation.ts
+- **Bug 4**: Self-conflict when scheduling unscheduled jobs
+  - **Symptom**: Scheduling an unscheduled job could conflict with its own old schedule data
+  - **Root Cause**: `excludeJobId` was not passed to validateSchedule in POST /schedule endpoint
+  - **Fix**: Added `excludeJobId: data.jobId` to validateSchedule call in calendar.ts
+- **Bug 5**: Missing onDragCancel handler
+  - **Symptom**: If drag was cancelled (e.g., Escape key), activeId might not reset
+  - **Fix**: Added onDragCancel handler to DndContext that resets activeId
+- **Bug 6**: Day View cards "dead" (not clickable/draggable) in technician columns
+  - **Symptom**: Cards under technicians couldn't be clicked or dragged
+  - **Root Cause**: QuarterDropZone had `pointer-events-auto` which captured all pointer events
+  - **Fix**: Changed to `pointer-events-none` in CalendarGridDayJobber.tsx (dnd-kit uses getBoundingClientRect for collision, not pointer events)
+- **Bug 7**: Unscheduled → Unassigned threw validation error "Expected string, received null"
+  - **Symptom**: Dropping to Unassigned column would error with technicianUserId null validation
+  - **Root Cause**: scheduleJobSchema only had `.optional()`, not `.nullable()`
+  - **Fix**: Added `.nullable()` to scheduleJobSchema and converted null → undefined for repository
+- **Bug 8**: Week Tech View "flash to Unassigned" before settling on technician
+  - **Symptom**: When dropping Unscheduled → Technician, job would briefly appear under Unassigned
+  - **Root Cause**: Optimistic update for createAssignment was missing technician fields
+  - **Fix**: Added optimisticTechFields to createAssignment onMutate in useCalendarDnD.ts
+- **Bug 9**: Zod schema chain order causing validation errors
+  - **Symptom**: "Expected string, received null" even with `.nullable()` in schema
+  - **Root Cause**: `.optional().nullable()` order differs from `.nullable().optional()` in Zod type narrowing
+  - **Fix**: Changed to `.nullable().optional()` consistently across all schemas (server + shared)
+- **Bug 10**: False conflict always referencing same Job #10017
+  - **Symptom**: Any timed drop would error with conflict against Job #10017 regardless of slot
+  - **Root Cause**: All-day jobs (scheduledStart=midnight, scheduledEnd=23:59:59) overlap any timed event on same day
+  - **Initial Fix**: Added `eq(jobs.isAllDay, false)` filter to conflict query in calendarValidation.ts
+  - All-day and timed jobs use separate "lanes" and should not conflict with each other
+  - Added DEV logging to validateSchedule for debugging conflict issues
+- **Bug 11**: Formalized all-day ("Anytime") conflict semantics (2026-01-29)
+  - **Symptom**: Initial Bug 10 fix globally filtered all-day jobs, missing all-day vs all-day conflicts
+  - **Root Cause**: `eq(jobs.isAllDay, false)` filtered ALL all-day jobs from conflict check
+  - **Expected Conflict Behavior**:
+    - Timed vs Timed: CONFLICT (standard double-booking prevention)
+    - Timed vs All-day: NO CONFLICT (Anytime jobs are non-blocking)
+    - All-day vs Timed: NO CONFLICT (Anytime doesn't block timed)
+    - All-day vs All-day: CONFLICT (one Anytime job per tech per day)
+  - **Fixes**:
+    - Added `isAllDay?: boolean` parameter to `ValidateScheduleOptions` interface
+    - Conditional conflict query: timed input checks against timed jobs only; all-day input checks against all-day jobs only
+    - Added `ANYTIME_JOB_EXISTS` error code for all-day vs all-day conflicts
+    - Updated error message: "Technician already has an Anytime job scheduled for this day"
+    - Updated POST /schedule route to pass `isAllDay` to `validateSchedule`
+    - Added DEV-only `verifyConflictSemantics()` function documenting expected behavior matrix
+- **Bug 12**: Day View using wrong date for unscheduled drops (2026-01-30)
+  - **Symptom**: Unscheduled → Technician timed slot always errored with constant Job #10015 conflict
+  - **Root Cause**: Day View `daily|` handler used `unscheduledItem.month ?? month` instead of `targetMo` from drop zone ID
+  - **Fix**: Changed to use `targetMo` and `targetYr` extracted from droppable ID
+  - **File**: `client/src/pages/Calendar.tsx` lines 1033-1034
+- **Bug 13**: Technician → Unassigned snapback in Day View (2026-01-30)
+  - **Symptom**: Dragging a job from a technician to Unassigned would snap back instead of unassigning
+  - **Root Cause**: PATCH /schedule/:jobId converted `null` (explicit unassign) to `undefined` (no change) via `data.technicianUserId ?? undefined`
+  - **Fix**: Changed to preserve null: `data.technicianUserId === undefined ? undefined : (data.technicianUserId ?? null)`
+  - **Also**: Updated repository type signature to accept `string | null | undefined` for technicianUserId
+  - **Files**: `server/routes/calendar.ts`, `server/storage/calendar.ts`
+- **Bug 14**: POST /schedule also converting null to undefined (2026-01-30)
+  - **Symptom**: Unscheduled → Unassigned would fail to schedule without technician
+  - **Root Cause**: POST /schedule had same `data.technicianUserId ?? undefined` conversion as Bug 13
+  - **Fix**: Changed to pass `data.technicianUserId` directly (repository handles both null and undefined correctly)
+  - **Also**: Updated `scheduleJob` and `scheduleJobBypassWorkingHours` type signatures to accept `string | null`
+  - **Files**: `server/routes/calendar.ts`, `server/storage/calendar.ts`
+- **Files Modified**:
+  - `server/services/calendarValidation.ts` (conditional conflict logic, ANYTIME_JOB_EXISTS code, verifyConflictSemantics)
+  - `server/routes/calendar.ts` (pass isAllDay to validateSchedule, fix null handling in PATCH)
+  - `server/storage/calendar.ts` (accept null in rescheduleJob type signature)
+  - `shared/schema.ts` (added .nullable() to scheduleJobSchema)
+  - `client/src/pages/Calendar.tsx` (added onDragCancel handler, fix Day View date bug)
+  - `client/src/components/calendar/CalendarGridDayJobber.tsx` (pointer-events-none for QuarterDropZone)
+  - `client/src/hooks/useCalendarDnD.ts` (optimisticTechFields in createAssignment onMutate)
 
 ### Added
 

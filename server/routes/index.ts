@@ -14,6 +14,7 @@ import usersAdminRouter from "./users_admin";
 import itemsRouter from "./items";
 import clientPartsRouter from "./clientParts";
 import companySettingsRouter from "./companySettings";
+import businessHoursRouter from "./businessHours";
 import maintenanceRouter from "./maintenance";
 import subscriptionsRouter from "./subscriptions";
 import impersonationRouter from "./impersonation";
@@ -163,6 +164,7 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/items", itemsRouter);
   app.use("/api/client-parts", clientPartsRouter);
   app.use("/api/company-settings", companySettingsRouter);
+  app.use("/api/company/business-hours", businessHoursRouter);
   app.use("/api/maintenance", maintenanceRouter);
   app.use("/api/subscriptions", subscriptionsRouter);
   app.use("/api/impersonation", impersonationRouter);

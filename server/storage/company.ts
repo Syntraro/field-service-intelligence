@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { companySettings } from "@shared/schema";
 import { BaseRepository } from "./base";
 import { cache, CacheKeys, CacheTTL } from "../services/cache";
+import { DEFAULT_TIMEZONE, isValidTimezone } from "../domain/scheduling";
 
 export class CompanyRepository extends BaseRepository {
   /**
@@ -63,6 +64,25 @@ export class CompanyRepository extends BaseRepository {
     cache.delete(CacheKeys.companySettings(companyId));
 
     return result;
+  }
+
+  /**
+   * Get company timezone for scheduling operations.
+   * Returns DEFAULT_TIMEZONE if not set or invalid.
+   *
+   * @param companyId - Company ID
+   * @returns IANA timezone string (e.g., "America/Toronto")
+   */
+  async getCompanyTimezone(companyId: string): Promise<string> {
+    const settings = await this.getCompanySettings(companyId);
+    const timezone = (settings as { timezone?: string } | null)?.timezone;
+
+    // Validate and return timezone, fallback to default
+    if (timezone && isValidTimezone(timezone)) {
+      return timezone;
+    }
+
+    return DEFAULT_TIMEZONE;
   }
 
   /**

@@ -22,22 +22,24 @@ if (!process.env.DATABASE_URL) {
 // Neon uses connection pooling differently than standard PostgreSQL
 // Neon automatically pools at the proxy level, so we use smaller pool sizes
 
-const pool = new Pool({ 
+const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  
+
   // For Neon Serverless, keep pool size smaller (5-10)
   // Neon handles pooling at the proxy level
   max: Number(process.env.DB_POOL_MAX ?? (IS_PROD ? 10 : 5)),
-  
-  // Minimum connections
-  min: Number(process.env.DB_POOL_MIN ?? 0), // Neon can scale to zero
-  
+
+  // OPTIMIZED: 2026-01-30 - Keep minimum connections warm to avoid cold starts
+  // Cold connections add ~100-200ms latency on first query
+  min: Number(process.env.DB_POOL_MIN ?? (IS_PROD ? 2 : 1)),
+
   // Connection timeouts
   connectionTimeoutMillis: Number(process.env.DB_CONNECTION_TIMEOUT ?? 10000), // 10s for Neon
-  idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT ?? 30000), // 30s
-  
-  // Neon-specific: Allow idle connections to close (scales to zero)
-  allowExitOnIdle: true,
+  // OPTIMIZED: Longer idle timeout in production to keep connections warm
+  idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT ?? (IS_PROD ? 60000 : 30000)),
+
+  // OPTIMIZED: Don't allow exit on idle - keep pool warm
+  allowExitOnIdle: false,
 });
 
 // ========================================

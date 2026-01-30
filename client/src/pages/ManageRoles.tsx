@@ -84,14 +84,18 @@ export default function ManageRoles() {
     queryKey: ["/api/permissions"],
   });
 
-  const { data: teamMembers = [] } = useQuery<Array<{ role: string }>>({
-    queryKey: ["/api/team"],
-  });
+  const { data: teamMembers = [] } = useQuery<Array<{ roleId?: string }>>({
+  queryKey: ["/api/team"],
+});
 
-  const { data: currentRolePermissions = [] } = useQuery<string[]>({
-    queryKey: ["/api/roles", selectedRole?.id, "permissions"],
-    enabled: !!selectedRole?.id,
-  });
+
+  const roleId = selectedRole?.id;
+
+const { data: currentRolePermissions = [] } = useQuery<string[]>({
+  queryKey: roleId ? [`/api/roles/${roleId}/permissions`] : [],
+  enabled: !!roleId,
+});
+
 
   const createRoleMutation = useMutation({
     mutationFn: async (data: typeof newRole) => {
@@ -140,10 +144,11 @@ export default function ManageRoles() {
     },
   });
 
-  const rolesWithCounts = roles.map(role => ({
-    ...role,
-    memberCount: teamMembers.filter(m => m.role?.toLowerCase() === role.name.toLowerCase()).length,
-  }));
+  const rolesWithCounts = roles.map((role) => ({
+  ...role,
+  memberCount: teamMembers.filter((m) => m.roleId === role.id).length,
+}));
+
 
   const permissionsByCategory = permissions.reduce((acc, perm) => {
     const cat = perm.category.toLowerCase();
@@ -216,10 +221,7 @@ export default function ManageRoles() {
             <h1 className="text-3xl font-bold" data-testid="text-roles-title">Role Management</h1>
             <p className="text-muted-foreground mt-1">Define permission templates for your team members</p>
           </div>
-          <Button onClick={() => setShowCreateDialog(true)} data-testid="button-create-role">
-            <Plus className="h-4 w-4 mr-2" />
-            Create Role
-          </Button>
+{/* Create Role button hidden - roles are predetermined */}
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -384,7 +386,7 @@ export default function ManageRoles() {
                                   {editMode ? (
                                     <Switch
                                       checked={hasPermission}
-                                      onCheckedChange={() => handleTogglePermission(perm.name)}
+                                      onCheckedChange={() => handleTogglePermission(perm.id)}
                                       data-testid={`switch-perm-${perm.id}`}
                                     />
                                   ) : (
@@ -407,54 +409,7 @@ export default function ManageRoles() {
         </div>
       </div>
 
-      <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Create New Role</DialogTitle>
-            <DialogDescription>
-              Define a new role that can be assigned to team members.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="role-display-name">Display Name</Label>
-              <Input
-                id="role-display-name"
-                value={newRole.displayName}
-                onChange={(e) => setNewRole(prev => ({ 
-                  ...prev, 
-                  displayName: e.target.value,
-                  name: e.target.value.toLowerCase().replace(/\s+/g, "_"),
-                }))}
-                placeholder="e.g., Senior Technician"
-                data-testid="input-role-display-name"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="role-description">Description (optional)</Label>
-              <Textarea
-                id="role-description"
-                value={newRole.description}
-                onChange={(e) => setNewRole(prev => ({ ...prev, description: e.target.value }))}
-                placeholder="Describe this role's responsibilities..."
-                data-testid="input-role-description"
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowCreateDialog(false)}>
-              Cancel
-            </Button>
-            <Button
-              onClick={() => createRoleMutation.mutate(newRole)}
-              disabled={!newRole.displayName || createRoleMutation.isPending}
-              data-testid="button-submit-create-role"
-            >
-              Create Role
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      
 
       <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
         <AlertDialogContent>

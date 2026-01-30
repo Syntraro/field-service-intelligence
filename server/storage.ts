@@ -1,6 +1,6 @@
 import { db } from "./db";
-import { eq, and } from "drizzle-orm";
-import { users, companies, calendarAssignments } from "@shared/schema";
+import { eq, and, isNull } from "drizzle-orm";
+import { users, companies, jobs } from "@shared/schema";
 
 /**
  * Legacy storage surface kept for backward compatibility.
@@ -8,6 +8,8 @@ import { users, companies, calendarAssignments } from "@shared/schema";
  * IMPORTANT:
  * - New code should import from ./storage/index (folder-based repos).
  * - This file exists so older imports don't break during refactors.
+ *
+ * MODEL A: calendar_assignments table removed - scheduling is on jobs table
  */
 
 export interface IStorage {
@@ -54,12 +56,24 @@ export async function getCompanyById(id: string) {
   return rows[0] ?? null;
 }
 
+/**
+ * Get scheduled jobs for a company (replaces legacy calendar_assignments query)
+ * MODEL A: Scheduling is on jobs table, not separate assignment table
+ */
 export async function getCalendarAssignments(companyId: string) {
   if (!companyId) return [];
+  // Return scheduled jobs (scheduledStart IS NOT NULL)
   const rows = await db
     .select()
-    .from(calendarAssignments)
-    .where(eq(calendarAssignments.companyId, companyId));
+    .from(jobs)
+    .where(
+      and(
+        eq(jobs.companyId, companyId),
+        isNull(jobs.deletedAt)
+        // Note: Not filtering by scheduledStart here to return ALL jobs
+        // Callers can filter as needed
+      )
+    );
   return rows;
 }
 

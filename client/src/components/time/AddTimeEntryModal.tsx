@@ -75,7 +75,7 @@ export function AddTimeEntryModal({
 
   // Fetch all technicians for the dropdown
   const { data: technicians = [] } = useQuery<UserType[]>({
-    queryKey: ["/api/technicians"],
+    queryKey: ["/api/team/technicians"],
     enabled: open,
   });
 

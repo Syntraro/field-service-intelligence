@@ -4,21 +4,58 @@ import bcrypt from "bcryptjs";
 import { storage } from "./storage/index";
 import type { User, AuthenticatedUser } from "@shared/schema";
 
+/**
+ * Passport Local Strategy using user_identities table for auth.
+ *
+ * Auth flow (simplified with global email uniqueness):
+ * 1. Normalize email input
+ * 2. Look up identity by email (global - one email = one company)
+ * 3. Verify password against identity.passwordHash
+ * 4. Load user using identity.userId + identity.companyId
+ * 5. Return user for session serialization (user's companyId is the tenant)
+ *
+ * This approach:
+ * - Each email can only exist in one company (global uniqueness)
+ * - No tenant selection needed at login - email determines company
+ * - Separates login credentials from user identity
+ * - Supports future SSO providers
+ */
 passport.use(
   new LocalStrategy({ usernameField: 'email' }, async (email, password, done) => {
     try {
-      const user = await storage.getUserByEmail(email);
-      
-      if (!user) {
+      // Normalize email for lookup
+      const normalizedEmail = (email || "").trim().toLowerCase();
+
+      // Look up email identity (global - since emails are unique across all companies)
+      const result = await storage.findUserByEmailGlobal(normalizedEmail);
+
+      if (!result) {
         return done(null, false, { message: "Invalid email or password" });
       }
 
-      const isValidPassword = await bcrypt.compare(password, user.password);
-      
+      const { user, identity } = result;
+
+      // Check if identity has a password set
+      // This catches invited-but-not-activated users who haven't set a password yet
+      if (!identity.passwordHash) {
+        return done(null, false, {
+          message: "Account not activated yet. Please accept your invitation or reset your password."
+        });
+      }
+
+      // Check if user is disabled
+      if (user.disabled || user.status === "deactivated") {
+        return done(null, false, { message: "Account is disabled" });
+      }
+
+      // Verify password against identity's passwordHash
+      const isValidPassword = await bcrypt.compare(password, identity.passwordHash);
+
       if (!isValidPassword) {
         return done(null, false, { message: "Invalid email or password" });
       }
 
+      // Success - user's companyId from user table is the tenant context
       return done(null, user as any);
     } catch (error) {
       return done(error);
@@ -26,23 +63,51 @@ passport.use(
   })
 );
 
+/**
+ * Session payload includes userId and tokenVersion for session invalidation.
+ * When user changes password or email, tokenVersion is incremented,
+ * invalidating all existing sessions.
+ */
+interface SessionPayload {
+  userId: string;
+  tokenVersion: number;
+}
+
 passport.serializeUser((user: any, done) => {
-  done(null, user.id);
+  // Store both userId and tokenVersion in session
+  const payload: SessionPayload = {
+    userId: user.id,
+    tokenVersion: user.tokenVersion ?? 0,
+  };
+  done(null, payload);
 });
 
-passport.deserializeUser(async (id: string, done) => {
+passport.deserializeUser(async (payload: SessionPayload | string, done) => {
   try {
-    const user = await storage.getUser(id);
+    // Handle legacy sessions that only stored userId as string
+    const sessionData: SessionPayload = typeof payload === "string"
+      ? { userId: payload, tokenVersion: 0 }
+      : payload;
+
+    const user = await storage.getUser(sessionData.userId);
     if (!user) {
       return done(null, false);
     }
-    
+
+    // Check tokenVersion - if it doesn't match, session is invalid
+    // This happens when user changes password or email
+    const currentTokenVersion = user.tokenVersion ?? 0;
+    if (currentTokenVersion !== sessionData.tokenVersion) {
+      // Session was invalidated by password/email change
+      return done(null, false);
+    }
+
     // Fetch company data to merge subscription fields
     const company = await storage.getCompanyById(user.companyId);
     if (!company) {
       return done(null, false);
     }
-    
+
     // Merge user + company subscription data
     const authenticatedUser: AuthenticatedUser = {
       ...user,
@@ -55,7 +120,7 @@ passport.deserializeUser(async (id: string, done) => {
       currentPeriodEnd: company.currentPeriodEnd,
       cancelAtPeriodEnd: company.cancelAtPeriodEnd
     };
-    
+
     done(null, authenticatedUser as any);
   } catch (error: any) {
     console.error("Deserialize user error:", error);

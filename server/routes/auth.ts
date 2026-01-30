@@ -155,6 +155,8 @@ router.get("/me", (req: Request, res: Response) => {
 /**
  * POST /api/auth/signup
  * Create new user account
+ *
+ * POLICY: Each email can only belong to one company globally.
  */
 router.post("/signup", asyncHandler(async (req: Request, res: Response) => {
   const { email, password, firstName, lastName, invitationToken } = req.body;
@@ -163,9 +165,14 @@ router.post("/signup", asyncHandler(async (req: Request, res: Response) => {
     throw createError(400, "Email and password are required");
   }
 
-  const existingUser = await storage.getUserByEmail(email);
-  if (existingUser) {
-    throw createError(400, "User already exists");
+  const normalizedEmail = email.trim().toLowerCase();
+
+  // Check global email uniqueness via identity table
+  const globalCheck = await storage.isEmailGloballyAvailable(normalizedEmail);
+  if (!globalCheck.available) {
+    throw createError(400,
+      "This email is already in use. Each email can only belong to one company."
+    );
   }
 
   // ✅ Production safety: require invitation for signup
@@ -183,14 +190,24 @@ router.post("/signup", asyncHandler(async (req: Request, res: Response) => {
   await storage.updateInvitation(invitation.id, { status: "accepted" });
 
   const hashedPassword = await bcrypt.hash(password, 10);
+
   const user = await storage.createUser({
-    email,
+    email: normalizedEmail,
     password: hashedPassword,
     companyId,
     role,
     firstName,
     lastName,
   });
+
+  // Create email identity for the new user
+  await storage.createEmailIdentity(
+    companyId,
+    user.id,
+    normalizedEmail,
+    hashedPassword,
+    true // verified
+  );
 
   req.logIn(user, (err) => {
     if (err) {

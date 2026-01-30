@@ -447,13 +447,11 @@ export class CustomerCompanyRepository extends BaseRepository {
     ]);
 
     // Calculate stats
-    // Closed job statuses that should NOT count as "open"
-    const closedJobStatuses = ["completed", "requires_invoicing", "invoiced", "closed", "archived", "cancelled"];
+    // Using normalized 4-status model: open, completed, invoiced, archived
+    // Only "open" status jobs count as active
     const stats = {
       totalLocations: locations.length,
-      openJobs: jobsList.filter(
-        (j: any) => !closedJobStatuses.includes(j.status)
-      ).length,
+      openJobs: jobsList.filter((j: any) => j.status === "open").length,
       openInvoices: invoicesList.filter(
         (i: any) => i.status !== "paid" && i.status !== "void"
       ).length,
