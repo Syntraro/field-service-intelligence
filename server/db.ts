@@ -17,13 +17,56 @@ if (!process.env.DATABASE_URL) {
 }
 
 // ========================================
+// NEON CONNECTION POOLER OPTIMIZATION
+// ========================================
+// Convert direct Neon URL to pooler URL for better performance
+// The pooler maintains warm connections, eliminating ~200-300ms cold start latency
+// Example: ep-xxx.us-east-2.aws.neon.tech -> ep-xxx-pooler.us-east-2.aws.neon.tech
+
+function getPoolerUrl(databaseUrl: string): string {
+  // Match Neon URL pattern and insert -pooler before the region
+  // Pattern: ep-something.region.aws.neon.tech
+  const poolerUrl = databaseUrl.replace(
+    /(@ep-[^.]+)(\.)/,  // Match @ep-xxx followed by first dot
+    '$1-pooler$2'       // Insert -pooler before the dot
+  );
+  
+  // Debug: show URL structure without exposing credentials
+  const urlPattern = databaseUrl.replace(/\/\/[^@]+@/, '//***:***@');
+  const isNeonUrl = urlPattern.includes('neon.tech');
+  const wasTransformed = poolerUrl !== databaseUrl;
+  
+  console.log(`[Neon] Database URL pattern: ${urlPattern.substring(0, 60)}...`);
+  console.log(`[Neon] Is Neon URL: ${isNeonUrl}, Pooler applied: ${wasTransformed}`);
+  
+  if (wasTransformed) {
+    // Show transformed URL pattern for verification
+    const transformedPattern = poolerUrl.replace(/\/\/[^@]+@/, '//***:***@');
+    console.log('[Neon] Using connection pooler for improved performance');
+    console.log(`[Neon] Transformed URL: ${transformedPattern.substring(0, 70)}...`);
+  } else if (isNeonUrl) {
+    console.log('[Neon] Warning: Neon URL detected but pooler transformation did not match');
+  } else {
+    console.log('[Neon] Non-Neon database detected, pooler not applicable');
+  }
+  
+  return poolerUrl;
+}
+
+// Use pooler URL unless explicitly disabled
+const USE_POOLER = process.env.NEON_DISABLE_POOLER !== 'true';
+const connectionString = USE_POOLER 
+  ? getPoolerUrl(process.env.DATABASE_URL)
+  : process.env.DATABASE_URL;
+
+// ========================================
 // CONNECTION POOL SETTINGS FOR NEON
 // ========================================
 // Neon uses connection pooling differently than standard PostgreSQL
-// Neon automatically pools at the proxy level, so we use smaller pool sizes
+// With pooler enabled, Neon handles pooling at the proxy level
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString,
 
   // For Neon Serverless, keep pool size smaller (5-10)
   // Neon handles pooling at the proxy level
