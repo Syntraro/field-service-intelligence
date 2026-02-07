@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import {
   Dialog,
@@ -22,26 +22,42 @@ import {
 } from "@/components/ui/select";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { apiRequest } from "@/lib/queryClient";
+import {
+  invalidateCalendarAndUnscheduledQueries,
+  invalidateJobQueries,
+  invalidateVisitQueries,
+} from "@/hooks/useCalendarApi";
 
 interface AddVisitDialogProps {
   jobId: string;
+  jobVersion: number;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   technicians: any[];
+  /** Optional default technician ID (e.g., from current visit for follow-up) */
+  defaultTechnicianId?: string | null;
+  /** Callback when visit is successfully created - receives new visit ID for highlighting */
+  onVisitCreated?: (visitId: string) => void;
 }
 
 export function AddVisitDialog({
   jobId,
+  jobVersion,
   open,
   onOpenChange,
   technicians,
+  defaultTechnicianId,
+  onVisitCreated,
 }: AddVisitDialogProps) {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [scheduledDate, setScheduledDate] = useState("");
   const [scheduledTime, setScheduledTime] = useState("09:00");
   const [estimatedDuration, setEstimatedDuration] = useState("60");
-  const [assignedTechnicianId, setAssignedTechnicianId] = useState<string>("");
+  // Sentinel value for "no technician" — Radix Select rejects value=""
+  const UNASSIGNED = "__unassigned__";
+  const [assignedTechnicianId, setAssignedTechnicianId] = useState<string>(UNASSIGNED);
   const [visitNotes, setVisitNotes] = useState("");
 
   useEffect(() => {
@@ -52,30 +68,71 @@ export function AddVisitDialog({
       setScheduledDate(format(tomorrow, "yyyy-MM-dd"));
       setScheduledTime("09:00");
       setEstimatedDuration("60");
-      setAssignedTechnicianId("");
+      // Default technician from prop (e.g., follow-up inherits from current visit)
+      setAssignedTechnicianId(defaultTechnicianId || UNASSIGNED);
       setVisitNotes("");
     }
-  }, [open]);
+  }, [open, defaultTechnicianId]);
+
+  // Phase 4: Use canonical calendar schedule endpoint
+  // POST /api/calendar/schedule creates a job_visit and syncs to jobs table
+  // IMPORTANT: This MUST be POST (create new visit), never PATCH (reschedule existing)
+  const SCHEDULE_ENDPOINT = "/api/calendar/schedule";
+  const SCHEDULE_METHOD = "POST";
 
   const createMutation = useMutation({
     mutationFn: async (data: any) => {
-      return await apiRequest(`/api/jobs/${jobId}/visits`, {
-        method: "POST",
+      // DEV-only assertion: Guarantee we always create NEW visits, never reschedule
+      // This prevents accidental reuse of PATCH /api/calendar/schedule/:jobId
+      if (process.env.NODE_ENV === "development") {
+        console.log(
+          "[AddVisitDialog] Creating new visit via %s %s (jobId=%s)",
+          SCHEDULE_METHOD,
+          SCHEDULE_ENDPOINT,
+          data.jobId
+        );
+        // Assert: endpoint must NOT contain jobId path param (that would be reschedule)
+        if (SCHEDULE_ENDPOINT.includes("/:") || SCHEDULE_ENDPOINT.match(/\/[a-f0-9-]{36}/i)) {
+          console.error(
+            "[AddVisitDialog] ASSERTION FAILED: Endpoint appears to be a reschedule path!",
+            SCHEDULE_ENDPOINT
+          );
+        }
+        // Assert: method must be POST, not PATCH
+        if (SCHEDULE_METHOD !== "POST") {
+          console.error(
+            "[AddVisitDialog] ASSERTION FAILED: Method must be POST, got:",
+            SCHEDULE_METHOD
+          );
+        }
+      }
+
+      return await apiRequest(SCHEDULE_ENDPOINT, {
+        method: SCHEDULE_METHOD,
         body: JSON.stringify(data),
       });
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "visits"] });
+    onSuccess: (data: any) => {
+      // Use centralized invalidation helpers for consistency and DEV logging
+      // Schedule creates visit: calendar + unscheduled (job may move from backlog)
+      invalidateCalendarAndUnscheduledQueries(queryClient, "schedule-visit", jobId);
+      invalidateJobQueries(queryClient, "schedule-visit", jobId);
+      invalidateVisitQueries(queryClient, "schedule-visit", jobId);
+
       toast({
         title: "Visit Scheduled",
         description: "The visit has been added to the job.",
       });
+      // Notify parent of new visit ID for highlighting/scrolling
+      if (onVisitCreated && data?.visit?.id) {
+        onVisitCreated(data.visit.id);
+      }
       onOpenChange(false);
     },
     onError: (error: Error) => {
       toast({
         title: "Error",
-        description: error.message || "Failed to create visit.",
+        description: error.message || "Failed to schedule visit.",
         variant: "destructive",
       });
     },
@@ -84,14 +141,17 @@ export function AddVisitDialog({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    // Combine date and time into ISO string
-    const dateTimeStr = `${scheduledDate}T${scheduledTime}:00.000Z`;
+    // Build payload matching scheduleJobSchema field names exactly
+    // Combine date and time into ISO datetime string
+    const startAt = `${scheduledDate}T${scheduledTime}:00.000Z`;
 
     createMutation.mutate({
-      scheduledDate: dateTimeStr,
-      estimatedDurationMinutes: parseInt(estimatedDuration, 10),
-      assignedTechnicianId: assignedTechnicianId || undefined,
-      visitNotes: visitNotes.trim() || undefined,
+      jobId,
+      startAt,
+      durationMinutes: parseInt(estimatedDuration, 10),
+      technicianUserId: assignedTechnicianId === UNASSIGNED ? null : assignedTechnicianId || null,
+      notes: visitNotes.trim() || undefined,
+      version: jobVersion,
     });
   };
 
@@ -153,9 +213,9 @@ export function AddVisitDialog({
                   <SelectValue placeholder="Select technician..." />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">Unassigned</SelectItem>
+                  <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
                   {technicians.map((tech: any) => (
-                    <SelectItem key={tech.id} value={tech.id}>
+                    <SelectItem key={String(tech.id)} value={String(tech.id)}>
                       {tech.firstName && tech.lastName
                         ? `${tech.firstName} ${tech.lastName}`
                         : tech.email}

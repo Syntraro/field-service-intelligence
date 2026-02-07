@@ -9,7 +9,8 @@
  */
 
 import { useState, useEffect } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
+import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { format } from "date-fns";
 import { Clock, Loader2, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -74,10 +75,7 @@ export function AddTimeEntryModal({
   const [billable, setBillable] = useState<boolean>(true);
 
   // Fetch all technicians for the dropdown
-  const { data: technicians = [] } = useQuery<UserType[]>({
-    queryKey: ["/api/team/technicians"],
-    enabled: open,
-  });
+  const { teamMembers: technicians } = useTechniciansDirectory();
 
   // Reset form when modal opens
   useEffect(() => {

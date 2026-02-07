@@ -9,6 +9,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ChevronUp, ChevronDown, MoreHorizontal, Pencil, Archive, Trash2, Loader2 } from "lucide-react";
+import { ListSurface } from "@/components/ui/list-surface";
 import { Part, SortField, SortDirection, formatCurrency } from "./types";
 
 interface ProductsServicesTableProps {
@@ -70,11 +71,11 @@ export function ProductsServicesTable({
   );
 
   return (
-    <div className="border rounded-md overflow-hidden">
+    <ListSurface>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="bg-muted/50 sticky top-0">
-            <tr className="border-b">
+          <thead className="border-b border-gray-200 dark:border-gray-800 sticky top-0 bg-white dark:bg-gray-900">
+            <tr>
               <th className="px-3 py-2 w-10">
                 <Checkbox
                   checked={selectedIds.size === parts.length && parts.length > 0}
@@ -108,7 +109,7 @@ export function ProductsServicesTable({
               parts.map((part) => (
                 <tr
                   key={part.id}
-                  className={`border-b hover:bg-muted/30 ${part.isActive === false ? "opacity-50" : ""}`}
+                  className={`border-b border-gray-200 dark:border-gray-800 hover:bg-gray-100/60 dark:hover:bg-gray-800/60 transition-colors ${part.isActive === false ? "opacity-50" : ""}`}
                   data-testid={`row-${part.id}`}
                 >
                   <td className="px-3 py-2">
@@ -249,6 +250,6 @@ export function ProductsServicesTable({
           </tbody>
         </table>
       </div>
-    </div>
+    </ListSurface>
   );
 }

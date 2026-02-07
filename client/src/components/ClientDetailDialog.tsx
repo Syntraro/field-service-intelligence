@@ -6,7 +6,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Calendar } from "@/components/ui/calendar";
 import { Badge } from "@/components/ui/badge";
 import { useState, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { Plus, X, Calendar as CalendarIcon, AlertCircle } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
 import { useMutationWithToast } from "@/hooks/useMutationWithToast";
@@ -49,10 +49,7 @@ export function ClientDetailDialog({
     }
   }, [assignment?.id]);
 
-  const { data: technicians = [] } = useQuery<any[]>({
-    queryKey: ['/api/team/technicians'],
-    enabled: open,
-  });
+  const { teamMembers: technicians } = useTechniciansDirectory();
 
   const clientParts = bulkParts[client?.id] || [];
 

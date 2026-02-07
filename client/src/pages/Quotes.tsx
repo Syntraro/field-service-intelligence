@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
+import { TablePageShell } from "@/components/ui/table-page-shell";
 import {
   Table,
   TableBody,
@@ -132,15 +134,15 @@ export default function Quotes() {
   }, [quotes]);
 
   return (
-    <div className="p-6 space-y-6 max-w-[1400px] mx-auto">
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <h1 className="text-2xl font-semibold">Quotes</h1>
+    <TablePageShell
+      title="Quotes"
+      actions={
         <Button onClick={() => setNewQuoteModalOpen(true)} data-testid="button-new-quote">
           <Plus className="h-4 w-4 mr-2" />
           New Quote
         </Button>
-      </div>
-
+      }
+    >
       <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
         <div className="flex items-center gap-2 flex-wrap">
           {(["all", "draft", "sent", "approved", "declined", "converted"] as QuoteStatusFilter[]).map((filter) => (
@@ -169,8 +171,7 @@ export default function Quotes() {
         </div>
       </div>
 
-      <Card>
-        <CardContent className="p-0">
+      <ListSurface>
           {isLoading ? (
             <div className="text-center py-12">Loading quotes...</div>
           ) : filteredQuotes.length === 0 ? (
@@ -196,7 +197,7 @@ export default function Quotes() {
                 {filteredQuotes.map((quote) => (
                   <TableRow
                     key={quote.id}
-                    className="cursor-pointer hover-elevate"
+                    className={tableRowClass}
                     onClick={() => setLocation(`/quotes/${quote.id}`)}
                     data-testid={`row-quote-${quote.id}`}
                   >
@@ -274,13 +275,12 @@ export default function Quotes() {
               </TableBody>
             </Table>
           )}
-        </CardContent>
-      </Card>
+      </ListSurface>
 
       <NewQuoteModal
         open={newQuoteModalOpen}
         onOpenChange={setNewQuoteModalOpen}
       />
-    </div>
+    </TablePageShell>
   );
 }

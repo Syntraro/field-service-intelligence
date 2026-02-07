@@ -4,6 +4,34 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-02-02: Step 2.4 - Job Visits → Jobs Schedule Mirroring
+
+### Summary
+Implemented `syncJobScheduleFromVisits()` in `server/storage/jobVisits.ts` to maintain backwards compatibility while transitioning from job-based to visit-based scheduling.
+
+### Invariants (Model A Compatibility Bridge)
+
+- **Eligible visits**: `is_active = true` AND `scheduled_start IS NOT NULL` AND `status NOT IN ('cancelled', 'completed')`
+- **Visit selection priority**:
+  1. Earliest future visit (scheduled_start >= now)
+  2. Most recent past visit (latest scheduled_start)
+  3. Fallback to first in list (should not occur)
+- **Mirrored fields** (job ← visit):
+  - `jobs.scheduled_start` ← `visit.scheduled_start`
+  - `jobs.scheduled_end` ← `visit.scheduled_end`
+  - `jobs.is_all_day` ← `visit.is_all_day`
+  - `jobs.duration_minutes` ← computed from start/end (NULL for all-day)
+  - `jobs.primary_technician_id` ← `visit.assigned_technician_id`
+  - `jobs.assigned_technician_ids` ← `visit.assigned_technician_ids` (or array of single tech)
+- **Unschedule behavior**: When NO eligible visits exist, ALL mirrored fields are cleared (including technicians) because the job's schedule fields are a mirror, not independent data
+- **Version bump**: `jobs.version` incremented on every sync to support optimistic locking
+- **Call sites**: createJobVisit, updateJobVisit, deleteJobVisit, updateJobVisitStatus, checkInJobVisit, checkOutJobVisit
+
+### Transitional Note
+This mirroring is temporary until the calendar UI reads directly from `job_visits` (Model B migration). At that point, `syncJobScheduleFromVisits()` can be removed.
+
+---
+
 ## 2026-01-26: MODEL A - Canonical Scheduling (Phase 1 Steps 2 & 2.5)
 
 ### Summary

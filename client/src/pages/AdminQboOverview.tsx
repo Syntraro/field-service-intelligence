@@ -387,7 +387,7 @@ export default function AdminQboOverview() {
                 overview.companies.map((company) => (
                   <TableRow
                     key={company.companyId}
-                    className="cursor-pointer hover:bg-muted/50"
+                    className="cursor-pointer"
                     onClick={() => setLocation(`/admin/tenants/${company.companyId}`)}
                   >
                     <TableCell>

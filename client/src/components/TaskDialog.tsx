@@ -1,5 +1,6 @@
 import { useMemo, useState, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -9,9 +10,37 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Trash2 } from "lucide-react";
 import { QuickAddSupplierDialog } from "@/components/suppliers/QuickAddSupplierDialog";
 import type { Supplier, SupplierLocation } from "@shared/schema";
+
+/**
+ * Safely convert a Date, string, or nullish value to an ISO string.
+ * Returns null if the value cannot be converted.
+ */
+function safeToISOString(value: Date | string | null | undefined): string | null {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    const parsed = new Date(value);
+    if (!isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+    return null;
+  }
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    return value.toISOString();
+  }
+  return null;
+}
+
+/**
+ * Extract YYYY-MM-DD date string from a Date or ISO string.
+ * Returns empty string if invalid.
+ */
+function extractDateString(value: Date | string | null | undefined): string {
+  const iso = safeToISOString(value);
+  if (!iso) return "";
+  return iso.split("T")[0];
+}
 
 type TaskType = "GENERAL" | "SUPPLIER_VISIT";
 
@@ -71,8 +100,10 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
   const [quickAddOpen, setQuickAddOpen] = useState(false);
 
   // Fetch task details if editing
+  // Note: queryKey[0] is used as the URL by the default query function,
+  // so we must include the full URL with taskId as the first element
   const { data: taskData, isLoading: isLoadingTask } = useQuery({
-    queryKey: taskId ? ["/api/tasks", taskId] : ["task-empty"],
+    queryKey: taskId ? [`/api/tasks/${taskId}`] : ["task-empty"],
     enabled: isEditMode && open,
     staleTime: 0,
   });
@@ -80,8 +111,9 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
   const task = taskData as any;
 
   // Fetch supplier visit details if editing a supplier visit
+  // Note: queryKey[0] is used as the URL by the default query function
   const { data: supplierVisitData } = useQuery({
-    queryKey: taskId ? ["/api/tasks", taskId, "supplier-visit"] : ["supplier-visit-empty"],
+    queryKey: taskId ? [`/api/tasks/${taskId}/supplier-visit`] : ["supplier-visit-empty"],
     enabled: isEditMode && open && type === "SUPPLIER_VISIT",
     staleTime: 0,
   });
@@ -99,10 +131,15 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
 
       // Parse scheduled times
       if (task.scheduledStartAt) {
-        const date = new Date(task.scheduledStartAt);
-        setStartDate(date.toISOString().split("T")[0]);
-        if (!task.allDay) {
-          setStartTime(date.toTimeString().slice(0, 5));
+        const dateStr = extractDateString(task.scheduledStartAt);
+        if (dateStr) {
+          setStartDate(dateStr);
+          if (!task.allDay) {
+            const date = new Date(task.scheduledStartAt);
+            if (!isNaN(date.getTime())) {
+              setStartTime(date.toTimeString().slice(0, 5));
+            }
+          }
         }
       }
     } else if (!isEditMode) {
@@ -139,11 +176,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
   const canSubmit = useMemo(() => title.trim().length > 0, [title]);
 
   // Fetch team members
-  const { data: teamData, isLoading: isLoadingTeam } = useQuery<TeamMember[]>({
-    queryKey: ["/api/team/technicians"],
-    staleTime: 5 * 60 * 1000,
-  });
-  const teamMembers = teamData || [];
+  const { teamMembers, isLoading: isLoadingTeam } = useTechniciansDirectory();
 
   // Fetch jobs
   const { data: jobsData } = useQuery<{ items: Job[] }>({
@@ -186,28 +219,24 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
         try {
           if (allDay) {
             // For all-day tasks
-            const startDateTime = new Date(startDate + "T00:00:00");
-            const endDateTime = new Date(startDate + "T23:59:59");
+            const startIso = safeToISOString(startDate + "T00:00:00");
+            const endIso = safeToISOString(startDate + "T23:59:59");
 
-            // Validate that dates are valid
-            if (startDateTime instanceof Date && !isNaN(startDateTime.getTime()) &&
-                endDateTime instanceof Date && !isNaN(endDateTime.getTime())) {
-              scheduledStartAt = startDateTime.toISOString();
-              scheduledEndAt = endDateTime.toISOString();
+            if (startIso && endIso) {
+              scheduledStartAt = startIso;
+              scheduledEndAt = endIso;
             }
           } else if (startTime && typeof startTime === 'string' && startTime.trim() !== "") {
             // Combine date and time
-            const dateTime = new Date(startDate + "T" + startTime);
-
-            if (dateTime instanceof Date && !isNaN(dateTime.getTime())) {
-              scheduledStartAt = dateTime.toISOString();
+            const iso = safeToISOString(startDate + "T" + startTime);
+            if (iso) {
+              scheduledStartAt = iso;
             }
           } else {
-            // Date only, no specific time
-            const dateTime = new Date(startDate + "T00:00:00");
-
-            if (dateTime instanceof Date && !isNaN(dateTime.getTime())) {
-              scheduledStartAt = dateTime.toISOString();
+            // Date only, no specific time - treat as all-day
+            const iso = safeToISOString(startDate + "T00:00:00");
+            if (iso) {
+              scheduledStartAt = iso;
             }
           }
         } catch (error) {
@@ -322,19 +351,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto p-3">
           <DialogHeader className="pb-1">
-            <div className="flex items-center justify-between">
-              <DialogTitle>{isEditMode ? "Edit Task" : "New Task"}</DialogTitle>
-              {isEditMode && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleDelete}
-                  className="text-destructive hover:text-destructive"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              )}
-            </div>
+            <DialogTitle>{isEditMode ? "Edit Task" : "New Task"}</DialogTitle>
           </DialogHeader>
 
           {isLoadingTask && isEditMode ? (
@@ -610,17 +627,35 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
             </div>
           )}
 
-          <DialogFooter className="pt-2 gap-2">
-            <Button variant="outline" onClick={() => onOpenChange(false)} size="sm">
-              Cancel
-            </Button>
-            <Button
-              onClick={() => saveMutation.mutate()}
-              disabled={!canSubmit || saveMutation.isPending}
-              size="sm"
-            >
-              {isEditMode ? "Update" : "Create"}
-            </Button>
+          <DialogFooter className="pt-2 flex justify-between items-center">
+            {/* Left side - Delete button (only for existing tasks) */}
+            {isEditMode ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={handleDelete}
+                className="text-red-600 hover:text-red-700 hover:bg-red-50"
+              >
+                Delete
+              </Button>
+            ) : (
+              <div /> // Spacer for create mode
+            )}
+
+            {/* Right side - Cancel and Submit */}
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => onOpenChange(false)} size="sm">
+                Cancel
+              </Button>
+              <Button
+                onClick={() => saveMutation.mutate()}
+                disabled={!canSubmit || saveMutation.isPending}
+                size="sm"
+              >
+                {isEditMode ? "Update" : "Create"}
+              </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>

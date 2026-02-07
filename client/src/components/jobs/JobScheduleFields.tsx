@@ -14,8 +14,7 @@
  * - Technician assignment
  */
 
-import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { format, parseISO, setHours, setMinutes } from "date-fns";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -194,9 +193,7 @@ export function JobScheduleFields({
   disabled = false,
 }: JobScheduleFieldsProps) {
   // Fetch technicians
-  const { data: technicians = [] } = useQuery<any[]>({
-    queryKey: ["/api/team/technicians"],
-  });
+  const { teamMembers: technicians } = useTechniciansDirectory();
 
   // Normalize technicians with display names
   const technicianOptions = technicians.map((tech) => ({

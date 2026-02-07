@@ -3,6 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -34,6 +35,7 @@ export function AddLocationDialog({ open, onOpenChange, supplierId }: AddLocatio
     contactName: "",
     email: "",
     phone: "",
+    notes: "",
     isPrimary: false,
   });
 
@@ -59,6 +61,7 @@ export function AddLocationDialog({ open, onOpenChange, supplierId }: AddLocatio
         contactName: "",
         email: "",
         phone: "",
+        notes: "",
         isPrimary: false,
       });
     },
@@ -188,6 +191,17 @@ export function AddLocationDialog({ open, onOpenChange, supplierId }: AddLocatio
                 value={formData.email}
                 onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                 placeholder="email@example.com"
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="notes">Notes</Label>
+              <Textarea
+                id="notes"
+                value={formData.notes}
+                onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+                placeholder="Account number, branch-specific info, etc."
+                rows={3}
               />
             </div>
 

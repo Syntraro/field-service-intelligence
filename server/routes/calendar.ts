@@ -1,7 +1,7 @@
 import express, { Response } from "express";
 import { z } from "zod";
-import { resizeJobTime } from "../services/calendarService";
 import { requireRole } from "../auth/requireRole";
+import { jobVisitsRepository } from "../storage/jobVisits";
 import { requireFeature } from "../auth/requireFeature";
 import { MANAGER_ROLES } from "../auth/roles";
 import { notificationService } from "../services/notificationService";
@@ -119,6 +119,9 @@ function transformToDto(job: CalendarJobWithDetails): CalendarEventDto {
     assignedTechnicianIds: job.assignedTechnicianIds,
     primaryTechnicianId: job.primaryTechnicianId,
     technicians: job.technicians,
+    // ADDITIVE: Visit info for calendar cards (deep-link to job visits section)
+    visitId: job.visitId,
+    visitNumber: job.visitNumber,
   };
 }
 
@@ -446,6 +449,14 @@ router.post(
       version: result.version,
       status: result.status,
       primaryTechnicianId: result.primaryTechnicianId,
+      // Include visit info for client-side highlighting after follow-up creation
+      visit: result.visit ? {
+        id: result.visit.id,
+        scheduledStart: result.visit.scheduledStart?.toISOString?.() || result.visit.scheduledStart,
+        scheduledEnd: result.visit.scheduledEnd?.toISOString?.() || result.visit.scheduledEnd,
+        isAllDay: result.visit.isAllDay,
+        status: result.visit.status,
+      } : undefined,
     });
   })
 );
@@ -663,19 +674,74 @@ router.get(
 // ============================================================================
 // POST /api/calendar/resize - Resize Job on Calendar
 // ============================================================================
+// PHASE 4: Now writes to job_visits instead of jobs directly.
+// Updates the current eligible visit's scheduled_end.
+// ============================================================================
 
 router.post(
   "/resize",
   requireRole(MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    assertCanEditSchedule(req.user);
+
     const validation = resizeJobSchema.safeParse(req.body);
     if (!validation.success) {
       throw createError(400, "Validation failed");
     }
 
     const { job, newEndTime } = validation.data;
-    const updated = await resizeJobTime(job, newEndTime);
-    res.json(updated);
+    const newEnd = new Date(newEndTime);
+
+    if (IS_DEV) {
+      console.log('[RESIZE-DEBUG] resize (PHASE 4 - job_visits) called:', {
+        jobId: job.id,
+        currentEnd: job.scheduledEnd,
+        newEnd: newEndTime,
+      });
+    }
+
+    // Find current eligible visit for this job
+    const currentVisit = await jobVisitsRepository.getCurrentEligibleVisit(companyId, job.id);
+    if (!currentVisit) {
+      throw createError(404, "No eligible visit found for this job");
+    }
+
+    // For all-day events, preserve the end-of-day time
+    let finalEnd = newEnd;
+    if (currentVisit.isAllDay) {
+      // Keep all-day events at 23:59:59
+      finalEnd = new Date(newEnd);
+      finalEnd.setHours(23, 59, 59, 0);
+    }
+
+    // Update only scheduled_end on the visit
+    await jobVisitsRepository.updateJobVisit(
+      companyId,
+      currentVisit.id,
+      currentVisit.version,
+      { scheduledEnd: finalEnd }
+    );
+
+    // Re-fetch job to return updated data
+    const updatedJob = await calendarRepository.getJobById(companyId, job.id);
+
+    if (IS_DEV) {
+      console.log(
+        `[Calendar] resize (PHASE 4): job=${job.id} visitId=${currentVisit.id} newEnd=${finalEnd.toISOString()}`
+      );
+    }
+
+    // Return response matching existing API contract
+    res.json({
+      id: updatedJob?.id,
+      jobId: updatedJob?.id,
+      scheduledStart: updatedJob?.scheduledStart?.toISOString() || null,
+      scheduledEnd: updatedJob?.scheduledEnd?.toISOString() || null,
+      isAllDay: updatedJob?.isAllDay ?? false,
+      version: updatedJob?.version,
+      status: updatedJob?.status,
+    });
   })
 );
 

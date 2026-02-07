@@ -39,10 +39,19 @@ const updateStatusSchema = z.object({
 // ========================================
 
 /* GET /api/jobs/:jobId/visits - List visits for a job */
+/* Supports ?all=true to include inactive visits for history display */
 router.get(
   "/:jobId/visits",
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
+
+    // PHASE 4: If ?all=true, return all visits including inactive for Job Detail panel
+    if (req.query.all === "true") {
+      const visits = await service.listAllJobVisitsForJob(companyId, req.params.jobId);
+      return res.json(visits);
+    }
+
+    // Default behavior: paginated active visits only
     const { params, explicit } = parsePaginationLenient(req.query);
 
     const offset = params.offset ?? 0;

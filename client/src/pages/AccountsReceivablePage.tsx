@@ -214,7 +214,7 @@ export default function AccountsReceivablePage() {
                   {invoices.map((invoice) => (
                     <TableRow
                       key={invoice.id}
-                      className="cursor-pointer hover:bg-muted/50"
+                      className="cursor-pointer"
                       onClick={() => handleInvoiceClick(invoice.id)}
                       data-testid={`ar-invoice-row-${invoice.id}`}
                     >

@@ -1,4 +1,7 @@
 import { useState, useRef, useMemo, useCallback } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { queryClient, apiRequest } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 import { useProductsServices } from "@/hooks/useProductsServices";
 import { ProductsServicesToolbar } from "@/components/products-services/ProductsServicesToolbar";
 import { ProductsServicesTable } from "@/components/products-services/ProductsServicesTable";
@@ -13,6 +16,29 @@ import {
 import { Part, ProductFormData, defaultFormData } from "@/components/products-services/types";
 
 export default function ProductsServicesManager() {
+  const { toast: seedToast } = useToast();
+
+  // Seed parts mutation - seeds 244 standard filters and belts
+  const seedPartsMutation = useMutation({
+    mutationFn: async () => {
+      return await apiRequest("/api/items/seed", { method: "POST" });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
+      seedToast({
+        title: "Success",
+        description: "Standard parts seeded successfully. Missing parts have been restored (244 filters and belts available).",
+      });
+    },
+    onError: () => {
+      seedToast({
+        title: "Error",
+        description: "Failed to seed standard parts.",
+        variant: "destructive",
+      });
+    },
+  });
+
   // Dialog state
   const [productDialogOpen, setProductDialogOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Part | null>(null);
@@ -203,6 +229,8 @@ export default function ProductsServicesManager() {
         onImportClick={() => fileInputRef.current?.click()}
         onExportClick={handleExport}
         onAddClick={handleOpenAddDialog}
+        onSeedClick={() => seedPartsMutation.mutate()}
+        seedPending={seedPartsMutation.isPending}
         selectedCount={selectedIds.size}
         onBulkCategoryClick={() => setBulkCategoryDialogOpen(true)}
         onBulkExportClick={handleExportSelected}

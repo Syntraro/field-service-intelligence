@@ -8,6 +8,9 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
+import { TablePageShell } from "@/components/ui/table-page-shell";
+import { cn } from "@/lib/utils";
 import {
   Table,
   TableBody,
@@ -205,17 +208,17 @@ export default function InvoicesListPage() {
   }, [invoices]);
 
   return (
-    <div className="p-6 space-y-6 max-w-[1400px] mx-auto">
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <h1 className="text-2xl font-semibold">Invoices</h1>
+    <TablePageShell
+      title="Invoices"
+      actions={
         <Link href="/invoices/new">
           <Button data-testid="button-new-invoice">
             <Plus className="h-4 w-4 mr-2" />
             New Invoice
           </Button>
         </Link>
-      </div>
-
+      }
+    >
       {isCompact ? (
         <div className="flex items-center gap-4 text-sm flex-wrap">
           <div className="flex items-center gap-1.5">
@@ -385,8 +388,7 @@ export default function InvoicesListPage() {
         </div>
       </div>
 
-      <Card>
-        <CardContent className="p-0">
+      <ListSurface>
           {isLoading ? (
             <div className="text-center py-12">Loading invoices...</div>
           ) : filteredInvoices.length === 0 ? (
@@ -411,9 +413,9 @@ export default function InvoicesListPage() {
               </TableHeader>
               <TableBody>
                 {filteredInvoices.map((invoice) => (
-                  <TableRow 
-                    key={invoice.id} 
-                    className={`cursor-pointer hover-elevate ${isCompact ? "h-10" : ""}`}
+                  <TableRow
+                    key={invoice.id}
+                    className={cn(tableRowClass, isCompact && "h-10")}
                     onClick={() => setLocation(`/invoices/${invoice.id}`)}
                     data-testid={`row-invoice-${invoice.id}`}
                   >
@@ -479,8 +481,7 @@ export default function InvoicesListPage() {
               </TableBody>
             </Table>
           )}
-        </CardContent>
-      </Card>
-    </div>
+      </ListSurface>
+    </TablePageShell>
   );
 }

@@ -87,3 +87,10 @@ export async function checkInJobVisit(companyId: string, visitId: string) {
 export async function checkOutJobVisit(companyId: string, visitId: string) {
   return jobVisitsRepository.checkOutJobVisit(companyId, visitId);
 }
+
+/**
+ * PHASE 4: List ALL visits for a job (including inactive) for Job Detail panel.
+ */
+export async function listAllJobVisitsForJob(companyId: string, jobId: string) {
+  return jobVisitsRepository.listAllJobVisitsForJob(companyId, jobId);
+}

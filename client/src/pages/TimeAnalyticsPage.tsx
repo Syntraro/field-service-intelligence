@@ -4,6 +4,7 @@
  */
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { format, addDays, subDays, startOfWeek, parseISO } from "date-fns";
 import { useAuth } from "@/lib/auth";
 import {
@@ -117,10 +118,7 @@ export default function TimeAnalyticsPage() {
   const isManager = !!(user && MANAGER_ROLES.includes(user.role));
 
   // Fetch technicians for dropdown
-  const { data: technicians = [] } = useQuery<Technician[]>({
-    queryKey: ["/api/team/technicians"],
-    enabled: isManager,
-  });
+  const { teamMembers: technicians } = useTechniciansDirectory();
 
   // Fetch weekly analytics
   const { data: weeklyData, isLoading: weeklyLoading, error: weeklyError } = useQuery<WeeklyAnalyticsResponse>({

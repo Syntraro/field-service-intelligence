@@ -4,6 +4,7 @@
  */
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { format } from "date-fns";
 import { useAuth } from "@/lib/auth";
 import { queryClient, apiRequest } from "@/lib/queryClient";
@@ -125,10 +126,7 @@ export default function UnassignedTimePage() {
   const isManager = !!(user && MANAGER_ROLES.includes(user.role));
 
   // Fetch technicians for dropdown
-  const { data: technicians = [] } = useQuery<Technician[]>({
-    queryKey: ["/api/team/technicians"],
-    enabled: isManager,
-  });
+  const { teamMembers: technicians } = useTechniciansDirectory();
 
   // Fetch unassigned time entries
   const { data: entries = [], isLoading, error } = useQuery<UnassignedTimeEntry[]>({

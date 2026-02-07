@@ -1,15 +1,28 @@
+/**
+ * Dashboard - Main admin dashboard
+ *
+ * Design features:
+ * 1. TailPanel-style frame contrast: sidebar/header unified, main content darker
+ * 2. Flat list items: border-b dividers, no card-in-card
+ * 3. Tasks panel with filters (Active/Completed, Technician, Type)
+ * 4. WorkflowStrip with half-height dividers
+ *
+ * Promoted from DashboardPreview2: 2026-02-06
+ */
+
 import { useState, useEffect, useMemo } from "react";
-import { useLocation, useSearch } from "wouter";
-import ClientListTable from "@/components/ClientListTable";
-import { Calendar, FileText, DollarSign, Briefcase, ChevronRight, ChevronDown, ChevronUp } from "lucide-react";
-import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { useLocation } from "wouter";
+import { Calendar, FileText, DollarSign, Briefcase, ChevronRight, ChevronDown, ChevronUp, PanelRightClose, PanelRightOpen, Plus, ClipboardList, CheckSquare, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useQuery } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
-import { Card } from "@/components/ui/card";
-import { TasksSidebar } from "@/components/TasksSidebar";
+import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { queryClient, apiRequest } from "@/lib/queryClient";
+import { useAuth } from "@/lib/auth";
+import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AsyncBlock } from "@/components/AsyncBlock";
+import { TaskDialog } from "@/components/TaskDialog";
 
 // ============================================================================
 // Types
@@ -43,8 +56,18 @@ interface Invoice {
   isPastDue?: boolean;
 }
 
+type Task = {
+  id: string;
+  title: string;
+  status: "pending" | "in_progress" | "completed" | "cancelled";
+  type?: "GENERAL" | "SUPPLIER_VISIT";
+  assignedToUserId?: string | null;
+  assignedUser?: { id: string; fullName: string; firstName?: string; lastName?: string } | null;
+  scheduledStartAt?: string | null;
+};
+
 // ============================================================================
-// Workflow Strip Component
+// Workflow Strip Component - half-height centered dividers
 // ============================================================================
 
 function WorkflowStrip({ data, isLoading, isError }: {
@@ -56,7 +79,7 @@ function WorkflowStrip({ data, isLoading, isError }: {
 
   if (isError) {
     return (
-      <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-4 text-center text-sm text-destructive">
+      <div className="bg-destructive/10 border border-destructive/20 rounded-xl p-4 text-center text-sm text-destructive">
         Failed to load workflow summary. Please refresh.
       </div>
     );
@@ -71,9 +94,6 @@ function WorkflowStrip({ data, isLoading, isError }: {
         { label: "Draft", count: data?.quotes.draftCount ?? 0, href: "/quotes?status=draft" },
       ],
       color: "text-blue-600 dark:text-blue-400",
-      bgColor: "bg-blue-50/80 dark:bg-blue-950/40",
-      borderColor: "border-blue-200 dark:border-blue-800",
-      hoverBg: "hover:bg-blue-100/80 dark:hover:bg-blue-900/50",
     },
     {
       title: "Jobs",
@@ -84,9 +104,6 @@ function WorkflowStrip({ data, isLoading, isError }: {
         { label: "On Hold", count: data?.jobs.onHoldCount ?? 0, href: "/jobs?status=on_hold" },
       ],
       color: "text-emerald-600 dark:text-emerald-400",
-      bgColor: "bg-emerald-50/80 dark:bg-emerald-950/40",
-      borderColor: "border-emerald-200 dark:border-emerald-800",
-      hoverBg: "hover:bg-emerald-100/80 dark:hover:bg-emerald-900/50",
     },
     {
       title: "Invoices",
@@ -96,69 +113,67 @@ function WorkflowStrip({ data, isLoading, isError }: {
         { label: "Past Due", count: data?.invoices.pastDueCount ?? 0, href: "/invoices?filter=pastDue" },
       ],
       color: "text-amber-600 dark:text-amber-400",
-      bgColor: "bg-amber-50/80 dark:bg-amber-950/40",
-      borderColor: "border-amber-200 dark:border-amber-800",
-      hoverBg: "hover:bg-amber-100/80 dark:hover:bg-amber-900/50",
     },
     {
       title: "Reports",
       icon: Calendar,
       items: [],
       color: "text-slate-500 dark:text-slate-400",
-      bgColor: "bg-slate-50/80 dark:bg-slate-900/40",
-      borderColor: "border-slate-200 dark:border-slate-700",
-      hoverBg: "hover:bg-slate-100/80 dark:hover:bg-slate-800/50",
       placeholder: "Coming soon",
     },
   ];
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-      {sections.map((section) => (
-        <div
-          key={section.title}
-          className={`${section.bgColor} ${section.borderColor} border rounded-lg shadow-sm transition-colors ${section.hoverBg}`}
-        >
-          <div className="px-4 pt-3 pb-2">
-            <div className="flex items-center gap-2">
+    <div className="bg-white dark:bg-gray-900 rounded-xl shadow-sm">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
+        {sections.map((section, index) => (
+          <div
+            key={section.title}
+            className="relative px-4 py-3"
+          >
+            {/* Half-height centered divider */}
+            {index > 0 && (
+              <div className="hidden sm:block absolute left-0 top-1/2 -translate-y-1/2 h-1/2 w-px bg-gray-200 dark:bg-gray-700" />
+            )}
+            <div className="flex items-center gap-2 mb-2">
               <section.icon className={`h-4 w-4 ${section.color}`} />
               <span className={`text-sm font-medium ${section.color}`}>{section.title}</span>
             </div>
+            <div>
+              {section.placeholder ? (
+                <p className="text-xs text-muted-foreground">{section.placeholder}</p>
+              ) : isLoading ? (
+                <div className="space-y-2">
+                  {[1, 2].map((i) => (
+                    <Skeleton key={i} className="h-5 w-full rounded-lg" />
+                  ))}
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  {section.items.map((item) => (
+                    <button
+                      key={item.label}
+                      onClick={() => setLocation(item.href)}
+                      className="flex items-center justify-between w-full text-left py-1 px-2 -mx-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors group"
+                    >
+                      <span className="text-xs text-muted-foreground group-hover:text-foreground transition-colors">
+                        {item.label}
+                      </span>
+                      <span className="text-sm font-semibold tabular-nums">{item.count}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
-          <div className="px-4 pb-3">
-            {section.placeholder ? (
-              <p className="text-xs text-muted-foreground">{section.placeholder}</p>
-            ) : isLoading ? (
-              <div className="space-y-2">
-                {[1, 2].map((i) => (
-                  <Skeleton key={i} className="h-5 w-full" />
-                ))}
-              </div>
-            ) : (
-              <div className="space-y-1">
-                {section.items.map((item) => (
-                  <button
-                    key={item.label}
-                    onClick={() => setLocation(item.href)}
-                    className="flex items-center justify-between w-full text-left py-1 px-2 -mx-2 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors group"
-                  >
-                    <span className="text-xs text-muted-foreground group-hover:text-foreground transition-colors">
-                      {item.label}
-                    </span>
-                    <span className="text-sm font-semibold tabular-nums">{item.count}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   );
 }
 
 // ============================================================================
-// Widget Components
+// Widget Components - flat rows with dividers
 // ============================================================================
 
 interface AttentionJob extends Job {
@@ -181,18 +196,6 @@ function NeedsAttentionWidget({
 }) {
   const [, setLocation] = useLocation();
 
-  const getAccentClass = (attentionType?: string) => {
-    switch (attentionType) {
-      case "overdue":
-        return "border-l-red-500";
-      case "on_hold":
-        return "border-l-orange-400";
-      case "requires_invoicing":
-      default:
-        return "border-l-emerald-500";
-    }
-  };
-
   const formatSchedule = (start: string | null, end?: string | null) => {
     if (!start) return null;
     const startDate = new Date(start);
@@ -206,19 +209,14 @@ function NeedsAttentionWidget({
     return `${dateStr} · ${startTime}`;
   };
 
-  const overdueCount = jobs.filter(j => j.attentionType === "overdue").length;
+  const displayJobs = jobs.slice(0, 5);
 
   return (
-    <Card className="flex flex-col">
-      <div className="p-4 pb-3 flex-1">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-base font-medium">Needs Attention</h3>
-          {overdueCount > 0 && (
-            <span className="text-xs font-medium text-red-600 dark:text-red-400">
-              {overdueCount} overdue
-            </span>
-          )}
-        </div>
+    <div className="bg-white dark:bg-gray-900 rounded-xl shadow-sm flex flex-col">
+      <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-800">
+        <h3 className="text-base font-medium">Needs Attention</h3>
+      </div>
+      <div className="flex-1">
         <AsyncBlock
           title="attention items"
           isLoading={isLoading}
@@ -229,45 +227,51 @@ function NeedsAttentionWidget({
           emptyMessage="All caught up!"
           skeletonRows={5}
         >
-          <div className="space-y-1.5">
-            {jobs.slice(0, 5).map((job) => {
-              const accentClass = getAccentClass(job.attentionType);
+          <div>
+            {displayJobs.map((job, index) => {
               const schedule = formatSchedule(job.scheduledStart, job.scheduledEnd);
               const companyName = job.location?.companyName || job.locationName || "No location";
+              const isLast = index === displayJobs.length - 1;
 
               return (
                 <button
                   key={job.id}
                   onClick={() => setLocation(`/jobs/${job.id}`)}
-                  className={`w-full text-left px-3 py-2 rounded border border-slate-200 dark:border-slate-700 border-l-4 ${accentClass} hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors`}
+                  className={`w-full text-left px-4 py-2.5 hover:bg-gray-100/60 dark:hover:bg-gray-800/50 transition-colors ${!isLast ? "border-b border-gray-100 dark:border-gray-800" : ""}`}
                 >
-                  <p className="text-sm font-medium text-foreground truncate">
-                    {companyName}
-                  </p>
-                  <p className="text-xs text-muted-foreground truncate mt-0.5">
-                    {job.summary}
-                    {schedule && <span className="text-muted-foreground/70"> · {schedule}</span>}
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-foreground truncate">{companyName}</p>
+                      <p className="text-xs text-muted-foreground truncate mt-0.5">
+                        {job.summary}
+                        {schedule && <span className="text-muted-foreground/70"> · {schedule}</span>}
+                      </p>
+                    </div>
                     {job.attentionType === "overdue" && (
-                      <span className="ml-1.5 text-red-600 dark:text-red-400 font-medium">Overdue</span>
+                      <span className="text-xs font-medium text-red-600 dark:text-red-400 whitespace-nowrap mt-0.5">
+                        Overdue
+                      </span>
                     )}
-                  </p>
+                  </div>
                 </button>
               );
             })}
           </div>
         </AsyncBlock>
-        {!isError && !isLoading && jobs.length > 0 && (
+      </div>
+      {!isError && !isLoading && jobs.length > 0 && (
+        <div className="px-4 py-2 border-t border-gray-100 dark:border-gray-800">
           <Button
             variant="ghost"
             size="sm"
-            className="w-full mt-2 h-8"
+            className="w-full h-8"
             onClick={() => setLocation("/jobs")}
           >
             View all jobs <ChevronRight className="h-4 w-4 ml-1" />
           </Button>
-        )}
-      </div>
-    </Card>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -292,7 +296,6 @@ function InvoicesWidget({
   const displayLimit = isExpanded ? EXPANDED_LIMIT : COLLAPSED_LIMIT;
   const displayedInvoices = invoices.slice(0, displayLimit);
   const hasMore = invoices.length > COLLAPSED_LIMIT;
-  const pastDueCount = invoices.filter(inv => inv.isPastDue).length;
 
   const formatCurrency = (amount: string) => {
     const num = parseFloat(amount || "0");
@@ -305,9 +308,9 @@ function InvoicesWidget({
   };
 
   return (
-    <Card className="flex flex-col">
-      <div className="p-4 pb-3 flex-1">
-        <div className="flex items-center justify-between mb-3">
+    <div className="bg-white dark:bg-gray-900 rounded-xl shadow-sm flex flex-col">
+      <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-800">
+        <div className="flex items-center justify-between">
           <button
             onClick={() => setLocation("/invoices?filter=awaiting_payment")}
             className="text-base font-medium hover:text-primary hover:underline transition-colors text-left"
@@ -315,11 +318,6 @@ function InvoicesWidget({
             Invoices
           </button>
           <div className="flex items-center gap-3">
-            {pastDueCount > 0 && (
-              <span className="text-xs font-medium text-red-600 dark:text-red-400">
-                {pastDueCount} past due
-              </span>
-            )}
             {hasMore && !isLoading && !isError && invoices.length > 0 && (
               <button
                 onClick={() => setIsExpanded(!isExpanded)}
@@ -334,6 +332,8 @@ function InvoicesWidget({
             )}
           </div>
         </div>
+      </div>
+      <div className="flex-1">
         <AsyncBlock
           title="invoices"
           isLoading={isLoading}
@@ -344,15 +344,15 @@ function InvoicesWidget({
           emptyMessage="No unpaid invoices"
           skeletonRows={5}
         >
-          <div className="space-y-1.5">
-            {displayedInvoices.map((invoice) => {
-              const accentClass = invoice.isPastDue ? "border-l-red-500" : "border-l-amber-400";
+          <div>
+            {displayedInvoices.map((invoice, index) => {
+              const isLast = index === displayedInvoices.length - 1;
 
               return (
                 <button
                   key={invoice.id}
                   onClick={() => setLocation(`/invoices/${invoice.id}`)}
-                  className={`w-full text-left px-3 py-2 rounded border border-slate-200 dark:border-slate-700 border-l-4 ${accentClass} hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors`}
+                  className={`w-full text-left px-4 py-2.5 hover:bg-gray-100/60 dark:hover:bg-gray-800/50 transition-colors ${!isLast ? "border-b border-gray-100 dark:border-gray-800" : ""}`}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 min-w-0">
@@ -362,12 +362,14 @@ function InvoicesWidget({
                       <p className="text-xs text-muted-foreground mt-0.5">
                         {invoice.invoiceNumber && <span>#{invoice.invoiceNumber} · </span>}
                         Due {formatDate(invoice.dueDate)}
-                        {invoice.isPastDue && (
-                          <span className="ml-1.5 text-red-600 dark:text-red-400 font-medium">Past due</span>
-                        )}
                       </p>
                     </div>
-                    <div className="text-right flex-shrink-0">
+                    <div className="text-right flex-shrink-0 flex flex-col items-end">
+                      {invoice.isPastDue && (
+                        <span className="text-xs font-medium text-red-600 dark:text-red-400 mb-0.5">
+                          Past due
+                        </span>
+                      )}
                       <p className="text-sm font-semibold text-foreground tabular-nums">
                         {formatCurrency(invoice.balance)}
                       </p>
@@ -381,18 +383,255 @@ function InvoicesWidget({
             })}
           </div>
         </AsyncBlock>
-        {!isError && !isLoading && invoices.length > 0 && (
+      </div>
+      {!isError && !isLoading && invoices.length > 0 && (
+        <div className="px-4 py-2 border-t border-gray-100 dark:border-gray-800">
           <Button
             variant="ghost"
             size="sm"
-            className="w-full mt-2 h-8"
+            className="w-full h-8"
             onClick={() => setLocation("/invoices?filter=awaiting_payment")}
           >
             View all invoices <ChevronRight className="h-4 w-4 ml-1" />
           </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// Tasks Panel - flat rows with dividers, matching other cards
+// ============================================================================
+
+function getInitials(fullName?: string, firstName?: string, lastName?: string): string {
+  if (fullName) {
+    const parts = fullName.trim().split(/\s+/);
+    if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    return fullName.slice(0, 2).toUpperCase();
+  }
+  if (firstName && lastName) return (firstName[0] + lastName[0]).toUpperCase();
+  if (firstName) return firstName.slice(0, 2).toUpperCase();
+  return "?";
+}
+
+function formatTaskDate(dateString?: string | null): string {
+  if (!dateString) return "";
+  const date = new Date(dateString);
+  const today = new Date();
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (date.toDateString() === today.toDateString()) return "Today";
+  if (date.toDateString() === tomorrow.toDateString()) return "Tomorrow";
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function TasksPanel({
+  collapsed,
+  onToggleCollapsed,
+}: {
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+}) {
+  const { user } = useAuth();
+  const currentUserId = user?.id;
+  const { teamMembers } = useTechniciansDirectory();
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>(undefined);
+
+  // Filter state: Active/Completed, Technician, Type
+  const [tab, setTab] = useState<"active" | "completed">("active");
+  const [techFilter, setTechFilter] = useState<string>("all");
+  const [typeFilter, setTypeFilter] = useState<string>("all");
+
+  const tasksUrl = `/api/tasks?offset=0&limit=50`;
+  const { data, isLoading, error } = useQuery({ queryKey: [tasksUrl], enabled: !collapsed });
+
+  // Parse raw tasks from API
+  const allTasks: Task[] = useMemo(() => {
+    if (!data) return [];
+    const items = Array.isArray(data) ? data : (data as any).items || (data as any).data || [];
+    return items;
+  }, [data]);
+
+  // Apply filters: tab (active/completed), technician, type
+  const filteredTasks: Task[] = useMemo(() => {
+    return allTasks.filter((t: Task) => {
+      // Tab filter
+      if (tab === "active" && (t.status === "completed" || t.status === "cancelled")) return false;
+      if (tab === "completed" && t.status !== "completed") return false;
+      // Technician filter
+      if (techFilter !== "all" && t.assignedToUserId !== techFilter) return false;
+      // Type filter
+      if (typeFilter !== "all" && t.type !== typeFilter) return false;
+      return true;
+    });
+  }, [allTasks, tab, techFilter, typeFilter]);
+
+  const closeTask = useMutation({
+    mutationFn: async (id: string) => {
+      if (!currentUserId) throw new Error("Missing currentUserId");
+      return apiRequest(`/api/tasks/${id}/close`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: currentUserId }),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('/api/tasks') });
+    },
+  });
+
+  const handleTaskClick = (taskId: string) => {
+    setSelectedTaskId(taskId);
+    setDialogOpen(true);
+  };
+
+  const handleNewTask = () => {
+    setSelectedTaskId(undefined);
+    setDialogOpen(true);
+  };
+
+  // Collapsed state - matching card style
+  if (collapsed) {
+    return (
+      <div className="h-full w-14 bg-white dark:bg-gray-900 rounded-xl shadow-sm flex flex-col items-center py-3 gap-2">
+        <Button variant="ghost" size="icon" onClick={onToggleCollapsed} title="Expand tasks" className="rounded-xl">
+          <PanelRightOpen className="h-5 w-5" />
+        </Button>
+        <div className="mt-2 flex flex-col items-center gap-2">
+          <ClipboardList className="h-5 w-5 opacity-70" />
+          <Button variant="ghost" size="icon" onClick={() => { onToggleCollapsed(); handleNewTask(); }} title="New task" className="rounded-xl">
+            <Plus className="h-5 w-5" />
+          </Button>
+        </div>
+        <TaskDialog open={dialogOpen} onOpenChange={setDialogOpen} taskId={selectedTaskId} onChanged={() => queryClient.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('/api/tasks') })} />
+      </div>
+    );
+  }
+
+  // Expanded state - matching card style with flat rows
+  return (
+    <div className="h-full w-[380px] bg-white dark:bg-gray-900 rounded-xl shadow-sm flex flex-col">
+      {/* Header */}
+      <div className="px-3 py-2 border-b border-gray-100 dark:border-gray-800">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <ClipboardList className="h-5 w-5" />
+            <span className="font-semibold">Tasks</span>
+            <Badge variant="secondary" className="text-xs rounded-lg">{filteredTasks.length}</Badge>
+          </div>
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" size="icon" onClick={handleNewTask} title="New task" className="h-8 w-8 rounded-xl">
+              <Plus className="h-4 w-4" />
+            </Button>
+            <Button variant="ghost" size="icon" onClick={onToggleCollapsed} title="Collapse tasks" className="h-8 w-8 rounded-xl">
+              <PanelRightClose className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+
+        {/* Filter Controls */}
+        <div className="space-y-2">
+          {/* Active/Completed Toggle */}
+          <div className="flex items-center gap-1">
+            <Button
+              size="sm"
+              variant={tab === "active" ? "default" : "ghost"}
+              onClick={() => setTab("active")}
+              className="h-7 text-xs px-3"
+            >
+              Active
+            </Button>
+            <Button
+              size="sm"
+              variant={tab === "completed" ? "default" : "ghost"}
+              onClick={() => setTab("completed")}
+              className="h-7 text-xs px-3"
+            >
+              Completed
+            </Button>
+          </div>
+
+          {/* Technician and Type Filter Dropdowns */}
+          <div className="flex items-center gap-2">
+            <Select value={techFilter} onValueChange={setTechFilter}>
+              <SelectTrigger className="h-7 text-xs flex-1">
+                <SelectValue placeholder="All Technicians" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Technicians</SelectItem>
+                {teamMembers.map((tech) => (
+                  <SelectItem key={tech.id} value={String(tech.id)}>
+                    {tech.fullName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select value={typeFilter} onValueChange={setTypeFilter}>
+              <SelectTrigger className="h-7 text-xs w-[120px]">
+                <SelectValue placeholder="All Types" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Types</SelectItem>
+                <SelectItem value="GENERAL">General</SelectItem>
+                <SelectItem value="SUPPLIER_VISIT">Supplier Visit</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      </div>
+
+      {/* List - flat rows with dividers */}
+      <div className="flex-1 overflow-y-auto min-h-0">
+        {isLoading ? (
+          <div className="p-4 text-sm opacity-70">Loading tasks…</div>
+        ) : error ? (
+          <div className="p-4 text-sm text-destructive">Failed to load tasks</div>
+        ) : filteredTasks.length === 0 ? (
+          <div className="p-4 text-sm opacity-70">No tasks</div>
+        ) : (
+          <div>
+            {filteredTasks.map((t, index) => {
+              const isDone = t.status === "completed" || t.status === "cancelled";
+              const initials = t.assignedUser ? getInitials(t.assignedUser.fullName, t.assignedUser.firstName, t.assignedUser.lastName) : null;
+              const taskDate = formatTaskDate(t.scheduledStartAt);
+              const isLast = index === filteredTasks.length - 1;
+
+              return (
+                <div
+                  key={t.id}
+                  className={`px-4 py-2.5 flex items-start gap-2 cursor-pointer hover:bg-gray-100/60 dark:hover:bg-gray-800/50 transition-colors relative ${!isLast ? "border-b border-gray-100 dark:border-gray-800" : ""}`}
+                  onClick={() => handleTaskClick(t.id)}
+                >
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="mt-0.5 h-6 w-6 flex-shrink-0 rounded-lg"
+                    onClick={(e) => { e.stopPropagation(); if (!isDone) closeTask.mutate(t.id); }}
+                    title={isDone ? "Completed" : "Complete"}
+                  >
+                    {isDone ? <CheckSquare className="h-4 w-4" /> : <Square className="h-4 w-4" />}
+                  </Button>
+                  <div className="min-w-0 flex-1 pr-8">
+                    <div className={`text-sm font-medium ${isDone ? "line-through opacity-60" : ""}`}>{t.title}</div>
+                    {taskDate && <div className="text-xs text-muted-foreground mt-0.5">{taskDate}</div>}
+                  </div>
+                  {initials && (
+                    <div className="absolute top-2.5 right-4 h-6 w-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-medium" title={t.assignedUser?.fullName}>
+                      {initials}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
-    </Card>
+
+      <TaskDialog open={dialogOpen} onOpenChange={setDialogOpen} taskId={selectedTaskId} onChanged={() => queryClient.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('/api/tasks') })} />
+    </div>
   );
 }
 
@@ -401,55 +640,24 @@ function InvoicesWidget({
 // ============================================================================
 
 export default function Dashboard() {
-
-  // ✅ Tasks sidebar collapse state (persisted)
   const TASKS_COLLAPSE_KEY = "dashboardTasksCollapsed";
   const [tasksCollapsed, setTasksCollapsed] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(TASKS_COLLAPSE_KEY) === "1";
-    } catch {
-      return false;
-    }
+    try { return localStorage.getItem(TASKS_COLLAPSE_KEY) === "1"; } catch { return false; }
   });
 
   useEffect(() => {
-    try {
-      localStorage.setItem(TASKS_COLLAPSE_KEY, tasksCollapsed ? "1" : "0");
-    } catch {}
+    try { localStorage.setItem(TASKS_COLLAPSE_KEY, tasksCollapsed ? "1" : "0"); } catch {}
   }, [tasksCollapsed]);
 
-  // Derive activeTab directly from URL search params
-  const searchString = useSearch();
-  const activeTab = useMemo(() => {
-    const params = new URLSearchParams(searchString);
-    return params.get("tab") === "clients" ? "clients" : "schedule";
-  }, [searchString]);
-
-  // ============================================================================
-  // Queries - each independent, no blocking
-  // ============================================================================
-
-  // Workflow summary
-  const {
-    data: workflowData,
-    isLoading: workflowLoading,
-    isError: workflowError,
-  } = useQuery<WorkflowSummary>({
+  // Queries
+  const { data: workflowData, isLoading: workflowLoading, isError: workflowError } = useQuery<WorkflowSummary>({
     queryKey: ["/api/dashboard/workflow"],
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
 
-  // Jobs needing attention (dedicated dashboard endpoint)
   const today = new Date().toISOString().slice(0, 10);
-  // Includes: overdue jobs + on_hold + requires_invoicing
-  const {
-    data: needsAttentionResponse,
-    isLoading: needsAttentionLoading,
-    isError: needsAttentionError,
-    error: needsAttentionErrorObj,
-    refetch: refetchNeedsAttention,
-  } = useQuery<{ data: (Job & { attentionType?: string })[] }>({
+  const { data: needsAttentionResponse, isLoading: needsAttentionLoading, isError: needsAttentionError, error: needsAttentionErrorObj, refetch: refetchNeedsAttention } = useQuery<{ data: (Job & { attentionType?: string })[] }>({
     queryKey: ["/api/dashboard/needs-attention", { date: today }],
     queryFn: () => apiRequest(`/api/dashboard/needs-attention?date=${today}&limit=5`),
     staleTime: 60_000,
@@ -457,14 +665,7 @@ export default function Dashboard() {
   });
   const needsAttentionJobs = needsAttentionResponse?.data || [];
 
-  // Dashboard invoices (past due + awaiting payment, sorted appropriately)
-  const {
-    data: dashboardInvoicesResponse,
-    isLoading: dashboardInvoicesLoading,
-    isError: dashboardInvoicesError,
-    error: dashboardInvoicesErrorObj,
-    refetch: refetchDashboardInvoices,
-  } = useQuery<{ data: Invoice[] }>({
+  const { data: dashboardInvoicesResponse, isLoading: dashboardInvoicesLoading, isError: dashboardInvoicesError, error: dashboardInvoicesErrorObj, refetch: refetchDashboardInvoices } = useQuery<{ data: Invoice[] }>({
     queryKey: ["/api/invoices/dashboard"],
     queryFn: () => apiRequest(`/api/invoices/dashboard`),
     staleTime: 60_000,
@@ -472,58 +673,26 @@ export default function Dashboard() {
   });
   const dashboardInvoices = dashboardInvoicesResponse?.data || [];
 
-  // ============================================================================
-  // Render
-  // ============================================================================
-
+  // Frame contrast: main content uses darker bg, cards (white) sit on top
+  // Sidebar + header use bg-background (white) - unified frame
   return (
-    <div className="min-h-screen bg-background">
-      <main className="mx-auto px-4 sm:px-6 lg:px-8 py-3 space-y-3">
-        <Tabs value={activeTab} className="space-y-3">
-          <TabsContent value="schedule" className="space-y-0 mt-0">
-            <div className="flex gap-4">
-              {/* Left column - main content */}
-              <div className="flex-1 min-w-0 space-y-3">
-                {/* Workflow Strip */}
-                <WorkflowStrip
-                  data={workflowData}
-                  isLoading={workflowLoading}
-                  isError={workflowError}
-                />
-
-                {/* Two-column grid: Needs Attention + Invoices */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
-                  <NeedsAttentionWidget
-                    jobs={needsAttentionJobs}
-                    isLoading={needsAttentionLoading}
-                    isError={needsAttentionError}
-                    error={needsAttentionErrorObj}
-                    onRetry={() => refetchNeedsAttention()}
-                  />
-                  <InvoicesWidget
-                    invoices={dashboardInvoices}
-                    isLoading={dashboardInvoicesLoading}
-                    isError={dashboardInvoicesError}
-                    error={dashboardInvoicesErrorObj}
-                    onRetry={() => refetchDashboardInvoices()}
-                  />
-                </div>
-              </div>
-
-              {/* Right sidebar - Tasks */}
-              <div className="h-[calc(100vh-120px)] sticky top-16 self-start">
-                <TasksSidebar
-                  collapsed={tasksCollapsed}
-                  onToggleCollapsed={() => setTasksCollapsed((v) => !v)}
-                />
-              </div>
+    <div className="min-h-screen bg-gray-200 dark:bg-gray-900">
+      <main className="mx-auto px-3 sm:px-4 lg:px-6 py-3 space-y-3">
+        <div className="flex gap-4">
+          {/* Left column - main content */}
+          <div className="flex-1 min-w-0 space-y-3">
+            <WorkflowStrip data={workflowData} isLoading={workflowLoading} isError={workflowError} />
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
+              <NeedsAttentionWidget jobs={needsAttentionJobs} isLoading={needsAttentionLoading} isError={needsAttentionError} error={needsAttentionErrorObj} onRetry={() => refetchNeedsAttention()} />
+              <InvoicesWidget invoices={dashboardInvoices} isLoading={dashboardInvoicesLoading} isError={dashboardInvoicesError} error={dashboardInvoicesErrorObj} onRetry={() => refetchDashboardInvoices()} />
             </div>
-          </TabsContent>
+          </div>
 
-          <TabsContent value="clients">
-            <ClientListTable />
-          </TabsContent>
-        </Tabs>
+          {/* Right sidebar - Tasks (integrated styling) */}
+          <div className="h-[calc(100vh-120px)] sticky top-16 self-start">
+            <TasksPanel collapsed={tasksCollapsed} onToggleCollapsed={() => setTasksCollapsed((v) => !v)} />
+          </div>
+        </div>
       </main>
     </div>
   );

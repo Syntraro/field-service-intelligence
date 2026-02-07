@@ -1,7 +1,12 @@
+/**
+ * Clients page - Standalone list of all client companies/locations
+ * Uses TablePageShell for consistent width/spacing with Jobs, Invoices, etc.
+ */
+
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Download, Upload, RotateCcw } from "lucide-react";
+import { Search, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -24,9 +29,9 @@ const MONTH_NAMES = [
 ];
 
 interface CompanyGroup {
-  companyId: string;            // Model A: customerCompanies id OR legacy fallback id
+  companyId: string;
   companyName: string;
-  primaryLocationId: string;    // location client id
+  primaryLocationId: string;
   location: string;
   address: string;
   maintenanceMonths: string;
@@ -35,7 +40,7 @@ interface CompanyGroup {
   allInactive: boolean;
 }
 
-export default function ClientListTable() {
+export default function Clients() {
   const [, setLocation] = useLocation();
   const [search, setSearch] = useState("");
   const [activeTab, setActiveTab] = useState<"active" | "inactive">("active");
@@ -58,11 +63,6 @@ export default function ClientListTable() {
     return selectedMonths.map((m) => MONTH_NAMES[m]).join(", ");
   };
 
-  /**
-   * Model A grouping:
-   * - company key = parentCompanyId (customerCompanies.id) if present
-   * - otherwise fallback to the client.id (legacy single-location / unlinked data)
-   */
   const companyGroups = useMemo(() => {
     const groupMap = new Map<string, Client[]>();
 
@@ -78,8 +78,6 @@ export default function ClientListTable() {
 
     groupMap.forEach((locations, companyId) => {
       const hasMultiple = locations.length > 1;
-
-      // Model A primary: explicit isPrimary first, then deterministic fallback
       const primary =
         locations.find((l) => (l as any).isPrimary) ??
         locations[0];
@@ -110,38 +108,30 @@ export default function ClientListTable() {
     return companyGroups.filter((g) => g.allInactive);
   }, [companyGroups, activeTab]);
 
- const handleRowClick = (primaryLocationId: string) => {
-  // Navigate to location detail (primary location for this company)
-  setLocation(`/clients/${primaryLocationId}`);
-};
+  const handleRowClick = (primaryLocationId: string) => {
+    setLocation(`/clients/${primaryLocationId}`);
+  };
+
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-96">
-        <div className="text-muted-foreground">Loading clients...</div>
-      </div>
+      <TablePageShell title="Clients" data-testid="clients-page">
+        <div className="flex items-center justify-center h-64">
+          <div className="text-muted-foreground">Loading clients...</div>
+        </div>
+      </TablePageShell>
     );
   }
 
   return (
     <TablePageShell
-      title="All Clients"
+      title="Clients"
       actions={
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" data-testid="button-import-clients">
-            <Upload className="h-4 w-4 mr-2" />
-            Import
-          </Button>
-          <Button variant="outline" size="sm" data-testid="button-backup-clients">
-            <Download className="h-4 w-4 mr-2" />
-            Backup
-          </Button>
-          <Button variant="outline" size="sm" data-testid="button-restore-backup">
-            <RotateCcw className="h-4 w-4 mr-2" />
-            Restore
-          </Button>
-        </div>
+        <Button onClick={() => setLocation("/clients/new")} data-testid="button-new-client">
+          <Plus className="h-4 w-4 mr-2" />
+          New Client
+        </Button>
       }
-      data-testid="text-page-title"
+      data-testid="clients-page"
     >
       <Tabs value={activeTab} onValueChange={(tab) => setActiveTab(tab as "active" | "inactive")}>
         <div className="flex items-center justify-between gap-4">
@@ -155,31 +145,33 @@ export default function ClientListTable() {
           </TabsList>
 
           <div className="relative flex-1 max-w-sm">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input
               placeholder="Search clients..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
+              className="pl-9"
               data-testid="input-search-clients"
             />
           </div>
         </div>
 
-        <TabsContent value={activeTab} className="mt-3">
+        <TabsContent value={activeTab} className="mt-4">
           <ListSurface>
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="py-2">Company</TableHead>
-                  <TableHead className="py-2">Location</TableHead>
-                  <TableHead className="py-2">Address</TableHead>
-                  <TableHead className="py-2">Maintenance Months</TableHead>
+                  <TableHead>Company</TableHead>
+                  <TableHead>Location</TableHead>
+                  <TableHead>Address</TableHead>
+                  <TableHead>Maintenance Months</TableHead>
                 </TableRow>
               </TableHeader>
 
               <TableBody>
                 {filteredGroups.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={4} className="text-center text-muted-foreground py-6">
+                    <TableCell colSpan={4} className="text-center text-muted-foreground py-8">
                       No {activeTab} clients found
                     </TableCell>
                   </TableRow>
@@ -192,10 +184,10 @@ export default function ClientListTable() {
                       data-testid={`row-client-${group.companyId}`}
                       title={group.locationCount > 1 ? `${group.locationCount} locations` : undefined}
                     >
-                      <TableCell className="py-2 font-medium">{group.companyName}</TableCell>
-                      <TableCell className="py-2 text-muted-foreground">{group.location}</TableCell>
-                      <TableCell className="py-2 text-muted-foreground">{group.address}</TableCell>
-                      <TableCell className="py-2 text-sm">{group.maintenanceMonths}</TableCell>
+                      <TableCell className="font-medium">{group.companyName}</TableCell>
+                      <TableCell className="text-muted-foreground">{group.location}</TableCell>
+                      <TableCell className="text-muted-foreground">{group.address}</TableCell>
+                      <TableCell className="text-sm">{group.maintenanceMonths}</TableCell>
                     </TableRow>
                   ))
                 )}
@@ -203,7 +195,7 @@ export default function ClientListTable() {
             </Table>
           </ListSurface>
 
-          <div className="text-sm text-muted-foreground mt-3">
+          <div className="text-sm text-muted-foreground mt-4">
             Showing {filteredGroups.length} companies
           </div>
         </TabsContent>
@@ -211,5 +203,3 @@ export default function ClientListTable() {
     </TablePageShell>
   );
 }
-
-export type { Client };

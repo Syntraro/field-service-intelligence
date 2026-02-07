@@ -46,6 +46,7 @@ import timeBillingRulesRouter from "./timeBillingRules";
 import rolesRouter, { permissionsRouter } from "./roles";
 import recurringJobsRouter from "./recurringJobs";
 import taxRouter from "./tax";
+import searchRouter from "./search";
 
 /**
  * Register all API routes in a single place.
@@ -187,6 +188,7 @@ export function registerRoutes(app: Express): Server {
   console.log("[ROUTES] ✓ Mounted /api/permissions (canonical permissions router)");
   app.use("/api/recurring-templates", recurringJobsRouter); // Recurring jobs: templates + generation
   app.use("/api/tax", taxRouter); // Tax: rates + groups CRUD
+  app.use("/api/search", searchRouter); // Universal search: jobs, invoices, customers, locations, suppliers
 
   // ✅ NEW ROUTES (company rollups + notes API)
   // Company/Client (parent) endpoints: /api/customer-companies/:id/overview, /locations, etc.

@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { format, differenceInHours } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
@@ -32,6 +33,8 @@ import {
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import { ApplyTemplateModal } from "@/components/ApplyTemplateModal";
 import { Card, CardContent } from "@/components/ui/card";
+import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
+import { TablePageShell } from "@/components/ui/table-page-shell";
 import type { Job, User as UserType } from "@shared/schema";
 import { isJobScheduled, isJobAssigned, isBacklogEligible, isJobOverdue } from "@shared/schema";
 import { getJobStatusDisplay } from "@/components/job/jobUtils";
@@ -229,9 +232,7 @@ export default function Jobs() {
   });
 
   // Technician lookup for the Assignment column
-  const { data: technicians = [] } = useQuery<UserType[]>({
-    queryKey: ["/api/team/technicians"],
-  });
+  const { teamMembers: technicians } = useTechniciansDirectory();
   const techNameMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const t of technicians) {
@@ -597,7 +598,16 @@ export default function Jobs() {
   }
 
   return (
-    <div className="p-6 space-y-6" data-testid="jobs-page">
+    <TablePageShell
+      title="Jobs"
+      actions={
+        <Button onClick={() => setShowCreateDialog(true)} data-testid="button-new-job-header">
+          <Plus className="h-4 w-4 mr-2" />
+          New Job
+        </Button>
+      }
+      data-testid="jobs-page"
+    >
       {/* SLA Breach Warning Banners - office users only */}
       {isOfficeUser && slaKpis?.current && (
         <div className="space-y-2" data-testid="sla-warning-banners">
@@ -837,8 +847,7 @@ export default function Jobs() {
         </div>
       </div>
 
-      <Card data-testid="table-jobs">
-        <CardContent className="p-0">
+      <ListSurface data-testid="table-jobs">
           <Table>
           <TableHeader>
             <TableRow>
@@ -876,9 +885,9 @@ export default function Jobs() {
               </TableRow>
             ) : (
               visibleJobs.map((job) => (
-                <TableRow 
-                  key={job.id} 
-                  className="cursor-pointer hover-elevate"
+                <TableRow
+                  key={job.id}
+                  className={tableRowClass}
                   onClick={() => handleRowClick(job)}
                   data-testid={`row-job-${job.id}`}
                 >
@@ -1118,8 +1127,7 @@ export default function Jobs() {
             )}
           </TableBody>
         </Table>
-        </CardContent>
-      </Card>
+      </ListSurface>
 
       {hasMore && (
         <div 
@@ -1247,6 +1255,6 @@ export default function Jobs() {
           jobNumber={applyTemplateJob.jobNumber}
         />
       )}
-    </div>
+    </TablePageShell>
   );
 }

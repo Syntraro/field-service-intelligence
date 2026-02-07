@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
+import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,9 +26,7 @@ export default function TechnicianManagementPage() {
   const [inviteOpen, setInviteOpen] = useState(false);
   const [copiedInvite, setCopiedInvite] = useState<string | null>(null);
 
-  const { data: technicians = [], isLoading } = useQuery<Technician[]>({
-    queryKey: ["/api/team/technicians"],
-  });
+  const { teamMembers: technicians, isLoading } = useTechniciansDirectory();
 
   const inviteMutation = useMutation({
     mutationFn: async (data: { email: string }) => {

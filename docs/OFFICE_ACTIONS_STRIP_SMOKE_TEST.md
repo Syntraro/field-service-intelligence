@@ -99,3 +99,108 @@ These behaviors must NEVER occur:
 ## Changelog
 
 - 2026-02-03: Initial checklist created
+
+---
+
+## Verification Log
+
+### Build Verification (2026-02-03)
+
+**Status:** ✅ PASS
+
+```
+npm run build - completed successfully
+- vite build: 2831 modules transformed, built in 8.12s
+- esbuild: dist/index.js 1.2mb, done in 63ms
+- No TypeScript errors in OfficeActionsStrip code
+```
+
+### Code Review Verification (2026-02-03)
+
+**Verified by:** Claude Code automated review
+
+| Item | Status | Notes |
+|------|--------|-------|
+| Button labels match requirements | ✅ | ATTENTION_CONFIG defines correct labels per reason |
+| Confirmation dialog for Mark Invoiced | ✅ | `requiresConfirm: true` for requires_invoicing |
+| No confirmation for Resume/Unschedule | ✅ | `requiresConfirm: false` for on_hold and overdue |
+| Permission checks implemented | ✅ | `canPerformOfficeActions()` checks MANAGER_ROLES |
+| Tooltips on disabled buttons | ✅ | TooltipProvider wraps disabled buttons |
+| Unschedule hidden if not scheduled | ✅ | `showSecondaryAction` checks `isJobScheduled` |
+| No archive transitions | ✅ | Only `invoiced` status used, never `archived` |
+| Version passed to mutations | ✅ | All mutations include `job.version` |
+| Unschedule uses canonical hook | ✅ | Uses `useUnscheduleJob()` from useCalendarApi.ts |
+| No missing invalidations | ✅ | Hook covers /api/calendar, /api/calendar/range, /api/calendar/unscheduled, /api/jobs |
+| No over-invalidation loops | ✅ | Each mutation invalidates once on success |
+
+### Manual UI Testing Required
+
+**Status:** ⏳ PENDING - Requires human tester
+
+The following tests require manual UI interaction:
+
+1. **Test 1 (requires_invoicing):** Navigate to completed job, verify strip, click Mark Invoiced
+2. **Test 2 (on_hold):** Navigate to on-hold job, verify strip, click Resume
+3. **Test 3 (overdue):** Navigate to overdue job, verify strip, click Reschedule/Unschedule
+4. **Test 4 (schedule visit):** Create visit from strip, verify job_visit and history
+
+**Instructions for Manual Tester:**
+
+```bash
+# Start dev server
+npm run dev
+
+# Access the app at http://localhost:5000
+# Login with a Manager/Admin account
+# Navigate to Jobs page and test each scenario
+```
+
+**Recording Results:**
+
+After completing manual tests, update this section with:
+- Date and tester name
+- Pass/Fail status for each test
+- Any screenshots (save to `/docs/screenshots/`)
+- Bug descriptions if any tests fail
+
+### Test Data Setup (SQL)
+
+For testers who need to create test jobs:
+
+```sql
+-- Create a completed job (requires_invoicing)
+UPDATE jobs SET status = 'completed', closed_at = NOW()
+WHERE id = '<job_id>' AND company_id = '<company_id>';
+
+-- Create an on_hold job
+UPDATE jobs SET status = 'open', open_sub_status = 'on_hold', hold_reason = 'parts'
+WHERE id = '<job_id>' AND company_id = '<company_id>';
+
+-- Create an overdue job (scheduled for yesterday)
+UPDATE jobs SET status = 'open', scheduled_start = NOW() - INTERVAL '2 days',
+  scheduled_end = NOW() - INTERVAL '1 day'
+WHERE id = '<job_id>' AND company_id = '<company_id>';
+```
+
+---
+
+## Manual Test Results
+
+<!--
+Template for recording manual test results:
+
+### [Date] - [Tester Name]
+
+| Test | Status | Notes |
+|------|--------|-------|
+| Test 1: requires_invoicing | PASS/FAIL | |
+| Test 2: on_hold | PASS/FAIL | |
+| Test 3: overdue | PASS/FAIL | |
+| Test 4: schedule visit | PASS/FAIL | |
+
+**Issues Found:**
+- None / List any bugs
+
+**Screenshots:**
+- `/docs/screenshots/test1_strip.png`
+-->

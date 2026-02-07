@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { useLocation } from "wouter";
 import { format } from "date-fns";
 import { Trash2, Plus, Camera, Edit2, X, AlertTriangle, Save, AlertCircle, Calendar as CalendarIcon, MapPin, Clock, User, Wrench, FileText, Image as ImageIcon, CheckCircle2, Loader2, Pencil, ExternalLink } from "lucide-react";
@@ -215,10 +216,7 @@ export function JobDetailDialog({
     }
   }, [assignment?.id, open]);
 
-  const { data: technicians = [] } = useQuery<any[]>({
-    queryKey: ['/api/team/technicians'],
-    enabled: open,
-  });
+  const { teamMembers: technicians } = useTechniciansDirectory();
 
   const { data: notes = [], isLoading: isLoadingNotes } = useQuery<JobNote[]>({
     queryKey: ["/api/job-notes", assignment?.id],

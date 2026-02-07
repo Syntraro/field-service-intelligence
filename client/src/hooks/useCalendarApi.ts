@@ -13,7 +13,7 @@
  * - unscheduleJob(jobId, version) - Clear job schedule
  */
 
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, QueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import type {
   CalendarEventDto,
@@ -21,6 +21,167 @@ import type {
   CalendarRangeResponseDto,
 } from "@shared/types/calendar";
 import { assertCalendarRangeResponseDto } from "@shared/types/calendar";
+
+// ============================================================================
+// Centralized Invalidation Helpers
+// ============================================================================
+// These helpers ensure consistent cache invalidation across all calendar operations
+// and provide DEV-only logging to track which queries are invalidated.
+//
+// INVALIDATION RULES:
+// - schedule: calendar + unscheduled (job moves FROM backlog TO calendar)
+// - reschedule: calendar only (job stays on calendar, just different slot)
+// - unschedule: calendar + unscheduled (job moves FROM calendar TO backlog)
+// - complete: calendar only (job stays on calendar, status changes)
+// ============================================================================
+
+/** DEV-only flag to enable invalidation logging */
+const INVALIDATION_DEBUG = process.env.NODE_ENV === "development";
+
+/** Track invalidated keys within a single operation to detect duplicates */
+let currentOperationKeys: Set<string> | null = null;
+
+/**
+ * DEV-only: Log which query keys are being invalidated
+ * Warns if the same key is invalidated twice within a single operation
+ */
+function logInvalidation(operation: string, keys: string[], context?: string) {
+  if (!INVALIDATION_DEBUG) return;
+
+  const timestamp = new Date().toISOString().split("T")[1].slice(0, 12);
+  const contextStr = context ? ` [${context}]` : "";
+
+  // Check for duplicates within this operation
+  if (currentOperationKeys) {
+    const duplicates = keys.filter((k) => currentOperationKeys!.has(k));
+    if (duplicates.length > 0) {
+      console.warn(
+        `[INVALIDATE ${timestamp}] ⚠️ DUPLICATE in ${operation}${contextStr}:`,
+        duplicates
+      );
+    }
+    keys.forEach((k) => currentOperationKeys!.add(k));
+  }
+
+  console.log(
+    `[INVALIDATE ${timestamp}] ${operation}${contextStr}:`,
+    keys.join(", ")
+  );
+}
+
+/**
+ * Start tracking invalidations for a single operation
+ * Call this at the start of an onSuccess handler
+ */
+function startInvalidationTracking() {
+  if (!INVALIDATION_DEBUG) return;
+  currentOperationKeys = new Set();
+}
+
+/**
+ * End tracking invalidations for a single operation
+ * Call this at the end of an onSuccess handler
+ */
+function endInvalidationTracking() {
+  if (!INVALIDATION_DEBUG) return;
+  currentOperationKeys = null;
+}
+
+/**
+ * Invalidate calendar-related queries (scheduled events on calendar)
+ * Used by: reschedule, complete (operations where job stays on calendar)
+ */
+export function invalidateCalendarQueries(
+  queryClient: QueryClient,
+  operation: string,
+  context?: string
+) {
+  startInvalidationTracking();
+
+  const keys = ["/api/calendar", "/api/calendar/range"];
+  logInvalidation(operation, keys, context);
+
+  queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
+
+  endInvalidationTracking();
+}
+
+/**
+ * Invalidate calendar + unscheduled queries (backlog)
+ * Used by: schedule, unschedule (operations where job moves between calendar and backlog)
+ */
+export function invalidateCalendarAndUnscheduledQueries(
+  queryClient: QueryClient,
+  operation: string,
+  context?: string
+) {
+  startInvalidationTracking();
+
+  const keys = [
+    "/api/calendar",
+    "/api/calendar/range",
+    "/api/calendar/unscheduled",
+  ];
+  logInvalidation(operation, keys, context);
+
+  queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+
+  endInvalidationTracking();
+}
+
+/**
+ * Invalidate job queries (list and optionally specific job)
+ * Most operations need this to refresh job data in various views
+ */
+export function invalidateJobQueries(
+  queryClient: QueryClient,
+  operation: string,
+  jobId?: string,
+  context?: string
+) {
+  startInvalidationTracking();
+
+  const keys = ["/api/jobs"];
+  if (jobId) {
+    keys.push(`/api/jobs/${jobId}`);
+  }
+  logInvalidation(operation, keys, context);
+
+  queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+  if (jobId) {
+    // Also invalidate specific job queries for immediate refresh
+    queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
+  }
+
+  endInvalidationTracking();
+}
+
+/**
+ * Invalidate visit queries for a specific job
+ * Used after schedule/unschedule operations that affect job visits
+ */
+export function invalidateVisitQueries(
+  queryClient: QueryClient,
+  operation: string,
+  jobId: string,
+  context?: string
+) {
+  startInvalidationTracking();
+
+  const keys = [
+    `/api/jobs/${jobId}/visits`,
+    `/api/jobs/${jobId}/visits/all`,
+  ];
+  logInvalidation(operation, keys, context);
+
+  queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "visits"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "visits", "all"] });
+
+  endInvalidationTracking();
+}
 
 // ============================================================================
 // Types
@@ -191,23 +352,28 @@ export function useCalendarRange(
 
 /**
  * Hook to schedule a job
+ *
+ * INVALIDATION: calendar + unscheduled + jobs
+ * Reason: Job moves FROM backlog TO calendar
  */
 export function useScheduleJob() {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: scheduleJob,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+    onSuccess: (_, variables) => {
+      // Job moves from backlog to calendar - invalidate both
+      invalidateCalendarAndUnscheduledQueries(queryClient, "schedule", variables.jobId);
+      invalidateJobQueries(queryClient, "schedule", variables.jobId);
     },
   });
 }
 
 /**
  * Hook to reschedule a job
+ *
+ * INVALIDATION: calendar only + jobs (NOT unscheduled)
+ * Reason: Job stays on calendar, just moved to different slot
  */
 export function useRescheduleJob() {
   const queryClient = useQueryClient();
@@ -215,16 +381,19 @@ export function useRescheduleJob() {
   return useMutation({
     mutationFn: ({ jobId, payload }: { jobId: string; payload: RescheduleJobPayload }) =>
       rescheduleJob(jobId, payload),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+    onSuccess: (_, variables) => {
+      // Job stays on calendar - no need to invalidate unscheduled
+      invalidateCalendarQueries(queryClient, "reschedule", variables.jobId);
+      invalidateJobQueries(queryClient, "reschedule", variables.jobId);
     },
   });
 }
 
 /**
  * Hook to unschedule a job
+ *
+ * INVALIDATION: calendar + unscheduled + jobs + visits
+ * Reason: Job moves FROM calendar TO backlog, visit becomes inactive
  */
 export function useUnscheduleJob() {
   const queryClient = useQueryClient();
@@ -232,17 +401,21 @@ export function useUnscheduleJob() {
   return useMutation({
     mutationFn: ({ jobId, version }: { jobId: string; version: number }) =>
       unscheduleJob(jobId, version),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+    onSuccess: (_, variables) => {
+      // Job moves from calendar to backlog - invalidate both
+      invalidateCalendarAndUnscheduledQueries(queryClient, "unschedule", variables.jobId);
+      invalidateJobQueries(queryClient, "unschedule", variables.jobId);
+      // Also invalidate visits since unschedule marks visit as inactive
+      invalidateVisitQueries(queryClient, "unschedule", variables.jobId);
     },
   });
 }
 
 /**
  * Hook to mark a job as complete
+ *
+ * INVALIDATION: calendar only + jobs (NOT unscheduled)
+ * Reason: Job stays on calendar, status changes to completed
  */
 export function useCompleteJob() {
   const queryClient = useQueryClient();
@@ -250,10 +423,10 @@ export function useCompleteJob() {
   return useMutation({
     mutationFn: ({ jobId, payload }: { jobId: string; payload?: { completionNotes?: string } }) =>
       completeJob(jobId, payload),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+    onSuccess: (_, variables) => {
+      // Job stays on calendar - no need to invalidate unscheduled
+      invalidateCalendarQueries(queryClient, "complete", variables.jobId);
+      invalidateJobQueries(queryClient, "complete", variables.jobId);
     },
   });
 }

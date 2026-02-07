@@ -3,6 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
@@ -41,6 +42,7 @@ export function EditLocationDialog({
     contactName: location.contactName || "",
     email: location.email || "",
     phone: location.phone || "",
+    notes: location.notes || "",
     isActive: location.isActive ?? true,
   });
 
@@ -56,6 +58,7 @@ export function EditLocationDialog({
       contactName: location.contactName || "",
       email: location.email || "",
       phone: location.phone || "",
+      notes: location.notes || "",
       isActive: location.isActive ?? true,
     });
   }, [location]);
@@ -198,6 +201,17 @@ export function EditLocationDialog({
                 value={formData.email}
                 onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                 placeholder="email@example.com"
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="edit-notes">Notes</Label>
+              <Textarea
+                id="edit-notes"
+                value={formData.notes}
+                onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+                placeholder="Account number, branch-specific info, etc."
+                rows={3}
               />
             </div>
 

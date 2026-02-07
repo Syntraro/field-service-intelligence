@@ -440,7 +440,7 @@ export default function AdminTenants() {
                 filteredTenants.map((tenant) => (
                   <TableRow
                     key={tenant.company.id}
-                    className="cursor-pointer hover:bg-muted/50"
+                    className="cursor-pointer"
                     onClick={() => setLocation(`/admin/tenants/${tenant.company.id}`)}
                   >
                     <TableCell>

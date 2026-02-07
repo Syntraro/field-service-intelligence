@@ -124,9 +124,14 @@ export default function ClientDetailPage() {
   } = useQuery<Client>({
     queryKey: ["/api/clients", clientId],
     queryFn: async () => {
+      // Try client_locations first, then fall back to customer_companies
       const res = await fetch(`/api/clients/${clientId}`, { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch client");
-      return res.json();
+      if (res.ok) return res.json();
+      if (res.status === 404) {
+        const companyRes = await fetch(`/api/customer-companies/${clientId}`, { credentials: "include" });
+        if (companyRes.ok) return companyRes.json();
+      }
+      throw new Error("Failed to fetch client");
     },
     enabled: Boolean(clientId),
   });
@@ -138,11 +143,20 @@ export default function ClientDetailPage() {
   const { data: overview } = useQuery<CompanyOverview>({
     queryKey: ["/api/clients", clientId, "overview"],
     queryFn: async () => {
+      // Try client_locations overview first
       const res = await fetch(`/api/clients/${clientId}/overview`, {
         credentials: "include",
       });
-      if (!res.ok) throw new Error("Failed to fetch client overview");
-      return res.json();
+      if (res.ok) return res.json();
+
+      // Fallback to customer_companies overview
+      if (res.status === 404) {
+        const companyRes = await fetch(`/api/customer-companies/${clientId}/overview`, {
+          credentials: "include",
+        });
+        if (companyRes.ok) return companyRes.json();
+      }
+      throw new Error("Failed to fetch client overview");
     },
     enabled: Boolean(clientId),
   });
@@ -377,7 +391,7 @@ const deleteNoteMutation = useMutation({
           <p className="text-muted-foreground mt-2">
             The client you're looking for doesn't exist or you don't have access.
           </p>
-          <Button variant="outline" className="mt-4" onClick={() => setLocation("/?tab=clients")}>
+          <Button variant="outline" className="mt-4" onClick={() => setLocation("/clients")}>
             <ArrowLeft className="mr-2 h-4 w-4" />
             Back to Client List
           </Button>
@@ -400,7 +414,7 @@ const deleteNoteMutation = useMutation({
             <button
               type="button"
               className="font-medium text-primary hover:text-primary/80 hover:underline transition-colors"
-              onClick={() => setLocation("/?tab=clients")}
+              onClick={() => setLocation("/clients")}
               data-testid="breadcrumb-clients"
             >
               Clients

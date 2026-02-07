@@ -224,7 +224,7 @@ export default function QuoteTemplatesPage() {
                 {templates.map((template) => (
                   <TableRow
                     key={template.id}
-                    className="cursor-pointer hover:bg-muted/50"
+                    className="cursor-pointer"
                     onClick={() => handleEdit(template)}
                     data-testid={`row-template-${template.id}`}
                   >

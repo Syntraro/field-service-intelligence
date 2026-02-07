@@ -88,13 +88,17 @@ export class TaskRepository extends BaseRepository {
       values.assignedToUserId = input.assignedToUserId;
     if (input.notes !== undefined) values.notes = input.notes;
 
-    // For date fields, ensure they're valid ISO strings or undefined
+    // For date fields, convert ISO strings to Date objects for Drizzle timestamp columns
+    // Drizzle's timestamp type uses mode: 'date' by default, expecting Date objects
     if (input.scheduledStartAt !== undefined && input.scheduledStartAt !== null) {
       if (
         typeof input.scheduledStartAt === "string" &&
         input.scheduledStartAt.trim() !== ""
       ) {
-        values.scheduledStartAt = input.scheduledStartAt;
+        const parsed = new Date(input.scheduledStartAt);
+        if (!isNaN(parsed.getTime())) {
+          values.scheduledStartAt = parsed;
+        }
       }
     }
     if (input.scheduledEndAt !== undefined && input.scheduledEndAt !== null) {
@@ -102,7 +106,10 @@ export class TaskRepository extends BaseRepository {
         typeof input.scheduledEndAt === "string" &&
         input.scheduledEndAt.trim() !== ""
       ) {
-        values.scheduledEndAt = input.scheduledEndAt;
+        const parsed = new Date(input.scheduledEndAt);
+        if (!isNaN(parsed.getTime())) {
+          values.scheduledEndAt = parsed;
+        }
       }
     }
 
@@ -361,8 +368,29 @@ export class TaskRepository extends BaseRepository {
 
     if ("title" in input) updates.title = input.title;
     if ("notes" in input) updates.notes = input.notes;
-    if ("scheduledStartAt" in input) updates.scheduledStartAt = input.scheduledStartAt;
-    if ("scheduledEndAt" in input) updates.scheduledEndAt = input.scheduledEndAt;
+
+    // Convert ISO strings to Date objects for Drizzle timestamp columns
+    if ("scheduledStartAt" in input) {
+      if (input.scheduledStartAt === null) {
+        updates.scheduledStartAt = null;
+      } else if (typeof input.scheduledStartAt === "string" && input.scheduledStartAt.trim() !== "") {
+        const parsed = new Date(input.scheduledStartAt);
+        if (!isNaN(parsed.getTime())) {
+          updates.scheduledStartAt = parsed;
+        }
+      }
+    }
+    if ("scheduledEndAt" in input) {
+      if (input.scheduledEndAt === null) {
+        updates.scheduledEndAt = null;
+      } else if (typeof input.scheduledEndAt === "string" && input.scheduledEndAt.trim() !== "") {
+        const parsed = new Date(input.scheduledEndAt);
+        if (!isNaN(parsed.getTime())) {
+          updates.scheduledEndAt = parsed;
+        }
+      }
+    }
+
     if ("allDay" in input) updates.allDay = input.allDay;
     if ("jobId" in input) updates.jobId = input.jobId;
 

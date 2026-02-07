@@ -238,10 +238,10 @@ export default function ClientJobsTab({
             </TableHeader>
             <TableBody>
               {jobs.map((job) => (
-                <TableRow 
-                  key={job.id} 
+                <TableRow
+                  key={job.id}
                   data-testid={`row-job-${job.id}`}
-                  className="cursor-pointer hover-elevate"
+                  className="cursor-pointer"
                   onClick={() => setLocation(`/jobs/${job.id}`)}
                 >
                   <TableCell className="font-medium">

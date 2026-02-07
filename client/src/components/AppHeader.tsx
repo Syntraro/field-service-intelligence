@@ -1,3 +1,13 @@
+/**
+ * AppHeader - Main application header with navigation and universal search
+ *
+ * Renders the standard header layout including:
+ * - Company name/logo
+ * - Navigation tabs
+ * - Universal search
+ * - Quick actions (Add Client, Notifications, Settings, Logout)
+ */
+
 import { Button } from "@/components/ui/button";
 import { LayoutDashboard, LogOut, Shield, Settings, Calendar as CalendarIcon, Plus, Users, Package, FileText, MessageCircle } from "lucide-react";
 import { Link, useLocation } from "wouter";
@@ -11,12 +21,12 @@ import QuickAddClientModal from "./QuickAddClientModal";
 import NotificationBell from "./NotificationBell";
 import UniversalSearch from "./UniversalSearch";
 
-interface HeaderProps {
+interface AppHeaderProps {
   onAddClient?: () => void;
   onDashboardClick?: () => void;
 }
 
-export default function Header({ onAddClient, onDashboardClick }: HeaderProps) {
+export default function AppHeader({ onAddClient, onDashboardClick }: AppHeaderProps) {
   const [location, setLocation] = useLocation();
   const { user, logout } = useAuth();
   const { toast } = useToast();
@@ -164,7 +174,7 @@ export default function Header({ onAddClient, onDashboardClick }: HeaderProps) {
               <MessageCircle className="h-4 w-4" />
             </Button>
             <Link href="/company-settings">
-              <Button 
+              <Button
                 variant="ghost"
                 size="icon"
                 data-testid="button-settings-header"
@@ -186,8 +196,8 @@ export default function Header({ onAddClient, onDashboardClick }: HeaderProps) {
         </div>
       </div>
       <FeedbackDialog open={feedbackOpen} onOpenChange={setFeedbackOpen} />
-      <QuickAddClientModal 
-        open={addClientModalOpen} 
+      <QuickAddClientModal
+        open={addClientModalOpen}
         onOpenChange={setAddClientModalOpen}
         onSuccess={handleClientCreated}
       />

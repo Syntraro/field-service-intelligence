@@ -24,7 +24,10 @@ import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 
 export default function LocationDetailPage() {
-  const { id, locationId } = useParams<{ id: string; locationId: string }>();
+  // Support both:
+  // - Nested route: /clients/:id/locations/:locationId
+  // - Direct route: /locations/:locationId (id will be undefined)
+  const { id, locationId } = useParams<{ id?: string; locationId: string }>();
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   
@@ -58,11 +61,21 @@ export default function LocationDetailPage() {
 
   const { data: location, isLoading: locationLoading, error: locationError } = useQuery<Client>({
     queryKey: ["/api/clients", locationId],
+    queryFn: async () => {
+      const res = await fetch(`/api/clients/${locationId}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch location");
+      return res.json();
+    },
     enabled: Boolean(locationId),
   });
 
   const { data: parentClient } = useQuery<Client>({
     queryKey: ["/api/clients", id],
+    queryFn: async () => {
+      const res = await fetch(`/api/clients/${id}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch parent client");
+      return res.json();
+    },
     enabled: Boolean(id),
   });
 
@@ -224,7 +237,8 @@ export default function LocationDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
       setDeleteLocationDialogOpen(false);
       toast({ title: "Location deleted", description: "The location has been marked as inactive." });
-      setLocation(`/clients/${id}`);
+      // Navigate to parent company if available, otherwise to clients list
+      setLocation(effectiveParentCompanyId ? `/clients/${effectiveParentCompanyId}` : "/clients");
     },
     onError: () => {
       toast({ title: "Error", description: "Failed to delete location.", variant: "destructive" });
@@ -278,16 +292,16 @@ export default function LocationDetailPage() {
         <div className="text-center py-12">
           <h2 className="text-lg font-semibold text-destructive">Location not found</h2>
           <p className="text-muted-foreground mt-2">The location you're looking for doesn't exist.</p>
-          <Button variant="outline" className="mt-4" onClick={() => setLocation(`/clients/${id}`)}>
+          <Button variant="outline" className="mt-4" onClick={() => setLocation(id ? `/clients/${id}` : "/clients")}>
             <ArrowLeft className="mr-2 h-4 w-4" />
-            Back to Client
+            {id ? "Back to Client" : "Back to Clients"}
           </Button>
         </div>
       </div>
     );
   }
 
-  const companyName = parentCompany?.name || parentClient?.companyName || "Client";
+  const companyName = parentCompany?.name || parentClient?.companyName || location?.companyName || "Client";
   const locationName =
     location.location?.trim() ||
     (location.address ? `${location.address}${location.city ? `, ${location.city}` : ""}` : null) ||
@@ -322,7 +336,7 @@ export default function LocationDetailPage() {
             <button
               type="button"
               className="font-medium text-primary hover:text-primary/80 hover:underline transition-colors"
-              onClick={() => setLocation(`/clients/${id}`)}
+              onClick={() => setLocation(effectiveParentCompanyId ? `/clients/${effectiveParentCompanyId}` : "/clients")}
               data-testid="breadcrumb-client"
             >
               {companyName}

@@ -80,7 +80,9 @@
       "Bash(fuser:*)",
       "Bash(killall node:*)",
       "Bash(./scripts/ralph-loop.sh:*)",
-      "Bash(xargs:*)"
+      "Bash(xargs:*)",
+      "Bash(git checkout:*)",
+      "Bash(npm run test:*)"
     ]
   }
 }

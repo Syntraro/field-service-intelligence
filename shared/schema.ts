@@ -457,10 +457,11 @@ export type MaintenanceRecord = typeof maintenanceRecords.$inferSelect;
 // ============================================================================
 
 // Company counters table - tracks sequential counters per company (e.g., job numbers, invoice numbers)
+// Job numbers default to 100000 (6 digits) for better readability and search
 export const companyCounters = pgTable("company_counters", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().unique().references(() => companies.id, { onDelete: "cascade" }),
-  nextJobNumber: integer("next_job_number").notNull().default(10000),
+  nextJobNumber: integer("next_job_number").notNull().default(100000), // 6-digit job numbers
   nextInvoiceNumber: integer("next_invoice_number").notNull().default(1001),
   nextQuoteNumber: integer("next_quote_number").notNull().default(1001),
 });
@@ -1942,7 +1943,7 @@ export const jobVisitStatusEnum = [
   "in_progress",
   "on_hold",
   "completed",
-  "cancelled"
+  "cancelled",
 ] as const;
 export type JobVisitStatus = typeof jobVisitStatusEnum[number];
 
@@ -1951,28 +1952,35 @@ export const jobVisits = pgTable("job_visits", {
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   jobId: varchar("job_id").notNull().references(() => jobs.id, { onDelete: "cascade" }),
 
-  // Scheduling
-  scheduledDate: timestamp("scheduled_date").notNull(),
+  // Calendar compatibility
+  scheduledDate: timestamp("scheduled_date").notNull(), // legacy field, keep for backwards compat
+  scheduledStart: timestamp("scheduled_start"), // nullable in DB, preferred field for scheduling
+  scheduledEnd: timestamp("scheduled_end"),     // nullable in DB
+  isAllDay: boolean("is_all_day").notNull().default(false),
+
+  // Duration
   estimatedDurationMinutes: integer("estimated_duration_minutes").default(60),
 
   // Assignment
   assignedTechnicianId: varchar("assigned_technician_id").references(() => users.id, { onDelete: "set null" }),
+  assignedTechnicianIds: varchar("assigned_technician_ids").array(), // DB has array
 
-  // Status tracking
+  // Status
   status: text("status").notNull().default("scheduled"),
+
+  // Visit sequencing
+  visitNumber: integer("visit_number"), // nullable in DB, computed by repository
 
   // Time tracking
   checkedInAt: timestamp("checked_in_at"),
   checkedOutAt: timestamp("checked_out_at"),
-  actualDurationMinutes: integer("actual_duration_minutes"), // Auto-calculated on checkout
+  actualDurationMinutes: integer("actual_duration_minutes"),
 
   // Notes
   visitNotes: text("visit_notes"),
 
-  // Soft deletion
+  // Soft delete + optimistic locking
   isActive: boolean("is_active").notNull().default(true),
-
-  // Optimistic locking
   version: integer("version").notNull().default(0),
 
   // Audit timestamps
@@ -1980,26 +1988,42 @@ export const jobVisits = pgTable("job_visits", {
   updatedAt: timestamp("updated_at"),
 });
 
+
+
 export const insertJobVisitSchema = createInsertSchema(jobVisits).omit({
   id: true,
   companyId: true,
   createdAt: true,
   updatedAt: true,
-  actualDurationMinutes: true, // Auto-calculated
+  actualDurationMinutes: true,
+  version: true,
 }).extend({
   status: z.enum(jobVisitStatusEnum).default("scheduled"),
-  scheduledDate: z.string(), // Accept ISO string
+  scheduledDate: z.string().optional(),           // ISO date string (legacy, optional)
+  scheduledStart: z.string().optional(),          // ISO timestamp string (nullable in DB)
+  scheduledEnd: z.string().optional(),            // ISO timestamp string (nullable in DB)
+  isAllDay: z.boolean().default(false),
   estimatedDurationMinutes: z.number().int().positive().default(60),
+  assignedTechnicianId: z.string().uuid().nullable().optional(),
+  assignedTechnicianIds: z.array(z.string()).optional(),
+  visitNumber: z.number().int().min(1).optional(), // computed by repository if not provided
+  visitNotes: z.string().nullable().optional(),
 });
 
 export const updateJobVisitSchema = z.object({
   scheduledDate: z.string().optional(),
+  scheduledStart: z.string().optional(),
+  scheduledEnd: z.string().optional(),
+  isAllDay: z.boolean().optional(),
   estimatedDurationMinutes: z.number().int().positive().optional(),
-  assignedTechnicianId: z.string().nullable().optional(),
+  assignedTechnicianId: z.string().uuid().nullable().optional(),
+  assignedTechnicianIds: z.array(z.string()).nullable().optional(),
+  visitNumber: z.number().int().min(1).optional(),
   status: z.enum(jobVisitStatusEnum).optional(),
   visitNotes: z.string().nullable().optional(),
   isActive: z.boolean().optional(),
 });
+
 
 export type InsertJobVisit = z.infer<typeof insertJobVisitSchema>;
 export type UpdateJobVisit = z.infer<typeof updateJobVisitSchema>;
@@ -2413,6 +2437,8 @@ export const supplierLocations = pgTable("supplier_locations", {
   contactName: text("contact_name"),
   email: text("email"),
   phone: text("phone"),
+  // Notes (account numbers, branch-specific info, etc.)
+  notes: text("notes"),
   // Status
   isPrimary: boolean("is_primary").notNull().default(false),
   isActive: boolean("is_active").notNull().default(true), // Legacy (use deletedAt)
@@ -2444,6 +2470,7 @@ export const updateSupplierLocationSchema = z.object({
   contactName: z.string().nullable().optional(),
   email: z.string().email().nullable().optional(),
   phone: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
   isActive: z.boolean().optional(),
 });
 

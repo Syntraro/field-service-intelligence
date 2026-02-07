@@ -14,6 +14,8 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { Supplier, SupplierLocation } from "@shared/schema";
+import { ListSurface } from "@/components/ui/list-surface";
+import { TablePageShell } from "@/components/ui/table-page-shell";
 
 interface SupplierWithLocations extends Supplier {
   locations?: SupplierLocation[];
@@ -71,17 +73,15 @@ export default function SuppliersListPage() {
 
   
   return (
-    <div className="p-6 space-y-6 max-w-[1400px] mx-auto">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <h1 className="text-2xl font-semibold">Suppliers</h1>
-        
-          <Button onClick={() => setLocation("/suppliers/new")}>
-            <Plus className="h-4 w-4 mr-2" />
-            New Supplier
-          </Button>
-      </div>
-
+    <TablePageShell
+      title="Suppliers"
+      actions={
+        <Button onClick={() => setLocation("/suppliers/new")}>
+          <Plus className="h-4 w-4 mr-2" />
+          New Supplier
+        </Button>
+      }
+    >
       {/* Search */}
       <div className="flex items-center gap-4">
         <div className="relative flex-1 max-w-md">
@@ -96,7 +96,7 @@ export default function SuppliersListPage() {
       </div>
 
       {/* Table */}
-      <div className="rounded-md border">
+      <ListSurface>
         <Table>
           <TableHeader>
             <TableRow>
@@ -131,7 +131,7 @@ export default function SuppliersListPage() {
                 return (
                   <TableRow
                     key={supplier.id}
-                    className="cursor-pointer hover:bg-muted/50"
+                    className="cursor-pointer"
                     onClick={() => setLocation(`/suppliers/${supplier.id}`)}
                   >
                     <TableCell className="font-medium">
@@ -177,7 +177,7 @@ export default function SuppliersListPage() {
             )}
           </TableBody>
         </Table>
-      </div>
+      </ListSurface>
 
       {/* Summary */}
       {!isLoading && suppliers.length > 0 && (
@@ -185,6 +185,6 @@ export default function SuppliersListPage() {
           Showing {suppliers.length} {suppliers.length === 1 ? "supplier" : "suppliers"}
         </div>
       )}
-    </div>
+    </TablePageShell>
   );
 }

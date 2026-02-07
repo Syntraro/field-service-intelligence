@@ -1,6 +1,6 @@
 import { Switch, Route, useLocation, Link } from "wouter";
 import { queryClient } from "./lib/queryClient";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider, useAuth } from "@/lib/auth";
@@ -25,6 +25,7 @@ import AdminQboQueue from "@/pages/AdminQboQueue";
 import SupportConsole from "@/pages/SupportConsole";
 import AddClientPage from "@/pages/AddClientPage";
 import NewClientPage from "@/pages/NewClientPage";
+import Clients from "@/pages/Clients";
 import ClientDetailPage from "@/pages/ClientDetailPage";
 import LocationDetailPage from "@/pages/LocationDetailPage";
 import PartsManagementPage from "@/pages/PartsManagementPage";
@@ -68,9 +69,9 @@ import { SubscriptionBanner } from "@/components/SubscriptionBanner";
 import { ImpersonationBanner } from "@/components/ImpersonationBanner";
 import QuickAddClientModal from "@/components/QuickAddClientModal";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
-import { useQuery } from "@tanstack/react-query";
+import UniversalSearch from "@/components/UniversalSearch";
 import { useState } from "react";
-import { Search, Plus, Settings, AlertTriangle, X, ChevronRight, ClipboardList, Users, FileText, Receipt } from "lucide-react";
+import { Plus, Settings, AlertTriangle, X, ChevronRight, ClipboardList, Users, FileText, Receipt } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -78,8 +79,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import SuppliersListPage from "@/pages/SuppliersListPage";
 import SupplierDetailPage from "@/pages/SupplierDetailPage";
 
@@ -185,14 +184,14 @@ function Router() {
           <AddClientPage />
         </ProtectedRoute>
       </Route>
+      <Route path="/clients">
+        <ProtectedRoute requireAdmin>
+          <Clients />
+        </ProtectedRoute>
+      </Route>
       <Route path="/clients/new">
         <ProtectedRoute requireAdmin>
           <NewClientPage />
-        </ProtectedRoute>
-      </Route>
-      <Route path="/products">
-        <ProtectedRoute requireAdmin>
-          <PartsManagementPage />
         </ProtectedRoute>
       </Route>
       <Route path="/settings">
@@ -341,6 +340,11 @@ function Router() {
           <LocationDetailPage />
         </ProtectedRoute>
       </Route>
+      <Route path="/locations/:locationId">
+        <ProtectedRoute requireAdmin>
+          <LocationDetailPage />
+        </ProtectedRoute>
+      </Route>
       <Route path="/suppliers">
         <ProtectedRoute requireAdmin>
           <SuppliersListPage />
@@ -359,8 +363,6 @@ function Router() {
 function AppContent() {
   const [location, setLocation] = useLocation();
   const { user } = useAuth();
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
   const [overdueAlertMinimized, setOverdueAlertMinimized] = useState(false);
   const [addClientModalOpen, setAddClientModalOpen] = useState(false);
   const [addJobModalOpen, setAddJobModalOpen] = useState(false);
@@ -370,6 +372,14 @@ function AppContent() {
     queryKey: ["/api/calendar/unscheduled"],
     enabled: Boolean(user?.id),
   });
+
+  // Fetch company settings to display company name in header
+  const { data: companySettings } = useQuery<{ companyName?: string }>({
+    queryKey: ["/api/company-settings"],
+    enabled: Boolean(user?.id),
+    staleTime: 5 * 60 * 1000,
+  });
+  const companyDisplayName = companySettings?.companyName || "";
 
   // Count past-month unscheduled items from the backlog (within the 3-month window)
   const now = new Date();
@@ -386,21 +396,9 @@ function AppContent() {
     const itemMonth = itemDate.getMonth() + 1;
     return itemYear < currentYear || (itemYear === currentYear && itemMonth < currentMonth);
   }).length;
-  
-  const { data: clientsResponse } = useQuery<{ data: any[], pagination: any }>({
-    queryKey: ["/api/clients"],
-    enabled: Boolean(user?.id),
-  });
-
-  const allClients = clientsResponse?.data || [];
 
   const isAuthPage = ['/login', '/signup', '/request-reset', '/reset-password'].includes(location);
   const isTechnicianPage = location === '/technician' || location === '/daily-parts';
-
-  const handleClientSelect = (clientId: string) => {
-    // Navigate directly to client detail page
-    setLocation(`/clients/${clientId}`);
-  };
 
   const handleDashboardClick = () => {
     // Navigate to dashboard and clear query params
@@ -416,11 +414,6 @@ function AppContent() {
     setLocation(`/clients/${clientId}`);
   };
 
-  const filteredClients = allClients.filter(client =>
-    client.companyName?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    client.location?.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-
   const style = {
     "--sidebar-width": "12rem",
     "--sidebar-width-icon": "3rem",
@@ -432,13 +425,21 @@ function AppContent() {
 
   return (
     <SidebarProvider defaultOpen={true} style={style as React.CSSProperties}>
-      <div className="flex h-screen w-full">
+      <div className="flex h-screen w-full bg-gray-200 dark:bg-gray-900">
         <AppSidebar onDashboardClick={handleDashboardClick} />
         <div className="flex flex-col flex-1 overflow-hidden">
-          <header className="flex items-center justify-between gap-2 border-b px-4 py-2">
+          {/* Universal header - visible on all pages except auth pages */}
+          <header className="flex items-center justify-between gap-2 px-4 h-14 bg-gray-200 dark:bg-gray-900 shadow-sm">
             <SidebarTrigger data-testid="button-sidebar-toggle" />
-            
-            {/* Minimizable overdue jobs alert */}
+
+            {/* Company name - hidden on technician pages */}
+            {!isTechnicianPage && companyDisplayName && (
+              <div className="ml-3 text-base font-semibold text-foreground truncate max-w-[260px]">
+                {companyDisplayName}
+              </div>
+            )}
+
+            {/* Minimizable overdue jobs alert - hidden on technician pages */}
             {!isTechnicianPage && totalOverdueCount > 0 && (
               overdueAlertMinimized ? (
                 <Button
@@ -453,7 +454,7 @@ function AppContent() {
                   <ChevronRight className="h-3 w-3" />
                 </Button>
               ) : (
-                <div 
+                <div
                   className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-destructive/10 border border-destructive/20"
                   data-testid="alert-past-unscheduled-header"
                 >
@@ -473,89 +474,48 @@ function AppContent() {
                 </div>
               )
             )}
-            
-            {!isTechnicianPage && (
-              <div className="flex items-center gap-2">
-                <div className="relative">
-                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
-                  <input
-                    type="text"
-                    placeholder="Search..."
-                    value={searchQuery}
-                    onChange={(e) => {
-                      setSearchQuery(e.target.value);
-                      setSearchOpen(e.target.value.length > 0);
-                    }}
-                    onFocus={() => searchQuery.length > 0 && setSearchOpen(true)}
-                    onBlur={() => setTimeout(() => setSearchOpen(false), 200)}
-                    data-testid="input-client-search"
-                    className="h-9 w-64 rounded-md border border-input bg-white dark:bg-gray-900 pl-8 pr-3 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                  />
-                  {searchOpen && searchQuery && (
-                    <div className="absolute top-full left-0 right-0 mt-1 rounded-md border bg-popover text-popover-foreground shadow-md outline-none z-50">
-                      <Command>
-                        <CommandList>
-                          <CommandEmpty className="py-6 text-center text-sm">No clients found.</CommandEmpty>
-                          <CommandGroup>
-                            {filteredClients.map((client) => (
-                              <CommandItem
-                                key={client.id}
-                                value={client.id}
-                                keywords={[client.companyName, client.location || '']}
-                                onSelect={() => {
-                                  handleClientSelect(client.id);
-                                  setSearchOpen(false);
-                                  setSearchQuery("");
-                                }}
-                                data-testid={`client-search-item-${client.id}`}
-                              >
-                                <div className="flex flex-col">
-                                  <span className="font-medium">{client.companyName}</span>
-                                  {client.location && (
-                                    <span className="text-xs text-muted-foreground">{client.location}</span>
-                                  )}
-                                </div>
-                              </CommandItem>
-                            ))}
-                          </CommandGroup>
-                        </CommandList>
-                      </Command>
-                    </div>
-                  )}
-                </div>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="default" size="default" data-testid="button-create-new" className="gap-1.5">
-                      <Plus className="h-4 w-4" />
-                      <span>New</span>
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-48">
-                    <DropdownMenuItem onClick={() => setAddJobModalOpen(true)} data-testid="menu-new-job">
-                      <ClipboardList className="h-4 w-4 mr-2" />
-                      New Job
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={handleAddClient} data-testid="menu-new-client">
-                      <Users className="h-4 w-4 mr-2" />
-                      New Client
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setLocation('/quotes?create=true')} data-testid="menu-new-quote">
-                      <FileText className="h-4 w-4 mr-2" />
-                      New Quote
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setLocation('/invoices?create=true')} data-testid="menu-new-invoice">
-                      <Receipt className="h-4 w-4 mr-2" />
-                      New Invoice
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-                <Button variant="ghost" size="icon" asChild data-testid="button-settings">
-                  <Link href="/company-settings">
-                    <Settings className="h-4 w-4" />
-                  </Link>
-                </Button>
-              </div>
-            )}
+
+            {/* Universal search - visible on all pages including technician pages */}
+            <div className="flex items-center gap-2">
+              <UniversalSearch />
+
+              {/* New dropdown and Settings - hidden on technician pages */}
+              {!isTechnicianPage && (
+                <>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="default" size="default" data-testid="button-create-new" className="gap-1.5">
+                        <Plus className="h-4 w-4" />
+                        <span>New</span>
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-48">
+                      <DropdownMenuItem onClick={() => setAddJobModalOpen(true)} data-testid="menu-new-job">
+                        <ClipboardList className="h-4 w-4 mr-2" />
+                        New Job
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={handleAddClient} data-testid="menu-new-client">
+                        <Users className="h-4 w-4 mr-2" />
+                        New Client
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setLocation('/quotes?create=true')} data-testid="menu-new-quote">
+                        <FileText className="h-4 w-4 mr-2" />
+                        New Quote
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setLocation('/invoices?create=true')} data-testid="menu-new-invoice">
+                        <Receipt className="h-4 w-4 mr-2" />
+                        New Invoice
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <Button variant="ghost" size="icon" asChild data-testid="button-settings">
+                    <Link href="/company-settings">
+                      <Settings className="h-4 w-4" />
+                    </Link>
+                  </Button>
+                </>
+              )}
+            </div>
           </header>
           <ImpersonationBanner />
           <SubscriptionBanner />

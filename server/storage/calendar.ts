@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { eq, and, or, gte, lt, isNull, sql, inArray } from "drizzle-orm";
+import { eq, and, or, gte, lt, isNull, sql, inArray, notInArray, asc, desc } from "drizzle-orm";
 import {
   jobs,
   users,
@@ -7,8 +7,10 @@ import {
   clientLocations,
   customerCompanies,
   jobScheduleAudit,
+  jobVisits,
 } from "@shared/schema";
 import { BaseRepository } from "./base";
+import { jobVisitsRepository, isVisitActioned } from "./jobVisits";
 import {
   // Domain helpers - SINGLE SOURCE OF TRUTH for scheduling logic
   BACKLOG_STATUS,
@@ -101,6 +103,10 @@ export interface CalendarJobWithDetails {
   }>;
   /** Job version for optimistic locking */
   version: number;
+  /** Visit ID (the job_visit driving this calendar event) - ADDITIVE */
+  visitId?: string;
+  /** Visit number within the job (e.g., 1, 2, 3) - ADDITIVE */
+  visitNumber?: number | null;
 }
 
 /**
@@ -155,12 +161,18 @@ export function countOutsideVisibleHours(
 
 export class CalendarRepository extends BaseRepository {
   /**
-   * CANONICAL SCHEDULING: Get scheduled jobs for a date range
+   * PHASE 3: Get scheduled jobs for a date range from job_visits
+   *
+   * MIGRATION: Now reads from job_visits instead of jobs.scheduledStart
+   * Uses same selection rules as syncJobScheduleFromVisits:
+   * - Eligible visit = is_active=true, scheduled_start NOT NULL, status NOT IN (cancelled, completed)
+   * - Selection = earliest future visit if any, else most recent past
+   * - Only include jobs whose "next visit" falls in [startDate, endDate)
    *
    * INVARIANTS:
    * - Calendar shows SCHEDULED work only (NOT status-based)
-   * - Scheduled = scheduledStart IS NOT NULL (canonical check)
-   * - All-day events have scheduledStart = midnight of their day
+   * - Schedule data comes from job_visits (transitional until Model B)
+   * - Technician data comes from visit.assigned_technician_ids
    * - Range is [startDate, endDate) - exclusive end to prevent boundary issues
    *
    * @param companyId - Tenant ID
@@ -172,48 +184,100 @@ export class CalendarRepository extends BaseRepository {
     startDate: Date,
     endDate: Date
   ): Promise<CalendarJobWithDetails[]> {
-    // MODEL A: Filter by schedule existence, NOT by status
-    // Range is [startDate, endDate) - exclusive end for clean boundaries
-    const jobRows = await db
-      .select({
-        id: jobs.id,
-        companyId: jobs.companyId,
-        jobNumber: jobs.jobNumber,
-        jobType: jobs.jobType,
-        summary: jobs.summary,
-        status: jobs.status,
-        locationId: jobs.locationId,
-        scheduledStart: jobs.scheduledStart,
-        scheduledEnd: jobs.scheduledEnd,
-        isAllDay: jobs.isAllDay,
-        durationMinutes: jobs.durationMinutes,
-        assignedTechnicianIds: jobs.assignedTechnicianIds,
-        primaryTechnicianId: jobs.primaryTechnicianId,
-        locationName: clientLocations.companyName,
-        customerCompanyId: clientLocations.parentCompanyId,
-        version: jobs.version,
-      })
-      .from(jobs)
-      .leftJoin(clientLocations, eq(jobs.locationId, clientLocations.id))
-      .where(
-        and(
-          eq(jobs.companyId, companyId),
-          // Exclude soft-deleted jobs
-          isNull(jobs.deletedAt),
-          // CANONICAL SCHEDULING: scheduledStart IS NOT NULL means scheduled
-          // All-day events also have scheduledStart set (to midnight of the day)
-          sql`${jobs.scheduledStart} IS NOT NULL`,
-          // Range filter: scheduledStart >= startDate AND scheduledStart < endDate (exclusive end)
-          gte(jobs.scheduledStart, startDate),
-          lt(jobs.scheduledStart, endDate)
-        )
+    // PHASE 3: Excluded visit statuses (same as syncJobScheduleFromVisits)
+    const EXCLUDED_VISIT_STATUSES = ['cancelled', 'completed'];
+    const now = new Date();
+
+    // Step 1: Get all eligible visits for this company, grouped and ranked per job
+    // Using raw SQL for the window function ranking
+    const rankedVisitsQuery = await db.execute(sql`
+      WITH eligible_visits AS (
+        SELECT
+          jv.id as visit_id,
+          jv.job_id,
+          jv.scheduled_start,
+          jv.scheduled_end,
+          jv.is_all_day,
+          jv.assigned_technician_id,
+          jv.assigned_technician_ids,
+          jv.estimated_duration_minutes,
+          jv.status as visit_status,
+          jv.visit_number
+        FROM job_visits jv
+        WHERE jv.company_id = ${companyId}
+          AND jv.is_active = true
+          AND jv.scheduled_start IS NOT NULL
+          AND jv.status NOT IN ('cancelled', 'completed')
+      ),
+      ranked_visits AS (
+        SELECT
+          ev.*,
+          ROW_NUMBER() OVER (
+            PARTITION BY ev.job_id
+            ORDER BY
+              CASE WHEN ev.scheduled_start >= ${now} THEN 0 ELSE 1 END,
+              CASE WHEN ev.scheduled_start >= ${now} THEN ev.scheduled_start END ASC NULLS LAST,
+              CASE WHEN ev.scheduled_start < ${now} THEN ev.scheduled_start END DESC NULLS LAST
+          ) as rn
+        FROM eligible_visits ev
       )
-      .orderBy(jobs.scheduledStart);
+      SELECT
+        rv.visit_id,
+        rv.job_id,
+        rv.scheduled_start,
+        rv.scheduled_end,
+        rv.is_all_day,
+        rv.assigned_technician_id,
+        rv.assigned_technician_ids,
+        rv.estimated_duration_minutes,
+        rv.visit_number,
+        j.id,
+        j.company_id,
+        j.job_number,
+        j.job_type,
+        j.summary,
+        j.status,
+        j.location_id,
+        j.version,
+        cl.company_name as location_name,
+        cl.parent_company_id as customer_company_id
+      FROM ranked_visits rv
+      JOIN jobs j ON rv.job_id = j.id
+      LEFT JOIN client_locations cl ON j.location_id = cl.id
+      WHERE rv.rn = 1
+        AND rv.scheduled_start >= ${startDate}
+        AND rv.scheduled_start < ${endDate}
+        AND j.deleted_at IS NULL
+      ORDER BY rv.scheduled_start
+    `);
+
+    // Parse raw results
+    const jobRows = (rankedVisitsQuery.rows || []) as Array<{
+      visit_id: string;
+      job_id: string;
+      scheduled_start: Date | string;
+      scheduled_end: Date | string | null;
+      is_all_day: boolean;
+      assigned_technician_id: string | null;
+      assigned_technician_ids: string[] | null;
+      estimated_duration_minutes: number | null;
+      visit_number: number | null;
+      id: string;
+      company_id: string;
+      job_number: number;
+      job_type: string;
+      summary: string;
+      status: string;
+      location_id: string;
+      version: number;
+      location_name: string | null;
+      customer_company_id: string | null;
+    }>;
 
     // DEV-only debug log
     if (IS_DEV) {
       console.log(
-        `[Calendar] getScheduledJobsInRange: company=${companyId} range=[${startDate.toISOString()}, ${endDate.toISOString()}) found=${jobRows.length} scheduled`
+        `[Calendar] getScheduledJobsInRange (PHASE 3 - job_visits): company=${companyId} range=[${startDate.toISOString()}, ${endDate.toISOString()}) found=${jobRows.length} scheduled`
       );
     }
 
@@ -221,21 +285,21 @@ export class CalendarRepository extends BaseRepository {
       return [];
     }
 
-    // Collect all technician IDs to fetch in bulk
+    // Collect all technician IDs to fetch in bulk (from VISIT data)
     const technicianIdSet = new Set<string>();
     const customerCompanyIds = new Set<string>();
 
-    for (const job of jobRows) {
-      if (job.primaryTechnicianId) {
-        technicianIdSet.add(job.primaryTechnicianId);
+    for (const row of jobRows) {
+      if (row.assigned_technician_id) {
+        technicianIdSet.add(row.assigned_technician_id);
       }
-      if (job.assignedTechnicianIds) {
-        for (const techId of job.assignedTechnicianIds) {
+      if (row.assigned_technician_ids) {
+        for (const techId of row.assigned_technician_ids) {
           technicianIdSet.add(techId);
         }
       }
-      if (job.customerCompanyId) {
-        customerCompanyIds.add(job.customerCompanyId);
+      if (row.customer_company_id) {
+        customerCompanyIds.add(row.customer_company_id);
       }
     }
 
@@ -284,39 +348,61 @@ export class CalendarRepository extends BaseRepository {
     }
 
     // Build result with technician details
-    const results = jobRows.map((job) => {
-      const techIds = job.assignedTechnicianIds || [];
+    // PHASE 3: Use visit data for schedule fields, job data for everything else
+    const results = jobRows.map((row) => {
+      // Technician IDs from visit (fallback to single tech if array is null)
+      const techIds = row.assigned_technician_ids ||
+        (row.assigned_technician_id ? [row.assigned_technician_id] : []);
       const technicians = techIds
         .map((id) => technicianMap.get(id))
         .filter((t): t is { id: string; name: string; color: string | null } => t !== undefined);
 
+      // Parse dates (may be strings from raw SQL)
+      const scheduledStart = row.scheduled_start
+        ? (row.scheduled_start instanceof Date ? row.scheduled_start : new Date(row.scheduled_start))
+        : null;
+      const scheduledEnd = row.scheduled_end
+        ? (row.scheduled_end instanceof Date ? row.scheduled_end : new Date(row.scheduled_end))
+        : null;
+
+      // Compute duration from visit data
+      let durationMinutes: number | null = null;
+      if (!row.is_all_day && scheduledStart && scheduledEnd) {
+        durationMinutes = Math.max(15, Math.round((scheduledEnd.getTime() - scheduledStart.getTime()) / 60000));
+      }
+
       return {
-        id: job.id,
-        companyId: job.companyId,
-        jobId: job.id,
-        jobNumber: job.jobNumber,
-        jobType: job.jobType,
-        summary: job.summary,
-        status: job.status,
-        locationId: job.locationId,
-        locationName: job.locationName || "Unknown Location",
-        customerCompanyId: job.customerCompanyId,
-        customerCompanyName: job.customerCompanyId
-          ? customerCompanyMap.get(job.customerCompanyId) || null
+        id: row.job_id,
+        companyId: row.company_id,
+        jobId: row.job_id,
+        jobNumber: row.job_number,
+        jobType: row.job_type,
+        summary: row.summary,
+        status: row.status,
+        locationId: row.location_id,
+        locationName: row.location_name || "Unknown Location",
+        customerCompanyId: row.customer_company_id,
+        customerCompanyName: row.customer_company_id
+          ? customerCompanyMap.get(row.customer_company_id) || null
           : null,
-        scheduledStart: job.scheduledStart,
-        scheduledEnd: job.scheduledEnd,
-        isAllDay: job.isAllDay ?? false,
-        durationMinutes: job.durationMinutes,
-        assignedTechnicianIds: job.assignedTechnicianIds,
-        primaryTechnicianId: job.primaryTechnicianId,
+        // PHASE 3: Schedule data from visit
+        scheduledStart,
+        scheduledEnd,
+        isAllDay: row.is_all_day ?? false,
+        durationMinutes,
+        // PHASE 3: Technician data from visit
+        assignedTechnicianIds: techIds.length > 0 ? techIds : null,
+        primaryTechnicianId: row.assigned_technician_id,
         technicians,
-        version: job.version,
+        version: row.version,
+        // ADDITIVE: Visit info for calendar cards
+        visitId: row.visit_id,
+        visitNumber: row.visit_number,
       };
     });
 
     // DEV: Assert calendar results meet Model A invariants
-    assertCalendarQueryResults(results, "storage:getScheduledJobsInRange");
+    assertCalendarQueryResults(results, "storage:getScheduledJobsInRange:PHASE3");
 
     return results;
   }
@@ -559,24 +645,25 @@ export class CalendarRepository extends BaseRepository {
   }
 
   /**
-   * MODEL A: Schedule a job (place it on the calendar)
+   * PHASE 4: Schedule a job (place it on the calendar)
    *
-   * OPTIMIZED: 2026-01-30 - Reduced from 2 DB calls to 1 in happy path
-   * - Removed separate getJobById() - version check is in UPDATE WHERE clause
-   * - Terminal status check is in UPDATE WHERE clause
-   * - Only fetch job on error to determine error type
+   * MIGRATION: Now writes to job_visits instead of jobs table.
+   * The jobs table is updated via syncJobScheduleFromVisits for backwards compat.
    *
-   * INVARIANTS (MODEL A - Timestamp Canonical):
-   * - Sets scheduledStart/scheduledEnd for ALL scheduled events (timed AND all-day)
-   * - All-day events: scheduledStart=midnight, scheduledEnd=end-of-day (NOT NULL)
-   * - Status derived from schedule presence via domain layer
-   * - Ensures assignedTechnicianIds is never NULL when technician is set
+   * BEHAVIOR:
+   * - Creates a new job_visit row with scheduled_start/end, technician assignment
+   * - visit_number is auto-computed as max(existing)+1
+   * - Calls syncJobScheduleFromVisits to mirror to jobs table
+   * - Returns the job row (after sync) for API response compatibility
+   *
+   * INVARIANTS:
+   * - job_visits.scheduled_start is always set for scheduled events
+   * - jobs.* schedule fields are driven ONLY by syncJobScheduleFromVisits
    */
   async scheduleJob(
     companyId: string,
     data: {
       jobId: string;
-      // 2026-01-30: Accept null for explicit unassignment (undefined = no change)
       technicianUserId?: string | null;
       startAt: Date;
       endAt: Date;
@@ -586,159 +673,148 @@ export class CalendarRepository extends BaseRepository {
       expectedVersion?: number;
     }
   ) {
-    // OPTIMIZED: Normalize schedule times directly without fetching job first
+    // Normalize schedule times through canonical helper
     const normalized = normalizeScheduleTimes({
       allDay: data.allDay,
       startAt: data.startAt,
       endAt: data.endAt,
     });
 
-    // CANONICAL: Use normalizeTechnicianAssignment for consistent invariant enforcement
+    // Sanitize for all-day if needed
+    let scheduledStart = normalized.scheduledStart;
+    let scheduledEnd = normalized.scheduledEnd;
+    const isAllDay = normalized.isAllDay;
+
+    // Build technician assignment
     const techAssignment = normalizeTechnicianAssignment(data.technicianUserId || null);
 
-    // Prepare update data
-    const updateData: any = {
-      scheduledStart: normalized.scheduledStart,
-      scheduledEnd: normalized.scheduledEnd,
-      isAllDay: normalized.isAllDay,
-      status: 'open', // Scheduling keeps job in 'open' status
-      updatedAt: new Date(),
-      // Version increment handled in SQL below
-      primaryTechnicianId: techAssignment.primaryTechnicianId,
-      assignedTechnicianIds: techAssignment.assignedTechnicianIds,
-    };
-
-    // Notes go to description if provided
-    if (data.notes) {
-      updateData.description = data.notes;
-    }
-
-    // Sanitize all-day timestamps for UTC-safe DB write
-    sanitizeAllDayTimestamps(updateData, data.jobId);
-
     if (IS_DEV) {
-      console.log('[SCHEDULE-DEBUG] scheduleJob called:', {
+      console.log('[SCHEDULE-DEBUG] scheduleJob (PHASE 4 - job_visits) called:', {
         jobId: data.jobId,
         allDay: data.allDay,
-        isAllDay: updateData.isAllDay,
-        scheduledStartValue: updateData.scheduledStart?.toISOString?.() ?? String(updateData.scheduledStart),
-        scheduledEndValue: updateData.scheduledEnd?.toISOString?.() ?? String(updateData.scheduledEnd),
+        isAllDay,
+        scheduledStart: scheduledStart?.toISOString(),
+        scheduledEnd: scheduledEnd?.toISOString(),
         expectedVersion: data.expectedVersion,
       });
     }
 
-    // OPTIMIZED: Single UPDATE with version + terminal check in WHERE clause
-    // This eliminates the separate getJobById() call in the happy path
-    const result = await db.transaction(async (tx) => {
-      // Build WHERE conditions
-      const whereConditions = [
-        eq(jobs.id, data.jobId),
-        eq(jobs.companyId, companyId),
-        // Terminal status check - cannot schedule invoiced/archived jobs
-        sql`${jobs.status} NOT IN ('invoiced', 'archived')`,
-      ];
+    // First verify job exists, belongs to tenant, and check version + terminal status
+    const existingJob = await this.getJobById(companyId, data.jobId);
+    if (!existingJob) {
+      throw new Error('Job not found');
+    }
 
-      // Add version check if provided (optimistic locking)
-      if (data.expectedVersion !== undefined) {
-        whereConditions.push(eq(jobs.version, data.expectedVersion));
+    // Terminal status check
+    if (TERMINAL_STATUSES.includes(existingJob.status as any)) {
+      throw new TerminalJobImmutableError(data.jobId, existingJob.status);
+    }
+
+    // Version check (optimistic locking against job version)
+    if (data.expectedVersion !== undefined) {
+      if (existingJob.version === null || existingJob.version === undefined) {
+        throw new VersionNotInitializedError(data.jobId);
       }
-
-      // UPDATE with version increment and all checks in WHERE
-      const rows = await tx
-        .update(jobs)
-        .set({
-          ...updateData,
-          version: sql`${jobs.version} + 1`,
-        })
-        .where(and(...whereConditions))
-        .returning();
-
-      // If no rows updated, determine the error
-      if (rows.length === 0) {
-        // Fetch job to determine error type (only on error path)
-        const existing = await tx
-          .select({ id: jobs.id, version: jobs.version, status: jobs.status })
-          .from(jobs)
-          .where(and(eq(jobs.id, data.jobId), eq(jobs.companyId, companyId)))
-          .limit(1);
-
-        if (existing.length === 0) {
-          throw new Error('Job not found');
-        }
-
-        const job = existing[0];
-
-        // Check if terminal status blocked the update
-        if (TERMINAL_STATUSES.includes(job.status as any)) {
-          throw new TerminalJobImmutableError(data.jobId, job.status);
-        }
-
-        // Check version mismatch
-        if (data.expectedVersion !== undefined) {
-          if (job.version === null || job.version === undefined) {
-            throw new VersionNotInitializedError(data.jobId);
-          }
-          if (job.version !== data.expectedVersion) {
-            throw new VersionMismatchError(data.expectedVersion, job.version);
-          }
-        }
-
-        throw new Error('Failed to schedule job - unknown error');
+      if (existingJob.version !== data.expectedVersion) {
+        throw new VersionMismatchError(data.expectedVersion, existingJob.version);
       }
+    }
 
-      const updated = rows[0];
-
-      // AUDIT: Log scheduling change (oldFields is null since we didn't pre-fetch)
-      await this.writeScheduleAudit(tx, {
-        jobId: data.jobId,
-        companyId,
-        userId: null,
-        contextLabel: 'storage:createAssignment',
-        oldFields: null, // OPTIMIZED: We don't pre-fetch, so oldFields is null
-        newFields: {
-          scheduledStart: updated.scheduledStart,
-          scheduledEnd: updated.scheduledEnd,
-          isAllDay: updated.isAllDay,
-          status: updated.status,
-          version: updated.version,
-        },
-      });
-
-      return updated;
+    // PHASE 4: Create job_visit row
+    const visit = await jobVisitsRepository.createJobVisit(companyId, data.jobId, {
+      scheduledStart,
+      scheduledEnd,
+      isAllDay,
+      assignedTechnicianId: techAssignment.primaryTechnicianId,
+      assignedTechnicianIds: techAssignment.assignedTechnicianIds,
+      status: 'scheduled',
+      visitNotes: data.notes,
     });
 
-    // DEV: Assert result meets invariants
-    if (result) {
-      assertSchedulingInvariants(result, "storage:scheduleJob:result");
-      assertTechnicianAssignmentInvariant(result, "storage:scheduleJob:result");
+    // JOBBER-LIKE BEHAVIOR: Reopen completed jobs when scheduling a follow-up visit.
+    // Rationale: A completed job means "the work is done". Scheduling another visit
+    // means "more work is needed", so the job should return to 'open' status.
+    // This is a valid status transition per JOB_STATUS_FLOW: completed -> open.
+    // syncJobScheduleFromVisits only mirrors schedule fields, not status.
+    if (existingJob.status === 'completed') {
+      await db
+        .update(jobs)
+        .set({
+          status: 'open',
+          openSubStatus: null, // Clear any sub-status
+          updatedAt: new Date(),
+          // Note: version is already incremented by syncJobScheduleFromVisits
+        })
+        .where(and(eq(jobs.id, data.jobId), eq(jobs.companyId, companyId)));
+
+      if (IS_DEV) {
+        console.log(`[Calendar] scheduleJob: Reopened completed job ${data.jobId} to 'open' status`);
+      }
     }
+
+    // syncJobScheduleFromVisits is called inside createJobVisit, which updates jobs table
+    // Re-fetch job to return updated data
+    const result = await this.getJobById(companyId, data.jobId);
+
+    // Write audit log
+    const wasReopened = existingJob.status === 'completed';
+    await db.insert(jobScheduleAudit).values({
+      jobId: data.jobId,
+      companyId,
+      userId: null,
+      contextLabel: wasReopened ? 'storage:scheduleJob:PHASE4:reopen' : 'storage:scheduleJob:PHASE4',
+      oldFields: wasReopened ? { status: 'completed' } : null,
+      newFields: {
+        visitId: visit.id,
+        scheduledStart: result?.scheduledStart,
+        scheduledEnd: result?.scheduledEnd,
+        isAllDay: result?.isAllDay,
+        version: result?.version,
+        ...(wasReopened && { status: 'open', statusChange: 'completed -> open' }),
+      },
+    });
 
     if (IS_DEV) {
       console.log(
-        `[Calendar] scheduleJob: job=${data.jobId} scheduledStart=${result?.scheduledStart?.toISOString()} isAllDay=${result?.isAllDay} version=${result?.version}`
+        `[Calendar] scheduleJob (PHASE 4): job=${data.jobId} visitId=${visit.id} scheduledStart=${result?.scheduledStart?.toISOString()} isAllDay=${result?.isAllDay} version=${result?.version}`
       );
     }
 
-    return result;
+    // Return job with visit info for client-side highlighting
+    return {
+      ...result,
+      visit: {
+        id: visit.id,
+        scheduledStart: visit.scheduledStart,
+        scheduledEnd: visit.scheduledEnd,
+        isAllDay: visit.isAllDay,
+        status: visit.status,
+      },
+    };
   }
 
   /**
-   * MODEL A: Reschedule a job (update schedule/reassign technician)
+   * PHASE 4: Reschedule a job (update schedule/reassign technician)
    *
-   * OPTIMIZED: 2026-01-30 - Reduced from 2 DB calls to 1 in happy path
-   * - Removed separate getJobById() - version check is in UPDATE WHERE clause
-   * - Terminal status check is in UPDATE WHERE clause
-   * - Only fetch job on error to determine error type
+   * MIGRATION: Now writes to job_visits instead of jobs table.
+   * The jobs table is updated via syncJobScheduleFromVisits for backwards compat.
    *
-   * INVARIANTS delegated to domain/scheduling.ts:
-   * - Schedule normalization (all-day boundaries)
-   * - Invariant assertions
+   * SPAWN-ON-ACTION BEHAVIOR:
+   * - Finds the "current eligible visit" (same selection as calendar read)
+   * - If visit has NO activity: updates that visit's fields (no new visit created)
+   * - If visit IS actioned (checkedIn, status progressed, etc.):
+   *   - Soft-deletes old visit (is_active=false) to preserve history
+   *   - Creates a new visit with the requested schedule fields
+   * - Respects optimistic locking via job.version (not visit.version) for API compat
+   * - Calls syncJobScheduleFromVisits to mirror to jobs table
+   * - Returns the job row (after sync) for API response compatibility
+   *
+   * INVARIANT: Dragging an untouched visit back and forth does NOT create extra visits.
    */
   async rescheduleJob(
     companyId: string,
     jobId: string,
     data: {
-      // 2026-01-30: Accept null for explicit unassignment (undefined = no change)
       technicianUserId?: string | null;
       startAt?: Date;
       endAt?: Date;
@@ -748,267 +824,284 @@ export class CalendarRepository extends BaseRepository {
       expectedVersion?: number;
     }
   ) {
-    // Build dynamic SET clause - only include fields that are provided
-    const updateData: any = {
-      updatedAt: new Date(),
-      // Version increment handled in SQL below
-    };
+    if (IS_DEV) {
+      console.log('[SCHEDULE-DEBUG] rescheduleJob (PHASE 4 - spawn-on-action) called:', {
+        jobId,
+        allDay: data.allDay,
+        startAt: data.startAt?.toISOString(),
+        endAt: data.endAt?.toISOString(),
+        technicianUserId: data.technicianUserId,
+        expectedVersion: data.expectedVersion,
+      });
+    }
 
-    // Apply scheduling field updates if provided
-    const hasSchedulingChanges = data.startAt !== undefined || data.allDay !== undefined;
-    if (hasSchedulingChanges) {
-      // Normalize schedule times
+    // First verify job exists, belongs to tenant, and check version + terminal status
+    const existingJob = await this.getJobById(companyId, jobId);
+    if (!existingJob) {
+      throw new Error('Job not found');
+    }
+
+    // Terminal status check
+    if (TERMINAL_STATUSES.includes(existingJob.status as any)) {
+      throw new TerminalJobImmutableError(jobId, existingJob.status);
+    }
+
+    // Version check (optimistic locking against job version for API compat)
+    if (data.expectedVersion !== undefined) {
+      if (existingJob.version === null || existingJob.version === undefined) {
+        throw new VersionNotInitializedError(jobId);
+      }
+      if (existingJob.version !== data.expectedVersion) {
+        throw new VersionMismatchError(data.expectedVersion, existingJob.version);
+      }
+    }
+
+    // PHASE 4: Find current eligible visit
+    const currentVisit = await jobVisitsRepository.getCurrentEligibleVisit(companyId, jobId);
+    if (!currentVisit) {
+      // No eligible visit exists - create one instead (job was unscheduled)
+      // This handles the edge case where job had no visits
+      if (data.startAt) {
+        const normalized = normalizeScheduleTimes({
+          allDay: data.allDay,
+          startAt: data.startAt,
+          endAt: data.endAt,
+        });
+        const techAssignment = normalizeTechnicianAssignment(data.technicianUserId || null);
+
+        await jobVisitsRepository.createJobVisit(companyId, jobId, {
+          scheduledStart: normalized.scheduledStart,
+          scheduledEnd: normalized.scheduledEnd,
+          isAllDay: normalized.isAllDay,
+          assignedTechnicianId: techAssignment.primaryTechnicianId,
+          assignedTechnicianIds: techAssignment.assignedTechnicianIds,
+          status: 'scheduled',
+          visitNotes: data.notes,
+        });
+      }
+      return await this.getJobById(companyId, jobId);
+    }
+
+    // SPAWN-ON-ACTION: Check if visit has been actioned
+    const visitIsActioned = isVisitActioned(currentVisit);
+
+    if (IS_DEV) {
+      console.log('[RESCHEDULE-DEBUG] Spawn-on-action check:', {
+        visitId: currentVisit.id,
+        isActioned: visitIsActioned,
+        checkedInAt: currentVisit.checkedInAt,
+        checkedOutAt: currentVisit.checkedOutAt,
+        actualDurationMinutes: currentVisit.actualDurationMinutes,
+        status: currentVisit.status,
+      });
+    }
+
+    if (visitIsActioned) {
+      // ACTIONED: Soft-delete old visit and create new one
+      // This preserves history of the actioned visit
+
+      // Step 1: Soft-delete old visit (is_active=false)
+      await jobVisitsRepository.updateJobVisit(
+        companyId,
+        currentVisit.id,
+        currentVisit.version,
+        { isActive: false }
+      );
+
+      if (IS_DEV) {
+        console.log(`[RESCHEDULE-DEBUG] Soft-deleted actioned visit: ${currentVisit.id}`);
+      }
+
+      // Step 2: Create new visit with requested schedule
+      // Normalize scheduling fields
       const normalized = normalizeScheduleTimes({
         allDay: data.allDay,
         startAt: data.startAt,
         endAt: data.endAt,
       });
-      updateData.scheduledStart = normalized.scheduledStart;
-      updateData.scheduledEnd = normalized.scheduledEnd;
-      updateData.isAllDay = normalized.isAllDay;
-    }
 
-    // Apply technician assignment if provided
-    if (data.technicianUserId !== undefined) {
-      // CANONICAL: Use normalizeTechnicianAssignment for consistent invariant enforcement
-      // 2026-01-30: null = explicit unassign, undefined = no change (already filtered)
-      const techAssignment = normalizeTechnicianAssignment(data.technicianUserId || null);
-      updateData.primaryTechnicianId = techAssignment.primaryTechnicianId;
-      updateData.assignedTechnicianIds = techAssignment.assignedTechnicianIds;
+      // Technician: use new value if provided, else carry forward from old visit
+      const techAssignment = data.technicianUserId !== undefined
+        ? normalizeTechnicianAssignment(data.technicianUserId || null)
+        : normalizeTechnicianAssignment(currentVisit.assignedTechnicianId || null);
+
+      const newVisit = await jobVisitsRepository.createJobVisit(companyId, jobId, {
+        scheduledStart: normalized.scheduledStart,
+        scheduledEnd: normalized.scheduledEnd,
+        isAllDay: normalized.isAllDay,
+        assignedTechnicianId: techAssignment.primaryTechnicianId,
+        assignedTechnicianIds: techAssignment.assignedTechnicianIds,
+        status: 'scheduled',
+        visitNotes: data.notes,
+      });
 
       if (IS_DEV) {
-        console.log('[RESCHEDULE-DEBUG] Technician update:', {
-          inputTechnicianUserId: data.technicianUserId,
-          isNull: data.technicianUserId === null,
-          normalizedPrimary: techAssignment.primaryTechnicianId,
-          normalizedAssigned: techAssignment.assignedTechnicianIds,
+        console.log(`[RESCHEDULE-DEBUG] Created new visit: ${newVisit.id} (spawn-on-action)`);
+      }
+
+      // Write audit log for spawn-on-action
+      await db.insert(jobScheduleAudit).values({
+        jobId,
+        companyId,
+        userId: null,
+        contextLabel: 'storage:rescheduleJob:spawn-on-action',
+        oldFields: {
+          visitId: currentVisit.id,
+          scheduledStart: currentVisit.scheduledStart,
+          status: currentVisit.status,
+        },
+        newFields: {
+          visitId: newVisit.id,
+          scheduledStart: newVisit.scheduledStart,
+          action: 'spawned-new-visit',
+        },
+      });
+
+    } else {
+      // NOT ACTIONED: Update the existing visit in place
+      // Build update payload for the visit
+      const visitUpdate: any = {};
+
+      // Apply scheduling field updates if provided
+      if (data.startAt !== undefined || data.allDay !== undefined) {
+        const normalized = normalizeScheduleTimes({
+          allDay: data.allDay,
+          startAt: data.startAt,
+          endAt: data.endAt,
         });
+        visitUpdate.scheduledStart = normalized.scheduledStart;
+        visitUpdate.scheduledEnd = normalized.scheduledEnd;
+        visitUpdate.isAllDay = normalized.isAllDay;
+      }
+
+      // Apply technician assignment if provided
+      if (data.technicianUserId !== undefined) {
+        const techAssignment = normalizeTechnicianAssignment(data.technicianUserId || null);
+        visitUpdate.assignedTechnicianId = techAssignment.primaryTechnicianId;
+        visitUpdate.assignedTechnicianIds = techAssignment.assignedTechnicianIds;
+
+        if (IS_DEV) {
+          console.log('[RESCHEDULE-DEBUG] Technician update:', {
+            inputTechnicianUserId: data.technicianUserId,
+            normalizedPrimary: techAssignment.primaryTechnicianId,
+            normalizedAssigned: techAssignment.assignedTechnicianIds,
+          });
+        }
+      }
+
+      if (data.notes !== undefined) {
+        visitUpdate.visitNotes = data.notes;
+      }
+
+      // Update the visit (this calls syncJobScheduleFromVisits internally)
+      if (Object.keys(visitUpdate).length > 0) {
+        await jobVisitsRepository.updateJobVisit(
+          companyId,
+          currentVisit.id,
+          currentVisit.version, // Use visit version for visit-level locking
+          visitUpdate
+        );
+      }
+
+      if (IS_DEV) {
+        console.log(`[RESCHEDULE-DEBUG] Updated existing visit in place: ${currentVisit.id}`);
       }
     }
 
-    if (data.notes !== undefined) {
-      updateData.description = data.notes;
-    }
-
-    // Sanitize all-day timestamps for UTC-safe DB write
-    sanitizeAllDayTimestamps(updateData, jobId);
+    // Re-fetch job to return updated data (jobs table was synced)
+    const result = await this.getJobById(companyId, jobId);
 
     if (IS_DEV) {
-      console.log('[SCHEDULE-DEBUG] rescheduleJob called:', {
-        jobId,
-        allDay: data.allDay,
-        isAllDay: updateData.isAllDay,
-        hasScheduledStart: 'scheduledStart' in updateData,
-        hasScheduledEnd: 'scheduledEnd' in updateData,
-        scheduledStartValue: updateData.scheduledStart?.toISOString?.() ?? String(updateData.scheduledStart),
-        scheduledEndValue: updateData.scheduledEnd?.toISOString?.() ?? String(updateData.scheduledEnd),
-        expectedVersion: data.expectedVersion,
-      });
-    }
-
-    // OPTIMIZED: Single UPDATE with version + terminal check in WHERE clause
-    const result = await db.transaction(async (tx) => {
-      // Build WHERE conditions
-      const whereConditions = [
-        eq(jobs.id, jobId),
-        eq(jobs.companyId, companyId),
-        // Terminal status check - cannot reschedule invoiced/archived jobs
-        sql`${jobs.status} NOT IN ('invoiced', 'archived')`,
-      ];
-
-      // Add version check if provided (optimistic locking)
-      if (data.expectedVersion !== undefined) {
-        whereConditions.push(eq(jobs.version, data.expectedVersion));
-      }
-
-      // UPDATE with version increment and all checks in WHERE
-      const rows = await tx
-        .update(jobs)
-        .set({
-          ...updateData,
-          version: sql`${jobs.version} + 1`,
-        })
-        .where(and(...whereConditions))
-        .returning();
-
-      // If no rows updated, determine the error
-      if (rows.length === 0) {
-        // Fetch job to determine error type (only on error path)
-        const existing = await tx
-          .select({ id: jobs.id, version: jobs.version, status: jobs.status })
-          .from(jobs)
-          .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
-          .limit(1);
-
-        if (existing.length === 0) {
-          throw new Error('Job not found');
-        }
-
-        const job = existing[0];
-
-        // Check if terminal status blocked the update
-        if (TERMINAL_STATUSES.includes(job.status as any)) {
-          throw new TerminalJobImmutableError(jobId, job.status);
-        }
-
-        // Check version mismatch
-        if (data.expectedVersion !== undefined) {
-          if (job.version === null || job.version === undefined) {
-            throw new VersionNotInitializedError(jobId);
-          }
-          if (job.version !== data.expectedVersion) {
-            throw new VersionMismatchError(data.expectedVersion, job.version);
-          }
-        }
-
-        throw new Error('Failed to reschedule job - unknown error');
-      }
-
-      const updated = rows[0];
-
-      // Assert technician invariant after write
-      assertTechnicianAssignmentInvariant(updated, "storage:rescheduleJob");
-
-      // AUDIT: Log scheduling change (only if scheduling fields changed)
-      if (hasSchedulingChanges) {
-        await this.writeScheduleAudit(tx, {
-          jobId,
-          companyId,
-          userId: null,
-          contextLabel: 'storage:updateAssignment',
-          oldFields: null, // OPTIMIZED: We don't pre-fetch, so oldFields is null
-          newFields: {
-            scheduledStart: updated.scheduledStart,
-            scheduledEnd: updated.scheduledEnd,
-            isAllDay: updated.isAllDay,
-            status: updated.status,
-            version: updated.version,
-          },
-        });
-      }
-
-      return updated;
-    });
-
-    // DEV: Assert result meets invariants
-    if (result) {
-      assertSchedulingInvariants(result, "storage:rescheduleJob:result");
+      console.log(
+        `[Calendar] rescheduleJob (PHASE 4): job=${jobId} scheduledStart=${result?.scheduledStart?.toISOString()} version=${result?.version} actioned=${visitIsActioned}`
+      );
     }
 
     return result;
   }
 
   /**
-   * MODEL A: Unschedule a job (returns job to backlog)
+   * PHASE 4: Unschedule a job (returns job to backlog)
    *
-   * OPTIMIZED: 2026-01-30 - Reduced from 2 DB calls to 1 in happy path
-   * - Removed separate getJobById() - version check is in UPDATE WHERE clause
-   * - Terminal status check is in UPDATE WHERE clause
-   * - Only fetch job on error to determine error type
+   * MIGRATION: Now writes to job_visits instead of jobs table.
+   * The jobs table is updated via syncJobScheduleFromVisits for backwards compat.
    *
-   * INVARIANTS:
-   * - Clears scheduledStart/scheduledEnd/isAllDay (removes schedule)
-   * - Status stays 'open' (job returns to backlog)
+   * BEHAVIOR:
+   * - Finds the "current eligible visit" (same selection as calendar read)
+   * - Sets is_active=false to soft-delete the visit (consistent with repository pattern)
+   * - Calls syncJobScheduleFromVisits to update jobs table
+   *   (which will clear schedule fields if no other eligible visits exist)
+   * - Returns the job row (after sync) for API response compatibility
    */
   async unscheduleJob(companyId: string, jobId: string, expectedVersion?: number) {
     if (IS_DEV) {
-      console.log('[SCHEDULE-DEBUG] unscheduleJob called:', {
+      console.log('[SCHEDULE-DEBUG] unscheduleJob (PHASE 4 - job_visits) called:', {
         jobId,
         expectedVersion,
       });
     }
 
-    // OPTIMIZED: Single UPDATE with version + terminal check in WHERE clause
-    const result = await db.transaction(async (tx) => {
-      // Build WHERE conditions
-      const whereConditions = [
-        eq(jobs.id, jobId),
-        eq(jobs.companyId, companyId),
-        // Terminal status check - cannot unschedule invoiced/archived jobs
-        sql`${jobs.status} NOT IN ('invoiced', 'archived')`,
-      ];
+    // First verify job exists, belongs to tenant, and check version + terminal status
+    const existingJob = await this.getJobById(companyId, jobId);
+    if (!existingJob) {
+      throw new Error('Job not found');
+    }
 
-      // Add version check if provided (optimistic locking)
-      if (expectedVersion !== undefined) {
-        whereConditions.push(eq(jobs.version, expectedVersion));
+    // Terminal status check
+    if (TERMINAL_STATUSES.includes(existingJob.status as any)) {
+      throw new TerminalJobImmutableError(jobId, existingJob.status);
+    }
+
+    // Version check (optimistic locking against job version for API compat)
+    if (expectedVersion !== undefined) {
+      if (existingJob.version === null || existingJob.version === undefined) {
+        throw new VersionNotInitializedError(jobId);
       }
-
-      // UPDATE with version increment and all checks in WHERE
-      const rows = await tx
-        .update(jobs)
-        .set({
-          scheduledStart: null,
-          scheduledEnd: null,
-          isAllDay: false,
-          status: 'open', // Return to backlog
-          updatedAt: new Date(),
-          version: sql`${jobs.version} + 1`,
-        })
-        .where(and(...whereConditions))
-        .returning();
-
-      // If no rows updated, determine the error
-      if (rows.length === 0) {
-        // Fetch job to determine error type (only on error path)
-        const existing = await tx
-          .select({ id: jobs.id, version: jobs.version, status: jobs.status })
-          .from(jobs)
-          .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
-          .limit(1);
-
-        if (existing.length === 0) {
-          throw new Error('Job not found');
-        }
-
-        const job = existing[0];
-
-        // Check if terminal status blocked the update
-        if (TERMINAL_STATUSES.includes(job.status as any)) {
-          throw new TerminalJobImmutableError(jobId, job.status);
-        }
-
-        // Check version mismatch
-        if (expectedVersion !== undefined) {
-          if (job.version === null || job.version === undefined) {
-            throw new VersionNotInitializedError(jobId);
-          }
-          if (job.version !== expectedVersion) {
-            throw new VersionMismatchError(expectedVersion, job.version);
-          }
-        }
-
-        throw new Error('Failed to unschedule job - unknown error');
+      if (existingJob.version !== expectedVersion) {
+        throw new VersionMismatchError(expectedVersion, existingJob.version);
       }
+    }
 
-      const updated = rows[0];
-
-      // AUDIT: Log scheduling change
-      await this.writeScheduleAudit(tx, {
-        jobId,
+    // PHASE 4: Find current eligible visit to soft-delete
+    const currentVisit = await jobVisitsRepository.getCurrentEligibleVisit(companyId, jobId);
+    if (currentVisit) {
+      // Set is_active=false (consistent with repository's soft-delete pattern)
+      // This calls syncJobScheduleFromVisits internally, which will update jobs table
+      await jobVisitsRepository.updateJobVisit(
         companyId,
-        userId: null,
-        contextLabel: 'storage:deleteAssignment',
-        oldFields: null, // OPTIMIZED: We don't pre-fetch, so oldFields is null
-        newFields: {
-          scheduledStart: null,
-          scheduledEnd: null,
-          isAllDay: false,
-          status: updated.status,
-          version: updated.version,
-        },
-      });
+        currentVisit.id,
+        currentVisit.version,
+        { isActive: false }
+      );
 
-      return updated;
+      if (IS_DEV) {
+        console.log(`[Calendar] unscheduleJob (PHASE 4): soft-deleted visitId=${currentVisit.id}`);
+      }
+    } else {
+      // No eligible visit exists - just ensure jobs table is synced
+      // This handles edge case where job has no visits but has schedule fields
+      await jobVisitsRepository.syncJobToVisits(companyId, jobId);
+    }
+
+    // Write audit log
+    await db.insert(jobScheduleAudit).values({
+      jobId,
+      companyId,
+      userId: null,
+      contextLabel: 'storage:unscheduleJob:PHASE4',
+      oldFields: null,
+      newFields: {
+        visitId: currentVisit?.id || null,
+        action: 'soft-delete',
+      },
     });
 
-    // DEV: Assert result meets invariants
-    if (result) {
-      assertSchedulingInvariants(result, "storage:unscheduleJob:result");
-    }
+    // Re-fetch job to return updated data
+    const result = await this.getJobById(companyId, jobId);
 
     if (IS_DEV) {
       console.log(
-        `[Calendar] unscheduleJob: job=${jobId} status->${result?.status} version=${result?.version}`
+        `[Calendar] unscheduleJob (PHASE 4): job=${jobId} status->${result?.status} version=${result?.version} scheduledStart=${result?.scheduledStart}`
       );
     }
 

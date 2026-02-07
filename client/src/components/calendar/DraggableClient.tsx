@@ -1,7 +1,8 @@
 import { memo, useRef } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
-import { CheckCircle2, Loader2, AlertTriangle } from "lucide-react";
+import { useLocation } from "wouter";
+import { CheckCircle2, Loader2, AlertTriangle, History } from "lucide-react";
 import { DRAG_ENABLED, getAssignmentStartMinutes, formatTimeFromMinutes, TechnicianColor } from "./calendarUtils";
 import { logClick, logHover, isDiagnosticsEnabled } from "@/lib/calendarDiagnostics";
 
@@ -58,6 +59,9 @@ export const DraggableClient = memo(function DraggableClient({
 }: DraggableClientProps) {
   // Track if we've logged for this card (prevents spam during drag)
   const hasLoggedRef = useRef(false);
+
+  // Navigation for deep link to job visits section
+  const [, setLocation] = useLocation();
 
   // ---------------------------------------------------------------------------
   // Drag disabled computation — Model A rules:
@@ -225,20 +229,44 @@ export const DraggableClient = memo(function DraggableClient({
                 {client.companyName}
               </span>
             </div>
-            {/* Show second line (summary/location) unless card is too short */}
+            {/* Show second line (time + visit #) unless card is too short */}
             {(cardHeight === undefined || cardHeight > 28) && (
-              <div className={`text-[11px] leading-tight text-muted-foreground truncate mt-0.5 ${isCompleted ? "opacity-60" : ""}`}>
-                {assignment && assignment.scheduledHour !== null && assignment.scheduledHour !== undefined ? (
-                  (() => {
-                    const startM = getAssignmentStartMinutes(assignment);
-                    const dur = (assignment.durationMinutes || 60) as number;
-                    const endM = startM + dur;
-                    const timeStr = `${formatTimeFromMinutes(startM, timeFormat)}–${formatTimeFromMinutes(endM, timeFormat)}`;
-                    const location = client.location || assignment?.summary || "";
-                    return location ? `${timeStr} · ${location}` : timeStr;
-                  })()
-                ) : (
-                  assignment?.summary || client.location || ""
+              <div className={`flex items-center gap-1 text-[11px] leading-tight text-muted-foreground mt-0.5 ${isCompleted ? "opacity-60" : ""}`}>
+                <span className="truncate min-w-0 flex-1">
+                  {assignment && assignment.scheduledHour !== null && assignment.scheduledHour !== undefined ? (
+                    (() => {
+                      const startM = getAssignmentStartMinutes(assignment);
+                      const dur = (assignment.durationMinutes || 60) as number;
+                      const endM = startM + dur;
+                      const timeStr = `${formatTimeFromMinutes(startM, timeFormat)}–${formatTimeFromMinutes(endM, timeFormat)}`;
+                      const location = client.location || assignment?.summary || "";
+                      return location ? `${timeStr} · ${location}` : timeStr;
+                    })()
+                  ) : (
+                    assignment?.summary || client.location || ""
+                  )}
+                </span>
+                {/* Visit number badge + history icon for deep link to job visits section */}
+                {assignment?.visitNumber != null && (
+                  <>
+                    <span className="text-[10px] font-medium text-muted-foreground/80 shrink-0">
+                      Visit #{assignment.visitNumber}
+                    </span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        // Navigate to job detail with ?section=visits to auto-expand visits section
+                        const jobId = assignment?.jobId || id;
+                        setLocation(`/jobs/${jobId}?section=visits`);
+                      }}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      className="p-0.5 rounded hover:bg-muted/60 transition-colors shrink-0"
+                      title="View all visits for this job"
+                    >
+                      <History className="h-3 w-3 text-muted-foreground hover:text-foreground" />
+                    </button>
+                  </>
                 )}
               </div>
             )}
@@ -277,6 +305,7 @@ export const DraggableClient = memo(function DraggableClient({
     prevProps.client?.companyName === nextProps.client?.companyName &&
     prevProps.summary === nextProps.summary &&
     prevProps.assignment?.version === nextProps.assignment?.version &&
+    prevProps.assignment?.visitNumber === nextProps.assignment?.visitNumber &&
     prevProps.technicianColor?.borderLeft === nextProps.technicianColor?.borderLeft
   );
 });

@@ -48,6 +48,10 @@ export interface CalendarEventDto {
   jobId: string;
   /** Human-readable job number */
   jobNumber: number;
+  /** Visit ID (the job_visit driving this calendar event) - ADDITIVE field */
+  visitId?: string;
+  /** Visit number within the job (e.g., 1, 2, 3) - ADDITIVE field */
+  visitNumber?: number | null;
   /** Job type (e.g., "PM", "Repair", "Install") */
   jobType: string;
   /** Job summary/description */

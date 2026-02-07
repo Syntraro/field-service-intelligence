@@ -1294,9 +1294,10 @@ export class InvoiceRepository extends BaseRepository {
             .set({ nextInvoiceNumber: invoiceNumber + 1 })
             .where(eq(companyCounters.companyId, companyId));
         } else {
+          // Create initial counter with 6-digit job numbers
           await tx.insert(companyCounters).values({
             companyId,
-            nextJobNumber: 10000,
+            nextJobNumber: 100000,
             nextInvoiceNumber: 1002,
           });
         }

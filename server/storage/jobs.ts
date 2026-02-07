@@ -137,10 +137,10 @@ export class JobRepository extends BaseRepository {
       });
 
       if (!counter) {
-        // Create initial counter
+        // Create initial counter with 6-digit job numbers
         const [created] = await tx
           .insert(companyCounters)
-          .values({ companyId, nextJobNumber: 10000, nextInvoiceNumber: 1001 })
+          .values({ companyId, nextJobNumber: 100000, nextInvoiceNumber: 1001 })
           .returning();
         counter = created;
       }

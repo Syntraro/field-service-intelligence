@@ -6,7 +6,766 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+#### JobDetailPage Visit-Level Enhancements (2026-02-07)
+
+- **Removed** `AssignTechnicianDialog` and "Assign Technician" button — technician assignment is visit-level only
+- **Replaced** `<JobVisitsSection>` in middle column with compact inline visits list (single-line rows: date/time + tech + status pill)
+- **Visits collapse**: Shows first 3 visits by default; "Show all visits (N)" toggle for >3; internal scroll only when expanded
+- **Added** `VisitDetailDialog` — click any visit row to view full details (status, date, technician, duration, notes, check-in/out times)
+- **Visit dialog actions**: Quick "Complete" button for scheduled visits, "More Actions" dropdown with Delete
+- **Visit sort order**: Active visits first, then by date descending (newest first)
+- **Right column**: Removed job-level "Scheduled" date with calendar popover; replaced with read-only "Created" (createdAt) and "Completed" (closedAt) dates
+- **Removed**: `updateScheduleMutation`, `handleDateSelect`, `datePopoverOpen` state, `Popover`/`CalendarPicker` imports
+- **Fixed** `SelectItem value=""` in `AddVisitDialog` — replaced with `"__unassigned__"` sentinel (Radix Select rejects empty string values)
+- **Fixed** visit modal infinite loading — VisitDetailDialog only mounts when `selectedVisitId` is set; stable query key `["visit-detail", visitId]`
+- **Added reschedule rule**: When scheduling a follow-up, checks for existing non-completed active visits. Empty drafts (no tech/notes/status changes) can be deleted; other visits can be cancelled or user can schedule anyway
+- **Files changed**: `client/src/pages/JobDetailPage.tsx`, `client/src/components/AddVisitDialog.tsx`
+
+#### JobDetailPage 2-Tier Layout Redesign (2026-02-07)
+
+- **Goal**: Consolidate JobDetailPage top section into unified meta card, tighten layout
+- **Top section** — replaced 3-card row (JobHeaderCard, JobAssignmentsCard, JobMetaCard) + standalone JobDescriptionCard with a single unified container using `grid-cols-[2fr_1.5fr_1fr]`:
+  - **Left column**: JobHeaderCard (border-stripped via `[&_.shadcn-card]` selector), inline description, "Assign Technician" button
+  - **Middle column**: JobVisitsSection (scrollable, `calc(100vh - 16rem)` max height, defaultOpen=true)
+  - **Right column**: Inline status stack — Job#, Invoice link, Status dropdown, scheduled date with calendar popover, on-hold info
+- **Scheduled date popover**: Click date → CalendarPicker opens → pick new date (preserves existing time, respects ALL DAY convention) → saves immediately. "Clear date" button to unset scheduledStart.
+- **Status dropdown**: Replicates JobMetaCard logic — compound values (`open:in_progress`, `open:on_hold`), intercepts on_hold to open ActionRequiredModal
+- **Main grid**: Changed from `grid-cols-[7fr,3fr]` to `grid-cols-[3fr_1fr]`
+  - Left: Parts & Billing, Expenses, Recurring (unchanged)
+  - Right sidebar reordered: Labour, Notes, Equipment, StatusTimeline, SchedulingHistory, Activity
+  - Visits removed from sidebar (moved to top middle column)
+- **Removed components**: JobDescriptionCard function (~118 lines deleted), JobAssignmentsCard import, JobMetaCard import
+- **Fixed**: AssignTechnicianDialog tech.id number→string type mismatch (pre-existing from useTechniciansDirectory hook)
+- **Fixed**: handleMetaStatusChange double-mutation for sub-status changes (removed redundant updateStatusMutation.mutate call)
+- **File changed**: `client/src/pages/JobDetailPage.tsx`
+
+#### Supplier Detail Page Tightening (2026-02-07)
+
+- **Goal**: Make the Supplier Details page more compact and visually cleaner
+- **Left column (Supplier Information)**:
+  - Removed duplicate Phone input field (was rendered twice)
+  - Removed "Primary Address" box entirely — address lives in the Locations table
+  - Removed Website field from form state and UI
+  - Email/Phone now fall back to primary location values when supplier record is blank
+  - Final field order: Name, Email, Phone, Active toggle, QBO status
+- **Right column (Locations table)**:
+  - Replaced "Primary" text column header with blank icon-only column (w-70px)
+  - Replaced "Active" text column header with blank icon-only column (w-60px)
+  - Primary indicator is now a clickable star icon (filled when primary, outline otherwise)
+  - Primary star uses optimistic cache update for instant visual feedback + rollback on error
+  - Active indicator is now a small dot (green=active, gray=inactive)
+  - Removed "Set Primary" button and "Primary" badge — star icon replaces both
+- **Notes support for Supplier Locations**:
+  - Added `notes` text column to `supplier_locations` table (`shared/schema.ts`)
+  - Added `notes` to `updateSupplierLocationSchema` validation
+  - Added Notes textarea to AddLocationDialog and EditLocationDialog
+  - Migration: `migrations/2026_02_07_add_notes_to_supplier_locations.sql`
+- **Files changed**:
+  - `client/src/pages/SupplierDetailPage.tsx`
+  - `client/src/components/suppliers/AddLocationDialog.tsx`
+  - `client/src/components/suppliers/EditLocationDialog.tsx`
+  - `shared/schema.ts`
+
+#### Standalone Clients Page (2026-02-07)
+
+- **Goal**: Remove legacy `?tab=` navigation, create dedicated route for Clients
+- **New pages**:
+  - `pages/Clients.tsx`: Standalone clients list page using TablePageShell
+- **Routing changes**:
+  - Added `/clients` route pointing to Clients page
+- **Sidebar updates** (`AppSidebar.tsx`):
+  - Changed Clients from onClick (`/?tab=clients`) to href (`/clients`)
+- **Removed legacy tab navigation**:
+  - Dashboard.tsx: Removed `?tab=clients` handling and ClientListTable tab
+  - Updated ClientDetailPage.tsx: Back links now use `/clients`
+  - Updated Header.tsx, AppHeader.tsx: Clients navigation uses `/clients`
+- **Note**: ClientListTable.tsx kept for backwards compatibility with examples
+
+#### Settings Products Page Standardization (2026-02-07)
+
+- **Goal**: Apply standardized color + surface system to existing Settings Products page (Jobs reference)
+- **Consolidated duplicate headers**:
+  - `pages/PartsManagementPage.tsx`: Simplified to thin wrapper with workspace background only
+  - `components/ProductsServicesManager.tsx`: Added seed parts mutation (moved from page)
+  - `components/products-services/ProductsServicesToolbar.tsx`: Now the single source for header/title
+    - Updated typography: `text-xl` → `text-lg font-semibold text-foreground` (matches Jobs)
+    - Added Seed Parts button with Sprout icon
+- **Standardized table surface**:
+  - `components/products-services/ProductsServicesTable.tsx`:
+    - Changed wrapper from `div` with border to `<ListSurface>`
+    - Updated thead to use `bg-white dark:bg-gray-900` with explicit border colors
+    - Updated row styling: `hover:bg-gray-100/60 dark:hover:bg-gray-800/60 transition-colors border-b border-gray-200 dark:border-gray-800`
+- **3-layer surface model applied**:
+  - Workspace: `bg-gray-200 dark:bg-gray-900`
+  - Content surface: `<ListSurface>` (white/gray-900 with shadow-sm)
+  - Row hover: standardized gray-100/60 / gray-800/60
+- **Removed mistakenly created pages**:
+  - Deleted `pages/Products.tsx` and `pages/Services.tsx` (top-level pages created in error)
+  - Removed Products and Services from sidebar navigation
+  - Removed `/products` and `/services` routes from App.tsx
+  - Settings Products page (`/settings/products`) remains the canonical products management UI
+
+#### TablePageShell Component - Consistent Page Width/Spacing (2026-02-07)
+
+- **Goal**: Standardize page width, padding, and spacing across Jobs, Invoices, Quotes, Clients
+- **Reference**: Jobs.tsx wrapper (`p-6 space-y-6`) used as source of truth
+- **New file: `components/ui/table-page-shell.tsx`**:
+  - `TablePageShell` - Reusable page wrapper component
+  - Props: `title` (string), `actions` (ReactNode), `children`
+  - Applies consistent `p-6 space-y-6` wrapper classes
+  - Renders standardized page header row: title + actions
+- **Refactored pages to use TablePageShell**:
+  - `Jobs.tsx`: Uses shell (ensures shell matches Jobs exactly)
+  - `InvoicesListPage.tsx`: Removed `max-w-[1400px] mx-auto` to match Jobs width
+  - `Quotes.tsx`: Removed `max-w-[1400px] mx-auto` to match Jobs width
+  - `ClientListTable.tsx`: Changed from `p-4 pt-3 space-y-3` to `p-6 space-y-6`
+  - `SuppliersListPage.tsx`: Removed `max-w-[1400px] mx-auto` to match Jobs width
+
+#### Reusable List Surface Primitives (2026-02-07)
+
+- **Goal**: Create reusable primitives for list/table surfaces, reduce repeated class strings
+- **New file: `components/ui/list-surface.tsx`**:
+  - `ListSurface` - Container component: `rounded-lg bg-white dark:bg-gray-900 overflow-hidden shadow-sm`
+  - `ListRow` - Row component for non-table lists with hover, borders, padding
+  - `listSurfaceClass` - Raw class string for container styling
+  - `tableRowClass` - Raw class string for table rows: `cursor-pointer hover:bg-gray-100/60 dark:hover:bg-gray-800/60 transition-colors border-b border-gray-200 dark:border-gray-800 last:border-b-0`
+  - `listRowClass` - Raw class string for list rows (same as tableRowClass minus cursor)
+- **Refactored pages to use primitives**:
+  - `Jobs.tsx`: Uses `ListSurface` + `tableRowClass`
+  - `InvoicesListPage.tsx`: Uses `ListSurface` + `tableRowClass` with cn() for compact mode
+  - `Quotes.tsx`: Uses `ListSurface` + `tableRowClass`
+  - `ClientListTable.tsx`: Uses `ListSurface` + `tableRowClass`
+
+#### Typography and Header Standardization (2026-02-07)
+
+- **Goal**: Consistent typography and table headers across all list pages
+- **components/ui/table.tsx**:
+  - `TableHeader`: Added explicit border color `border-gray-200 dark:border-gray-800`
+  - `TableHead`: Updated to `text-xs font-medium uppercase tracking-wide text-muted-foreground` (Option A - clean + modern)
+  - Reduced header height from `h-12` to `h-10` for tighter look
+- **Page Titles** (all now use `text-lg font-semibold text-foreground`):
+  - `Jobs.tsx`: Added page header with title + New Job button
+  - `InvoicesListPage.tsx`: Changed from `text-2xl` to `text-lg`
+  - `Quotes.tsx`: Changed from `text-2xl` to `text-lg`
+  - `ClientListTable.tsx`: Changed from `text-2xl font-bold` to `text-lg font-semibold`
+
+#### Global List Surface Standardization (2026-02-07)
+
+- **Goal**: Apply Dashboard flat-row design to all table/list views
+- **Jobs.tsx**:
+  - Replaced Card wrapper with `rounded-lg bg-white dark:bg-gray-900 overflow-hidden shadow-sm`
+  - Updated TableRow hover from `hover-elevate` to `hover:bg-gray-100/60 dark:hover:bg-gray-800/60`
+  - Added `border-b border-gray-200 dark:border-gray-800 last:border-b-0` to rows
+- **InvoicesListPage.tsx**:
+  - Same container and hover updates as Jobs
+  - Kept stats cards unchanged (they're not list rows)
+- **Quotes.tsx**:
+  - Same container and hover updates as Jobs
+- **ClientListTable.tsx**:
+  - Replaced `rounded-md border` with `rounded-lg bg-white dark:bg-gray-900 overflow-hidden shadow-sm`
+  - Updated hover from `hover:bg-muted/50` to `hover:bg-gray-100/60 dark:hover:bg-gray-800/60`
+  - Added consistent border-b dividers
+
+#### Dashboard Visual Polish & Promotion (2026-02-06)
+
+- **Goal**: Promote polished dashboard, unified frame color, company branding
+- **App.tsx**:
+  - Header and wrapper now use `bg-gray-200 dark:bg-gray-900` to match workspace
+  - Added company name display in header (`text-base font-semibold text-foreground`), hidden on technician pages
+  - Removed `/dashboard-preview-2` route (preview promoted to production)
+  - Removed `DashboardPreview2` import
+- **AppSidebar.tsx**:
+  - Removed "Preview 2" menu item
+- **Dashboard.tsx** (formerly DashboardPreview2.tsx):
+  - Renamed from `DashboardPreview2.tsx` → `Dashboard.tsx`
+  - Renamed export from `DashboardPreview2` → `Dashboard`
+  - **TasksPanel**: Active/Completed tabs, Technician filter, Type filter
+  - **NeedsAttentionWidget**: Flat rows, "Overdue" badge right-aligned with `mt-0.5`, no counter in header
+  - **InvoicesWidget**: Flat rows, "Past due" badge right-aligned above amount, no counter in header
+  - All rows use `hover:bg-gray-100/60 dark:hover:bg-gray-800/50` for visible hover
+- **Deleted**: `client/src/pages/Dashboard.tsx` (old version)
+
+#### 6-Digit Job Numbers and Search Improvements (2026-02-06)
+
+- **Goal**: Better numeric search ordering (invoices first) + 6-digit job numbers for scalability
+- **Search Ordering (`server/storage/search.ts`)**:
+  - Invoice search now runs BEFORE job search for numeric queries
+  - Invoice exact matches ranked above prefix matches via `ORDER BY CASE`
+  - `interleaveResults()` now accepts optional `typeOrder` param for numeric queries
+  - For numeric searches: `["invoice", "job", "customerCompany", "location", "supplier"]`
+- **Frontend Group Ordering (`client/src/components/UniversalSearch.tsx`)**:
+  - Added `TYPE_ORDER` constant for stable group display: invoice > job > customerCompany > location > supplier
+  - `orderedTypes` filters TYPE_ORDER to only types with results
+  - `flatResults` now uses `orderedTypes.flatMap()` so keyboard navigation matches visual order
+  - Searching "1001" now shows INVOICES section first, with Invoice #1001 at top
+- **6-Digit Job Numbers**:
+  - Schema default changed from `10000` to `100000` (`shared/schema.ts`)
+  - Hardcoded init values updated in `server/storage/jobs.ts` and `server/storage/invoices.ts`
+  - Job number search logic updated for 6-digit range:
+    - Exact match threshold: `>=6` digits (was `>=5`)
+    - Prefix multiplier: `10^(6-digits.length)` (was `10^(5-digits.length)`)
+    - Examples: `100` → 100000-100999, `1001` → 100100-100199, `100123` → exact
+- **Migration (`migrations/2026_02_06_bump_job_numbers_to_6_digits.sql`)**:
+  - Bumps existing companies with `next_job_number < 100000` to `100000`
+  - Safe/idempotent: companies already at 6-digits are unaffected
+
+#### Universal Header Rollout (2026-02-06)
+
+- **Goal**: Single global header with UniversalSearch on all pages except auth pages
+- **App.tsx Changes**:
+  - Replaced old client-only search (Command dropdown) with `UniversalSearch` component
+  - Removed old search state (`searchOpen`, `searchQuery`) and `/api/clients` query
+  - UniversalSearch now visible on technician pages (`/technician`, `/daily-parts`)
+  - "New" dropdown and Settings button remain hidden on technician pages
+  - Overdue jobs alert behavior unchanged (still hidden on technician pages)
+  - Removed unused imports: `Search`, `Command*`, `Popover*`
+- **Page Cleanup**:
+  - `ManageTeam.tsx`: Removed duplicate `<AppHeader />` - now uses global header
+  - `TechnicianDashboard.tsx`: Removed duplicate `<AppHeader />` and `FeedbackDialog`
+- **Dead Code**: `Header.tsx` and `AppHeader.tsx` components are now unused (previously used by removed page headers)
+- **Note**: Page-level `<header>` tags in `ClientDetailPage.tsx` and `LocationDetailPage.tsx` are page title sections (breadcrumbs + actions), not navigation headers - intentionally kept
+
 ### Fixed
+
+- **Search auth guard** (`server/routes/search.ts`): Added explicit auth guard to fail fast with 401 for unauthenticated requests instead of hanging on missing `companyId`
+
+### Added
+
+#### Dashboard Preview 2 - Frame Contrast + Flat Lists (2026-02-06)
+
+- **Feature**: Design polish of cloned Dashboard.tsx (not a redesign)
+- **File**: `client/src/pages/DashboardPreview2.tsx`
+- **Route**: `/dashboard-preview-2`
+- **Styling changes applied**:
+  - **Frame contrast (TailPanel)**: `bg-gray-200` main content, sidebar/header stay unified white
+  - **Flat list items**: Removed card-in-card pattern
+    - `border-b border-gray-100` dividers between rows (not on last)
+    - No individual row backgrounds or shadows
+    - `hover:bg-gray-50` light hover
+    - Preserved `border-l-4` colored status strips (red/amber/green)
+  - **Card headers**: Separated header from list with `border-b`, footer with `border-t`
+  - **Tasks panel**: Matches Needs Attention / Invoices with same flat row + divider behavior
+- **Preserved exactly**: Layout, density, sections, all data hooks, no new sections
+- **Note**: Original Dashboard.tsx completely unchanged
+
+#### Universal Header Search (2026-02-04)
+
+- **Feature**: Global search across jobs, invoices, customer companies, locations, and suppliers
+- **Backend (`server/routes/search.ts`, `server/storage/search.ts`)**:
+  - `GET /api/search?q=<query>&limit=<n>` endpoint
+  - Returns typed results: `job | invoice | customerCompany | location | supplier`
+  - Each result includes: `type`, `id`, `title`, `subtitle`, `match` (match type indicator)
+  - Matching priority: job/invoice numbers (exact/prefix) → names/addresses → email → phone
+  - Phone normalization: strips non-digits for flexible matching
+  - Invoice number handling: supports `INV-22019`, `22019`, `220` prefix
+  - Tenant isolation: all queries scoped by `companyId`
+- **Indexes (`migrations/2026_02_04_add_search_trgm_indexes.sql`)**:
+  - `pg_trgm` extension for fuzzy text search
+  - GIN trigram indexes on: `customer_companies.name`, `client_locations.company_name`, `client_locations.address`, `jobs.summary`, `suppliers.name`
+  - B-tree indexes on: `jobs(company_id, job_number)`, `invoices(company_id, invoice_number)`
+- **Frontend (`client/src/components/UniversalSearch.tsx`)**:
+  - Replaces old client-only search in Header
+  - 200ms debounce, grouped dropdown by type
+  - Keyboard navigation: `↑↓` navigate, `Enter` select, `Esc` close
+  - Routes on selection: jobs, invoices, customers, clients, suppliers
+- **Tests (`tests/search.test.ts`)**:
+  - 19 tests covering: job/invoice number search, name/address/email/phone matching, tenant isolation
+
+### Changed
+
+#### Centralized calendar invalidation helpers to reduce unnecessary refetches (2026-02-03)
+
+- **Goal**: Reduce duplicate React Query invalidations after calendar/visit mutations
+- **Centralized Helpers Added** (`useCalendarApi.ts`):
+  | Helper | Invalidates | Use Case |
+  |--------|-------------|----------|
+  | `invalidateCalendarQueries` | `/api/calendar`, `/api/calendar/range` | reschedule, complete (job stays on calendar) |
+  | `invalidateCalendarAndUnscheduledQueries` | Above + `/api/calendar/unscheduled` | schedule, unschedule (job moves between calendar/backlog) |
+  | `invalidateJobQueries` | `/api/jobs`, `/api/jobs/{jobId}` | All mutations that change job data |
+  | `invalidateVisitQueries` | `/api/jobs/{jobId}/visits/*` | Mutations that affect job visits |
+- **DEV-only Logging**:
+  - Logs which query keys are invalidated per operation with timestamps
+  - Warns if same key is invalidated twice within a single operation (duplicate detection)
+  - Gated by `process.env.NODE_ENV === "development"`
+- **Hooks Updated to Use Centralized Helpers**:
+  - `useScheduleJob()` - calendar + unscheduled + jobs
+  - `useRescheduleJob()` - calendar only + jobs (NOT unscheduled - job stays on calendar)
+  - `useUnscheduleJob()` - calendar + unscheduled + jobs + visits
+  - `useCompleteJob()` - calendar only + jobs (NOT unscheduled)
+- **Components Migrated to Centralized Hooks/Helpers**:
+  - `JobVisitsSection.tsx` - Now uses `useUnscheduleJob` hook instead of custom mutation
+  - `AddVisitDialog.tsx` - Now uses centralized invalidation helpers
+- **Invalidation Rules Enforced**:
+  - schedule: calendar + unscheduled (job moves FROM backlog TO calendar)
+  - reschedule: calendar only (job stays on calendar, just different slot)
+  - unschedule: calendar + unscheduled (job moves FROM calendar TO backlog)
+  - complete: calendar only (job stays on calendar, status changes)
+- **Hard Stop Verified**:
+  - No duplicate invalidation of same key within single operation
+  - No regression in UI freshness (all necessary queries still invalidated)
+- **Modified Files**:
+  - `client/src/hooks/useCalendarApi.ts` - Added centralized helpers and DEV logging
+  - `client/src/components/JobVisitsSection.tsx` - Switched to centralized hook
+  - `client/src/components/AddVisitDialog.tsx` - Switched to centralized helpers
+
+### Added
+
+#### Calendar event cards: Visit #N display with deep link to job visits (2026-02-03)
+
+- **Goal**: Display visit number on calendar cards with deep link to job detail visits section
+- **Calendar Card Changes** (`DraggableClient.tsx`):
+  - Shows "Visit #N" text when `visitNumber` is available in calendar event data
+  - Added history icon button that navigates to Job Detail visits section
+  - Deep link uses `?section=visits` query param to auto-expand visits collapsible
+- **Server Changes** (ADDITIVE - no breaking changes):
+  - `CalendarEventDto` now includes `visitId?: string` and `visitNumber?: number | null`
+  - `server/storage/calendar.ts` - SQL query fetches `visit_number` from eligible job_visit
+  - `server/routes/calendar.ts` - Transform includes visitId and visitNumber in response
+- **JobDetailPage Deep Link Support**:
+  - Parses `?section=visits` query parameter using `useSearch` from wouter
+  - Passes `forceOpen` prop to JobVisitsSection to auto-expand when deep linked
+- **JobVisitsSection Props Extended**:
+  - Added `forceOpen?: boolean` prop for external control (deep link support)
+  - useEffect syncs open state when forceOpen changes
+- **Invariants Preserved**:
+  - Existing calendar functionality unchanged - all fields are additive
+  - Visit selection logic same as server: earliest future eligible, else most recent past
+  - No changes to calendar write/schedule operations
+- **Modified Files**:
+  - `shared/types/calendar.ts` - Added visitId, visitNumber to CalendarEventDto
+  - `server/storage/calendar.ts` - SQL fetches visit_number, interface updated
+  - `server/routes/calendar.ts` - Transform includes visit info
+  - `client/src/components/calendar/DraggableClient.tsx` - Visit #N display, history icon
+  - `client/src/pages/JobDetailPage.tsx` - Deep link query param handling
+  - `client/src/components/JobVisitsSection.tsx` - forceOpen prop for deep link support
+
+#### "Schedule follow-up visit" button in JobVisitsSection (2026-02-03)
+
+- **Goal**: Allow office users to schedule follow-up visits directly from the timeline
+- **Button Location**: Top right of JobVisitsSection header (replaced "Add Visit")
+- **Behavior**:
+  - Always creates NEW visit via `POST /api/calendar/schedule` (preserves old visits)
+  - Defaults technician from current eligible visit (same pattern as OfficeActionsStrip)
+  - After scheduling, auto-scrolls to and highlights the new visit (green ring, 3s pulse)
+- **AddVisitDialog Props Extended**:
+  - `defaultTechnicianId?: string | null` - Pre-fills technician dropdown
+  - `onVisitCreated?: (visitId: string) => void` - Callback for highlight/scroll
+- **Server Response Enhanced**:
+  - `POST /api/calendar/schedule` now returns `visit.id` in response for client highlighting
+- **Hard Stop**: Follow-up always creates new `job_visits` row - never modifies existing visits
+- **No New Endpoints**: Only existing endpoint response was enriched
+- **Modified Files**:
+  - `client/src/components/JobVisitsSection.tsx` - Added highlight state, scroll logic, renamed button
+  - `client/src/components/AddVisitDialog.tsx` - Added defaultTechnicianId and onVisitCreated props
+  - `server/routes/calendar.ts` - Added visit info to schedule response
+  - `server/storage/calendar.ts` - Return visit info from scheduleJob
+
+#### JobVisitsSection timeline tags for unambiguous visit eligibility (2026-02-03)
+
+- **Goal**: Make it clear to office users which visit drives the job's calendar position
+- **Timeline Tags Added**:
+  | Tag | Meaning | Badge Style |
+  |-----|---------|-------------|
+  | CURRENT (mirrored) | Visit that syncJobScheduleFromVisits() picks | Primary (blue) |
+  | UPCOMING | Future eligible visits after current | Light blue |
+  | HISTORY | Not eligible for sync | Gray |
+- **Eligibility Explanation**: Shows why history visits are not eligible:
+  - `is_active=false` - Unscheduled via calendar
+  - `status=completed` - Work finished
+  - `status=cancelled` - Visit was cancelled
+- **Eligibility Rules Match Server**: Uses same logic as `syncJobScheduleFromVisits`:
+  - Eligible: `is_active=true AND status NOT IN ('completed','cancelled')`
+  - Selection: earliest future visit, else most recent past visit
+- **Section Headers Updated**: Explicit descriptions explaining what each section means
+- **Tooltips Added**: Hover on tags to see detailed explanation
+- **UI-only change**: No sync or calendar write logic modified
+- **Modified Files**:
+  - `client/src/components/JobVisitsSection.tsx` - Added timeline tags, tooltips, and section descriptions
+  - `client/src/hooks/useJobVisits.ts` - Imported `isVisitIneligible` helper (already existed)
+
+### Fixed
+
+#### Safety: JobVisitsSection unschedule confirmation dialog (2026-02-03)
+
+- **Goal**: Make unschedule from JobVisitsSection safe with explicit confirmation
+- **Safety Rules Enforced**:
+  1. Unschedule button only renders for CURRENT visit (`isCurrent && !inactive`)
+  2. Uses canonical endpoint: `POST /api/calendar/unschedule/:jobId`
+  3. Confirmation dialog required before execution
+- **Confirmation Dialog Message**:
+  > "This will remove the job from the calendar by setting is_active=false on the current visit. History is preserved."
+- **Invalidations Verified** (all 4 required):
+  - `["/api/jobs", jobId]` ✅
+  - `["/api/jobs", jobId, "visits", "all"]` ✅
+  - `["/api/calendar"]` ✅
+  - `["/api/calendar/unscheduled"]` ✅
+- **Hard Stop**: Unschedule never targets a non-current visit (enforced by `isCurrent` render condition)
+- **Modified Files**:
+  - `client/src/components/JobVisitsSection.tsx` - Added AlertDialog import, confirmation state, and dialog
+
+#### Refactor: OfficeActionsStrip unschedule uses canonical useUnscheduleJob hook (2026-02-03)
+
+- **Goal**: Ensure invalidations use centralized helpers, avoid drift between views
+- **Before**: JobDetailPage defined inline `unscheduleMutation` with manual invalidations
+- **After**: Uses `useUnscheduleJob()` from `client/src/hooks/useCalendarApi.ts`
+- **Canonical Hook Invalidations**:
+  - `/api/calendar` ✅
+  - `/api/calendar/range` ✅ (was missing in inline version)
+  - `/api/calendar/unscheduled` ✅
+  - `/api/jobs` ✅ (prefix matches job-specific queries like `/api/jobs/${id}`)
+- **Custom Callbacks Preserved**: Toast notifications for success/error passed via `mutate()` options
+- **Modified Files**:
+  - `client/src/pages/JobDetailPage.tsx` - Replaced inline mutation with hook import and usage
+
+#### DEV: AddVisitDialog assertion guarantees POST /api/calendar/schedule (2026-02-03)
+
+- **Goal**: Guarantee OfficeActionsStrip "Schedule another visit" always creates NEW visits
+- **Call Chain Verified**:
+  1. `OfficeActionsStrip.onScheduleVisit` → `setShowScheduleVisitDialog(true)`
+  2. Opens `AddVisitDialog` component
+  3. `AddVisitDialog` uses `POST /api/calendar/schedule` (line 66)
+- **DEV-only Assertions Added** (guarded by `process.env.NODE_ENV === "development"`):
+  - Logs: `[AddVisitDialog] Creating new visit via POST /api/calendar/schedule (jobId=...)`
+  - Assert: Endpoint must NOT contain `:jobId` path param (that would be reschedule)
+  - Assert: Method must be POST, not PATCH
+- **Production Behavior**: Unchanged (logs only in development)
+- **Modified Files**:
+  - `client/src/components/AddVisitDialog.tsx` - Added DEV assertions in mutationFn
+
+#### Fix: Overdue calculation now matches server/storage/dashboard.ts (2026-02-03)
+
+- **Bug**: Frontend `getAttentionReason()` used different overdue logic than server
+- **Server Logic** (`server/storage/dashboard.ts:222-226`):
+  ```sql
+  CASE
+    WHEN scheduled_end IS NOT NULL THEN scheduled_end
+    WHEN duration_minutes IS NOT NULL THEN scheduled_start + duration_minutes
+    ELSE scheduled_start
+  END < todayStart  -- midnight UTC of today
+  ```
+- **Previous Frontend Logic** (incorrect):
+  - Compared against `new Date()` (current moment)
+  - Used `durationMinutes && durationMinutes > 0` (excluded 0)
+- **Fixed Frontend Logic** (now matches server):
+  - Compares against midnight UTC of today: `todayStart.setUTCHours(0,0,0,0)`
+  - Uses `durationMinutes != null` (includes 0, matches SQL `IS NOT NULL`)
+- **Impact**: Jobs now correctly show as overdue only when effectiveEnd < midnight of today
+- **Modified Files**:
+  - `client/src/pages/JobDetailPage.tsx` - Updated `getAttentionReason()` and detail text computation
+
+#### Fix: Status mutations missing required version field (2026-02-03)
+
+- **Bug**: `updateStatusMutation` and `clearHoldMutation` in JobDetailPage were missing the required `version` field
+- **Impact**: All status updates from JobDetailPage (including "Mark Invoiced" from OfficeActionsStrip) were failing with 400 validation errors
+- **Root Cause**: Server schema at `server/routes/jobs.ts:303` requires `version: z.number().int().nonnegative()`
+- **Fix**: Updated mutations to accept and pass `job.version` to the server
+- **Modified Files**:
+  - `client/src/pages/JobDetailPage.tsx` - Updated `updateStatusMutation` and `clearHoldMutation` signatures and all call sites
+- **Verified Transitions**:
+  - `completed → invoiced` ✅ (OfficeActionsStrip "Mark Invoiced")
+  - `open → open` with `openSubStatus: null` ✅ (OfficeActionsStrip "Clear Hold")
+
+#### Polish: OfficeActionsStrip Jobber-grade UX (2026-02-03)
+
+- **Goal**: Make OfficeActionsStrip feel "Jobber-grade" with proper permissions and UX
+- **Button Labels Match Reason**:
+  | Reason | Primary | Secondary |
+  |--------|---------|-----------|
+  | requires_invoicing | "Schedule another visit" | "Mark Invoiced" (with confirm) |
+  | on_hold | "Schedule another visit" | "Resume" |
+  | overdue | "Reschedule" | "Unschedule" (hidden if not scheduled) |
+- **Permission Checks Added**:
+  - Uses `useAuth()` to get current user role
+  - `MANAGER_ROLES` (owner, admin, manager, dispatcher) can perform all actions
+  - Technicians see disabled buttons with tooltip: "You don't have permission..."
+- **Invalid Actions Hidden**:
+  - "Unschedule" button hidden for overdue jobs that aren't currently scheduled
+- **Tooltips on Disabled Buttons**:
+  - Permission denied: "You don't have permission to perform this action"
+  - Action in progress: "Action in progress..."
+- **Confirmation Dialogs**:
+  - "Mark Invoiced" requires confirmation (lifecycle change: completed → invoiced)
+  - Other actions don't require confirmation (reversible/no lifecycle change)
+- **Modified Files**:
+  - `client/src/pages/JobDetailPage.tsx` - Added permission helpers, useAuth, tooltips
+
+### Changed
+
+#### OfficeActionsStrip: Jobber-style workflow actions (2026-02-03)
+
+- **Change**: Actions now depend on attention reason and follow Jobber workflow patterns
+- **Modified Files**:
+  - `client/src/pages/JobDetailPage.tsx` - Updated ATTENTION_CONFIG and OfficeActionsStrip component
+- **Action Mapping by Reason**:
+  - **requires_invoicing** (status=completed):
+    - Primary: "Schedule another visit" (opens visit dialog)
+    - Secondary: "Mark Invoiced" (with confirmation dialog - lifecycle change)
+  - **on_hold** (status=open, openSubStatus=on_hold):
+    - Primary: "Schedule another visit" (Jobber-like follow-up)
+    - Secondary: "Resume" (clears openSubStatus via existing endpoint)
+  - **overdue** (status=open, past scheduledEnd):
+    - Primary: "Reschedule" (opens schedule dialog)
+    - Secondary: "Unschedule" (uses POST /api/calendar/unschedule/:jobId)
+- **Confirmation Dialog**: Added for "Mark Invoiced" action (lifecycle status change)
+- **Safety Verified**:
+  - ✅ No path archives jobs from on_hold or overdue states
+  - ✅ requires_invoicing only transitions to "invoiced" (not "archived")
+  - ✅ All actions use existing server endpoints (no new endpoints invented)
+- **New Props**: `isMarkingInvoiced`, `isClearingHold` for loading states
+- **UI Improvements**:
+  - Primary button icon now varies by reason (CalendarPlus vs Calendar)
+  - Secondary button shows spinner when action is pending
+
+#### Phase 4: Compact Reason Details in Office Actions Strip (2026-02-03)
+
+- **Change**: OfficeActionsStrip now shows context-specific details for each attention reason
+- **Modified Files**:
+  - `client/src/pages/JobDetailPage.tsx` - Updated OfficeActionsStripProps and rendering
+- **Detail Text by Reason**:
+  - **on_hold**: Shows hold reason + "Follow-up: <date>" if nextActionDate is set
+  - **overdue**: Shows "Overdue since <date>" computed from effectiveEnd
+  - **requires_invoicing**: Shows "Completed <date>" if closedAt is available
+- **Props Added** to OfficeActionsStripProps:
+  - `nextActionDate?: string | null` - For on_hold follow-up dates
+  - `closedAt?: Date | string | null` - For requires_invoicing completion date
+- **Hard Stop Verified**: No layout shifting on load
+  - Detail text computed synchronously from existing job data
+  - Uses stable `min-content` layout - text appears inline with badge
+  - No async data fetching, no conditional loading states
+- **Date Formatting**: Uses date-fns `format(date, 'MMM d')` for compact display (e.g., "Feb 3")
+
+#### Phase 4: Completed Jobs Reopen on Follow-up Visit (2026-02-03)
+
+- **Change**: Scheduling a follow-up visit on a completed job now reopens it to 'open' status
+- **Modified Files**:
+  - `server/storage/calendar.ts` - `scheduleJob()` now reopens completed jobs
+- **Behavior** (Jobber-like):
+  - When scheduling a visit on a completed job:
+    1. New visit is created (as before)
+    2. Job status is set to 'open' (new behavior)
+    3. Job's `openSubStatus` is cleared
+  - This is a valid status transition per `JOB_STATUS_FLOW: completed → open`
+- **Rationale**:
+  - A completed job means "the work is done"
+  - Scheduling another visit means "more work is needed"
+  - The job should return to 'open' status for correct calendar/backlog behavior
+  - Without this, jobs would stay in "Requires Invoicing" state even with future visits
+- **Audit**: New context label `storage:scheduleJob:PHASE4:reopen` captures the status change
+- **Office Actions Strip Updates**:
+  - Primary action "Schedule another visit" now properly reopens completed jobs
+  - Secondary action "Mark Invoiced" transitions `completed → invoiced` (unchanged)
+
+#### Phase 4: Office Actions Strip in Job Detail (2026-02-03)
+
+- **Change**: Added Jobber-style "Office Action Required" banner in Job Detail when job needs attention
+- **Modified Files**:
+  - `client/src/pages/JobDetailPage.tsx` - Added OfficeActionsStrip component and integration
+- **Attention Conditions** (matches server dashboard logic):
+  - `requires_invoicing`: `status='completed'` → shows "Requires Invoicing" badge
+  - `on_hold`: `status='open' AND openSubStatus='on_hold'` → shows "On Hold" badge with holdReason
+  - `overdue`: `status='open' AND effectiveEnd < now` → shows "Overdue" badge
+- **Overdue Calculation** (client-side, matches server semantics):
+  - `effectiveEnd = scheduledEnd ?? (scheduledStart + durationMinutes) ?? scheduledStart`
+  - Job is overdue when `effectiveEnd < now`
+- **Actions per Attention Reason** (safe, Jobber-like):
+  - **requires_invoicing**: Primary "Schedule another visit", Secondary "Mark Invoiced" (`completed → invoiced`)
+  - **on_hold**: Primary "Schedule another visit", Secondary "Clear Hold" (sets `openSubStatus=null`)
+  - **overdue**: Primary "Schedule another visit", Secondary "Unschedule" (`POST /api/calendar/unschedule/:jobId`)
+- **Mutations Added**:
+  - `clearHoldMutation`: Sets `openSubStatus=null` to resume normal workflow
+  - `unscheduleMutation`: Uses canonical calendar endpoint to return job to backlog
+- **Safety Constraints**:
+  - No accidental archiving from on_hold or overdue states
+  - All transitions use valid lifecycle rules per `server/statusRules.ts`
+  - Unschedule uses canonical calendar endpoint (preserves job_visits history)
+- **UI**:
+  - Amber-themed banner at top of Job Detail (before header cards)
+  - Only appears when conditions match
+  - Responsive layout (stacks on mobile)
+
+#### Phase 4: Spawn-on-Action Reschedule Behavior (2026-02-03)
+
+- **Change**: Reschedule now creates a new visit when the current visit has been actioned
+- **Modified Files**:
+  - `server/storage/calendar.ts` - `rescheduleJob()` rewritten with spawn-on-action logic
+  - `server/storage/jobVisits.ts` - Added `isVisitActioned()` helper function
+- **Behavior**:
+  - If visit has NO activity: updates that same visit (no extra visits created)
+  - If visit IS actioned: soft-deletes old visit (`is_active=false`), creates new visit
+- **Actioned Detection** (deterministic, uses existing schema fields):
+  - `checkedInAt` is set (technician checked in)
+  - `checkedOutAt` is set (technician checked out)
+  - `actualDurationMinutes > 0` (time was tracked)
+  - `status` progressed beyond 'scheduled' (dispatched, en_route, on_site, in_progress, on_hold, completed)
+- **Invariants Preserved**:
+  - Dragging an untouched visit back and forth does NOT create extra visits
+  - History preserved: old actioned visits become inactive and appear in History section
+  - No direct writes to jobs scheduling fields (uses `syncJobScheduleFromVisits()`)
+  - Version handling unchanged (uses job.version for API compat)
+- **Audit**: New context label `storage:rescheduleJob:spawn-on-action` for spawn events
+
+#### Phase 4: AddVisitDialog Uses Canonical Calendar Endpoint (2026-02-03)
+
+- **Change**: AddVisitDialog now uses `POST /api/calendar/schedule` instead of `POST /api/jobs/:jobId/visits`
+- **Modified Files**:
+  - `client/src/components/AddVisitDialog.tsx` - Changed endpoint and payload to match scheduleJobSchema
+  - `client/src/components/JobVisitsSection.tsx` - Passes jobVersion to AddVisitDialog
+- **Payload Changes** (old → new field names):
+  - `scheduledDate` → `startAt` (ISO datetime string)
+  - `estimatedDurationMinutes` → `durationMinutes`
+  - `assignedTechnicianId` → `technicianUserId` (null for unassigned)
+  - `visitNotes` → `notes`
+  - Added: `jobId`, `version` (required by schema)
+- **Cache Invalidation**: Now invalidates job detail, calendar, and unscheduled backlog queries
+  - AddVisitDialog: `["/api/calendar/unscheduled"]` added (job moves from backlog to calendar)
+  - JobVisitsSection: `["/api/calendar/unscheduled"]` added (job moves from calendar to backlog)
+- **Rationale**: Single source of truth for scheduling - all schedule operations go through calendar endpoint
+
+#### Phase 4: Job Detail Visits Panel with Timeline UI (2026-02-03)
+
+- **Change**: Enhanced JobVisitsSection component with Current/Upcoming/History grouping
+- **New Files**:
+  - `client/src/hooks/useJobVisits.ts` - Hook with derived selectors for visit categorization
+- **Modified Files**:
+  - `client/src/components/JobVisitsSection.tsx` - Rewrote to show grouped visits with timeline UI
+  - `client/src/components/AddVisitDialog.tsx` - Added calendar query invalidation
+  - `server/storage/jobVisits.ts` - Added `listAllJobVisitsForJob()` for history display
+  - `server/services/jobVisits.service.ts` - Added service wrapper
+  - `server/routes/jobVisits.routes.ts` - Added `?all=true` query param for full history
+- **Display Logic** (client-side only, matches server eligibility):
+  - Eligible: `isActive=true` AND `status NOT IN ('completed', 'cancelled')`
+  - Current: Earliest future eligible visit, else most recent past eligible
+  - Upcoming: Future eligible visits after current
+  - History: All other visits (completed, cancelled, inactive)
+- **UI Features**:
+  - Current Visit section with highlight ring
+  - Upcoming Visits section (if any)
+  - History section with inactive badge showing "Unscheduled"
+  - Per-visit: DateTime range, duration, status chip, technician, notes
+  - Unschedule action via calendar endpoint `POST /api/calendar/unschedule/:jobId`
+- **Invariants Preserved**: No changes to `syncJobScheduleFromVisits`, eligibility rules, or calendar write logic
+
+#### Phase 4: Calendar WRITE Path Migrated to job_visits (2026-02-02)
+
+- **Change**: Calendar write endpoints now write to `job_visits` instead of directly updating `jobs` table
+- **Endpoints Migrated**:
+  - `POST /api/calendar/schedule` → Creates new job_visit row
+  - `PATCH /api/calendar/schedule/:jobId` → Updates current eligible visit
+  - `POST /api/calendar/unschedule/:jobId` → Sets visit status='cancelled'
+  - `POST /api/calendar/resize` → Updates visit's scheduled_end
+- **Current Visit Selection**: Same logic as calendar read - earliest future visit if any exist, else most recent past
+  - Eligibility: `is_active=true`, `scheduled_start IS NOT NULL`, `status NOT IN ('cancelled', 'completed')`
+- **jobs Table Sync**: After each write, `syncJobScheduleFromVisits()` mirrors data to jobs table for backwards compat
+- **Optimistic Locking**: Still uses `jobs.version` for API compatibility; visit.version used internally
+- **Unschedule Behavior**: Sets `is_active=false` (soft-delete, consistent with repository pattern)
+- **Files Modified**:
+  - `server/storage/calendar.ts` - `scheduleJob`, `rescheduleJob`, `unscheduleJob` rewritten
+  - `server/routes/calendar.ts` - `/resize` endpoint rewritten
+  - `server/storage/jobVisits.ts` - Added `getCurrentEligibleVisit()` and `syncJobToVisits()` helpers
+- **Unchanged**: Calendar READ path (Phase 3), bypass functions (`scheduleJobBypassWorkingHours`, etc.)
+
+#### Phase 3: Calendar API Reads from job_visits (2026-02-02)
+
+- **Change**: Calendar API now reads scheduled events from `job_visits` table instead of `jobs.scheduledStart` (Model B migration)
+- **Selection Rules**: Same as `syncJobScheduleFromVisits()` - uses earliest future visit, else most recent past visit
+  - Excluded: `is_active=false`, `scheduled_start IS NULL`, `status IN ('cancelled', 'completed')`
+- **Implementation**: Uses raw SQL CTE with window function `ROW_NUMBER() OVER (PARTITION BY job_id ORDER BY ...)` to rank visits per job
+- **Technician Data**: Now sourced from visit fields (`assigned_technician_id`, `assigned_technician_ids`) instead of job fields
+- **Files Modified**: `server/storage/calendar.ts`
+- **Functions Updated**: `getScheduledJobsInRange()` - replaced Drizzle ORM query with CTE-based raw SQL
+- **Backwards Compatibility**: `syncJobScheduleFromVisits()` still mirrors visit data to job fields for other consumers
+- **Query Structure**:
+  ```sql
+  WITH eligible_visits AS (
+    SELECT jv.* FROM job_visits jv
+    WHERE jv.company_id = ? AND jv.is_active = true
+      AND jv.scheduled_start IS NOT NULL
+      AND jv.status NOT IN ('cancelled', 'completed')
+  ),
+  ranked_visits AS (
+    SELECT ev.*, ROW_NUMBER() OVER (
+      PARTITION BY ev.job_id
+      ORDER BY
+        CASE WHEN ev.scheduled_start >= NOW() THEN 0 ELSE 1 END,
+        CASE WHEN ev.scheduled_start >= NOW() THEN ev.scheduled_start END ASC,
+        CASE WHEN ev.scheduled_start < NOW() THEN ev.scheduled_start END DESC
+    ) as rn FROM eligible_visits ev
+  )
+  SELECT rv.*, j.*, cl.company_name as location_name
+  FROM ranked_visits rv
+  JOIN jobs j ON rv.job_id = j.id
+  WHERE rv.rn = 1 AND rv.scheduled_start >= ? AND rv.scheduled_start < ?
+  ```
+
+#### Step 2.4: syncJobScheduleFromVisits Helper (2026-02-02)
+
+- **Change**: Added compatibility mirror that syncs the "next scheduled visit" onto `jobs.scheduled_*` fields
+- **Purpose**: Maintains backwards compatibility while calendar transitions from Model A (job-based) to Model B (visit-based)
+- **Selection Rules**:
+  - Eligible visits: `is_active=true`, `scheduled_start IS NOT NULL`, `status NOT IN ('cancelled', 'completed')`
+  - Prefer earliest future visit if any exist
+  - Otherwise use most recent past visit (latest `scheduled_start`)
+- **Mirrored Fields**: `scheduledStart`, `scheduledEnd`, `isAllDay`, `durationMinutes`, `primaryTechnicianId`, `assignedTechnicianIds`
+- **Unschedule Branch**: If no eligible visits exist, all mirrored fields are cleared (including technician assignments)
+- **Optimistic Locking**: Bumps `jobs.version` on every sync
+- **Call Sites**: All 6 write methods - `createJobVisit`, `updateJobVisit`, `deleteJobVisit`, `updateJobVisitStatus`, `checkInJobVisit`, `checkOutJobVisit`
+- **Files Modified**: `server/storage/jobVisits.ts`
+
+#### Task Status Filter Simplified to Active/Completed (2026-02-01)
+
+- **Change**: Simplified status filter from 4 options (Active, Pending, In Progress, Completed) to 2 options (Active, Completed)
+- **Active**: Shows all non-completed tasks (pending, in_progress) - filters out completed and cancelled
+- **Completed**: Shows only completed tasks
+- **Files Modified**: `client/src/components/TasksSidebar.tsx`
+- **Functions Updated**: `buildTasksUrl()`, `normalizeTasks()`, status state type
+
+#### Task Panel Filter Buttons Replaced with Dropdowns (2026-02-01)
+
+- **Change**: Replaced My/All toggle buttons and type buttons with two dropdown filters
+- **Assignee Dropdown**: "All Technicians" (default) + list of technicians from `useTechniciansDirectory()`
+- **Type Dropdown**: "All Types" (default), "General", "Supplier Visit"
+- **Both filters work together**: e.g., selecting "John" + "General" shows only John's general tasks
+- **Files Modified**: `client/src/components/TasksSidebar.tsx`
+- **State Changes**: `scope` renamed to `assigneeFilter`, `type` renamed to `typeFilter`
+- **Added Imports**: `Select` components, `useTechniciansDirectory` hook
+
+#### Task Dialog Delete Button Moved to Footer (2026-02-01)
+
+- **Change**: Moved the delete button from the header (icon next to title) to the dialog footer (left side)
+- **Layout**: Footer now shows `[Delete]` on left, `[Cancel] [Update]` on right for edit mode
+- **Files Modified**: `client/src/components/TaskDialog.tsx`
+- **Removed Import**: `Trash2` icon from lucide-react (no longer used)
+
+### Fixed
+
+#### Edit Task Dialog Not Populating Existing Task Data (2026-02-01)
+
+- **Problem**: When opening an existing task to edit, all form fields were blank - task data wasn't being loaded
+- **Root Cause**: The `useQuery` calls used query keys like `["/api/tasks", taskId]`, but the default query function (`getQueryFn`) only uses `queryKey[0]` as the URL. This meant the fetch URL was `/api/tasks` instead of `/api/tasks/${taskId}`
+- **Solution**: Changed query keys to include the full URL as the first element:
+  - Task data: `["/api/tasks", taskId]` → `[\`/api/tasks/${taskId}\`]`
+  - Supplier visit: `["/api/tasks", taskId, "supplier-visit"]` → `[\`/api/tasks/${taskId}/supplier-visit\`]`
+- **Files Modified**: `client/src/components/TaskDialog.tsx` (lines 104-108, 113-117)
+
+#### Task Creation "toISOString is not a function" Error (2026-02-01)
+
+- **Problem**: Creating all-day tasks failed with "value.toISOString is not a function" error
+- **Root Cause**: The task storage layer passed ISO date strings directly to Drizzle ORM, but Drizzle's `timestamp` column type uses `mode: 'date'` by default, which expects JavaScript Date objects. Drizzle internally calls `.toISOString()` on the value, which fails on strings.
+- **Solution**: Convert ISO strings to Date objects before passing to Drizzle in both `createTask` and `updateTask` functions
+- **Files Modified**: `server/storage/tasks.ts`
+- **Code Change**:
+  ```ts
+  // Before: Passed string directly (caused error)
+  values.scheduledStartAt = input.scheduledStartAt;
+
+  // After: Convert string to Date for Drizzle
+  const parsed = new Date(input.scheduledStartAt);
+  if (!isNaN(parsed.getTime())) {
+    values.scheduledStartAt = parsed;
+  }
+  ```
 
 #### React Hooks Rule Violation in Calendar Component (2026-01-30)
 

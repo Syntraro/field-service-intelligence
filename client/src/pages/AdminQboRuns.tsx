@@ -203,7 +203,7 @@ export default function AdminQboRuns() {
                   return (
                     <TableRow
                       key={run.syncRunId}
-                      className="cursor-pointer hover:bg-muted/50"
+                      className="cursor-pointer"
                       onClick={() => setLocation(`/admin/qbo/runs/${run.syncRunId}`)}
                     >
                       <TableCell>

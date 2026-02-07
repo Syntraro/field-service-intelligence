@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { DndContext, DragOverlay, closestCenter, DragEndEvent, DragStartEvent, pointerWithin, CollisionDetection, PointerSensor, useSensor, useSensors, rectIntersection } from "@dnd-kit/core";
 import NewAddClientDialog from "@/components/NewAddClientDialog";
 import { JobDetailDialog } from "@/components/JobDetailDialog";
@@ -322,10 +323,8 @@ export default function Calendar() {
     return partsList;
   };
 
-  // Use /api/team/technicians which returns active team members with { id, fullName, email, role }
-  const { data: techniciansQueryData, isError: techniciansError } = useQuery<any>({
-    queryKey: ['/api/team/technicians'],
-  });
+  // Use shared technicians hook
+  const { teamMembers: techniciansQueryData, isError: techniciansError } = useTechniciansDirectory();
 
   // SAFE: Normalize technicians to array first, then ensure displayName/fullName/name are always populated
   const technicians = useMemo(() => {

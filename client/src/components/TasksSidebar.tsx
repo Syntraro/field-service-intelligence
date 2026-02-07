@@ -2,8 +2,10 @@ import { useMemo, useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
+import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ChevronLeft, ChevronRight, Plus, CheckSquare, Square, ClipboardList } from "lucide-react";
 import { TaskDialog } from "@/components/TaskDialog";
 
@@ -64,15 +66,17 @@ function formatTaskDate(dateString?: string | null): string {
 }
 
 function buildTasksUrl(params: {
-  status?: TaskStatus | "active";
+  status?: "active" | "completed";
   assignedToUserId?: string;
   type?: TaskType;
   offset?: number;
   limit?: number;
 }) {
   const usp = new URLSearchParams();
-  if (params.status && params.status !== "active") {
-    usp.set("status", params.status);
+  // "active" = don't filter by status (server returns all, we filter client-side)
+  // "completed" = filter to completed tasks only
+  if (params.status === "completed") {
+    usp.set("status", "completed");
   }
   if (params.assignedToUserId) usp.set("assignedToUserId", params.assignedToUserId);
   if (params.type) usp.set("type", params.type);
@@ -81,15 +85,17 @@ function buildTasksUrl(params: {
   return `/api/tasks?${usp.toString()}`;
 }
 
-function normalizeTasks(payload: any, statusFilter?: "active" | TaskStatus): Task[] {
+function normalizeTasks(payload: any, statusFilter?: "active" | "completed"): Task[] {
   let tasks: Task[] = [];
   if (!payload) return [];
   if (Array.isArray(payload)) tasks = payload;
   else if (Array.isArray(payload.items)) tasks = payload.items;
   else if (Array.isArray(payload.data)) tasks = payload.data;
 
+  // "active" = all non-completed tasks (pending, in_progress, etc.)
+  // "completed" = completed tasks only (already filtered server-side)
   if (statusFilter === "active") {
-    return tasks.filter(t => t.status === "pending" || t.status === "in_progress");
+    return tasks.filter(t => t.status !== "completed" && t.status !== "cancelled");
   }
 
   return tasks;
@@ -102,24 +108,28 @@ export function TasksSidebar(props: {
   const { collapsed, onToggleCollapsed } = props;
   const { user } = useAuth();
   const currentUserId = user?.id;
+  const { teamMembers } = useTechniciansDirectory();
 
-  const [status, setStatus] = useState<TaskStatus | "active">("active");
-  const [scope, setScope] = useState<"mine" | "all">("mine");
-  const [type, setType] = useState<"all" | TaskType>("all");
+  // Simplified status filter: "active" (non-completed) or "completed"
+  const [status, setStatus] = useState<"active" | "completed">("active");
+  // Assignee filter: "all" for all technicians, or a specific user ID
+  const [assigneeFilter, setAssigneeFilter] = useState<string>("all");
+  // Type filter: "all" for all types, or a specific task type
+  const [typeFilter, setTypeFilter] = useState<string>("all");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>(undefined);
 
-  const assignedToUserId = scope === "mine" ? currentUserId : undefined;
+  const assignedToUserId = assigneeFilter === "all" ? undefined : assigneeFilter;
 
   const tasksUrl = useMemo(() => {
     return buildTasksUrl({
       status,
       assignedToUserId,
-      type: type === "all" ? undefined : type,
+      type: typeFilter === "all" ? undefined : typeFilter as TaskType,
       offset: 0,
       limit: 50,
     });
-  }, [status, assignedToUserId, type]);
+  }, [status, assignedToUserId, typeFilter]);
 
   const { data, isLoading, error } = useQuery({
     queryKey: [tasksUrl],
@@ -183,7 +193,7 @@ export function TasksSidebar(props: {
 
   if (collapsed) {
     return (
-      <div className="h-full flex flex-col items-center justify-start gap-2 py-3 w-14 border-l bg-background">
+      <div className="h-full flex flex-col items-center justify-start gap-2 py-3 w-14 border-l bg-white dark:bg-gray-900">
         <Button variant="ghost" size="icon" onClick={onToggleCollapsed} title="Expand tasks">
           <ChevronLeft className="h-5 w-5" />
         </Button>
@@ -214,7 +224,7 @@ export function TasksSidebar(props: {
   }
 
   return (
-    <div className="h-full w-[380px] border-l bg-background flex flex-col">
+    <div className="h-full w-[380px] border-l bg-white dark:bg-gray-900 flex flex-col rounded-xl shadow-sm">
       {/* Header */}
       <div className="px-3 py-2 border-b">
         <div className="flex items-center justify-between mb-2">
@@ -237,90 +247,54 @@ export function TasksSidebar(props: {
 
         {/* Horizontal Filter Bar */}
         <div className="space-y-2">
-          {/* Status Filter - Horizontal Pills */}
-          <div className="flex items-center gap-1 flex-wrap">
+          {/* Status Filter - Active/Completed Toggle */}
+          <div className="flex items-center gap-1">
             <Button
               size="sm"
               variant={status === "active" ? "default" : "ghost"}
               onClick={() => setStatus("active")}
-              className="h-7 text-xs px-2"
+              className="h-7 text-xs px-3"
             >
               Active
             </Button>
             <Button
               size="sm"
-              variant={status === "pending" ? "default" : "ghost"}
-              onClick={() => setStatus("pending")}
-              className="h-7 text-xs px-2"
-            >
-              Pending
-            </Button>
-            <Button
-              size="sm"
-              variant={status === "in_progress" ? "default" : "ghost"}
-              onClick={() => setStatus("in_progress")}
-              className="h-7 text-xs px-2"
-            >
-              In Progress
-            </Button>
-            <Button
-              size="sm"
               variant={status === "completed" ? "default" : "ghost"}
               onClick={() => setStatus("completed")}
-              className="h-7 text-xs px-2"
+              className="h-7 text-xs px-3"
             >
               Completed
             </Button>
           </div>
 
-          {/* Scope and Type Filters */}
-          <div className="flex items-center gap-2 justify-between">
-            <div className="flex gap-1">
-              <Button
-                size="sm"
-                variant={scope === "mine" ? "secondary" : "ghost"}
-                onClick={() => setScope("mine")}
-                disabled={!currentUserId}
-                className="h-6 text-xs px-2"
-              >
-                My
-              </Button>
-              <Button
-                size="sm"
-                variant={scope === "all" ? "secondary" : "ghost"}
-                onClick={() => setScope("all")}
-                className="h-6 text-xs px-2"
-              >
-                All
-              </Button>
-            </div>
+          {/* Assignee and Type Filter Dropdowns */}
+          <div className="flex items-center gap-2">
+            {/* Assignee Filter */}
+            <Select value={assigneeFilter} onValueChange={setAssigneeFilter}>
+              <SelectTrigger className="h-7 text-xs flex-1">
+                <SelectValue placeholder="All Technicians" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Technicians</SelectItem>
+                {teamMembers.map((tech) => (
+                  <SelectItem key={tech.id} value={tech.id}>
+                    {tech.fullName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
 
-            <div className="flex gap-1">
-              <Button
-                size="sm"
-                variant={type === "all" ? "secondary" : "ghost"}
-                onClick={() => setType("all")}
-                className="h-6 text-xs px-2"
-              >
-                All
-              </Button>
-              <Button
-                size="sm"
-                variant={type === "GENERAL" ? "secondary" : "ghost"}
-                onClick={() => setType("GENERAL")}
-                className="h-6 text-xs px-2"
-              >
-                General
-              </Button>
-              <Button
-                size="sm"
-                variant={type === "SUPPLIER_VISIT" ? "secondary" : "ghost"}
-                onClick={() => setType("SUPPLIER_VISIT")}
-                className="h-6 text-xs px-2"
-              >
-                Supplier
-              </Button>
-            </div>
+            {/* Type Filter */}
+            <Select value={typeFilter} onValueChange={setTypeFilter}>
+              <SelectTrigger className="h-7 text-xs w-[120px]">
+                <SelectValue placeholder="All Types" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Types</SelectItem>
+                <SelectItem value="GENERAL">General</SelectItem>
+                <SelectItem value="SUPPLIER_VISIT">Supplier Visit</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </div>
       </div>
@@ -334,7 +308,7 @@ export function TasksSidebar(props: {
         ) : tasks.length === 0 ? (
           <div className="p-3 text-sm opacity-70">No tasks</div>
         ) : (
-          <ul className="divide-y">
+          <ul>
             {tasks.map((t) => {
               const isDone = t.status === "completed" || t.status === "cancelled";
               const initials = t.assignedUser
@@ -350,7 +324,7 @@ export function TasksSidebar(props: {
               return (
                 <li
                   key={t.id}
-                  className="p-2 flex items-start gap-2 cursor-pointer hover:bg-muted/40 relative"
+                  className="p-2 flex items-start gap-2 cursor-pointer hover:bg-gray-100/60 dark:hover:bg-gray-800/60 transition-colors border-b border-gray-200 dark:border-gray-800 last:border-b-0 relative"
                   onClick={() => handleTaskClick(t.id)}
                   title="Click to view/edit"
                 >

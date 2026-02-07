@@ -16,11 +16,11 @@ import {
   Building2,
   FileCheck
 } from "lucide-react";
-import { Link, useLocation, useSearch } from "wouter";
+import { Link, useLocation } from "wouter";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery } from "@tanstack/react-query";
-import { useState, useEffect, useMemo } from "react";
+import { useState } from "react";
 import type { CompanySettings } from "@shared/schema";
 import {
   Sidebar,
@@ -54,11 +54,6 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
     refetchOnWindowFocus: false,
   });
 
-  // Derive isClientsTab from URL search params
-  const searchString = useSearch();
-  const isClientsTab = useMemo(() => {
-    return location === "/" && searchString.includes("tab=clients");
-  }, [location, searchString]);
 
   const handleLogout = async () => {
     try {
@@ -100,7 +95,7 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
     menuItems.push({
       title: "Dashboard",
       icon: LayoutDashboard,
-      isActive: location === "/" && !isClientsTab,
+      isActive: location === "/",
       onClick: () => {
         if (onDashboardClick) {
           onDashboardClick();
@@ -134,10 +129,8 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
     menuItems.push({
       title: "Clients",
       icon: Users,
-      isActive: isClientsTab || location.startsWith("/clients/"),
-      onClick: () => {
-        setLocation('/?tab=clients');
-      },
+      href: "/clients",
+      isActive: location === "/clients" || location.startsWith("/clients/"),
       testId: "nav-clients"
     });
     menuItems.push({
@@ -196,8 +189,8 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
   }
 
   return (
-    <Sidebar collapsible="icon">
-      <SidebarHeader className="border-b px-2 py-2 h-10" />
+    <Sidebar collapsible="icon" className="bg-gray-50 dark:bg-gray-950">
+      <SidebarHeader className="px-2 py-2 h-14 bg-gray-50 dark:bg-gray-950" />
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupContent>
@@ -212,7 +205,7 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
                       asChild 
                       isActive={item.isActive} 
                       data-testid={item.testId}
-                      className="h-10 data-[active=true]:bg-primary/10 data-[active=true]:border-l-[3px] data-[active=true]:border-l-primary data-[active=true]:font-semibold data-[active=true]:pl-[7px] hover:bg-gray-100"
+                      className="h-10 data-[active=true]:bg-primary/10 data-[active=true]:border-l-[3px] data-[active=true]:border-l-primary data-[active=true]:font-semibold data-[active=true]:pl-[7px] hover:bg-gray-50"
                     >
                       <Link href={item.href}>
                         <item.icon className="h-4 w-4" />
@@ -224,7 +217,7 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
                       isActive={item.isActive} 
                       onClick={item.onClick} 
                       data-testid={item.testId}
-                      className="h-10 data-[active=true]:bg-primary/10 data-[active=true]:border-l-[3px] data-[active=true]:border-l-primary data-[active=true]:font-semibold data-[active=true]:pl-[7px] hover:bg-gray-100"
+                      className="h-10 data-[active=true]:bg-primary/10 data-[active=true]:border-l-[3px] data-[active=true]:border-l-primary data-[active=true]:font-semibold data-[active=true]:pl-[7px] hover:bg-gray-50"
                     >
                       <item.icon className="h-4 w-4" />
                       <span>{item.title}</span>
@@ -236,16 +229,16 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
-      <SidebarFooter className="border-t">
+      <SidebarFooter className="bg-gray-50 dark:bg-gray-950">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton onClick={() => setFeedbackOpen(true)} data-testid="button-feedback" className="h-10 hover:bg-gray-100">
+            <SidebarMenuButton onClick={() => setFeedbackOpen(true)} data-testid="button-feedback" className="h-10 hover:bg-gray-50">
               <MessageCircle className="h-4 w-4" />
               <span>Feedback</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
-            <SidebarMenuButton onClick={handleLogout} data-testid="button-logout" className="h-10 hover:bg-gray-100">
+            <SidebarMenuButton onClick={handleLogout} data-testid="button-logout" className="h-10 hover:bg-gray-50">
               <LogOut className="h-4 w-4" />
               <span>Logout</span>
             </SidebarMenuButton>

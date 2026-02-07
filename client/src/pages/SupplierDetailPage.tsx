@@ -1,12 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -31,14 +31,14 @@ import {
   Pencil,
   Trash2,
   Star,
-  CheckCircle2,
-  XCircle,
 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { Supplier, SupplierLocation } from "@shared/schema";
 import { AddLocationDialog } from "@/components/suppliers/AddLocationDialog";
 import { EditLocationDialog } from "@/components/suppliers/EditLocationDialog";
+import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
 
 interface SupplierResponse {
   supplier: Supplier;
@@ -49,15 +49,14 @@ export default function SupplierDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [, setLocation] = useLocation();
   const { toast } = useToast();
-  
+
   const isCreateMode = id === "new";
- 
-  // Form state
+
+  // Form state (website removed per requirements)
   const [formData, setFormData] = useState({
     name: "",
     email: "",
     phone: "",
-    website: "",
     isActive: true,
   });
 
@@ -78,35 +77,35 @@ export default function SupplierDetailPage() {
     enabled: !isCreateMode,
   });
 
-  // Set form data from fetched supplier
-  useState(() => {
-    if (data?.supplier) {
-      setFormData({
-        name: data.supplier.name || "",
-        email: data.supplier.email || "",
-        phone: data.supplier.phone || "",
-        website: data.supplier.website || "",
-        isActive: data.supplier.isActive ?? true,
-      });
-    }
-  });
-
   const supplier = data?.supplier;
   const locations = data?.locations || [];
 
+  // Populate form from supplier record, falling back to primary location for email/phone
+  useEffect(() => {
+    if (!supplier) return;
+    const primary = locations.find((l) => l.isPrimary) ?? locations[0];
+
+    setFormData({
+      name: supplier.name || "",
+      email: supplier.email || primary?.email || "",
+      phone: supplier.phone || primary?.phone || "",
+      isActive: supplier.isActive ?? true,
+    });
+  }, [supplier?.id, locations]);
+
   // Create supplier mutation
   const createMutation = useMutation({
-    mutationFn: async (data: typeof formData) => {
+    mutationFn: async (dataToCreate: typeof formData) => {
       const res = await apiRequest("/api/suppliers", {
         method: "POST",
-        body: JSON.stringify({ name: data.name }),
+        body: JSON.stringify({ name: dataToCreate.name }),
       });
       return res;
     },
-    onSuccess: (data) => {
+    onSuccess: (resp: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/suppliers"] });
       toast({ title: "Supplier created successfully" });
-      setLocation(`/suppliers/${data.supplier.id}`);
+      setLocation(`/suppliers/${resp.supplier.id}`);
     },
     onError: () => {
       toast({
@@ -119,10 +118,10 @@ export default function SupplierDetailPage() {
 
   // Update supplier mutation
   const updateMutation = useMutation({
-    mutationFn: async (data: Partial<typeof formData>) => {
+    mutationFn: async (partial: Partial<typeof formData>) => {
       return await apiRequest(`/api/suppliers/${id}`, {
         method: "PATCH",
-        body: JSON.stringify(data),
+        body: JSON.stringify(partial),
       });
     },
     onSuccess: () => {
@@ -139,23 +138,45 @@ export default function SupplierDetailPage() {
     },
   });
 
-  // Set location as primary mutation
+  // Set location as primary mutation with optimistic UI update
   const setPrimaryMutation = useMutation({
     mutationFn: async (locationId: string) => {
       return await apiRequest(`/api/suppliers/${id}/locations/${locationId}/primary`, {
         method: "PATCH",
       });
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/suppliers", id] });
-      toast({ title: "Primary location updated" });
+    onMutate: async (locationId: string) => {
+      // Optimistic update: move the star immediately
+      await queryClient.cancelQueries({ queryKey: ["/api/suppliers", id] });
+      const previous = queryClient.getQueryData<SupplierResponse>(["/api/suppliers", id]);
+      if (previous) {
+        queryClient.setQueryData<SupplierResponse>(["/api/suppliers", id], {
+          ...previous,
+          locations: previous.locations.map((l) => ({
+            ...l,
+            isPrimary: l.id === locationId,
+          })),
+        });
+      }
+      return { previous };
     },
-    onError: () => {
+    onError: (_err, _locationId, context) => {
+      // Roll back on failure
+      if (context?.previous) {
+        queryClient.setQueryData(["/api/suppliers", id], context.previous);
+      }
       toast({
         title: "Error",
         description: "Failed to set primary location",
         variant: "destructive",
       });
+    },
+    onSuccess: () => {
+      toast({ title: "Primary location updated" });
+    },
+    onSettled: () => {
+      // Always refetch to ensure server truth
+      queryClient.invalidateQueries({ queryKey: ["/api/suppliers", id] });
     },
   });
 
@@ -172,7 +193,7 @@ export default function SupplierDetailPage() {
       toast({ title: "Location deleted successfully" });
     },
     onError: (error: any) => {
-      const message = error.message || "Failed to delete location";
+      const message = error?.message || "Failed to delete location";
       toast({
         title: "Error",
         description: message,
@@ -212,238 +233,205 @@ export default function SupplierDetailPage() {
 
   if (!isCreateMode && isLoading) {
     return (
-      <div className="p-6">
+      <div className="p-6 bg-gray-200 dark:bg-gray-900">
         <div>Loading...</div>
       </div>
     );
   }
 
   return (
-    <div className="p-6 space-y-6 max-w-[1200px] mx-auto">
+    <div className="p-6 space-y-6 bg-gray-200 dark:bg-gray-900">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => setLocation("/suppliers")}
-          >
+          <Button variant="ghost" size="icon" onClick={() => setLocation("/suppliers")}>
             <ArrowLeft className="h-4 w-4" />
           </Button>
-          <h1 className="text-2xl font-semibold">
+          <h1 className="text-lg font-semibold text-foreground">
             {isCreateMode ? "New Supplier" : "Supplier Details"}
           </h1>
         </div>
       </div>
 
-      {/* Supplier Information */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Supplier Information</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4">
-            <div>
-              <Label htmlFor="name">Name *</Label>
-              <Input
-                id="name"
-                value={formData.name}
-                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                placeholder="Supplier name"
-                disabled={false}
-              />
-            </div>
-
-            <div className="grid md:grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="email">Email</Label>
-                <Input
-                  id="email"
-                  type="email"
-                  value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  placeholder="email@example.com"
-                  disabled={false}
-                />
-              </div>
-
-              <div>
-                <Label htmlFor="phone">Phone</Label>
-                <Input
-                  id="phone"
-                  type="tel"
-                  value={formData.phone}
-                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                  placeholder="(555) 123-4567"
-                  disabled={false}
-                />
-              </div>
-            </div>
-
-            <div>
-              <Label htmlFor="website">Website</Label>
-              <Input
-                id="website"
-                type="url"
-                value={formData.website}
-                onChange={(e) => setFormData({ ...formData, website: e.target.value })}
-                placeholder="https://example.com"
-                disabled={false}
-              />
-            </div>
-
-            {!isCreateMode && (
-              <>
-                <div className="flex items-center justify-between py-2">
-                  <Label htmlFor="active">Active</Label>
-                  <Switch
-                    id="active"
-                    checked={formData.isActive}
-                    onCheckedChange={(checked) =>
-                      setFormData({ ...formData, isActive: checked })
-                    }
-                    disabled={false}
+      {/* Two-column layout */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* LEFT: Supplier Information */}
+         <div className="lg:col-span-4 space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Supplier Information</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-4">
+                <div>
+                  <Label htmlFor="name">Name *</Label>
+                  <Input
+                    id="name"
+                    value={formData.name}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    placeholder="Supplier name"
                   />
                 </div>
 
-                <div className="pt-2">
-                  <Label>QBO Status</Label>
-                  <div className="mt-2">{getQboStatusBadge()}</div>
-                  {supplier?.qboSyncStatus === "ERROR" && supplier.qboSyncError && (
-                    <p className="text-sm text-destructive mt-2">{supplier.qboSyncError}</p>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
+                <div className="space-y-4">
+  <div>
+    <Label htmlFor="email">Email</Label>
+    <Input
+      id="email"
+      type="email"
+      value={formData.email}
+      onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+      placeholder="email@example.com"
+    />
+  </div>
 
-          <div className="flex gap-2 pt-4">
-            
-              <Button
-                onClick={handleSave}
-                disabled={createMutation.isPending || updateMutation.isPending}
-              >
-                {isCreateMode ? "Create Supplier" : "Save Changes"}
-              </Button>
-            
-            <Button variant="outline" onClick={() => setLocation("/suppliers")}>
-              Cancel
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+  <div>
+    <Label htmlFor="phone">Phone</Label>
+    <Input
+      id="phone"
+      type="tel"
+      value={formData.phone}
+      onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+      placeholder="(555) 123-4567"
+    />
+  </div>
+</div>
+              </div>
 
-      {/* Locations Section (Edit Mode Only) */}
-      {!isCreateMode && supplier && (
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle>Locations</CardTitle>
+                {!isCreateMode && (
+                  <>
+                    <div className="flex items-center justify-between py-2">
+                      <Label htmlFor="active">Active</Label>
+                      <Switch
+                        id="active"
+                        checked={formData.isActive}
+                        onCheckedChange={(checked) =>
+                          setFormData({ ...formData, isActive: checked })
+                        }
+                      />
+                    </div>
+
+                    <div className="pt-2">
+                      <Label>QBO Status</Label>
+                      <div className="mt-2">{getQboStatusBadge()}</div>
+                      {supplier?.qboSyncStatus === "ERROR" && supplier.qboSyncError && (
+                        <p className="text-sm text-destructive mt-2">{supplier.qboSyncError}</p>
+                      )}
+                    </div>
+                  </>
+                )}
               
+              <div className="flex gap-2 pt-4">
+                <Button onClick={handleSave} disabled={createMutation.isPending || updateMutation.isPending}>
+                  {isCreateMode ? "Create Supplier" : "Save Changes"}
+                </Button>
+                <Button variant="outline" onClick={() => setLocation("/suppliers")}>
+                  Cancel
+                </Button>
+              </div>
+            </CardContent>
+          </Card>        
+        </div>
+
+        {/* RIGHT: Locations */}
+        <div className="lg:col-span-8">
+          {!isCreateMode && supplier && (
+            <ListSurface>
+              <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
+                <div className="text-sm font-semibold text-foreground">Locations</div>
                 <Button onClick={() => setAddLocationOpen(true)} size="sm">
                   <Plus className="h-4 w-4 mr-2" />
                   Add Location
                 </Button>
-              
-            </div>
-          </CardHeader>
-          <CardContent>
-            {locations.length === 0 ? (
-              <div className="text-center text-muted-foreground py-8">
-                No locations yet. Click "Add Location" to create one.
               </div>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Name</TableHead>
-                    <TableHead>Address</TableHead>
-                    <TableHead>Contact</TableHead>
-                    <TableHead>Phone</TableHead>
-                    <TableHead className="text-center">Primary</TableHead>
-                    <TableHead className="text-center">Active</TableHead>
-                    
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {locations.map((location) => (
-                    <TableRow key={location.id}>
-                      <TableCell className="font-medium">{location.name}</TableCell>
-                      <TableCell>
-                        {location.city && location.province ? (
-                          <div className="text-sm">
-                            {location.city}, {location.province}
-                          </div>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {location.contactName || (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {location.phone || <span className="text-muted-foreground">—</span>}
-                      </TableCell>
-                      <TableCell className="text-center">
-                        {location.isPrimary ? (
-                          <Badge variant="default">
-                            <Star className="h-3 w-3 mr-1" />
-                            Primary
-                          </Badge>
-                        ) :  (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setPrimaryMutation.mutate(location.id)}
-                          >
-                            Set Primary
-                          </Button>
-                        
-                        )}
-                      </TableCell>
-                      <TableCell className="text-center">
-                        {location.isActive ? (
-                          <CheckCircle2 className="h-4 w-4 text-green-500 mx-auto" />
-                        ) : (
-                          <XCircle className="h-4 w-4 text-red-500 mx-auto" />
-                        )}
-                      </TableCell>
-                      
-                        <TableCell className="text-right">
-                          <div className="flex items-center justify-end gap-2">
+
+              <div className="p-3">
+                {locations.length === 0 ? (
+                  <div className="text-center text-muted-foreground py-8">
+                    No locations yet. Click "Add Location" to create one.
+                  </div>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Name</TableHead>
+                        <TableHead>Address</TableHead>
+                        <TableHead>Contact</TableHead>
+                        <TableHead>Phone</TableHead>
+                        <TableHead className="w-[70px] text-center"></TableHead>
+                        <TableHead className="w-[60px] text-center"></TableHead>
+                        <TableHead className="text-right"></TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {locations.map((location) => (
+                        <TableRow key={location.id} className={tableRowClass}>
+                          <TableCell className="font-medium">{location.name}</TableCell>
+                          <TableCell>
+                            {location.city && location.province ? (
+                              <div className="text-sm">
+                                {location.city}, {location.province}
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {location.contactName || <span className="text-muted-foreground">—</span>}
+                          </TableCell>
+                          <TableCell>
+                            {location.phone || <span className="text-muted-foreground">—</span>}
+                          </TableCell>
+                          <TableCell className="text-center">
                             <Button
                               variant="ghost"
                               size="icon"
-                              onClick={() => handleEditLocation(location)}
+                              className="h-8 w-8"
+                              onClick={() => !location.isPrimary && setPrimaryMutation.mutate(location.id)}
+                              disabled={location.isPrimary || setPrimaryMutation.isPending}
+                              title={location.isPrimary ? "Primary location" : "Set as primary"}
                             >
-                              <Pencil className="h-4 w-4" />
+                              <Star className={cn(
+                                "h-4 w-4",
+                                location.isPrimary ? "text-primary fill-primary" : "text-muted-foreground"
+                              )} />
                             </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => setDeleteLocationId(location.id)}
-                              disabled={location.isPrimary}
-                              title={
-                                location.isPrimary
-                                  ? "Cannot delete primary location"
-                                  : "Delete location"
-                              }
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </TableCell>
-                      
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </CardContent>
-        </Card>
-      )}
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <div
+                              className={cn(
+                                "h-2.5 w-2.5 rounded-full mx-auto",
+                                location.isActive ? "bg-green-500" : "bg-gray-400 dark:bg-gray-600"
+                              )}
+                              title={location.isActive ? "Active" : "Inactive"}
+                            />
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex items-center justify-end gap-2">
+                              <Button variant="ghost" size="icon" onClick={() => handleEditLocation(location)}>
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => setDeleteLocationId(location.id)}
+                                disabled={location.isPrimary}
+                                title={location.isPrimary ? "Cannot delete primary location" : "Delete location"}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </div>
+            </ListSurface>
+          )}
+        </div>
+      </div>
 
       {/* Dialogs */}
       {!isCreateMode && supplier && (
@@ -466,10 +454,7 @@ export default function SupplierDetailPage() {
             />
           )}
 
-          <AlertDialog
-            open={deleteLocationId !== null}
-            onOpenChange={() => setDeleteLocationId(null)}
-          >
+          <AlertDialog open={deleteLocationId !== null} onOpenChange={() => setDeleteLocationId(null)}>
             <AlertDialogContent>
               <AlertDialogHeader>
                 <AlertDialogTitle>Delete Location</AlertDialogTitle>
