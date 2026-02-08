@@ -6,9 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
-import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowLeft, Briefcase, FileText, Trash2, ChevronDown, ChevronRight, Star } from "lucide-react";
+import { ArrowLeft, Briefcase, FileText, Trash2, ChevronDown, ChevronRight, Star, User, Phone, Mail } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
@@ -17,7 +16,7 @@ import { PartsSelectorModal } from "@/components/PartsSelectorModal";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { format } from "date-fns";
-import type { Client, CustomerCompany, ClientNote, Job, LocationPMPartTemplate, LocationEquipment } from "@shared/schema";
+import type { Client, CustomerCompany, ClientNote, Job, LocationPMPartTemplate, LocationEquipment, ClientContact } from "@shared/schema";
 import { isJobOverdue, isJobScheduled } from "@shared/schema";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -44,12 +43,12 @@ export default function LocationDetailPage() {
     serialNumber: "",
   });
 
-  // Collapsible states
+  // Collapsible states — Contacts expanded by default, all others collapsed
+  const [contactsOpen, setContactsOpen] = useState(true);
   const [pmOpen, setPmOpen] = useState(false);
-  const [equipmentOpen, setEquipmentOpen] = useState(false);
   const [partsOpen, setPartsOpen] = useState(false);
-  const [notesOpen, setNotesOpen] = useState(true);
-  const [billingOpen, setBillingOpen] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [equipmentOpen, setEquipmentOpen] = useState(false);
 
   type OverviewTab = "activeWork" | "jobs" | "invoices";
   const [overviewTab, setOverviewTab] = useState<OverviewTab>("activeWork");
@@ -106,6 +105,18 @@ export default function LocationDetailPage() {
     enabled: Boolean(locationId),
   });
 
+  // Contacts for this location (location-specific + company-level)
+  const { data: contactsData } = useQuery<{ companyContacts: ClientContact[]; locationContacts: ClientContact[] }>({
+    queryKey: ["/api/clients", locationId, "contacts"],
+    queryFn: async () => {
+      const res = await fetch(`/api/clients/${locationId}/contacts`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch contacts");
+      return res.json();
+    },
+    enabled: Boolean(locationId),
+  });
+  const locationContacts = contactsData?.locationContacts ?? [];
+
   const { data: pmParts = [] } = useQuery<LocationPMPartTemplate[]>({
     queryKey: ["/api/locations", locationId, "pm-parts"],
     enabled: false,  // ✅ DISABLE - endpoint doesn't exist
@@ -138,22 +149,6 @@ export default function LocationDetailPage() {
     (isJobScheduled(j) || j.openSubStatus === "in_progress") &&
     !overdueJobs.some(o => o.id === j.id)
   );
-
-  const toggleBillWithParentMutation = useMutation({
-    mutationFn: async (billWithParent: boolean) => {
-      return await apiRequest(`/api/clients/${locationId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ billWithParent }),
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId] });
-      toast({ title: "Billing updated" });
-    },
-    onError: () => {
-      toast({ title: "Error", description: "Failed to update billing.", variant: "destructive" });
-    },
-  });
 
   const setPrimaryMutation = useMutation({
     mutationFn: async () => {
@@ -573,9 +568,60 @@ export default function LocationDetailPage() {
           </Card>
         </div>
 
-        {/* RIGHT column unchanged below */}
-        {/* ... keep your existing right-column cards exactly as before ... */}
+        {/* RIGHT column: Contacts → PM → Location Parts → Notes → Equipment */}
         <div className="space-y-3">
+          {/* Contacts — view-only, location-scoped only */}
+          <Collapsible open={contactsOpen} onOpenChange={setContactsOpen}>
+            <Card>
+              <CollapsibleTrigger asChild>
+                <button className="w-full flex items-center justify-between px-4 py-3 hover-elevate" data-testid="trigger-contacts">
+                  <span className="text-sm font-semibold">Contacts</span>
+                  {contactsOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+                </button>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="border-t px-4 pb-4 pt-3 max-h-64 overflow-y-auto space-y-2">
+                  {locationContacts.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      No contacts assigned to this location. Manage contacts on the{" "}
+                      <button
+                        type="button"
+                        className="text-primary hover:underline"
+                        onClick={() => setLocation(effectiveParentCompanyId ? `/clients/${effectiveParentCompanyId}` : "/clients")}
+                      >
+                        client page
+                      </button>.
+                    </p>
+                  ) : (
+                    locationContacts.map((c) => (
+                      <div key={c.id} className="p-2 border rounded-lg text-sm space-y-1" data-testid={`contact-${c.id}`}>
+                        <div className="flex items-center gap-2">
+                          <User className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                          <span className="font-medium text-sm">
+                            {[c.firstName, c.lastName].filter(Boolean).join(" ") || "Unnamed"}
+                          </span>
+                          {(c.roles as string[] || []).map((r) => (
+                            <Badge key={r} variant="outline" className="text-[10px] px-1.5 py-0 capitalize">{r}</Badge>
+                          ))}
+                        </div>
+                        {c.phone && (
+                          <div className="flex items-center gap-1.5 text-xs text-muted-foreground pl-5">
+                            <Phone className="h-3 w-3" /> {c.phone}
+                          </div>
+                        )}
+                        {c.email && (
+                          <div className="flex items-center gap-1.5 text-xs text-muted-foreground pl-5">
+                            <Mail className="h-3 w-3" /> {c.email}
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </CollapsibleContent>
+            </Card>
+          </Collapsible>
+
           {/* PM Schedule */}
           <Collapsible open={pmOpen} onOpenChange={setPmOpen}>
             <Card>
@@ -624,65 +670,7 @@ export default function LocationDetailPage() {
             </Card>
           </Collapsible>
 
-          {/* Equipment */}
-          <Collapsible open={equipmentOpen} onOpenChange={setEquipmentOpen}>
-            <Card>
-              <CollapsibleTrigger asChild>
-                <button className="w-full flex items-center justify-between px-4 py-3 hover-elevate" data-testid="trigger-equipment">
-                  <span className="text-sm font-semibold">Equipment</span>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="text-xs h-auto p-0 text-primary"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setEquipmentModalOpen(true);
-                      }}
-                      data-testid="button-add-equipment"
-                    >
-                      + Add
-                    </Button>
-                    {equipmentOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-                  </div>
-                </button>
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <div className="border-t px-4 pb-4 pt-3 max-h-48 overflow-y-auto space-y-2">
-                  {equipment.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">
-                      No equipment added yet for this location.
-                    </p>
-                  ) : (
-                    equipment.map((eq) => (
-                      <div key={eq.id} className="rounded-lg border p-2 text-sm">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <div className="font-medium">{eq.name}</div>
-                            <div className="text-xs text-muted-foreground">{eq.equipmentType || "—"}</div>
-                          </div>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                            onClick={() => deleteEquipmentMutation.mutate(eq.id)}
-                            data-testid={`button-delete-equipment-${eq.id}`}
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </Button>
-                        </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {eq.manufacturer || ""} {eq.modelNumber || ""} {(eq.manufacturer || eq.modelNumber) && eq.serialNumber ? "•" : ""} S/N: {eq.serialNumber || "—"}
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </CollapsibleContent>
-            </Card>
-          </Collapsible>
-
-          {/* PM Parts */}
+          {/* Location Parts */}
           <Collapsible open={partsOpen} onOpenChange={setPartsOpen}>
             <Card>
               <CollapsibleTrigger asChild>
@@ -807,31 +795,59 @@ export default function LocationDetailPage() {
             </Card>
           </Collapsible>
 
-          {/* Billing */}
-          <Collapsible open={billingOpen} onOpenChange={setBillingOpen}>
+          {/* Equipment */}
+          <Collapsible open={equipmentOpen} onOpenChange={setEquipmentOpen}>
             <Card>
               <CollapsibleTrigger asChild>
-                <button className="w-full flex items-center justify-between px-4 py-3 hover-elevate" data-testid="trigger-billing">
-                  <span className="text-sm font-semibold">Billing Settings</span>
-                  {billingOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+                <button className="w-full flex items-center justify-between px-4 py-3 hover-elevate" data-testid="trigger-equipment">
+                  <span className="text-sm font-semibold">Equipment</span>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-xs h-auto p-0 text-primary"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEquipmentModalOpen(true);
+                      }}
+                      data-testid="button-add-equipment"
+                    >
+                      + Add
+                    </Button>
+                    {equipmentOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+                  </div>
                 </button>
               </CollapsibleTrigger>
               <CollapsibleContent>
-                <div className="border-t px-4 pb-4 pt-3">
-                  <div className="flex items-center justify-between p-3 border rounded-lg">
-                    <div className="space-y-0.5">
-                      <p className="text-sm font-medium">Bill with Parent</p>
-                      <p className="text-xs text-muted-foreground">
-                        {billParent ? "Invoices go to parent company" : "Invoices go directly to this location"}
-                      </p>
-                    </div>
-                    <Switch
-                      checked={billParent}
-                      onCheckedChange={(checked) => toggleBillWithParentMutation.mutate(checked)}
-                      disabled={toggleBillWithParentMutation.isPending}
-                      data-testid="switch-bill-with-parent"
-                    />
-                  </div>
+                <div className="border-t px-4 pb-4 pt-3 max-h-48 overflow-y-auto space-y-2">
+                  {equipment.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      No equipment added yet for this location.
+                    </p>
+                  ) : (
+                    equipment.map((eq) => (
+                      <div key={eq.id} className="rounded-lg border p-2 text-sm">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <div className="font-medium">{eq.name}</div>
+                            <div className="text-xs text-muted-foreground">{eq.equipmentType || "—"}</div>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                            onClick={() => deleteEquipmentMutation.mutate(eq.id)}
+                            data-testid={`button-delete-equipment-${eq.id}`}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {eq.manufacturer || ""} {eq.modelNumber || ""} {(eq.manufacturer || eq.modelNumber) && eq.serialNumber ? "•" : ""} S/N: {eq.serialNumber || "—"}
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </div>
               </CollapsibleContent>
             </Card>

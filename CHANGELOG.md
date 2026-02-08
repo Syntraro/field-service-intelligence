@@ -8,6 +8,139 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Location Detail Page — Contacts view-only, remove Billing Settings, reorder right column (2026-02-08)
+
+- **Contacts card moved to top** of right column and expanded by default; shows only location-scoped contacts (no inherited company contacts).
+- **View-only contacts** — removed all "Add Contact" actions from this page; empty state links to the client page for contact management.
+- **Billing Settings card removed** — handled via Edit Location modal instead. Removed `billingOpen` state, `toggleBillWithParentMutation`, and `Switch` import.
+- **Right column reordered**: Contacts → PM Schedule → Location Parts → Notes → Equipment.
+- **Default collapse states**: `contactsOpen=true`, all others `false` (notes was previously `true`).
+- **Dead code cleanup**: removed unused `Pencil` import.
+- **Files changed**: `client/src/pages/LocationDetailPage.tsx`, `CHANGELOG.md`
+
+### Fixed
+
+#### Contact Edit — Transactional Association Replace (2026-02-08)
+
+- **Root cause** — PATCH endpoint only updated a single `client_contacts` row. When a person had multiple location associations, the frontend sent parallel PATCHes but could not add new locations, remove unchecked locations, or switch between company-wide and location-specific modes.
+- **Storage layer** — Added `replacePersonContacts()` to `ClientContactRepository` using `db.transaction()`. Atomically deletes all existing rows (by ID list, tenant-scoped) then inserts new rows for the desired association state.
+- **PATCH route upgraded** — `PATCH /api/customer-companies/:companyId/contacts/:contactId` now accepts optional `association` + `existingContactIds` fields. When present, uses transactional replace instead of single-row update. Returns split `{ companyContacts, locationContacts }` matching GET format.
+- **Frontend mutation rewritten** — `updateContactMutation` now sends a single PATCH with full association payload and all existing row IDs, instead of parallel per-row PATCHes. Awaits `refetchQueries` after success for immediate UI consistency.
+- **Backward compat** — Simple single-row PATCH (without association field) still works for legacy callers.
+- **Files changed**: `server/storage/clientContacts.ts`, `server/routes/customer-companies.ts`, `client/src/pages/ClientDetailPage.tsx`
+
+### Changed
+
+#### Phase 5: Per-Location Roles in Contact Modal (2026-02-07)
+
+- **Per-association role toggles** — Replaced global `isBilling`/`isScheduling` checkboxes with per-association `RoleFlags` (`{ billing, scheduling }`). New `AssociationState` discriminated union: `{ type: "company"; companyRoles }` or `{ type: "locations"; locationRolesById }`. Each location in the modal now has its own Billing/Scheduling checkboxes.
+- **Edit prefill from PersonGroup** — `openEditContact` now accepts a `PersonGroup` instead of a raw `ClientContact`, reconstructing `companyRoles` or `locationRolesById` from all existing associations.
+- **Create payload: per-location roles** — `createContactMutation` sends `association.locations[]` with per-location `roles` arrays (e.g., one location gets `["billing"]`, another `["scheduling"]`).
+- **Edit payload: parallel PATCH** — `updateContactMutation` in locations mode PATCHes each association row with its own roles via parallel API calls.
+- **Backend: new Zod schema field** — `contactFieldsSchema.association.locations[]` accepts `{ locationId, roles }` entries. POST handler prefers `locations[]` (per-location roles) over `locationIds[]` (legacy uniform roles).
+- **Backward compat** — Legacy `locationIds[]` + global `roles` still works for older clients.
+- **Files changed**: `client/src/pages/ClientDetailPage.tsx`, `server/routes/customer-companies.ts`
+
+#### Contacts Card — Full Person-Level Dedup + Accordion Associations (2026-02-07)
+
+- **Rewrote contact grouping** — New `peopleGroups` useMemo with `Assoc`/`PersonGroup` types. Grouping key uses prefixed namespace: `e:email` > `p:phone-digits` > `n:first|last` > `id:id`. `upsert` pattern merges base fields (phone/email/isPrimary) and accumulates per-association roles.
+- **One row per person** — List maps exclusively over `peopleGroups`. All raw `companyContacts.map` / `locationContacts.reduce` patterns removed. Nadeem appears once, Jad appears once.
+- **Collapsed row** — Name, Primary badge, Company badge (if company-wide), location summary badge ("Home" if 1 location, "Home +1" if 2+), phone/email inline. Clickable `<button>` toggles accordion.
+- **Expanded associations** — Shows ALL associations: Company first, then locations alphabetically. Each row: fixed-width label + role badges (Billing, Scheduling). "No roles" fallback.
+- **Sorted output** — Primary contacts first, then alphabetical by name. Associations sorted company-first then alpha.
+- **Kebab menu (⋯)** — Edit/Delete using `primaryAssociationId` (prefers company-wide record). Menu is outside the `<button>`, no stopPropagation needed. Edit calls `openEditContact`, Delete triggers existing AlertDialog.
+- **Dead code cleanup** — Removed unused `User` icon import.
+- **Files changed**: `client/src/pages/ClientDetailPage.tsx`
+
+#### Contact Save — Route Verification, CSRF Validation, Query Invalidation (2026-02-07)
+
+- **Verified POST route mounting** — `POST /api/customer-companies/:companyId/contacts` confirmed reachable (403 without CSRF token, 401 with token but no auth). Route was already registered in `server/routes/index.ts` at `/api/customer-companies`.
+- **Verified CSRF flow** — `csurf` middleware applied globally to `/api` before route registration. Frontend `apiRequest` lazily fetches CSRF token via `getCSRFToken()`, sends `x-csrf-token` header, and auto-retries on CSRF errors (403 EBADCSRFTOKEN).
+- **Fixed TS errors** — `association` and `locationIds` were possibly undefined after Zod `.default()`. Added explicit runtime fallbacks in POST handler.
+- **Improved query invalidation** — After contact create/update/delete, now invalidates both company-level (`/api/customer-companies/:id/contacts`) AND all location-level (`/api/clients/:locId/contacts`) queries so LocationDetailPage reflects changes immediately.
+- **Files changed**: `server/routes/customer-companies.ts`, `client/src/pages/ClientDetailPage.tsx`
+
+#### Contact Management — Association Selector, Location Contacts, Unified Modal (2026-02-07)
+
+- **Association selector on Add Contact modal** — Contacts can now be assigned to "Company (all locations)" or "Specific location(s)" with a multi-select checkbox list. POST endpoint creates one row per selected location when `association.type === "locations"`.
+- **Unified Add/Edit Contact modal** — Replaced three separate dialogs (add, edit, delete) with a single configurable modal (`contactModalMode: "add" | "edit"`) plus a delete AlertDialog. Edit pre-fills all fields including association type.
+- **Location Contacts section on ClientDetailPage** — Contacts linked to specific locations now appear grouped by location below Company Contacts, with edit/delete actions per contact.
+- **LocationDetailPage contacts** — Added a "Contacts" collapsible card in the right column showing location-specific contacts and inherited company-level contacts (with "Inherited" label). Links to company page for adding new contacts.
+- **Backend: association-aware POST** (server/routes/customer-companies.ts) — `POST /api/customer-companies/:id/contacts` now accepts `association: { type: "company" | "locations", locationIds: string[] }`. Creates multiple rows for multi-location assignment. PATCH supports `locationId` changes.
+- **Files changed**: `client/src/pages/ClientDetailPage.tsx`, `client/src/pages/LocationDetailPage.tsx`, `server/routes/customer-companies.ts`, `server/storage/clientContacts.ts`
+
+#### ClientDetailPage — Fix Name Bug & Full Contact Management (2026-02-07)
+
+- **Bug fix: Client name disappears after navigation** — `companyName` went blank when navigating to a location and returning because the overview query re-fetched and `parentCompany?.name` was temporarily `undefined` while `client.companyName` was empty (client fetched as CustomerCompany which uses `.name`). Fixed with a robust fallback chain: `parentCompany?.name || client.companyName || client.name || client.displayName || "Unnamed Client"`. Added `placeholderData: keepPreviousData` to the overview query to prevent flicker during navigation.
+- **Company Contacts section with full CRUD** — Replaced the read-only contacts card with an interactive "Company Contacts" section directly on the detail page (not inside Edit Company modal). Shows each contact with name, role badges (billing/scheduling), phone, email. Hover reveals Edit/Delete actions. "Add Contact" button opens a dialog with first/last name, phone, email, billing/scheduling checkboxes. Validation: requires (first or last name) AND (phone or email).
+- **New API endpoints** (server/routes/customer-companies.ts):
+  - `POST /api/customer-companies/:id/contacts` — create a single contact with Zod validation
+  - `PATCH /api/customer-companies/:id/contacts/:contactId` — update contact fields, validates merged state
+  - `DELETE /api/customer-companies/:id/contacts/:contactId` — delete single contact
+- **New storage methods** (server/storage/clientContacts.ts): `getContactById`, `createContact`, `updateContact`, `deleteContact` — all tenant-scoped
+- **Cleanup**: Removed unused imports (Tabs, Building2, MapPin, Settings, useSearch, useEffect)
+- **Files changed**: `client/src/pages/ClientDetailPage.tsx`, `server/routes/customer-companies.ts`, `server/storage/clientContacts.ts`
+
+#### NewClientPage Jobber-Style Rewrite (2026-02-07)
+
+- **Complete UI rewrite** to Jobber-like density with placeholder-based inputs (no stacked labels)
+- **Layout**: 2-pane `grid-cols-[480px_1fr]`, max-w-[1600px], Cancel/Save in top-right header
+- **Left card ("Client")**: First/Last name always visible, Company Name with dynamic placeholder (`*` when checkbox on, `optional` when off), "Saved as" preview in person mode, billing address, company contacts
+- **Right card ("Locations")**: Segmented tab strip, "Location details" editor with 2-column grid, "Copy billing address" button replaces same-as-billing toggle, location contacts with Billing/Scheduling role toggles
+- **Simplified data model**: `AddressForm` extracted as nested type, `LocationForm` flattened (phone/email at top level), roles reduced to `billing | scheduling` (primary contact handled separately via dedicated first/last fields)
+- **Contact draft pattern**: `ContactEditor` component with Save/Cancel, save disabled until any field filled, no editing existing contacts (add-only + delete), separate `companyDraft`/`locDraft` state
+- **Removed**: Maintenance schedule, same-as-billing Switch, Label components for most fields, DropdownMenu on locations (replaced with Remove button), inline contact editing
+- **API shape preserved**: Payload still matches `/api/clients/full-create` with company, primaryLocation, additionalLocations, contacts arrays
+- **Files changed**: `client/src/pages/NewClientPage.tsx`
+
+#### NewClientPage UX Fixes — Contacts Draft, Segmented Tabs, Spacing (2026-02-07)
+
+- **Contacts draft pattern**: "Add contact" now opens a draft editor that does NOT create an entry until Save. Save disabled until first/last name provided. Esc key or clicking away discards the draft. Applies to both company and location contacts. No more "Unnamed" contacts.
+- **ContactInlineEditor**: Added `canSave`/`isDraft` props; shows "New contact" header + X (cancel) for drafts, "Edit contact" + Trash (delete) for existing. Save button disabled when `!canSave`.
+- **ContactsSection**: Changed from `onAdd: () => void` to `onCommit: (contact) => void`. Draft state managed internally with blur/Esc discard. `useEffect` clears draft when `editingId` changes cross-section.
+- **Location tabs**: Replaced pill-style selector with segmented tab strip (`rounded-lg border bg-muted/30 p-1`). Selected tab: `bg-background shadow-sm border`. Never shows "Unnamed" — falls back to "Location 1", "Location 2", etc.
+- **Add location UX**: Auto-selects new tab, scrolls tab strip into view, focuses Location Name input via `requestAnimationFrame` + ref.
+- **Spacing**: Grid `440px_1fr gap-8`, card content `space-y-6`, sections `space-y-3`, City/Province/Postal `grid-cols-[2fr_1fr_1fr] gap-4`
+- **Company card person mode**: Checkbox correctly toggles Company Name vs First/Last fields; "Saved as" preview appears under name fields in both modes
+- **Files changed**: `client/src/pages/NewClientPage.tsx`
+
+#### NewClientPage Layout & Spacing Polish (2026-02-07)
+
+- **Page width**: Increased max-width from 1200px to 1320px
+- **Grid**: Changed to `lg:grid-cols-[420px_1fr]` (fixed left, fluid right)
+- **Locations card**: Replaced vertical location list with horizontal scrollable "location pills" selector row (pill per location, primary dot indicator, selected pill highlighted)
+- **Location editor**: Added "Location details" header with overflow menu (Set as primary / Delete); editor now uses 2-column grid — left: name, same-as-billing, address fields; right: phone/email, maintenance schedule, contacts
+- **Removed** internal "Primary Location" heading from locations card
+- **Company card**: Improved empty contacts state with bordered dashed placeholder box
+- **Footer**: Full-width anchored bar with top border (`-mx-6 px-6 py-4 border-t`)
+- **Files changed**: `client/src/pages/NewClientPage.tsx`
+
+#### New Client Flow — Contacts, Name Source, Card-Based UI (2026-02-07)
+
+**Data Model & API:**
+- **Removed** "Legal Name" field from New Client form (UI + payload)
+- **Added** `nameSource` column to `customer_companies` table (`'company'` or `'person'`) to preserve naming intent
+- **Added** `client_contacts` table for multiple contacts per customer company or per location
+  - `location_id` nullable: NULL = company-level contact, set = location-specific contact
+  - Role flags stored as text array: `billing`, `scheduling`, `general`, `primary`
+  - `is_primary` boolean flag
+- **Added** `GET /api/clients/:clientId/contacts` endpoint
+- **Added** `POST /api/clients/full-create` now accepts `contacts` array and persists via `clientContactRepository`
+- **Added** `server/storage/clientContacts.ts` — new repository with `createContacts`, `getCompanyContacts`, `getLocationContacts`, `getAllContactsForCustomerCompany`, `deleteContactsByCustomerCompany`
+
+**UI Redesign (NewClientPage.tsx):**
+- **Redesigned** as two-column card layout: `grid gap-6 lg:grid-cols-[1fr_1.2fr]`
+- **LEFT CARD ("Company")**: "Use company name as client name" checkbox (default on), conditional Company Name / First+Last fields, "Saved as" preview pill, phone/email, billing address, company-level contacts with compact display rows + inline editor
+- **RIGHT CARD ("Locations")**: Clickable location list with Primary/Billing badges, contact counts, overflow menu (Set as primary / Delete) + location editor panel with name, same-as-billing address switch, phone/email, location contacts, PM schedule
+- **Contact display**: `ContactDisplayRow` (compact read-only: name, muted email/phone, role Badge pills, edit/delete icons) ↔ `ContactInlineEditor` (edit mode with first/last, email/phone, role checkboxes, done/delete buttons)
+- **Contacts reusable**: `ContactsSection` component manages display/edit toggle via single global `editingContactId`
+- **Location primary swap**: `setAsPrimary(id)` demotes current primary to additional, promotes selected
+- **Same-as-billing**: UI-only toggle on locations; address resolved from billing values at submit time
+- **Save validation**: Save button disabled unless company/person name valid and at least one location exists
+- **Form loads blank** — no placeholder/demo values
+- **Files changed**: `client/src/pages/NewClientPage.tsx`, `server/routes/clients.ts`, `server/storage/clientContacts.ts` (new), `server/storage/customerCompanies.ts`, `server/storage/index.ts`, `shared/schema.ts`
+- **Migration**: `migrations/2026_02_07_add_client_contacts_and_name_source.sql`
+
 #### JobDetailPage Visit-Level Enhancements (2026-02-07)
 
 - **Removed** `AssignTechnicianDialog` and "Assign Technician" button — technician assignment is visit-level only
