@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Request, Response, NextFunction } from "express";
-import { storage, customerCompanyRepository } from "../storage/index";
+import { storage, customerCompanyRepository, clientContactRepository } from "../storage/index";
 import { insertClientSchema, insertLocationEquipmentSchema, updateLocationEquipmentSchema } from "@shared/schema";
 import { z } from "zod";
 import type { Client } from "@shared/schema";
@@ -205,7 +205,7 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
 router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   const userId = req.user.id;
-  const { company, primaryLocation, additionalLocations = [] } = req.body;
+  const { company, primaryLocation, additionalLocations = [], contacts = [] } = req.body;
 
   if (!company?.name?.trim()) {
     throw createError(400, "Company name is required");
@@ -242,6 +242,8 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
   // 1) Create (or reuse) customer company row
   // Reuse if same name exists for this tenant (prevents duplicates when users retry)
   const companyName = company.name.trim();
+  // nameSource: 'company' (default) = use company name as display, 'person' = use contact first+last
+  const nameSource = company.nameSource === "person" ? "person" : "company";
   const customerCompany = await customerCompanyRepository.findOrCreateCustomerCompany(
     companyId,
     {
@@ -253,6 +255,7 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
       billingProvince: company.billingAddress?.stateOrProvince?.trim() || null,
       billingPostalCode: company.billingAddress?.postalCode?.trim() || null,
       billingCountry: company.billingAddress?.country?.trim() || null,
+      nameSource,
     }
   );
 
@@ -315,10 +318,37 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
     createdLocations.push(newLoc);
   }
 
+  // 4) Create contacts (company-level and location-level)
+  // contacts array format: [{ firstName, lastName, email, phone, roles, locationIndex?, isPrimary }]
+  // locationIndex: undefined/null = company-level, 0 = primary location, 1+ = additional location index
+  let createdContacts: any[] = [];
+  if (contacts.length > 0) {
+    const contactRows = contacts.map((c: any) => {
+      let locationId: string | null = null;
+      if (c.locationIndex != null && c.locationIndex >= 0) {
+        // locationIndex 0 = primary, 1+ = additional locations (offset by 1 since createdLocations[0] = primary)
+        const loc = createdLocations[c.locationIndex];
+        if (loc) locationId = loc.id;
+      }
+      return {
+        customerCompanyId: customerCompany.id,
+        locationId,
+        firstName: (c.firstName || "").trim(),
+        lastName: (c.lastName || "").trim(),
+        email: c.email?.trim() || null,
+        phone: c.phone?.trim() || null,
+        roles: Array.isArray(c.roles) ? c.roles : [],
+        isPrimary: c.isPrimary === true,
+      };
+    });
+    createdContacts = await clientContactRepository.createContacts(companyId, contactRows);
+  }
+
   res.json({
     customerCompany,
     client: primaryClient,
     locations: createdLocations,
+    contacts: createdContacts,
   });
 }));
 
@@ -372,6 +402,30 @@ router.post("/quick-create", requireRole(MANAGER_ROLES), asyncHandler(async (req
   const client = await storage.createClient(companyId, userId, clientData);
 
   res.json({ client });
+}));
+
+/**
+ * GET /api/clients/:clientId/contacts
+ * Get contacts for a client location (and its parent customer company).
+ * Returns both company-level contacts and location-specific contacts.
+ */
+router.get("/:clientId/contacts", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  const { clientId } = req.params;
+
+  const client = await storage.getClient(companyId!, clientId);
+  if (!client) throw createError(404, "Client not found");
+
+  // Get location-specific contacts
+  const locationContacts = await clientContactRepository.getLocationContacts(companyId!, clientId);
+
+  // Get company-level contacts if this location has a parent company
+  let companyContacts: any[] = [];
+  if (client.parentCompanyId) {
+    companyContacts = await clientContactRepository.getCompanyContacts(companyId!, client.parentCompanyId);
+  }
+
+  res.json({ companyContacts, locationContacts });
 }));
 
 /**

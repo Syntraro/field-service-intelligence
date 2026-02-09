@@ -8,6 +8,7 @@ import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { customerCompanyRepository } from "../storage/customerCompanies";
+import { clientContactRepository } from "../storage/clientContacts";
 
 function requireCompanyContext(req: any, res: Response, next: NextFunction) {
   if (!req.user) return res.status(401).json({ error: "Unauthorized" });
@@ -104,6 +105,222 @@ router.get("/:companyId/overview", asyncHandler(async (req: AuthedRequest, res: 
   if (!overview) throw createError(404, "Customer company not found");
 
   res.json(overview);
+}));
+
+/**
+ * GET /api/customer-companies/:companyId/contacts
+ * Returns all contacts for a customer company, split into company-level and location-level.
+ * Used by the Client Detail Page to show contacts across all locations.
+ */
+router.get("/:companyId/contacts", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId: tenantCompanyId } = req;
+  const { companyId: customerCompanyId } = req.params;
+
+  const allContacts = await clientContactRepository.getAllContactsForCustomerCompany(
+    tenantCompanyId!,
+    customerCompanyId
+  );
+
+  // Split into company-level (locationId is null) and location-level contacts
+  const companyContacts = allContacts.filter(c => !c.locationId);
+  const locationContacts = allContacts.filter(c => !!c.locationId);
+
+  res.json({ companyContacts, locationContacts });
+}));
+
+// Validation: name present + (phone or email)
+// Phase 5: association.locations[] carries per-location roles
+const contactFieldsSchema = z.object({
+  firstName: z.string().optional().default(""),
+  lastName: z.string().optional().default(""),
+  phone: z.string().optional().nullable(),
+  email: z.string().optional().nullable(),
+  roles: z.array(z.string()).optional().default([]),
+  isPrimary: z.boolean().optional().default(false),
+  association: z.object({
+    type: z.enum(["company", "locations"]),
+    locationIds: z.array(z.string().uuid()).optional().default([]),
+    // Per-location roles (Phase 5): each entry has its own roles array
+    locations: z.array(z.object({
+      locationId: z.string().uuid(),
+      roles: z.array(z.string()).optional().default([]),
+    })).optional().default([]),
+  }).optional().default({ type: "company", locationIds: [], locations: [] }),
+}).refine(
+  (d) => (d.firstName?.trim() || d.lastName?.trim()),
+  { message: "First name or last name is required" }
+).refine(
+  (d) => (d.phone?.trim() || d.email?.trim()),
+  { message: "Phone or email is required" }
+);
+
+/**
+ * POST /api/customer-companies/:companyId/contacts
+ * Create contact(s) for a customer company.
+ * association.type = "company" → one row with locationId = null, uses top-level roles
+ * association.type = "locations" + locations[] → one row per entry with per-location roles (Phase 5)
+ * association.type = "locations" + locationIds[] → legacy: one row per locationId, same roles
+ */
+router.post("/:companyId/contacts", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId: tenantCompanyId } = req;
+  const { companyId: customerCompanyId } = req.params;
+
+  const data = validateSchema(contactFieldsSchema, req.body);
+  const { association: rawAssociation, ...contactFields } = data;
+  const association = rawAssociation ?? { type: "company" as const, locationIds: [] as string[], locations: [] };
+  const locationsWithRoles = association.locations ?? [];
+  const locationIds = association.locationIds ?? [];
+
+  const baseData = {
+    customerCompanyId,
+    firstName: contactFields.firstName,
+    lastName: contactFields.lastName,
+    phone: contactFields.phone ?? null,
+    email: contactFields.email ?? null,
+    isPrimary: contactFields.isPrimary,
+  };
+
+  if (association.type === "locations" && locationsWithRoles.length > 0) {
+    // Phase 5: per-location roles — each location carries its own roles array
+    const rows = await clientContactRepository.createContacts(
+      tenantCompanyId!,
+      locationsWithRoles.map(loc => ({ ...baseData, locationId: loc.locationId, roles: loc.roles }))
+    );
+    res.status(201).json({ contacts: rows });
+  } else if (association.type === "locations" && locationIds.length > 0) {
+    // Legacy: same roles for all locations (backward compat)
+    const rows = await clientContactRepository.createContacts(
+      tenantCompanyId!,
+      locationIds.map(locId => ({ ...baseData, locationId: locId, roles: contactFields.roles }))
+    );
+    res.status(201).json({ contacts: rows });
+  } else {
+    // Company-wide: locationId = null
+    const contact = await clientContactRepository.createContact(tenantCompanyId!, {
+      ...baseData,
+      locationId: null,
+      roles: contactFields.roles,
+    });
+    res.status(201).json(contact);
+  }
+}));
+
+/**
+ * Schema for full-association contact update.
+ * Accepts identity fields + association payload + list of existing row IDs to replace.
+ * When association is provided, all existing rows (existingContactIds) are deleted
+ * and new rows are inserted atomically in a transaction.
+ */
+const updateContactSchema = z.object({
+  firstName: z.string().optional(),
+  lastName: z.string().optional(),
+  phone: z.string().optional().nullable(),
+  email: z.string().optional().nullable(),
+  roles: z.array(z.string()).optional(),
+  isPrimary: z.boolean().optional(),
+  locationId: z.string().uuid().nullable().optional(),
+  // Full association payload for transactional replace
+  association: z.object({
+    type: z.enum(["company", "locations"]),
+    roles: z.array(z.string()).optional().default([]),
+    locations: z.array(z.object({
+      locationId: z.string().uuid(),
+      roles: z.array(z.string()).optional().default([]),
+    })).optional().default([]),
+  }).optional(),
+  // All existing DB row IDs for this person (used for delete-and-replace)
+  existingContactIds: z.array(z.string()).optional(),
+});
+
+/**
+ * PATCH /api/customer-companies/:companyId/contacts/:contactId
+ * Update a contact. When association + existingContactIds are provided,
+ * atomically replaces all association rows in a transaction.
+ * Otherwise falls back to single-row update for backward compat.
+ */
+router.patch("/:companyId/contacts/:contactId", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId: tenantCompanyId } = req;
+  const { companyId: customerCompanyId, contactId } = req.params;
+
+  const existing = await clientContactRepository.getContactById(tenantCompanyId!, contactId);
+  if (!existing) throw createError(404, "Contact not found");
+
+  const data = validateSchema(updateContactSchema, req.body);
+
+  // Merge with existing to validate the final state
+  const merged = {
+    firstName: data.firstName ?? existing.firstName,
+    lastName: data.lastName ?? existing.lastName,
+    phone: data.phone !== undefined ? data.phone : existing.phone,
+    email: data.email !== undefined ? data.email : existing.email,
+  };
+  if (!merged.firstName?.trim() && !merged.lastName?.trim()) {
+    throw createError(400, "First name or last name is required");
+  }
+  if (!merged.phone?.trim() && !merged.email?.trim()) {
+    throw createError(400, "Phone or email is required");
+  }
+
+  // Full association replace mode: delete old rows, insert new ones in a transaction
+  if (data.association && data.existingContactIds) {
+    const baseData = {
+      customerCompanyId: existing.customerCompanyId,
+      firstName: merged.firstName,
+      lastName: merged.lastName,
+      phone: merged.phone ?? null,
+      email: merged.email ?? null,
+      isPrimary: data.isPrimary ?? existing.isPrimary,
+    };
+
+    let newRows: Array<typeof baseData & { locationId: string | null; roles: string[] }>;
+    if (data.association.type === "company") {
+      // Company-wide: single row with locationId = null
+      newRows = [{ ...baseData, locationId: null, roles: data.association.roles ?? [] }];
+    } else {
+      // Per-location rows
+      const locations = data.association.locations ?? [];
+      if (locations.length === 0) {
+        throw createError(400, "At least one location is required for location-specific contacts");
+      }
+      newRows = locations.map((loc) => ({
+        ...baseData,
+        locationId: loc.locationId,
+        roles: loc.roles ?? [],
+      }));
+    }
+
+    const inserted = await clientContactRepository.replacePersonContacts(
+      tenantCompanyId!,
+      existing.customerCompanyId,
+      data.existingContactIds,
+      newRows
+    );
+
+    // Return in the same split format as GET for immediate UI consistency
+    const companyContacts = inserted.filter((c) => !c.locationId);
+    const locationContacts = inserted.filter((c) => !!c.locationId);
+    return res.json({ companyContacts, locationContacts });
+  }
+
+  // Fallback: simple single-row update (backward compat)
+  const updated = await clientContactRepository.updateContact(tenantCompanyId!, contactId, data);
+  if (!updated) throw createError(404, "Contact not found");
+
+  res.json(updated);
+}));
+
+/**
+ * DELETE /api/customer-companies/:companyId/contacts/:contactId
+ * Delete a single contact.
+ */
+router.delete("/:companyId/contacts/:contactId", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId: tenantCompanyId } = req;
+  const { contactId } = req.params;
+
+  const deleted = await clientContactRepository.deleteContact(tenantCompanyId!, contactId);
+  if (!deleted) throw createError(404, "Contact not found");
+
+  res.json({ success: true });
 }));
 
 // ============================================================================

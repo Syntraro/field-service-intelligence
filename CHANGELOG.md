@@ -6,6 +6,72 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### Location PM Parts: Row-Based Multi-Add Modal + Backend (2026-02-09)
+
+- **Backend storage**: New `server/storage/pmParts.ts` — `PMPartRepository` with `getLocationPMParts` (LEFT JOIN to items for name/sku/category/cost) and `bulkUpsertPMParts` (transactional replace: soft-delete removed, upsert existing, insert new).
+- **Backend routes**: New `server/routes/pm-parts.ts` — `GET /api/locations/:locationId/pm-parts` (list with item details) and `PUT /api/locations/:locationId/pm-parts` (bulk upsert with `{ parts: [{ productId, quantity }] }` payload). Registered at `/api/locations` in `routes/index.ts`.
+- **Frontend modal rewrite**: `PartsSelectorModal.tsx` rewritten from two-panel picker to row-based multi-add UX. Each row has server-side search input (debounced 300ms, min 2 chars, calls `GET /api/items?q=TERM`), dropdown results, quantity input. "Add another part" button appends rows. Single "Save" submits all rows via bulk PUT. Duplicate detection with inline warning. Prefills existing parts on open.
+- **Search fix**: Previous modal loaded full `/api/items` catalog and expected `{ items: Item[] }` but API returns raw array — search showed nothing. New modal uses per-row server-side search, correctly handling the API response shape.
+- **LocationDetailPage**: Re-enabled PM parts query (`GET /api/locations/:id/pm-parts`, was `enabled: false`). Parts list now uses joined `itemName`/`itemSku` from the API response instead of a separate items query.
+- **Files changed**: `server/storage/pmParts.ts` (new), `server/storage/index.ts`, `server/routes/pm-parts.ts` (new), `server/routes/index.ts`, `client/src/components/PartsSelectorModal.tsx`, `client/src/pages/LocationDetailPage.tsx`, `CHANGELOG.md`
+
+#### ClientDetailPage: Notes Header "+ Add" Button (2026-02-09)
+
+- **Notes header button**: Moved "+ Add Note" from NotesPanel body into the Notes card header on the Company/Client Detail page. Uses same `forwardRef`/`useImperativeHandle` pattern as LocationDetailPage — `notesPanelRef.current?.startAdding()` with `e.stopPropagation()` to avoid toggling the collapsible. Passes `hideAddButton` to suppress the internal button.
+- **Files changed**: `client/src/pages/ClientDetailPage.tsx`, `CHANGELOG.md`
+
+#### LocationDetailPage: Parts Card Styling + Notes Header Button (2026-02-09)
+
+- **Parts card no scrollbar**: Removed `max-h-48 overflow-y-auto` from Location Parts card content — card now expands vertically to fit all parts, page scrolls instead.
+- **Parts list dividers**: Replaced boxed rows (`rounded-lg border p-2`) with `divide-y` separator pattern for tighter, cleaner layout.
+- **Notes "+ Add" in header**: Moved "+ Add Note" button from NotesPanel body into Notes card header (same pattern as Parts card). Uses `forwardRef` + `useImperativeHandle` on NotesPanel to expose `startAdding()`. Header button uses `e.stopPropagation()` to avoid toggling the collapsible.
+- **NotesPanel ref API**: Added `NotesPanelRef` type export with `startAdding()` method; added `hideAddButton` prop to suppress internal button when parent provides its own.
+- **Files changed**: `client/src/pages/LocationDetailPage.tsx`, `client/src/components/NotesPanel.tsx`, `CHANGELOG.md`
+
+#### PM Parts Fixes: Query, Search, Dropdown Clipping (2026-02-09)
+
+- **Parts not showing after save (root cause)**: `LocationDetailPage.tsx` pm-parts `useQuery` had no `queryFn`. The default `getQueryFn` uses `queryKey[0]` as the URL, which was just `"/api/locations"` — never reached the actual endpoint. Added explicit `queryFn: () => apiRequest(\`/api/locations/${locationId}/pm-parts\`)`.
+- **Case-insensitive search**: `server/storage/items.ts` — changed `like` to `ilike` (Postgres ILIKE) so `?q=Ther` and `?q=ther` return the same results.
+- **Dropdown clipping fix**: `PartsSelectorModal.tsx` — replaced absolute-positioned dropdown (clipped by parent `overflow-y-auto`) with inline results panel that participates in the scroll flow. Results render inside each row card with `max-h-52 overflow-y-auto`.
+- **Modal sizing**: Dialog `max-w-4xl w-[95vw] max-h-[85vh]`; scroll area has `min-h-0` for proper flex containment.
+- **Files changed**: `client/src/pages/LocationDetailPage.tsx`, `server/storage/items.ts`, `client/src/components/PartsSelectorModal.tsx`, `CHANGELOG.md`
+
+#### Note Attachments + Visibility Flags + Scoped Notes Routes (2026-02-08)
+
+- **Schema**: `client_notes.locationId` now nullable (NULL = company-wide note). Added `showOnJobs`, `showOnInvoices`, `showOnQuotes` boolean visibility flags.
+- **New tables**: `files` (tenant-scoped file metadata) and `note_attachments` (join table linking notes to files, cascade delete).
+- **File upload route**: `POST /api/uploads` — multipart/form-data, multer disk storage to `uploads/<companyId>/<fileId>`, 10 MB / 10 files max. CSRF-protected.
+- **Secure file streaming**: `GET /api/files/:fileId` — tenant-scoped, streams from disk with correct Content-Type/Content-Disposition. No public static serving.
+- **Location notes routes**: `GET/POST/PATCH/DELETE /api/locations/:locationId/notes` — strict locationId scoping, enriched with attachments, visibility flags support.
+- **Company notes routes**: `GET/POST/PATCH/DELETE /api/companies/:companyId/notes` — WHERE locationId IS NULL, tenant guard.
+- **Note attachments routes**: `POST/DELETE /api/notes/:noteId/attachments` — attach/detach files by fileId.
+- **Back-compat**: Legacy `/api/clients/:clientId/notes` routes preserved (TODO: remove after migration).
+- **Frontend NotesPanel component**: Reusable `<NotesPanel scope="location"|"company" />` with multi-file picker, visibility checkboxes (Jobs/Invoices/Quotes), image thumbnails, file download links, inline edit with flag toggles.
+- **LocationDetailPage**: Notes card now uses `<NotesPanel>`, removed inline note state/mutations.
+- **apiRequest FormData fix**: Skip auto-setting `Content-Type: application/json` when body is `FormData` (for multipart uploads).
+- **Storage repos**: `FilesRepository`, `NoteAttachmentRepository` extending BaseRepository; `ClientNotesRepository` expanded with `listLocationNotes`, `listCompanyNotes`, `createCompanyNote`, `updateCompanyNote`, `deleteCompanyNote`.
+- **Migration**: `migrations/2026_02_08_note_attachments.sql`
+- **Files changed**: `shared/schema.ts`, `server/storage/clientNotes.ts`, `server/storage/files.ts` (new), `server/storage/noteAttachments.ts` (new), `server/storage/index.ts`, `server/routes/uploads.ts` (new), `server/routes/files.ts` (new), `server/routes/location-notes.ts` (new), `server/routes/company-notes.ts` (new), `server/routes/note-attachments.ts` (new), `server/routes/client-notes.ts`, `server/routes/index.ts`, `client/src/components/NotesPanel.tsx` (new), `client/src/pages/LocationDetailPage.tsx`, `client/src/lib/queryClient.ts`, `.gitignore`, `CHANGELOG.md`
+
+#### ClientDetailPage: Replace bespoke notes with reusable NotesPanel (2026-02-09)
+
+- **Schema**: Added `customerCompanyId` column to `client_notes` (nullable FK to `customer_companies`, cascade delete) for customer-company-level notes.
+- **Migration**: `migrations/2026_02_09_customer_company_notes.sql` — adds column + partial index.
+- **Storage**: Added `listCustomerCompanyNotes`, `createCustomerCompanyNote`, `updateCustomerCompanyNote`, `deleteCustomerCompanyNote`, `findRecentDuplicateForCustomerCompany`, and `assertCustomerCompanyOwned` to `ClientNotesRepository`. All join `users` for `createdByName` and enforce tenant isolation.
+- **New route**: `server/routes/customer-company-notes.ts` — `GET/POST/PATCH/DELETE /api/customer-companies/:customerCompanyId/notes`. Tenant guard via `assertCustomerCompanyOwned`, enriched with attachments + createdByName, dedupe on POST, cascade-delete attachments on DELETE.
+- **Route registration**: Mounted on `/api/customer-companies` in `server/routes/index.ts`.
+- **NotesPanel**: Company scope now hits `/api/customer-companies/:id/notes` (was `/api/companies/:id/notes`). Query key updated to match.
+- **ClientDetailPage**: Removed bespoke notes UI (state, query, 3 mutations, AlertDialog, Textarea). Replaced with `<NotesPanel scope="company" companyId={companyId} />` inside collapsible card matching LocationDetailPage style. Notes now support multi-file attachments, visibility flags (Jobs/Invoices/Quotes), and "Added by {name} · {timestamp}" footer.
+- **Files changed**: `shared/schema.ts`, `server/storage/clientNotes.ts`, `server/routes/customer-company-notes.ts` (new), `server/routes/index.ts`, `client/src/components/NotesPanel.tsx`, `client/src/pages/ClientDetailPage.tsx`, `CHANGELOG.md`
+
+#### Notes: Show author name, remove duplicate heading (2026-02-09)
+
+- **API**: `listLocationNotes` and `listCompanyNotes` now join `users` table to return `createdByName` on each note.
+- **NotesPanel**: Removed duplicate inner "Notes" heading (card header already provides it). Note footer now reads "Added by {name} · {date/time}" instead of just the timestamp.
+- **Files changed**: `server/storage/clientNotes.ts`, `client/src/components/NotesPanel.tsx`, `CHANGELOG.md`
+
 ### Changed
 
 #### Location Detail Page — Contacts view-only, remove Billing Settings, reorder right column (2026-02-08)

@@ -31,6 +31,12 @@ import tasksRoutes from "./tasks.routes";
 import suppliersRouter from "./suppliers";
 import jobVisitsRoutes from "./jobVisits.routes";
 import clientNotesRouter from "./client-notes";
+import locationNotesRouter from "./location-notes";
+import companyNotesRouter from "./company-notes";
+import customerCompanyNotesRouter from "./customer-company-notes";
+import noteAttachmentsRouter from "./note-attachments";
+import uploadsRouter from "./uploads";
+import filesRouter from "./files";
 import dashboardRouter from "./dashboard";
 import reportsRouter from "./reports";
 import paymentsRouter from "./payments";
@@ -47,6 +53,7 @@ import rolesRouter, { permissionsRouter } from "./roles";
 import recurringJobsRouter from "./recurringJobs";
 import taxRouter from "./tax";
 import searchRouter from "./search";
+import pmPartsRouter from "./pm-parts";
 
 /**
  * Register all API routes in a single place.
@@ -190,15 +197,25 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/tax", taxRouter); // Tax: rates + groups CRUD
   app.use("/api/search", searchRouter); // Universal search: jobs, invoices, customers, locations, suppliers
 
+  // PM parts: location-level part templates for preventive maintenance
+  app.use("/api/locations", pmPartsRouter);
+
   // ✅ NEW ROUTES (company rollups + notes API)
   // Company/Client (parent) endpoints: /api/customer-companies/:id/overview, /locations, etc.
   app.use("/api/customer-companies", customerCompaniesRouter);
+  // Customer-company-scoped notes: /api/customer-companies/:id/notes
+  app.use("/api/customer-companies", customerCompanyNotesRouter);
 
-  // Notes endpoints
-  // ✅ Preferred canonical API: /api/clients/:id/notes
-  // ⚠️ Legacy alias (/api/client-notes) may still exist for backward compatibility.
-  // Mounted at /api so the router can expose multiple paths.
+  // Notes endpoints — new canonical routes + legacy back-compat
+  app.use("/api/locations", locationNotesRouter);
+  app.use("/api/companies", companyNotesRouter);
+  app.use("/api/notes", noteAttachmentsRouter);
+  // ⚠️ Legacy: /api/clients/:clientId/notes — TODO: remove once frontend migrated
   app.use("/api", clientNotesRouter);
+
+  // File uploads & secure streaming
+  app.use("/api/uploads", uploadsRouter);
+  app.use("/api/files", filesRouter);
 
   // ========================================
   // ADMIN ROUTES (owner-only)

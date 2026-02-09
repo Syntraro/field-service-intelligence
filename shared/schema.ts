@@ -272,6 +272,8 @@ export const customerCompanies = pgTable("customer_companies", {
   qboLastSyncedAt: timestamp("qbo_last_synced_at"),
   qboSyncStatus: text("qbo_sync_status").notNull().default("NOT_SYNCED"), // NOT_SYNCED | SYNCED | PENDING | ERROR
   qboSyncError: text("qbo_sync_error"), // Last sync error message if any
+  // Name source: 'company' = use company name as display, 'person' = use contact first+last
+  nameSource: text("name_source").notNull().default("company"),
   // Soft delete
   deletedAt: timestamp("deleted_at"),
   // Metadata
@@ -351,6 +353,34 @@ export type Client = typeof clientLocations.$inferSelect;
 export type ClientLocation = typeof clientLocations.$inferSelect;
 export type InsertClient = z.infer<typeof insertClientLocationSchema>;
 export type InsertClientLocation = z.infer<typeof insertClientLocationSchema>;
+
+// Client Contacts - multiple contacts per customer company or per location
+// location_id = NULL → company-level contact; set → location-specific contact
+export const clientContacts = pgTable("client_contacts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  customerCompanyId: varchar("customer_company_id").notNull().references(() => customerCompanies.id, { onDelete: "cascade" }),
+  locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "cascade" }),
+  firstName: text("first_name").notNull().default(""),
+  lastName: text("last_name").notNull().default(""),
+  email: text("email"),
+  phone: text("phone"),
+  // Role flags: 'billing', 'scheduling', 'general', 'primary'
+  roles: text("roles").array().notNull().default(sql`'{}'::text[]`),
+  isPrimary: boolean("is_primary").notNull().default(false),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const insertClientContactSchema = createInsertSchema(clientContacts).omit({
+  id: true,
+  companyId: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type ClientContact = typeof clientContacts.$inferSelect;
+export type InsertClientContact = z.infer<typeof insertClientContactSchema>;
 
 // Items table - represents products and services for QuickBooks Online sync
 // These Items are designed to sync to QuickBooks Online Items in the future.
@@ -812,15 +842,22 @@ export type UpdateJobNote = z.infer<typeof updateJobNoteSchema>;
 export type JobNote = typeof jobNotes.$inferSelect;
 
 // Client notes table - stores multiple timestamped notes per client/location
+// locationId nullable: NULL = company-wide note, non-NULL = location-specific note
 export const clientNotes = pgTable("client_notes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   // DEPRECATED: clientId kept for backwards compatibility - use locationId instead
   clientId: varchar("client_id").references(() => clientLocations.id, { onDelete: "restrict" }),
-  // Canonical reference to service location
-  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }),
+  // Nullable: NULL = company-wide note, non-NULL = location-specific note
+  locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "restrict" }),
+  // Customer-company-level notes: set when note belongs to a customer company (not a specific location)
+  customerCompanyId: varchar("customer_company_id").references(() => customerCompanies.id, { onDelete: "cascade" }),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   noteText: text("note_text").notNull(),
+  // Visibility flags — control where this note surfaces
+  showOnJobs: boolean("show_on_jobs").notNull().default(false),
+  showOnInvoices: boolean("show_on_invoices").notNull().default(false),
+  showOnQuotes: boolean("show_on_quotes").notNull().default(false),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
@@ -835,11 +872,40 @@ export const insertClientNoteSchema = createInsertSchema(clientNotes).omit({
 
 export const updateClientNoteSchema = z.object({
   noteText: z.string().optional(),
+  showOnJobs: z.boolean().optional(),
+  showOnInvoices: z.boolean().optional(),
+  showOnQuotes: z.boolean().optional(),
 });
 
 export type InsertClientNote = z.infer<typeof insertClientNoteSchema>;
 export type UpdateClientNote = z.infer<typeof updateClientNoteSchema>;
 export type ClientNote = typeof clientNotes.$inferSelect;
+
+// Files table — tenant-scoped file metadata for local storage
+export const files = pgTable("files", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  storageKey: varchar("storage_key").notNull(),
+  originalName: varchar("original_name"),
+  mimeType: varchar("mime_type"),
+  size: integer("size"),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdBy: varchar("created_by").references(() => users.id),
+});
+
+export type FileRecord = typeof files.$inferSelect;
+
+// Note attachments — join table linking notes to files
+export const noteAttachments = pgTable("note_attachments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  noteId: varchar("note_id").notNull().references(() => clientNotes.id, { onDelete: "cascade" }),
+  fileId: varchar("file_id").notNull().references(() => files.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdBy: varchar("created_by").references(() => users.id),
+});
+
+export type NoteAttachment = typeof noteAttachments.$inferSelect;
 
 // Invoice statuses - Canonical lifecycle: draft → sent → partial_paid/paid (with void from any non-terminal)
 export const invoiceStatusEnum = ["draft", "sent", "partial_paid", "paid", "voided"] as const;

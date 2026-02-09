@@ -26,14 +26,18 @@ import { subscriptionRepository } from "./subscriptions";
 import { companyRepository } from "./company";
 import { partRepository } from "./parts";
 import { customerCompanyRepository } from "./customerCompanies";
+import { clientContactRepository } from "./clientContacts";
 import { taskRepository } from "./tasks";
 import { permissionRepository } from "./permissions";
 import { clientNotesRepository } from "./clientNotes";
+import { filesRepository } from "./files";
+import { noteAttachmentRepository } from "./noteAttachments";
 import { quoteRepository } from "./quotes";
 import { quoteTemplateRepository } from "./quoteTemplates";
 import { calendarRepository } from "./calendar";
 import { taxRepository } from "./tax";
 import { businessHoursRepository } from "./businessHours";
+import { pmPartRepository } from "./pmParts";
 import type { PaginationOptions, PaginatedResult } from "./clients";
 
 /**
@@ -492,13 +496,17 @@ export {
   subscriptionRepository,
   companyRepository,
   customerCompanyRepository,
+  clientContactRepository,
   taskRepository,
   permissionRepository,
   clientNotesRepository,
+  filesRepository,
+  noteAttachmentRepository,
   quoteRepository,
   quoteTemplateRepository,
   calendarRepository,
   taxRepository,
+  pmPartRepository,
 };
 
 // Subscription billing (separate export due to its size and specialized nature)

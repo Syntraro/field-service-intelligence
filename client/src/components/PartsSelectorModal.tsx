@@ -1,130 +1,212 @@
-import { useState, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+/**
+ * PartsSelectorModal — Row-based multi-add for location PM parts.
+ *
+ * Each row: server-side search input → dropdown → quantity.
+ * "Add another part" appends rows. One "Save" bulk-upserts all rows.
+ * Search calls GET /api/items?q=TERM (debounced 300ms, min 2 chars).
+ */
+
+import { useState, useEffect, useRef, useCallback } from "react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { X } from "lucide-react";
+import { Trash2, Plus, Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { Item, LocationPMPartTemplate } from "@shared/schema";
+import type { LocationPMPartTemplate } from "@shared/schema";
 
+/** PM part template with joined item fields (returned by GET /api/locations/:id/pm-parts) */
+interface PMPartWithItem extends LocationPMPartTemplate {
+  itemName: string | null;
+  itemSku: string | null;
+  itemCategory: string | null;
+  itemCost: string | null;
+}
 
-interface SelectedPart {
-  templateId?: string;
-  productId: string;
+// ========================================
+// TYPES
+// ========================================
+
+interface PartSearchResult {
+  id: string;
   name: string | null;
   sku: string | null;
   category: string | null;
   cost: string | null;
-  quantity: string;
+}
+
+interface PartRow {
+  tempId: string;
+  searchTerm: string;
+  selected: PartSearchResult | null;
+  qty: string;
 }
 
 interface PartsSelectorModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   locationId: string;
-  existingParts?: LocationPMPartTemplate[];
+  existingParts?: PMPartWithItem[];
 }
+
+// ========================================
+// HELPERS
+// ========================================
+
+let _counter = 0;
+function tempId(): string {
+  return `row-${Date.now()}-${++_counter}`;
+}
+
+function newRow(): PartRow {
+  return { tempId: tempId(), searchTerm: "", selected: null, qty: "1" };
+}
+
+// ========================================
+// COMPONENT
+// ========================================
 
 export function PartsSelectorModal({ open, onOpenChange, locationId, existingParts = [] }: PartsSelectorModalProps) {
   const { toast } = useToast();
-  const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<SelectedPart[]>([]);
+  const [rows, setRows] = useState<PartRow[]>([newRow()]);
   const [isSaving, setIsSaving] = useState(false);
 
-  const { data: partsData, isLoading } = useQuery<{ items: Item[] }>({
-    queryKey: ["/api/items"],
-    enabled: open,
-  });
-  const parts = partsData?.items || [];
+  // Per-row search results & loading state
+  const [resultsByRow, setResultsByRow] = useState<Record<string, PartSearchResult[]>>({});
+  const [loadingByRow, setLoadingByRow] = useState<Record<string, boolean>>({});
 
+  // Debounce timers keyed by tempId
+  const timersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  // Prefill rows from existing parts when modal opens
   useEffect(() => {
-    if (open && existingParts.length > 0) {
-      const mapped = existingParts.map((ep) => {
-        const part = parts.find(p => p.id === ep.productId);
-        return {
-          templateId: ep.id,
-          productId: ep.productId,
-          name: part?.name || "Unknown Part",
-          sku: part?.sku || null,
-          category: part?.category || null,
-          cost: part?.cost || null,
-          quantity: ep.quantityPerVisit,
-        };
-      });
-      setSelected(mapped);
-    } else if (open && existingParts.length === 0) {
-      setSelected([]);
-    }
-  }, [open, existingParts, parts]);
-
-  const filtered = parts.filter((p) =>
-    `${p.name} ${p.sku || ""} ${p.category || ""}`.toLowerCase().includes(search.toLowerCase())
-  );
-
-  const toggleSelect = (part: Item) => {
-    const existing = selected.find((s) => s.productId === part.id);
-    if (existing) {
-      setSelected(selected.filter((s) => s.productId !== part.id));
+    if (!open) return;
+    if (existingParts.length > 0) {
+      setRows(
+        existingParts.map((ep) => ({
+          tempId: tempId(),
+          searchTerm: ep.itemName || "Unknown Part",
+          selected: {
+            id: ep.productId,
+            name: ep.itemName,
+            sku: ep.itemSku,
+            category: ep.itemCategory,
+            cost: ep.itemCost,
+          },
+          qty: ep.quantityPerVisit,
+        }))
+      );
     } else {
-      setSelected([...selected, {
-        productId: part.id,
-        name: part.name,
-        sku: part.sku,
-        category: part.category,
-        cost: part.cost,
-        quantity: "1",
-      }]);
+      setRows([newRow()]);
     }
-  };
+    setResultsByRow({});
+    setLoadingByRow({});
+  }, [open, existingParts]);
 
-  const updateQuantity = (productId: string, quantity: string) => {
-    const numVal = parseFloat(quantity);
-    const validQuantity = isNaN(numVal) || numVal < 0.01 ? "1" : quantity;
-    setSelected(selected.map((s) => 
-      s.productId === productId ? { ...s, quantity: validQuantity } : s
-    ));
-  };
+  // Cleanup timers on unmount
+  useEffect(() => {
+    return () => {
+      Object.values(timersRef.current).forEach(clearTimeout);
+    };
+  }, []);
+
+  // ========================================
+  // SEARCH
+  // ========================================
+
+  const fetchResults = useCallback(async (rowId: string, term: string) => {
+    if (term.trim().length < 2) {
+      setResultsByRow((prev) => ({ ...prev, [rowId]: [] }));
+      setLoadingByRow((prev) => ({ ...prev, [rowId]: false }));
+      return;
+    }
+
+    setLoadingByRow((prev) => ({ ...prev, [rowId]: true }));
+    try {
+      const res = await fetch(`/api/items?q=${encodeURIComponent(term.trim())}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Search failed");
+      const data = await res.json();
+      // API returns raw array (paginatedCompat with explicit=false)
+      const items: PartSearchResult[] = Array.isArray(data) ? data : (data.data ?? data.items ?? []);
+      setResultsByRow((prev) => ({ ...prev, [rowId]: items.slice(0, 50) }));
+    } catch {
+      setResultsByRow((prev) => ({ ...prev, [rowId]: [] }));
+    } finally {
+      setLoadingByRow((prev) => ({ ...prev, [rowId]: false }));
+    }
+  }, []);
+
+  const handleSearchChange = useCallback((rowId: string, value: string) => {
+    // Update searchTerm and clear selection (forces re-search / re-select)
+    setRows((prev) =>
+      prev.map((r) => (r.tempId === rowId ? { ...r, searchTerm: value, selected: null } : r))
+    );
+
+    // Debounce server search
+    if (timersRef.current[rowId]) clearTimeout(timersRef.current[rowId]);
+    timersRef.current[rowId] = setTimeout(() => fetchResults(rowId, value), 300);
+  }, [fetchResults]);
+
+  const selectResult = useCallback((rowId: string, result: PartSearchResult) => {
+    setRows((prev) =>
+      prev.map((r) =>
+        r.tempId === rowId ? { ...r, selected: result, searchTerm: result.name || "" } : r
+      )
+    );
+    // Clear dropdown for this row
+    setResultsByRow((prev) => ({ ...prev, [rowId]: [] }));
+  }, []);
+
+  const updateQty = useCallback((rowId: string, qty: string) => {
+    setRows((prev) => prev.map((r) => (r.tempId === rowId ? { ...r, qty } : r)));
+  }, []);
+
+  const removeRow = useCallback((rowId: string) => {
+    setRows((prev) => {
+      const next = prev.filter((r) => r.tempId !== rowId);
+      return next.length === 0 ? [newRow()] : next;
+    });
+    // Cleanup results/loading for removed row
+    setResultsByRow((prev) => { const n = { ...prev }; delete n[rowId]; return n; });
+    setLoadingByRow((prev) => { const n = { ...prev }; delete n[rowId]; return n; });
+  }, []);
+
+  const addRow = useCallback(() => {
+    setRows((prev) => [...prev, newRow()]);
+  }, []);
+
+  // ========================================
+  // SAVE
+  // ========================================
+
+  const allValid = rows.every((r) => r.selected && parseFloat(r.qty) >= 0.01);
+
+  // Check for duplicate productIds
+  const productIdCounts: Record<string, number> = {};
+  rows.forEach((r) => {
+    if (r.selected) {
+      productIdCounts[r.selected.id] = (productIdCounts[r.selected.id] || 0) + 1;
+    }
+  });
+  const hasDuplicates = Object.values(productIdCounts).some((c) => c > 1);
+
+  const canSave = allValid && !hasDuplicates && !isSaving;
 
   const handleSave = async () => {
+    if (!canSave) return;
     setIsSaving(true);
     try {
-      const existingIds = existingParts.map(ep => ep.productId);
-      const selectedIds = selected.map(s => s.productId);
+      const payload = {
+        parts: rows.map((r) => ({
+          productId: r.selected!.id,
+          quantity: String(parseFloat(r.qty) || 1),
+        })),
+      };
 
-      const toDelete = existingParts.filter(ep => !selectedIds.includes(ep.productId));
-      const toCreate = selected.filter(s => !existingIds.includes(s.productId));
-      const toUpdate = selected.filter(s => {
-        const existing = existingParts.find(ep => ep.productId === s.productId);
-        if (!existing) return false;
-        return existing.quantityPerVisit !== s.quantity;
+      await apiRequest(`/api/locations/${locationId}/pm-parts`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
       });
-
-      for (const ep of toDelete) {
-        await apiRequest(`/api/locations/${locationId}/pm-parts/${ep.id}`, { method: "DELETE" });
-      }
-
-      for (const part of toCreate) {
-        await apiRequest(`/api/locations/${locationId}/pm-parts`, {
-          method: "POST",
-          body: JSON.stringify({
-            productId: part.productId,
-            quantityPerVisit: part.quantity,
-          }),
-        });
-      }
-
-      for (const part of toUpdate) {
-        const template = existingParts.find(ep => ep.productId === part.productId);
-        if (template) {
-          await apiRequest(`/api/locations/${locationId}/pm-parts/${template.id}`, {
-            method: "PUT",
-            body: JSON.stringify({
-              quantityPerVisit: part.quantity,
-            }),
-          });
-        }
-      }
 
       queryClient.invalidateQueries({ queryKey: ["/api/locations", locationId, "pm-parts"] });
       toast({ title: "Parts saved", description: "PM parts have been updated for this location." });
@@ -137,122 +219,132 @@ export function PartsSelectorModal({ open, onOpenChange, locationId, existingPar
     }
   };
 
+  // ========================================
+  // RENDER
+  // ========================================
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-4xl max-h-[80vh] flex flex-col">
+      <DialogContent className="max-w-4xl w-[95vw] max-h-[85vh] flex flex-col">
         <DialogHeader>
           <DialogTitle>Location Parts</DialogTitle>
         </DialogHeader>
 
-        <div className="grid gap-4 md:grid-cols-2 flex-1 overflow-hidden">
-          {/* Left: Parts list */}
-          <div className="border rounded-lg p-3 flex flex-col overflow-hidden">
-            <div className="mb-3">
-              <Input
-                type="text"
-                placeholder="Search parts by name, SKU, or category"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                data-testid="input-search-parts"
-              />
-            </div>
-            <div className="flex-1 overflow-y-auto space-y-2">
-              {isLoading && (
-                <p className="text-xs text-muted-foreground">Loading parts...</p>
-              )}
-              {filtered.map((part) => {
-                const isSelected = selected.some((s) => s.productId === part.id);
-                return (
-                  <button
-                    key={part.id}
-                    type="button"
-                    onClick={() => toggleSelect(part)}
-                    className={`w-full text-left rounded-lg border px-3 py-2 text-sm transition-colors ${
-                      isSelected
-                        ? "border-primary bg-primary/5"
-                        : "border-border hover:border-primary/50 hover-elevate"
-                    }`}
-                    data-testid={`button-part-${part.id}`}
-                  >
-                    <div className="flex justify-between items-center">
-                      <div>
-                        <div className="font-medium">{part.name}</div>
-                        <div className="text-xs text-muted-foreground">
-                          {part.sku || "No SKU"} • {part.category || "Uncategorized"}
-                        </div>
-                      </div>
-                      {part.cost !== null && (
-                        <div className="text-xs text-muted-foreground">${parseFloat(part.cost).toFixed(2)}</div>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
-              {!isLoading && filtered.length === 0 && (
-                <p className="text-xs text-muted-foreground">No parts match your search.</p>
-              )}
-            </div>
-          </div>
+        <div className="flex-1 min-h-0 overflow-y-auto space-y-3 py-2 px-1">
+          {rows.map((row, idx) => {
+            const results = resultsByRow[row.tempId] || [];
+            const isLoading = loadingByRow[row.tempId] || false;
+            const isDuplicate = row.selected && productIdCounts[row.selected.id] > 1;
+            const showResults = results.length > 0 && !row.selected;
+            const showNoResults = !isLoading && row.searchTerm.trim().length >= 2 && results.length === 0 && !row.selected;
 
-          {/* Right: selected parts */}
-          <div className="border rounded-lg p-3 flex flex-col overflow-hidden">
-            <h3 className="mb-3 text-sm font-semibold">Selected Parts ({selected.length})</h3>
-            <div className="flex-1 overflow-y-auto space-y-2">
-              {selected.length === 0 && (
-                <p className="text-xs text-muted-foreground">
-                  No parts selected yet. Click a part from the left list to add it.
-                </p>
-              )}
-              {selected.map((part) => (
-                <div
-                  key={part.productId}
-                  className="flex items-center justify-between rounded-lg border px-3 py-2 text-sm"
-                  data-testid={`selected-part-${part.productId}`}
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium truncate">{part.name}</div>
-                    <div className="text-xs text-muted-foreground">{part.sku || "No SKU"}</div>
+            return (
+              <div key={row.tempId} className="border rounded-lg p-3 space-y-2">
+                {/* Row header: search input + qty + remove */}
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium text-muted-foreground w-6 shrink-0">#{idx + 1}</span>
+
+                  <div className="relative flex-1">
+                    <Input
+                      type="text"
+                      placeholder="Search parts by name or SKU..."
+                      value={row.searchTerm}
+                      onChange={(e) => handleSearchChange(row.tempId, e.target.value)}
+                      className={`h-9 text-sm ${row.selected ? "border-primary bg-primary/5" : ""}`}
+                      data-testid={`input-search-part-${idx}`}
+                    />
+                    {isLoading && (
+                      <div className="absolute right-2 top-1/2 -translate-y-1/2">
+                        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                      </div>
+                    )}
                   </div>
-                  <div className="flex items-center gap-2 ml-2">
-                    <div className="flex items-center gap-1">
-                      <span className="text-xs text-muted-foreground">Qty:</span>
-                      <Input
-                        type="number"
-                        min={0.01}
-                        step="any"
-                        value={part.quantity}
-                        onChange={(e) => updateQuantity(part.productId, e.target.value)}
-                        className="w-16 h-7 text-center text-sm"
-                        data-testid={`input-quantity-${part.productId}`}
-                      />
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 text-destructive"
-                      onClick={() => {
-                        const p = parts.find(pt => pt.id === part.productId);
-                        if (p) toggleSelect(p);
-                      }}
-                      data-testid={`button-remove-${part.productId}`}
-                    >
-                      <X className="h-4 w-4" />
-                    </Button>
+
+                  <div className="flex items-center gap-1 shrink-0">
+                    <span className="text-xs text-muted-foreground">Qty:</span>
+                    <Input
+                      type="number"
+                      min={0.01}
+                      step="any"
+                      value={row.qty}
+                      onChange={(e) => updateQty(row.tempId, e.target.value)}
+                      className="w-16 h-9 text-center text-sm"
+                      data-testid={`input-qty-${idx}`}
+                    />
                   </div>
+
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-9 w-9 text-muted-foreground hover:text-destructive shrink-0"
+                    onClick={() => removeRow(row.tempId)}
+                    data-testid={`button-remove-row-${idx}`}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
                 </div>
-              ))}
-            </div>
-          </div>
+
+                {/* Inline search results (not absolute — avoids clipping) */}
+                {showResults && (
+                  <div className="ml-8 border rounded-md max-h-52 overflow-y-auto bg-popover">
+                    {results.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className="w-full text-left px-3 py-2 text-sm hover:bg-accent transition-colors border-b last:border-b-0"
+                        onClick={() => selectResult(row.tempId, item)}
+                        data-testid={`result-${item.id}`}
+                      >
+                        <div className="font-medium">{item.name}</div>
+                        <div className="text-xs text-muted-foreground">
+                          {item.sku || "No SKU"} {item.category ? `• ${item.category}` : ""}
+                          {item.cost ? ` • $${parseFloat(item.cost).toFixed(2)}` : ""}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {showNoResults && (
+                  <div className="ml-8 border rounded-md px-3 py-2 bg-popover">
+                    <p className="text-xs text-muted-foreground">No parts found.</p>
+                  </div>
+                )}
+
+                {/* Selected part summary */}
+                {row.selected && (
+                  <div className="ml-8 text-xs text-muted-foreground">
+                    Selected: <span className="font-medium text-foreground">{row.selected.name}</span>
+                    {row.selected.sku ? ` (${row.selected.sku})` : ""}
+                  </div>
+                )}
+
+                {/* Duplicate warning */}
+                {isDuplicate && (
+                  <div className="ml-8 text-xs text-destructive">
+                    Duplicate part — each part should only appear once.
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
 
-        <DialogFooter className="mt-4">
-          <Button variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-parts">
-            Cancel
+        <div className="flex items-center justify-between pt-2 border-t">
+          <Button variant="outline" size="sm" onClick={addRow} data-testid="button-add-row">
+            <Plus className="h-4 w-4 mr-1" />
+            Add another part
           </Button>
-          <Button onClick={handleSave} disabled={isSaving} data-testid="button-save-parts">
-            {isSaving ? "Saving..." : "Save Parts"}
-          </Button>
-        </DialogFooter>
+
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)} data-testid="button-cancel-parts">
+              Cancel
+            </Button>
+            <Button onClick={handleSave} disabled={!canSave} data-testid="button-save-parts">
+              {isSaving ? "Saving..." : "Save Parts"}
+            </Button>
+          </div>
+        </div>
       </DialogContent>
     </Dialog>
   );

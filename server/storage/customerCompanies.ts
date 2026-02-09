@@ -102,6 +102,7 @@ export class CustomerCompanyRepository extends BaseRepository {
       billingProvince?: string | null;
       billingPostalCode?: string | null;
       billingCountry?: string | null;
+      nameSource?: string | null;
     }
   ): Promise<typeof customerCompanies.$inferSelect> {
     this.assertCompanyId(companyId);
@@ -118,6 +119,7 @@ export class CustomerCompanyRepository extends BaseRepository {
         billingProvince: data.billingProvince ?? null,
         billingPostalCode: data.billingPostalCode ?? null,
         billingCountry: data.billingCountry ?? null,
+        nameSource: data.nameSource ?? "company",
       })
       .returning();
 
@@ -139,6 +141,7 @@ export class CustomerCompanyRepository extends BaseRepository {
       billingProvince?: string | null;
       billingPostalCode?: string | null;
       billingCountry?: string | null;
+      nameSource?: string | null;
     }
   ): Promise<typeof customerCompanies.$inferSelect> {
     this.assertCompanyId(companyId);

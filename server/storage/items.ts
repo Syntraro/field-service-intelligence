@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { eq, and, or, like, sql, isNull } from "drizzle-orm";
+import { eq, and, or, ilike, sql, isNull } from "drizzle-orm";
 import { items } from "@shared/schema";
 import type { InsertItem, Item } from "@shared/schema";
 import { BaseRepository } from "./base";
@@ -10,28 +10,30 @@ export class ItemRepository extends BaseRepository {
    * Excludes soft-deleted items (deletedAt is not null)
    */
   async getItems(companyId: string, searchQuery?: string): Promise<Item[]> {
-    let query = db
-      .select()
-      .from(items)
-      .where(and(
-        eq(items.companyId, companyId),
-        eq(items.isActive, true),
-        isNull(items.deletedAt) // Exclude soft-deleted items
-      ))
-      .$dynamic();
+    // Build WHERE conditions — always include tenant + active filters
+    const conditions = [
+      eq(items.companyId, companyId),
+      eq(items.isActive, true),
+      isNull(items.deletedAt),
+    ];
 
     if (searchQuery) {
       const search = `%${searchQuery}%`;
-      query = query.where(
+      // Case-insensitive search (ILIKE for Postgres)
+      conditions.push(
         or(
-          like(items.name, search),
-          like(items.sku, search),
-          like(items.description, search)
-        )
+          ilike(items.name, search),
+          ilike(items.sku, search),
+          ilike(items.description, search)
+        )!
       );
     }
 
-    return await query.orderBy(items.name);
+    return await db
+      .select()
+      .from(items)
+      .where(and(...conditions))
+      .orderBy(items.name);
   }
 
   /**

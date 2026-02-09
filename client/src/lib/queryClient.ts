@@ -119,8 +119,8 @@ export async function apiRequest<T = any>(
     logMutationRequest(method, url, parsedBody);
   }
 
-  // Ensure JSON content type for requests with body
-  if (options.body && !headers.has('Content-Type')) {
+  // Ensure JSON content type for requests with body (skip FormData — browser sets multipart boundary)
+  if (options.body && !headers.has('Content-Type') && !(options.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');
   }
 

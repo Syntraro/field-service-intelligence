@@ -1,11 +1,10 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { useParams, useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ArrowLeft, Briefcase, FileText, Trash2, ChevronDown, ChevronRight, Star, User, Phone, Mail } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -13,10 +12,11 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import LocationFormModal from "@/components/LocationFormModal";
 import { PartsSelectorModal } from "@/components/PartsSelectorModal";
+import NotesPanel, { type NotesPanelRef } from "@/components/NotesPanel";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { format } from "date-fns";
-import type { Client, CustomerCompany, ClientNote, Job, LocationPMPartTemplate, LocationEquipment, ClientContact } from "@shared/schema";
+import type { Client, CustomerCompany, Job, LocationPMPartTemplate, LocationEquipment, ClientContact } from "@shared/schema";
 import { isJobOverdue, isJobScheduled } from "@shared/schema";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -33,7 +33,6 @@ export default function LocationDetailPage() {
   const [jobDialogOpen, setJobDialogOpen] = useState(false);
   const [editModalOpen, setEditModalOpen] = useState(false);
   const [partsModalOpen, setPartsModalOpen] = useState(false);
-  const [isAddingNote, setIsAddingNote] = useState(false);
   const [equipmentModalOpen, setEquipmentModalOpen] = useState(false);
   const [newEquipmentData, setNewEquipmentData] = useState({
     name: "",
@@ -49,13 +48,10 @@ export default function LocationDetailPage() {
   const [partsOpen, setPartsOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [equipmentOpen, setEquipmentOpen] = useState(false);
+  const notesPanelRef = useRef<NotesPanelRef>(null);
 
   type OverviewTab = "activeWork" | "jobs" | "invoices";
   const [overviewTab, setOverviewTab] = useState<OverviewTab>("activeWork");
-  const [newNoteContent, setNewNoteContent] = useState("");
-  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
-  const [editNoteContent, setEditNoteContent] = useState("");
-  const [deleteNoteId, setDeleteNoteId] = useState<string | null>(null);
   const [deleteLocationDialogOpen, setDeleteLocationDialogOpen] = useState(false);
 
   const { data: location, isLoading: locationLoading, error: locationError } = useQuery<Client>({
@@ -89,14 +85,6 @@ export default function LocationDetailPage() {
     enabled: Boolean(effectiveParentCompanyId),
   });
 
-  const { data: notes = [] } = useQuery<ClientNote[]>({
-    queryKey: ["/api/clients", locationId, "notes"],
-    queryFn: async () => {
-      return await apiRequest(`/api/clients/${locationId}/notes`);
-    },
-    enabled: Boolean(locationId),
-  });
-
   const { data: equipment = [] } = useQuery<LocationEquipment[]>({
     queryKey: ["/api/clients", locationId, "equipment"],
     queryFn: async () => {
@@ -117,16 +105,18 @@ export default function LocationDetailPage() {
   });
   const locationContacts = contactsData?.locationContacts ?? [];
 
-  const { data: pmParts = [] } = useQuery<LocationPMPartTemplate[]>({
+  // PM part templates with joined item fields (from GET /api/locations/:id/pm-parts)
+  interface PMPartWithItem extends LocationPMPartTemplate {
+    itemName: string | null;
+    itemSku: string | null;
+    itemCategory: string | null;
+    itemCost: string | null;
+  }
+  const { data: pmParts = [] } = useQuery<PMPartWithItem[]>({
     queryKey: ["/api/locations", locationId, "pm-parts"],
-    enabled: false,  // ✅ DISABLE - endpoint doesn't exist
+    queryFn: () => apiRequest(`/api/locations/${locationId}/pm-parts`),
+    enabled: Boolean(locationId),
   });
-
-  const { data: partsData } = useQuery<{ items: { id: string; name: string | null; sku: string | null }[] }>({
-    queryKey: ["/api/items"],
-    enabled: Boolean(locationId) && pmParts.length > 0,
-  });
-  const allParts = partsData?.items || [];
 
   const { data: jobs = [] } = useQuery<{ data: Job[]; meta: { limit: number; hasMore: boolean; nextOffset?: number } }, Error, Job[]>({
     queryKey: ["/api/jobs", { offset: 0, limit: 200 }],
@@ -168,56 +158,6 @@ export default function LocationDetailPage() {
     },
     onError: () => {
       toast({ title: "Error", description: "Failed to set as primary.", variant: "destructive" });
-    },
-  });
-
-  const createNoteMutation = useMutation({
-    mutationFn: async (noteText: string) => {
-      return await apiRequest(`/api/clients/${locationId}/notes`, {
-        method: "POST",
-        body: JSON.stringify({ noteText }),
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "notes"] });
-      setNewNoteContent("");
-      setIsAddingNote(false);
-      toast({ title: "Note added" });
-    },
-    onError: () => {
-      toast({ title: "Error", description: "Failed to add note.", variant: "destructive" });
-    },
-  });
-
-  const updateNoteMutation = useMutation({
-    mutationFn: async ({ noteId, noteText }: { noteId: string; noteText: string }) => {
-      return await apiRequest(`/api/clients/${locationId}/notes/${noteId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ noteText }),
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "notes"] });
-      setEditingNoteId(null);
-      setEditNoteContent("");
-      toast({ title: "Note updated" });
-    },
-    onError: () => {
-      toast({ title: "Error", description: "Failed to update note.", variant: "destructive" });
-    },
-  });
-
-  const deleteNoteMutation = useMutation({
-    mutationFn: async (noteId: string) => {
-      await apiRequest(`/api/clients/${locationId}/notes/${noteId}`, { method: "DELETE" });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "notes"] });
-      setDeleteNoteId(null);
-      toast({ title: "Note deleted" });
-    },
-    onError: () => {
-      toast({ title: "Error", description: "Failed to delete note.", variant: "destructive" });
     },
   });
 
@@ -694,25 +634,22 @@ export default function LocationDetailPage() {
                 </button>
               </CollapsibleTrigger>
               <CollapsibleContent>
-                <div className="border-t px-4 pb-4 pt-3 max-h-48 overflow-y-auto">
+                <div className="border-t px-4 pb-3 pt-2">
                   {pmParts.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-xs text-muted-foreground pt-1">
                       No PM parts configured. Add filters, belts, and other recurring parts.
                     </p>
                   ) : (
-                    <div className="space-y-2">
-                      {pmParts.map((pmPart) => {
-                        const part = allParts.find(p => p.id === pmPart.productId);
-                        return (
-                          <div key={pmPart.id} className="flex items-center justify-between text-sm rounded-lg border p-2">
-                            <div>
-                              <div className="font-medium">{part?.name || "Unknown Part"}</div>
-                              <div className="text-xs text-muted-foreground">{part?.sku || ""}</div>
-                            </div>
-                            <span className="text-xs text-muted-foreground">x{pmPart.quantityPerVisit}</span>
+                    <div className="divide-y">
+                      {pmParts.map((pmPart) => (
+                        <div key={pmPart.id} className="flex items-center justify-between py-2 text-sm">
+                          <div className="min-w-0">
+                            <div className="font-medium">{pmPart.itemName || "Unknown Part"}</div>
+                            {pmPart.itemSku && <div className="text-xs text-muted-foreground">{pmPart.itemSku}</div>}
                           </div>
-                        );
-                      })}
+                          <span className="text-xs text-muted-foreground ml-2 shrink-0">x{pmPart.quantityPerVisit}</span>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -720,76 +657,33 @@ export default function LocationDetailPage() {
             </Card>
           </Collapsible>
 
-          {/* Notes */}
+          {/* Notes — uses reusable NotesPanel with attachments + visibility flags */}
           <Collapsible open={notesOpen} onOpenChange={setNotesOpen}>
             <Card>
               <CollapsibleTrigger asChild>
                 <button className="w-full flex items-center justify-between px-4 py-3 hover-elevate" data-testid="trigger-notes">
                   <span className="text-sm font-semibold">Notes</span>
                   <div className="flex items-center gap-2">
-                    {!isAddingNote && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-xs h-auto p-0 text-primary"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setNotesOpen(true);
-                          setIsAddingNote(true);
-                        }}
-                        data-testid="button-add-note"
-                      >
-                        + Add
-                      </Button>
-                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-xs h-auto p-0 text-primary"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setNotesOpen(true);
+                        notesPanelRef.current?.startAdding();
+                      }}
+                      data-testid="button-add-note"
+                    >
+                      + Add
+                    </Button>
                     {notesOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
                   </div>
                 </button>
               </CollapsibleTrigger>
               <CollapsibleContent>
-                <div className="border-t px-4 pb-4 pt-3 max-h-48 overflow-y-auto space-y-2">
-                  {isAddingNote && (
-                    <div className="space-y-2">
-                      <Textarea
-                        placeholder="Enter note..."
-                        value={newNoteContent}
-                        onChange={(e) => setNewNoteContent(e.target.value)}
-                        className="min-h-[60px]"
-                        data-testid="textarea-new-note"
-                      />
-                      <div className="flex gap-2">
-                        <Button
-                          size="sm"
-                          onClick={() => createNoteMutation.mutate(newNoteContent.trim())}
-                          disabled={!newNoteContent.trim() || createNoteMutation.isPending}
-                        >
-                          Save
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => { setIsAddingNote(false); setNewNoteContent(""); }}
-                        >
-                          Cancel
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-
-                  {notes.length === 0 && !isAddingNote && (
-                    <p className="text-xs text-muted-foreground">
-                      No notes yet. Use notes to record access info, landlord details, etc.
-                    </p>
-                  )}
-
-                  {notes.map((note) => (
-                    <div key={note.id} className="p-2 border rounded-lg text-sm" data-testid={`card-note-${note.id}`}>
-                      <p className="text-xs text-muted-foreground mb-1">
-                        {format(new Date(note.createdAt), "MMM dd, yyyy")}
-                      </p>
-                      <p className="whitespace-pre-wrap text-xs">{note.noteText}</p>
-                    </div>
-                  ))}
+                <div className="border-t px-4 pb-4 pt-3">
+                  <NotesPanel ref={notesPanelRef} scope="location" companyId={location?.companyId || ""} locationId={locationId} hideAddButton />
                 </div>
               </CollapsibleContent>
             </Card>

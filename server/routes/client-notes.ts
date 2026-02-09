@@ -12,7 +12,8 @@ import { clientNotesRepository } from "../storage/clientNotes";
 const router = Router();
 
 /**
- * NOTE ROUTES - Canonical only
+ * LEGACY NOTE ROUTES — back-compat, treats :clientId as locationId.
+ * TODO: Remove once frontend is fully migrated to /api/locations/:locationId/notes
  *  - GET    /api/clients/:clientId/notes
  *  - POST   /api/clients/:clientId/notes
  *  - PATCH  /api/clients/:clientId/notes/:noteId
