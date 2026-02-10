@@ -41,8 +41,62 @@ const DEFAULT_TIMEZONE = "America/Toronto";
 // Default generation window in days
 const DEFAULT_WINDOW_DAYS = 45;
 
+/**
+ * Detect whether a template is a PM template (maintenance with month restrictions).
+ * PM templates get a window start override to the 1st of the current month so that
+ * occurrences on days before today are not filtered out mid-month.
+ *
+ * Mirrors the client-side isPmTemplate logic in PMScheduleCard.tsx.
+ */
+function isPmTemplate(template: RecurringJobTemplate): boolean {
+  const hasMonths = Array.isArray(template.monthsOfYear) && template.monthsOfYear.length > 0;
+  if (template.jobType === "maintenance" && hasMonths && template.locationId) return true;
+  // Legacy fallback: title prefix "PM" + months configured
+  if (template.title.toUpperCase().startsWith("PM") && hasMonths && template.locationId) return true;
+  return false;
+}
+
+/**
+ * For PM templates, return the 1st of the current month (local) so that
+ * period_start / day_of_month occurrences earlier in the month are not
+ * excluded by the window.startDate >= today filter.
+ * Non-PM templates return the original date unchanged.
+ */
+function pmWindowStart(today: Date, template: RecurringJobTemplate): Date {
+  if (!isPmTemplate(template)) return today;
+  return new Date(today.getFullYear(), today.getMonth(), 1);
+}
+
 // Stale claim threshold in minutes
 const STALE_CLAIM_THRESHOLD_MINUTES = 10;
+
+/**
+ * Get "today" as a midnight Date in the company's configured timezone.
+ *
+ * Uses Intl.DateTimeFormat to determine what calendar date it is *right now*
+ * in the company timezone, then returns `new Date(year, month-1, day)` —
+ * the same local-time basis that parseLocalDate uses for template.startDate.
+ * This ensures window start/end comparisons are consistent with occurrence dates.
+ *
+ * Without this, a UTC-based server at 23:30 UTC on Jan 31 would think it's
+ * "Feb 1" when the company (America/Toronto, UTC-5) is still on Jan 31.
+ */
+export async function getCompanyToday(companyId: string): Promise<Date> {
+  const tz = await getCompanyTimezone(companyId);
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const parts = formatter.formatToParts(now);
+  const year = parseInt(parts.find(p => p.type === "year")?.value || "0", 10);
+  const month = parseInt(parts.find(p => p.type === "month")?.value || "0", 10);
+  const day = parseInt(parts.find(p => p.type === "day")?.value || "0", 10);
+  // Return as local-time Date (same basis as parseLocalDate)
+  return new Date(year, month - 1, day);
+}
 
 // Phase 2 Step 6: All generated jobs have status='open'.
 // Template only controls openSubStatusDefault (null for backlog, "on_hold" for held jobs).
@@ -628,9 +682,8 @@ export async function generateInstances(
   // Recover any stale claims before generating
   await recoverStaleClaims(companyId);
 
-  // Get generation window
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  // Get generation window in company timezone (not server time)
+  const today = await getCompanyToday(companyId);
   const windowEnd = addDays(today, windowDays);
 
   // Get all active templates for the company
@@ -652,9 +705,12 @@ export async function generateInstances(
         continue;
       }
 
+      // PM fix: use 1st of current month for PM templates (same as generateForSingleTemplate)
+      const windowStart = pmWindowStart(today, template);
+
       const { instancesCreated, jobsCreated } = await generateForTemplate(
         template,
-        today,
+        windowStart,
         windowEnd
       );
 
@@ -721,14 +777,25 @@ export async function generateForSingleTemplate(
   }
 
   try {
-    // Get generation window
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    // Get generation window in company timezone (not server time)
+    const today = await getCompanyToday(companyId);
     const windowEnd = addDays(today, windowDays);
+
+    // PM fix: use 1st of current month as window start so period_start / day_of_month
+    // occurrences earlier in the month are not excluded (bug: occDate < today was dropped)
+    const windowStart = pmWindowStart(today, template);
+
+    if (process.env.NODE_ENV !== "production" && windowStart.getTime() !== today.getTime()) {
+      console.warn("[pm-generate] windowStart overridden to month start", {
+        templateId, windowStart: formatDateString(windowStart),
+        originalStart: formatDateString(today), windowDays,
+        generationMode: template.generationMode,
+      });
+    }
 
     const { instancesCreated, jobsCreated } = await generateForTemplate(
       template,
-      today,
+      windowStart,
       windowEnd
     );
 
@@ -760,9 +827,8 @@ export async function previewGeneration(
     jobsWouldCreate: 0,
   };
 
-  // Get generation window
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  // Get generation window in company timezone (not server time)
+  const today = await getCompanyToday(companyId);
   const windowEnd = addDays(today, windowDays);
 
   // Get all active templates for the company
@@ -784,8 +850,11 @@ export async function previewGeneration(
 
     result.templatesProcessed++;
 
+    // PM fix: use 1st of current month for PM templates (same as generate paths)
+    const windowStart = pmWindowStart(today, template);
+
     // Compute occurrence dates
-    const occurrenceDates = computeOccurrenceDates(template, today, windowEnd);
+    const occurrenceDates = computeOccurrenceDates(template, windowStart, windowEnd);
 
     for (const occurrenceDate of occurrenceDates) {
       const instanceDateStr = formatDateString(occurrenceDate);

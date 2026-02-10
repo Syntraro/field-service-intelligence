@@ -6,7 +6,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### PM Schedule UI on Location Detail Page (2026-02-10)
+
+- **PMScheduleCard** (`client/src/components/PMScheduleCard.tsx`): New collapsible card component for the Location Detail right column. Fetches recurring templates via `GET /api/recurring-templates` and identifies the PM template for the current location (jobType=maintenance with monthsOfYear configured, fallback to title prefix "PM"). Displays summary (months, generation timing, scheduling mode, parts) with Edit, Pause/Resume, Preview, Generate, and Delete actions.
+- **PMSetupModal** (`client/src/components/PMSetupModal.tsx`): 2-step modal for creating/editing PM schedules. Step 1: month picker with presets (Quarterly, Bi-Annual, Annual, Monthly), generation mode (start of month / day of month), auto-schedule toggle with time/duration, and PM parts inclusion. Step 2: review summary before save. Validates required fields (>=1 month, valid day 1-31, valid HH:MM).
+- **LocationDetailPage integration**: Replaced placeholder PM card with `PMScheduleCard` wired to existing recurring template API. Removed unused Select component imports.
+- **Current-month-only generation**: "Generate This Month" button computes `windowDays` from today to end of current month (+2 buffer, max 35) so only the current month's PM job is created. Button only shown when schedule is active and current month is in `monthsOfYear`. After create/save in PMSetupModal, auto-generates current month if applicable. Idempotent — duplicate clicks are safe (no-op from backend).
+- **No backend changes.** Uses existing `POST/PATCH/DELETE /api/recurring-templates`, `POST /api/recurring-templates/:id/generate`, and `GET /api/recurring-templates/:id/instances` endpoints.
+- **Files added**: `client/src/components/PMScheduleCard.tsx`, `client/src/components/PMSetupModal.tsx`
+- **Files changed**: `client/src/pages/LocationDetailPage.tsx`
+
 ### Fixed
+
+#### Test: Fix stale "assigned" status assertion in recurring-jobs test (2026-02-10)
+
+- **Stale assertion**: Test 4 in `tests/recurring-jobs.test.ts` expected `status === "assigned"` for jobs generated from a template with `preferredTechnicianId`. Per Phase 2 Step 6, the generator always sets `status: "open"` — "assigned" is a derived state, not persisted. Changed assertion to `"open"`.
+- **Audit**: Confirmed no code path in `server/domain/recurrence.ts` or `server/storage/jobs.ts` ever sets `status: "assigned"` during generation.
+- **Files changed**: `tests/recurring-jobs.test.ts`
+
+#### Backend: PM "Generate This Month" returns 0 after 1st of month (2026-02-10)
+
+- **Root cause**: `generateForSingleTemplate` and `generateInstances` set `windowStart = today` (local midnight). For PM templates with `generationMode="period_start"`, the occurrence date is the 1st of the month. After the 1st, `occDate < windowStart` caused the occurrence to be silently filtered out by `computePmOccurrences`, resulting in 0 instances and 0 jobs. Same issue for `day_of_month` mode when `generationDayOfMonth < today`.
+- **Fix**: Added `isPmTemplate()` helper and `pmWindowStart()` in `server/domain/recurrence.ts`. For PM templates (jobType=maintenance + monthsOfYear configured + locationId set, or legacy title prefix "PM"), `windowStart` is overridden to the 1st of the current month. Non-PM templates are unaffected. Applied in `generateForSingleTemplate`, `generateInstances`, and `previewGeneration`.
+- **Timezone hardening**: Replaced raw `new Date(); setHours(0,0,0,0)` (server time) with `getCompanyToday(companyId)` — uses `Intl.DateTimeFormat` with the company's configured IANA timezone to determine the current calendar date, returned as a local-time `Date` (same basis as `parseLocalDate`). Prevents month-boundary bugs when UTC server clock is ahead of the company timezone (e.g., UTC 03:30 Feb 1 = Toronto 22:30 Jan 31). Applied consistently in `generateForSingleTemplate`, `generateInstances`, and `previewGeneration`.
+- **Tests**: `tests/pm-window-start.test.ts` — 12 unit tests: period_start bug repro/fix, day_of_month bug repro/fix, non-PM unaffected, idempotency, no future-month flooding, plus 5 timezone boundary tests (Toronto Jan 31 vs UTC Feb 1, Toronto Feb 1, LA Feb 28 vs UTC Mar 1, pmWindowStart month-start at boundary).
+- **Files changed**: `server/domain/recurrence.ts`
+- **Files added**: `tests/pm-window-start.test.ts`
+
+#### PM Card: PM-only filtering, improved 0-jobs diagnostics, UX tweaks (2026-02-10)
+
+- **`isPmTemplate` helper**: Extracted shared predicate for PM template identification — `jobType=maintenance` + locationId match + monthsOfYear configured, with legacy fallback (title prefix "PM" + months). Used by `findPMTemplate` and cross-template discovery to prevent non-PM templates from leaking into search results.
+- **Cross-template search restricted to PM templates**: The 0-jobs-created discovery loop now only iterates templates where `isPmTemplate(t, locationId)` is true AND `monthsOfYear` includes the current month. Prevents false matches against repair/install templates for the same location.
+- **Improved "nothing generated" diagnostics**: When generate returns 0 jobs and no existing PM job is found via cross-template search, shows descriptive toast ("Nothing generated for Feb. No existing PM job found. Verify generation mode and day-of-month settings.") instead of misleading "already exists." DEV-only `console.warn` logs templateId, locationId, date range, windowDays, raw generate response, and list of PM templates searched — aids debugging whether the issue is out-of-window, idempotency, or misconfigured day-of-month.
+- **Remove confirmation copy updated**: Archive dialog now explicitly states "Any PM jobs already generated will remain and must be removed manually if you don't want them." Toast updated to match.
+- **Contacts card collapsed by default**: On LocationDetailPage, `contactsOpen` initial state changed from `true` to `false` — all right-column cards now start collapsed.
+- **Files changed**: `client/src/components/PMScheduleCard.tsx`, `client/src/pages/LocationDetailPage.tsx`
+
+#### PM Card: Tiered delete UX, Generate surfaces existing job (2026-02-10)
+
+- **Tiered delete UX**: Default "Remove" button uses soft delete (`DELETE /api/recurring-templates/:id`, sets `isActive=false`). Schedule disappears from PM card (via `isActive` filter in `findPMTemplate`) but remains restorable from recurring templates admin. "Delete permanently..." link shown only for owner/admin roles — requires typing "DELETE" to confirm, calls `?hard=true`. Cascade verified safe: hard delete removes template + instances only; `jobs.recurrenceTemplateId` is a plain varchar (no FK), so jobs/job_parts/invoices are untouched.
+- **Generate shows existing job (cross-template discovery)**: When "Generate This Month" returns 0 jobs created, searches PM templates for this location (including archived/soft-deleted) to find the existing PM job. Fixes bug where archive→recreate flow showed "No PM job needed" because the new template had no instances — the job was linked to the old archived template. Discovered job is stored in state so the "This month" row displays it as a fallback.
+- **"This month" row always refreshed**: Instances cache invalidation moved to top of generate `onSuccess` so the row refreshes regardless of whether jobs were created or found cross-template.
+- **"This month" row**: New inline row in the PM card showing current month's generated job status with a clickable link navigating to the job detail page. Shows "Not generated" if no job exists yet.
+- **Preview job links**: Preview dialog now shows clickable job number links for instances that have generated jobs.
+- **Instance type fix**: Fixed client-side instance type to match backend `InstanceWithJob` shape (`instanceDate`, nested `job` object) instead of incorrect flat fields.
+- **Files changed**: `client/src/components/PMScheduleCard.tsx`, `CHANGELOG.md`
 
 #### TeamMember type cascade — id: number → string (2026-02-10)
 

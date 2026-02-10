@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+
 import { ArrowLeft, Briefcase, FileText, Trash2, ChevronDown, ChevronRight, Star, User, Phone, Mail, Plus } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
@@ -13,6 +13,7 @@ import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import LocationFormModal from "@/components/LocationFormModal";
 import { PartsSelectorModal } from "@/components/PartsSelectorModal";
 import NotesPanel, { type NotesPanelRef } from "@/components/NotesPanel";
+import PMScheduleCard from "@/components/PMScheduleCard";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { format } from "date-fns";
@@ -43,8 +44,8 @@ export default function LocationDetailPage() {
     serialNumber: "",
   });
 
-  // Collapsible states — Contacts expanded by default, all others collapsed
-  const [contactsOpen, setContactsOpen] = useState(true);
+  // Collapsible states — all cards collapsed by default
+  const [contactsOpen, setContactsOpen] = useState(false);
   const [pmOpen, setPmOpen] = useState(false);
   const [partsOpen, setPartsOpen] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
@@ -591,53 +592,15 @@ export default function LocationDetailPage() {
             </Card>
           </Collapsible>
 
-          {/* PM Schedule */}
-          <Collapsible open={pmOpen} onOpenChange={setPmOpen}>
-            <Card>
-              <CollapsibleTrigger asChild>
-                <button className="w-full flex items-center justify-between px-4 py-3 hover-elevate" data-testid="trigger-pm-schedule">
-                  <span className="text-sm font-semibold">Preventive Maintenance Schedule</span>
-                  {pmOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-                </button>
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <div className="border-t px-4 pb-4 pt-3 space-y-3 text-sm">
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-muted-foreground">PM Type</div>
-                    <Select defaultValue="quarterly">
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select PM type" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="quarterly">Quarterly PM</SelectItem>
-                        <SelectItem value="biannual">Bi-Annual PM</SelectItem>
-                        <SelectItem value="annual">Annual PM</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-muted-foreground">Scheduled Months</div>
-                    <div className="flex flex-wrap gap-1">
-                      <span className="text-xs text-muted-foreground">Not configured</span>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1 text-xs text-muted-foreground">
-                    <div>
-                      Last PM: <span className="font-medium text-foreground">—</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span>Next PM: <span className="font-medium text-foreground">—</span></span>
-                      {overdueJobs.length > 0 && (
-                        <Badge variant="destructive" className="text-xs">Overdue</Badge>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </CollapsibleContent>
-            </Card>
-          </Collapsible>
+          {/* PM Schedule — wired to recurring_job_templates engine */}
+          <PMScheduleCard
+            locationId={locationId!}
+            locationName={locationName}
+            companyId={location?.companyId || ""}
+            clientId={effectiveParentCompanyId || undefined}
+            open={pmOpen}
+            onOpenChange={setPmOpen}
+          />
 
           {/* Location Parts */}
           <Collapsible open={partsOpen} onOpenChange={setPartsOpen}>

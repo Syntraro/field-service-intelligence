@@ -375,8 +375,9 @@ describe("Recurring Jobs Tests", () => {
       }
     }
 
-    // Check assigned status job
-    const assignedJobs = await db
+    // Check tech-assigned template still produces status "open" (Phase 2 Step 6:
+    // "assigned" is derived, not a persisted status — generator always sets "open")
+    const techJobs = await db
       .select()
       .from(jobs)
       .where(
@@ -386,13 +387,14 @@ describe("Recurring Jobs Tests", () => {
         )
       );
 
-    if (assignedJobs.length > 0) {
-      createdJobIds.push(...assignedJobs.map((j) => j.id));
-      for (const job of assignedJobs) {
+    if (techJobs.length > 0) {
+      createdJobIds.push(...techJobs.map((j) => j.id));
+      for (const job of techJobs) {
         expect(job.scheduledStart).toBeNull();
         expect(job.scheduledEnd).toBeNull();
         expect(job.isAllDay).toBe(false);
-        expect(job.status).toBe("assigned");
+        // Phase 2 Step 6: all generated jobs are "open"; tech assignment doesn't change status
+        expect(job.status).toBe("open");
         expect(job.primaryTechnicianId).toBe(testUserId);
       }
     }

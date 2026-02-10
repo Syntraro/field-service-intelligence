@@ -82,7 +82,18 @@
       "Bash(./scripts/ralph-loop.sh:*)",
       "Bash(xargs:*)",
       "Bash(git checkout:*)",
-      "Bash(npm run test:*)"
+      "Bash(npm run test:*)",
+      "Bash(node:*)",
+      "Bash(printf:*)",
+      "Bash(CSRF_TOKEN=\"vhv37D7m-Ff0O4pyY2u6m-yOCIeuMVgKWn2o\" CUSTOMER_COMPANY=\"8d49ca39-6318-464a-b610-7953e51bf1f9\" CONTACT_ID=\"fd186fec-efe5-447d-844c-70859285cd51\" LOCATION_HOME=\"ec0211dc-9cfa-4202-a4b6-b077568966c8\" LOCATION_OFFICE=\"ea256e72-3609-4907-8b2e-565ecafffac6\" __NEW_LINE_e1235b70730d71a1__ printf '{\n  \"\"\"\"firstName\"\"\"\": \"\"\"\"Juliana\"\"\"\",\n  \"\"\"\"lastName\"\"\"\": \"\"\"\"Elias\"\"\"\",\n  \"\"\"\"email\"\"\"\": \"\"\"\"julsamaha@gmail.com\"\"\"\",\n  \"\"\"\"phone\"\"\"\": \"\"\"\"2898942282\"\"\"\",\n  \"\"\"\"isPrimary\"\"\"\": false,\n  \"\"\"\"association\"\"\"\": {\n    \"\"\"\"type\"\"\"\": \"\"\"\"locations\"\"\"\",\n    \"\"\"\"locations\"\"\"\": [\n      {\"\"\"\"locationId\"\"\"\": \"\"\"\"%s\"\"\"\", \"\"\"\"roles\"\"\"\": [\"\"\"\"billing\"\"\"\"]},\n      {\"\"\"\"locationId\"\"\"\": \"\"\"\"%s\"\"\"\", \"\"\"\"roles\"\"\"\": [\"\"\"\"scheduling\"\"\"\"]}\n    ]\n  },\n  \"\"\"\"existingContactIds\"\"\"\": [\"\"\"\"%s\"\"\"\"]\n}' \"$LOCATION_HOME\" \"$LOCATION_OFFICE\" \"$CONTACT_ID\")",
+      "Bash(CSRF_TOKEN=\"GcJyu5W6--wmsFErdQSPsUu1e_OE_c-mfJnI\" CUSTOMER_COMPANY=\"8d49ca39-6318-464a-b610-7953e51bf1f9\" CONTACT_ID=\"fd186fec-efe5-447d-844c-70859285cd51\" LOCATION_HOME=\"ec0211dc-9cfa-4202-a4b6-b077568966c8\" LOCATION_OFFICE=\"ea256e72-3609-4907-8b2e-565ecafffac6\" __NEW_LINE_3cd11f0b8b3ec846__ printf '{\"\"\"\"firstName\"\"\"\":\"\"\"\"Juliana\"\"\"\",\"\"\"\"lastName\"\"\"\":\"\"\"\"Elias\"\"\"\",\"\"\"\"email\"\"\"\":\"\"\"\"julsamaha@gmail.com\"\"\"\",\"\"\"\"phone\"\"\"\":\"\"\"\"2898942282\"\"\"\",\"\"\"\"isPrimary\"\"\"\":false,\"\"\"\"association\"\"\"\":{\"\"\"\"type\"\"\"\":\"\"\"\"locations\"\"\"\",\"\"\"\"locations\"\"\"\":[{\"\"\"\"locationId\"\"\"\":\"\"\"\"%s\"\"\"\",\"\"\"\"roles\"\"\"\":[\"\"\"\"billing\"\"\"\"]},{\"\"\"\"locationId\"\"\"\":\"\"\"\"%s\"\"\"\",\"\"\"\"roles\"\"\"\":[\"\"\"\"scheduling\"\"\"\"]}]},\"\"\"\"existingContactIds\"\"\"\":[\"\"\"\"%s\"\"\"\"]}' \"$LOCATION_HOME\" \"$LOCATION_OFFICE\" \"$CONTACT_ID\")",
+      "Bash(PORT=5000 npm run dev:*)",
+      "Bash(python3:*)",
+      "Bash(CSRF=\"qJVd642S-Weplch83bpLj1aXFJmV9xbRv_wY\")",
+      "Bash(LOC_ID=\"8bfe7b5a-7312-4752-8467-f60d2f3e8158\")",
+      "Bash(CSRF=\"yWQCJxVm-vO8u1rXbnT0kgY6hHd3IFv9nLjM\")",
+      "Bash(CSRF=\"ajxNJmx2-4rLLZD-rjFD77Eo4TSHVwmWAmZc\")",
+      "Bash(HASH='$2b$10$.8FMbYLk85Bo6nOqFqTe0e7bNdex9.XN3FV/C0Z81mrvrM9S.2eW2')"
     ]
   }
 }
