@@ -136,6 +136,24 @@ router.post(
       throw createError(400, "daysOfWeek is required for weekly recurrence");
     }
 
+    // PM scheduling cross-field validation
+    if (data.generationMode === "day_of_month" && !data.generationDayOfMonth) {
+      throw createError(400, "generationDayOfMonth is required when generationMode is day_of_month");
+    }
+    if (data.autoSchedule && !data.scheduledTimeLocal) {
+      throw createError(400, "scheduledTimeLocal is required when autoSchedule is true");
+    }
+    if (data.scheduledTimeLocal) {
+      const [hh, mm] = data.scheduledTimeLocal.split(":").map(Number);
+      if (hh < 0 || hh > 23 || mm < 0 || mm > 59) {
+        throw createError(400, "scheduledTimeLocal must be valid HH:MM (00:00-23:59)");
+      }
+    }
+    // Dedupe monthsOfYear if provided
+    if (data.monthsOfYear) {
+      data.monthsOfYear = data.monthsOfYear.filter((v, i, arr) => arr.indexOf(v) === i);
+    }
+
     const template = await recurringJobsRepository.createTemplate(companyId, data);
 
     res.status(201).json(template);
@@ -175,6 +193,28 @@ router.patch(
     const newDaysOfWeek = data.daysOfWeek !== undefined ? data.daysOfWeek : existing.daysOfWeek;
     if (newKind === "weekly" && (!newDaysOfWeek || newDaysOfWeek.length === 0)) {
       throw createError(400, "daysOfWeek is required for weekly recurrence");
+    }
+
+    // PM scheduling cross-field validation (merge with existing values)
+    const effectiveGenMode = data.generationMode ?? existing.generationMode;
+    const effectiveGenDay = data.generationDayOfMonth !== undefined ? data.generationDayOfMonth : existing.generationDayOfMonth;
+    if (effectiveGenMode === "day_of_month" && !effectiveGenDay) {
+      throw createError(400, "generationDayOfMonth is required when generationMode is day_of_month");
+    }
+    const effectiveAutoSchedule = data.autoSchedule ?? existing.autoSchedule;
+    const effectiveTime = data.scheduledTimeLocal !== undefined ? data.scheduledTimeLocal : existing.scheduledTimeLocal;
+    if (effectiveAutoSchedule && !effectiveTime) {
+      throw createError(400, "scheduledTimeLocal is required when autoSchedule is true");
+    }
+    if (data.scheduledTimeLocal) {
+      const [hh, mm] = data.scheduledTimeLocal.split(":").map(Number);
+      if (hh < 0 || hh > 23 || mm < 0 || mm > 59) {
+        throw createError(400, "scheduledTimeLocal must be valid HH:MM (00:00-23:59)");
+      }
+    }
+    // Dedupe monthsOfYear if provided
+    if (data.monthsOfYear) {
+      data.monthsOfYear = data.monthsOfYear.filter((v, i, arr) => arr.indexOf(v) === i);
     }
 
     const updated = await recurringJobsRepository.updateTemplate(

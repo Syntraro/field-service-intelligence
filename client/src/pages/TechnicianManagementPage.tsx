@@ -12,15 +12,6 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { useToast } from "@/hooks/use-toast";
 import { Trash2, Copy, RotateCcw, Plus } from "lucide-react";
 
-interface Technician {
-  id: string;
-  email: string;
-  firstName: string | null;
-  lastName: string | null;
-  role: string;
-  createdAt: string;
-}
-
 export default function TechnicianManagementPage() {
   const { toast } = useToast();
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -150,7 +141,7 @@ export default function TechnicianManagementPage() {
                             <p className="text-sm text-muted-foreground">{tech.email}</p>
                           )}
                           <p className="text-xs text-muted-foreground mt-2">
-                            Role: {tech.role} • Added: {new Date(tech.createdAt).toLocaleDateString()}
+                            Role: {tech.role}{tech.createdAt ? ` • Added: ${new Date(tech.createdAt).toLocaleDateString()}` : ""}
                           </p>
                         </div>
                         <div className="flex gap-2">

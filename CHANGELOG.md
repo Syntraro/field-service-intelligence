@@ -6,7 +6,108 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### TeamMember type cascade — id: number → string (2026-02-10)
+
+- **Root cause**: `TeamMember` interface in `useTechnicians.ts` declared `id: number`, but the API (`GET /api/team/technicians`) returns string UUIDs. This caused 17 TS errors across 10 files wherever `TeamMember.id` was used as a `SelectItem` value, Map key, or mutation argument.
+- **Fix**: Changed `id: number` to `id: string`; made `firstName`, `lastName`, `status` optional (not guaranteed by API); added optional `roleId`, `isSchedulable`, `createdAt` fields used by consuming pages.
+- **AddTimeEntryModal**: Changed `getTechName` param from `UserType` (full User schema) to `TeamMember` — the modal only needs the narrow hook type, not the full DB row.
+- **TechnicianManagementPage**: Guarded `tech.createdAt` with optional fallback (API may not return it); removed unused local `Technician` interface that shadowed the hook type.
+- **Files changed**: `client/src/hooks/useTechnicians.ts`, `client/src/components/time/AddTimeEntryModal.tsx`, `client/src/pages/TechnicianManagementPage.tsx`
+- **No backend changes.** No runtime behavior changes — only TypeScript type corrections.
+
 ### Added
+
+#### PM Scheduling Extension for Recurring Job Templates (2026-02-10)
+
+- **Schema**: 6 new columns on `recurring_job_templates`: `months_of_year` (INT[]), `generation_mode` (TEXT, default 'phase'), `generation_day_of_month` (INT), `auto_schedule` (BOOL, default false), `scheduled_time_local` (TEXT), `include_location_pm_parts` (BOOL, default false). All backward-compatible with defaults.
+- **Migration**: `migrations/2026_02_10_pm_scheduling_columns.sql` — additive ALTER TABLE with IF NOT EXISTS.
+- **Zod schemas**: Both `insertRecurringJobTemplateSchema` and `updateRecurringJobTemplateSchema` accept new PM fields with validation (month 1-12, HH:MM format, cross-field rules).
+- **Generation mode enum**: `generationModeEnum = ["phase", "period_start", "day_of_month"]` exported from `shared/schema.ts`.
+- **PM occurrence computation**: New `computePmOccurrences()` in `server/domain/recurrence.ts` — month-by-month iteration with month-of-year filtering and day clamping.
+- **Month filter for phase mode**: `filterByMonthsOfYear()` applies month restriction even to existing weekly/monthly phase patterns.
+- **Auto-scheduling**: When `autoSchedule=true`, generated jobs get `scheduledStart`/`scheduledEnd` computed from `scheduledTimeLocal` + `defaultDurationMinutes` (fallback 60 min).
+- **PM parts copy service**: New `server/services/pmJobParts.ts` — `copyLocationPMPartsToJob(companyId, locationId, jobId, tx?)` snapshots location PM part templates into `job_parts` with idempotency guard (skips if job already has parts). Accepts optional Drizzle transaction; wraps in its own transaction when called standalone. Uses efficient bulk INSERT (not N × createJobPart) since the target job is freshly generated and cannot be invoiced.
+- **pmParts join extended**: `getLocationPMParts()` now includes `itemUnitPrice` from the `items` table JOIN.
+- **Route validation**: POST/PATCH `/api/recurring-templates` validate cross-field constraints (generationDayOfMonth required for day_of_month mode, scheduledTimeLocal required when autoSchedule=true, monthsOfYear deduped).
+- **Storage layer**: `createTemplate()` passes through all 6 new fields.
+- **Day-of-month clamping**: `generationDayOfMonth=31` in February deterministically clamps to last day (28 or 29), no rollover.
+- **Month restriction in phase mode**: Weekly/monthly templates with `monthsOfYear` set will only generate occurrences in those months.
+- **Files changed**: `shared/schema.ts`, `server/domain/recurrence.ts`, `server/storage/recurringJobs.ts`, `server/storage/pmParts.ts`, `server/routes/recurringJobs.ts`, `server/services/pmJobParts.ts` (new), `migrations/2026_02_10_pm_scheduling_columns.sql` (new)
+
+### Fixed
+
+#### Tag delete error toast and stale UI (2026-02-10)
+
+- **Root cause**: `apiRequest` in `client/src/lib/queryClient.ts` unconditionally called `response.json()` on success — 204 No Content responses (from DELETE endpoints) have no body, causing "Unexpected end of JSON input" error.
+- **Fix (global)**: `apiRequest` now returns `undefined` for 204 / empty-body responses instead of attempting JSON parse. Prevents the same bug on any future DELETE endpoint.
+- **Fix (optimistic UI)**: Tag delete mutation now uses `queryClient.setQueryData` to immediately remove the deleted tag from cache — item disappears instantly without waiting for refetch. Also clears inline-edit state if the deleted tag was being edited.
+- **Files changed**: `client/src/lib/queryClient.ts`, `client/src/pages/TagsSettingsPage.tsx`
+
+### Added
+
+#### Manage Tags Settings Page (2026-02-10)
+
+- **New page**: `client/src/pages/TagsSettingsPage.tsx` — admin page at `/settings/tags` for full tag CRUD (create, inline edit, delete with confirmation).
+- **Features**: Tag name + 9-color picker for create/edit, live preview pill, inline editing with save/cancel, delete confirmation dialog with cascade warning, duplicate name validation, sorted alphabetically.
+- **Settings card**: Added "Tags" card to `SettingsPage.tsx` (first position in grid) with Tag icon and description.
+- **Route**: `/settings/tags` registered in App.tsx with `requireAdmin` protection.
+- **Files changed**: `client/src/pages/TagsSettingsPage.tsx` (new), `client/src/pages/SettingsPage.tsx`, `client/src/App.tsx`, `CHANGELOG.md`
+
+#### Tag Filtering for All Locations Page (2026-02-10)
+
+- **Tag filter chips**: Added to `client/src/pages/Locations.tsx` — same UX pattern as Clients page. Clickable colored chips toggle tag filter on/off. Active chips show with full color + ring, inactive at 33% opacity.
+- **AND logic**: Location must have ALL selected tags to be visible. Uses client-side filtering against the already-loaded `GET /api/tags/location-assignments` data — no new backend calls.
+- **Performance**: `locationTagMap` (locationId → Set\<tagId\>) and `filteredLocations` computed via `useMemo`. Filtering, sorting, and selection all derive from the same memo chain.
+- **Bulk edit compatibility**: "Select all" operates on filtered results. Bulk tag editing works correctly on the filtered subset.
+- **Clear button**: Resets tag filter and shows all locations.
+- **Files changed**: `client/src/pages/Locations.tsx`
+
+#### Phase 2B: Bulk Tag Edit for Locations (2026-02-10)
+
+- **Backend**: New `bulkUpdateLocationTags` method in `server/storage/clientTags.ts` — transactional, set-based inserts/deletes across multiple locations. Validates all location IDs and tag IDs belong to tenant.
+- **API endpoint**: `POST /api/locations/bulk-tags` — accepts `{ locationIds, addTagIds, removeTagIds }`. Validates no overlap between add/remove lists. Registered before `/:id` param routes to avoid capture. Returns `{ updatedCount }`.
+- **API endpoint**: `GET /api/tags/location-assignments` — returns all location tag assignments for the tenant (for list view tag pills).
+- **BulkEditTagsModal generalized**: Added `entityType` prop (`"customerCompany"` | `"location"`) with config-driven endpoint, request body ID field, cache invalidation key, and display labels. Default `"customerCompany"` preserves backwards compatibility with Clients.tsx.
+- **Locations.tsx page**: New `client/src/pages/Locations.tsx` — flat list of all service locations with location-level tag pills, checkbox selection, bulk action bar, and BulkEditTagsModal in location mode.
+- **Route**: `/all-locations` registered in App.tsx before `/locations/:locationId`. "All Locations" button added to Clients page header for navigation.
+- **Files changed**: `server/storage/clientTags.ts`, `server/routes/tags.ts`, `client/src/components/BulkEditTagsModal.tsx`, `client/src/pages/Locations.tsx` (new), `client/src/pages/Clients.tsx`, `client/src/App.tsx`, `CHANGELOG.md`
+
+#### Phase 2A: Bulk Tag Edit for Clients (2026-02-10)
+
+- **Backend**: New `bulkUpdateCustomerCompanyTags` method in `server/storage/clientTags.ts` — transactional, set-based inserts/deletes across multiple customer companies. Validates all IDs belong to tenant before proceeding.
+- **API endpoint**: `POST /api/customer-companies/bulk-tags` — accepts `{ customerCompanyIds, addTagIds, removeTagIds }`. Validates no overlap between add/remove lists. Returns `{ updatedCount }`.
+- **Clients.tsx row selection**: Checkbox column with header "select all visible" toggle. Selection count badge. Bulk action bar with "Bulk Edit Tags" and "Clear selection" buttons.
+- **BulkEditTagsModal**: New `client/src/components/BulkEditTagsModal.tsx` — two-step modal:
+  - Step 1 (Edit): Add/Remove tag pickers with search, inline tag creation (with color picker), overlap prevention between add/remove lists.
+  - Step 2 (Review): Summary of changes (N clients, +X tags, -Y tags), preview of first 10 client names, Confirm & Apply / Back buttons.
+- **Apply behavior**: On confirm, calls bulk endpoint, invalidates tag assignments cache, shows success toast, clears selection.
+- **Files changed**: `server/storage/clientTags.ts`, `server/routes/tags.ts`, `client/src/pages/Clients.tsx`, `client/src/components/BulkEditTagsModal.tsx`, `CHANGELOG.md`
+
+#### Phase 1B: Location Tags (2026-02-09)
+
+- **Database schema**: New `location_tag_assignments` junction table (id, companyId, tagId, locationId, createdAt) with unique index on (companyId, locationId, tagId). Reuses existing `client_tags` table for tag definitions.
+- **Migration**: `migrations/2026_02_09_location_tag_assignments.sql` — creates table with indexes for fast lookup by tenant+location and tenant+tag.
+- **Storage layer**: Extended `ClientTagRepository` in `server/storage/clientTags.ts` with 3 new methods: `getTagsForLocation`, `updateLocationTags` (transactional bulk add/remove with tenant + location ownership validation), `getLocationTagAssignmentsByCompany` (for future list views).
+- **API routes**: New `locationTagRouter` in `server/routes/tags.ts` — `GET /api/locations/:locationId/tags` (list tags for a location), `POST /api/locations/:locationId/tags` (add/remove tags with `{ addTagIds, removeTagIds }` payload).
+- **EditTagsModal generalized**: Changed props from `customerCompanyId` to `entityType` + `entityId` to support both customer companies and locations. API URL and cache keys derived from entity type.
+- **LocationDetailPage tag pills**: Colored tag pills in the header below status badges. Dashed "+ Add Tag" / "Edit" button opens EditTagsModal with `entityType="location"`.
+- **No inheritance**: Location tags are fully independent from client tags — assigning a tag to a location does NOT affect client/company tag assignments.
+- **Files changed**: `shared/schema.ts`, `server/storage/clientTags.ts`, `server/routes/tags.ts`, `server/routes/index.ts`, `client/src/components/EditTagsModal.tsx`, `client/src/pages/ClientDetailPage.tsx`, `client/src/pages/LocationDetailPage.tsx`, `CHANGELOG.md`
+- **Migration file**: `migrations/2026_02_09_location_tag_assignments.sql`
+
+#### Phase 1: Client Tags System (2026-02-09)
+
+- **Database schema**: New `client_tags` table (id, companyId, name, color) with unique index on (companyId, name). New `client_tag_assignments` junction table (id, companyId, tagId, customerCompanyId) with unique index on (tagId, customerCompanyId).
+- **Migration**: `migrations/2026_02_09_client_tags.sql` — creates both tables with indexes for fast lookup by tenant, customer company, and tag.
+- **Storage layer**: New `server/storage/clientTags.ts` — `ClientTagRepository` with methods: `getTagsByCompany`, `createTag`, `updateTag`, `deleteTag`, `getTagsForCustomerCompany`, `updateCustomerCompanyTags` (transactional bulk add/remove with tenant validation), `getTagAssignmentsByCompany` (for list views).
+- **API routes**: New `server/routes/tags.ts` — Tag CRUD (`GET/POST/PATCH/DELETE /api/tags`), bulk assignments endpoint (`GET /api/tags/assignments`), customer-company tag management (`GET/POST /api/customer-companies/:id/tags` with `{ addTagIds, removeTagIds }` payload). Duplicate name returns 409.
+- **ClientDetailPage tag pills**: Colored tag pills in the header below the company subtitle. Dashed "+ Add Tag" / "Edit" button opens the EditTagsModal.
+- **EditTagsModal**: New `client/src/components/EditTagsModal.tsx` — modal for managing tags on a customer company. Shows current tags as removable pills, search/filter existing tags, inline "Create" button with 9-color picker, keyboard Enter to create.
+- **Clients list tag filter**: Tag filter chips above the client table in `Clients.tsx`. Click to toggle (AND filter — company must have ALL selected tags). "Clear" button resets. Tags column in the table shows assigned tag pills per company row. Uses `GET /api/tags/assignments` for efficient bulk loading.
+- **Files changed**: `shared/schema.ts`, `server/storage/clientTags.ts` (new), `server/storage/index.ts`, `server/routes/tags.ts` (new), `server/routes/index.ts`, `client/src/components/EditTagsModal.tsx` (new), `client/src/pages/ClientDetailPage.tsx`, `client/src/pages/Clients.tsx`, `CHANGELOG.md`
+- **Migration file**: `migrations/2026_02_09_client_tags.sql`
 
 #### Location PM Parts: Row-Based Multi-Add Modal + Backend (2026-02-09)
 

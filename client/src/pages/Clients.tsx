@@ -3,12 +3,13 @@
  * Uses TablePageShell for consistent width/spacing with Jobs, Invoices, etc.
  */
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Search, Plus } from "lucide-react";
+import { Search, Plus, X, Tag, MapPin } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table,
@@ -21,7 +22,16 @@ import {
 import { apiRequest } from "@/lib/queryClient";
 import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
 import { TablePageShell } from "@/components/ui/table-page-shell";
-import type { Client } from "@shared/schema";
+import BulkEditTagsModal from "@/components/BulkEditTagsModal";
+import type { Client, ClientTag } from "@shared/schema";
+
+/** Tag assignment row from GET /api/tags/assignments */
+interface TagAssignment {
+  customerCompanyId: string;
+  tagId: string;
+  tagName: string;
+  tagColor: string;
+}
 
 const MONTH_NAMES = [
   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -44,6 +54,42 @@ export default function Clients() {
   const [, setLocation] = useLocation();
   const [search, setSearch] = useState("");
   const [activeTab, setActiveTab] = useState<"active" | "inactive">("active");
+  const [selectedTagIds, setSelectedTagIds] = useState<Set<string>>(new Set());
+
+  // Phase 2A: Row selection + bulk edit state
+  const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
+  const [bulkModalOpen, setBulkModalOpen] = useState(false);
+
+  // Fetch all tenant tags for filter chips
+  const { data: allTags = [] } = useQuery<ClientTag[]>({
+    queryKey: ["/api/tags"],
+  });
+
+  // Fetch tag assignments to map tags → customer companies
+  const { data: tagAssignments = [] } = useQuery<TagAssignment[]>({
+    queryKey: ["/api/tags/assignments"],
+    queryFn: () => apiRequest("/api/tags/assignments"),
+  });
+
+  // Build maps for tag filtering and display
+  const companyTagMap = useMemo(() => {
+    const m = new Map<string, Set<string>>();
+    tagAssignments.forEach((a) => {
+      if (!m.has(a.customerCompanyId)) m.set(a.customerCompanyId, new Set());
+      m.get(a.customerCompanyId)!.add(a.tagId);
+    });
+    return m;
+  }, [tagAssignments]);
+
+  // companyId → TagAssignment[] for rendering tag pills in rows
+  const companyTagsList = useMemo(() => {
+    const m = new Map<string, TagAssignment[]>();
+    tagAssignments.forEach((a) => {
+      if (!m.has(a.customerCompanyId)) m.set(a.customerCompanyId, []);
+      m.get(a.customerCompanyId)!.push(a);
+    });
+    return m;
+  }, [tagAssignments]);
 
   const { data, isLoading } = useQuery({
     queryKey: ["/api/clients", search],
@@ -102,11 +148,52 @@ export default function Clients() {
   }, [clients]);
 
   const filteredGroups = useMemo(() => {
-    if (activeTab === "active") {
-      return companyGroups.filter((g) => g.hasActiveLocation);
+    let groups = activeTab === "active"
+      ? companyGroups.filter((g) => g.hasActiveLocation)
+      : companyGroups.filter((g) => g.allInactive);
+
+    // Apply tag filter: company must have ALL selected tags
+    if (selectedTagIds.size > 0) {
+      groups = groups.filter((g) => {
+        const tags = companyTagMap.get(g.companyId);
+        if (!tags) return false;
+        const selectedArr = Array.from(selectedTagIds);
+        for (let i = 0; i < selectedArr.length; i++) {
+          if (!tags.has(selectedArr[i])) return false;
+        }
+        return true;
+      });
     }
-    return companyGroups.filter((g) => g.allInactive);
-  }, [companyGroups, activeTab]);
+
+    return groups;
+  }, [companyGroups, activeTab, selectedTagIds, companyTagMap]);
+
+  // Phase 2A: Selection helpers
+  const allVisibleIds = useMemo(() => filteredGroups.map((g) => g.companyId), [filteredGroups]);
+  const allVisibleSelected = allVisibleIds.length > 0 && allVisibleIds.every((id) => selectedRows.has(id));
+  const someSelected = selectedRows.size > 0;
+
+  const toggleSelectAll = useCallback(() => {
+    setSelectedRows((prev) => {
+      if (allVisibleIds.every((id) => prev.has(id))) return new Set(); // deselect all
+      return new Set(allVisibleIds);
+    });
+  }, [allVisibleIds]);
+
+  const toggleRow = useCallback((companyId: string) => {
+    setSelectedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(companyId)) next.delete(companyId); else next.add(companyId);
+      return next;
+    });
+  }, []);
+
+  /** companyId → companyName map for the review step preview */
+  const selectedNamesMap = useMemo(() => {
+    const m = new Map<string, string>();
+    filteredGroups.forEach((g) => { if (selectedRows.has(g.companyId)) m.set(g.companyId, g.companyName); });
+    return m;
+  }, [filteredGroups, selectedRows]);
 
   const handleRowClick = (primaryLocationId: string) => {
     setLocation(`/clients/${primaryLocationId}`);
@@ -126,10 +213,16 @@ export default function Clients() {
     <TablePageShell
       title="Clients"
       actions={
-        <Button onClick={() => setLocation("/clients/new")} data-testid="button-new-client">
-          <Plus className="h-4 w-4 mr-2" />
-          New Client
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setLocation("/all-locations")} data-testid="button-view-locations">
+            <MapPin className="h-4 w-4 mr-2" />
+            All Locations
+          </Button>
+          <Button onClick={() => setLocation("/clients/new")} data-testid="button-new-client">
+            <Plus className="h-4 w-4 mr-2" />
+            New Client
+          </Button>
+        </div>
       }
       data-testid="clients-page"
     >
@@ -156,12 +249,77 @@ export default function Clients() {
           </div>
         </div>
 
+        {/* Tag filter chips */}
+        {allTags.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 mt-3">
+            {allTags.map((tag) => {
+              const active = selectedTagIds.has(tag.id);
+              return (
+                <button
+                  key={tag.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedTagIds((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(tag.id)) next.delete(tag.id);
+                      else next.add(tag.id);
+                      return next;
+                    });
+                  }}
+                  className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-all ${
+                    active ? "text-white ring-2 ring-offset-1" : "opacity-50 hover:opacity-80"
+                  }`}
+                  style={{
+                    backgroundColor: active ? tag.color : `${tag.color}33`,
+                    color: active ? "white" : tag.color,
+                    ...(active ? { boxShadow: `0 0 0 2px ${tag.color}` } : {}),
+                  }}
+                >
+                  {tag.name}
+                  {active && <X className="h-3 w-3" />}
+                </button>
+              );
+            })}
+            {selectedTagIds.size > 0 && (
+              <button
+                type="button"
+                onClick={() => setSelectedTagIds(new Set())}
+                className="text-xs text-muted-foreground hover:text-foreground ml-1"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Phase 2A: Bulk action bar */}
+        {someSelected && (
+          <div className="flex items-center gap-3 mt-3 rounded-md border bg-muted/50 px-4 py-2">
+            <span className="text-sm font-medium">{selectedRows.size} selected</span>
+            <Button size="sm" variant="outline" onClick={() => setBulkModalOpen(true)}>
+              <Tag className="h-3.5 w-3.5 mr-1.5" />
+              Bulk Edit Tags
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setSelectedRows(new Set())}>
+              Clear selection
+            </Button>
+          </div>
+        )}
+
         <TabsContent value={activeTab} className="mt-4">
           <ListSurface>
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-10">
+                    <Checkbox
+                      checked={allVisibleSelected}
+                      onCheckedChange={toggleSelectAll}
+                      aria-label="Select all visible rows"
+                    />
+                  </TableHead>
                   <TableHead>Company</TableHead>
+                  <TableHead>Tags</TableHead>
                   <TableHead>Location</TableHead>
                   <TableHead>Address</TableHead>
                   <TableHead>Maintenance Months</TableHead>
@@ -171,7 +329,7 @@ export default function Clients() {
               <TableBody>
                 {filteredGroups.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={4} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
                       No {activeTab} clients found
                     </TableCell>
                   </TableRow>
@@ -184,7 +342,27 @@ export default function Clients() {
                       data-testid={`row-client-${group.companyId}`}
                       title={group.locationCount > 1 ? `${group.locationCount} locations` : undefined}
                     >
+                      <TableCell className="w-10" onClick={(e) => e.stopPropagation()}>
+                        <Checkbox
+                          checked={selectedRows.has(group.companyId)}
+                          onCheckedChange={() => toggleRow(group.companyId)}
+                          aria-label={`Select ${group.companyName}`}
+                        />
+                      </TableCell>
                       <TableCell className="font-medium">{group.companyName}</TableCell>
+                      <TableCell>
+                        <div className="flex flex-wrap gap-1">
+                          {(companyTagsList.get(group.companyId) ?? []).map((t) => (
+                            <span
+                              key={t.tagId}
+                              className="inline-flex rounded-full px-1.5 py-0.5 text-[10px] font-medium text-white"
+                              style={{ backgroundColor: t.tagColor }}
+                            >
+                              {t.tagName}
+                            </span>
+                          ))}
+                        </div>
+                      </TableCell>
                       <TableCell className="text-muted-foreground">{group.location}</TableCell>
                       <TableCell className="text-muted-foreground">{group.address}</TableCell>
                       <TableCell className="text-sm">{group.maintenanceMonths}</TableCell>
@@ -200,6 +378,15 @@ export default function Clients() {
           </div>
         </TabsContent>
       </Tabs>
+
+      {/* Phase 2A: Bulk Edit Tags Modal */}
+      <BulkEditTagsModal
+        open={bulkModalOpen}
+        onOpenChange={setBulkModalOpen}
+        selectedIds={Array.from(selectedRows)}
+        selectedNames={selectedNamesMap}
+        onApplied={() => setSelectedRows(new Set())}
+      />
     </TablePageShell>
   );
 }

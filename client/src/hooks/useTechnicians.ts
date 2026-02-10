@@ -1,13 +1,16 @@
 import { useQuery } from "@tanstack/react-query";
 
 export interface TeamMember {
-  id: number;
-  firstName: string;
-  lastName: string;
+  id: string;
+  firstName?: string;
+  lastName?: string;
   fullName: string;
   email: string;
   role: string;
-  status: string;
+  roleId?: string | null;
+  status?: string;
+  isSchedulable?: boolean;
+  createdAt?: string;
 }
 
 export function useTechniciansDirectory() {

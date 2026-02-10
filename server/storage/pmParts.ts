@@ -19,6 +19,7 @@ export interface PMPartWithItem extends LocationPMPartTemplate {
   itemSku: string | null;
   itemCategory: string | null;
   itemCost: string | null;
+  itemUnitPrice: string | null; // Sell price from items catalog (for PM job generation)
 }
 
 export class PMPartRepository extends BaseRepository {
@@ -48,6 +49,7 @@ export class PMPartRepository extends BaseRepository {
         itemSku: items.sku,
         itemCategory: items.category,
         itemCost: items.cost,
+        itemUnitPrice: items.unitPrice,
       })
       .from(locationPMPartTemplates)
       .leftJoin(items, eq(locationPMPartTemplates.productId, items.id))

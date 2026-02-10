@@ -56,6 +56,7 @@ import TimeAlertSettingsPage from "@/pages/TimeAlertSettingsPage";
 import TimeBillingRulesPage from "@/pages/TimeBillingRulesPage";
 import RegionalSettingsPage from "@/pages/RegionalSettingsPage";
 import BusinessHoursSettingsPage from "@/pages/BusinessHoursSettingsPage";
+import TagsSettingsPage from "@/pages/TagsSettingsPage";
 import { TimezoneSetupBanner } from "@/components/TimezoneSetupBanner";
 import { TimezoneSetupDialog } from "@/components/TimezoneSetupDialog";
 import Login from "@/pages/Login";
@@ -81,6 +82,7 @@ import {
 import { Button } from "@/components/ui/button";
 import SuppliersListPage from "@/pages/SuppliersListPage";
 import SupplierDetailPage from "@/pages/SupplierDetailPage";
+import Locations from "@/pages/Locations";
 
 function Router() {
   return (
@@ -197,6 +199,11 @@ function Router() {
       <Route path="/settings">
         <ProtectedRoute requireAdmin>
           <SettingsPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/settings/tags">
+        <ProtectedRoute requireAdmin>
+          <TagsSettingsPage />
         </ProtectedRoute>
       </Route>
       <Route path="/settings/products">
@@ -338,6 +345,11 @@ function Router() {
       <Route path="/clients/:id/locations/:locationId">
         <ProtectedRoute requireAdmin>
           <LocationDetailPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/all-locations">
+        <ProtectedRoute requireAdmin>
+          <Locations />
         </ProtectedRoute>
       </Route>
       <Route path="/locations/:locationId">

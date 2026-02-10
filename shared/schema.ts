@@ -294,6 +294,39 @@ export type InsertCustomerCompany = z.infer<typeof insertCustomerCompanySchema>;
 export type UpdateCustomerCompany = z.infer<typeof updateCustomerCompanySchema>;
 export type CustomerCompany = typeof customerCompanies.$inferSelect;
 
+// Client Tags - tenant-scoped labels for categorizing customer companies
+export const clientTags = pgTable("client_tags", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  color: text("color").notNull().default("#6b7280"), // Tailwind gray-500 default
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("client_tags_company_name_idx").on(table.companyId, table.name),
+]);
+
+export const insertClientTagSchema = createInsertSchema(clientTags).omit({
+  id: true,
+  companyId: true,
+  createdAt: true,
+});
+
+export type ClientTag = typeof clientTags.$inferSelect;
+export type InsertClientTag = z.infer<typeof insertClientTagSchema>;
+
+// Client Tag Assignments - many-to-many link between tags and customer companies
+export const clientTagAssignments = pgTable("client_tag_assignments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  tagId: varchar("tag_id").notNull().references(() => clientTags.id, { onDelete: "cascade" }),
+  customerCompanyId: varchar("customer_company_id").notNull().references(() => customerCompanies.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("client_tag_assignments_unique_idx").on(table.tagId, table.customerCompanyId),
+]);
+
+export type ClientTagAssignment = typeof clientTagAssignments.$inferSelect;
+
 // Client Locations - Child entities that map to QBO Sub-Customers
 // These represent specific sites/locations (e.g. "Toronto Warehouse")
 export const clientLocations = pgTable("client_locations", {
@@ -353,6 +386,19 @@ export type Client = typeof clientLocations.$inferSelect;
 export type ClientLocation = typeof clientLocations.$inferSelect;
 export type InsertClient = z.infer<typeof insertClientLocationSchema>;
 export type InsertClientLocation = z.infer<typeof insertClientLocationSchema>;
+
+// Location Tag Assignments — Phase 1B: many-to-many link between tags and locations
+export const locationTagAssignments = pgTable("location_tag_assignments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  tagId: varchar("tag_id").notNull().references(() => clientTags.id, { onDelete: "cascade" }),
+  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("location_tag_assignments_unique_idx").on(table.companyId, table.locationId, table.tagId),
+]);
+
+export type LocationTagAssignment = typeof locationTagAssignments.$inferSelect;
 
 // Client Contacts - multiple contacts per customer company or per location
 // location_id = NULL → company-level contact; set → location-specific contact
@@ -3844,6 +3890,10 @@ export type TimeBillingRules = typeof timeBillingRules.$inferSelect;
 export const recurrenceKindEnum = ["weekly", "monthly"] as const;
 export type RecurrenceKind = typeof recurrenceKindEnum[number];
 
+// PM generation mode: 'phase' preserves existing behavior; 'period_start' and 'day_of_month' for PM scheduling
+export const generationModeEnum = ["phase", "period_start", "day_of_month"] as const;
+export type GenerationMode = typeof generationModeEnum[number];
+
 // Phase 2 Step 6: All generated jobs start as status='open'.
 // Template only controls the openSubStatus default (null for normal backlog, "on_hold" for held jobs).
 // templateStatusDefaultEnum removed - use openSubStatusEnum for openSubStatusDefault.
@@ -3877,6 +3927,13 @@ export const recurringJobTemplates = pgTable("recurring_job_templates", {
   interval: integer("interval").notNull().default(1), // every N weeks/months
   daysOfWeek: integer("days_of_week").array(), // 0=Sun..6=Sat, for weekly
   dayOfMonth: integer("day_of_month"), // 1..31, for monthly (null = use startDate day)
+  // PM scheduling extensions
+  monthsOfYear: integer("months_of_year").array(), // 1..12; null = no month restriction
+  generationMode: text("generation_mode").notNull().default("phase"), // phase | period_start | day_of_month
+  generationDayOfMonth: integer("generation_day_of_month"), // 1..31, required when generationMode = 'day_of_month'
+  autoSchedule: boolean("auto_schedule").notNull().default(false), // false = unscheduled (PM default)
+  scheduledTimeLocal: text("scheduled_time_local"), // "HH:MM" 24h, required when autoSchedule = true
+  includeLocationPmParts: boolean("include_location_pm_parts").notNull().default(false), // copy location PM parts into job_parts on generation
   // Timestamps
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
@@ -3900,6 +3957,13 @@ export const insertRecurringJobTemplateSchema = createInsertSchema(recurringJobT
   dayOfMonth: z.number().int().min(1).max(31).nullable().optional(),
   startDate: z.string(), // Accept ISO date string
   endDate: z.string().nullable().optional(),
+  // PM scheduling extensions
+  monthsOfYear: z.array(z.number().int().min(1).max(12)).nullable().optional(),
+  generationMode: z.enum(generationModeEnum).default("phase"),
+  generationDayOfMonth: z.number().int().min(1).max(31).nullable().optional(),
+  autoSchedule: z.boolean().default(false),
+  scheduledTimeLocal: z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
+  includeLocationPmParts: z.boolean().default(false),
 });
 
 export const updateRecurringJobTemplateSchema = z.object({
@@ -3922,6 +3986,13 @@ export const updateRecurringJobTemplateSchema = z.object({
   interval: z.number().int().min(1).max(52).optional(),
   daysOfWeek: z.array(z.number().int().min(0).max(6)).nullable().optional(),
   dayOfMonth: z.number().int().min(1).max(31).nullable().optional(),
+  // PM scheduling extensions
+  monthsOfYear: z.array(z.number().int().min(1).max(12)).nullable().optional(),
+  generationMode: z.enum(generationModeEnum).optional(),
+  generationDayOfMonth: z.number().int().min(1).max(31).nullable().optional(),
+  autoSchedule: z.boolean().optional(),
+  scheduledTimeLocal: z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
+  includeLocationPmParts: z.boolean().optional(),
 });
 
 export type InsertRecurringJobTemplate = z.infer<typeof insertRecurringJobTemplateSchema>;

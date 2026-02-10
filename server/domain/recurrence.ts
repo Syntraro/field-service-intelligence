@@ -2,13 +2,18 @@
  * Recurring Job Generation Domain Logic
  *
  * Handles:
- * - Computing occurrence dates from templates
- * - Generating job instances into the backlog
- * - Idempotent generation (no duplicate jobs)
+ * - Computing occurrence dates from templates (phase, period_start, day_of_month modes)
+ * - Month-of-year restriction for PM contracts
+ * - Generating job instances into the backlog (idempotent via unique constraint)
+ * - Auto-scheduling when template.autoSchedule is true (scheduledStart/End from HH:MM + duration)
+ * - PM parts copy: snapshots location PM part templates into job_parts on generation
  * - Concurrency-safe: atomic claim prevents duplicate jobs under race
  *
+ * SCHEDULING:
+ * - Default (autoSchedule=false): generated jobs are unscheduled (scheduledStart = NULL)
+ * - PM auto-schedule (autoSchedule=true): scheduledStart = instanceDate + scheduledTimeLocal
+ *
  * CONSTRAINTS:
- * - Generated jobs are ALWAYS unscheduled (scheduledStart = NULL)
  * - Generated jobs have backlog-compatible status: open, on_hold
  * - Phase 2 Step 4: "assigned" is derived, not a status. Legacy values normalized to "open".
  * - Does NOT modify existing scheduling logic, versioning, or audit
@@ -28,6 +33,7 @@ import {
   type HoldReason,
 } from "@shared/schema";
 import { jobRepository } from "../storage/jobs";
+import { copyLocationPMPartsToJob } from "../services/pmJobParts";
 
 // Default timezone fallback
 const DEFAULT_TIMEZONE = "America/Toronto";
@@ -218,6 +224,62 @@ function computeMonthlyOccurrences(
 }
 
 /**
+ * Compute PM-mode occurrence dates (period_start or day_of_month).
+ *
+ * Iterates month-by-month from template start through window end,
+ * generating one occurrence per qualifying month.
+ */
+function computePmOccurrences(
+  template: RecurringJobTemplate,
+  window: OccurrenceWindow,
+): Date[] {
+  const occurrences: Date[] = [];
+  const templateStart = parseLocalDate(template.startDate);
+  const templateEnd = template.endDate ? parseLocalDate(template.endDate) : null;
+  const monthsSet = template.monthsOfYear ? new Set(template.monthsOfYear) : null;
+
+  // Determine target day per occurrence
+  const isPeriodStart = template.generationMode === "period_start";
+  const targetDay = isPeriodStart ? 1 : (template.generationDayOfMonth ?? 1);
+
+  // Start scanning from template start month
+  let cursor = new Date(templateStart.getFullYear(), templateStart.getMonth(), 1);
+
+  while (cursor <= window.endDate) {
+    const month1Based = cursor.getMonth() + 1; // 1..12
+
+    // Month restriction filter
+    if (!monthsSet || monthsSet.has(month1Based)) {
+      const day = clampDayOfMonth(cursor.getFullYear(), cursor.getMonth(), targetDay);
+      const occDate = new Date(cursor.getFullYear(), cursor.getMonth(), day);
+
+      if (
+        occDate >= templateStart &&
+        occDate >= window.startDate &&
+        occDate <= window.endDate &&
+        (!templateEnd || occDate <= templateEnd)
+      ) {
+        occurrences.push(occDate);
+      }
+    }
+
+    // Advance one month
+    cursor = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+  }
+
+  return occurrences;
+}
+
+/**
+ * Apply month-of-year filter to an existing occurrence list.
+ * Removes any occurrence whose month (1..12) is not in the allowed set.
+ */
+function filterByMonthsOfYear(occurrences: Date[], monthsOfYear: number[]): Date[] {
+  const allowed = new Set(monthsOfYear);
+  return occurrences.filter((d) => allowed.has(d.getMonth() + 1));
+}
+
+/**
  * Compute all occurrence dates for a template within a window
  *
  * @param template - The recurring job template
@@ -237,6 +299,13 @@ export function computeOccurrenceDates(
 
   let occurrences: Date[];
 
+  // PM generation modes use dedicated occurrence logic
+  if (template.generationMode === "period_start" || template.generationMode === "day_of_month") {
+    occurrences = computePmOccurrences(template, window);
+    return occurrences.sort((a, b) => a.getTime() - b.getTime());
+  }
+
+  // Default 'phase' mode: existing recurrence logic unchanged
   switch (template.recurrenceKind) {
     case "weekly":
       occurrences = computeWeeklyOccurrences(template, window);
@@ -246,6 +315,11 @@ export function computeOccurrenceDates(
       break;
     default:
       occurrences = [];
+  }
+
+  // Apply month-of-year filter even in phase mode (allows restricting e.g. weekly to certain months)
+  if (template.monthsOfYear && template.monthsOfYear.length > 0) {
+    occurrences = filterByMonthsOfYear(occurrences, template.monthsOfYear);
   }
 
   // Sort chronologically
@@ -459,7 +533,21 @@ async function generateForTemplate(
       continue;
     }
 
-    // Step 3: Create the job with recurrence linkage
+    // Step 3: Compute scheduling fields based on template PM settings
+    let scheduledStart: Date | null = null;
+    let scheduledEnd: Date | null = null;
+
+    if (template.autoSchedule && template.scheduledTimeLocal) {
+      // Parse HH:MM and combine with occurrence date
+      const [hh, mm] = template.scheduledTimeLocal.split(":").map(Number);
+      scheduledStart = new Date(occurrenceDate);
+      scheduledStart.setHours(hh, mm, 0, 0);
+      // Set end using defaultDurationMinutes or fallback to 60 min
+      const durationMin = template.defaultDurationMinutes ?? 60;
+      scheduledEnd = new Date(scheduledStart.getTime() + durationMin * 60 * 1000);
+    }
+
+    // Step 4: Create the job with recurrence linkage
     try {
       const newJob = await jobRepository.createJob(template.companyId, {
         // Link to location
@@ -475,16 +563,26 @@ async function generateForTemplate(
         status: "open" as JobStatus,
         openSubStatus: template.openSubStatusDefault ?? null,
         holdReason: (template.openSubStatusDefault === "on_hold" ? template.holdReason : null) as HoldReason | null,
-        // IMPORTANT: No scheduling - these are backlog jobs
-        scheduledStart: null,
-        scheduledEnd: null,
+        // Scheduling: null (unscheduled) unless autoSchedule is true
+        scheduledStart: scheduledStart ? scheduledStart.toISOString() : null,
+        scheduledEnd: scheduledEnd ? scheduledEnd.toISOString() : null,
         isAllDay: false,
         // Recurrence linkage (v1.1)
         recurrenceTemplateId: template.id,
         recurrenceInstanceDate: instanceDateStr,
       });
 
-      // Step 4: Update instance with actual job ID and set status to "generated"
+      // Step 5: Copy location PM parts into job_parts if enabled
+      if (template.includeLocationPmParts && template.locationId) {
+        try {
+          await copyLocationPMPartsToJob(template.companyId, template.locationId, newJob.id);
+        } catch (partsCopyErr) {
+          // Log but don't fail the entire job creation — parts can be added manually
+          console.error(`[recurrence] Failed to copy PM parts for job ${newJob.id}:`, partsCopyErr);
+        }
+      }
+
+      // Step 6: Update instance with actual job ID and set status to "generated"
       // Clear claimedAt since we're done
       await db
         .update(recurringJobInstances)

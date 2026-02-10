@@ -54,6 +54,7 @@ import recurringJobsRouter from "./recurringJobs";
 import taxRouter from "./tax";
 import searchRouter from "./search";
 import pmPartsRouter from "./pm-parts";
+import { tagCrudRouter, customerCompanyTagRouter, locationTagRouter } from "./tags";
 
 /**
  * Register all API routes in a single place.
@@ -200,11 +201,19 @@ export function registerRoutes(app: Express): Server {
   // PM parts: location-level part templates for preventive maintenance
   app.use("/api/locations", pmPartsRouter);
 
+  // Client tags: CRUD + bulk assignments
+  app.use("/api/tags", tagCrudRouter);
+
   // ✅ NEW ROUTES (company rollups + notes API)
   // Company/Client (parent) endpoints: /api/customer-companies/:id/overview, /locations, etc.
   app.use("/api/customer-companies", customerCompaniesRouter);
   // Customer-company-scoped notes: /api/customer-companies/:id/notes
   app.use("/api/customer-companies", customerCompanyNotesRouter);
+  // Customer-company tag assignments: /api/customer-companies/:id/tags
+  app.use("/api/customer-companies", customerCompanyTagRouter);
+
+  // Location tag assignments: /api/locations/:locationId/tags
+  app.use("/api/locations", locationTagRouter);
 
   // Notes endpoints — new canonical routes + legacy back-compat
   app.use("/api/locations", locationNotesRouter);

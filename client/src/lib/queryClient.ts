@@ -231,8 +231,14 @@ export async function apiRequest<T = any>(
     );
   }
 
-  // Return parsed JSON with diagnostics logging
+  // Return parsed JSON with diagnostics logging (handle 204 No Content gracefully)
   const durationMs = Date.now() - startTime;
+  if (response.status === 204 || response.headers.get('content-length') === '0') {
+    if (isDiagnosticsEnabled() && isCalendarMutation && method !== 'GET') {
+      logMutationResponse(method, url, response.status, null, durationMs);
+    }
+    return undefined as T;
+  }
   const data = await response.json();
   if (isDiagnosticsEnabled() && isCalendarMutation && method !== 'GET') {
     logMutationResponse(method, url, response.status, data, durationMs);

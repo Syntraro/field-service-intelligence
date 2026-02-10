@@ -124,6 +124,13 @@ export class RecurringJobsRepository extends BaseRepository {
       interval?: number;
       daysOfWeek?: number[] | null;
       dayOfMonth?: number | null;
+      // PM scheduling extensions
+      monthsOfYear?: number[] | null;
+      generationMode?: string;
+      generationDayOfMonth?: number | null;
+      autoSchedule?: boolean;
+      scheduledTimeLocal?: string | null;
+      includeLocationPmParts?: boolean;
     }
   ): Promise<RecurringJobTemplate> {
     this.assertCompanyId(companyId);
@@ -152,6 +159,13 @@ export class RecurringJobsRepository extends BaseRepository {
         interval: data.interval ?? 1,
         daysOfWeek: data.daysOfWeek ?? null,
         dayOfMonth: data.dayOfMonth ?? null,
+        // PM scheduling extensions
+        monthsOfYear: data.monthsOfYear ?? null,
+        generationMode: data.generationMode ?? "phase",
+        generationDayOfMonth: data.generationDayOfMonth ?? null,
+        autoSchedule: data.autoSchedule ?? false,
+        scheduledTimeLocal: data.scheduledTimeLocal ?? null,
+        includeLocationPmParts: data.includeLocationPmParts ?? false,
       })
       .returning();
 

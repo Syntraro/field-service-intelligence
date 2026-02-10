@@ -51,10 +51,11 @@ import {
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import EditClientDialog from "@/components/EditClientDialog";
 import NotesPanel, { type NotesPanelRef } from "@/components/NotesPanel";
+import EditTagsModal from "@/components/EditTagsModal";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { format } from "date-fns";
-import type { Client, CustomerCompany, Job, Invoice, ClientContact } from "@shared/schema";
+import type { Client, CustomerCompany, Job, Invoice, ClientContact, ClientTag } from "@shared/schema";
 import { isJobOverdue, isJobScheduled } from "@shared/schema";
 
 type OverviewTab = "activeWork" | "jobs" | "invoices";
@@ -206,6 +207,14 @@ export default function ClientDetailPage() {
 
   const parentCompany = overview?.company;
   const companyId = parentCompany?.id;
+
+  // Phase 1 Client Tags: fetch tags for this customer company
+  const [editTagsOpen, setEditTagsOpen] = useState(false);
+  const { data: companyTags = [] } = useQuery<ClientTag[]>({
+    queryKey: ["/api/customer-companies", companyId, "tags"],
+    queryFn: () => apiRequest(`/api/customer-companies/${companyId}/tags`),
+    enabled: Boolean(companyId),
+  });
 
   // Phase 4: Fetch contacts for the customer company (company-level + all locations)
   const { data: contactsData } = useQuery<{ companyContacts: ClientContact[]; locationContacts: ClientContact[] }>({
@@ -690,6 +699,26 @@ export default function ClientDetailPage() {
               Bill Parent: <span className="font-medium">{billParent ? "Yes" : "No"}</span>
             </span>
           </p>
+          {/* Tag pills */}
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+            {companyTags.map((tag) => (
+              <span
+                key={tag.id}
+                className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium text-white"
+                style={{ backgroundColor: tag.color }}
+              >
+                {tag.name}
+              </span>
+            ))}
+            <button
+              type="button"
+              onClick={() => setEditTagsOpen(true)}
+              className="inline-flex items-center rounded-full border border-dashed border-muted-foreground/40 px-2 py-0.5 text-xs text-muted-foreground hover:border-muted-foreground hover:text-foreground transition-colors"
+            >
+              <Plus className="h-3 w-3 mr-0.5" />
+              {companyTags.length === 0 ? "Add Tag" : "Edit"}
+            </button>
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -1194,6 +1223,17 @@ export default function ClientDetailPage() {
             }
             setEditDialogOpen(false);
           }}
+        />
+      )}
+
+      {/* Edit Tags Modal */}
+      {companyId && (
+        <EditTagsModal
+          open={editTagsOpen}
+          onOpenChange={setEditTagsOpen}
+          entityType="customerCompany"
+          entityId={companyId}
+          currentTags={companyTags}
         />
       )}
 

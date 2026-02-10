@@ -36,7 +36,8 @@ import {
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import type { User as UserType, TimeEntryType } from "@shared/schema";
+import type { TimeEntryType } from "@shared/schema";
+import type { TeamMember } from "@/hooks/useTechnicians";
 
 const TIME_ENTRY_TYPES: { value: TimeEntryType; label: string }[] = [
   { value: "travel_to_job", label: "Travel to Job" },
@@ -162,7 +163,7 @@ export function AddTimeEntryModal({
   };
 
   // Get technician name for display
-  const getTechName = (tech: UserType) => {
+  const getTechName = (tech: TeamMember) => {
     if (tech.firstName && tech.lastName) {
       return `${tech.firstName} ${tech.lastName}`;
     }

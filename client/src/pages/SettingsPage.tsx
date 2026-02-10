@@ -1,6 +1,6 @@
 import { Link } from "wouter";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Package, ChevronRight, Users, FormInput, Receipt, Plug, FileText, ListChecks, FileCheck, CreditCard, Clock, Wallet, BarChart3, Globe } from "lucide-react";
+import { Package, ChevronRight, Users, FormInput, Receipt, Plug, FileText, ListChecks, FileCheck, CreditCard, Clock, Wallet, BarChart3, Globe, Tag } from "lucide-react";
 
 interface SettingsCardProps {
   href: string;
@@ -39,6 +39,14 @@ function SettingsCard({ href, icon: Icon, title, description, detail, testId }: 
 
 export default function SettingsPage() {
   const settingsItems: SettingsCardProps[] = [
+    {
+      href: "/settings/tags",
+      icon: Tag,
+      title: "Tags",
+      description: "Manage client & location tags",
+      detail: "Create, edit, and delete tags used to categorize clients and locations for filtering.",
+      testId: "card-tags-settings",
+    },
     {
       href: "/settings/products",
       icon: Package,

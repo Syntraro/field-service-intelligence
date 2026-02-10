@@ -38,6 +38,7 @@ import { calendarRepository } from "./calendar";
 import { taxRepository } from "./tax";
 import { businessHoursRepository } from "./businessHours";
 import { pmPartRepository } from "./pmParts";
+import { clientTagRepository } from "./clientTags";
 import type { PaginationOptions, PaginatedResult } from "./clients";
 
 /**
@@ -507,6 +508,7 @@ export {
   calendarRepository,
   taxRepository,
   pmPartRepository,
+  clientTagRepository,
 };
 
 // Subscription billing (separate export due to its size and specialized nature)
