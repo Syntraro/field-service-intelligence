@@ -366,6 +366,7 @@ export async function getTenantDetail(companyId: string): Promise<TenantDetail |
     .where(and(
       eq(jobs.companyId, companyId),
       isNull(jobs.deletedAt),
+      eq(jobs.isActive, true),
       eq(jobs.status, "open")
     ));
 
@@ -375,9 +376,10 @@ export async function getTenantDetail(companyId: string): Promise<TenantDetail |
     .from(jobs)
     .where(and(
       eq(jobs.companyId, companyId),
+      isNull(jobs.deletedAt),
+      eq(jobs.isActive, true),
       eq(jobs.status, "open"),
-      eq(jobs.openSubStatus, "on_hold"),
-      isNull(jobs.deletedAt)
+      eq(jobs.openSubStatus, "on_hold")
     ));
 
   // Phase 2 Step 5: Overdue = effectiveEnd < NOW
@@ -388,6 +390,7 @@ export async function getTenantDetail(companyId: string): Promise<TenantDetail |
     .where(and(
       eq(jobs.companyId, companyId),
       isNull(jobs.deletedAt),
+      eq(jobs.isActive, true),
       sql`${jobs.scheduledStart} IS NOT NULL`,
       sql`CASE
         WHEN ${jobs.scheduledEnd} IS NOT NULL THEN ${jobs.scheduledEnd}
@@ -404,6 +407,7 @@ export async function getTenantDetail(companyId: string): Promise<TenantDetail |
     .where(and(
       eq(jobs.companyId, companyId),
       isNull(jobs.deletedAt),
+      eq(jobs.isActive, true),
       sql`${jobs.scheduledStart} IS NOT NULL`,
       gte(jobs.scheduledStart, weekRange.start),
       lte(jobs.scheduledStart, weekRange.end)
