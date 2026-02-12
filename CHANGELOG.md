@@ -6,6 +6,336 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### Phase 1 — Correctness Hotfixes from Canonical Query Audit (2026-02-12)
+
+- **Fix 1: Tech mobile visit sync**: `techField.ts` en_route/start/complete handlers now call `syncJobScheduleFromVisits` after updating visit status, matching the pattern used by every other visit mutation. Previously, tech mobile status changes never propagated to the parent `jobs` table, causing stale data on calendar, dashboard, and job detail pages.
+  - File changed: `server/routes/techField.ts`
+
+- **Fix 2: Admin overdue column name**: Raw SQL in `admin.ts` batch job metrics referenced `estimated_duration_minutes` (a `job_visits` column) instead of `duration_minutes` (the correct `jobs` column). This caused overdue counts to always return 0.
+  - File changed: `server/storage/admin.ts`
+
+- **Fix 3: TechnicianDashboard month index**: `getMonth()` returns 0-indexed months but the calendar API expects 1-indexed. Added `+ 1` so the dashboard fetches the correct month's data instead of the previous month.
+  - File changed: `client/src/pages/TechnicianDashboard.tsx`
+
+- **Fix 4: Calendar getJobById soft-delete**: Added `deletedAt IS NULL` and `isActive = true` filters to `getJobById()` in `calendar.ts`. Previously could return soft-deleted or deactivated jobs for scheduling operations.
+  - File changed: `server/storage/calendar.ts`
+
+- **Fix 5: Admin getTenantDetail isActive**: Added `eq(jobs.isActive, true)` to all 4 job count queries (open, on-hold, overdue, scheduled-this-week) in `getTenantDetail`. Previously included deactivated jobs in admin panel counts.
+  - File changed: `server/storage/admin.ts`
+
+- **Fix 6: Timesheet job validation**: Added `deletedAt IS NULL` and `isActive = true` checks to the job validation query in `POST /api/admin/timesheets/entries`. Previously allowed creating time entries against soft-deleted jobs.
+  - File changed: `server/routes/adminTimesheets.ts`
+
+#### Tech Schedule 404 — Route diagnosis + canonical visit queries (2026-02-12)
+
+- **404 root cause**: `GET /api/tech/visits/today` was returning 404 because the server process was running stale code that predated the `techField.ts` file and `index.ts` import. Route mounting is correct: `app.use("/api/tech", techFieldRouter)` in `server/routes/index.ts` line 232 + `router.get("/visits/today", ...)` in `server/routes/techField.ts`. After server restart, the endpoint returns 401 (auth required) for unauthenticated requests, confirming the route is registered. No path mismatch exists.
+  - Files verified: `server/routes/techField.ts`, `server/routes/index.ts`, `client/src/pages/TechSchedulePage.tsx`
+
+### Added
+
+#### Canonical Visit Query Module (2026-02-12)
+
+- **`server/storage/visits.ts`** — Single source of truth for visit reads, preventing query divergence between tech and calendar consumers. Provides:
+  - `getVisitsForUserInRange(tenantId, userId, start, end)` — visits assigned to user in date range, enriched with job + location
+  - `getUnscheduledVisitsForUser(tenantId, userId)` — visits with `scheduledStart IS NULL` assigned to user
+  - `getVisitByIdForUser(tenantId, userId, visitId)` — single visit with assignment validation
+  - `getVisitsForTenantInRange(tenantId, start, end, options?)` — superset for calendar/admin (optional userId filter, optional status exclusion)
+  - Shared `ENRICHED_VISIT_SELECT` and `toEnrichedVisit()` mapper eliminate duplicated join/map logic
+  - All functions enforce tenant isolation via `companyId`
+  - Files added: `server/storage/visits.ts`
+
+- **Tech routes refactored**: `/api/tech/visits/today` now calls `getVisitsForUserInRange` from the canonical module instead of `jobVisitsRepository` directly
+  - Files changed: `server/routes/techField.ts`
+
+- **Calendar cross-reference**: Added comment in `server/storage/calendar.ts` pointing to the canonical module for simpler visit list queries. Calendar retains its own CTE-based query (`getScheduledJobsInRange`) because it needs per-job ranking via `ROW_NUMBER()` and technician profile enrichment — different semantics from flat visit lists.
+  - Files changed: `server/storage/calendar.ts`
+
+#### Tech Field App — Auth + query fixes (2026-02-11)
+
+- **Schedulable user auth**: Replaced `requireRole(TECH_ROLES)` with `requireSchedulable` middleware on all `/api/tech/*` endpoints. Access is now granted based on `users.is_schedulable` flag ("Show on calendar") rather than role. Any role (owner, admin, tech, etc.) with `isSchedulable=true` can use the tech app.
+  - Files changed: `server/routes/techField.ts`
+
+- **Timezone-aware "today" query**: `dayBounds()` now uses the tenant's timezone from `company_settings.timezone` (default: America/Toronto) instead of UTC midnight. Prevents visits scheduled near day boundaries from being missed or double-counted.
+  - Files changed: `server/routes/techField.ts`
+
+- **Location join fix**: Changed `j.client_id` (deprecated) to `j.location_id` in the raw SQL location enrichment query for `/api/tech/visits/today`. Fixes missing location data on visit cards.
+  - Files changed: `server/routes/techField.ts`
+
+- **Dev debug log**: Added structured JSON log on `/api/tech/visits/today` (dev only) printing userId, email, role, isSchedulable, timezone, day bounds, and visit count for troubleshooting.
+
+### Added
+
+#### Admin Timesheets — Jobber-style timesheet management (2026-02-11)
+
+- **Single source of truth**: Admin reads and edits the same `time_entries` records created by the technician field app. No parallel time systems.
+
+- **Tech field time entry fix**: Rewired `/api/tech/visits/:visitId/en-route`, `/start`, and `/complete` to use the canonical `recordJobStatus()` state machine instead of ad-hoc `startTimeEntry`/`stopTimeEntry` calls:
+  - **EN ROUTE** now creates a `travel_to_job` time entry (was missing entirely)
+  - **START VISIT** now stops the travel entry and starts an `on_site` entry via `recordJobStatus("arrived")`
+  - **COMPLETE VISIT** now stops the on_site entry via `recordJobStatus("completed")`
+  - All three record `technician_job_status_events` for audit trail
+  - Files changed: `server/routes/techField.ts`
+
+- **Job reassignment in time entries**: Extended `managerUpdateTimeEntrySchema` to accept optional `jobId` field. `updateTimeEntryManager()` now validates the target job belongs to the same tenant before allowing reassignment.
+  - Files changed: `shared/schema.ts`, `server/storage/timeTracking.ts`
+
+- **Delete time entry**: Added `deleteTimeEntry()` to `timeTrackingRepository` — hard delete with tenant isolation, invoice lock check, and structured audit logging.
+  - Files changed: `server/storage/timeTracking.ts`
+
+- **Admin Timesheets API** (`server/routes/adminTimesheets.ts`, mounted at `/api/admin/timesheets`):
+  - `GET /users` — list active staff for user switcher dropdown
+  - `GET /day?userId=...&date=YYYY-MM-DD` — time entries for a user on a date, enriched with job info, with travel/work/total breakdowns
+  - `GET /week?userId=...&weekStart=YYYY-MM-DD` — aggregated grid: rows = jobs, columns = Mon–Sun, cells = duration totals, plus day and week grand totals
+  - `GET /visits-for-reassign?userId=...&date=...` — visits within a 7-day window for the reassignment dropdown (same-tenant, assigned to user)
+  - `PATCH /entries/:id` — edit time entry (start/end times, type, jobId reassignment, notes) with overlap validation and audit logging
+  - `DELETE /entries/:id` — delete time entry with tenant + role validation
+  - All endpoints require `MANAGER_ROLES` access (owner, admin, manager, dispatcher)
+  - Files added: `server/routes/adminTimesheets.ts`
+  - Files changed: `server/routes/index.ts` (registered adminTimesheetsRouter)
+
+- **Admin Timesheets UI** (`client/src/pages/AdminTimesheetsPage.tsx`, at `/settings/timesheets`):
+  - **Header**: User switcher dropdown + Day/Week toggle tabs
+  - **Date navigation**: Left/right arrows, date picker input, Today button, date/week range label
+  - **Day view**: Summary bar (total/work/travel) + card per entry showing type badge, job reference, start→end times, duration, notes, edit/delete buttons
+  - **Week view**: Grid table with Mon–Sun columns, rows per job, HH:MM cells, day totals footer, week grand total
+  - **Edit modal**: Start/end datetime inputs with auto-calculated duration, type selector, job reassignment dropdown (populated from visits-for-reassign API), notes field
+  - **Delete confirmation**: AlertDialog with destructive action styling
+  - Files added: `client/src/pages/AdminTimesheetsPage.tsx`
+  - Files changed: `client/src/App.tsx` (added route), `client/src/components/SettingsLayout.tsx` (added nav item)
+
+- **No migrations required** — all changes use existing `time_entries` and `technician_job_status_events` tables
+
+##### Manual Verification Checklist
+1. **As a tech**: Tap En Route → confirm `travel_to_job` time entry created in DB
+2. **As a tech**: Tap Start Visit → confirm travel entry stopped + `on_site` entry started
+3. **As a tech**: Tap Complete Visit → confirm on_site entry stopped with correct duration
+4. **As an admin**: Navigate to Settings > Timesheets
+5. **Admin Day view**: Select tech user + today → confirm tech's time entries appear
+6. **Admin Day view**: Verify travel/work/total summary is accurate
+7. **Admin Edit**: Click edit on an entry → change start/end times → save → verify totals update
+8. **Admin Reassign**: In edit modal, reassign entry to different job → save → verify entry moves
+9. **Admin Delete**: Click delete → confirm dialog → verify entry removed and totals update
+10. **Admin Week view**: Switch to Week tab → verify grid shows per-job per-day totals
+11. **Tenant isolation**: Confirm no cross-tenant data visible in user list or reassignment dropdown
+12. **Desktop admin app unaffected** — existing payroll/time pages still work
+
+#### Admin Timesheets — Tighten Pass (2026-02-11)
+
+- **Overlap guard + auto-stop audit**: Rewrote `recordJobStatus()` state machine to auto-stop any running time entry before starting a new one. Prevents phantom/overlapping entries.
+  - New `autoStopOpen()` helper stops the running entry, logs a structured `time_entry_auto_stopped` JSON event, and records an `auto_stop` event in `technician_job_status_events`
+  - EN_ROUTE: auto-stops any open entry before creating `travel_to_job`
+  - ARRIVED: auto-stops any open entry before creating `on_site` (replaces manual stop logic)
+  - COMPLETED: only stops the running entry if it belongs to the same job (no phantom stops)
+  - Files changed: `server/storage/timeTracking.ts`
+
+- **Admin Day view grouped by Job**: Rewrote `GET /day` endpoint and UI to group entries under Job headers (Jobber-style):
+  - API returns `groups` array (grouped by jobId) with per-group `travelMinutes`, `workMinutes`, `totalMinutes` subtotals
+  - Joins with `clientLocations` for location name/address/city
+  - UI shows summary bar (Work/Travel colored labels) + Card per job with header → Travel/Work badge rows → subtotals
+  - No internal enum names exposed: all `travel_*` types → "Travel", `on_site` → "Work"
+  - Files changed: `server/routes/adminTimesheets.ts`, `client/src/pages/AdminTimesheetsPage.tsx`
+
+- **Reassign dropdown tightened**: Rewrote `GET /visits-for-reassign` endpoint:
+  - Bounded ±7 day date window (was unbounded)
+  - `.limit(50)` hard cap (was unlimited)
+  - Optional `search` query param — ILIKE on job summary, job number, and client location name
+  - No user-assignment filter (admin can reassign to any visit in tenant)
+  - Joins with `clientLocations` for `locationName`
+  - Tags results with `sameDay` boolean for UI partitioning ("Same Day" / "Recent" groups)
+  - Files changed: `server/routes/adminTimesheets.ts`, `client/src/pages/AdminTimesheetsPage.tsx`
+
+- **Admin "Add Time" manual entry**: New `POST /entries` endpoint + Add Time modal:
+  - Schema: `technicianId`, `jobId` (required), `type` (`travel_to_job`|`on_site`), `startAt`, `endAt`, `notes`
+  - Validates end > start, job + tech belong to tenant, no overlaps
+  - Creates via `createFinishedTimeEntry` with structured audit logging
+  - UI modal: Job dropdown with search (same-day/recent grouping), Type selector (Travel/Work), Start/End datetime inputs with auto-duration, Notes field, pre-fills 8:00–9:00 AM
+  - "Add Time" button in date nav bar (day view only)
+  - Files changed: `server/routes/adminTimesheets.ts`, `client/src/pages/AdminTimesheetsPage.tsx`
+
+- **No migrations required** — all changes use existing tables
+
+##### Manual Verification Checklist (Tighten Pass)
+1. **Overlap guard**: As tech, start En Route on Job A → then En Route on Job B → confirm Job A's travel entry was auto-stopped with correct duration
+2. **Auto-stop audit**: Check `technician_job_status_events` for `auto_stop` status entry with notes describing what was stopped
+3. **No phantom stops**: Complete a visit → start En Route on new job → confirm completed job's entry was NOT re-stopped
+4. **Grouped Day view**: Admin Day view shows entries grouped under Job cards with job#, summary, location header
+5. **Summary bar**: Colored Work/Travel labels with correct totals match sum of all entries
+6. **Per-group subtotals**: Each job card shows its own Travel + Work subtotals
+7. **No internal enum names**: UI shows "Travel" and "Work" only — no `travel_to_job` or `on_site` visible
+8. **Reassign search**: In edit modal, type in search box → results filter by job name/number/client
+9. **Reassign grouping**: Results split into "Same Day" and "Recent" sections
+10. **Add Time modal**: Click "Add Time" → fill job (required), type, start/end → confirm entry created
+11. **Add Time overlap**: Try creating an entry that overlaps an existing one → confirm 409 error
+12. **Add Time validation**: Try end before start → confirm validation error
+
+#### Technician Field App — mobile-first web UI (2026-02-11)
+
+- **New backend API** (`server/routes/techField.ts`, mounted at `/api/tech`):
+  - `GET /api/tech/visits/today` — today's assigned visits with job + location enrichment
+  - `GET /api/tech/visits/:visitId` — visit detail with job, location, and job notes
+  - `POST /api/tech/visits/:visitId/en-route` — mark visit as en_route
+  - `POST /api/tech/visits/:visitId/start` — start visit (on-site) + auto-start billable time entry
+  - `POST /api/tech/visits/:visitId/complete` — complete visit with outcome modal (completed/needs_parts/needs_followup), required notes for non-completed outcomes, auto-stop time entry
+  - `POST /api/tech/visits/:visitId/notes` — add a note to the visit's job
+  - `GET /api/tech/time/summary` — today + this week time summary
+  - All endpoints enforce `TECH_ROLES` access, tenant isolation, and assignment validation (tech can only see/act on visits assigned to them)
+
+- **New frontend pages** (mobile-first, no sidebar/header):
+  - `TechLoginPage` (`/tech/login`) — dedicated login redirecting to `/tech` on success
+  - `TechHomePage` (`/tech`) — today's visits with greeting, date, visit count, scrollable card list
+  - `TechSchedulePage` (`/tech/schedule`) — visits grouped by date
+  - `TechVisitDetailPage` (`/tech/visit/:visitId`) — full visit detail with state-driven action buttons:
+    - scheduled/dispatched → **EN ROUTE** button
+    - en_route → **START VISIT** button (green)
+    - in_progress/on_site → **COMPLETE VISIT** button → outcome modal
+  - Complete Visit outcome modal: 3 outcome options (Completed, Needs Parts, Needs Follow-up), required note for non-completed outcomes
+  - `TechTimesheetPage` (`/tech/timesheet`) — clock status, today's hours, weekly totals
+  - `TechMorePage` (`/tech/more`) — profile info + sign out
+
+- **TechnicianLayout** (`client/src/components/TechnicianLayout.tsx`):
+  - Fixed bottom navigation with 4 tabs: Home, Schedule, Timesheet, More
+  - Active state highlighting, mobile-optimized with safe-area padding
+
+- **Routing**: `/tech/*` routes bypass the main sidebar/header layout entirely. AppContent detects `/tech*` paths and renders TechRouter directly.
+
+- **Files added**: `server/routes/techField.ts`, `client/src/components/TechnicianLayout.tsx`, `client/src/pages/TechLoginPage.tsx`, `client/src/pages/TechHomePage.tsx`, `client/src/pages/TechSchedulePage.tsx`, `client/src/pages/TechVisitDetailPage.tsx`, `client/src/pages/TechTimesheetPage.tsx`, `client/src/pages/TechMorePage.tsx`
+- **Files changed**: `server/routes/index.ts` (registered techFieldRouter), `client/src/App.tsx` (added TechRouter + /tech route handling)
+- **No migrations required** — uses existing tables (job_visits, jobs, job_notes, time_entries)
+
+##### Manual Verification Checklist
+1. Navigate to `/tech/login` → see dedicated login screen (no sidebar)
+2. Log in as technician → redirects to `/tech` (Home)
+3. Home shows today's assigned visits with greeting + date
+4. Tap a visit → visit detail page with job info, location, notes
+5. Visit status=scheduled → "En Route" button visible
+6. Tap "En Route" → status updates to en_route, button changes to "Start Visit"
+7. Tap "Start Visit" → status updates to in_progress, button changes to "Complete Visit"
+8. Tap "Complete Visit" → outcome modal appears
+9. Select "Needs Parts" without note → validation error
+10. Select "Needs Parts" with note → visit completes, note auto-created
+11. Bottom nav tabs switch between Home/Schedule/Timesheet/More
+12. More page → Sign Out logs out and redirects to `/tech/login`
+13. Desktop admin app unaffected — `/` still shows sidebar + dashboard
+
+### Changed
+
+#### Settings page: Jobber-style two-column layout (2026-02-11)
+
+- **New layout**: Replaced the card-grid Settings landing page with a two-column layout:
+  - **Left column** (280px, desktop only): Scrollable vertical nav with section headers (General, Billing & Products, Jobs & Templates, Team & Time, Integrations) and compact nav items with icon + label + active highlight.
+  - **Right column** (flex fill): Active settings page content.
+- **Responsive**: On mobile (`<lg`), left nav collapses to a dropdown selector at the top of the page with expand/collapse toggle.
+- **Deep linking**: Refreshing `/settings/tags` (or any sub-route) correctly renders the layout with the right page and active nav highlight.
+- **Active state**: Current nav item highlighted with `bg-primary/10` + left border indicator, matching the app sidebar pattern.
+- **Routing**: All `/settings/*` routes now render inside `SettingsLayout` via a shared `SettingsRouter` component. Uses two catch-all Route entries in the outer Switch (no wouter `nest` to preserve absolute `<Link>` paths in sub-pages).
+- **Sub-pages unchanged**: Existing settings pages render as-is inside the right panel. Back buttons still work (navigate to `/settings` landing).
+- **Files added**: `client/src/components/SettingsLayout.tsx`
+- **Files changed**: `client/src/App.tsx` (routing restructured), `client/src/pages/SettingsPage.tsx` (card grid replaced with centered welcome message)
+- **No breaking route changes** — all existing `/settings/*` URLs continue to work.
+
+#### Explicit visit scheduling and close-job guardrail (2026-02-11)
+
+- **Removed "Schedule Anyway"**: Deleted the "Schedule Anyway" button from the existing-visit conflict dialog in `JobDetailPage.tsx`. The dialog now offers two explicit choices:
+  - **Reschedule Existing Visit** — opens the existing visit for rescheduling (UPDATE, never INSERT)
+  - **Add Follow-up Visit** — creates a new visit with next visit_number
+  - **Cancel** — dismiss dialog
+- **Close-job uncompleted-visits guardrail**: `POST /api/jobs/:id/close` now checks for uncompleted visits (`is_active=true AND status NOT IN ('completed','cancelled')`) before closing. If found, returns 409 with `UNCOMPLETED_VISITS` code. Frontend shows a modal with:
+  - **Go to Visits** — scrolls to visits section
+  - **Mark Visits Completed & Close** — retries with `autoCompleteOpenVisits=true`, bulk-completing all open visits
+  - **Cancel**
+- **Bulk-complete visits**: Added `bulkCompleteVisits()` to `jobVisitsRepository` — sets status='completed', checkedOutAt, and actualDurationMinutes (consistent with existing transition logic at `jobVisits.ts:494`).
+- **Follow-up visit endpoint**: Added `POST /api/jobs/:jobId/visits/follow-up` — explicit intent endpoint that always creates a new visit with auto-computed visit_number.
+- **Removed dead code**: Removed `resolveConflictMutation` from `JobDetailPage.tsx` (no longer used after Schedule Anyway removal).
+- **Files changed**: `server/routes/jobs.ts`, `server/routes/jobVisits.routes.ts`, `server/storage/jobVisits.ts`, `server/services/jobVisits.service.ts`, `client/src/pages/JobDetailPage.tsx`, `client/src/components/JobHeaderCard.tsx`
+- **No migrations required** — all changes are application-level logic, no schema changes.
+
+##### Manual Verification Checklist
+1. Create job → visit #1 auto-created
+2. Drag/drop visit on calendar → updates same visit id (no new visit created)
+3. Click "Schedule follow-up" with existing active visit → modal offers "Reschedule Existing Visit" and "Add Follow-up Visit"
+4. Choose "Add Follow-up Visit" → creates visit #2
+5. Close job with open visits → "Uncompleted Visits" modal appears
+6. Click "Mark Visits Completed & Close" → visits auto-completed, job closes successfully
+7. Close job with no open visits → closes normally (no modal)
+
+#### Hardened PM + job scheduling invariants (2026-02-11)
+
+- **New DB constraint**: `jobs_allday_requires_start_check` — `scheduled_start IS NOT NULL OR is_all_day IS DISTINCT FROM TRUE`. Prevents marking a job as all-day without a scheduled date. Existing constraint `jobs_scheduled_end_requires_start_check` already enforces `scheduledEnd` requires `scheduledStart`.
+- **Migration**: `migrations/2026_02_11_scheduling_invariants.sql` — adds the CHECK constraint. Pre-check confirmed 0 violating rows.
+- **Schema**: Added `allDayRequiresStartCheck` to Drizzle schema in `shared/schema.ts`.
+- **PM generation hardened**: Both `generateForTemplate()` and `generatePmForCurrentMonth()` in `server/domain/recurrence.ts` now explicitly tie `scheduledEnd` to `scheduledStart` (null when start is null) with invariant comments.
+- **Canonical predicates verified**: `isJobScheduled()` returns true ONLY when `scheduledStart != null`. LocationDetailPage and ClientDetailPage use `getJobStatusDisplay(job)` with no local "scheduled" logic.
+- **Tests**: `tests/job-scheduling-invariants.test.ts` — 9 tests: DB rejects isAllDay=true+null start, DB rejects scheduledEnd without start, valid unscheduled accepted, valid scheduled accepted, isJobScheduled predicate (null→false, set→true), getJobStatusDisplay returns "Open" not "Scheduled" for unscheduled, "Scheduled" for scheduled, valid all-day accepted.
+- **Files changed**: `shared/schema.ts`, `server/domain/recurrence.ts`
+- **Files added**: `migrations/2026_02_11_scheduling_invariants.sql`, `tests/job-scheduling-invariants.test.ts`
+
+#### Active Work now includes all open jobs, including unscheduled PM jobs (2026-02-11)
+
+- **Canonical rule**: Active Work = `activeJobFilter() AND status = 'open'`. No `scheduledStart` requirement.
+- **New helper**: `activeWorkJobFilter()` in `server/storage/jobFilters.ts` — Drizzle ORM composable filter combining `deletedAt IS NULL`, `isActive = true`, and `status = 'open'`. Also added raw SQL equivalents `JOB_ACTIVE_WORK_SQL` and `JOB_ACTIVE_WORK_SQL_J`.
+- **LocationDetailPage.tsx**: Removed `isJobScheduled(j) || openSubStatus === "in_progress"` restriction from Active Work filter. All open jobs for the location now appear, including unscheduled PM jobs and backlog.
+- **ClientDetailPage.tsx**: Same fix — Active Work now shows all open jobs for the customer company.
+- **Tests**: `tests/active-work-filter.test.ts` — 10 integration tests validating: unscheduled open jobs included, scheduled open jobs included, in_progress/on_hold included, completed/invoiced/archived excluded, soft-deleted excluded, deactivated excluded.
+- **Files changed**: `server/storage/jobFilters.ts`, `client/src/pages/LocationDetailPage.tsx`, `client/src/pages/ClientDetailPage.tsx`
+- **Files added**: `tests/active-work-filter.test.ts`
+
+#### Removed Preview button from PM schedule card (2026-02-11)
+
+- **What**: Removed the "Preview" button and its associated dialog from `PMScheduleCard.tsx`. The preview showed upcoming PM occurrences but was not useful for the PM workflow since generation is now month-keyed.
+- **Cleanup**: Removed `previewOpen` state, preview query (`/instances?from=...&to=...`), preview dialog markup, and unused imports (`Eye` icon, `format` from date-fns).
+- **Files changed**: `client/src/components/PMScheduleCard.tsx`
+
+#### Consolidated legacy job status display to canonical jobUtils.ts (2026-02-11)
+
+- **What**: Removed 3 duplicate/legacy `getJobStatusDisplay()` / `getStatusBadge()` functions that used 12+ legacy status strings (draft, scheduled, dispatched, en_route, on_site, requires_invoicing, cancelled, closed, etc.). All job status display now uses the single canonical implementation in `client/src/components/job/jobUtils.ts`.
+- **JobHeaderCard.tsx**: Removed dead-code `getJobStatusDisplay()` (12 legacy statuses) and `getPriorityDisplay()` functions. Fixed `canReopen` check to use canonical statuses (`["completed", "archived"]` instead of including legacy `"requires_invoicing"`).
+- **JobMetaCard.tsx**: Replaced local `getJobStatusDisplay(status, scheduledStart, openSubStatus)` with import of canonical `getJobStatusDisplay(job)` from jobUtils.ts. Uses full job object for overdue detection via `isJobOverdue()`.
+- **ClientJobsTab.tsx**: Replaced legacy `getStatusBadge()` switch (in_progress, on_hold, cancelled, draft, scheduled) with canonical `getJobStatusDisplay(job)` from jobUtils.ts. Removed unused icon imports (CheckCircle, Clock, AlertCircle).
+- **Dashboard.tsx**: Fixed legacy navigation links — "Requires Invoicing" now links to `/jobs?lifecycle=completed` instead of `/jobs?status=requires_invoicing`; "On Hold" now links to `/jobs?lifecycle=open&subStatus=on_hold` instead of `/jobs?status=on_hold`.
+- **LocationDetailPage.tsx**: Fixed legacy overdue check (`status !== "cancelled"`) to use canonical model (`status === "open"`).
+- **Files changed**: `client/src/components/JobHeaderCard.tsx`, `client/src/components/JobMetaCard.tsx`, `client/src/components/ClientJobsTab.tsx`, `client/src/pages/Dashboard.tsx`, `client/src/pages/LocationDetailPage.tsx`
+
+#### Fixed PM jobs showing "Scheduled" when unscheduled (2026-02-11)
+
+- **Bug**: PM jobs (status=open, scheduledStart=NULL) were showing "Scheduled" badge on LocationDetailPage and ClientDetailPage Active Work sections. The Jobs list correctly showed "Open" via canonical `getJobStatusDisplay()`.
+- **Root cause**: Both pages had hardcoded badge logic: `job.openSubStatus === "in_progress" ? "In Progress" : "Scheduled"` — always showing "Scheduled" for any non-in_progress open job, regardless of whether `scheduledStart` was set.
+- **LocationDetailPage.tsx**: Removed local `getStatusBadge()` function (legacy switch with "scheduled"/"in_progress"/"completed"/"overdue" cases). Replaced both Active Work badges and Jobs tab badges with canonical `getJobStatusDisplay(job)` from `jobUtils.ts`. Removed duplicate overdue detection (canonical helper handles it).
+- **ClientDetailPage.tsx**: Replaced Active Work hardcoded badge and Jobs tab inline status logic (which used `isJobScheduled()` locally) with canonical `getJobStatusDisplay(job)`. Removed unused `isJobScheduled` import from `@shared/schema`.
+- **Data sanity**: Verified both PM generation paths (`generateForTemplate` and `generatePmForCurrentMonth` in `server/domain/recurrence.ts`) correctly set `isAllDay: false` and `scheduledStart: null` for unscheduled PM jobs.
+- **Files changed**: `client/src/pages/LocationDetailPage.tsx`, `client/src/pages/ClientDetailPage.tsx`
+
+### Fixed
+
+#### PM generate endpoint: pmResult missing from scope=current_month response (2026-02-11)
+
+- **Root cause**: The `scope=current_month` route handler was syntactically correct but the running server had stale code (pre-change). Additionally, `scope` parsing used `req.query.scope ? String(...) : undefined` which could silently fail on edge-case falsy values.
+- **Fix 1 — Robust scope parsing**: Changed to `String(req.query.scope ?? "")` so scope is always a non-undefined string. Eliminates any ambiguity in the `=== "current_month"` comparison.
+- **Fix 2 — Explicit `return res.json`**: Added `return` before `res.json()` in the `scope === "current_month"` branch to make the early return pattern explicit and prevent any possibility of fallthrough.
+- **Fix 3 — DEV diagnostic log**: Added `console.log("[recurringJobs.generate]", { templateId, scope, rawScope })` before the branch so scope routing is visible in dev server output.
+- **Fix 4 — Legacy path includes `pmResult: null`**: The non-scope response now includes `pmResult: null` so the frontend never receives `undefined` for that field.
+- **Fix 5 — Response shape test**: New test `"pmResult always includes reason, monthKey, createdCount keys"` validates the `PmCurrentMonthResult` shape for all three reason codes (CREATED, EXISTS, MONTH_EXCLUDED).
+- **Files changed**: `server/routes/recurringJobs.ts`, `tests/pm-current-month.test.ts`
+
+#### PM "Generate This Month" now works mid-month for period_start schedules (2026-02-11)
+
+- **Root causes**: Two bugs prevented PM job generation mid-month:
+  1. `computePmOccurrences()` filtered `occDate >= templateStart` at day-level. When a template was created mid-month (e.g., Feb 11) with `period_start` mode, the occurrence date (Feb 1) was before `templateStart` (Feb 11) and got filtered out.
+  2. `generateForTemplate()` skipped instances with `status !== "pending"`. When a previously generated job was soft-deleted, the instance still had `status="generated"` pointing to a dead job, so regeneration was blocked.
+- **Fix**: New `generatePmForCurrentMonth(companyId, templateId)` function in `server/domain/recurrence.ts` bypasses window-based logic entirely. Generates by monthKey (1st of month in company timezone) regardless of what day it is. Includes:
+  - Month exclusion check (returns `MONTH_EXCLUDED` if current month not in `monthsOfYear`)
+  - Active-job idempotency (queries `jobs` table directly for active jobs with matching `recurrence_template_id` + `recurrence_instance_date`)
+  - Soft-delete recovery: if instance exists but linked job is deleted/inactive, resets instance to `pending` and creates new job (returns `RECOVERED_INSTANCE`)
+  - Structured diagnostics: returns `PmCurrentMonthResult` with `createdCount`, `reason` enum (`CREATED | EXISTS | MONTH_EXCLUDED | RECOVERED_INSTANCE`), optional `existingJob` reference, and `monthKey`
+- **Route update**: `POST /api/recurring-templates/:id/generate` now supports `?scope=current_month` query param. When set, uses `generatePmForCurrentMonth` instead of window-based `generateForSingleTemplate`. Response includes both `GenerationResult` shape (backward compat) and `pmResult` with diagnostics.
+- **Frontend updates**:
+  - `PMScheduleCard.tsx`: "Generate This Month" button now calls `?scope=current_month`. Handles `pmResult.reason` for better toasts (`EXISTS` shows job number, `MONTH_EXCLUDED` shows specific message). Falls back to cross-template discovery for edge cases.
+  - `PMSetupModal.tsx`: Auto-generation on schedule create/edit now uses `?scope=current_month` instead of window-based generation. Removed unused `computeCurrentMonthWindowDays()`.
+- **Tests**: `tests/pm-current-month.test.ts` — 8 integration tests: mid-month creation with correct instance_date, soft-delete recovery, fresh template after old deleted, idempotency (EXISTS + job reference), month exclusion, mid-month startDate template, inactive template error, non-PM template error.
+- **Files changed**: `server/domain/recurrence.ts`, `server/routes/recurringJobs.ts`, `client/src/components/PMScheduleCard.tsx`, `client/src/components/PMSetupModal.tsx`
+- **Files added**: `tests/pm-current-month.test.ts`
+
 ### Added
 
 #### PM Schedule UI on Location Detail Page (2026-02-10)
@@ -19,6 +349,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Files changed**: `client/src/pages/LocationDetailPage.tsx`
 
 ### Fixed
+
+#### Deleted jobs now fully invisible across all server endpoints and UI (2026-02-10)
+
+- **Root cause**: Soft-deleted jobs (`deleted_at IS NOT NULL`, `is_active = false`) were excluded by `isNull(jobs.deletedAt)` in most queries, but `is_active = true` was never checked. Jobs deactivated via `is_active = false` without `deleted_at` would still appear in lists, search, dashboard, calendar backlog, and maintenance views.
+- **Phase 1 — Canonical filter**: Created `server/storage/jobFilters.ts` with `activeJobFilter()` (Drizzle ORM), `JOB_ACTIVE_SQL_J` (raw SQL alias `j`), and `JOB_ACTIVE_SQL` (raw SQL full table name). All check both `deleted_at IS NULL AND is_active = true`.
+- **Phase 2 — Patched 18+ query sites**:
+  - `server/storage/jobs.ts`: Added `eq(jobs.isActive, true)` to `getJobs`, `getJob`, `updateJob` (no-version), `updateJobStatus`, `transitionJobStatus`, `getJobsOnHoldOrNeedsReview` (6 sites)
+  - `server/storage/search.ts`: Added `AND ${JOB_ACTIVE_SQL_J}` to all 3 raw SQL job queries (exact number, range prefix, summary text)
+  - `server/storage/recurringJobs.ts`: `getInstancesWithJobs` left join now filters out deleted/deactivated jobs so PM card never shows ghost job links
+  - `server/storage/calendar.ts`: Added `AND j.is_active = true` to raw SQL + `eq(jobs.isActive, true)` to backlog query (2 sites)
+  - `server/storage/admin.ts`: Added `AND is_active = true` to tenant health metrics raw SQL (1 site)
+  - `server/storage/dashboard.ts`: Added `eq(jobs.isActive, true)` to `getJobCounts`, overdue jobs, and attention jobs (3 sites)
+  - `server/storage/maintenance.ts`: Added `eq(jobs.isActive, true)` to recently completed and status summary (2 sites)
+  - `server/storage/jobNotes.ts`: Added deletion guards to both job existence checks (2 sites)
+- **Phase 3 — Job detail 404**: `getJob()` now returns null for deleted/deactivated jobs; all route handlers already throw 404 on null.
+- **Phase 4 — Integration test**: `tests/deleted-job-exclusion.test.ts` — 11 tests: soft-delete verification, getJobs exclusion, getJob null, getJob active, dashboard counts, maintenance statuses, search exclusion, search active, updateJob null for deleted, getJobsAndInvoicesForLocations exclusion, getCustomerCompanyOverview exclusion.
+- **Phase 5 — UI cache hardening**: Job deletion mutations now invalidate `/api/dashboard` and `/api/maintenance` in addition to `/api/jobs` and `/api/calendar`. Added `"dashboard"` to `QUERY_GROUPS` in `useMutationWithToast.ts`. All 3 delete mutation sites now also invalidate `/api/clients` (prefix-matches `["/api/clients", id, "overview"]`) so Client Detail page updates instantly after job deletion without manual refresh.
+- **Phase 6 — Client Detail page fix**: `customerCompanies.ts` `getJobsAndInvoicesForLocations()` and `getCustomerCompanyOverview()` now apply `activeJobFilter()` to exclude deleted/inactive jobs. Previously these queries only filtered by `companyId` and `locationId`, allowing soft-deleted jobs to appear on the Client Detail page. Added DEV guardrail to log any leaked deleted jobs.
+- **Files created**: `server/storage/jobFilters.ts`, `tests/deleted-job-exclusion.test.ts`
+- **Files changed**: `server/storage/jobs.ts`, `server/storage/search.ts`, `server/storage/recurringJobs.ts`, `server/storage/calendar.ts`, `server/storage/admin.ts`, `server/storage/dashboard.ts`, `server/storage/maintenance.ts`, `server/storage/jobNotes.ts`, `server/storage/customerCompanies.ts`, `client/src/pages/JobDetailPage.tsx`, `client/src/pages/Calendar.tsx`, `client/src/components/JobDetailDialog.tsx`, `client/src/hooks/useMutationWithToast.ts`, `tests/deleted-job-exclusion.test.ts`
+
+#### PM Card: Ghost job link after deleted job + second Generate click (2026-02-10)
+
+- **Root cause**: `discoveredJob` state and React Query instances cache survived across generate clicks. After a job was deleted externally, clicking Generate again returned 0 jobs, cross-template discovery found nothing, but the stale `discoveredJob` from the prior run (or stale `currentMonthInstances` cache) still rendered a link to the now-deleted job.
+- **Fix 1 — Clear stale state eagerly**: `setDiscoveredJob(null)` is now called at the start of `generateMutation.mutationFn` (before the API call), so the UI never renders a ghost link during the request.
+- **Fix 2 — Always overwrite discoveredJob**: In the 0-jobs-created branch, `setDiscoveredJob(existingJob)` is now called unconditionally — even when `existingJob` is null. Previously the null case only showed a toast but left the old `discoveredJob` value intact.
+- **Fix 3 — Clear on delete**: Both `archiveMutation.onSuccess` and `hardDeleteMutation.onSuccess` now call `setDiscoveredJob(null)` and invalidate the instances cache.
+- **Fix 4 — Await cache invalidation**: `generateMutation.onSuccess` now `await`s `queryClient.invalidateQueries` for templates, jobs, and instances before reading cached data for cross-template discovery.
+- **Fix 5 — PMSetupModal instances cache**: After auto-generation on save, `PMSetupModal` now also invalidates the instances `current-month` cache so the PMScheduleCard "This month" row shows fresh data.
+- **Files changed**: `client/src/components/PMScheduleCard.tsx`, `client/src/components/PMSetupModal.tsx`
 
 #### Test: Fix stale "assigned" status assertion in recurring-jobs test (2026-02-10)
 
