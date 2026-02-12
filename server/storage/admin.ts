@@ -174,18 +174,18 @@ export async function getTenantHealthList(): Promise<TenantHealthSummary[]> {
       COUNT(*) FILTER (WHERE status = 'open') as open_count,
       COUNT(*) FILTER (WHERE status = 'open' AND open_sub_status = 'on_hold') as on_hold_count,
       -- Phase 2 Step 5: Overdue = effectiveEnd < NOW
-      -- effectiveEnd priority: scheduled_end > scheduled_start + estimated_duration_minutes > scheduled_start
+      -- effectiveEnd priority: scheduled_end > scheduled_start + duration_minutes > scheduled_start
       COUNT(*) FILTER (
         WHERE scheduled_start IS NOT NULL
         AND status = 'open'
         AND CASE
           WHEN scheduled_end IS NOT NULL THEN scheduled_end
-          WHEN estimated_duration_minutes IS NOT NULL THEN scheduled_start + (estimated_duration_minutes || ' minutes')::interval
+          WHEN duration_minutes IS NOT NULL THEN scheduled_start + (duration_minutes || ' minutes')::interval
           ELSE scheduled_start
         END < NOW()
       ) as overdue_count
     FROM jobs
-    WHERE deleted_at IS NULL
+    WHERE deleted_at IS NULL AND is_active = true
     GROUP BY company_id
   `);
   const jobMetricsMap = new Map(jobMetricsRows.rows.map(r => [r.company_id, r]));
@@ -381,7 +381,7 @@ export async function getTenantDetail(companyId: string): Promise<TenantDetail |
     ));
 
   // Phase 2 Step 5: Overdue = effectiveEnd < NOW
-  // effectiveEnd priority: scheduled_end > scheduled_start + estimated_duration_minutes > scheduled_start
+  // effectiveEnd priority: scheduled_end > scheduled_start + duration_minutes > scheduled_start
   const overdueJobs = await db
     .select({ count: count() })
     .from(jobs)
