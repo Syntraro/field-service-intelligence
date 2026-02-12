@@ -11,6 +11,10 @@ import {
 } from "@shared/schema";
 import { BaseRepository } from "./base";
 import { jobVisitsRepository, isVisitActioned } from "./jobVisits";
+// NOTE: For simple visit list queries (e.g. tech schedule, admin views), use the
+// canonical functions in server/storage/visits.ts (getVisitsForTenantInRange, etc.).
+// Calendar uses its own CTE-based query below because it needs per-job ranking
+// (current eligible visit via ROW_NUMBER) and technician profile enrichment.
 import {
   // Domain helpers - SINGLE SOURCE OF TRUTH for scheduling logic
   BACKLOG_STATUS,
@@ -247,7 +251,7 @@ export class CalendarRepository extends BaseRepository {
       WHERE rv.rn = 1
         AND rv.scheduled_start >= ${startDate}
         AND rv.scheduled_start < ${endDate}
-        AND j.deleted_at IS NULL
+        AND j.deleted_at IS NULL AND j.is_active = true
       ORDER BY rv.scheduled_start
     `);
 
@@ -482,8 +486,9 @@ export class CalendarRepository extends BaseRepository {
       .where(
         and(
           eq(jobs.companyId, companyId),
-          // Exclude soft-deleted jobs
+          // Exclude soft-deleted/deactivated jobs
           isNull(jobs.deletedAt),
+          eq(jobs.isActive, true),
           // CANONICAL BACKLOG: scheduledStart IS NULL means unscheduled
           // All-day events have scheduledStart set (to midnight), so they won't appear here
           isNull(jobs.scheduledStart),
@@ -607,13 +612,19 @@ export class CalendarRepository extends BaseRepository {
   }
 
   /**
-   * Get a single job by ID (for update/delete validation)
+   * Get a single job by ID (for update/delete validation).
+   * Excludes soft-deleted and deactivated jobs.
    */
   async getJobById(companyId: string, jobId: string) {
     const rows = await db
       .select()
       .from(jobs)
-      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+      .where(and(
+        eq(jobs.id, jobId),
+        eq(jobs.companyId, companyId),
+        isNull(jobs.deletedAt),
+        eq(jobs.isActive, true),
+      ))
       .limit(1);
 
     return rows[0] ?? null;
