@@ -87,9 +87,10 @@ export default function TechnicianDashboard() {
   
   const currentDate = new Date();
   const currentYear = currentDate.getFullYear();
-  const currentMonth = currentDate.getMonth();
-  const nextMonth = currentMonth === 11 ? 0 : currentMonth + 1;
-  const nextMonthYear = currentMonth === 11 ? currentYear + 1 : currentYear;
+  // getMonth() is 0-indexed; calendar API expects 1-indexed months
+  const currentMonth = currentDate.getMonth() + 1;
+  const nextMonth = currentMonth === 12 ? 1 : currentMonth + 1;
+  const nextMonthYear = currentMonth === 12 ? currentYear + 1 : currentYear;
 
   const { data: currentMonthData } = useQuery({
     queryKey: ["/api/calendar", currentYear, currentMonth],
