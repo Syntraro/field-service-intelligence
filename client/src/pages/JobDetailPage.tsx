@@ -1201,7 +1201,8 @@ export default function JobDetailPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      // (covered by family-wide ["jobs"] invalidation)
+      // Phase 5.1: clearing hold changes dashboard on_hold / needs-attention counts
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       toast({
         title: "Hold Cleared",
         description: "Job is no longer on hold.",
