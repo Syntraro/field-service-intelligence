@@ -257,6 +257,8 @@ export async function createJobWithSchedule(
 
 function invalidateScheduleQueries(jobId?: string) {
   queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
+  queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
   queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
   if (jobId) {
     queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
