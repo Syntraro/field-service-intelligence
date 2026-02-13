@@ -43,6 +43,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Final `INVALIDATION_MAP.md` update with all canonical family keys.
   - Files: `server/statusRules.ts`, `client/src/components/job/jobUtils.ts`, `client/src/pages/JobDetailPage.tsx`, `client/src/components/TaskDialog.tsx`, `client/src/components/calendar/ScheduleJobModal.tsx`, `docs/INVALIDATION_MAP.md`
 
+#### Phase 6 — Equipment Table Migration + Code Consolidation (2026-02-13)
+
+- Both tables were empty (0 records) — no data migration needed.
+- Redirected legacy `createEquipment()` and `getClientEquipment()` to use canonical `locationEquipment` table, then removed them.
+- Updated bulk import route (`POST /api/clients/import`) to insert into `locationEquipment`.
+- Removed orphaned `EquipmentDialog.tsx` and `EquipmentList.tsx` (649 lines, referenced non-existent `/api/equipment` endpoints).
+- Fixed endpoint path mismatch in `LocationEquipmentSection.tsx` and `JobEquipmentSection.tsx`: `/api/locations/` → `/api/clients/`.
+- Fixed HTTP method mismatch: `PUT` → `PATCH` for equipment updates in `LocationEquipmentSection.tsx`.
+- Renamed legacy `equipment` table to `equipment_legacy_deprecated`.
+  - Files: `server/storage/clients.ts`, `server/storage/index.ts`, `server/routes/clients.ts`, `client/src/components/LocationEquipmentSection.tsx`, `client/src/components/JobEquipmentSection.tsx`, `docs/EQUIPMENT_MIGRATION.md`, `docs/INVALIDATION_MAP.md`
+  - Deleted: `client/src/components/EquipmentDialog.tsx`, `client/src/components/EquipmentList.tsx`
+  - Migration: `migrations/2026_02_13_rename_legacy_equipment.sql`
+
 ### Fixed
 - AR aging report now includes invoices with no/deleted location (was silently excluding via INNER JOIN).
 - Invoice `createInvoiceMutation` now properly invalidates stats and dashboard via family key (was missing in JobDetailPage).

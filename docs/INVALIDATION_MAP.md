@@ -253,30 +253,32 @@ Uses `useMutationWithToast` (group-based invalidation):
 | `deleteMutation` | `DELETE /api/jobs/:id/notes/:noteId` | Dynamic query key (passed as prop) |
 | `deleteAttachmentMutation` | `DELETE /api/...` | Dynamic query key (passed as prop) |
 
-### Equipment Components
+### Equipment Components (Phase 6 — consolidated)
 
-**`components/EquipmentList.tsx`:**
-
-| Mutation | API | Invalidates |
-|---|---|---|
-| `createMutation` | `POST /api/equipment` | Via dynamic queryKey prop |
-| `updateMutation` | `PATCH /api/equipment/:id` | Via dynamic queryKey prop |
-| `deleteMutation` | `DELETE /api/equipment/:id` | Via `useMutationWithToast` groups |
+All equipment CRUD uses canonical `locationEquipment` table.
+Legacy `EquipmentList.tsx` and `EquipmentDialog.tsx` removed (orphaned).
 
 **`components/LocationEquipmentSection.tsx`:**
 
 | Mutation | API | Invalidates |
 |---|---|---|
-| `createMutation` | `POST /api/clients/:id/equipment` | clients/:id/equipment |
-| `updateMutation` | `PATCH /api/clients/:id/equipment/:eqId` | clients/:id/equipment |
-| `deleteMutation` | `DELETE /api/clients/:id/equipment/:eqId` | clients/:id/equipment |
+| `createMutation` | `POST /api/clients/:id/equipment` | `/api/clients/:id/equipment` |
+| `updateMutation` | `PATCH /api/clients/:id/equipment/:eqId` | `/api/clients/:id/equipment` |
+| `deleteMutation` | `DELETE /api/clients/:id/equipment/:eqId` | `/api/clients/:id/equipment` |
 
 **`components/JobEquipmentSection.tsx`:**
 
 | Mutation | API | Invalidates |
 |---|---|---|
-| `addMutation` | `POST /api/jobs/:id/equipment` | jobs/:jobId/equipment, jobs/:jobId |
-| `removeMutation` | `DELETE /api/jobs/:id/equipment/:eqId` | jobs/:jobId/equipment, jobs/:jobId |
+| `addMutation` | `POST /api/jobs/:id/equipment` | `/api/jobs/:jobId/equipment`, `/api/jobs/:jobId` |
+| `removeMutation` | `DELETE /api/jobs/:id/equipment/:eqId` | `/api/jobs/:jobId/equipment`, `/api/jobs/:jobId` |
+
+**`pages/LocationDetailPage.tsx`:**
+
+| Mutation | API | Invalidates |
+|---|---|---|
+| `createEquipmentMutation` | `POST /api/clients/:id/equipment` | `/api/clients/:id/equipment` |
+| `deleteEquipmentMutation` | `DELETE /api/clients/:id/equipment/:eqId` | `/api/clients/:id/equipment` |
 
 ### Auth — `lib/auth.tsx`
 

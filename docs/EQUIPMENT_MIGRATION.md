@@ -1,10 +1,21 @@
 # Equipment Table Migration Plan
 
-> Phase 5 Part D — Equipment Table Consolidation
+> Phase 5 Part D / Phase 6 — Equipment Table Consolidation
 >
-> **Status:** Plan only — DO NOT execute migration without explicit approval.
+> **Status:** EXECUTED — Migration complete.
 >
 > **Created:** 2026-02-13
+> **Executed:** 2026-02-13
+>
+> ### Migration Results
+> - Legacy `equipment` table: **0 records** (empty — no data migration needed)
+> - Canonical `location_equipment` table: **0 records** (no duplicates, no orphans)
+> - Legacy table renamed to `equipment_legacy_deprecated`
+> - All application code consolidated to use `locationEquipment` exclusively
+> - Orphaned components removed: `EquipmentDialog.tsx`, `EquipmentList.tsx` (649 lines deleted)
+> - Endpoint path mismatch fixed: `LocationEquipmentSection.tsx` and `JobEquipmentSection.tsx`
+> - HTTP method mismatch fixed: PUT → PATCH for equipment updates
+> - Bulk import route updated to insert into `locationEquipment`
 
 ---
 
