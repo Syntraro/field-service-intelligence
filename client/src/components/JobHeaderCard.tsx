@@ -106,6 +106,8 @@ export function JobHeaderCard({
       // Phase 5 Step A7: canonical family key invalidation
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      // Phase 5.3 G2: dashboard invoice widget stale after creating invoice from job
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       toast({ title: "Invoice Created", description: "Invoice has been created from this job." });
       setLocation(`/invoices/${data.id}`);
     },
