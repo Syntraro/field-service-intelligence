@@ -1,7 +1,8 @@
 import { db } from "../db";
-import { and, eq, desc } from "drizzle-orm";
+import { and, eq, desc, isNull } from "drizzle-orm";
 import { jobNotes, jobs, users } from "@shared/schema";
 import { BaseRepository, clampLimit } from "./base";
+import { resolveTechnicianName } from "../lib/resolveTechnicianName";
 
 /**
  * Job Notes repository - handles all job note database operations.
@@ -20,14 +21,14 @@ export class JobNotesRepository extends BaseRepository {
     const [job] = await db
       .select()
       .from(jobs)
-      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
+      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), isNull(jobs.deletedAt), eq(jobs.isActive, true)));
 
     if (!job) {
       throw this.notFoundError("Job");
     }
 
     // Get notes with user information
-    return await db
+    const rows = await db
       .select({
         id: jobNotes.id,
         jobId: jobNotes.jobId,
@@ -37,6 +38,7 @@ export class JobNotesRepository extends BaseRepository {
         user: {
           id: users.id,
           email: users.email,
+          fullName: users.fullName,
           firstName: users.firstName,
           lastName: users.lastName,
         },
@@ -46,6 +48,12 @@ export class JobNotesRepository extends BaseRepository {
       .where(and(eq(jobNotes.companyId, companyId), eq(jobNotes.jobId, jobId)))
       .orderBy(desc(jobNotes.createdAt))
       .limit(safeLimit);
+
+    // Phase 4 Step B4: add pre-resolved userName from canonical utility
+    return rows.map((row) => ({
+      ...row,
+      userName: row.user ? resolveTechnicianName(row.user) : "Unknown",
+    }));
   }
 
   /**
@@ -65,7 +73,7 @@ export class JobNotesRepository extends BaseRepository {
     const [job] = await db
       .select()
       .from(jobs)
-      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
+      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), isNull(jobs.deletedAt), eq(jobs.isActive, true)));
 
     if (!job) {
       throw this.notFoundError("Job");
@@ -92,6 +100,7 @@ export class JobNotesRepository extends BaseRepository {
         user: {
           id: users.id,
           email: users.email,
+          fullName: users.fullName,
           firstName: users.firstName,
           lastName: users.lastName,
         },
@@ -153,6 +162,7 @@ export class JobNotesRepository extends BaseRepository {
         user: {
           id: users.id,
           email: users.email,
+          fullName: users.fullName,
           firstName: users.firstName,
           lastName: users.lastName,
         },

@@ -15,9 +15,12 @@ interface JobNote {
   noteText: string;
   createdAt: string;
   updatedAt: string | null;
+  // Phase 4 Step B4: pre-resolved name from canonical resolveTechnicianName
+  userName: string;
   user: {
     id: string;
     email: string;
+    fullName: string | null;
     firstName: string | null;
     lastName: string | null;
   };
@@ -64,12 +67,8 @@ export default function JobNotesSection({ jobId, defaultOpen = true }: JobNotesS
     },
   });
 
-  const getUserName = (user: JobNote["user"]) => {
-    if (user.firstName && user.lastName) {
-      return `${user.firstName} ${user.lastName}`;
-    }
-    return user.email;
-  };
+  // Phase 4 Step B4: use pre-resolved userName from server
+  const getUserName = (note: JobNote) => note.userName;
 
   return (
     <>
@@ -126,7 +125,7 @@ export default function JobNotesSection({ jobId, defaultOpen = true }: JobNotesS
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex items-center gap-2 text-xs text-muted-foreground">
                           <User className="h-3 w-3" />
-                          <span className="font-medium">{getUserName(note.user)}</span>
+                          <span className="font-medium">{getUserName(note)}</span>
                           <span>•</span>
                           <span>{format(new Date(note.createdAt), "MMM dd, yyyy 'at' h:mm a")}</span>
                           {note.updatedAt && (
