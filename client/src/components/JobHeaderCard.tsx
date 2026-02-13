@@ -46,14 +46,15 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import type { Invoice } from "@shared/schema";
 import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
+import type { InvoiceFeedItem } from "@/hooks/useInvoicesFeed";
 
 // Phase 4 Step A7: Accept canonical JobHeaderDetail which includes
 // correctly resolved location and parentCompany from the COALESCE join.
+// Phase 6.2: jobInvoice uses canonical InvoiceFeedItem (only .id accessed).
 interface JobHeaderCardProps {
   job: JobHeaderDetail;
-  jobInvoice: Invoice | null;
+  jobInvoice: InvoiceFeedItem | null;
   onEdit: () => void;
   onDelete: () => void;
 }

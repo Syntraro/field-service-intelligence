@@ -3,6 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { useJobVisits } from "@/hooks/useJobVisits";
 import { useUnscheduleJob } from "@/hooks/useCalendarApi";
+import { useInvoiceByJob } from "@/hooks/useInvoicesFeed";
 import { useRoute, useLocation, Link, useSearch } from "wouter";
 import { format } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
@@ -94,7 +95,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import type { Job, Client, CustomerCompany, User as UserType, RecurringJobSeries, Invoice, JobTimeSummary, TimeEntryType } from "@shared/schema";
+import type { Job, Client, CustomerCompany, User as UserType, RecurringJobSeries, JobTimeSummary, TimeEntryType } from "@shared/schema";
 import { useJobHeader } from "@/hooks/useJobsFeed";
 import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
 
@@ -1144,17 +1145,8 @@ export default function JobDetailPage() {
     error: Error | null;
   };
 
-  // Phase 11: Fixed job/invoice cross-linking - use correct endpoint
-  const { data: jobInvoice } = useQuery<Invoice | null>({
-    // Phase 5 Step A7: canonical family key prefix
-    queryKey: ["invoices", "by-job", jobId],
-    queryFn: async () => {
-      const res = await fetch(`/api/invoices/by-job/${jobId}`, { credentials: "include" });
-      if (!res.ok) return null;
-      return res.json();
-    },
-    enabled: !!jobId,
-  });
+  // Phase 6.2 Step A4: canonical hook replaces direct useQuery
+  const { data: jobInvoice } = useInvoiceByJob(jobId);
 
   // Status update mutation - uses POST to match Time Tracking V1 backend
   // FIXED: Include version for optimistic locking (required by server schema)
