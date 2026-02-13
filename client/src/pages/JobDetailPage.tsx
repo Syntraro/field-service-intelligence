@@ -95,6 +95,7 @@ import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Job, Client, CustomerCompany, User as UserType, RecurringJobSeries, Invoice, JobTimeSummary, TimeEntryType } from "@shared/schema";
+import { useJobHeader } from "@/hooks/useJobsFeed";
 import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
 
 // ============================================================================
@@ -1135,18 +1136,12 @@ export default function JobDetailPage() {
     }
   };
 
-  const { data: job, isLoading, error } = useQuery<JobDetailResponse>({
-    queryKey: ["/api/jobs", jobId],
-    queryFn: async () => {
-      const res = await fetch(`/api/jobs/${jobId}`, { credentials: "include" });
-      if (!res.ok) {
-        if (res.status === 404) throw new Error("Job not found");
-        throw new Error("Failed to fetch job");
-      }
-      return res.json();
-    },
-    enabled: !!jobId,
-  });
+  // Phase 4 Step C3: Use canonical useJobHeader with ['jobs', 'detail', jobId] key
+  const { data: job, isLoading, error } = useJobHeader(jobId) as {
+    data: JobDetailResponse | undefined;
+    isLoading: boolean;
+    error: Error | null;
+  };
 
   // Phase 11: Fixed job/invoice cross-linking - use correct endpoint
   const { data: jobInvoice } = useQuery<Invoice | null>({
