@@ -36,6 +36,7 @@ import {
   type TimeByTypeBreakdown,
 } from "@shared/schema";
 import { BaseRepository } from "./base";
+import { resolveTechnicianName } from "../lib/resolveTechnicianName";
 import {
   isEntryLocked,
   checkEntryLock,
@@ -2426,10 +2427,8 @@ export class TimeTrackingRepository extends BaseRepository {
 
     const techNameMap = new Map<string, string>();
     for (const t of techniciansQuery) {
-      const name = t.firstName && t.lastName
-        ? `${t.firstName} ${t.lastName}`
-        : t.firstName || t.lastName || t.email;
-      techNameMap.set(t.id, name);
+      // Phase 4 Step B3: canonical tech name resolution (was missing fullName fallback)
+      techNameMap.set(t.id, resolveTechnicianName(t));
     }
 
     // Initialize per-technician data
