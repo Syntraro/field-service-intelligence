@@ -684,6 +684,9 @@ export function useCalendarDnD(
       // Only invalidate unscheduled list (job moved from there)
       // No full refetch needed - optimistic update + merge is sufficient
       invalidateNarrow(true);
+      // Phase 5.2: job list and dashboard stale after DnD schedule
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       perfMark('invalidation-complete');
 
       endPerfSession(true);
@@ -1200,6 +1203,9 @@ export function useCalendarDnD(
 
       // Only invalidate unscheduled list (job moved there)
       invalidateNarrow(true);
+      // Phase 5.2: job list and dashboard stale after DnD unschedule
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       perfMark('invalidation-complete');
 
       endPerfSession(true);
