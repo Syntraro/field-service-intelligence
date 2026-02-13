@@ -158,8 +158,9 @@ export function JobHeaderCard({
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      // (covered by family-wide ["jobs"] invalidation above)
       queryClient.invalidateQueries({ queryKey: ["visits"] });
+      // Phase 5.1: closing a job removes it from active/on-hold dashboard counts
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       setShowCloseJobDialog(false);
       setUncompletedVisitsGuardrail(null);
 
