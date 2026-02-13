@@ -93,9 +93,9 @@ Single source of truth for invoice list and stats queries. Read-only module; mut
 
 **Exported types:** `InvoiceFeedFilters`, `InvoiceFeedItem`, `InvoiceStatsResult`
 
-**Query key family:** `["invoices"]` (exported as `INVOICES_FEED_FAMILY_KEY` from `client/src/hooks/useInvoicesFeed.ts`)
+**Query key family:** `["invoices"]`
 
-**Client hooks:** `useInvoicesFeed`, `useInvoiceStats` (defined in `client/src/hooks/useInvoicesFeed.ts`, staleTime: 30s). Note: these hooks are created but not yet integrated into all invoice pages — some pages still use direct `useQuery` calls.
+**Client hooks:** Not yet created. Invoice pages currently use direct `useQuery` calls. A canonical `useInvoicesFeed` hook should be created when invoice pages are migrated.
 
 ### Dashboard — `server/storage/dashboard.ts`
 
@@ -202,10 +202,7 @@ Raw SQL constants also exported: `JOB_ACTIVE_SQL_J`, `JOB_ACTIVE_SQL`, `JOB_ACTI
 | `useVisitFeed(params, options?)` | `client/src/hooks/useVisitFeed.ts` | `["visits", from, to, techId, status, ...]` | `["visits"]` | default |
 | `useJobsFeed(params?, options?)` | `client/src/hooks/useJobsFeed.ts` | `["jobs", "feed", status, techId, ...]` | `["jobs"]` | default |
 | `useJobHeader(jobId)` | `client/src/hooks/useJobsFeed.ts` | `["jobs", "detail", jobId]` | `["jobs"]` | default |
-| `useInvoicesFeed(filters?, options?)` | `client/src/hooks/useInvoicesFeed.ts` | `["invoices", "feed", status, ...]` | `["invoices"]` | 30s |
-| `useInvoiceStats(options?)` | `client/src/hooks/useInvoicesFeed.ts` | `["invoices", "stats"]` | `["invoices"]` | 30s |
-
-Family key constants are exported from each hook file (e.g., `VISIT_FEED_FAMILY_KEY`, `JOBS_FEED_FAMILY_KEY`, `INVOICES_FEED_FAMILY_KEY`).
+Family key constants are exported from each hook file (e.g., `VISIT_FEED_FAMILY_KEY`, `JOBS_FEED_FAMILY_KEY`).
 
 ---
 
@@ -312,7 +309,7 @@ Invoice queries use `activeInvoiceFilter()` from `server/storage/invoicesFeed.ts
 | Calendar projection | `server/storage/calendar.ts` |
 | Visit feed hook | `client/src/hooks/useVisitFeed.ts` |
 | Jobs feed hook | `client/src/hooks/useJobsFeed.ts` |
-| Invoices feed hook | `client/src/hooks/useInvoicesFeed.ts` |
+| Invoices feed hook | *(not yet created — invoice pages use direct `useQuery`)* |
 | Mutation invalidation groups | `client/src/hooks/useMutationWithToast.ts` |
 | Invalidation map | `docs/INVALIDATION_MAP.md` |
 | Equipment migration | `docs/EQUIPMENT_MIGRATION.md` |

@@ -43,6 +43,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Final `INVALIDATION_MAP.md` update with all canonical family keys.
   - Files: `server/statusRules.ts`, `client/src/components/job/jobUtils.ts`, `client/src/pages/JobDetailPage.tsx`, `client/src/components/TaskDialog.tsx`, `client/src/components/calendar/ScheduleJobModal.tsx`, `docs/INVALIDATION_MAP.md`
 
+#### Surgical Cleanup — Dead Code Removal (2026-02-13)
+
+- Deleted orphaned `client/src/hooks/useInvoicesFeed.ts` (0 external references; hooks not yet integrated into any pages).
+- Deleted orphaned `client/src/hooks/useTextScale.ts` (0 external references).
+- Deleted orphaned `client/src/hooks/useArrayRows.ts` (0 external references).
+- Deleted orphaned `client/src/hooks/useImageUpload.ts` (0 external references).
+  - Deleted: `useInvoicesFeed.ts`, `useTextScale.ts`, `useArrayRows.ts`, `useImageUpload.ts`
+
 #### Phase 6 — Equipment Table Migration + Code Consolidation (2026-02-13)
 
 - Both tables were empty (0 records) — no data migration needed.
