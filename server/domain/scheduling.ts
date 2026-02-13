@@ -41,19 +41,15 @@
 
 import type { JobStatus, OpenSubStatus } from "@shared/schema";
 import { normalizeJobStatus, isJobScheduled, isJobAssigned, isBacklogEligible } from "@shared/schema";
+import { TERMINAL_STATUSES } from "../statusRules";
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-/**
- * Terminal statuses - jobs in these states cannot be rescheduled
- * without explicit workflow transition first
- */
-export const TERMINAL_STATUSES: readonly JobStatus[] = [
-  "invoiced",
-  "archived",
-] as const;
+// TERMINAL_STATUSES imported from ../statusRules (canonical source)
+// Re-exported for backwards compatibility with existing consumers
+export { TERMINAL_STATUSES };
 
 /**
  * Statuses that appear in the unscheduled sidebar (backlog)

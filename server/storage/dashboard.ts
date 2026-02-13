@@ -26,13 +26,11 @@ import { db } from "../db";
 import { jobs, invoices, clientLocations as clients, customerCompanies } from "@shared/schema";
 import { eq, and, isNull, or, sql, lt, asc } from "drizzle-orm";
 import { BaseRepository } from "./base";
+import { TERMINAL_STATUSES } from "../statusRules";
 
 // Normalized status constants
 // "completed" means work is finished and may need invoicing
 const NEEDS_INVOICING_STATUS = "completed";
-
-// Terminal statuses - workflow is complete
-const TERMINAL_STATUSES = ["invoiced", "archived"];
 
 // Unpaid invoice statuses that count as "outstanding"
 // NOTE: "sent" is LEGACY - new invoices use "awaiting_payment"
