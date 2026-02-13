@@ -261,7 +261,7 @@ export default function RecurringJobsPage() {
     queryKey: [`/api/recurring-templates/${viewingTemplate?.id}/instances`, { from: today, to: sixtyDaysAhead }],
     queryFn: async () => {
       if (!viewingTemplate) return [];
-      const res = await fetch(`/api/recurring-templates/${viewingTemplate.id}/instances?from=${today}&to=${sixtyDaysAhead}`);
+      const res = await fetch(`/api/recurring-templates/${viewingTemplate.id}/instances?from=${today}&to=${sixtyDaysAhead}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch instances");
       return res.json();
     },

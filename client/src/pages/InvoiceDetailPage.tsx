@@ -362,6 +362,8 @@ export default function InvoiceDetailPage() {
     },
     onSuccess: (response) => {
       queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+      // Refresh from job can change line items/totals — invalidate invoices list + dashboard
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
       qboOverride.closeModal();
       setQboOverridePending(false);
       if (response?._qboWarning) {

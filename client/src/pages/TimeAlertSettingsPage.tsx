@@ -92,7 +92,7 @@ export default function TimeAlertSettingsPage() {
   const { data: settings, isLoading } = useQuery<TimeAlertSettings>({
     queryKey: ["/api/time-alerts/settings"],
     queryFn: async () => {
-      const response = await fetch("/api/time-alerts/settings");
+      const response = await fetch("/api/time-alerts/settings", { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch settings");
       return response.json();
     },

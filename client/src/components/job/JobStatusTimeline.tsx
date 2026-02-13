@@ -89,7 +89,7 @@ export function JobStatusTimeline({ jobId, defaultOpen = false }: JobStatusTimel
   const { data: events, isLoading } = useQuery<JobStatusEvent[]>({
     queryKey: ["/api/jobs", jobId, "status-events"],
     queryFn: async () => {
-      const res = await fetch(`/api/jobs/${jobId}/status-events`);
+      const res = await fetch(`/api/jobs/${jobId}/status-events`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch status events");
       return res.json();
     },

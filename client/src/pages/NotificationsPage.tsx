@@ -340,7 +340,7 @@ export default function NotificationsPage() {
         limit: "50",
         ...(activeTab === "unread" && { unreadOnly: "true" }),
       });
-      const response = await fetch(`/api/notifications?${params}`);
+      const response = await fetch(`/api/notifications?${params}`, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch notifications");
       return response.json();
     },
@@ -352,7 +352,7 @@ export default function NotificationsPage() {
   const { data: snoozesData } = useQuery<{ snoozes: ActiveSnooze[] }>({
     queryKey: ["/api/time-alerts/snoozes"],
     queryFn: async () => {
-      const response = await fetch("/api/time-alerts/snoozes");
+      const response = await fetch("/api/time-alerts/snoozes", { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch snoozes");
       return response.json();
     },

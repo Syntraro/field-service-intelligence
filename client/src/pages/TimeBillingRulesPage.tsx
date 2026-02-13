@@ -109,7 +109,7 @@ export default function TimeBillingRulesPage() {
   const { data, isLoading } = useQuery<RulesResponse>({
     queryKey: ["/api/time-billing/rules"],
     queryFn: async () => {
-      const response = await fetch("/api/time-billing/rules");
+      const response = await fetch("/api/time-billing/rules", { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch billing rules");
       return response.json();
     },

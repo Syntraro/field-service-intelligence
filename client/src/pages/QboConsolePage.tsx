@@ -495,7 +495,7 @@ export default function QboConsolePage() {
   const { data: status, isLoading: statusLoading, refetch: refetchStatus } = useQuery<QboStatusResponse>({
     queryKey: ["/api/qbo/status"],
     queryFn: async () => {
-      const response = await fetch("/api/qbo/status");
+      const response = await fetch("/api/qbo/status", { credentials: "include" });
       if (!response.ok) {
         if (response.status === 403) throw new Error("Access denied. Admin role required.");
         throw new Error("Failed to fetch QBO status");
@@ -512,7 +512,7 @@ export default function QboConsolePage() {
       const params = new URLSearchParams({ limit: "50" });
       if (eventTypeFilter && eventTypeFilter !== "all") params.set("entityType", eventTypeFilter);
       if (resultFilter && resultFilter !== "all") params.set("result", resultFilter);
-      const response = await fetch(`/api/qbo/events?${params}`);
+      const response = await fetch(`/api/qbo/events?${params}`, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch QBO events");
       return response.json();
     },
@@ -522,7 +522,7 @@ export default function QboConsolePage() {
   useQuery<QboMappingConfigResponse>({
     queryKey: ["/api/qbo/mapping-config"],
     queryFn: async () => {
-      const response = await fetch("/api/qbo/mapping-config");
+      const response = await fetch("/api/qbo/mapping-config", { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch mapping config");
       const data = await response.json();
       setMappingConfig(data.config || {});
@@ -534,7 +534,7 @@ export default function QboConsolePage() {
   const { data: preflight, isLoading: preflightLoading, refetch: refetchPreflight } = useQuery<PreflightResult>({
     queryKey: ["/api/qbo/preflight"],
     queryFn: async () => {
-      const response = await fetch("/api/qbo/preflight");
+      const response = await fetch("/api/qbo/preflight", { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch preflight status");
       return response.json();
     },
@@ -546,6 +546,7 @@ export default function QboConsolePage() {
       const response = await fetch("/api/qbo/enabled", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify(payload),
       });
       if (!response.ok) {
@@ -572,7 +573,7 @@ export default function QboConsolePage() {
   // Connectivity test mutation
   const connectivityTestMutation = useMutation({
     mutationFn: async () => {
-      const response = await fetch("/api/qbo/connectivity-test", { method: "POST" });
+      const response = await fetch("/api/qbo/connectivity-test", { method: "POST", credentials: "include" });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.error || "Connectivity test failed");
@@ -597,7 +598,7 @@ export default function QboConsolePage() {
   // Dry-run invoice sync mutation
   const dryRunInvoiceMutation = useMutation({
     mutationFn: async (id: string) => {
-      const response = await fetch(`/api/qbo/dry-run/invoice/${id}`, { method: "POST" });
+      const response = await fetch(`/api/qbo/dry-run/invoice/${id}`, { method: "POST", credentials: "include" });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.error || "Dry-run failed");
@@ -621,7 +622,7 @@ export default function QboConsolePage() {
   // Dry-run queue process mutation
   const dryRunQueueMutation = useMutation({
     mutationFn: async () => {
-      const response = await fetch("/api/qbo/dry-run/queue/process", { method: "POST" });
+      const response = await fetch("/api/qbo/dry-run/queue/process", { method: "POST", credentials: "include" });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.error || "Dry-run failed");
@@ -646,7 +647,7 @@ export default function QboConsolePage() {
     queryFn: async () => {
       const params = new URLSearchParams({ limit: "50" });
       if (webhookStatusFilter && webhookStatusFilter !== "all") params.set("status", webhookStatusFilter);
-      const response = await fetch(`/api/qbo/webhooks?${params}`);
+      const response = await fetch(`/api/qbo/webhooks?${params}`, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch webhooks");
       return response.json();
     },
@@ -656,7 +657,7 @@ export default function QboConsolePage() {
   const { data: driftAlertsData, isLoading: driftAlertsLoading, refetch: refetchDriftAlerts } = useQuery<DriftAlertsResponse>({
     queryKey: ["/api/qbo/drift-alerts"],
     queryFn: async () => {
-      const response = await fetch("/api/qbo/drift-alerts");
+      const response = await fetch("/api/qbo/drift-alerts", { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch drift alerts");
       return response.json();
     },
@@ -666,7 +667,7 @@ export default function QboConsolePage() {
   const { data: runsData, isLoading: runsLoading, refetch: refetchRuns } = useQuery<SyncRunsResponse>({
     queryKey: ["/api/qbo/runs"],
     queryFn: async () => {
-      const response = await fetch("/api/qbo/runs?limit=20");
+      const response = await fetch("/api/qbo/runs?limit=20", { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch runs");
       return response.json();
     },
@@ -676,7 +677,7 @@ export default function QboConsolePage() {
   const { data: runDetailData, isLoading: runDetailLoading } = useQuery<SyncRunDetailResponse>({
     queryKey: ["/api/qbo/runs", selectedRunId],
     queryFn: async () => {
-      const response = await fetch(`/api/qbo/runs/${selectedRunId}`);
+      const response = await fetch(`/api/qbo/runs/${selectedRunId}`, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch run detail");
       return response.json();
     },
@@ -689,7 +690,7 @@ export default function QboConsolePage() {
     queryFn: async () => {
       const params = new URLSearchParams({ limit: "50" });
       if (itemSearchQuery) params.set("q", itemSearchQuery);
-      const response = await fetch(`/api/qbo/items?${params}`);
+      const response = await fetch(`/api/qbo/items?${params}`, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch QBO items");
       return response.json();
     },
@@ -702,7 +703,7 @@ export default function QboConsolePage() {
     queryFn: async () => {
       const params = new URLSearchParams({ limit: "50" });
       if (localItemsSyncStatus && localItemsSyncStatus !== "all") params.set("syncStatus", localItemsSyncStatus);
-      const response = await fetch(`/api/qbo/items/local?${params}`);
+      const response = await fetch(`/api/qbo/items/local?${params}`, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch local items");
       return response.json();
     },
@@ -714,6 +715,7 @@ export default function QboConsolePage() {
       const response = await fetch("/api/qbo/items/link", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ itemId, qboItemId }),
       });
       if (!response.ok) {
@@ -737,7 +739,7 @@ export default function QboConsolePage() {
   // Create item in QBO mutation
   const createItemInQboMutation = useMutation({
     mutationFn: async (itemId: string) => {
-      const response = await fetch(`/api/qbo/items/create/${itemId}`, { method: "POST" });
+      const response = await fetch(`/api/qbo/items/create/${itemId}`, { method: "POST", credentials: "include" });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.error || "Create failed");
@@ -759,6 +761,7 @@ export default function QboConsolePage() {
       const response = await fetch("/api/qbo/items/bulk-create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ itemIds }),
       });
       if (!response.ok) {
@@ -783,7 +786,7 @@ export default function QboConsolePage() {
   // Process webhooks mutation
   const processWebhooksMutation = useMutation({
     mutationFn: async () => {
-      const response = await fetch("/api/qbo/webhook/process", { method: "POST" });
+      const response = await fetch("/api/qbo/webhook/process", { method: "POST", credentials: "include" });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.error || "Process failed");
@@ -807,7 +810,7 @@ export default function QboConsolePage() {
   // Enqueue reconcile for drift alert
   const reconcileDriftAlertMutation = useMutation({
     mutationFn: async (eventId: string) => {
-      const response = await fetch(`/api/qbo/drift-alerts/${eventId}/reconcile`, { method: "POST" });
+      const response = await fetch(`/api/qbo/drift-alerts/${eventId}/reconcile`, { method: "POST", credentials: "include" });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.error || "Reconcile failed");
@@ -833,6 +836,7 @@ export default function QboConsolePage() {
       const response = await fetch("/api/qbo/mapping-config", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify(config),
       });
       if (!response.ok) {
@@ -858,7 +862,7 @@ export default function QboConsolePage() {
     queryFn: async () => {
       const params = new URLSearchParams({ limit: "50" });
       if (queueStatusFilter && queueStatusFilter !== "all") params.set("status", queueStatusFilter);
-      const response = await fetch(`/api/qbo/queue?${params}`);
+      const response = await fetch(`/api/qbo/queue?${params}`, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch queue");
       return response.json();
     },
@@ -867,7 +871,7 @@ export default function QboConsolePage() {
   // Process queue mutation
   const processQueueMutation = useMutation({
     mutationFn: async (limit: number = 20) => {
-      const response = await fetch(`/api/qbo/queue/process?limit=${limit}`, { method: "POST" });
+      const response = await fetch(`/api/qbo/queue/process?limit=${limit}`, { method: "POST", credentials: "include" });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.error || "Process failed");
@@ -891,7 +895,7 @@ export default function QboConsolePage() {
   // Replay job mutation
   const replayJobMutation = useMutation({
     mutationFn: async (jobId: string) => {
-      const response = await fetch(`/api/qbo/queue/${jobId}/replay`, { method: "POST" });
+      const response = await fetch(`/api/qbo/queue/${jobId}/replay`, { method: "POST", credentials: "include" });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.error || "Replay failed");
@@ -918,7 +922,7 @@ export default function QboConsolePage() {
   // Delete job mutation
   const deleteJobMutation = useMutation({
     mutationFn: async (jobId: string) => {
-      const response = await fetch(`/api/qbo/queue/${jobId}`, { method: "DELETE" });
+      const response = await fetch(`/api/qbo/queue/${jobId}`, { method: "DELETE", credentials: "include" });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.error || "Delete failed");
@@ -940,6 +944,7 @@ export default function QboConsolePage() {
       const response = await fetch("/api/qbo/queue/enqueue", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify(payload),
       });
       if (!response.ok) {
@@ -964,7 +969,7 @@ export default function QboConsolePage() {
   // Mutations for sync actions
   const syncInvoiceMutation = useMutation({
     mutationFn: async (id: string) => {
-      const response = await fetch(`/api/qbo/sync/invoice/${id}`, { method: "POST" });
+      const response = await fetch(`/api/qbo/sync/invoice/${id}`, { method: "POST", credentials: "include" });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.error || "Sync failed");
@@ -987,7 +992,7 @@ export default function QboConsolePage() {
 
   const syncWithDepsMutation = useMutation({
     mutationFn: async (id: string) => {
-      const response = await fetch(`/api/qbo/sync/invoice-with-deps/${id}`, { method: "POST" });
+      const response = await fetch(`/api/qbo/sync/invoice-with-deps/${id}`, { method: "POST", credentials: "include" });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.error || "Sync failed");
@@ -1013,7 +1018,7 @@ export default function QboConsolePage() {
 
   const reconcileDryRunMutation = useMutation({
     mutationFn: async (id: string) => {
-      const response = await fetch(`/api/qbo/reconcile/invoice/${id}`, { method: "POST" });
+      const response = await fetch(`/api/qbo/reconcile/invoice/${id}`, { method: "POST", credentials: "include" });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.error || "Reconcile failed");
@@ -1045,7 +1050,7 @@ export default function QboConsolePage() {
 
   const reconcileApplyMutation = useMutation({
     mutationFn: async (id: string) => {
-      const response = await fetch(`/api/qbo/reconcile/invoice/${id}/apply`, { method: "POST" });
+      const response = await fetch(`/api/qbo/reconcile/invoice/${id}/apply`, { method: "POST", credentials: "include" });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.error || "Apply failed");

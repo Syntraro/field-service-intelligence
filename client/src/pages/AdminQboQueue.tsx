@@ -148,7 +148,7 @@ export default function AdminQboQueue() {
   const { data, isLoading, error, refetch } = useQuery<{ jobs: QboQueueJob[]; count: number }>({
     queryKey: ["/api/admin/qbo/queue", statusFilter],
     queryFn: async () => {
-      const res = await fetch(`/api/admin/qbo/queue?status=${statusFilter}`);
+      const res = await fetch(`/api/admin/qbo/queue?status=${statusFilter}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch queue");
       return res.json();
     },
@@ -158,7 +158,7 @@ export default function AdminQboQueue() {
   const { data: failedCountData } = useQuery<{ count: number }>({
     queryKey: ["/api/admin/qbo/queue/failed-count"],
     queryFn: async () => {
-      const res = await fetch("/api/admin/qbo/queue/failed-count");
+      const res = await fetch("/api/admin/qbo/queue/failed-count", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch failed count");
       return res.json();
     },
@@ -168,7 +168,7 @@ export default function AdminQboQueue() {
   // Replay single job mutation
   const replayJob = useMutation({
     mutationFn: async (jobId: string) => {
-      const csrfRes = await fetch("/api/csrf-token");
+      const csrfRes = await fetch("/api/csrf-token", { credentials: "include" });
       const { csrfToken } = await csrfRes.json();
 
       const res = await fetch(`/api/admin/qbo/queue/${jobId}/replay`, {
@@ -177,6 +177,7 @@ export default function AdminQboQueue() {
           "Content-Type": "application/json",
           "X-CSRF-Token": csrfToken,
         },
+        credentials: "include",
         body: JSON.stringify({ confirmToken: REPLAY_CONFIRM_TOKEN }),
       });
       if (!res.ok) {
@@ -206,7 +207,7 @@ export default function AdminQboQueue() {
   // Replay all failed jobs mutation
   const replayAllFailed = useMutation({
     mutationFn: async () => {
-      const csrfRes = await fetch("/api/csrf-token");
+      const csrfRes = await fetch("/api/csrf-token", { credentials: "include" });
       const { csrfToken } = await csrfRes.json();
 
       const res = await fetch("/api/admin/qbo/queue/replay-failed", {
@@ -215,6 +216,7 @@ export default function AdminQboQueue() {
           "Content-Type": "application/json",
           "X-CSRF-Token": csrfToken,
         },
+        credentials: "include",
         body: JSON.stringify({ confirmToken: REPLAY_CONFIRM_TOKEN }),
       });
       if (!res.ok) {

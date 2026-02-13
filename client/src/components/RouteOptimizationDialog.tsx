@@ -85,6 +85,7 @@ export function RouteOptimizationDialog({
       const response = await fetch("/api/routes/optimize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({
           clientIds: clients.map(c => c.id),
           startingLocation: startingLocation || undefined

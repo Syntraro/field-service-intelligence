@@ -79,7 +79,7 @@ export default function AccountsReceivablePage() {
   const { data: report, isLoading, error } = useQuery<ARAgingReport>({
     queryKey: ["/api/reports/ar-aging"],
     queryFn: async () => {
-      const response = await fetch("/api/reports/ar-aging");
+      const response = await fetch("/api/reports/ar-aging", { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch AR aging report");
       return response.json();
     },

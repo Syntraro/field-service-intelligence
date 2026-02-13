@@ -50,7 +50,7 @@ export function SchedulingHistory({ jobId, defaultOpen = false }: SchedulingHist
   const { data, isLoading, error } = useQuery<{ history: ScheduleHistoryEntry[] }>({
     queryKey: ["/api/jobs", jobId, "schedule-history"],
     queryFn: async () => {
-      const res = await fetch(`/api/jobs/${jobId}/schedule-history`);
+      const res = await fetch(`/api/jobs/${jobId}/schedule-history`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch schedule history");
       return res.json();
     },

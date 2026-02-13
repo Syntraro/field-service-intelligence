@@ -94,7 +94,7 @@ export default function Reports() {
   const { data: reportData = [], isLoading } = useQuery<ReportItem[]>({
     queryKey: ["/api/reports/parts", selectedMonth, showOnlyOutstanding ? "outstanding" : "all"],
     queryFn: async () => {
-      const response = await fetch(`/api/reports/parts/${selectedMonth}?outstanding=${showOnlyOutstanding}`);
+      const response = await fetch(`/api/reports/parts/${selectedMonth}?outstanding=${showOnlyOutstanding}`, { credentials: "include" });
       if (!response.ok) throw new Error('Failed to fetch report');
       return response.json();
     },

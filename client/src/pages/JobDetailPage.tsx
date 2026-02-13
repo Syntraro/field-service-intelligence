@@ -1169,7 +1169,7 @@ export default function JobDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       // (covered by family-wide ["jobs"] invalidation)
       // Also invalidate time summary so Labour card updates immediately
-      queryClient.invalidateQueries({ queryKey: ["jobs", jobId, "time-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-summary"] });
       // Refresh calendar and dashboard to reflect status change
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
@@ -1911,8 +1911,8 @@ export default function JobDetailPage() {
         jobId={job.id}
         assignedTechnicianIds={job.assignedTechnicianIds || []}
         onSuccess={() => {
-          queryClient.invalidateQueries({ queryKey: ["jobs", jobId, "time-summary"] });
-          queryClient.invalidateQueries({ queryKey: ["jobs", jobId, "time-entries"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-summary"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-entries"] });
         }}
       />
 
@@ -1925,8 +1925,8 @@ export default function JobDetailPage() {
         jobId={job.id}
         entry={editingTimeEntry}
         onSuccess={() => {
-          queryClient.invalidateQueries({ queryKey: ["jobs", jobId, "time-summary"] });
-          queryClient.invalidateQueries({ queryKey: ["jobs", jobId, "time-entries"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-summary"] });
+          queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-entries"] });
         }}
       />
     </div>

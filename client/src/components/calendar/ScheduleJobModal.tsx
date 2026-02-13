@@ -125,10 +125,10 @@ export function ScheduleJobModal({
     // Phase 5 E2: canonical family key
     queryKey: ["jobs", { status: "pending,scheduled" }],
     queryFn: async () => {
-      const res = await fetch("/api/jobs?status=pending,scheduled&limit=100");
+      const res = await fetch("/api/jobs?status=pending,scheduled&limit=100", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch jobs");
       const data = await res.json();
-      return data.jobs || [];
+      return data.data ?? data.items ?? [];
     },
     enabled: open && !isEditMode,
   });

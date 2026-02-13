@@ -172,13 +172,13 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
   const { teamMembers, isLoading: isLoadingTeam } = useTechniciansDirectory();
 
   // Fetch jobs
-  const { data: jobsData } = useQuery<{ items: Job[] }>({
+  const { data: jobsData } = useQuery<{ data?: Job[]; items?: Job[] }>({
     // Phase 5 E2: canonical family key
     queryKey: ["jobs"],
     queryFn: () => apiRequest("/api/jobs"),
     staleTime: 2 * 60 * 1000,
   });
-  const jobs = jobsData?.items || [];
+  const jobs = jobsData?.data ?? jobsData?.items ?? [];
 
   // Fetch clients
   const { data: clientsData } = useQuery<{ items: Client[] }>({

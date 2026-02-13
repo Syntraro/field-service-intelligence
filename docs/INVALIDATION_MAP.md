@@ -24,6 +24,19 @@
 | **Timesheets** | `/api/admin/timesheets/day`, `/api/admin/timesheets/week` | Admin timesheet views |
 | **Products** | `/api/items` | Parts & services catalog |
 
+### Job Time Tracking Sub-Resources (Special-Case Keys)
+
+The time-summary and time-entries queries use **path-based** keys, not the canonical `["jobs"]` family prefix:
+
+| Query | Key | Defined In |
+|-------|-----|------------|
+| Time summary | `["/api/jobs", jobId, "time-summary"]` | `JobDetailPage.tsx` |
+| Time entries | `["/api/jobs", jobId, "time-entries"]` | `JobDetailPage.tsx` |
+
+**Invalidation rule:** These keys must be invalidated with the exact same prefix `["/api/jobs", jobId, ...]`. Using `["jobs", jobId, "time-summary"]` will silently fail — TanStack Query prefix-matches element-by-element, so `"jobs" !== "/api/jobs"` at position 0 means no match.
+
+Family-wide `invalidateQueries({ queryKey: ["jobs"] })` does **not** reach these keys. If a mutation affects time data, it must explicitly invalidate `["/api/jobs", jobId, "time-summary"]` in addition to `["jobs"]`.
+
 ---
 
 ## Centralized Invalidation Helpers

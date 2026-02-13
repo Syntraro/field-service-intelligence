@@ -220,7 +220,7 @@ export default function Calendar() {
       // Fetch all needed months in parallel
       const results = await Promise.all(
         monthsToFetch.map(async ({ year: y, month: m }) => {
-          const res = await fetch(`/api/calendar?year=${y}&month=${m}`);
+          const res = await fetch(`/api/calendar?year=${y}&month=${m}`, { credentials: "include" });
           if (!res.ok) throw new Error("Failed to fetch calendar data");
           return res.json();
         })
@@ -265,7 +265,7 @@ export default function Calendar() {
       queryClient.prefetchQuery({
         queryKey: ["/api/calendar", "weekly", prevYear, prevMonth, prevWeekStart.getTime()],
         queryFn: async () => {
-          const res = await fetch(`/api/calendar?year=${prevYear}&month=${prevMonth}`);
+          const res = await fetch(`/api/calendar?year=${prevYear}&month=${prevMonth}`, { credentials: "include" });
           if (!res.ok) throw new Error("Failed to prefetch");
           return res.json();
         },
@@ -280,7 +280,7 @@ export default function Calendar() {
       queryClient.prefetchQuery({
         queryKey: ["/api/calendar", "weekly", nextYear, nextMonth, nextWeekStart.getTime()],
         queryFn: async () => {
-          const res = await fetch(`/api/calendar?year=${nextYear}&month=${nextMonth}`);
+          const res = await fetch(`/api/calendar?year=${nextYear}&month=${nextMonth}`, { credentials: "include" });
           if (!res.ok) throw new Error("Failed to prefetch");
           return res.json();
         },
@@ -1360,7 +1360,7 @@ export default function Calendar() {
   const { data: unscheduledQueryData, isLoading: isLoadingUnscheduled } = useQuery<any>({
     queryKey: ["/api/calendar/unscheduled"],
     queryFn: async () => {
-      const res = await fetch(`/api/calendar/unscheduled`);
+      const res = await fetch(`/api/calendar/unscheduled`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch unscheduled clients");
       const data = await res.json();
       // SAFE: Normalize to array in query function
@@ -1406,7 +1406,7 @@ export default function Calendar() {
   const { data: oldUnscheduledQueryData } = useQuery<any>({
     queryKey: ["/api/calendar/old-unscheduled"],
     queryFn: async () => {
-      const res = await fetch(`/api/calendar/old-unscheduled`);
+      const res = await fetch(`/api/calendar/old-unscheduled`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch old unscheduled items");
       return res.json();
     },
@@ -1630,7 +1630,7 @@ export default function Calendar() {
     // Fetch state snapshot for invariant verification
     const fetchSnapshot = async () => {
       try {
-        const res = await fetch('/api/calendar/state-snapshot');
+        const res = await fetch('/api/calendar/state-snapshot', { credentials: 'include' });
         if (!res.ok) {
           console.warn('[Calendar] State snapshot fetch failed:', res.status);
           return;

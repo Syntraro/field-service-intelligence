@@ -108,7 +108,7 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
     unitPrice: "",
   });
 
-  const { data: catalogData } = useQuery<{ data: Item[] }>({
+  const { data: catalogData } = useQuery<Item[]>({
     queryKey: ["/api/items", { limit: 200 }],
     queryFn: async () => {
       const res = await fetch("/api/items?limit=200", { credentials: "include" });
@@ -117,7 +117,7 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
     },
     enabled: open,
   });
-  const catalogParts = catalogData?.data?.filter((p) => p.isActive !== false) || [];
+  const catalogParts = catalogData?.filter((p) => p.isActive !== false) || [];
 
   const { data: templateDetails, isLoading: isLoadingDetails } = useQuery<
     JobTemplate & { lines: any[] }

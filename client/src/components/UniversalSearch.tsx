@@ -108,7 +108,7 @@ export default function UniversalSearch() {
 
     setLoading(true);
     try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(searchQuery)}&limit=20`);
+      const res = await fetch(`/api/search?q=${encodeURIComponent(searchQuery)}&limit=20`, { credentials: "include" });
       if (res.ok) {
         const data: SearchResponse = await res.json();
         setResults(data.results);

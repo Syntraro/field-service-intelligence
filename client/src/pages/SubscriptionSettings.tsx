@@ -70,7 +70,7 @@ interface SubscriptionInfo {
 // ============================================================================
 
 async function fetchSubscriptionInfo(): Promise<SubscriptionInfo> {
-  const res = await fetch("/api/subscriptions/me");
+  const res = await fetch("/api/subscriptions/me", { credentials: "include" });
   if (!res.ok) throw new Error("Failed to fetch subscription");
   return res.json();
 }
@@ -82,6 +82,7 @@ async function signupSubscription(data: {
   const res = await fetch("/api/subscriptions/signup", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify(data),
   });
   if (!res.ok) {
@@ -95,6 +96,7 @@ async function setAutoRenew(autoRenewAnnual: boolean): Promise<{ success: boolea
   const res = await fetch("/api/subscriptions/auto-renew", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify({ autoRenewAnnual }),
   });
   if (!res.ok) {
@@ -108,6 +110,7 @@ async function cancelSubscription(): Promise<{ success: boolean }> {
   const res = await fetch("/api/subscriptions/cancel", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
   });
   if (!res.ok) {
     const err = await res.json();
@@ -120,6 +123,7 @@ async function renewAnnual(autoRenewAnnual: boolean): Promise<{ success: boolean
   const res = await fetch("/api/subscriptions/renew-annual", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify({ autoRenewAnnual }),
   });
   if (!res.ok) {
