@@ -18,8 +18,10 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { format } from "date-fns";
 import EditTagsModal from "@/components/EditTagsModal";
-import type { Client, CustomerCompany, Job, LocationPMPartTemplate, LocationEquipment, ClientContact, ClientTag } from "@shared/schema";
-import { isJobOverdue, isJobScheduled } from "@shared/schema";
+import type { Client, CustomerCompany, LocationPMPartTemplate, LocationEquipment, ClientContact, ClientTag } from "@shared/schema";
+import { isJobOverdue } from "@shared/schema";
+import { useJobsFeed } from "@/hooks/useJobsFeed";
+import { getJobStatusDisplay } from "@/components/job/jobUtils";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -128,25 +130,17 @@ export default function LocationDetailPage() {
     enabled: Boolean(locationId),
   });
 
-  const { data: jobs = [] } = useQuery<{ data: Job[]; meta: { limit: number; hasMore: boolean; nextOffset?: number } }, Error, Job[]>({
-    queryKey: ["/api/jobs", { offset: 0, limit: 200 }],
-    queryFn: async () => {
-      const res = await fetch("/api/jobs?offset=0&limit=200", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch jobs");
-      return res.json();
-    },
-    select: (response) => response.data,
-    enabled: Boolean(locationId),
-  });
-
-  const locationJobs = jobs.filter(j => j.locationId === locationId);
+  // Phase 4 Step C4: Use canonical useJobsFeed with location filter
+  const { jobs: locationJobs } = useJobsFeed(
+    { locationId: locationId!, limit: 200, offset: 0 },
+    { enabled: Boolean(locationId) }
+  );
   // Use canonical isJobOverdue predicate
   const overdueJobs = locationJobs.filter(j => isJobOverdue(j));
+  // Active Work = all open jobs (no scheduledStart requirement).
+  // Overdue jobs are shown in a separate section, so exclude them here.
   const activeJobs = locationJobs.filter(j =>
-    // Active = open + (scheduled OR in_progress)
-    // Use canonical isJobScheduled predicate for scheduled check
     j.status === "open" &&
-    (isJobScheduled(j) || j.openSubStatus === "in_progress") &&
     !overdueJobs.some(o => o.id === j.id)
   );
 
@@ -256,21 +250,6 @@ export default function LocationDetailPage() {
   const billParent = location.billWithParent ?? true;
 
   const canShowSetPrimary = !location.isPrimary && Boolean(effectiveParentCompanyId);
-
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case "completed":
-        return <Badge className="bg-green-50 text-green-700 hover:bg-green-50">Completed</Badge>;
-      case "in_progress":
-        return <Badge variant="default">In Progress</Badge>;
-      case "scheduled":
-        return <Badge className="bg-blue-50 text-blue-700 hover:bg-blue-50">Scheduled</Badge>;
-      case "overdue":
-        return <Badge variant="destructive">Overdue</Badge>;
-      default:
-        return <Badge variant="outline">{status}</Badge>;
-    }
-  };
 
   return (
     <div className="p-6 h-full flex flex-col">
@@ -479,9 +458,10 @@ export default function LocationDetailPage() {
                                       : "Not scheduled"}
                                   </p>
                                 </div>
-                                <Badge variant={job.openSubStatus === "in_progress" ? "default" : "secondary"}>
-                                  {job.openSubStatus === "in_progress" ? "In Progress" : "Scheduled"}
-                                </Badge>
+                                {(() => {
+                                  const display = getJobStatusDisplay(job);
+                                  return <Badge variant={display.variant as any}>{display.label}</Badge>;
+                                })()}
                               </div>
                             ))}
                           </div>
@@ -498,11 +478,7 @@ export default function LocationDetailPage() {
                       <p className="text-xs text-muted-foreground">No jobs yet for this location.</p>
                     ) : (
                       locationJobs.map((job) => {
-                        const isOverdue =
-                          job.scheduledStart &&
-                          new Date(job.scheduledStart) < new Date() &&
-                          job.status !== "completed" &&
-                          job.status !== "cancelled";
+                        const display = getJobStatusDisplay(job);
                         return (
                           <div
                             key={job.id}
@@ -520,7 +496,7 @@ export default function LocationDetailPage() {
                                   : "Not scheduled"}
                               </div>
                             </div>
-                            {isOverdue ? <Badge variant="destructive">Overdue</Badge> : getStatusBadge(job.status)}
+                            <Badge variant={display.variant as any}>{display.label}</Badge>
                           </div>
                         );
                       })

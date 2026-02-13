@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Plus, Briefcase, Calendar, MapPin } from "lucide-react";
 import { getJobStatusDisplay } from "@/components/job/jobUtils";
 import type { Client } from "@shared/schema";
+import { useJobsFeed } from "@/hooks/useJobsFeed";
 import type { JobFeedItem } from "@/hooks/useJobsFeed";
 import { format } from "date-fns";
 
@@ -43,40 +44,22 @@ export default function ClientJobsTab({
     enabled: Boolean(parentCompanyId),
   });
 
-  // Build the locationId filter - if specific location selected, use it; otherwise get all jobs for all locations
-  const locationIds = selectedLocationId !== "all" 
-    ? [selectedLocationId] 
-    : (parentCompanyId ? locations.map(l => l.id) : [clientId]);
-  
-  // Fetch jobs from the Jobs API with location filter
-  const { data: jobs = [], isLoading: jobsLoading } = useQuery<{ data: JobFeedItem[]; meta: { limit: number; hasMore: boolean; nextOffset?: number } }, Error, JobFeedItem[]>({
-    queryKey: ["/api/jobs", { locationIds, offset: 0, limit: 200 }],
-    queryFn: async () => {
-      // If we have specific location IDs to filter, use the first one
-      // The API supports single locationId filter
-      if (selectedLocationId !== "all") {
-        const res = await fetch(`/api/jobs?locationId=${encodeURIComponent(selectedLocationId)}&offset=0&limit=200`, { credentials: "include" });
-        if (!res.ok) throw new Error(`Failed to fetch jobs: ${res.statusText}`);
-        return res.json();
-      }
-      
-      // For "all locations", fetch all jobs and filter client-side
-      const res = await fetch("/api/jobs?offset=0&limit=200", { credentials: "include" });
-      if (!res.ok) throw new Error(`Failed to fetch jobs: ${res.statusText}`);
-      return res.json();
-    },
-    select: (response) => {
-      const allJobs = response.data;
-      // Filter to only jobs for locations under this parent company
-      if (parentCompanyId && locations.length > 0) {
-        const locationIdSet = new Set(locations.map(l => l.id));
-        return allJobs.filter(job => job.locationId && locationIdSet.has(job.locationId));
-      }
-      // If no parent company, filter to just this client's jobs
-      return allJobs.filter(job => job.locationId === clientId);
-    },
-    enabled: !locationsLoading,
-  });
+  // Phase 4 Step C4: Use canonical useJobsFeed with location filter
+  const feedLocationId = selectedLocationId !== "all" ? selectedLocationId : undefined;
+  const { jobs: allFeedJobs, isLoading: jobsLoading } = useJobsFeed(
+    { locationId: feedLocationId, limit: 200, offset: 0 },
+    { enabled: !locationsLoading }
+  );
+
+  // For "all locations", filter client-side to jobs belonging to this parent company
+  const jobs = useMemo(() => {
+    if (selectedLocationId !== "all") return allFeedJobs;
+    if (parentCompanyId && locations.length > 0) {
+      const locationIdSet = new Set(locations.map(l => l.id));
+      return allFeedJobs.filter(job => job.locationId && locationIdSet.has(job.locationId));
+    }
+    return allFeedJobs.filter(job => job.locationId === clientId);
+  }, [allFeedJobs, selectedLocationId, parentCompanyId, locations, clientId]);
 
   const getLocationName = (locationClientId: string | null) => {
     if (!locationClientId) return "Unknown Location";
