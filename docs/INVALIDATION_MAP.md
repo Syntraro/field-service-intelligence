@@ -116,13 +116,13 @@
 | `updateStatusMutation` (job) | `POST /api/jobs/:jobId/status` | jobs/:jobId, jobs, jobs/:jobId/time-summary, **calendar**, **calendar/range**, **calendar/unscheduled**, `["dashboard"]` (family) |
 | `clearHoldMutation` | `POST /api/jobs/:jobId/status` | jobs/:jobId, jobs, `["dashboard"]` (family) |
 | `deleteJobMutation` | `DELETE /api/jobs/:jobId` | jobs, calendar, maintenance, `["dashboard"]` (family), recurring-templates, clients |
-| `createInvoiceMutation` | `POST /api/invoices/from-job/:jobId` | `["invoices"]` (family), jobs/:jobId |
+| `createInvoiceMutation` | `POST /api/invoices/from-job/:jobId` | `["invoices"]` (family), jobs/:jobId, `["dashboard"]` |
 
 ### Job Header Card — `components/JobHeaderCard.tsx`
 
 | Mutation | API | Invalidates |
 |---|---|---|
-| `createInvoiceMutation` | `POST /api/invoices/from-job/:jobId` | `["invoices"]` (family), jobs/:jobId |
+| `createInvoiceMutation` | `POST /api/invoices/from-job/:jobId` | `["invoices"]` (family), jobs/:jobId, `["dashboard"]` |
 | `undoCloseMutation` | `POST /api/jobs/:jobId/undo-close` | jobs/:jobId, jobs, `["dashboard"]` (family) |
 | `closeJobMutation` | `POST /api/jobs/:jobId/close` | jobs/:jobId, jobs, `["visits"]` (family), `["dashboard"]` (family), (if invoice created: `["invoices"]` family) |
 | `reopenJobMutation` | `POST /api/jobs/:jobId/reopen` | jobs/:jobId, jobs, **calendar**, **calendar/range**, **calendar/unscheduled**, `["dashboard"]` (family) |
@@ -138,7 +138,7 @@
 
 | Mutation | API | Invalidates |
 |---|---|---|
-| `createJobMutation` | `POST /api/jobs` | jobs, calendar (exact: false) |
+| `createJobMutation` | `POST /api/jobs` | jobs, calendar (exact: false), `["dashboard"]` |
 | `updateJobMutation` | `PATCH /api/jobs/:id` | jobs, jobs/:id, calendar (exact: false) |
 | `quickCreateClientMutation` | `POST /api/clients` | clients |
 

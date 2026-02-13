@@ -47,6 +47,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - AR aging report now includes invoices with no/deleted location (was silently excluding via INNER JOIN).
 - Invoice `createInvoiceMutation` now properly invalidates stats and dashboard via family key (was missing in JobDetailPage).
 
+#### Phase 5.1-5.3 — Invalidation Gap Closure + Visit Feed Fixes (2026-02-13)
+
+**Phase 5.1 — Close 3 dashboard invalidation gaps:**
+- Added `["dashboard"]` invalidation to `clearHoldMutation`, `undoCloseMutation`, `closeJobMutation`.
+  - Files: `client/src/pages/JobDetailPage.tsx`, `client/src/components/JobHeaderCard.tsx`
+
+**Phase 5.2 — Close 4 calendar/DnD invalidation gaps:**
+- Added `["dashboard"]` invalidation to `ActionRequiredModal.updateStatusMutation` and `Calendar.archiveOldAssignment`.
+- Added `["jobs"]` + `["dashboard"]` invalidation to `useCalendarDnD.createAssignment` and `deleteAssignment`.
+  - Files: `client/src/components/ActionRequiredModal.tsx`, `client/src/pages/Calendar.tsx`, `client/src/hooks/useCalendarDnD.ts`
+- All known gaps in `docs/INVALIDATION_MAP.md` cleared.
+
+**Phase 5.3 — QA regression fixes:**
+- **(G4 HIGH)** Added `activeJobFilter()` to all 5 canonical visit query functions in `server/storage/visits.ts`. Visits for soft-deleted/inactive jobs were leaking into the visit feed and tech schedule.
+- **(G3 MEDIUM)** Added `customerCompanies` LEFT JOIN + `COALESCE(customerCompanies.name, clientLocations.companyName)` to visit feed. Location names now consistent with jobsFeed, invoicesFeed, dashboard, and calendar.
+- **(G1 MEDIUM)** Added `["dashboard"]` invalidation to `QuickAddJobDialog.createJobMutation`.
+- **(G2 MEDIUM)** Added `["dashboard"]` invalidation to `createInvoiceMutation` in `JobHeaderCard.tsx` and `JobDetailPage.tsx`.
+  - Files: `server/storage/visits.ts`, `client/src/components/QuickAddJobDialog.tsx`, `client/src/components/JobHeaderCard.tsx`, `client/src/pages/JobDetailPage.tsx`, `docs/INVALIDATION_MAP.md`
+
 #### Phase 4 — Jobs Canonicalization + Technician Display Utility (2026-02-13)
 
 **Pre-flight:**
