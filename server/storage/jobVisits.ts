@@ -208,78 +208,10 @@ export class JobVisitsRepository extends BaseRepository {
   }
 
   // ========================================================================
-  // CANONICAL ENRICHED QUERIES — shared by tech field + calendar consumers
+  // ENRICHED QUERIES — visit detail + assignment validation
   // ========================================================================
-
-  /**
-   * Get visits assigned to a user within a date range, enriched with job + location.
-   * Used by: /api/tech/visits/today, tech schedule page.
-   * Filters: companyId, isActive, scheduledStart in [start, end], assigned to userId.
-   */
-  async getVisitsForUserInRange(
-    companyId: string,
-    userId: string,
-    start: Date,
-    end: Date
-  ): Promise<EnrichedVisit[]> {
-    this.assertCompanyId(companyId);
-
-    const rows = await db
-      .select({
-        visit: jobVisits,
-        jobId: jobs.id,
-        jobNumber: jobs.jobNumber,
-        jobSummary: jobs.summary,
-        jobType: jobs.jobType,
-        jobDescription: jobs.description,
-        jobPriority: jobs.priority,
-        locationId: clientLocations.id,
-        locationCompanyName: clientLocations.companyName,
-        locationLocation: clientLocations.location,
-        locationAddress: clientLocations.address,
-        locationCity: clientLocations.city,
-        locationProvince: clientLocations.province,
-        locationPostalCode: clientLocations.postalCode,
-        locationPhone: clientLocations.phone,
-      })
-      .from(jobVisits)
-      .innerJoin(jobs, eq(jobVisits.jobId, jobs.id))
-      .leftJoin(clientLocations, eq(jobs.locationId, clientLocations.id))
-      .where(
-        and(
-          eq(jobVisits.companyId, companyId),
-          eq(jobVisits.isActive, true),
-          gte(jobVisits.scheduledStart, start),
-          lte(jobVisits.scheduledStart, end),
-          sql`(${jobVisits.assignedTechnicianId} = ${userId} OR ${userId} = ANY(${jobVisits.assignedTechnicianIds}))`
-        )
-      )
-      .orderBy(asc(jobVisits.scheduledStart));
-
-    return rows.map((r) => ({
-      ...r.visit,
-      job: {
-        id: r.jobId,
-        jobNumber: r.jobNumber,
-        summary: r.jobSummary,
-        jobType: r.jobType,
-        description: r.jobDescription,
-        priority: r.jobPriority,
-      },
-      location: r.locationId
-        ? {
-            id: r.locationId,
-            companyName: r.locationCompanyName,
-            location: r.locationLocation,
-            address: r.locationAddress,
-            city: r.locationCity,
-            province: r.locationProvince,
-            postalCode: r.locationPostalCode,
-            phone: r.locationPhone,
-          }
-        : null,
-    }));
-  }
+  // NOTE: getVisitsForUserInRange has been moved to server/storage/visits.ts
+  // (canonical standalone module). Use that for date-range visit queries.
 
   /**
    * Get a single visit assigned to a user, enriched with job + location + job notes.
