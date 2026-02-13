@@ -94,6 +94,8 @@ export function ActionRequiredModal({
     onSuccess: () => {
       // Phase 4 Step C5: single family-wide invalidation
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      // Phase 5.2: dashboard needs-attention stale after hold update
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       toast({
         title: "Status Updated",
         description: "Job marked as on hold.",
