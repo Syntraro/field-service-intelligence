@@ -89,8 +89,11 @@ export const REOPENABLE_STATUSES: JobStatus[] = ["completed", "archived"];
 
 /**
  * Terminal states - jobs in these states are considered "finished"
+ * Phase 5 E1: Renamed from TERMINAL_STATUSES to disambiguate from visit terminal statuses
  */
-export const TERMINAL_STATUSES: JobStatus[] = ["invoiced", "archived"];
+export const JOB_TERMINAL_STATUSES: JobStatus[] = ["invoiced", "archived"];
+/** @deprecated Use JOB_TERMINAL_STATUSES — kept for backward compat during migration */
+export const TERMINAL_STATUSES = JOB_TERMINAL_STATUSES;
 
 /**
  * Active states - jobs that are in progress
@@ -177,7 +180,7 @@ export function canReopenJob(status: JobStatus | string): boolean {
  */
 export function isTerminalStatus(status: JobStatus | string): boolean {
   const normalized = normalizeJobStatus(status);
-  return TERMINAL_STATUSES.includes(normalized);
+  return JOB_TERMINAL_STATUSES.includes(normalized);
 }
 
 // =============================================================================
@@ -195,9 +198,9 @@ export const CLOSEABLE_STATES = CLOSEABLE_STATUSES;
 export const REOPENABLE_STATES = REOPENABLE_STATUSES;
 
 /**
- * @deprecated Use TERMINAL_STATUSES instead
+ * @deprecated Use JOB_TERMINAL_STATUSES instead
  */
-export const TERMINAL_STATES = TERMINAL_STATUSES;
+export const TERMINAL_STATES = JOB_TERMINAL_STATUSES;
 
 /**
  * @deprecated Use ACTIVE_STATUSES instead

@@ -38,8 +38,11 @@ import { isJobScheduled, isJobAssigned, isJobOverdue } from "@shared/schema";
 // Valid lifecycle statuses - the ONLY allowed values for jobs.status
 export const VALID_JOB_STATUSES: readonly JobStatus[] = ["open", "completed", "invoiced", "archived"];
 
+// Phase 5 E1: renamed to disambiguate from visit terminal statuses
 // Terminal statuses - jobs cannot be rescheduled without explicit workflow transition
-export const TERMINAL_STATUSES: readonly JobStatus[] = ["invoiced", "archived"];
+export const JOB_TERMINAL_STATUSES: readonly JobStatus[] = ["invoiced", "archived"];
+/** @deprecated Use JOB_TERMINAL_STATUSES */
+export const TERMINAL_STATUSES = JOB_TERMINAL_STATUSES;
 
 // Status flow visualization for UI (lifecycle only)
 export const JOB_STATUS_FLOW = [
@@ -206,7 +209,7 @@ export function getPriorityDisplay(priority: string): PriorityDisplay {
  * Check if a status is terminal (workflow complete)
  */
 export function isTerminalStatus(status: string): boolean {
-  return TERMINAL_STATUSES.includes(status as JobStatus);
+  return JOB_TERMINAL_STATUSES.includes(status as JobStatus);
 }
 
 /**

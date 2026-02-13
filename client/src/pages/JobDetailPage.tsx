@@ -1119,9 +1119,10 @@ export default function JobDetailPage() {
 
   // Reschedule rule: check for existing non-completed active visits before creating a new one
   const handleScheduleFollowUp = () => {
-    const TERMINAL_STATUSES = ["completed", "cancelled"];
+    // Phase 5 E1: renamed to disambiguate from job terminal statuses
+    const VISIT_TERMINAL_STATUSES = ["completed", "cancelled"];
     const activeNonTerminal = allVisits.filter(
-      (v) => v.isActive && !TERMINAL_STATUSES.includes(v.status)
+      (v) => v.isActive && !VISIT_TERMINAL_STATUSES.includes(v.status)
     );
     if (activeNonTerminal.length > 0) {
       // Found a conflicting visit — determine if it's an empty draft
