@@ -14,19 +14,15 @@
 
 import { apiRequest, queryClient } from "./queryClient";
 import type { JobScheduleValue } from "@/components/jobs/JobScheduleFields";
+import type { ScheduleJobPayload as CalendarSchedulePayload } from "@/hooks/useCalendarApi";
 
 // ============================================================================
 // Types
 // ============================================================================
 
-export interface ScheduleJobPayload {
-  jobId: string;
+/** Pre-API conversion payload — extends the calendar API payload with extra fields. */
+export interface ScheduleJobPayload extends Omit<CalendarSchedulePayload, "version"> {
   allDay: boolean;
-  date: string; // YYYY-MM-DD
-  startAt?: string; // ISO datetime (for timed events)
-  endAt?: string; // ISO datetime (for timed events)
-  durationMinutes?: number;
-  technicianUserId?: string;
   notes?: string;
 }
 
