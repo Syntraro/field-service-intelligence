@@ -146,6 +146,8 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
+      // Phase 5.3 G1: dashboard counts stale after job creation
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
 
       toast({
         title: "Job Created",
