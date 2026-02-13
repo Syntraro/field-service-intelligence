@@ -40,28 +40,9 @@ import {
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import type { VisitJob, VisitLocation } from "@shared/types/visits";
 
 // -- Types --
-
-interface VisitJob {
-  id: string;
-  jobNumber: number;
-  summary: string;
-  jobType: string;
-  description?: string;
-  priority?: string;
-}
-
-interface VisitLocation {
-  id: string;
-  companyName: string;
-  location?: string;
-  address?: string;
-  city?: string;
-  province?: string;
-  postalCode?: string;
-  phone?: string;
-}
 
 interface VisitNote {
   id: string;
