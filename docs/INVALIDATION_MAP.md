@@ -307,3 +307,52 @@ When a mutation modifies an entity, which query families should be invalidated?
 | **PM template change** | recurring-templates | + recurring-templates/:id/instances/current-month |
 | **Equipment change** | clients/:id/equipment | — |
 | **Time entry change** | admin/timesheets/day, admin/timesheets/week | + jobs/:id/time-summary |
+
+---
+
+## How to Add a New Mutation
+
+When adding any new mutation (create, update, delete) to the app, follow this checklist to ensure all surfaces stay in sync.
+
+### Step 1: Identify affected query families
+
+Ask: "Which data surfaces could change as a result of this mutation?"
+
+Common patterns:
+
+| Mutation type | Affected families |
+|---|---|
+| Create/update/delete a **job** | `["jobs"]`, `["dashboard"]`, `["calendar"]` (if scheduled), `["visits"]` (if visits exist) |
+| Create/update/delete a **visit** | `["visits"]`, `["calendar"]`, `["jobs"]` (parent job schedule syncs via `syncJobScheduleFromVisits`) |
+| Create/update/delete an **invoice** | `["invoices"]`, `["dashboard"]`, `["jobs"]` (job invoice state changes) |
+| Change **tech assignment** | `["visits"]`, `["calendar"]`, `["jobs"]` |
+| Change **job status** | `["jobs"]`, `["dashboard"]`, `["calendar"]` |
+| Change **equipment** | `["/api/clients", locationId, "equipment"]` |
+
+### Step 2: Add invalidation to onSuccess
+
+In the client-side mutation's `onSuccess` callback:
+
+```typescript
+onSuccess: () => {
+  queryClient.invalidateQueries({ queryKey: ["jobs"] });
+  queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+  // ... add each affected family
+}
+```
+
+Always invalidate by **family prefix** (e.g., `["jobs"]`), not by specific query key (e.g., `["jobs", "feed", { status: "open" }]`). Family prefix invalidation catches all queries in that family regardless of their filters.
+
+### Step 3: Update this document
+
+Add a row to the appropriate mutation table in the "Mutations by Source File" section above, with:
+- Mutation name
+- API endpoint it calls
+- All query families it invalidates
+
+### Checklist
+
+- [ ] Identified all affected query families (use Cross-Reference table above)
+- [ ] Added `invalidateQueries` for each family in `onSuccess`
+- [ ] Tested: mutation triggers → all surfaces update without manual refresh
+- [ ] Added entry to this invalidation map document
