@@ -95,6 +95,7 @@ import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Job, Client, CustomerCompany, User as UserType, RecurringJobSeries, Invoice, JobTimeSummary, TimeEntryType } from "@shared/schema";
+import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
 
 // ============================================================================
 // PERMISSION HELPERS - Role-based action availability
@@ -550,9 +551,10 @@ function OfficeActionsStrip({
   );
 }
 
-interface JobDetailResponse extends Job {
-  location?: Client;
-  parentCompany?: CustomerCompany;
+// Phase 4 Step A7: Use canonical JobHeaderDetail type for main job data.
+// The canonical getJobHeader now correctly joins customerCompanies,
+// fixing the location name mismatch between list and detail views.
+interface JobDetailResponse extends JobHeaderDetail {
   technicians?: UserType[];
   recurringSeries?: RecurringJobSeries;
 }

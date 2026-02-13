@@ -46,13 +46,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import type { Job, Client, CustomerCompany, Invoice } from "@shared/schema";
+import type { Invoice } from "@shared/schema";
+import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
 
+// Phase 4 Step A7: Accept canonical JobHeaderDetail which includes
+// correctly resolved location and parentCompany from the COALESCE join.
 interface JobHeaderCardProps {
-  job: Job & {
-    location?: Client;
-    parentCompany?: CustomerCompany;
-  };
+  job: JobHeaderDetail;
   jobInvoice: Invoice | null;
   onEdit: () => void;
   onDelete: () => void;
