@@ -1,7 +1,12 @@
 /**
- * Dashboard Storage Repository
+ * Dashboard Storage — Phase 5 Part B
  *
- * Provides workflow summary counts for the Dashboard workflow strip.
+ * Provides workflow summary counts and needs-attention job list
+ * for the Dashboard page.
+ *
+ * Phase 5 B2: Refactored from class-based DashboardRepository to
+ * function-based QueryCtx pattern. Uses canonical activeJobFilter()
+ * and activeInvoiceFilter() guards instead of inline conditions.
  *
  * NORMALIZED JOB STATUS MODEL (4 values only):
  * - "open"      - Active job that can be worked on
@@ -15,285 +20,268 @@
  * - on_hold      - Job is blocked (requires holdReason)
  * - on_route     - Technician traveling to job
  * - needs_review - Needs supervisor review
- *
- * ASSUMPTIONS:
- * - "completed" status means job work is done, may need invoicing
- * - No quotes table exists in the schema - returns 0 counts
- * - Invoice "balance" field represents outstanding amount (total - amountPaid)
  */
 
-import { db } from "../db";
 import { jobs, invoices, clientLocations as clients, customerCompanies } from "@shared/schema";
-import { eq, and, isNull, or, sql, lt, asc } from "drizzle-orm";
-import { BaseRepository } from "./base";
-import { TERMINAL_STATUSES } from "../statusRules";
+import { eq, and, or, sql, asc } from "drizzle-orm";
+import type { QueryCtx } from "../lib/queryCtx";
+import { activeJobFilter } from "./jobFilters";
+import { activeInvoiceFilter } from "./invoicesFeed";
 
-// Normalized status constants
-// "completed" means work is finished and may need invoicing
-const NEEDS_INVOICING_STATUS = "completed";
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
 
-// Unpaid invoice statuses that count as "outstanding"
-// NOTE: "sent" is LEGACY - new invoices use "awaiting_payment"
-const UNPAID_INVOICE_STATUSES = ["awaiting_payment", "sent", "partial_paid"];
-
+/** Workflow summary for the Dashboard strip. */
 export interface WorkflowSummary {
-  quotes: {
-    approvedCount: number;
-    draftCount: number;
-  };
-  jobs: {
-    requiresInvoicingCount: number;
-    activeCount: number;
-    onHoldCount: number; // Renamed from actionRequiredCount
-  };
-  invoices: {
-    outstandingCount: number;
-    pastDueCount: number;
-  };
+  quotes: { approvedCount: number; draftCount: number };
+  jobs: { requiresInvoicingCount: number; activeCount: number; onHoldCount: number };
+  invoices: { outstandingCount: number; pastDueCount: number };
   fourth: null;
 }
 
-class DashboardRepository extends BaseRepository {
-  /**
-   * Get workflow summary counts for a company.
-   * Used to power the Dashboard workflow strip UI.
-   */
-  async getWorkflowSummary(companyId: string): Promise<WorkflowSummary> {
-    this.assertCompanyId(companyId);
-
-    // Run all count queries in parallel for efficiency
-    const [jobCounts, invoiceCounts] = await Promise.all([
-      this.getJobCounts(companyId),
-      this.getInvoiceCounts(companyId),
-    ]);
-
-    return {
-      quotes: {
-        // No quotes table exists - return 0 counts
-        approvedCount: 0,
-        draftCount: 0,
-      },
-      jobs: jobCounts,
-      invoices: invoiceCounts,
-      fourth: null,
-    };
-  }
-
-  /**
-   * Get job counts by category.
-   * Using normalized 4-status model: open, completed, invoiced, archived
-   */
-  private async getJobCounts(companyId: string): Promise<{
-    requiresInvoicingCount: number;
-    activeCount: number;
-    onHoldCount: number;
-  }> {
-    const terminalList = TERMINAL_STATUSES.map(s => `'${s}'`).join(", ");
-
-    const result = await db
-      .select({
-        // Count jobs needing invoicing (status = 'completed')
-        requiresInvoicingCount: sql<number>`
-          COUNT(*) FILTER (WHERE ${jobs.status} = ${NEEDS_INVOICING_STATUS})
-        `.as("requires_invoicing_count"),
-        // Count active jobs (status = 'open')
-        activeCount: sql<number>`
-          COUNT(*) FILTER (WHERE ${jobs.status} = 'open')
-        `.as("active_count"),
-        // Count jobs on hold (status = 'open' AND openSubStatus = 'on_hold')
-        onHoldCount: sql<number>`
-          COUNT(*) FILTER (WHERE ${jobs.status} = 'open' AND ${jobs.openSubStatus} = 'on_hold')
-        `.as("on_hold_count"),
-      })
-      .from(jobs)
-      .where(
-        and(
-          eq(jobs.companyId, companyId),
-          isNull(jobs.deletedAt),
-          eq(jobs.isActive, true)
-        )
-      );
-
-    const counts = result[0] || {
-      requiresInvoicingCount: 0,
-      activeCount: 0,
-      onHoldCount: 0,
-    };
-
-    return {
-      requiresInvoicingCount: Number(counts.requiresInvoicingCount) || 0,
-      activeCount: Number(counts.activeCount) || 0,
-      onHoldCount: Number(counts.onHoldCount) || 0,
-    };
-  }
-
-  /**
-   * Get invoice counts by category.
-   * Outstanding = unpaid invoices with balance > 0 (status: awaiting_payment, sent, partial_paid)
-   * Past Due = outstanding invoices where dueDate < today
-   */
-  private async getInvoiceCounts(companyId: string): Promise<{
-    outstandingCount: number;
-    pastDueCount: number;
-  }> {
-    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-
-    const result = await db
-      .select({
-        // Count unpaid invoices with balance > 0
-        outstandingCount: sql<number>`
-          COUNT(*) FILTER (
-            WHERE CAST(${invoices.balance} AS NUMERIC) > 0
-            AND ${invoices.status} IN ('awaiting_payment', 'sent', 'partial_paid')
-          )
-        `.as("outstanding_count"),
-        // Count past due: unpaid with balance > 0 AND dueDate < today
-        pastDueCount: sql<number>`
-          COUNT(*) FILTER (
-            WHERE ${invoices.dueDate} < ${today}
-            AND CAST(${invoices.balance} AS NUMERIC) > 0
-            AND ${invoices.status} IN ('awaiting_payment', 'sent', 'partial_paid')
-          )
-        `.as("past_due_count"),
-      })
-      .from(invoices)
-      .where(
-        and(
-          eq(invoices.companyId, companyId),
-          isNull(invoices.deletedAt),
-          // Legacy compatibility: treat NULL isActive as active
-          or(eq(invoices.isActive, true), isNull(invoices.isActive))
-        )
-      );
-
-    const counts = result[0] || {
-      outstandingCount: 0,
-      pastDueCount: 0,
-    };
-
-    return {
-      outstandingCount: Number(counts.outstandingCount) || 0,
-      pastDueCount: Number(counts.pastDueCount) || 0,
-    };
-  }
-
-  /**
-   * Get jobs needing attention for dashboard.
-   * Normalized 4-status model:
-   * Phase 2 Step 5: Overdue = effectiveEnd < now (not scheduledStart)
-   * - Overdue jobs: effectiveEnd < now AND status = 'open'
-   * - On hold jobs: status = 'open' AND openSubStatus = 'on_hold'
-   * - Awaiting invoicing: status = 'completed'
-   * Sort: overdue first (oldest), then on_hold, then completed
-   */
-  async getNeedsAttentionJobs(companyId: string, todayDate: string, limit: number = 5) {
-    this.assertCompanyId(companyId);
-
-    const todayStart = new Date(`${todayDate}T00:00:00.000Z`);
-
-    // Query overdue jobs (effectiveEnd < now, still open)
-    // Phase 2 Step 5: effectiveEnd priority: scheduled_end > scheduled_start + duration_minutes > scheduled_start
-    const overdueJobs = await db
-      .select({
-        id: jobs.id,
-        jobNumber: jobs.jobNumber,
-        summary: jobs.summary,
-        status: jobs.status,
-        scheduledStart: jobs.scheduledStart,
-        locationName: clients.location,
-        locationCompanyName: sql<string>`COALESCE(${customerCompanies.name}, ${clients.companyName})`,
-        location: {
-          companyName: clients.companyName,
-          location: clients.location,
-        },
-        attentionType: sql<string>`'overdue'`.as('attention_type'),
-      })
-      .from(jobs)
-      .leftJoin(clients, eq(jobs.locationId, clients.id))
-      .leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))
-      .where(
-        and(
-          eq(jobs.companyId, companyId),
-          isNull(jobs.deletedAt),
-          eq(jobs.isActive, true),
-          // Must be scheduled
-          sql`${jobs.scheduledStart} IS NOT NULL`,
-          // effectiveEnd < now (job should have finished)
-          sql`CASE
-            WHEN ${jobs.scheduledEnd} IS NOT NULL THEN ${jobs.scheduledEnd}
-            WHEN ${jobs.durationMinutes} IS NOT NULL THEN ${jobs.scheduledStart} + (${jobs.durationMinutes} || ' minutes')::interval
-            ELSE ${jobs.scheduledStart}
-          END < ${todayStart}`,
-          // Only open status jobs (normalized model)
-          eq(jobs.status, "open")
-        )
-      )
-      .orderBy(asc(jobs.scheduledStart));
-
-    // Query attention jobs (on_hold sub-status or completed status)
-    const attentionJobs = await db
-      .select({
-        id: jobs.id,
-        jobNumber: jobs.jobNumber,
-        summary: jobs.summary,
-        status: jobs.status,
-        scheduledStart: jobs.scheduledStart,
-        locationName: clients.location,
-        locationCompanyName: sql<string>`COALESCE(${customerCompanies.name}, ${clients.companyName})`,
-        location: {
-          companyName: clients.companyName,
-          location: clients.location,
-        },
-        attentionType: sql<string>`
-          CASE
-            WHEN ${jobs.openSubStatus} = 'on_hold' THEN 'on_hold'
-            WHEN ${jobs.status} = 'completed' THEN 'requires_invoicing'
-            ELSE 'other'
-          END
-        `.as('attention_type'),
-      })
-      .from(jobs)
-      .leftJoin(clients, eq(jobs.locationId, clients.id))
-      .leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))
-      .where(
-        and(
-          eq(jobs.companyId, companyId),
-          isNull(jobs.deletedAt),
-          eq(jobs.isActive, true),
-          // Attention: on_hold sub-status OR completed status (needs invoicing)
-          or(
-            and(eq(jobs.status, "open"), eq(jobs.openSubStatus, "on_hold")),
-            eq(jobs.status, "completed")
-          )
-        )
-      )
-      .orderBy(
-        // completed (needs invoicing) first (0), then on_hold (1)
-        sql`CASE WHEN ${jobs.status} = 'completed' THEN 0 ELSE 1 END`,
-        asc(jobs.scheduledStart)
-      );
-
-    // Combine: overdue first, then attention jobs, limited
-    // Dedupe by job id (in case a job appears in both)
-    const seenIds = new Set<string>();
-    const combined: typeof overdueJobs = [];
-
-    for (const job of overdueJobs) {
-      if (!seenIds.has(job.id)) {
-        seenIds.add(job.id);
-        combined.push(job);
-      }
-    }
-
-    for (const job of attentionJobs) {
-      if (!seenIds.has(job.id)) {
-        seenIds.add(job.id);
-        combined.push(job);
-      }
-    }
-
-    return combined.slice(0, limit);
-  }
+/**
+ * Phase 5 B2: Dashboard job item with attention classification.
+ * attentionType is presentation logic specific to the dashboard,
+ * not a core job attribute — hence a separate type (Option B).
+ */
+export interface DashboardJobItem {
+  id: string;
+  jobNumber: number;
+  summary: string;
+  status: string;
+  scheduledStart: string | null;
+  locationName: string | null;
+  locationDisplayName: string | null;
+  location: {
+    companyName: string | null;
+    location: string | null;
+  } | null;
+  attentionType: "overdue" | "on_hold" | "requires_invoicing" | "other";
 }
 
-export const dashboardRepository = new DashboardRepository();
+// ---------------------------------------------------------------------------
+// Workflow Summary (counts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Get workflow summary counts for a company.
+ * Phase 5 B2: Now uses QueryCtx + canonical filters.
+ */
+export async function getWorkflowSummary(ctx: QueryCtx): Promise<WorkflowSummary> {
+  const [jobCounts, invoiceCounts] = await Promise.all([
+    getJobCounts(ctx),
+    getInvoiceCounts(ctx),
+  ]);
+
+  return {
+    quotes: { approvedCount: 0, draftCount: 0 }, // No quotes table
+    jobs: jobCounts,
+    invoices: invoiceCounts,
+    fourth: null,
+  };
+}
+
+async function getJobCounts(ctx: QueryCtx) {
+  const result = await ctx.db
+    .select({
+      requiresInvoicingCount: sql<number>`
+        COUNT(*) FILTER (WHERE ${jobs.status} = 'completed')
+      `.as("requires_invoicing_count"),
+      activeCount: sql<number>`
+        COUNT(*) FILTER (WHERE ${jobs.status} = 'open')
+      `.as("active_count"),
+      onHoldCount: sql<number>`
+        COUNT(*) FILTER (WHERE ${jobs.status} = 'open' AND ${jobs.openSubStatus} = 'on_hold')
+      `.as("on_hold_count"),
+    })
+    .from(jobs)
+    .where(and(eq(jobs.companyId, ctx.tenantId), activeJobFilter()));
+
+  const c = result[0] || { requiresInvoicingCount: 0, activeCount: 0, onHoldCount: 0 };
+  return {
+    requiresInvoicingCount: Number(c.requiresInvoicingCount) || 0,
+    activeCount: Number(c.activeCount) || 0,
+    onHoldCount: Number(c.onHoldCount) || 0,
+  };
+}
+
+async function getInvoiceCounts(ctx: QueryCtx) {
+  const today = new Date().toISOString().slice(0, 10);
+
+  const result = await ctx.db
+    .select({
+      outstandingCount: sql<number>`
+        COUNT(*) FILTER (
+          WHERE CAST(${invoices.balance} AS NUMERIC) > 0
+          AND ${invoices.status} IN ('awaiting_payment', 'sent', 'partial_paid')
+        )
+      `.as("outstanding_count"),
+      pastDueCount: sql<number>`
+        COUNT(*) FILTER (
+          WHERE ${invoices.dueDate} < ${today}
+          AND CAST(${invoices.balance} AS NUMERIC) > 0
+          AND ${invoices.status} IN ('awaiting_payment', 'sent', 'partial_paid')
+        )
+      `.as("past_due_count"),
+    })
+    .from(invoices)
+    .where(and(eq(invoices.companyId, ctx.tenantId), activeInvoiceFilter()));
+
+  const c = result[0] || { outstandingCount: 0, pastDueCount: 0 };
+  return {
+    outstandingCount: Number(c.outstandingCount) || 0,
+    pastDueCount: Number(c.pastDueCount) || 0,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Needs-Attention Jobs (thin wrapper — Option B)
+// ---------------------------------------------------------------------------
+
+/** Shared select fields for dashboard job queries. */
+const dashboardJobSelect = {
+  id: jobs.id,
+  jobNumber: jobs.jobNumber,
+  summary: jobs.summary,
+  status: jobs.status,
+  scheduledStart: jobs.scheduledStart,
+  locationName: clients.location,
+  locationDisplayName: sql<string>`COALESCE(${customerCompanies.name}, ${clients.companyName})`,
+  location: {
+    companyName: clients.companyName,
+    location: clients.location,
+  },
+};
+
+function toISOOrNull(val: Date | string | null | undefined): string | null {
+  if (!val) return null;
+  if (val instanceof Date) return val.toISOString();
+  return val;
+}
+
+function mapDashboardRow(row: any, attentionType: string): DashboardJobItem {
+  return {
+    id: row.id,
+    jobNumber: row.jobNumber,
+    summary: row.summary,
+    status: row.status,
+    scheduledStart: toISOOrNull(row.scheduledStart),
+    locationName: row.locationName ?? null,
+    locationDisplayName: row.locationDisplayName ?? null,
+    location: row.location?.companyName
+      ? { companyName: row.location.companyName, location: row.location.location ?? null }
+      : null,
+    attentionType: attentionType as DashboardJobItem["attentionType"],
+  };
+}
+
+/**
+ * Get jobs needing attention for the dashboard widget.
+ * Phase 5 B2: Uses QueryCtx, activeJobFilter(), canonical COALESCE joins.
+ *
+ * Combines:
+ *   1. Overdue jobs (effectiveEnd < now, still open)
+ *   2. On-hold + completed (needs invoicing) attention jobs
+ * Sorted: overdue first (oldest), then requires_invoicing, then on_hold.
+ * Deduplicates by job ID.
+ */
+export async function getNeedsAttentionJobs(
+  ctx: QueryCtx,
+  todayDate: string,
+  limit: number = 5
+): Promise<DashboardJobItem[]> {
+  const todayStart = new Date(`${todayDate}T00:00:00.000Z`);
+
+  // Query 1: Overdue jobs (effectiveEnd < now, still open)
+  const overdueRows = await ctx.db
+    .select({
+      ...dashboardJobSelect,
+      attentionType: sql<string>`'overdue'`.as("attention_type"),
+    })
+    .from(jobs)
+    .leftJoin(clients, eq(jobs.locationId, clients.id))
+    .leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))
+    .where(
+      and(
+        eq(jobs.companyId, ctx.tenantId),
+        activeJobFilter(),
+        sql`${jobs.scheduledStart} IS NOT NULL`,
+        sql`CASE
+          WHEN ${jobs.scheduledEnd} IS NOT NULL THEN ${jobs.scheduledEnd}
+          WHEN ${jobs.durationMinutes} IS NOT NULL THEN ${jobs.scheduledStart} + (${jobs.durationMinutes} || ' minutes')::interval
+          ELSE ${jobs.scheduledStart}
+        END < ${todayStart}`,
+        eq(jobs.status, "open")
+      )
+    )
+    .orderBy(asc(jobs.scheduledStart));
+
+  // Query 2: Attention jobs (on_hold or completed/needs-invoicing)
+  const attentionRows = await ctx.db
+    .select({
+      ...dashboardJobSelect,
+      attentionType: sql<string>`
+        CASE
+          WHEN ${jobs.openSubStatus} = 'on_hold' THEN 'on_hold'
+          WHEN ${jobs.status} = 'completed' THEN 'requires_invoicing'
+          ELSE 'other'
+        END
+      `.as("attention_type"),
+    })
+    .from(jobs)
+    .leftJoin(clients, eq(jobs.locationId, clients.id))
+    .leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))
+    .where(
+      and(
+        eq(jobs.companyId, ctx.tenantId),
+        activeJobFilter(),
+        or(
+          and(eq(jobs.status, "open"), eq(jobs.openSubStatus, "on_hold")),
+          eq(jobs.status, "completed")
+        )
+      )
+    )
+    .orderBy(
+      sql`CASE WHEN ${jobs.status} = 'completed' THEN 0 ELSE 1 END`,
+      asc(jobs.scheduledStart)
+    );
+
+  // Combine: overdue first, then attention, deduped
+  const seenIds = new Set<string>();
+  const combined: DashboardJobItem[] = [];
+
+  for (const row of overdueRows) {
+    if (!seenIds.has(row.id)) {
+      seenIds.add(row.id);
+      combined.push(mapDashboardRow(row, row.attentionType));
+    }
+  }
+  for (const row of attentionRows) {
+    if (!seenIds.has(row.id)) {
+      seenIds.add(row.id);
+      combined.push(mapDashboardRow(row, row.attentionType));
+    }
+  }
+
+  return combined.slice(0, limit);
+}
+
+// ---------------------------------------------------------------------------
+// Legacy export for backward compatibility (used by routes)
+// Phase 5 B2: Thin adapter bridging old class API → new function API
+// ---------------------------------------------------------------------------
+
+export const dashboardRepository = {
+  getWorkflowSummary: (companyId: string) => {
+    // Legacy callers pass companyId directly; wrap in a minimal QueryCtx
+    const { db } = require("../db");
+    const ctx: QueryCtx = { db, tenantId: companyId, userId: "", role: "" };
+    return getWorkflowSummary(ctx);
+  },
+  getNeedsAttentionJobs: (companyId: string, todayDate: string, limit?: number) => {
+    const { db } = require("../db");
+    const ctx: QueryCtx = { db, tenantId: companyId, userId: "", role: "" };
+    return getNeedsAttentionJobs(ctx, todayDate, limit);
+  },
+};
