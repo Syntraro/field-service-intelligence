@@ -18,6 +18,7 @@ import {
 import type { InsertJob, Job, InsertJobPart, JobPart, InsertJobStatusEvent, JobStatusEvent } from "@shared/schema";
 import { BaseRepository } from "./base";
 import { sanitizeAllDayTimestamps } from "../utils/allDaySanitizer";
+import { resolveTechnicianName } from "../lib/resolveTechnicianName";
 import { encodeCursor, decodeCursor } from "../utils/cursor";
 import type { PaginationParams } from "../utils/pagination";
 import type { PaginatedResult } from "./types";
@@ -223,8 +224,9 @@ export class JobRepository extends BaseRepository {
       .where(
         and(
           eq(jobs.companyId, companyId),
-          // SOFT DELETE: Always exclude deleted jobs
-          isNull(jobs.deletedAt)
+          // SOFT DELETE + DEACTIVATION: Always exclude deleted/deactivated jobs
+          isNull(jobs.deletedAt),
+          eq(jobs.isActive, true)
         )
       )
       .$dynamic();
@@ -368,8 +370,9 @@ export class JobRepository extends BaseRepository {
         and(
           eq(jobs.id, jobId),
           eq(jobs.companyId, companyId),
-          // SOFT DELETE: Exclude deleted jobs
-          isNull(jobs.deletedAt)
+          // SOFT DELETE + DEACTIVATION: Exclude deleted/deactivated jobs
+          isNull(jobs.deletedAt),
+          eq(jobs.isActive, true)
         )
       )
       .limit(1);
@@ -454,7 +457,8 @@ export class JobRepository extends BaseRepository {
       const rows = await db
         .update(jobs)
         .set(updateData)
-        .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+        // Prevent updates to deleted/deactivated jobs
+        .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), isNull(jobs.deletedAt), eq(jobs.isActive, true)))
         .returning();
 
       return rows[0] ?? null;
@@ -523,7 +527,8 @@ export class JobRepository extends BaseRepository {
     const rows = await db
       .update(jobs)
       .set(updates)
-      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+      // Prevent status updates to deleted/deactivated jobs
+      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), isNull(jobs.deletedAt), eq(jobs.isActive, true)))
       .returning();
 
     return rows[0] ?? null;
@@ -1248,8 +1253,9 @@ export class JobRepository extends BaseRepository {
           and(
             eq(jobs.id, jobId),
             eq(jobs.companyId, companyId),
-            // SOFT DELETE: Cannot update status of deleted job
-            isNull(jobs.deletedAt)
+            // SOFT DELETE + DEACTIVATION: Cannot update status of deleted/deactivated job
+            isNull(jobs.deletedAt),
+            eq(jobs.isActive, true)
           )
         )
         .limit(1);
@@ -1363,8 +1369,9 @@ export class JobRepository extends BaseRepository {
       .where(
         and(
           eq(jobs.companyId, companyId),
-          // SOFT DELETE: Exclude deleted jobs
+          // SOFT DELETE + DEACTIVATION: Exclude deleted/deactivated jobs
           isNull(jobs.deletedAt),
+          eq(jobs.isActive, true),
           eq(jobs.status, "open"),
           sql`${jobs.openSubStatus} IN ('on_hold', 'needs_review')`
         )
@@ -1407,7 +1414,10 @@ export class JobRepository extends BaseRepository {
         userId: jobScheduleAudit.userId,
         oldFields: jobScheduleAudit.oldFields,
         newFields: jobScheduleAudit.newFields,
-        userName: users.fullName,
+        // Phase 4 Step B6: select name parts for canonical resolution
+        userFullName: users.fullName,
+        userFirstName: users.firstName,
+        userLastName: users.lastName,
         userEmail: users.email,
       })
       .from(jobScheduleAudit)
@@ -1433,7 +1443,13 @@ export class JobRepository extends BaseRepository {
         createdAt: row.createdAt,
         contextLabel: row.contextLabel,
         userId: row.userId,
-        userName: row.userName,
+        // Phase 4 Step B6: canonical tech name resolution
+        userName: resolveTechnicianName({
+          fullName: row.userFullName,
+          firstName: row.userFirstName,
+          lastName: row.userLastName,
+          email: row.userEmail,
+        }),
         userEmail: row.userEmail,
         oldFields,
         newFields,
