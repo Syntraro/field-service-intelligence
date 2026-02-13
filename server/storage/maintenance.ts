@@ -24,6 +24,7 @@ export class MaintenanceRepository extends BaseRepository {
         and(
           eq(jobs.companyId, companyId),
           isNull(jobs.deletedAt),
+          eq(jobs.isActive, true),
           eq(jobs.status, 'completed'),
           isNotNull(jobs.billingNotes) // Completion notes stored in billingNotes
         )
@@ -39,7 +40,7 @@ export class MaintenanceRepository extends BaseRepository {
   async getMaintenanceStatuses(companyId: string) {
     // Derive status from job fields
     // Phase 2 Step 5: Overdue = effectiveEnd < NOW
-    // effectiveEnd priority: scheduled_end > scheduled_start + estimated_duration_minutes > scheduled_start
+    // effectiveEnd priority: scheduled_end > scheduled_start + duration_minutes > scheduled_start
     const statusExpr = sql<string>`
       CASE
         WHEN ${jobs.status} = 'completed' THEN 'completed'
@@ -65,7 +66,8 @@ export class MaintenanceRepository extends BaseRepository {
       .where(
         and(
           eq(jobs.companyId, companyId),
-          isNull(jobs.deletedAt)
+          isNull(jobs.deletedAt),
+          eq(jobs.isActive, true)
         )
       )
       .groupBy(statusExpr);

@@ -111,7 +111,8 @@ class DashboardRepository extends BaseRepository {
       .where(
         and(
           eq(jobs.companyId, companyId),
-          isNull(jobs.deletedAt)
+          isNull(jobs.deletedAt),
+          eq(jobs.isActive, true)
         )
       );
 
@@ -193,7 +194,7 @@ class DashboardRepository extends BaseRepository {
     const todayStart = new Date(`${todayDate}T00:00:00.000Z`);
 
     // Query overdue jobs (effectiveEnd < now, still open)
-    // Phase 2 Step 5: effectiveEnd priority: scheduled_end > scheduled_start + estimated_duration_minutes > scheduled_start
+    // Phase 2 Step 5: effectiveEnd priority: scheduled_end > scheduled_start + duration_minutes > scheduled_start
     const overdueJobs = await db
       .select({
         id: jobs.id,
@@ -216,6 +217,7 @@ class DashboardRepository extends BaseRepository {
         and(
           eq(jobs.companyId, companyId),
           isNull(jobs.deletedAt),
+          eq(jobs.isActive, true),
           // Must be scheduled
           sql`${jobs.scheduledStart} IS NOT NULL`,
           // effectiveEnd < now (job should have finished)
@@ -259,6 +261,7 @@ class DashboardRepository extends BaseRepository {
         and(
           eq(jobs.companyId, companyId),
           isNull(jobs.deletedAt),
+          eq(jobs.isActive, true),
           // Attention: on_hold sub-status OR completed status (needs invoicing)
           or(
             and(eq(jobs.status, "open"), eq(jobs.openSubStatus, "on_hold")),
