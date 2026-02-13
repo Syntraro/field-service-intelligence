@@ -63,20 +63,20 @@ export default function LocationEquipmentSection({ locationId }: LocationEquipme
   const [formData, setFormData] = useState(emptyEquipment);
 
   const { data: equipment = [], isLoading } = useQuery<LocationEquipment[]>({
-    queryKey: ["/api/locations", locationId, "equipment"],
+    queryKey: ["/api/clients", locationId, "equipment"],
   });
 
   const { data: equipmentDetails } = useQuery<{ equipment: LocationEquipment; serviceHistory: Job[] }>({
-    queryKey: ["/api/locations", locationId, "equipment", expandedEquipmentId],
+    queryKey: ["/api/clients", locationId, "equipment", expandedEquipmentId],
     enabled: !!expandedEquipmentId,
   });
 
   const createMutation = useMutation({
     mutationFn: async (data: typeof formData) => {
-      return await apiRequest(`/api/locations/${locationId}/equipment`, { method: "POST", body: JSON.stringify(data) });
+      return await apiRequest(`/api/clients/${locationId}/equipment`, { method: "POST", body: JSON.stringify(data) });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/locations", locationId, "equipment"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "equipment"] });
       setIsAddDialogOpen(false);
       setFormData(emptyEquipment);
       toast({
@@ -95,10 +95,11 @@ export default function LocationEquipmentSection({ locationId }: LocationEquipme
 
   const updateMutation = useMutation({
     mutationFn: async ({ id, data }: { id: string; data: typeof formData }) => {
-      return await apiRequest(`/api/locations/${locationId}/equipment/${id}`, { method: "PUT", body: JSON.stringify(data) });
+      // Phase 6 C3: Use PATCH to match server route (was PUT)
+      return await apiRequest(`/api/clients/${locationId}/equipment/${id}`, { method: "PATCH", body: JSON.stringify(data) });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/locations", locationId, "equipment"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "equipment"] });
       setEditingEquipment(null);
       setFormData(emptyEquipment);
       toast({
@@ -117,10 +118,10 @@ export default function LocationEquipmentSection({ locationId }: LocationEquipme
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
-      await apiRequest(`/api/locations/${locationId}/equipment/${id}`, { method: "DELETE" });
+      await apiRequest(`/api/clients/${locationId}/equipment/${id}`, { method: "DELETE" });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/locations", locationId, "equipment"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "equipment"] });
       toast({
         title: "Equipment Removed",
         description: "The equipment has been removed from this location.",

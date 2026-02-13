@@ -61,9 +61,10 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
   });
 
   const { data: locationEquipment = [], isLoading: locationEquipmentLoading } = useQuery<LocationEquipment[]>({
-    queryKey: ["/api/locations", locationId, "equipment"],
+    // Phase 6 C3: Use correct /api/clients path to match server route
+    queryKey: ["/api/clients", locationId, "equipment"],
     queryFn: async () => {
-      const res = await fetch(`/api/locations/${locationId}/equipment`, { credentials: "include" });
+      const res = await fetch(`/api/clients/${locationId}/equipment`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch location equipment");
       return res.json();
     },
