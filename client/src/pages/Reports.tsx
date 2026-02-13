@@ -83,8 +83,9 @@ interface ClientScheduleItem {
 }
 
 export default function Reports() {
-  const [selectedMonth, setSelectedMonth] = useState<number>(new Date().getMonth());
-  const [scheduleMonth, setScheduleMonth] = useState<number>(new Date().getMonth());
+  // getMonth() is 0-indexed; API expects 1-indexed months
+  const [selectedMonth, setSelectedMonth] = useState<number>(new Date().getMonth() + 1);
+  const [scheduleMonth, setScheduleMonth] = useState<number>(new Date().getMonth() + 1);
   const [activeTab, setActiveTab] = useState<string>("parts");
   const [, setLocation] = useLocation();
   const [addClientDialogOpen, setAddClientDialogOpen] = useState(false);
