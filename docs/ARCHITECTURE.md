@@ -93,9 +93,9 @@ Single source of truth for invoice list and stats queries. Read-only module; mut
 
 **Exported types:** `InvoiceFeedFilters`, `InvoiceFeedItem`, `InvoiceStatsResult`
 
-**Query key family:** `["invoices"]`
+**Query key family:** `["invoices"]` (exported as `INVOICES_FEED_FAMILY_KEY` from `client/src/hooks/useInvoicesFeed.ts`)
 
-**Client hooks:** Not yet created. Invoice pages currently use direct `useQuery` calls. A canonical `useInvoicesFeed` hook should be created when invoice pages are migrated.
+**Client consumers:** `InvoicesListPage` (via `useInvoicesFeed`, `useInvoiceStats`), `JobDetailPage` (via `useInvoiceByJob`), `Dashboard` (via `useDashboardInvoices`)
 
 ### Dashboard — `server/storage/dashboard.ts`
 
@@ -110,7 +110,9 @@ Workflow summary counts and needs-attention job list.
 
 **Exported types:** `WorkflowSummary`, `DashboardJobItem` (includes `attentionType: "overdue" | "on_hold" | "requires_invoicing" | "other"`)
 
-**Query key family:** `["dashboard"]`
+**Query key family:** `["dashboard"]` (exported as `DASHBOARD_FAMILY_KEY` from `client/src/hooks/useDashboard.ts`)
+
+**Client consumers:** `Dashboard` (via `useWorkflowSummary`, `useNeedsAttention`)
 
 **Key behaviors:**
 - Uses `activeJobFilter()` and `activeInvoiceFilter()` guards.
@@ -202,7 +204,14 @@ Raw SQL constants also exported: `JOB_ACTIVE_SQL_J`, `JOB_ACTIVE_SQL`, `JOB_ACTI
 | `useVisitFeed(params, options?)` | `client/src/hooks/useVisitFeed.ts` | `["visits", from, to, techId, status, ...]` | `["visits"]` | default |
 | `useJobsFeed(params?, options?)` | `client/src/hooks/useJobsFeed.ts` | `["jobs", "feed", status, techId, ...]` | `["jobs"]` | default |
 | `useJobHeader(jobId)` | `client/src/hooks/useJobsFeed.ts` | `["jobs", "detail", jobId]` | `["jobs"]` | default |
-Family key constants are exported from each hook file (e.g., `VISIT_FEED_FAMILY_KEY`, `JOBS_FEED_FAMILY_KEY`).
+| `useInvoicesFeed(params?)` | `client/src/hooks/useInvoicesFeed.ts` | `["invoices", "feed", {offset, limit}]` | `["invoices"]` | default |
+| `useInvoiceStats()` | `client/src/hooks/useInvoicesFeed.ts` | `["invoices", "stats"]` | `["invoices"]` | default |
+| `useInvoiceByJob(jobId)` | `client/src/hooks/useInvoicesFeed.ts` | `["invoices", "by-job", jobId]` | `["invoices"]` | default |
+| `useDashboardInvoices()` | `client/src/hooks/useInvoicesFeed.ts` | `["invoices", "dashboard"]` | `["invoices"]` | 60s |
+| `useWorkflowSummary(options?)` | `client/src/hooks/useDashboard.ts` | `["dashboard", "workflow"]` | `["dashboard"]` | 60s |
+| `useNeedsAttention(params?, options?)` | `client/src/hooks/useDashboard.ts` | `["dashboard", "needs-attention", {date}]` | `["dashboard"]` | 60s |
+
+Family key constants are exported from each hook file (`VISIT_FEED_FAMILY_KEY`, `JOBS_FEED_FAMILY_KEY`, `INVOICES_FEED_FAMILY_KEY`, `DASHBOARD_FAMILY_KEY`).
 
 ---
 
@@ -309,7 +318,8 @@ Invoice queries use `activeInvoiceFilter()` from `server/storage/invoicesFeed.ts
 | Calendar projection | `server/storage/calendar.ts` |
 | Visit feed hook | `client/src/hooks/useVisitFeed.ts` |
 | Jobs feed hook | `client/src/hooks/useJobsFeed.ts` |
-| Invoices feed hook | *(not yet created — invoice pages use direct `useQuery`)* |
+| Invoices feed hook | `client/src/hooks/useInvoicesFeed.ts` |
+| Dashboard hook | `client/src/hooks/useDashboard.ts` |
 | Mutation invalidation groups | `client/src/hooks/useMutationWithToast.ts` |
 | Invalidation map | `docs/INVALIDATION_MAP.md` |
 | Equipment migration | `docs/EQUIPMENT_MIGRATION.md` |
