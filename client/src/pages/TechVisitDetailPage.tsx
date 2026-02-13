@@ -40,6 +40,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { VISIT_FEED_FAMILY_KEY } from "@/hooks/useVisitFeed";
 import type { VisitJob, VisitLocation } from "@shared/types/visits";
 
 // -- Types --
@@ -119,13 +120,14 @@ export default function TechVisitDetailPage() {
   const notes = data?.notes ?? [];
 
   // -- Mutations --
+  // Phase 3 Step D5: Family-based invalidation for canonical visit feed
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: [`/api/tech/visits/${visitId}`] });
-    queryClient.invalidateQueries({ queryKey: ["/api/tech/visits/today"] });
-    // Refresh calendar + job views that reflect visit status changes
+    queryClient.invalidateQueries({ queryKey: VISIT_FEED_FAMILY_KEY });
     queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
     queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+    // Phase 4 Step C5: canonical family key
+    queryClient.invalidateQueries({ queryKey: ["jobs"] });
     queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
   };
 

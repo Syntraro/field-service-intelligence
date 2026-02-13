@@ -3,7 +3,7 @@
 > Canonical reference for every client-side mutation and the TanStack Query keys
 > it invalidates on success. Created as part of Phase 3 (Canonical Visit Feed Migration).
 >
-> **Last audited:** 2026-02-12 (post-Phase 2 fixes)
+> **Last audited:** 2026-02-13 (Phase 4 — Jobs Canonicalization)
 
 ---
 
@@ -12,10 +12,10 @@
 | Family | Key Prefix | Description |
 |---|---|---|
 | **Calendar** | `/api/calendar`, `/api/calendar/range`, `/api/calendar/unscheduled` | Scheduled events, date-range view, backlog sidebar |
-| **Jobs** | `/api/jobs` | Job list, detail, visits, time-summary |
+| **Jobs** | `["jobs"]` (family prefix) | Canonical feed `["jobs","feed",…]`, detail `["jobs","detail",jobId]`. Sub-resources still use `/api/jobs/:id/*` keys. |
 | **Dashboard** | `/api/dashboard`, `/api/dashboard/needs-attention` | Workflow counts and attention jobs |
 | **Invoices** | `/api/invoices`, `/api/invoices/list`, `/api/invoices/stats`, `/api/invoices/dashboard` | Invoice list, stats, dashboard widget |
-| **Visits (Tech)** | `/api/tech/visits/today`, `/api/tech/visits/:id` | Technician field-app visit feed |
+| **Visits** | `["visits"]` (family prefix) | Canonical visit keys `["visits", jobId, "all"]`. Tech feed: `/api/tech/visits/today`, `/api/tech/visits/:id` |
 | **Clients** | `/api/clients`, `/api/clients/:id` | Client locations and detail |
 | **Customer Companies** | `/api/customer-companies/:id` | Parent company overview, locations |
 | **Maintenance/PM** | `/api/maintenance`, `/api/recurring-templates` | PM statuses, recently completed, templates |
@@ -34,8 +34,8 @@
 |---|---|
 | `invalidateCalendarQueries(qc, op)` | `/api/calendar`, `/api/calendar/range` |
 | `invalidateCalendarAndUnscheduledQueries(qc, op)` | `/api/calendar`, `/api/calendar/range`, `/api/calendar/unscheduled` |
-| `invalidateJobQueries(qc, op, jobId?)` | `/api/jobs`, `/api/jobs/:jobId` (if jobId provided) |
-| `invalidateVisitQueries(qc, op, jobId)` | `/api/jobs/:jobId/visits`, `/api/jobs/:jobId/visits/all` |
+| `invalidateJobQueries(qc, op, jobId?)` | `["jobs"]` — family-wide, matches feed + detail + any sub-keys (Phase 4) |
+| `invalidateVisitQueries(qc, op, jobId)` | `["visits"]` — family-wide (Phase 4) |
 
 ### `useCalendarDnD.ts` — Internal Helpers
 
@@ -49,14 +49,14 @@
 
 | Keys Invalidated |
 |---|
-| `/api/calendar`, `/api/calendar/range`, `/api/calendar/unscheduled`, `/api/jobs`, `/api/jobs/:jobId` (if provided) |
+| `/api/calendar`, `/api/calendar/range`, `/api/calendar/unscheduled`, `["jobs"]` family-wide (Phase 4) |
 
 ### `useMutationWithToast.ts` — `QUERY_GROUPS`
 
 | Group | Keys |
 |---|---|
 | `calendar` | `/api/calendar`, `/api/calendar/all`, `/api/calendar/overdue`, `/api/calendar/unscheduled` |
-| `jobs` | `/api/jobs` |
+| `jobs` | `["jobs"]` (Phase 4 canonical family key) |
 | `clients` | `/api/clients` |
 | `maintenance` | `/api/maintenance/statuses`, `/api/maintenance/recently-completed` |
 | `invoices` | `/api/invoices` |

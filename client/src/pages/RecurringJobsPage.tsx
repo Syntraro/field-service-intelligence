@@ -234,7 +234,8 @@ export default function RecurringJobsPage() {
     onSuccess: (result: GenerationResult) => {
       queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
       queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates/preview"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      // Phase 4 Step C5: canonical family key
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
       setLastGenerationResult(result);
       toast({

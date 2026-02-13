@@ -872,8 +872,8 @@ function VisitDetailDialog({
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "visits"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
+      queryClient.invalidateQueries({ queryKey: ["visits"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
       toast({ title: "Visit Updated", description: "Visit status has been updated." });
     },
     onError: (error: Error) => {
@@ -887,8 +887,8 @@ function VisitDetailDialog({
       return apiRequest(`/api/jobs/${jobId}/visits/${visitId}`, { method: "DELETE" });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "visits"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
+      queryClient.invalidateQueries({ queryKey: ["visits"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       toast({ title: "Visit Deleted", description: "Visit has been removed." });
       onOpenChange(false);
@@ -1164,10 +1164,10 @@ export default function JobDetailPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      // (covered by family-wide ["jobs"] invalidation)
       // Also invalidate time summary so Labour card updates immediately
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-summary"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs", jobId, "time-summary"] });
       // Refresh calendar and dashboard to reflect status change
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
@@ -1197,8 +1197,8 @@ export default function JobDetailPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      // (covered by family-wide ["jobs"] invalidation)
       toast({
         title: "Hold Cleared",
         description: "Job is no longer on hold.",
@@ -1226,7 +1226,7 @@ export default function JobDetailPage() {
     },
     onSuccess: () => {
       // Invalidate ALL related queries so deleted job disappears from all views
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      // (covered by family-wide ["jobs"] invalidation)
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       queryClient.invalidateQueries({ queryKey: ["/api/maintenance"] });
       queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
@@ -1263,7 +1263,7 @@ export default function JobDetailPage() {
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
       toast({
         title: "Invoice Created",
         description: "Invoice has been created from this job.",
@@ -1305,8 +1305,8 @@ export default function JobDetailPage() {
           method: "POST",
           body: JSON.stringify({ status: "open", openSubStatus: subStatus, version: job.version, source: "web" }),
         }).then(() => {
-          queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
-          queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+          queryClient.invalidateQueries({ queryKey: ["jobs"] });
+          // (covered by family-wide ["jobs"] invalidation)
           toast({ title: "Status Updated", description: "Job status has been updated." });
         }).catch((error: Error) => {
           toast({ title: "Error", description: error.message || "Failed to update status", variant: "destructive" });
@@ -1778,7 +1778,7 @@ export default function JobDetailPage() {
         onOpenChange={setShowEditDialog}
         editJob={job}
         onSuccess={() => {
-          queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
+          queryClient.invalidateQueries({ queryKey: ["jobs"] });
         }}
       />
 
@@ -1904,8 +1904,8 @@ export default function JobDetailPage() {
         jobId={job.id}
         assignedTechnicianIds={job.assignedTechnicianIds || []}
         onSuccess={() => {
-          queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-summary"] });
-          queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-entries"] });
+          queryClient.invalidateQueries({ queryKey: ["jobs", jobId, "time-summary"] });
+          queryClient.invalidateQueries({ queryKey: ["jobs", jobId, "time-entries"] });
         }}
       />
 
@@ -1918,8 +1918,8 @@ export default function JobDetailPage() {
         jobId={job.id}
         entry={editingTimeEntry}
         onSuccess={() => {
-          queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-summary"] });
-          queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-entries"] });
+          queryClient.invalidateQueries({ queryKey: ["jobs", jobId, "time-summary"] });
+          queryClient.invalidateQueries({ queryKey: ["jobs", jobId, "time-entries"] });
         }}
       />
     </div>

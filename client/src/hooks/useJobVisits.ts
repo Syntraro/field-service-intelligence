@@ -26,7 +26,8 @@ export function useJobVisits(jobId: string, options: UseJobVisitsOptions = {}) {
 
   // Fetch ALL visits including inactive for history display
   const query = useQuery<JobVisit[]>({
-    queryKey: ["/api/jobs", jobId, "visits", "all"],
+    // Phase 4 Step C5: canonical visit family key
+    queryKey: ["visits", jobId, "all"],
     queryFn: async () => {
       const res = await fetch(`/api/jobs/${jobId}/visits?all=true`, {
         credentials: "include",
@@ -98,11 +99,10 @@ export function useJobVisits(jobId: string, options: UseJobVisitsOptions = {}) {
     };
   }, [visits]);
 
-  // Mutation to refetch after calendar operations
+  // Phase 4 Step C5: family-key invalidation for visits and jobs
   const refetchVisits = () => {
-    queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "visits"] });
-    // Also invalidate job detail query if needed
-    queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
+    queryClient.invalidateQueries({ queryKey: ["visits"] });
+    queryClient.invalidateQueries({ queryKey: ["jobs"] });
   };
 
   return {

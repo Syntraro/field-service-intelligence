@@ -255,8 +255,6 @@ function invalidateScheduleQueries(jobId?: string) {
   queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
   queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
   queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-  queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-  if (jobId) {
-    queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
-  }
+  // Phase 4 Step C5: single family-wide invalidation covers feed + detail
+  queryClient.invalidateQueries({ queryKey: ["jobs"] });
 }

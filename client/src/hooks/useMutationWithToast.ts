@@ -10,8 +10,9 @@ export const QUERY_GROUPS = {
     ["/api/calendar/overdue"],
     ["/api/calendar/unscheduled"],
   ],
+  // Phase 4 Step C5: canonical family key
   jobs: [
-    ["/api/jobs"],
+    ["jobs"],
   ],
   clients: [
     ["/api/clients"],
@@ -29,6 +30,9 @@ export const QUERY_GROUPS = {
   parts: [
     ["/api/items"],
     ["/api/client-parts/bulk"],
+  ],
+  dashboard: [
+    ["/api/dashboard"],
   ],
 } as const;
 

@@ -150,7 +150,8 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
     },
     onSuccess: (data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "parts"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
+      // Phase 4 Step C5: canonical family key
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
       const modeLabel = variables.mode === "replace" ? "replaced" : "merged";
       const skipMsg = data.skippedCount > 0 ? ` (${data.skippedCount} duplicates skipped)` : "";
       toast({

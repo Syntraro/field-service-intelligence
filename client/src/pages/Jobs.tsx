@@ -261,8 +261,8 @@ export default function Jobs() {
       });
     },
     onSuccess: (_, jobId) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
+      // Phase 4 Step C5: family-wide invalidation
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
       toast({ title: "Job escalated", description: "The job has been marked as escalated." });
     },
     onError: (error: Error) => {
@@ -288,8 +288,8 @@ export default function Jobs() {
       });
     },
     onSuccess: (_, { jobId, payload }) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
+      // Phase 4 Step C5: family-wide invalidation
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
       const field = payload.nextActionDate !== undefined ? "next action date" : "notes";
       toast({ title: "Updated", description: `Action required ${field} updated.` });
     },

@@ -133,8 +133,10 @@ export function invalidateCalendarAndUnscheduledQueries(
 }
 
 /**
- * Invalidate job queries (list and optionally specific job)
- * Most operations need this to refresh job data in various views
+ * Invalidate job queries using the canonical ['jobs'] family key.
+ * Phase 4 Step C5: Single family-wide invalidation replaces individual key patterns.
+ * invalidateQueries({ queryKey: ['jobs'] }) matches all keys starting with 'jobs':
+ *   ['jobs', 'feed', ...], ['jobs', 'detail', jobId], etc.
  */
 export function invalidateJobQueries(
   queryClient: QueryClient,
@@ -144,17 +146,10 @@ export function invalidateJobQueries(
 ) {
   startInvalidationTracking();
 
-  const keys = ["/api/jobs"];
-  if (jobId) {
-    keys.push(`/api/jobs/${jobId}`);
-  }
-  logInvalidation(operation, keys, context);
+  logInvalidation(operation, ["jobs"], context);
 
-  queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-  if (jobId) {
-    // Also invalidate specific job queries for immediate refresh
-    queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
-  }
+  // Family-wide invalidation: matches feed + detail + any sub-keys
+  queryClient.invalidateQueries({ queryKey: ["jobs"] });
 
   endInvalidationTracking();
 }
@@ -177,8 +172,8 @@ export function invalidateVisitQueries(
   ];
   logInvalidation(operation, keys, context);
 
-  queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "visits"] });
-  queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "visits", "all"] });
+  // Phase 4 Step C5: use visit family key
+  queryClient.invalidateQueries({ queryKey: ["visits"] });
 
   endInvalidationTracking();
 }

@@ -125,9 +125,10 @@ export function AddTimeEntryModal({
         title: "Time Entry Added",
         description: "The time entry has been created successfully.",
       });
-      // Invalidate job time queries
+      // Invalidate job time sub-resource queries + canonical family
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-summary"] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-entries"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
       onOpenChange(false);
       onSuccess?.();
     },

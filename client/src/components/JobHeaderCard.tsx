@@ -107,7 +107,7 @@ export function JobHeaderCard({
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/stats"] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/dashboard"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
       toast({ title: "Invoice Created", description: "Invoice has been created from this job." });
       setLocation(`/invoices/${data.id}`);
     },
@@ -136,8 +136,8 @@ export function JobHeaderCard({
       return response as { job: any };
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      // (covered by family-wide ["jobs"] invalidation above)
       toast({ title: "Undo Successful", description: "Job close has been undone." });
     },
     onError: (error: Error) => {
@@ -158,9 +158,9 @@ export function JobHeaderCard({
       return { ...(response as { job: any; invoice: any | null }), mode };
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id, "visits"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      // (covered by family-wide ["jobs"] invalidation above)
+      queryClient.invalidateQueries({ queryKey: ["visits"] });
       setShowCloseJobDialog(false);
       setUncompletedVisitsGuardrail(null);
 
@@ -221,8 +221,8 @@ export function JobHeaderCard({
       return response as { job: any };
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      // (covered by family-wide ["jobs"] invalidation above)
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });

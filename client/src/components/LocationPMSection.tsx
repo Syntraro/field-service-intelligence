@@ -164,7 +164,8 @@ export default function LocationPMSection({ locationId }: LocationPMSectionProps
       return await apiRequest(`/api/locations/${locationId}/generate-pm-job`, { method: "POST", body: JSON.stringify({ date }) });
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      // Phase 4 Step C5: canonical family key
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
       toast({
         title: "PM Job Created",
         description: `Created job #${data.job.jobNumber} with ${data.parts.length} parts.`,

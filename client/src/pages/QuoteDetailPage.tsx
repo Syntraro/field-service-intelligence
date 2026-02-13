@@ -230,7 +230,8 @@ export default function QuoteDetailPage() {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      // Phase 4 Step C5: canonical family key
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
       setShowConvertToJobConfirm(false);
       toast({ title: "Quote converted", description: data.message });
       // Navigate to the new job

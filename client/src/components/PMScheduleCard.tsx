@@ -3,7 +3,7 @@
  *
  * Fetches recurring templates for the location, identifies the PM template
  * (jobType=maintenance with monthsOfYear set), and displays either a
- * "No schedule" state or a summary with Edit/Pause/Resume/Preview/Delete actions.
+ * "No schedule" state or a summary with Edit/Pause/Resume/Delete actions.
  *
  * Generation is scoped to current month only (windowDays to end of month).
  * After generation, surfaces existing job link when no new jobs are needed.
@@ -28,13 +28,13 @@ import { Input } from "@/components/ui/input";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { ChevronDown, ChevronRight, Pause, Play, Eye, Pencil, Zap, Archive } from "lucide-react";
+import { ChevronDown, ChevronRight, Pause, Play, Pencil, Zap, Archive } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import PMSetupModal from "./PMSetupModal";
 import type { RecurringJobTemplate } from "@shared/schema";
-import { format } from "date-fns";
+
 
 const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
 
@@ -126,7 +126,6 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
   const [, navigate] = useLocation();
   const [setupModalOpen, setSetupModalOpen] = useState(false);
   const [editMode, setEditMode] = useState(false);
-  const [previewOpen, setPreviewOpen] = useState(false);
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
   const [hardDeleteDialogOpen, setHardDeleteDialogOpen] = useState(false);
   const [hardDeleteConfirmText, setHardDeleteConfirmText] = useState("");
@@ -163,17 +162,6 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
     return withJob?.job ?? discoveredJob;
   }, [currentMonthInstances, discoveredJob]);
 
-  // Preview query — fetch upcoming 6 occurrences across next 12 months
-  const { data: previewInstances = [], isLoading: previewLoading } = useQuery<InstanceWithJob[]>({
-    queryKey: ["/api/recurring-templates", pmTemplate?.id, "instances", "preview"],
-    queryFn: () => {
-      const today = new Date().toISOString().split("T")[0];
-      const future = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-      return apiRequest(`/api/recurring-templates/${pmTemplate!.id}/instances?from=${today}&to=${future}&limit=6`);
-    },
-    enabled: Boolean(pmTemplate?.id) && previewOpen,
-  });
-
   // Toggle isActive (pause/resume)
   const toggleActiveMutation = useMutation({
     mutationFn: async () => {
@@ -199,7 +187,9 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
       return apiRequest(`/api/recurring-templates/${pmTemplate.id}`, { method: "DELETE" });
     },
     onSuccess: () => {
+      setDiscoveredJob(null);
       queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates", pmTemplate?.id, "instances", "current-month"] });
       setArchiveDialogOpen(false);
       toast({ title: "PM schedule removed", description: "Existing PM jobs remain and must be removed manually." });
     },
@@ -215,7 +205,9 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
       return apiRequest(`/api/recurring-templates/${pmTemplate.id}?hard=true`, { method: "DELETE" });
     },
     onSuccess: () => {
+      setDiscoveredJob(null);
       queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates", pmTemplate?.id, "instances", "current-month"] });
       setHardDeleteDialogOpen(false);
       setHardDeleteConfirmText("");
       toast({ title: "PM schedule permanently deleted" });
@@ -225,31 +217,68 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
     },
   });
 
-  // Generate current month only — scoped windowDays to end of this month
+  // Generate current month only — uses scope=current_month for month-keyed generation
+  // Bypasses window-based logic; generates by monthKey (1st of month) regardless of day
   const generateMutation = useMutation({
     mutationFn: async () => {
       if (!pmTemplate) return;
-      const windowDays = computeCurrentMonthWindowDays();
-      return apiRequest<{ jobsCreated?: number }>(`/api/recurring-templates/${pmTemplate.id}/generate?windowDays=${windowDays}`, {
+      // Clear stale state BEFORE the API call so the UI never renders a ghost job
+      setDiscoveredJob(null);
+      return apiRequest<{
+        jobsCreated?: number;
+        pmResult?: {
+          createdCount: number;
+          reason: string;
+          existingJob?: { id: string; jobNumber: number } | null;
+          monthKey: string;
+        };
+      }>(`/api/recurring-templates/${pmTemplate.id}/generate?scope=current_month`, {
         method: "POST",
       });
     },
     onSuccess: async (result) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-      // Always refresh "This month" row after any generate attempt
-      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates", pmTemplate?.id, "instances", "current-month"] });
+      // Invalidate and AWAIT so subsequent reads see fresh data
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] }),
+        // Phase 4 Step C5: canonical family key
+        queryClient.invalidateQueries({ queryKey: ["jobs"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates", pmTemplate?.id, "instances", "current-month"] }),
+      ]);
 
-      const created = result?.jobsCreated ?? 0;
+      const pmResult = result?.pmResult;
+      const created = pmResult?.createdCount ?? result?.jobsCreated ?? 0;
 
       if (created > 0) {
-        setDiscoveredJob(null); // Clear stale cross-template discovery
         toast({ title: `PM job created for ${MONTH_LABELS[currentMonth - 1]}` });
         return;
       }
 
-      // 0 jobs created — search PM templates for this location (including archived)
-      // to find an existing job. The job may have been created by an older template.
+      // 0 jobs created — use the reason from pmResult for better diagnostics
+      const reason = pmResult?.reason;
+
+      if (reason === "EXISTS" && pmResult?.existingJob) {
+        setDiscoveredJob({
+          id: pmResult.existingJob.id,
+          jobNumber: pmResult.existingJob.jobNumber,
+          summary: pmTemplate?.title ?? "PM",
+          status: "open",
+        });
+        toast({
+          title: `PM job for ${MONTH_LABELS[currentMonth - 1]} already exists`,
+          description: `#${pmResult.existingJob.jobNumber}`,
+        });
+        return;
+      }
+
+      if (reason === "MONTH_EXCLUDED") {
+        toast({
+          title: `${MONTH_LABELS[currentMonth - 1]} not in schedule`,
+          description: "Current month is not included in the PM schedule months.",
+        });
+        return;
+      }
+
+      // Fallback: cross-template discovery for edge cases
       const pmTemplatesForLocation = templates.filter(
         (t) => isPmTemplate(t, locationId) && t.monthsOfYear?.includes(currentMonth)
       );
@@ -270,21 +299,21 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
         }
       }
 
+      // Always overwrite discoveredJob with the current discovery result
+      setDiscoveredJob(existingJob);
+
       if (existingJob) {
-        setDiscoveredJob(existingJob);
         toast({
           title: `PM job for ${MONTH_LABELS[currentMonth - 1]} already exists`,
           description: `#${existingJob.jobNumber} — ${existingJob.summary}`,
         });
       } else {
-        // No job found anywhere — surface clear "none found" message + dev diagnostics
         if (process.env.NODE_ENV !== "production") {
           console.warn("[PM] Generate returned 0 jobs and no existing job found.", {
             templateId: pmTemplate?.id,
             locationId,
-            from: monthFrom,
-            to: monthTo,
-            windowDays: computeCurrentMonthWindowDays(),
+            reason,
+            monthKey: pmResult?.monthKey,
             generateResponse: JSON.stringify(result),
             pmTemplatesSearched: pmTemplatesForLocation.map((t) => t.id),
           });
@@ -426,16 +455,6 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
                         <><Play className="h-3 w-3 mr-1" />Resume</>
                       )}
                     </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-7 text-xs"
-                      onClick={() => setPreviewOpen(true)}
-                      data-testid="pm-preview-btn"
-                    >
-                      <Eye className="h-3 w-3 mr-1" />
-                      Preview
-                    </Button>
                     {/* Default delete = soft delete (archive) */}
                     <Button
                       variant="outline"
@@ -479,45 +498,6 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
         clientId={clientId}
         existing={editMode ? pmTemplate : null}
       />
-
-      {/* Preview Dialog */}
-      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Upcoming PM Occurrences</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-2 py-2">
-            {previewLoading ? (
-              <p className="text-xs text-muted-foreground">Loading...</p>
-            ) : previewInstances.length === 0 ? (
-              <p className="text-xs text-muted-foreground">No upcoming occurrences found in the next 12 months.</p>
-            ) : (
-              previewInstances.map((inst) => (
-                <div key={inst.id} className="flex items-center justify-between text-sm border rounded-lg p-2">
-                  <span>{format(new Date(inst.instanceDate), "MMM dd, yyyy")}</span>
-                  <div className="flex items-center gap-1.5">
-                    {inst.job ? (
-                      <button
-                        type="button"
-                        className="text-xs text-primary hover:underline font-medium"
-                        onClick={() => { setPreviewOpen(false); navigate(`/jobs/${inst.job!.id}`); }}
-                      >
-                        #{inst.job.jobNumber}
-                      </button>
-                    ) : null}
-                    <Badge variant="outline" className="text-[10px] capitalize">
-                      {inst.job ? inst.job.status : inst.status}
-                    </Badge>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setPreviewOpen(false)}>Close</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* Archive (soft delete) confirmation */}
       <AlertDialog open={archiveDialogOpen} onOpenChange={setArchiveDialogOpen}>

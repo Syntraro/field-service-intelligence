@@ -20,18 +20,6 @@ import type { RecurringJobTemplate } from "@shared/schema";
 
 const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
 
-/**
- * Compute windowDays so generation only covers through end of current month.
- * Adds a +2 day buffer for safety, capped at 35.
- */
-function computeCurrentMonthWindowDays(): number {
-  const now = new Date();
-  const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-  const msPerDay = 86_400_000;
-  const daysRemaining = Math.ceil((endOfMonth.getTime() - now.getTime()) / msPerDay) + 1;
-  return Math.min(Math.max(daysRemaining + 2, 1), 35);
-}
-
 /** Quick-select presets for common PM schedules */
 const MONTH_PRESETS = [
   { label: "Quarterly", months: [1, 4, 7, 10] },
@@ -181,16 +169,22 @@ export default function PMSetupModal({
       onOpenChange(false);
 
       // Auto-generate current month job if this month is in the schedule
+      // Uses scope=current_month for month-keyed generation (no window dependency)
       const currentMonth = new Date().getMonth() + 1; // 1-indexed
       if (savedTemplate?.id && form.months.includes(currentMonth)) {
         try {
-          const windowDays = computeCurrentMonthWindowDays();
-          const result = await apiRequest<{ jobsCreated?: number }>(
-            `/api/recurring-templates/${savedTemplate.id}/generate?windowDays=${windowDays}`,
+          const result = await apiRequest<{
+            jobsCreated?: number;
+            pmResult?: { createdCount: number; reason: string };
+          }>(
+            `/api/recurring-templates/${savedTemplate.id}/generate?scope=current_month`,
             { method: "POST" }
           );
-          queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-          const created = result?.jobsCreated ?? 0;
+          // Phase 4 Step C5: canonical family key
+          queryClient.invalidateQueries({ queryKey: ["jobs"] });
+          // Refresh instance cache so PMScheduleCard "This month" row shows fresh data
+          queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates", savedTemplate.id, "instances", "current-month"] });
+          const created = result?.pmResult?.createdCount ?? result?.jobsCreated ?? 0;
           if (created > 0) {
             toast({ title: `PM job created for ${MONTH_LABELS[currentMonth - 1]}` });
           }

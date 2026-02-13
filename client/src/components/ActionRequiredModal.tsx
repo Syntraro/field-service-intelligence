@@ -92,8 +92,8 @@ export function ActionRequiredModal({
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      // Phase 4 Step C5: single family-wide invalidation
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
       toast({
         title: "Status Updated",
         description: "Job marked as on hold.",

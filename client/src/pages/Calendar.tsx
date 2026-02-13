@@ -1426,7 +1426,12 @@ export default function Calendar() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/old-unscheduled"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      // Phase 4 Step C5: canonical family key
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/maintenance"] });
+      // Prefix-matches ["/api/clients", id, "overview"] so Client Detail page updates
+      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
       toast({
         title: "Job deleted",
         description: "The old job has been removed",
@@ -1453,7 +1458,8 @@ export default function Calendar() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/old-unscheduled"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      // Phase 4 Step C5: canonical family key
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
       toast({
         title: "Job archived",
         description: "The old job has been marked as complete",
@@ -2265,7 +2271,8 @@ export default function Calendar() {
         editAssignment={scheduleModalEdit}
         onSuccess={() => {
           refetchCalendar();
-          queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+          // Phase 4 Step C5: canonical family key
+          queryClient.invalidateQueries({ queryKey: ["jobs"] });
         }}
       />
 
