@@ -6,6 +6,77 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### Phase 4 — Jobs Canonicalization + Technician Display Utility (2026-02-13)
+
+**Pre-flight:**
+- Fixed `buildVisitFeedKey` missing `excludeStatuses` in query key, causing cache collisions between filtered and unfiltered visit queries.
+  - File: `client/src/hooks/useVisitFeed.ts`
+
+**Part A — Canonical Jobs Feed Module (Steps A1-A8):**
+- Created `server/storage/jobsFeed.ts`: canonical `JobFeedFilters`, `JobFeedItem`, `JobHeaderDetail` types, `getJobsFeed(ctx, filters)` list query, and `getJobHeader(ctx, jobId)` detail query.
+  - Key fix: `getJobHeader` joins `customerCompanies` with `COALESCE(customerCompanies.name, clients.companyName)` for correct `locationDisplayName` — old `getJob()` was missing this join.
+- Wired `GET /api/jobs` and `GET /api/jobs/:id` to canonical builders.
+  - Files: `server/routes/jobs.ts`, `server/storage/jobsFeed.ts`
+- Migrated `Jobs.tsx`, `JobDetailPage.tsx`, `ClientJobsTab.tsx`, `LocationDetailPage.tsx` to canonical types (`locationCompanyName` → `locationDisplayName`).
+  - Files: `client/src/pages/Jobs.tsx`, `client/src/pages/JobDetailPage.tsx`, `client/src/components/ClientJobsTab.tsx`, `client/src/pages/LocationDetailPage.tsx`
+
+**Part B — Technician Display Name Utility (Steps B1-B6):**
+- Created `server/lib/resolveTechnicianName.ts`: single canonical fallback chain (fullName → firstName+lastName → firstName → lastName → email → "Unknown") replacing 6 divergent patterns.
+- Replaced inline name resolution in: `calendar.ts` (2 occurrences), `timeTracking.ts`, `jobNotes.ts`, `scheduling.ts`, `jobs.ts` schedule audit.
+  - Files: `server/lib/resolveTechnicianName.ts` (new), `server/storage/calendar.ts`, `server/storage/timeTracking.ts`, `server/storage/jobNotes.ts`, `server/domain/scheduling.ts`, `server/storage/jobs.ts`
+- Updated `JobNotesSection.tsx` to use pre-resolved `userName` field.
+  - File: `client/src/components/JobNotesSection.tsx`
+
+**Part C — Jobs Family Keys + Client Hooks (Steps C1-C6):**
+- Created `client/src/hooks/useJobsFeed.ts`: canonical `useJobsFeed(params)` and `useJobHeader(jobId)` hooks with `["jobs", "feed", ...]` and `["jobs", "detail", jobId]` query keys.
+- Updated all mutation `onSuccess` handlers across 20 files to invalidate by family prefix `["jobs"]` instead of path-based `["/api/jobs"]` keys.
+- Updated `useJobVisits.ts` fetch key to `["visits", jobId, "all"]` and invalidations to `["visits"]` family key.
+- Updated `INVALIDATION_MAP.md` to reflect new family key format.
+  - Files: `client/src/hooks/useJobsFeed.ts` (new), `client/src/hooks/useCalendarApi.ts`, `client/src/hooks/useJobVisits.ts`, `client/src/hooks/useMutationWithToast.ts`, `client/src/lib/jobScheduling.ts`, plus 15 component/page files.
+
+**Part D — Invoice Dashboard Label Fix:**
+- Fixed `getDashboardInvoices`: joined `customerCompanies` table and uses `COALESCE(customerCompanies.name, clients.companyName)` as `locationDisplayName`. Previously mislabeled `clients.companyName` as `customerCompanyName`.
+  - File: `server/storage/invoices.ts`
+
+### Fixed
+
+- `getJob()` detail query now joins `customerCompanies` for correct location display name (was missing, causing list vs detail name mismatch).
+- Invoice dashboard now shows parent company name when available instead of raw location company name.
+- Visit feed filter cache key now includes `excludeStatuses` parameter.
+
+#### Phase 3 — Canonical Visit Feed Migration (2026-02-12)
+
+**Part A — Invalidation Map:**
+- Created `docs/INVALIDATION_MAP.md`: comprehensive reference of every client-side mutation → TanStack Query invalidation relationship. Covers all query families, centralized helpers, 8 identified gaps.
+
+**Part B — QueryCtx Pattern:**
+- Created `server/lib/queryCtx.ts` with `QueryCtx` interface (`db`, `tenantId`, `userId`, `role`) and `getQueryCtx(req)` extractor. Used by all canonical repository queries.
+
+**Part C — Canonical Visit Feed API:**
+- Added `VisitFeedFilters`, `VisitFeedItem`, and `getVisitFeed()` to `server/storage/visits.ts`.
+- `getVisitFeed()` uses `QueryCtx` and applies RBAC: technicians auto-scoped to assigned visits.
+- `toVisitFeedItem()` mapper normalizes Drizzle Date objects to ISO strings.
+- Created `server/routes/visits.ts`: `GET /api/visits` endpoint with Zod query validation.
+- Registered route in `server/routes/index.ts`.
+
+**Part D — Tech Page Migration:**
+- Created `client/src/hooks/useVisitFeed.ts`: canonical hook with `['visits', ...]` family key prefix for family-wide invalidation.
+- Migrated `TechSchedulePage` to `useVisitFeed` with 7-day range (was today-only via old endpoint).
+- Migrated `TechHomePage` to `useVisitFeed` with today's date range.
+- Updated `TechVisitDetailPage` invalidation to use `VISIT_FEED_FAMILY_KEY` instead of old endpoint keys.
+- Deprecated `GET /api/tech/visits/today` (old consumers migrated, kept for backward compatibility).
+- Files: `client/src/hooks/useVisitFeed.ts` (new), `client/src/pages/TechSchedulePage.tsx`, `client/src/pages/TechHomePage.tsx`, `client/src/pages/TechVisitDetailPage.tsx`, `server/routes/techField.ts`
+
+**Part E — Calendar Separation Note:**
+- Added architecture comment to `server/storage/calendar.ts` documenting why calendar is a separate projection family from the visit feed (CTE ranking, technician profiles, all-day logic).
+
+**Part F — Server-Side Location Filtering:**
+- `GET /api/jobs` now accepts `locationId` query param and passes it to the storage layer (was client-side only).
+- `LocationDetailPage` now sends `locationId` to the API instead of fetching all jobs and filtering client-side.
+- Files: `server/routes/jobs.ts`, `client/src/pages/LocationDetailPage.tsx`
+
 ### Fixed
 
 #### Phase 2 — Data Freshness + Type Cleanup (2026-02-12)
