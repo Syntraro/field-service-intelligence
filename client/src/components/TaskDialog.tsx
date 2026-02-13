@@ -173,7 +173,9 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
 
   // Fetch jobs
   const { data: jobsData } = useQuery<{ items: Job[] }>({
-    queryKey: ["/api/jobs"],
+    // Phase 5 E2: canonical family key
+    queryKey: ["jobs"],
+    queryFn: () => apiRequest("/api/jobs"),
     staleTime: 2 * 60 * 1000,
   });
   const jobs = jobsData?.items || [];

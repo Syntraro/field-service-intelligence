@@ -122,7 +122,8 @@ export function ScheduleJobModal({
 
   // Fetch unscheduled/schedulable jobs
   const { data: schedulableJobs = [] } = useQuery<any[]>({
-    queryKey: ["/api/jobs", { status: "pending,scheduled" }],
+    // Phase 5 E2: canonical family key
+    queryKey: ["jobs", { status: "pending,scheduled" }],
     queryFn: async () => {
       const res = await fetch("/api/jobs?status=pending,scheduled&limit=100");
       if (!res.ok) throw new Error("Failed to fetch jobs");
