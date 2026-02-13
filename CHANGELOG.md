@@ -8,6 +8,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### Phase 5 — Remaining Canonicalization + Structural Cleanup (2026-02-13)
+
+**Part A — Invoice Family Canonicalization (Steps A1-A7):**
+- Created `server/storage/invoicesFeed.ts`: canonical `InvoiceFeedFilters`, `InvoiceFeedItem`, `InvoiceStatsResult` types, `getInvoicesFeed(ctx, filters)` list query, and `getInvoiceStats(ctx)` aggregated stats.
+- Wired `/api/invoices/list`, `/api/invoices/stats`, `/api/invoices/dashboard`, `/api/invoices/by-job/:jobId` to canonical builders.
+- Fixed AR aging report: changed INNER JOIN → LEFT JOIN on clientLocations to include invoices with no/deleted locations.
+- Created `client/src/hooks/useInvoicesFeed.ts`: canonical hooks with `["invoices", ...]` family key.
+- Migrated all invoice consumers and mutation invalidations to `["invoices"]` family prefix.
+  - Files: `server/storage/invoicesFeed.ts` (new), `server/routes/invoices.ts`, `server/storage/reports.ts`, `client/src/hooks/useInvoicesFeed.ts` (new), `client/src/pages/InvoicesListPage.tsx`, `client/src/pages/Dashboard.tsx`, `client/src/pages/JobDetailPage.tsx`, `client/src/components/JobHeaderCard.tsx`, `client/src/pages/InvoiceDetailPage.tsx`, `client/src/pages/QboConsolePage.tsx`
+
+**Part B — Dashboard Canonicalization (Steps B1-B3):**
+- Refactored `server/storage/dashboard.ts` from class-based DashboardRepository to function-based QueryCtx pattern with `getWorkflowSummary(ctx)` and `getNeedsAttentionJobs(ctx, todayDate, limit)`.
+- Uses canonical `activeJobFilter()` and `activeInvoiceFilter()` guards.
+- Exported typed `DashboardJobItem` with `attentionType` (Option B: presentation logic separate from core model).
+- Migrated all dashboard query keys to `["dashboard", ...]` family prefix and all invalidations to `["dashboard"]` family.
+  - Files: `server/storage/dashboard.ts`, `server/routes/dashboard.ts`, `client/src/pages/Dashboard.tsx`, `client/src/hooks/useMutationWithToast.ts`, `client/src/hooks/useCalendarApi.ts`, `client/src/pages/JobDetailPage.tsx`, `client/src/pages/TechVisitDetailPage.tsx`, `client/src/pages/Calendar.tsx`, `client/src/components/JobHeaderCard.tsx`
+
+**Part C — Calendar Shared Base Join Helpers (Steps C1-C3):**
+- Created `server/lib/queryHelpers.ts`: shared `locationDisplayNameExpr`, `bulkResolveTechnicians()`, `bulkResolveCustomerCompanies()`.
+- Replaced duplicate bulk resolution blocks in `calendar.ts` (2× tech + 2× company = ~64 lines removed).
+- Updated calendar architecture note with shared helper documentation.
+  - Files: `server/lib/queryHelpers.ts` (new), `server/storage/calendar.ts`
+
+**Part D — Equipment Table Migration Plan (Steps D1-D3):**
+- Completed equipment table schema audit: legacy `equipment` vs canonical `locationEquipment` column mapping, FK analysis, and conflict detection.
+- Created migration script `migrations/2026_02_13_equipment_consolidation.sql` with dry-run, insert, and verification steps (not yet executed).
+- Documented endpoint consolidation plan in `docs/EQUIPMENT_MIGRATION.md`.
+  - Files: `docs/EQUIPMENT_MIGRATION.md` (new), `migrations/2026_02_13_equipment_consolidation.sql` (new)
+
+**Part E — Final Cleanup (Steps E1-E3):**
+- Renamed `TERMINAL_STATUSES` → `JOB_TERMINAL_STATUSES` in `statusRules.ts` and `jobUtils.ts` to disambiguate from visit terminal statuses. Local constant in `JobDetailPage.tsx` renamed to `VISIT_TERMINAL_STATUSES`.
+- Cleaned up 2 remaining old-format query keys: `TaskDialog.tsx` and `ScheduleJobModal.tsx`.
+- Final `INVALIDATION_MAP.md` update with all canonical family keys.
+  - Files: `server/statusRules.ts`, `client/src/components/job/jobUtils.ts`, `client/src/pages/JobDetailPage.tsx`, `client/src/components/TaskDialog.tsx`, `client/src/components/calendar/ScheduleJobModal.tsx`, `docs/INVALIDATION_MAP.md`
+
+### Fixed
+- AR aging report now includes invoices with no/deleted location (was silently excluding via INNER JOIN).
+- Invoice `createInvoiceMutation` now properly invalidates stats and dashboard via family key (was missing in JobDetailPage).
+
 #### Phase 4 — Jobs Canonicalization + Technician Display Utility (2026-02-13)
 
 **Pre-flight:**
