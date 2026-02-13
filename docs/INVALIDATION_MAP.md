@@ -81,10 +81,10 @@
 
 | Mutation | API | Invalidates |
 |---|---|---|
-| `createAssignment` | `POST /api/calendar/schedule` | Optimistic cache merge + `invalidateNarrow(true)` → calendar/unscheduled |
+| `createAssignment` | `POST /api/calendar/schedule` | Optimistic cache merge + `invalidateNarrow(true)` → calendar/unscheduled, `["jobs"]`, `["dashboard"]` |
 | `updateAssignment` | `PATCH /api/calendar/schedule/:id` | Optimistic cache merge only (no invalidation on success) |
 | `updateDuration` | `PATCH /api/calendar/schedule/:id` | `invalidateCalendarOnly()` (calendar\* except unscheduled) |
-| `deleteAssignment` | `POST /api/calendar/unschedule/:id` | Optimistic cache merge + `invalidateNarrow(true)` → calendar/unscheduled |
+| `deleteAssignment` | `POST /api/calendar/unschedule/:id` | Optimistic cache merge + `invalidateNarrow(true)` → calendar/unscheduled, `["jobs"]`, `["dashboard"]` |
 | `assignTechnicians` | `PATCH /api/calendar/schedule/:id` | `invalidateCalendarOnly()` (calendar\* except unscheduled) |
 | `clearSchedule` | `POST /api/calendar/unschedule/:id` (batch) | `invalidateCalendarAndUnscheduled()` → calendar\*, calendar/unscheduled, clients |
 | `clearDay` | `POST /api/calendar/unschedule/:id` (batch) | `invalidateCalendarAndUnscheduled()` → calendar\*, calendar/unscheduled, clients |
@@ -95,7 +95,7 @@
 | Mutation / Callback | API | Invalidates |
 |---|---|---|
 | `deleteOldAssignment` | `DELETE /api/jobs/:id` | calendar/old-unscheduled, calendar/unscheduled, jobs, `["dashboard"]` (family), **maintenance**, **clients** |
-| `archiveOldAssignment` | `POST /api/jobs/:id/complete` | calendar/old-unscheduled, calendar/unscheduled, jobs |
+| `archiveOldAssignment` | `POST /api/jobs/:id/complete` | calendar/old-unscheduled, calendar/unscheduled, jobs, `["dashboard"]` |
 | `requireJobVersion` (stale guard) | — | calendar/unscheduled, `invalidateCalendarQueries()` |
 | `requireAssignmentVersion` (stale guard) | — | `invalidateCalendarQueries()` |
 | `onSaved` (NewAddClientDialog) | — | clients, calendar, calendar/unscheduled |
@@ -146,9 +146,7 @@
 
 | Mutation | API | Invalidates |
 |---|---|---|
-| `updateStatusMutation` | `POST /api/jobs/:jobId/status` | jobs/:jobId, jobs |
-
-> **TODO:** Missing dashboard invalidation. Action-required changes affect dashboard on_hold and needs-attention counts.
+| `updateStatusMutation` | `POST /api/jobs/:jobId/status` | jobs/:jobId, jobs, `["dashboard"]` |
 
 ### Add Visit Dialog — `components/AddVisitDialog.tsx`
 
@@ -287,19 +285,6 @@ Uses `useMutationWithToast` (group-based invalidation):
 | `loginMutation` | `POST /api/auth/login` | Refetches `/api/auth/me` |
 | `signupMutation` | `POST /api/auth/signup` | Refetches `/api/auth/me` |
 | `logoutMutation` | `POST /api/auth/logout` | Clears all queries |
-
----
-
-## Known Gaps (TODO)
-
-Remaining invalidation gaps not yet patched.
-
-| Location | Mutation | Missing Invalidation | Impact |
-|---|---|---|---|
-| `ActionRequiredModal.tsx` | `updateStatusMutation` | `["dashboard"]` | Dashboard needs-attention stale after action-required update |
-| `Calendar.tsx` | `archiveOldAssignment` | `["dashboard"]` | Dashboard counts stale after archiving old job |
-| `useCalendarDnD.ts` | `createAssignment` | `["jobs"]` (via narrow invalidation only) | Job list may show stale schedule data after DnD schedule |
-| `useCalendarDnD.ts` | `deleteAssignment` | `["jobs"]`, `["dashboard"]` | Job list and dashboard stale after DnD unschedule |
 
 ---
 
