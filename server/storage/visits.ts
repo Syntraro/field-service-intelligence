@@ -14,8 +14,9 @@
  */
 import { db } from "../db";
 import { and, eq, gte, lte, asc, isNull, sql, type SQL } from "drizzle-orm";
-import { jobVisits, jobs, clientLocations } from "@shared/schema";
+import { jobVisits, jobs, clientLocations, customerCompanies } from "@shared/schema";
 import type { QueryCtx } from "../lib/queryCtx";
+import { activeJobFilter } from "./jobFilters";
 import type {
   EnrichedVisit,
   VisitJobInfo,
@@ -127,6 +128,8 @@ export async function getVisitsForUserInRange(
       and(
         eq(jobVisits.companyId, tenantId),
         eq(jobVisits.isActive, true),
+        // Phase 5.3 G4: exclude visits for soft-deleted/inactive jobs
+        activeJobFilter(),
         gte(jobVisits.scheduledStart, start),
         lte(jobVisits.scheduledStart, end),
         assignedToUser(userId)
@@ -156,6 +159,8 @@ export async function getUnscheduledVisitsForUser(
       and(
         eq(jobVisits.companyId, tenantId),
         eq(jobVisits.isActive, true),
+        // Phase 5.3 G4: exclude visits for soft-deleted/inactive jobs
+        activeJobFilter(),
         isNull(jobVisits.scheduledStart),
         assignedToUser(userId)
       )
@@ -187,6 +192,8 @@ export async function getVisitByIdForUser(
         eq(jobVisits.id, visitId),
         eq(jobVisits.companyId, tenantId),
         eq(jobVisits.isActive, true),
+        // Phase 5.3 G4: exclude visits for soft-deleted/inactive jobs
+        activeJobFilter(),
         assignedToUser(userId)
       )
     );
@@ -222,6 +229,8 @@ export async function getVisitsForTenantInRange(
   const conditions = [
     eq(jobVisits.companyId, tenantId),
     eq(jobVisits.isActive, true),
+    // Phase 5.3 G4: exclude visits for soft-deleted/inactive jobs
+    activeJobFilter(),
     gte(jobVisits.scheduledStart, start),
     lte(jobVisits.scheduledStart, end),
   ];
@@ -353,6 +362,8 @@ export async function getVisitFeed(
   const conditions: SQL[] = [
     eq(jobVisits.companyId, ctx.tenantId),
     eq(jobVisits.isActive, true),
+    // Phase 5.3 G4: exclude visits for soft-deleted/inactive jobs
+    activeJobFilter(),
   ];
 
   // RBAC: Force technician assignment filter for tech roles
