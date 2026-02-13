@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
+import { useJobsFeed } from "@/hooks/useJobsFeed";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { format, differenceInHours } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
@@ -35,17 +36,12 @@ import { ApplyTemplateModal } from "@/components/ApplyTemplateModal";
 import { Card, CardContent } from "@/components/ui/card";
 import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
 import { TablePageShell } from "@/components/ui/table-page-shell";
-import type { Job, User as UserType } from "@shared/schema";
+import type { User as UserType } from "@shared/schema";
 import { isJobScheduled, isJobAssigned, isBacklogEligible, isJobOverdue } from "@shared/schema";
 import { getJobStatusDisplay } from "@/components/job/jobUtils";
 import { getMemberDisplayName } from "@/lib/displayName";
-
-interface EnrichedJob extends Job {
-  locationCompanyName: string;
-  locationName: string;
-  locationCity: string;
-  locationAddress: string;
-}
+// Phase 4 Step A6: Use canonical JobFeedItem type
+import type { JobFeedItem } from "@/hooks/useJobsFeed";
 
 // =============================================================================
 // FILTER TYPES - Phase 2 Step 4: 4-Status Lifecycle Model
@@ -207,15 +203,8 @@ export default function Jobs() {
   const [dismissedUrgentWarning, setDismissedUrgentWarning] = useState(false);
   const loaderRef = useRef<HTMLDivElement>(null);
 
-  const { data: jobs = [], isLoading } = useQuery<{ data: EnrichedJob[]; meta: { limit: number; hasMore: boolean; nextOffset?: number } }, Error, EnrichedJob[]>({
-    queryKey: ["/api/jobs", { offset: 0, limit: 200 }],
-    queryFn: async () => {
-      const res = await fetch("/api/jobs?offset=0&limit=200", { credentials: "include" });
-      if (!res.ok) throw new Error("Failed to fetch jobs");
-      return res.json();
-    },
-    select: (response) => response.data,
-  });
+  // Phase 4 Step A6: Use canonical useJobsFeed hook
+  const { jobs, isLoading } = useJobsFeed({ limit: 200, offset: 0 });
 
   const isOfficeUser = Boolean(user?.role && OFFICE_ROLES.includes(user.role));
 
@@ -373,7 +362,7 @@ export default function Jobs() {
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
       result = result.filter(job => {
-        const companyName = job.locationCompanyName?.toLowerCase() || "";
+        const companyName = job.locationDisplayName?.toLowerCase() || "";
         const locationName = job.locationName?.toLowerCase() || "";
         const address = job.locationAddress?.toLowerCase() || "";
         const city = job.locationCity?.toLowerCase() || "";
@@ -393,7 +382,7 @@ export default function Jobs() {
       let comparison = 0;
       switch (sortField) {
         case "location":
-          const companyCompare = (a.locationCompanyName || "").localeCompare(b.locationCompanyName || "");
+          const companyCompare = (a.locationDisplayName || "").localeCompare(b.locationDisplayName || "");
           if (companyCompare !== 0) {
             comparison = companyCompare;
           } else {
@@ -463,7 +452,7 @@ export default function Jobs() {
     }
   };
 
-  const handleRowClick = (job: EnrichedJob) => {
+  const handleRowClick = (job: JobFeedItem) => {
     setLocation(`/jobs/${job.id}`);
   };
 
@@ -894,7 +883,7 @@ export default function Jobs() {
                   data-testid={`row-job-${job.id}`}
                 >
                   <TableCell className="font-medium" data-testid={`text-location-${job.id}`}>
-                    <div>{job.locationCompanyName || "Unknown Company"}</div>
+                    <div>{job.locationDisplayName || "Unknown Company"}</div>
                     {job.locationName && (
                       <div className="text-xs text-muted-foreground">{job.locationName}</div>
                     )}
