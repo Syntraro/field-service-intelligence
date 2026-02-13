@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { eq, and, sql, desc, or, lt, isNull, isNotNull, asc } from "drizzle-orm";
-import { invoices, invoiceLines, clients, payments, jobs, jobParts, laborEntries, technicians, timeEntries, users, companySettings } from "@shared/schema";
+import { invoices, invoiceLines, clients, payments, jobs, jobParts, laborEntries, technicians, timeEntries, users, companySettings, customerCompanies } from "@shared/schema";
 import { BaseRepository, parseDecimal } from "./base";
 import { activeJobFilter } from "./jobFilters";
 import { encodeCursor, decodeCursor } from "../utils/cursor";
@@ -621,6 +621,7 @@ export class InvoiceRepository extends BaseRepository {
     // Fetch unpaid invoices (awaiting_payment or sent status) with balance > 0
     const unpaidStatuses = ["awaiting_payment", "sent", "partial_paid"];
 
+    // Phase 4 Step D: join customerCompanies for correct display name
     const rows = await db
       .select({
         id: invoices.id,
@@ -630,10 +631,12 @@ export class InvoiceRepository extends BaseRepository {
         total: invoices.total,
         balance: invoices.balance,
         locationName: clients.location,
-        customerCompanyName: clients.companyName,
+        // Phase 4 Step D: COALESCE gives parent company name when available
+        locationDisplayName: sql<string>`COALESCE(${customerCompanies.name}, ${clients.companyName})`,
       })
       .from(invoices)
       .leftJoin(clients, eq(invoices.locationId, clients.id))
+      .leftJoin(customerCompanies, eq(clients.customerCompanyId, customerCompanies.id))
       .where(
         and(
           eq(invoices.companyId, companyId),
@@ -661,11 +664,12 @@ export class InvoiceRepository extends BaseRepository {
     // Combine: past due first, then awaiting payment, limited to `limit`
     const combined = [...pastDue, ...awaitingPayment].slice(0, limit);
 
-    // Add isPastDue flag and fallback locationName
+    // Add isPastDue flag; use COALESCE'd locationDisplayName as primary label
     return combined.map(row => ({
       ...row,
       isPastDue: this.computeIsPastDue(row.status, row.dueDate, row.balance, today),
-      locationName: row.locationName || row.customerCompanyName || null,
+      // Phase 4 Step D: canonical display name from COALESCE
+      locationName: row.locationDisplayName || row.locationName || null,
     }));
   }
 
