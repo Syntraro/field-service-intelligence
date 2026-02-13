@@ -7,14 +7,11 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Plus, Briefcase, Calendar, MapPin, CheckCircle, Clock, AlertCircle } from "lucide-react";
-import type { Client, Job } from "@shared/schema";
+import { Plus, Briefcase, Calendar, MapPin } from "lucide-react";
+import { getJobStatusDisplay } from "@/components/job/jobUtils";
+import type { Client } from "@shared/schema";
+import type { JobFeedItem } from "@/hooks/useJobsFeed";
 import { format } from "date-fns";
-
-interface JobWithLocation extends Job {
-  locationName?: string;
-  locationCity?: string;
-}
 
 interface ClientJobsTabProps {
   clientId: string;
@@ -22,65 +19,6 @@ interface ClientJobsTabProps {
   parentCompanyId?: string;
   initialLocationId?: string;
   onCreateJob?: (locationId?: string) => void;
-}
-
-function getStatusBadge(job: Job) {
-  switch (job.status) {
-    case "completed":
-    case "invoiced":
-      return (
-        <Badge variant="default" className="bg-green-500/10 text-green-600 border-green-500/20">
-          <CheckCircle className="h-3 w-3 mr-1" />
-          {job.status === "invoiced" ? "Invoiced" : "Completed"}
-        </Badge>
-      );
-    case "in_progress":
-      return (
-        <Badge variant="default" className="bg-blue-500/10 text-blue-600 border-blue-500/20">
-          <Clock className="h-3 w-3 mr-1" />
-          In Progress
-        </Badge>
-      );
-    case "on_hold":
-      return (
-        <Badge variant="secondary">
-          <Clock className="h-3 w-3 mr-1" />
-          On Hold
-        </Badge>
-      );
-    case "cancelled":
-      return (
-        <Badge variant="outline" className="text-muted-foreground">
-          Cancelled
-        </Badge>
-      );
-    case "draft":
-      return (
-        <Badge variant="outline">
-          Draft
-        </Badge>
-      );
-    case "scheduled":
-    default:
-      const now = new Date();
-      const scheduledStart = job.scheduledStart ? new Date(job.scheduledStart) : null;
-      
-      if (scheduledStart && scheduledStart < now) {
-        return (
-          <Badge variant="destructive">
-            <AlertCircle className="h-3 w-3 mr-1" />
-            Overdue
-          </Badge>
-        );
-      }
-      
-      return (
-        <Badge variant="secondary">
-          <Clock className="h-3 w-3 mr-1" />
-          Scheduled
-        </Badge>
-      );
-  }
 }
 
 export default function ClientJobsTab({ 
@@ -111,7 +49,7 @@ export default function ClientJobsTab({
     : (parentCompanyId ? locations.map(l => l.id) : [clientId]);
   
   // Fetch jobs from the Jobs API with location filter
-  const { data: jobs = [], isLoading: jobsLoading } = useQuery<{ data: JobWithLocation[]; meta: { limit: number; hasMore: boolean; nextOffset?: number } }, Error, JobWithLocation[]>({
+  const { data: jobs = [], isLoading: jobsLoading } = useQuery<{ data: JobFeedItem[]; meta: { limit: number; hasMore: boolean; nextOffset?: number } }, Error, JobFeedItem[]>({
     queryKey: ["/api/jobs", { locationIds, offset: 0, limit: 200 }],
     queryFn: async () => {
       // If we have specific location IDs to filter, use the first one
@@ -267,7 +205,16 @@ export default function ClientJobsTab({
                     </TableCell>
                   )}
                   <TableCell>
-                    {getStatusBadge(job)}
+                    {(() => {
+                      const s = getJobStatusDisplay(job);
+                      const Icon = s.icon;
+                      return (
+                        <Badge variant={s.variant}>
+                          <Icon className="h-3 w-3 mr-1" />
+                          {s.label}
+                        </Badge>
+                      );
+                    })()}
                   </TableCell>
                 </TableRow>
               ))}
