@@ -304,9 +304,8 @@ export default function InvoiceDetailPage() {
       makeQboAwareRequest(`/api/invoices/${invoiceId}/send`, "POST", overrideReason),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices/stats"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices/dashboard"] });
+      // Phase 5 Step A7: canonical family key (covers feed + stats + dashboard)
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
       setShowSendConfirm(false);
       qboOverride.closeModal();
       setQboOverridePending(false);
@@ -332,9 +331,8 @@ export default function InvoiceDetailPage() {
       makeQboAwareRequest(`/api/invoices/${invoiceId}/void`, "POST", overrideReason),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices/stats"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices/dashboard"] });
+      // Phase 5 Step A7: canonical family key (covers feed + stats + dashboard)
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
       setShowVoidConfirm(false);
       qboOverride.closeModal();
       setQboOverridePending(false);
@@ -394,9 +392,8 @@ export default function InvoiceDetailPage() {
       apiRequest(`/api/invoices/${invoiceId}/payments`, { method: "POST", body: JSON.stringify(data) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices/stats"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices/dashboard"] });
+      // Phase 5 Step A7: canonical family key (covers feed + stats + dashboard)
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
       setShowPaymentDialog(false);
       setPaymentAmount("");
       setPaymentMethod("e-transfer");
@@ -432,7 +429,7 @@ export default function InvoiceDetailPage() {
     },
     onSuccess: (response: any) => {
       queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
       qboOverride.closeModal();
       setQboOverridePending(false);
       if (response?._qboWarning) {
@@ -548,7 +545,7 @@ export default function InvoiceDetailPage() {
       });
       // Invalidate queries to refresh data
       queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId, "details"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
       toast({ title: isSent ? "Invoice marked as sent" : "Sent status removed" });
     } catch (error: any) {
       toast({ title: "Failed to update sent status", description: error.message, variant: "destructive" });

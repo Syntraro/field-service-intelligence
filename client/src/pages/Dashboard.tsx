@@ -659,7 +659,8 @@ export default function Dashboard() {
   const needsAttentionJobs = needsAttentionResponse?.data || [];
 
   const { data: dashboardInvoicesResponse, isLoading: dashboardInvoicesLoading, isError: dashboardInvoicesError, error: dashboardInvoicesErrorObj, refetch: refetchDashboardInvoices } = useQuery<{ data: Invoice[] }>({
-    queryKey: ["/api/invoices/dashboard"],
+    // Phase 5 Step A7: canonical family key prefix
+    queryKey: ["invoices", "dashboard"],
     queryFn: () => apiRequest(`/api/invoices/dashboard`),
     staleTime: 60_000,
     refetchOnWindowFocus: false,

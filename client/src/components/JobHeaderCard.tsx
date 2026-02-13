@@ -103,10 +103,8 @@ export function JobHeaderCard({
       }) });
     },
     onSuccess: (data: any) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices/stats"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices/dashboard"] });
+      // Phase 5 Step A7: canonical family key invalidation
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       toast({ title: "Invoice Created", description: "Invoice has been created from this job." });
       setLocation(`/invoices/${data.id}`);
@@ -166,8 +164,8 @@ export function JobHeaderCard({
 
       if (data.invoice) {
         // Invoice created - no undo available
-        queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
+        // Phase 5 Step A7: canonical family key invalidation
+        queryClient.invalidateQueries({ queryKey: ["invoices"] });
         toast({ title: "Job Closed", description: "Job closed and invoice created." });
         setLocation(`/invoices/${data.invoice.id}`);
       } else {

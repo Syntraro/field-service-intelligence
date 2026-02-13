@@ -1145,7 +1145,8 @@ export default function JobDetailPage() {
 
   // Phase 11: Fixed job/invoice cross-linking - use correct endpoint
   const { data: jobInvoice } = useQuery<Invoice | null>({
-    queryKey: ["/api/invoices/by-job", jobId],
+    // Phase 5 Step A7: canonical family key prefix
+    queryKey: ["invoices", "by-job", jobId],
     queryFn: async () => {
       const res = await fetch(`/api/invoices/by-job/${jobId}`, { credentials: "include" });
       if (!res.ok) return null;
@@ -1261,8 +1262,8 @@ export default function JobDetailPage() {
       return response;
     },
     onSuccess: (data: any) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
+      // Phase 5 Step A7: canonical family key invalidation
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       toast({
         title: "Invoice Created",

@@ -21,8 +21,9 @@ export const QUERY_GROUPS = {
     ["/api/maintenance/statuses"],
     ["/api/maintenance/recently-completed"],
   ],
+  // Phase 5 Step A7: canonical family key
   invoices: [
-    ["/api/invoices"],
+    ["invoices"],
   ],
   equipment: [
     ["/api/equipment"],

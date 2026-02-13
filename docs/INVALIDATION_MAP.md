@@ -3,7 +3,7 @@
 > Canonical reference for every client-side mutation and the TanStack Query keys
 > it invalidates on success. Created as part of Phase 3 (Canonical Visit Feed Migration).
 >
-> **Last audited:** 2026-02-13 (Phase 4 — Jobs Canonicalization)
+> **Last audited:** 2026-02-13 (Phase 5 — Invoice Family Canonicalization)
 
 ---
 
@@ -14,7 +14,7 @@
 | **Calendar** | `/api/calendar`, `/api/calendar/range`, `/api/calendar/unscheduled` | Scheduled events, date-range view, backlog sidebar |
 | **Jobs** | `["jobs"]` (family prefix) | Canonical feed `["jobs","feed",…]`, detail `["jobs","detail",jobId]`. Sub-resources still use `/api/jobs/:id/*` keys. |
 | **Dashboard** | `/api/dashboard`, `/api/dashboard/needs-attention` | Workflow counts and attention jobs |
-| **Invoices** | `/api/invoices`, `/api/invoices/list`, `/api/invoices/stats`, `/api/invoices/dashboard` | Invoice list, stats, dashboard widget |
+| **Invoices** | `["invoices"]` (family prefix) | Canonical feed `["invoices","feed",…]`, stats `["invoices","stats"]`, dashboard `["invoices","dashboard"]`, by-job `["invoices","by-job",jobId]`. |
 | **Visits** | `["visits"]` (family prefix) | Canonical visit keys `["visits", jobId, "all"]`. Tech feed: `/api/tech/visits/today`, `/api/tech/visits/:id` |
 | **Clients** | `/api/clients`, `/api/clients/:id` | Client locations and detail |
 | **Customer Companies** | `/api/customer-companies/:id` | Parent company overview, locations |
@@ -59,7 +59,7 @@
 | `jobs` | `["jobs"]` (Phase 4 canonical family key) |
 | `clients` | `/api/clients` |
 | `maintenance` | `/api/maintenance/statuses`, `/api/maintenance/recently-completed` |
-| `invoices` | `/api/invoices` |
+| `invoices` | `["invoices"]` (Phase 5 canonical family key) |
 | `equipment` | `/api/equipment` |
 | `parts` | `/api/items`, `/api/client-parts/bulk` |
 | `dashboard` | `/api/dashboard` |
@@ -116,18 +116,17 @@
 | `updateStatusMutation` (job) | `POST /api/jobs/:jobId/status` | jobs/:jobId, jobs, jobs/:jobId/time-summary, **calendar**, **calendar/range**, **calendar/unscheduled**, **dashboard** |
 | `clearHoldMutation` | `POST /api/jobs/:jobId/status` | jobs/:jobId, jobs |
 | `deleteJobMutation` | `DELETE /api/jobs/:jobId` | jobs, calendar, maintenance, **dashboard**, recurring-templates, clients |
-| `createInvoiceMutation` | `POST /api/invoices/from-job/:jobId` | invoices, invoices/list, jobs/:jobId |
+| `createInvoiceMutation` | `POST /api/invoices/from-job/:jobId` | `["invoices"]` (family), jobs/:jobId |
 
 > **TODO:** `clearHoldMutation` is missing dashboard invalidation. Clearing a hold changes on_hold count.
-> **TODO:** `createInvoiceMutation` (JobDetailPage) is missing `invoices/stats` and `invoices/dashboard` — contrast with JobHeaderCard version which has them.
 
 ### Job Header Card — `components/JobHeaderCard.tsx`
 
 | Mutation | API | Invalidates |
 |---|---|---|
-| `createInvoiceMutation` | `POST /api/invoices/from-job/:jobId` | invoices, invoices/list, **invoices/stats**, **invoices/dashboard**, jobs/:jobId |
+| `createInvoiceMutation` | `POST /api/invoices/from-job/:jobId` | `["invoices"]` (family), jobs/:jobId |
 | `undoCloseMutation` | `POST /api/jobs/:jobId/undo-close` | jobs/:jobId, jobs |
-| `closeJobMutation` | `POST /api/jobs/:jobId/close` | jobs/:jobId, jobs, jobs/:jobId/visits, (if invoice created: invoices, invoices/list) |
+| `closeJobMutation` | `POST /api/jobs/:jobId/close` | jobs/:jobId, jobs, jobs/:jobId/visits, (if invoice created: `["invoices"]` family) |
 | `reopenJobMutation` | `POST /api/jobs/:jobId/reopen` | jobs/:jobId, jobs, **calendar**, **calendar/range**, **calendar/unscheduled**, **dashboard** |
 
 > **TODO:** `undoCloseMutation` is missing dashboard invalidation. Undoing a close moves job back to a different status bucket.
@@ -166,12 +165,12 @@
 
 | Mutation | API | Invalidates |
 |---|---|---|
-| `sendMutation` | `POST /api/invoices/:id/send` | invoice/:id, invoices/list, **invoices/stats**, **invoices/dashboard** |
-| `voidMutation` | `POST /api/invoices/:id/void` | invoice/:id, invoices/list, **invoices/stats**, **invoices/dashboard** |
+| `sendMutation` | `POST /api/invoices/:id/send` | invoice/:id, `["invoices"]` (family) |
+| `voidMutation` | `POST /api/invoices/:id/void` | invoice/:id, `["invoices"]` (family) |
 | `refreshFromJobMutation` | `POST /api/invoices/:id/refresh-from-job` | invoice/:id |
-| `createPaymentMutation` | `POST /api/invoices/:id/payments` | invoice/:id, invoices/list, **invoices/stats**, **invoices/dashboard** |
+| `createPaymentMutation` | `POST /api/invoices/:id/payments` | invoice/:id, `["invoices"]` (family) |
 | `reorderLinesMutation` | `PATCH /api/invoices/:id/lines/reorder` | invoice/:id |
-| `updateDiscountMutation` | `PATCH /api/invoices/:id/discount` | invoice/:id, invoices/list |
+| `updateDiscountMutation` | `PATCH /api/invoices/:id/discount` | invoice/:id, `["invoices"]` (family) |
 | `updatePaymentTermsMutation` | `PATCH /api/invoices/:id/payment-terms` | invoice/:id |
 
 ### Tech Visit Detail Page — `pages/TechVisitDetailPage.tsx`
@@ -304,7 +303,6 @@ They should be addressed in a future patch.
 | Location | Mutation | Missing Invalidation | Impact |
 |---|---|---|---|
 | `JobDetailPage.tsx` | `clearHoldMutation` | `/api/dashboard`, `/api/dashboard/needs-attention` | Dashboard on_hold count stale after clearing hold |
-| `JobDetailPage.tsx` | `createInvoiceMutation` | `/api/invoices/stats`, `/api/invoices/dashboard` | Invoice widget stale after creating invoice from job detail |
 | `JobHeaderCard.tsx` | `undoCloseMutation` | `/api/dashboard`, `/api/dashboard/needs-attention` | Dashboard counts stale after undo-close |
 | `JobHeaderCard.tsx` | `closeJobMutation` | `/api/dashboard`, `/api/dashboard/needs-attention` | Dashboard counts stale after closing job |
 | `ActionRequiredModal.tsx` | `updateStatusMutation` | `/api/dashboard`, `/api/dashboard/needs-attention` | Dashboard needs-attention stale after action-required update |
@@ -324,9 +322,9 @@ When a mutation modifies an entity, which query families should be invalidated?
 | **Job schedule** | jobs, calendar, calendar/range | + calendar/unscheduled (if toggling scheduled↔backlog) |
 | **Job delete** | jobs, calendar, dashboard | + maintenance, clients, recurring-templates |
 | **Visit status** | jobs/:id/visits, jobs/:id | + tech/visits, calendar, dashboard |
-| **Invoice create** | invoices, invoices/list, jobs/:id | + invoices/stats, invoices/dashboard |
-| **Invoice status change** | invoice/:id, invoices/list | + invoices/stats, invoices/dashboard |
-| **Payment recorded** | invoice/:id, invoices/list | + invoices/stats, invoices/dashboard |
+| **Invoice create** | `["invoices"]` (family), jobs/:id | — (family covers all sub-keys) |
+| **Invoice status change** | invoice/:id, `["invoices"]` (family) | — (family covers all sub-keys) |
+| **Payment recorded** | invoice/:id, `["invoices"]` (family) | — (family covers all sub-keys) |
 | **Client/Location update** | clients/:id | + customer-companies/:id/overview |
 | **PM template change** | recurring-templates | + recurring-templates/:id/instances/current-month |
 | **Equipment change** | clients/:id/equipment | — |

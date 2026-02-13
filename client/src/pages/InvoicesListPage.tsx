@@ -104,7 +104,8 @@ export default function InvoicesListPage() {
   }, [search]);
 
   const { data: invoices = [], isLoading } = useQuery<{ data: EnrichedInvoice[]; meta: { limit: number; hasMore: boolean; nextOffset?: number } }, Error, EnrichedInvoice[]>({
-    queryKey: ["/api/invoices/list", { offset: 0, limit: 200 }],
+    // Phase 5 Step A7: canonical family key prefix
+    queryKey: ["invoices", "feed", { offset: 0, limit: 200 }],
     queryFn: async () => {
       const res = await fetch("/api/invoices/list?offset=0&limit=200", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch invoices");
@@ -114,7 +115,8 @@ export default function InvoicesListPage() {
   });
 
   const { data: stats } = useQuery<InvoiceStats>({
-    queryKey: ["/api/invoices/stats"],
+    // Phase 5 Step A7: canonical family key prefix
+    queryKey: ["invoices", "stats"],
   });
 
   const outstandingAmount = stats?.outstanding?.amount ?? 0;

@@ -1062,7 +1062,8 @@ export default function QboConsolePage() {
       });
       refetchStatus();
       refetchEvents();
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      // Phase 5 Step A7: canonical invoice family key
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
     },
     onError: (err: Error) => {
       toast({ title: "Apply error", description: err.message, variant: "destructive" });
