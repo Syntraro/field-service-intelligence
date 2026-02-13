@@ -223,6 +223,10 @@ export function JobHeaderCard({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
       toast({ title: "Job Reopened", description: "Job has been reopened and is now in progress." });
     },
     onError: (error: Error) => {

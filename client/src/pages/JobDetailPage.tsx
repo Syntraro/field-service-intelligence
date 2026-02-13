@@ -1114,31 +1114,6 @@ export default function JobDetailPage() {
   const isEmptyDraftVisit = (v: import("@shared/schema").JobVisit) =>
     v.status === "scheduled" && !v.assignedTechnicianId && !v.visitNotes;
 
-  // Mutation: cancel or delete a conflicting visit before creating a new one
-  const resolveConflictMutation = useMutation({
-    mutationFn: async ({ visitId, action }: { visitId: string; action: "delete" | "cancel" }) => {
-      if (action === "delete") {
-        return apiRequest(`/api/jobs/${jobId}/visits/${visitId}`, { method: "DELETE" });
-      }
-      // Cancel: set status to cancelled
-      return apiRequest(`/api/jobs/${jobId}/visits/${visitId}/status`, {
-        method: "POST",
-        body: JSON.stringify({ status: "cancelled" }),
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "visits"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
-      // Now open the add visit dialog
-      setRescheduleConflict(null);
-      setShowScheduleVisitDialog(true);
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message || "Failed to resolve existing visit", variant: "destructive" });
-    },
-  });
-
   // Reschedule rule: check for existing non-completed active visits before creating a new one
   const handleScheduleFollowUp = () => {
     const TERMINAL_STATUSES = ["completed", "cancelled"];
@@ -1196,6 +1171,11 @@ export default function JobDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       // Also invalidate time summary so Labour card updates immediately
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-summary"] });
+      // Refresh calendar and dashboard to reflect status change
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
       toast({
         title: "Status Updated",
         description: "Job status has been updated.",
@@ -1252,6 +1232,10 @@ export default function JobDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       queryClient.invalidateQueries({ queryKey: ["/api/maintenance"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
+      // Prefix-matches ["/api/clients", id, "overview"] so Client Detail page updates
+      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
       toast({
         title: "Job Deleted",
         description: "Job has been deleted.",
@@ -1438,7 +1422,7 @@ export default function JobDetailPage() {
           </div>
 
           {/* MIDDLE COLUMN — Compact inline visits list */}
-          <div className="lg:border-l flex flex-col" style={{ maxHeight: 'calc(100vh - 16rem)' }}>
+          <div id="visits-section" className="lg:border-l flex flex-col" style={{ maxHeight: 'calc(100vh - 16rem)' }}>
             {/* Header: visit count + schedule follow-up */}
             <div className="flex items-center justify-between px-4 py-3 border-b shrink-0">
               <span className="text-sm font-semibold">
@@ -1827,7 +1811,7 @@ export default function JobDetailPage() {
         />
       )}
 
-      {/* Reschedule Conflict Dialog — shown when scheduling follow-up with existing active visit */}
+      {/* Existing Visit Conflict Dialog — explicit Reschedule vs Add Follow-up */}
       <AlertDialog open={!!rescheduleConflict} onOpenChange={(open) => { if (!open) setRescheduleConflict(null); }}>
         <AlertDialogContent data-testid="dialog-reschedule-conflict">
           <AlertDialogHeader>
@@ -1835,45 +1819,41 @@ export default function JobDetailPage() {
             <AlertDialogDescription>
               {rescheduleConflict?.isEmptyDraft ? (
                 <>
-                  There is an empty draft visit (Visit #{rescheduleConflict.visit.visitNumber || "—"}, {formatVisitDate(rescheduleConflict.visit)}) with no technician or notes.
-                  Delete it and create a new visit?
+                  Visit #{rescheduleConflict.visit.visitNumber || "—"} ({formatVisitDate(rescheduleConflict.visit)}) is an empty draft with no technician or notes.
+                  You can reschedule it or add a separate follow-up visit.
                 </>
               ) : (
                 <>
-                  There is an active visit (Visit #{rescheduleConflict?.visit.visitNumber || "—"} — {VISIT_STATUS_LABELS[rescheduleConflict?.visit.status || ""] || rescheduleConflict?.visit.status}).
-                  Cancel it before scheduling a new follow-up?
+                  Visit #{rescheduleConflict?.visit.visitNumber || "—"} ({VISIT_STATUS_LABELS[rescheduleConflict?.visit.status || ""] || rescheduleConflict?.visit.status}) is already scheduled.
+                  Would you like to reschedule it, or add a new follow-up visit?
                 </>
               )}
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel data-testid="button-cancel-reschedule">Keep Existing</AlertDialogCancel>
+          <AlertDialogFooter className="flex-col sm:flex-row gap-2">
+            <AlertDialogCancel data-testid="button-cancel-reschedule">Cancel</AlertDialogCancel>
             <Button
               variant="outline"
               onClick={() => {
-                // Skip conflict — open dialog without resolving
+                // Reschedule existing: open visit detail for rescheduling
+                if (rescheduleConflict) {
+                  setSelectedVisitId(rescheduleConflict.visit.id);
+                }
                 setRescheduleConflict(null);
-                setShowScheduleVisitDialog(true);
               }}
-              data-testid="button-schedule-anyway"
+              data-testid="button-reschedule-existing"
             >
-              Schedule Anyway
+              Reschedule Existing Visit
             </Button>
             <AlertDialogAction
               onClick={() => {
-                if (!rescheduleConflict) return;
-                resolveConflictMutation.mutate({
-                  visitId: rescheduleConflict.visit.id,
-                  action: rescheduleConflict.isEmptyDraft ? "delete" : "cancel",
-                });
+                // Add follow-up: create a new visit (no conflict resolution needed)
+                setRescheduleConflict(null);
+                setShowScheduleVisitDialog(true);
               }}
-              disabled={resolveConflictMutation.isPending}
-              data-testid="button-resolve-and-schedule"
+              data-testid="button-add-followup"
             >
-              {resolveConflictMutation.isPending ? (
-                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-              ) : null}
-              {rescheduleConflict?.isEmptyDraft ? "Delete & Schedule New" : "Cancel & Schedule New"}
+              Add Follow-up Visit
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

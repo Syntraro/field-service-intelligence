@@ -271,8 +271,9 @@ export default function Jobs() {
         method: "POST",
       });
     },
-    onSuccess: () => {
+    onSuccess: (_, jobId) => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
       toast({ title: "Job escalated", description: "The job has been marked as escalated." });
     },
     onError: (error: Error) => {
@@ -297,8 +298,9 @@ export default function Jobs() {
         headers: { "Content-Type": "application/json" },
       });
     },
-    onSuccess: (_, { payload }) => {
+    onSuccess: (_, { jobId, payload }) => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId] });
       const field = payload.nextActionDate !== undefined ? "next action date" : "notes";
       toast({ title: "Updated", description: `Action required ${field} updated.` });
     },
