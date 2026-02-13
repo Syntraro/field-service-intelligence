@@ -11,10 +11,29 @@ import {
 } from "@shared/schema";
 import { BaseRepository } from "./base";
 import { jobVisitsRepository, isVisitActioned } from "./jobVisits";
-// NOTE: For simple visit list queries (e.g. tech schedule, admin views), use the
-// canonical functions in server/storage/visits.ts (getVisitsForTenantInRange, etc.).
-// Calendar uses its own CTE-based query below because it needs per-job ranking
-// (current eligible visit via ROW_NUMBER) and technician profile enrichment.
+import { resolveTechnicianName } from "../lib/resolveTechnicianName";
+// ============================================================================
+// ARCHITECTURE NOTE: Calendar vs Visit Feed (Phase 3 Step E)
+// ============================================================================
+//
+// Calendar is a SEPARATE projection family from the canonical visit feed.
+// Do NOT attempt to unify these query paths — they serve different purposes:
+//
+// Visit Feed (server/storage/visits.ts):
+//   - Flat list of visits with job + location joins
+//   - RBAC auto-scoping (technicians see only their assigned visits)
+//   - Used by: tech field pages, admin visit lists
+//   - Query family: ['visits', ...]
+//
+// Calendar (this file):
+//   - CTE-based query with per-job ranking (ROW_NUMBER for current eligible visit)
+//   - Technician profile enrichment (colours, display names)
+//   - All-day event normalization + backlog logic
+//   - Used by: calendar page, dispatch views
+//   - Query family: ['/api/calendar', ...] and ['/api/calendar/range', ...]
+//
+// Both paths enforce tenant isolation via companyId.
+// ============================================================================
 import {
   // Domain helpers - SINGLE SOURCE OF TRUTH for scheduling logic
   BACKLOG_STATUS,
@@ -325,8 +344,8 @@ export class CalendarRepository extends BaseRepository {
         .where(inArray(users.id, technicianIds));
 
       for (const tech of techRows) {
-        const name = tech.fullName ||
-          (tech.firstName && tech.lastName ? `${tech.firstName} ${tech.lastName}` : tech.firstName || "Unknown");
+        // Phase 4 Step B2: canonical tech name resolution
+        const name = resolveTechnicianName(tech);
         technicianMap.set(tech.id, {
           id: tech.id,
           name,
@@ -547,8 +566,8 @@ export class CalendarRepository extends BaseRepository {
         .where(inArray(users.id, technicianIds));
 
       for (const tech of techRows) {
-        const name = tech.fullName ||
-          (tech.firstName && tech.lastName ? `${tech.firstName} ${tech.lastName}` : tech.firstName || "Unknown");
+        // Phase 4 Step B2: canonical tech name resolution
+        const name = resolveTechnicianName(tech);
         technicianMap.set(tech.id, {
           id: tech.id,
           name,
