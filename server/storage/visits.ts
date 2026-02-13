@@ -40,7 +40,8 @@ const ENRICHED_VISIT_SELECT = {
   jobDescription: jobs.description,
   jobPriority: jobs.priority,
   locationId: clientLocations.id,
-  locationCompanyName: clientLocations.companyName,
+  // Phase 5.3 G3: COALESCE parent company name for consistent display across surfaces
+  locationCompanyName: sql<string>`COALESCE(${customerCompanies.name}, ${clientLocations.companyName})`,
   locationLocation: clientLocations.location,
   locationAddress: clientLocations.address,
   locationCity: clientLocations.city,
@@ -124,6 +125,7 @@ export async function getVisitsForUserInRange(
     .from(jobVisits)
     .innerJoin(jobs, eq(jobVisits.jobId, jobs.id))
     .leftJoin(clientLocations, eq(jobs.locationId, clientLocations.id))
+    .leftJoin(customerCompanies, eq(clientLocations.parentCompanyId, customerCompanies.id))
     .where(
       and(
         eq(jobVisits.companyId, tenantId),
@@ -155,6 +157,7 @@ export async function getUnscheduledVisitsForUser(
     .from(jobVisits)
     .innerJoin(jobs, eq(jobVisits.jobId, jobs.id))
     .leftJoin(clientLocations, eq(jobs.locationId, clientLocations.id))
+    .leftJoin(customerCompanies, eq(clientLocations.parentCompanyId, customerCompanies.id))
     .where(
       and(
         eq(jobVisits.companyId, tenantId),
@@ -187,6 +190,7 @@ export async function getVisitByIdForUser(
     .from(jobVisits)
     .innerJoin(jobs, eq(jobVisits.jobId, jobs.id))
     .leftJoin(clientLocations, eq(jobs.locationId, clientLocations.id))
+    .leftJoin(customerCompanies, eq(clientLocations.parentCompanyId, customerCompanies.id))
     .where(
       and(
         eq(jobVisits.id, visitId),
@@ -253,6 +257,7 @@ export async function getVisitsForTenantInRange(
     .from(jobVisits)
     .innerJoin(jobs, eq(jobVisits.jobId, jobs.id))
     .leftJoin(clientLocations, eq(jobs.locationId, clientLocations.id))
+    .leftJoin(customerCompanies, eq(clientLocations.parentCompanyId, customerCompanies.id))
     .where(and(...conditions))
     .orderBy(asc(jobVisits.scheduledStart));
 
@@ -413,6 +418,7 @@ export async function getVisitFeed(
     .from(jobVisits)
     .innerJoin(jobs, eq(jobVisits.jobId, jobs.id))
     .leftJoin(clientLocations, eq(jobs.locationId, clientLocations.id))
+    .leftJoin(customerCompanies, eq(clientLocations.parentCompanyId, customerCompanies.id))
     .where(and(...conditions))
     .orderBy(
       filters.unscheduled
