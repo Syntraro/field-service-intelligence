@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { QuickAddSupplierDialog } from "@/components/suppliers/QuickAddSupplierDialog";
-import type { Supplier, SupplierLocation } from "@shared/schema";
+import type { Supplier, SupplierLocation, Job } from "@shared/schema";
 
 /**
  * Safely convert a Date, string, or nullish value to an ISO string.
@@ -49,13 +49,6 @@ interface TeamMember {
   fullName: string;
   email: string;
   role: string;
-}
-
-interface Job {
-  id: string;
-  jobNumber: number;
-  summary: string;
-  status: string;
 }
 
 interface Client {

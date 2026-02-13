@@ -23,37 +23,28 @@ import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AsyncBlock } from "@/components/AsyncBlock";
 import { TaskDialog } from "@/components/TaskDialog";
+import type { Job as SchemaJob, Invoice as SchemaInvoice } from "@shared/schema";
 
 // ============================================================================
 // Types
 // ============================================================================
+
+// Dashboard API response shapes — extend schema types with API enrichments
+interface Job extends Pick<SchemaJob, "id" | "jobNumber" | "summary" | "status" | "scheduledStart"> {
+  locationName?: string;
+  location?: { companyName?: string; location?: string };
+}
+
+interface Invoice extends Pick<SchemaInvoice, "id" | "invoiceNumber" | "total" | "balance" | "dueDate" | "status"> {
+  locationName?: string;
+  isPastDue?: boolean;
+}
 
 interface WorkflowSummary {
   quotes: { approvedCount: number; draftCount: number };
   jobs: { requiresInvoicingCount: number; activeCount: number; onHoldCount: number };
   invoices: { outstandingCount: number; pastDueCount: number };
   fourth: null;
-}
-
-interface Job {
-  id: string;
-  jobNumber: number;
-  summary: string;
-  status: string;
-  scheduledStart: string | null;
-  locationName?: string;
-  location?: { companyName?: string; location?: string };
-}
-
-interface Invoice {
-  id: string;
-  invoiceNumber: string | null;
-  total: string;
-  balance: string;
-  dueDate: string | null;
-  status: string;
-  locationName?: string;
-  isPastDue?: boolean;
 }
 
 type Task = {
@@ -99,9 +90,9 @@ function WorkflowStrip({ data, isLoading, isError }: {
       title: "Jobs",
       icon: Briefcase,
       items: [
-        { label: "Requires Invoicing", count: data?.jobs.requiresInvoicingCount ?? 0, href: "/jobs?status=requires_invoicing" },
+        { label: "Requires Invoicing", count: data?.jobs.requiresInvoicingCount ?? 0, href: "/jobs?lifecycle=completed" },
         { label: "Active", count: data?.jobs.activeCount ?? 0, href: "/jobs" },
-        { label: "On Hold", count: data?.jobs.onHoldCount ?? 0, href: "/jobs?status=on_hold" },
+        { label: "On Hold", count: data?.jobs.onHoldCount ?? 0, href: "/jobs?lifecycle=open&subStatus=on_hold" },
       ],
       color: "text-emerald-600 dark:text-emerald-400",
     },
