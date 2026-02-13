@@ -31,6 +31,11 @@ import {
   type LifecycleIntent,
   type TransitionActor,
 } from "../domain/jobLifecycle";
+import * as visitService from "../services/jobVisits.service";
+// Phase 4 Step A5: Canonical jobs feed module
+import { getQueryCtx } from "../lib/queryCtx";
+import { getJobsFeed, getJobHeader } from "../storage/jobsFeed";
+import type { JobFeedFilters } from "../storage/jobsFeed";
 
 const router = Router();
 
@@ -41,37 +46,45 @@ const router = Router();
  */
 
 // GET /api/jobs - List all jobs with pagination
-// Supports filters: status, technicianId, search, scheduledDate (YYYY-MM-DD for single day)
+// Phase 4 Step A5: Now uses canonical getJobsFeed with correct COALESCE joins
 router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const companyId = req.companyId;
-  // Use lenient pagination to support dashboard queries that only send limit
-  const { params: pagination } = parsePaginationLenient(req.query);
+  const ctx = getQueryCtx(req);
 
   const status = req.query.status ? String(req.query.status) : undefined;
   const technicianId = req.query.technicianId ? String(req.query.technicianId) : undefined;
   const search = req.query.search ? String(req.query.search) : undefined;
+  const locationId = req.query.locationId ? String(req.query.locationId) : undefined;
 
   // Support scheduledDate param (YYYY-MM-DD) for filtering jobs on a specific date
-  // Converts to startDate/endDate range for storage layer
-  let startDate: string | undefined;
-  let endDate: string | undefined;
-
+  let dateRange: { start: string; end: string } | undefined;
   if (req.query.scheduledDate) {
     const dateStr = String(req.query.scheduledDate);
-    // Set startDate to beginning of day, endDate to end of day
-    startDate = `${dateStr}T00:00:00.000Z`;
-    endDate = `${dateStr}T23:59:59.999Z`;
+    dateRange = {
+      start: `${dateStr}T00:00:00.000Z`,
+      end: `${dateStr}T23:59:59.999Z`,
+    };
   }
 
-  const result = await storage.getJobs(companyId, {
+  // Parse pagination from query params
+  const { params: pagination } = parsePaginationLenient(req.query);
+
+  const filters: JobFeedFilters = {
     status,
     technicianId,
     search,
-    startDate,
-    endDate,
-  }, pagination);
+    locationId,
+    dateRange,
+    limit: pagination.limit ?? 200,
+    offset: pagination.offset ?? 0,
+  };
 
-  res.json(paginated(result.items, result.meta));
+  const result = await getJobsFeed(ctx, filters);
+
+  // Return in paginated envelope for backward compatibility
+  res.json(paginated(result.items, {
+    limit: filters.limit!,
+    hasMore: result.items.length >= filters.limit!,
+  }));
 }));
 
 // GET /api/jobs/action-required - Get action required jobs queue
@@ -85,10 +98,11 @@ router.get("/action-required", requireRole(MANAGER_ROLES), asyncHandler(async (r
 }));
 
 // GET /api/jobs/:id - Get single job
+// Phase 4 Step A5: Now uses canonical getJobHeader with correct customerCompanies join
 router.get("/:id", asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const companyId = req.companyId;
+  const ctx = getQueryCtx(req);
 
-  const job = await storage.getJob(companyId, req.params.id);
+  const job = await getJobHeader(ctx, req.params.id);
   if (!job) throw createError(404, "Job not found");
 
   res.json(job);
@@ -463,17 +477,38 @@ import { CLOSEABLE_STATES } from "../statusRules";
 const closeJobSchema = z.object({
   mode: z.enum(["archive", "invoice_later", "invoice_now"]),
   version: z.number().int().nonnegative(),
+  // Visit guardrail: when true, auto-complete uncompleted visits before closing
+  autoCompleteOpenVisits: z.boolean().optional().default(false),
 }).strict(); // PHASE A.1: Reject unknown keys
 
 // POST /api/jobs/:id/close - Close job with specified mode
 // LIFECYCLE HARDENING: Uses transitionJobStatus for RBAC, version check, and audit
+// VISIT GUARDRAIL: Checks for uncompleted visits and returns 409 if not auto-completing
 router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   const jobId = req.params.id;
   const userId = req.user?.id || null;
   const userRole = req.user?.role || "unknown";
 
-  const { mode, version } = validateSchema(closeJobSchema, req.body);
+  const { mode, version, autoCompleteOpenVisits } = validateSchema(closeJobSchema, req.body);
+
+  // Visit guardrail: check for uncompleted visits before closing
+  const uncompletedVisits = await visitService.getUncompletedVisits(companyId, jobId);
+
+  if (uncompletedVisits.length > 0 && !autoCompleteOpenVisits) {
+    // Return 409 with visit details so UI can show guardrail modal
+    return res.status(409).json({
+      code: "UNCOMPLETED_VISITS",
+      error: `Job has ${uncompletedVisits.length} uncompleted visit(s). Complete them first or use autoCompleteOpenVisits.`,
+      visitCount: uncompletedVisits.length,
+      visitIds: uncompletedVisits.map((v) => v.id),
+    });
+  }
+
+  // If auto-completing, bulk-complete visits before proceeding
+  if (uncompletedVisits.length > 0 && autoCompleteOpenVisits) {
+    await visitService.bulkCompleteVisits(companyId, jobId);
+  }
 
   // Build actor for RBAC check
   const actor: TransitionActor = {
