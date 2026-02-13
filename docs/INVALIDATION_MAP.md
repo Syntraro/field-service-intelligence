@@ -114,23 +114,18 @@
 | `updateStatusMutation` (visit) | `POST /api/jobs/:jobId/visits/:visitId/status` | jobs/:jobId/visits, jobs/:jobId |
 | `deleteMutation` (visit) | `DELETE /api/jobs/:jobId/visits/:visitId` | jobs/:jobId/visits, jobs/:jobId, calendar |
 | `updateStatusMutation` (job) | `POST /api/jobs/:jobId/status` | jobs/:jobId, jobs, jobs/:jobId/time-summary, **calendar**, **calendar/range**, **calendar/unscheduled**, `["dashboard"]` (family) |
-| `clearHoldMutation` | `POST /api/jobs/:jobId/status` | jobs/:jobId, jobs |
+| `clearHoldMutation` | `POST /api/jobs/:jobId/status` | jobs/:jobId, jobs, `["dashboard"]` (family) |
 | `deleteJobMutation` | `DELETE /api/jobs/:jobId` | jobs, calendar, maintenance, `["dashboard"]` (family), recurring-templates, clients |
 | `createInvoiceMutation` | `POST /api/invoices/from-job/:jobId` | `["invoices"]` (family), jobs/:jobId |
-
-> **TODO:** `clearHoldMutation` is missing dashboard invalidation. Clearing a hold changes on_hold count.
 
 ### Job Header Card — `components/JobHeaderCard.tsx`
 
 | Mutation | API | Invalidates |
 |---|---|---|
 | `createInvoiceMutation` | `POST /api/invoices/from-job/:jobId` | `["invoices"]` (family), jobs/:jobId |
-| `undoCloseMutation` | `POST /api/jobs/:jobId/undo-close` | jobs/:jobId, jobs |
-| `closeJobMutation` | `POST /api/jobs/:jobId/close` | jobs/:jobId, jobs, jobs/:jobId/visits, (if invoice created: `["invoices"]` family) |
+| `undoCloseMutation` | `POST /api/jobs/:jobId/undo-close` | jobs/:jobId, jobs, `["dashboard"]` (family) |
+| `closeJobMutation` | `POST /api/jobs/:jobId/close` | jobs/:jobId, jobs, `["visits"]` (family), `["dashboard"]` (family), (if invoice created: `["invoices"]` family) |
 | `reopenJobMutation` | `POST /api/jobs/:jobId/reopen` | jobs/:jobId, jobs, **calendar**, **calendar/range**, **calendar/unscheduled**, `["dashboard"]` (family) |
-
-> **TODO:** `undoCloseMutation` is missing dashboard invalidation. Undoing a close moves job back to a different status bucket.
-> **TODO:** `closeJobMutation` is missing dashboard invalidation. Closing a job removes it from active/on-hold counts.
 
 ### Jobs List Page — `pages/Jobs.tsx`
 
@@ -297,14 +292,10 @@ Uses `useMutationWithToast` (group-based invalidation):
 
 ## Known Gaps (TODO)
 
-These are invalidation gaps discovered during audit that were NOT fixed in Phase 2.
-They should be addressed in a future patch.
+Remaining invalidation gaps not yet patched.
 
 | Location | Mutation | Missing Invalidation | Impact |
 |---|---|---|---|
-| `JobDetailPage.tsx` | `clearHoldMutation` | `["dashboard"]` | Dashboard on_hold count stale after clearing hold |
-| `JobHeaderCard.tsx` | `undoCloseMutation` | `["dashboard"]` | Dashboard counts stale after undo-close |
-| `JobHeaderCard.tsx` | `closeJobMutation` | `["dashboard"]` | Dashboard counts stale after closing job |
 | `ActionRequiredModal.tsx` | `updateStatusMutation` | `["dashboard"]` | Dashboard needs-attention stale after action-required update |
 | `Calendar.tsx` | `archiveOldAssignment` | `["dashboard"]` | Dashboard counts stale after archiving old job |
 | `useCalendarDnD.ts` | `createAssignment` | `["jobs"]` (via narrow invalidation only) | Job list may show stale schedule data after DnD schedule |
