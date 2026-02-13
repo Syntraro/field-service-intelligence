@@ -3,7 +3,7 @@
 > Canonical reference for every client-side mutation and the TanStack Query keys
 > it invalidates on success. Created as part of Phase 3 (Canonical Visit Feed Migration).
 >
-> **Last audited:** 2026-02-13 (Phase 5 — Invoice Family Canonicalization)
+> **Last audited:** 2026-02-13 (Phase 5 — Final Cleanup, Parts A-E)
 
 ---
 
@@ -75,7 +75,7 @@
 | `useScheduleJob` | `POST /api/calendar/schedule` | calendar, calendar/range, calendar/unscheduled, jobs, jobs/:jobId |
 | `useRescheduleJob` | `PATCH /api/calendar/schedule/:jobId` | calendar, calendar/range, calendar/unscheduled, jobs, jobs/:jobId |
 | `useUnscheduleJob` | `POST /api/calendar/unschedule/:jobId` | calendar, calendar/range, calendar/unscheduled, jobs, jobs/:jobId, jobs/:jobId/visits, jobs/:jobId/visits/all |
-| `useCompleteJob` | `POST /api/jobs/:jobId/complete` | calendar, calendar/range, jobs, jobs/:jobId, **dashboard**, **dashboard/needs-attention** |
+| `useCompleteJob` | `POST /api/jobs/:jobId/complete` | calendar, calendar/range, jobs, jobs/:jobId, `["dashboard"]` (family) |
 
 ### Calendar DnD — `hooks/useCalendarDnD.ts`
 
@@ -94,7 +94,7 @@
 
 | Mutation / Callback | API | Invalidates |
 |---|---|---|
-| `deleteOldAssignment` | `DELETE /api/jobs/:id` | calendar/old-unscheduled, calendar/unscheduled, jobs, **dashboard**, **maintenance**, **clients** |
+| `deleteOldAssignment` | `DELETE /api/jobs/:id` | calendar/old-unscheduled, calendar/unscheduled, jobs, `["dashboard"]` (family), **maintenance**, **clients** |
 | `archiveOldAssignment` | `POST /api/jobs/:id/complete` | calendar/old-unscheduled, calendar/unscheduled, jobs |
 | `requireJobVersion` (stale guard) | — | calendar/unscheduled, `invalidateCalendarQueries()` |
 | `requireAssignmentVersion` (stale guard) | — | `invalidateCalendarQueries()` |
@@ -113,9 +113,9 @@
 |---|---|---|
 | `updateStatusMutation` (visit) | `POST /api/jobs/:jobId/visits/:visitId/status` | jobs/:jobId/visits, jobs/:jobId |
 | `deleteMutation` (visit) | `DELETE /api/jobs/:jobId/visits/:visitId` | jobs/:jobId/visits, jobs/:jobId, calendar |
-| `updateStatusMutation` (job) | `POST /api/jobs/:jobId/status` | jobs/:jobId, jobs, jobs/:jobId/time-summary, **calendar**, **calendar/range**, **calendar/unscheduled**, **dashboard** |
+| `updateStatusMutation` (job) | `POST /api/jobs/:jobId/status` | jobs/:jobId, jobs, jobs/:jobId/time-summary, **calendar**, **calendar/range**, **calendar/unscheduled**, `["dashboard"]` (family) |
 | `clearHoldMutation` | `POST /api/jobs/:jobId/status` | jobs/:jobId, jobs |
-| `deleteJobMutation` | `DELETE /api/jobs/:jobId` | jobs, calendar, maintenance, **dashboard**, recurring-templates, clients |
+| `deleteJobMutation` | `DELETE /api/jobs/:jobId` | jobs, calendar, maintenance, `["dashboard"]` (family), recurring-templates, clients |
 | `createInvoiceMutation` | `POST /api/invoices/from-job/:jobId` | `["invoices"]` (family), jobs/:jobId |
 
 > **TODO:** `clearHoldMutation` is missing dashboard invalidation. Clearing a hold changes on_hold count.
@@ -127,7 +127,7 @@
 | `createInvoiceMutation` | `POST /api/invoices/from-job/:jobId` | `["invoices"]` (family), jobs/:jobId |
 | `undoCloseMutation` | `POST /api/jobs/:jobId/undo-close` | jobs/:jobId, jobs |
 | `closeJobMutation` | `POST /api/jobs/:jobId/close` | jobs/:jobId, jobs, jobs/:jobId/visits, (if invoice created: `["invoices"]` family) |
-| `reopenJobMutation` | `POST /api/jobs/:jobId/reopen` | jobs/:jobId, jobs, **calendar**, **calendar/range**, **calendar/unscheduled**, **dashboard** |
+| `reopenJobMutation` | `POST /api/jobs/:jobId/reopen` | jobs/:jobId, jobs, **calendar**, **calendar/range**, **calendar/unscheduled**, `["dashboard"]` (family) |
 
 > **TODO:** `undoCloseMutation` is missing dashboard invalidation. Undoing a close moves job back to a different status bucket.
 > **TODO:** `closeJobMutation` is missing dashboard invalidation. Closing a job removes it from active/on-hold counts.
@@ -183,7 +183,7 @@
 | `addNoteMutation` | `POST /api/tech/visits/:id/notes` | (all via shared `invalidate()` helper) |
 
 **Shared `invalidate()` helper invalidates:**
-`/api/tech/visits/:visitId`, `/api/tech/visits/today`, `/api/calendar`, `/api/calendar/range`, `/api/jobs`, `/api/dashboard`
+`/api/tech/visits/:visitId`, `["visits"]` (family), `/api/calendar`, `/api/calendar/range`, `["jobs"]` (family), `["dashboard"]` (family)
 
 ### Location Detail Page — `pages/LocationDetailPage.tsx`
 
@@ -302,13 +302,13 @@ They should be addressed in a future patch.
 
 | Location | Mutation | Missing Invalidation | Impact |
 |---|---|---|---|
-| `JobDetailPage.tsx` | `clearHoldMutation` | `/api/dashboard`, `/api/dashboard/needs-attention` | Dashboard on_hold count stale after clearing hold |
-| `JobHeaderCard.tsx` | `undoCloseMutation` | `/api/dashboard`, `/api/dashboard/needs-attention` | Dashboard counts stale after undo-close |
-| `JobHeaderCard.tsx` | `closeJobMutation` | `/api/dashboard`, `/api/dashboard/needs-attention` | Dashboard counts stale after closing job |
-| `ActionRequiredModal.tsx` | `updateStatusMutation` | `/api/dashboard`, `/api/dashboard/needs-attention` | Dashboard needs-attention stale after action-required update |
-| `Calendar.tsx` | `archiveOldAssignment` | `/api/dashboard` | Dashboard counts stale after archiving old job |
-| `useCalendarDnD.ts` | `createAssignment` | `/api/jobs` (via narrow invalidation only) | Job list may show stale schedule data after DnD schedule |
-| `useCalendarDnD.ts` | `deleteAssignment` | `/api/jobs`, `/api/dashboard` | Job list and dashboard stale after DnD unschedule |
+| `JobDetailPage.tsx` | `clearHoldMutation` | `["dashboard"]` | Dashboard on_hold count stale after clearing hold |
+| `JobHeaderCard.tsx` | `undoCloseMutation` | `["dashboard"]` | Dashboard counts stale after undo-close |
+| `JobHeaderCard.tsx` | `closeJobMutation` | `["dashboard"]` | Dashboard counts stale after closing job |
+| `ActionRequiredModal.tsx` | `updateStatusMutation` | `["dashboard"]` | Dashboard needs-attention stale after action-required update |
+| `Calendar.tsx` | `archiveOldAssignment` | `["dashboard"]` | Dashboard counts stale after archiving old job |
+| `useCalendarDnD.ts` | `createAssignment` | `["jobs"]` (via narrow invalidation only) | Job list may show stale schedule data after DnD schedule |
+| `useCalendarDnD.ts` | `deleteAssignment` | `["jobs"]`, `["dashboard"]` | Job list and dashboard stale after DnD unschedule |
 
 ---
 
@@ -318,10 +318,10 @@ When a mutation modifies an entity, which query families should be invalidated?
 
 | Entity Modified | Minimum Invalidation | Extended (recommended) |
 |---|---|---|
-| **Job status** | jobs, jobs/:id | + calendar, dashboard |
-| **Job schedule** | jobs, calendar, calendar/range | + calendar/unscheduled (if toggling scheduled↔backlog) |
-| **Job delete** | jobs, calendar, dashboard | + maintenance, clients, recurring-templates |
-| **Visit status** | jobs/:id/visits, jobs/:id | + tech/visits, calendar, dashboard |
+| **Job status** | `["jobs"]`, jobs/:id | + calendar, `["dashboard"]` |
+| **Job schedule** | `["jobs"]`, calendar, calendar/range | + calendar/unscheduled (if toggling scheduled↔backlog) |
+| **Job delete** | `["jobs"]`, calendar, `["dashboard"]` | + maintenance, clients, recurring-templates |
+| **Visit status** | `["visits"]`, jobs/:id | + tech/visits, calendar, `["dashboard"]` |
 | **Invoice create** | `["invoices"]` (family), jobs/:id | — (family covers all sub-keys) |
 | **Invoice status change** | invoice/:id, `["invoices"]` (family) | — (family covers all sub-keys) |
 | **Payment recorded** | invoice/:id, `["invoices"]` (family) | — (family covers all sub-keys) |
