@@ -42,6 +42,7 @@
 import type { JobStatus, OpenSubStatus } from "@shared/schema";
 import { normalizeJobStatus, isJobScheduled, isJobAssigned, isBacklogEligible } from "@shared/schema";
 import { TERMINAL_STATUSES } from "../statusRules";
+import { resolveTechnicianName } from "../lib/resolveTechnicianName";
 
 // ============================================================================
 // Constants
@@ -565,7 +566,8 @@ export function filterSchedulableTechnicians<T extends UserLike>(
     if (reason) {
       excluded.push({ user, reason });
       if (process.env.NODE_ENV === "development") {
-        const name = user.fullName || user.email || user.id;
+        // Phase 4 Step B5: canonical tech name resolution
+        const name = resolveTechnicianName(user);
         console.log(`[${contextLabel}] Excluded technician "${name}" (${user.id}): ${reason}`);
       }
     } else {
