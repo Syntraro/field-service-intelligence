@@ -135,7 +135,8 @@ export function JobHeaderCard({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      // (covered by family-wide ["jobs"] invalidation above)
+      // Phase 5.1: undoing a close moves job back to a different status bucket
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       toast({ title: "Undo Successful", description: "Job close has been undone." });
     },
     onError: (error: Error) => {
