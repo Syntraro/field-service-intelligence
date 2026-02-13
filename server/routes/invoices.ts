@@ -25,6 +25,9 @@ import {
   isBillingImpactingPatch,
 } from "../utils/qboInvoiceLock";
 import { generateInvoicePdf } from "../services/invoicePdfService";
+// Phase 5 Step A4: canonical invoice feed builders
+import { getQueryCtx } from "../lib/queryCtx";
+import { getInvoicesFeed, getInvoiceStats as getCanonicalInvoiceStats } from "../storage/invoicesFeed";
 
 const router = Router();
 
@@ -157,39 +160,55 @@ function validateSendRequirements(invoice: any): string[] {
 // ROUTES
 // ========================================
 
-// GET /api/invoices/list - List all invoices with pagination
+// Phase 5 Step A4: GET /api/invoices/list — canonical invoice feed
 router.get("/list", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const ctx = getQueryCtx(req);
   const pagination = parsePagination(req.query);
-  const result = await storage.getInvoices(req.companyId!, pagination);
-
-  res.json(paginated(result.items, result.meta));
+  const { items } = await getInvoicesFeed(ctx, {
+    limit: pagination.limit,
+    offset: pagination.offset ?? 0,
+  });
+  // Preserve existing response shape for backward compatibility
+  res.json(paginated(items, { limit: pagination.limit, hasMore: items.length >= pagination.limit }));
 }));
 
-// GET /api/invoices/stats - Get invoice statistics
+// Phase 5 Step A4: GET /api/invoices/stats — canonical stats
 router.get("/stats", asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const rows = await storage.getInvoiceStats(req.companyId!);
-  res.json(rows);
+  const ctx = getQueryCtx(req);
+  const stats = await getCanonicalInvoiceStats(ctx);
+  // Return byStatus array for backward compatibility with existing consumers
+  res.json(stats.byStatus);
 }));
 
-// GET /api/invoices/dashboard - Get invoices for dashboard widget
-// Returns past due invoices first, then awaiting payment, limited to 10
+// Phase 5 Step A4: GET /api/invoices/dashboard — canonical feed with dashboard preset
 router.get("/dashboard", asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const invoices = await storage.getDashboardInvoices(req.companyId!, 10);
-  res.json({ data: invoices });
+  const ctx = getQueryCtx(req);
+  const { items } = await getInvoicesFeed(ctx, {
+    statuses: ["awaiting_payment", "sent", "partial_paid"],
+    unpaidOnly: true,
+    limit: 20,
+    sortBy: "dueDate",
+    sortOrder: "asc",
+  });
+  // Sort: past due first, then awaiting payment (matching old behavior)
+  const pastDue = items.filter(i => i.isPastDue);
+  const notPastDue = items.filter(i => !i.isPastDue);
+  const combined = [...pastDue, ...notPastDue].slice(0, 10);
+  res.json({ data: combined });
 }));
 
-// GET /api/invoices/by-job/:jobId - Get invoice for a specific job (if exists)
-// Phase 11: Fix job/invoice cross-linking
+// Phase 5 Step A4: GET /api/invoices/by-job/:jobId — canonical feed with jobId filter
 router.get("/by-job/:jobId", asyncHandler(async (req: AuthedRequest, res: Response) => {
-  const invoice = await storage.getInvoiceByJobId(req.companyId!, req.params.jobId);
+  const ctx = getQueryCtx(req);
+  const { items } = await getInvoicesFeed(ctx, { jobId: req.params.jobId, limit: 1 });
 
-  if (!invoice) {
-    // Return null instead of 404 - it's valid for a job to not have an invoice
+  if (items.length === 0) {
+    // Return null instead of 404 — it's valid for a job to not have an invoice
     res.json(null);
     return;
   }
 
-  res.json(invoice);
+  res.json(items[0]);
 }));
 
 // GET /api/invoices/:id - Get single invoice
