@@ -12,11 +12,13 @@ import {
 import { BaseRepository } from "./base";
 import { jobVisitsRepository, isVisitActioned } from "./jobVisits";
 import { resolveTechnicianName } from "../lib/resolveTechnicianName";
+// Phase 5 Step C2: shared query helpers for bulk resolution
+import { bulkResolveTechnicians, bulkResolveCustomerCompanies } from "../lib/queryHelpers";
 // ============================================================================
-// ARCHITECTURE NOTE: Calendar vs Visit Feed (Phase 3 Step E)
+// ARCHITECTURE NOTE: Calendar vs Visit Feed (Phase 3 Step E, updated Phase 5)
 // ============================================================================
 //
-// Calendar is a SEPARATE projection family from the canonical visit feed.
+// Calendar is a SEPARATE projection family from the canonical visit/job feeds.
 // Do NOT attempt to unify these query paths — they serve different purposes:
 //
 // Visit Feed (server/storage/visits.ts):
@@ -31,6 +33,14 @@ import { resolveTechnicianName } from "../lib/resolveTechnicianName";
 //   - All-day event normalization + backlog logic
 //   - Used by: calendar page, dispatch views
 //   - Query family: ['/api/calendar', ...] and ['/api/calendar/range', ...]
+//
+// Shared building blocks consumed from server/lib/queryHelpers.ts (Phase 5 C2):
+//   - bulkResolveTechnicians() — batch user+profile lookup → Map<id, {name, color}>
+//   - bulkResolveCustomerCompanies() — batch company names → Map<id, name>
+//   - resolveTechnicianName() — canonical tech name fallback chain (Phase 4 B)
+//
+// Calendar does NOT consume the visit or job canonical query builders directly.
+// The shared helpers ensure consistency without coupling.
 //
 // Both paths enforce tenant isolation via companyId.
 // ============================================================================
@@ -326,49 +336,9 @@ export class CalendarRepository extends BaseRepository {
       }
     }
 
-    // Fetch technicians with their profiles for color
-    const technicianIds = Array.from(technicianIdSet);
-    const technicianMap = new Map<string, { id: string; name: string; color: string | null }>();
-
-    if (technicianIds.length > 0) {
-      const techRows = await db
-        .select({
-          id: users.id,
-          firstName: users.firstName,
-          lastName: users.lastName,
-          fullName: users.fullName,
-          color: technicianProfiles.color,
-        })
-        .from(users)
-        .leftJoin(technicianProfiles, eq(users.id, technicianProfiles.userId))
-        .where(inArray(users.id, technicianIds));
-
-      for (const tech of techRows) {
-        // Phase 4 Step B2: canonical tech name resolution
-        const name = resolveTechnicianName(tech);
-        technicianMap.set(tech.id, {
-          id: tech.id,
-          name,
-          color: tech.color,
-        });
-      }
-    }
-
-    // Fetch customer company names
-    const customerCompanyMap = new Map<string, string>();
-    if (customerCompanyIds.size > 0) {
-      const companyRows = await db
-        .select({
-          id: customerCompanies.id,
-          name: customerCompanies.name,
-        })
-        .from(customerCompanies)
-        .where(inArray(customerCompanies.id, Array.from(customerCompanyIds)));
-
-      for (const cc of companyRows) {
-        customerCompanyMap.set(cc.id, cc.name);
-      }
-    }
+    // Phase 5 Step C2: use shared query helpers for bulk resolution
+    const technicianMap = await bulkResolveTechnicians(db, Array.from(technicianIdSet));
+    const customerCompanyMap = await bulkResolveCustomerCompanies(db, Array.from(customerCompanyIds));
 
     // Build result with technician details
     // PHASE 3: Use visit data for schedule fields, job data for everything else
@@ -548,49 +518,9 @@ export class CalendarRepository extends BaseRepository {
       }
     }
 
-    // Fetch technicians with their profiles for color
-    const technicianIds = Array.from(technicianIdSet);
-    const technicianMap = new Map<string, { id: string; name: string; color: string | null }>();
-
-    if (technicianIds.length > 0) {
-      const techRows = await db
-        .select({
-          id: users.id,
-          firstName: users.firstName,
-          lastName: users.lastName,
-          fullName: users.fullName,
-          color: technicianProfiles.color,
-        })
-        .from(users)
-        .leftJoin(technicianProfiles, eq(users.id, technicianProfiles.userId))
-        .where(inArray(users.id, technicianIds));
-
-      for (const tech of techRows) {
-        // Phase 4 Step B2: canonical tech name resolution
-        const name = resolveTechnicianName(tech);
-        technicianMap.set(tech.id, {
-          id: tech.id,
-          name,
-          color: tech.color,
-        });
-      }
-    }
-
-    // Fetch customer company names
-    const customerCompanyMap = new Map<string, string>();
-    if (customerCompanyIds.size > 0) {
-      const companyRows = await db
-        .select({
-          id: customerCompanies.id,
-          name: customerCompanies.name,
-        })
-        .from(customerCompanies)
-        .where(inArray(customerCompanies.id, Array.from(customerCompanyIds)));
-
-      for (const cc of companyRows) {
-        customerCompanyMap.set(cc.id, cc.name);
-      }
-    }
+    // Phase 5 Step C2: use shared query helpers for bulk resolution
+    const technicianMap = await bulkResolveTechnicians(db, Array.from(technicianIdSet));
+    const customerCompanyMap = await bulkResolveCustomerCompanies(db, Array.from(customerCompanyIds));
 
     // Build result with technician details
     const results = jobRows.map((job) => {
