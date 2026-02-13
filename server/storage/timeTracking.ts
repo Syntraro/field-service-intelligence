@@ -10,6 +10,7 @@
 
 import { db } from "../db";
 import { eq, and, sql, desc, isNull, isNotNull, lt, gte, or, asc, lte } from "drizzle-orm";
+import { activeJobFilter } from "./jobFilters";
 import {
   workSessions,
   timeEntries,
@@ -872,11 +873,11 @@ export class TimeTrackingRepository extends BaseRepository {
     this.validateUUID(technicianId, "technicianId");
     this.validateUUID(jobId, "jobId");
 
-    // Verify job exists and belongs to company
+    // Verify job exists and belongs to company (exclude soft-deleted/inactive)
     const [job] = await db
       .select({ id: jobs.id, status: jobs.status })
       .from(jobs)
-      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), activeJobFilter()))
       .limit(1);
 
     if (!job) {
@@ -887,10 +888,49 @@ export class TimeTrackingRepository extends BaseRepository {
     const status = options.status;
     let timeEntry: TimeEntry | undefined;
 
+    // ── Overlap guard: auto-stop any open entry before starting a new one ──
+    // This prevents phantom/overlapping segments across all status transitions.
+    const autoStopOpen = async (reason: string) => {
+      const running = await this.getRunningTimeEntry(companyId, technicianId);
+      if (!running) return;
+
+      // Stop the running entry
+      await this.stopTimeEntry(companyId, technicianId, {
+        timeEntryId: running.id,
+        at: now,
+      });
+
+      // Record an auto-stop audit event
+      await db.insert(technicianJobStatusEvents).values({
+        companyId,
+        jobId: running.jobId ?? jobId,
+        technicianId,
+        status: "auto_stop",
+        at: now,
+        source: options.source ?? "mobile",
+        notes: `Auto-stopped ${running.type} entry (${reason}). Previous entry: ${running.id}, job: ${running.jobId}`,
+        timeEntryId: running.id,
+      });
+
+      console.log(JSON.stringify({
+        event: "time_entry_auto_stopped",
+        companyId,
+        technicianId,
+        stoppedEntryId: running.id,
+        stoppedType: running.type,
+        stoppedJobId: running.jobId,
+        reason,
+        newStatus: status,
+        newJobId: jobId,
+        timestamp: now.toISOString(),
+      }));
+    };
+
     // Handle status-specific time entry logic
     switch (status) {
       case "en_route":
-        // Start travel_to_job entry
+        // Auto-stop any open entry before starting travel
+        await autoStopOpen("tech started en_route to new visit");
         timeEntry = await this.startTimeEntry(companyId, technicianId, {
           type: "travel_to_job",
           jobId,
@@ -900,21 +940,8 @@ export class TimeTrackingRepository extends BaseRepository {
         break;
 
       case "arrived":
-        // Stop travel_to_job if running for this job, start on_site
-        const travelEntry = await this.getRunningTimeEntry(companyId, technicianId);
-        if (travelEntry && travelEntry.jobId === jobId && travelEntry.type === "travel_to_job") {
-          await this.stopTimeEntry(companyId, technicianId, {
-            timeEntryId: travelEntry.id,
-            at: now,
-          });
-        } else if (travelEntry) {
-          // Stop any other running entry before starting on_site
-          await this.stopTimeEntry(companyId, technicianId, {
-            timeEntryId: travelEntry.id,
-            at: now,
-          });
-        }
-        // Start on_site entry
+        // Auto-stop any open entry (travel or work for any job) before starting on_site
+        await autoStopOpen("tech arrived at visit");
         timeEntry = await this.startTimeEntry(companyId, technicianId, {
           type: "on_site",
           jobId,
@@ -930,7 +957,7 @@ export class TimeTrackingRepository extends BaseRepository {
         break;
 
       case "completed":
-        // Stop on_site if running for this job
+        // Stop the open entry for this job (if any)
         const onSiteEntry = await this.getRunningTimeEntry(companyId, technicianId);
         if (onSiteEntry && onSiteEntry.jobId === jobId) {
           timeEntry = (await this.stopTimeEntry(companyId, technicianId, {
@@ -938,6 +965,7 @@ export class TimeTrackingRepository extends BaseRepository {
             at: now,
           })) ?? undefined;
         }
+        // If no running entry for this job, no-op (don't create phantom entries)
         break;
 
       case "dispatched":
@@ -1192,6 +1220,7 @@ export class TimeTrackingRepository extends BaseRepository {
       type?: TimeEntryType;
       startAt?: Date;
       endAt?: Date | null;
+      jobId?: string | null;
     },
     options: {
       overrideInvoiceLock?: boolean;
@@ -1234,6 +1263,18 @@ export class TimeTrackingRepository extends BaseRepository {
 
       // Require reason if overriding lock
       requireOverrideReason(entry, options.overrideInvoiceLock, options.overrideReason);
+
+      // Validate jobId reassignment: new job must belong to same tenant
+      if (patch.jobId !== undefined && patch.jobId !== null) {
+        const [targetJob] = await tx
+          .select({ id: jobs.id })
+          .from(jobs)
+          .where(and(eq(jobs.id, patch.jobId), eq(jobs.companyId, companyId)))
+          .limit(1);
+        if (!targetJob) {
+          throw this.notFoundError("Target job for reassignment");
+        }
+      }
 
       // Compute new times
       const newStartAt = patch.startAt ?? entry.startAt;
@@ -1303,6 +1344,7 @@ export class TimeTrackingRepository extends BaseRepository {
       if (patch.type !== undefined) updateFields.type = patch.type;
       if (patch.startAt !== undefined) updateFields.startAt = patch.startAt;
       if (patch.endAt !== undefined) updateFields.endAt = patch.endAt;
+      if (patch.jobId !== undefined) updateFields.jobId = patch.jobId;
       if (durationMinutes !== entry.durationMinutes)
         updateFields.durationMinutes = durationMinutes;
 
@@ -1340,6 +1382,7 @@ export class TimeTrackingRepository extends BaseRepository {
           id: entry.id,
           billable: entry.billable,
           type: entry.type,
+          jobId: entry.jobId,
           startAt: entry.startAt?.toISOString(),
           endAt: entry.endAt?.toISOString(),
           durationMinutes: entry.durationMinutes,
@@ -1349,6 +1392,7 @@ export class TimeTrackingRepository extends BaseRepository {
           id: updated.id,
           billable: updated.billable,
           type: updated.type,
+          jobId: updated.jobId,
           startAt: updated.startAt?.toISOString(),
           endAt: updated.endAt?.toISOString(),
           durationMinutes: updated.durationMinutes,
@@ -1401,6 +1445,64 @@ export class TimeTrackingRepository extends BaseRepository {
       { billable },
       options
     );
+  }
+
+  /**
+   * Delete a time entry (manager/admin only). Hard delete.
+   * Validates tenant isolation and checks invoice lock.
+   */
+  async deleteTimeEntry(
+    companyId: string,
+    timeEntryId: string,
+    options: {
+      userId: string;
+      overrideInvoiceLock?: boolean;
+      overrideReason?: string;
+    }
+  ): Promise<void> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(timeEntryId, "timeEntryId");
+    this.validateUUID(options.userId, "userId");
+
+    const [entry] = await db
+      .select()
+      .from(timeEntries)
+      .where(and(eq(timeEntries.id, timeEntryId), eq(timeEntries.companyId, companyId)))
+      .limit(1);
+
+    if (!entry) {
+      throw this.notFoundError("Time entry");
+    }
+
+    // Check invoice lock
+    checkEntryLock(entry, { overrideInvoiceLock: options.overrideInvoiceLock });
+
+    // Check approval lock
+    await this.enforceApprovalLock(companyId, entry.technicianId, entry.startAt, {
+      overrideApprovalLock: true,
+      overrideReason: options.overrideReason || "Admin delete",
+      actingUserId: options.userId,
+    });
+
+    console.log(
+      JSON.stringify({
+        event: "time_entry_admin_delete",
+        companyId,
+        userId: options.userId,
+        timeEntryId,
+        technicianId: entry.technicianId,
+        jobId: entry.jobId,
+        type: entry.type,
+        startAt: entry.startAt?.toISOString(),
+        endAt: entry.endAt?.toISOString(),
+        durationMinutes: entry.durationMinutes,
+        timestamp: new Date().toISOString(),
+      })
+    );
+
+    await db
+      .delete(timeEntries)
+      .where(and(eq(timeEntries.id, timeEntryId), eq(timeEntries.companyId, companyId)));
   }
 
   // ============================================================================

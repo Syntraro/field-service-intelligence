@@ -1,7 +1,42 @@
 import { db } from "../db";
-import { and, eq, desc, gte, lte, asc, sql, notInArray } from "drizzle-orm";
-import { jobVisits, jobs } from "@shared/schema";
+import { and, eq, desc, gte, lte, asc, sql, notInArray, isNull } from "drizzle-orm";
+import { activeJobFilter } from "./jobFilters";
+import { jobVisits, jobs, jobNotes, users, clientLocations } from "@shared/schema";
 import { BaseRepository, clampLimit } from "./base";
+
+// ============================================================================
+// ENRICHED VISIT TYPES — shared response shapes for tech + calendar consumers
+// ============================================================================
+
+/** Job metadata attached to an enriched visit. */
+export interface VisitJobInfo {
+  id: string;
+  jobNumber: number;
+  summary: string;
+  jobType: string;
+  description: string | null;
+  priority: string | null;
+}
+
+/** Location metadata attached to an enriched visit. */
+export interface VisitLocationInfo {
+  id: string;
+  companyName: string | null;
+  location: string | null;
+  address: string | null;
+  city: string | null;
+  province: string | null;
+  postalCode: string | null;
+  phone: string | null;
+}
+
+/** A visit enriched with job + location data (canonical shape for tech/calendar). */
+export interface EnrichedVisit {
+  /** All columns from job_visits */
+  [key: string]: any;
+  job: VisitJobInfo;
+  location: VisitLocationInfo | null;
+}
 
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
@@ -172,6 +207,198 @@ export class JobVisitsRepository extends BaseRepository {
     return past[0] ?? visitRows[0];
   }
 
+  // ========================================================================
+  // CANONICAL ENRICHED QUERIES — shared by tech field + calendar consumers
+  // ========================================================================
+
+  /**
+   * Get visits assigned to a user within a date range, enriched with job + location.
+   * Used by: /api/tech/visits/today, tech schedule page.
+   * Filters: companyId, isActive, scheduledStart in [start, end], assigned to userId.
+   */
+  async getVisitsForUserInRange(
+    companyId: string,
+    userId: string,
+    start: Date,
+    end: Date
+  ): Promise<EnrichedVisit[]> {
+    this.assertCompanyId(companyId);
+
+    const rows = await db
+      .select({
+        visit: jobVisits,
+        jobId: jobs.id,
+        jobNumber: jobs.jobNumber,
+        jobSummary: jobs.summary,
+        jobType: jobs.jobType,
+        jobDescription: jobs.description,
+        jobPriority: jobs.priority,
+        locationId: clientLocations.id,
+        locationCompanyName: clientLocations.companyName,
+        locationLocation: clientLocations.location,
+        locationAddress: clientLocations.address,
+        locationCity: clientLocations.city,
+        locationProvince: clientLocations.province,
+        locationPostalCode: clientLocations.postalCode,
+        locationPhone: clientLocations.phone,
+      })
+      .from(jobVisits)
+      .innerJoin(jobs, eq(jobVisits.jobId, jobs.id))
+      .leftJoin(clientLocations, eq(jobs.locationId, clientLocations.id))
+      .where(
+        and(
+          eq(jobVisits.companyId, companyId),
+          eq(jobVisits.isActive, true),
+          gte(jobVisits.scheduledStart, start),
+          lte(jobVisits.scheduledStart, end),
+          sql`(${jobVisits.assignedTechnicianId} = ${userId} OR ${userId} = ANY(${jobVisits.assignedTechnicianIds}))`
+        )
+      )
+      .orderBy(asc(jobVisits.scheduledStart));
+
+    return rows.map((r) => ({
+      ...r.visit,
+      job: {
+        id: r.jobId,
+        jobNumber: r.jobNumber,
+        summary: r.jobSummary,
+        jobType: r.jobType,
+        description: r.jobDescription,
+        priority: r.jobPriority,
+      },
+      location: r.locationId
+        ? {
+            id: r.locationId,
+            companyName: r.locationCompanyName,
+            location: r.locationLocation,
+            address: r.locationAddress,
+            city: r.locationCity,
+            province: r.locationProvince,
+            postalCode: r.locationPostalCode,
+            phone: r.locationPhone,
+          }
+        : null,
+    }));
+  }
+
+  /**
+   * Get a single visit assigned to a user, enriched with job + location + job notes.
+   * Includes strict assignment validation — returns null if not assigned to userId.
+   * Used by: /api/tech/visits/:visitId detail endpoint.
+   */
+  async getVisitDetailForUser(
+    companyId: string,
+    userId: string,
+    visitId: string
+  ): Promise<{ visit: any; job: VisitJobInfo | null; location: VisitLocationInfo | null; notes: any[] } | null> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(visitId, "visitId");
+
+    // Fetch visit
+    const [visit] = await db
+      .select()
+      .from(jobVisits)
+      .where(
+        and(
+          eq(jobVisits.id, visitId),
+          eq(jobVisits.companyId, companyId),
+          eq(jobVisits.isActive, true)
+        )
+      );
+
+    if (!visit) return null;
+
+    // Assignment check
+    const isAssigned =
+      visit.assignedTechnicianId === userId ||
+      (visit.assignedTechnicianIds && visit.assignedTechnicianIds.includes(userId));
+    if (!isAssigned) return null;
+
+    // Fetch job
+    const [job] = await db
+      .select({
+        id: jobs.id,
+        jobNumber: jobs.jobNumber,
+        summary: jobs.summary,
+        jobType: jobs.jobType,
+        description: jobs.description,
+        priority: jobs.priority,
+      })
+      .from(jobs)
+      .where(and(eq(jobs.id, visit.jobId), eq(jobs.companyId, companyId), activeJobFilter()));
+
+    // Fetch location via job.locationId
+    let location: VisitLocationInfo | null = null;
+    if (job) {
+      const [loc] = await db
+        .select({
+          id: clientLocations.id,
+          companyName: clientLocations.companyName,
+          location: clientLocations.location,
+          address: clientLocations.address,
+          city: clientLocations.city,
+          province: clientLocations.province,
+          postalCode: clientLocations.postalCode,
+          phone: clientLocations.phone,
+        })
+        .from(clientLocations)
+        .innerJoin(jobs, eq(jobs.locationId, clientLocations.id))
+        .where(and(eq(jobs.id, visit.jobId), eq(jobs.companyId, companyId)));
+      location = loc ?? null;
+    }
+
+    // Fetch job notes
+    const notes = await db
+      .select({
+        id: jobNotes.id,
+        noteText: jobNotes.noteText,
+        imageUrl: jobNotes.imageUrl,
+        createdAt: jobNotes.createdAt,
+        userId: jobNotes.userId,
+        userName: users.fullName,
+        userFirstName: users.firstName,
+      })
+      .from(jobNotes)
+      .leftJoin(users, eq(jobNotes.userId, users.id))
+      .where(and(eq(jobNotes.companyId, companyId), eq(jobNotes.jobId, visit.jobId)))
+      .orderBy(desc(jobNotes.createdAt));
+
+    return {
+      visit,
+      job: job ?? null,
+      location,
+      notes,
+    };
+  }
+
+  /**
+   * Get an assigned visit row for mutation endpoints (en-route, start, complete).
+   * Returns the raw visit row or null. Does NOT enrich with job/location.
+   */
+  async getAssignedVisit(companyId: string, visitId: string, userId: string) {
+    this.assertCompanyId(companyId);
+    this.validateUUID(visitId, "visitId");
+
+    const [visit] = await db
+      .select()
+      .from(jobVisits)
+      .where(
+        and(
+          eq(jobVisits.id, visitId),
+          eq(jobVisits.companyId, companyId),
+          eq(jobVisits.isActive, true)
+        )
+      );
+
+    if (!visit) return null;
+
+    const isAssigned =
+      visit.assignedTechnicianId === userId ||
+      (visit.assignedTechnicianIds && visit.assignedTechnicianIds.includes(userId));
+
+    return isAssigned ? visit : null;
+  }
+
   /**
    * PHASE 4: Public wrapper for syncJobScheduleFromVisits.
    * Called by calendar write endpoints after modifying job_visits.
@@ -324,11 +551,11 @@ export class JobVisitsRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
-    // Verify job exists and belongs to company
+    // Verify job exists and belongs to company (exclude soft-deleted/inactive)
     const [job] = await db
       .select()
       .from(jobs)
-      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
+      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), activeJobFilter()));
 
     if (!job) {
       throw this.notFoundError("Job");
@@ -577,6 +804,69 @@ export class JobVisitsRepository extends BaseRepository {
     await this.syncJobScheduleFromVisits(companyId, existing.jobId);
 
     return updated;
+  }
+  /**
+   * Get uncompleted visits for a job.
+   * Uncompleted = is_active=true AND status NOT IN ('completed','cancelled').
+   * Used by close-job guardrail to detect visits that need resolution.
+   */
+  async getUncompletedVisits(companyId: string, jobId: string) {
+    this.assertCompanyId(companyId);
+    this.validateUUID(jobId, "jobId");
+
+    const TERMINAL: string[] = ["completed", "cancelled"];
+    return db
+      .select()
+      .from(jobVisits)
+      .where(
+        and(
+          eq(jobVisits.companyId, companyId),
+          eq(jobVisits.jobId, jobId),
+          eq(jobVisits.isActive, true),
+          notInArray(jobVisits.status, TERMINAL)
+        )
+      )
+      .orderBy(asc(jobVisits.visitNumber));
+  }
+
+  /**
+   * Bulk-complete uncompleted visits for a job.
+   * Sets status='completed', checkedOutAt=now(), actualDurationMinutes (if checkedInAt exists).
+   * Used by close-job with autoCompleteOpenVisits=true.
+   */
+  async bulkCompleteVisits(companyId: string, jobId: string) {
+    this.assertCompanyId(companyId);
+    this.validateUUID(jobId, "jobId");
+
+    const uncompleted = await this.getUncompletedVisits(companyId, jobId);
+    if (!uncompleted.length) return [];
+
+    const now = new Date();
+    const completed = [];
+
+    for (const visit of uncompleted) {
+      const updates: any = {
+        status: "completed",
+        checkedOutAt: now,
+        updatedAt: now,
+        version: visit.version + 1,
+      };
+      // Compute duration if checkedInAt exists (matches existing transition logic)
+      if (visit.checkedInAt) {
+        const durationMs = now.getTime() - new Date(visit.checkedInAt).getTime();
+        updates.actualDurationMinutes = Math.round(durationMs / 60000);
+      }
+      const [updated] = await db
+        .update(jobVisits)
+        .set(updates)
+        .where(and(eq(jobVisits.id, visit.id), eq(jobVisits.companyId, companyId)))
+        .returning();
+      completed.push(updated);
+    }
+
+    // Sync job schedule after bulk completion
+    await this.syncJobScheduleFromVisits(companyId, jobId);
+    return completed;
   }
 }
 

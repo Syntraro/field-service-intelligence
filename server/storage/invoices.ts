@@ -2,6 +2,7 @@ import { db } from "../db";
 import { eq, and, sql, desc, or, lt, isNull, isNotNull, asc } from "drizzle-orm";
 import { invoices, invoiceLines, clients, payments, jobs, jobParts, laborEntries, technicians, timeEntries, users, companySettings } from "@shared/schema";
 import { BaseRepository, parseDecimal } from "./base";
+import { activeJobFilter } from "./jobFilters";
 import { encodeCursor, decodeCursor } from "../utils/cursor";
 import type { PaginationParams } from "../utils/pagination";
 import type { PaginatedResult } from "./types";
@@ -714,17 +715,17 @@ export class InvoiceRepository extends BaseRepository {
     const errors: string[] = [];
     const warnings: string[] = [];
 
-    // Get the job
+    // Get the job (exclude soft-deleted and inactive)
     const [job] = await db
       .select()
       .from(jobs)
-      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), activeJobFilter()))
       .limit(1);
 
     if (!job) {
       return {
         valid: false,
-        errors: ["Job not found"],
+        errors: ["Job not found or has been deleted"],
         warnings: [],
         billableItems: { partsCount: 0, laborMinutes: 0, timeEntriesCount: 0, estimatedTotal: 0 },
       };
@@ -1203,7 +1204,7 @@ export class InvoiceRepository extends BaseRepository {
     const [jobPreCheck] = await db
       .select()
       .from(jobs)
-      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), activeJobFilter()))
       .limit(1);
 
     if (!jobPreCheck) {
@@ -1244,7 +1245,7 @@ export class InvoiceRepository extends BaseRepository {
         const [job] = await tx
           .select()
           .from(jobs)
-          .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+          .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), activeJobFilter()))
           .for("update") // Lock the row
           .limit(1);
 

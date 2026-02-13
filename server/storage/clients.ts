@@ -3,6 +3,7 @@ import { eq, and, inArray, sql, or, ilike, gte, lte, isNull, isNotNull, desc } f
 import { clients, clientParts, equipment, jobs, locationEquipment } from "@shared/schema";
 import type { InsertClient, Client, InsertLocationEquipment, UpdateLocationEquipment } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset, escapeLike } from "./base";
+import { activeJobFilter } from "./jobFilters";
 
 export interface PaginationOptions {
   limit?: number;
@@ -432,7 +433,7 @@ export class ClientRepository extends BaseRepository {
         and(
           eq(jobs.companyId, companyId),
           eq(jobs.locationId, locationId),
-          isNull(jobs.deletedAt),
+          activeJobFilter(),
           isNotNull(jobs.scheduledStart)
         )
       )
@@ -450,7 +451,7 @@ export class ClientRepository extends BaseRepository {
       .where(
         and(
           eq(jobs.companyId, companyId),
-          isNull(jobs.deletedAt),
+          activeJobFilter(),
           isNotNull(jobs.scheduledStart)
         )
       )
@@ -473,7 +474,7 @@ export class ClientRepository extends BaseRepository {
       .where(
         and(
           eq(jobs.companyId, companyId),
-          isNull(jobs.deletedAt),
+          activeJobFilter(),
           isNotNull(jobs.scheduledStart),
           gte(jobs.scheduledStart, new Date(args.start)),
           lte(jobs.scheduledStart, new Date(args.end))

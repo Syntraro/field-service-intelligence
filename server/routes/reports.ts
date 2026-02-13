@@ -3,6 +3,7 @@ import { z } from "zod";
 import { db } from "../db";
 import { jobs, jobStatusEvents } from "@shared/schema";
 import { eq, and, gte, sql, desc } from "drizzle-orm";
+import { activeJobFilter } from "../storage/jobFilters";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
 import { asyncHandler, createError } from "../middleware/errorHandler";
@@ -44,6 +45,7 @@ router.get("/action-required-kpis", requireRole(MANAGER_ROLES), asyncHandler(asy
     .where(
       and(
         eq(jobs.companyId, companyId),
+        activeJobFilter(),
         eq(jobs.status, "open"),
         eq(jobs.openSubStatus, "needs_review")
       )
