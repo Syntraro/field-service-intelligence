@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { format } from "date-fns";
 import { useLocation } from "wouter";
 import { useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
@@ -17,6 +17,7 @@ import {
   XCircle,
   AlertTriangle,
   RotateCcw,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -57,47 +58,6 @@ interface JobHeaderCardProps {
   onDelete: () => void;
 }
 
-function getJobStatusDisplay(status: string, scheduledStart: Date | null): { 
-  label: string; 
-  variant: "default" | "destructive" | "secondary" | "outline"; 
-  isOverdue?: boolean;
-} {
-  const now = new Date();
-  const isOverdue = !!(scheduledStart && new Date(scheduledStart) < now &&
-    !["completed", "requires_invoicing", "invoiced", "cancelled", "closed", "archived"].includes(status));
-
-  switch (status) {
-    case "draft": return { label: "Draft", variant: "outline", isOverdue };
-    case "scheduled": return { label: "Scheduled", variant: "secondary", isOverdue };
-    case "dispatched": return { label: "Dispatched", variant: "secondary", isOverdue };
-    case "en_route": return { label: "En Route", variant: "default", isOverdue };
-    case "on_site": return { label: "On Site", variant: "default", isOverdue };
-    case "in_progress": return { label: "In Progress", variant: "default", isOverdue };
-    case "needs_parts": return { label: "Needs Parts", variant: "secondary", isOverdue };
-    case "on_hold": return { label: "On Hold", variant: "secondary", isOverdue };
-    case "completed": return { label: "Completed", variant: "default", isOverdue: false }; // LEGACY
-    case "requires_invoicing": return { label: "Requires Invoicing", variant: "secondary", isOverdue: false };
-    case "invoiced": return { label: "Invoiced", variant: "default", isOverdue: false };
-    case "cancelled": return { label: "Cancelled", variant: "outline", isOverdue: false };
-    case "closed": return { label: "Closed", variant: "outline", isOverdue: false };
-    case "archived": return { label: "Archived", variant: "outline", isOverdue: false };
-    default: return { label: status, variant: "outline", isOverdue };
-  }
-}
-
-function getPriorityDisplay(priority: string): { 
-  label: string; 
-  variant: "default" | "destructive" | "secondary" | "outline";
-} {
-  switch (priority) {
-    case "low": return { label: "Low", variant: "outline" };
-    case "medium": return { label: "Medium", variant: "secondary" };
-    case "high": return { label: "High", variant: "default" };
-    case "urgent": return { label: "Urgent", variant: "destructive" };
-    default: return { label: priority, variant: "outline" };
-  }
-}
-
 // Office roles that can perform billing/admin actions
 const OFFICE_ROLES = ["owner", "admin", "manager", "dispatcher"];
 
@@ -114,12 +74,17 @@ export function JobHeaderCard({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showInvoicedWarning, setShowInvoicedWarning] = useState(false);
   const [closeOption, setCloseOption] = useState<"invoice_now" | "invoice_later" | "archive">("invoice_now");
+  // Uncompleted visits guardrail: shown when close fails due to open visits
+  const [uncompletedVisitsGuardrail, setUncompletedVisitsGuardrail] = useState<{
+    mode: "invoice_now" | "invoice_later" | "archive";
+    visitCount: number;
+  } | null>(null);
 
   // Role-based permissions
   const isOfficeUser = user?.role && OFFICE_ROLES.includes(user.role);
 
   // Check if job can be reopened
-  const canReopen = ["completed", "requires_invoicing", "archived"].includes(job.status);
+  const canReopen = ["completed", "archived"].includes(job.status);
   const isInvoiced = job.status === "invoiced";
 
   const locationName = job.location?.location || job.location?.companyName || "Location";
@@ -140,6 +105,8 @@ export function JobHeaderCard({
     onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices/dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id] });
       toast({ title: "Invoice Created", description: "Invoice has been created from this job." });
       setLocation(`/invoices/${data.id}`);
@@ -179,18 +146,23 @@ export function JobHeaderCard({
   });
 
   const closeJobMutation = useMutation({
-    mutationFn: async (mode: "invoice_now" | "invoice_later" | "archive") => {
-      // Use the unified close endpoint that handles multi-step transitions
+    mutationFn: async ({ mode, autoCompleteOpenVisits }: {
+      mode: "invoice_now" | "invoice_later" | "archive";
+      autoCompleteOpenVisits?: boolean;
+    }) => {
+      // Use the unified close endpoint with visit guardrail support
       const response = await apiRequest(`/api/jobs/${job.id}/close`, {
         method: "POST",
-        body: JSON.stringify({ mode }),
+        body: JSON.stringify({ mode, version: job.version, autoCompleteOpenVisits }),
       });
       return { ...(response as { job: any; invoice: any | null }), mode };
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id, "visits"] });
       setShowCloseJobDialog(false);
+      setUncompletedVisitsGuardrail(null);
 
       if (data.invoice) {
         // Invoice created - no undo available
@@ -227,6 +199,15 @@ export function JobHeaderCard({
       }
     },
     onError: (error: Error) => {
+      // Handle uncompleted visits guardrail (409 UNCOMPLETED_VISITS)
+      if (isApiError(error) && error.status === 409 && error.message.includes("uncompleted visit")) {
+        // Extract visit count from error message (format: "Job has N uncompleted visit(s)")
+        const countMatch = error.message.match(/(\d+)\s+uncompleted/);
+        const visitCount = countMatch ? parseInt(countMatch[1], 10) : 0;
+        setShowCloseJobDialog(false);
+        setUncompletedVisitsGuardrail({ mode: closeOption, visitCount });
+        return;
+      }
       toast({ title: "Error", description: error.message || "Failed to close job", variant: "destructive" });
     },
   });
@@ -270,7 +251,7 @@ export function JobHeaderCard({
   };
 
   const handleCloseJob = () => {
-    closeJobMutation.mutate(closeOption);
+    closeJobMutation.mutate({ mode: closeOption });
   };
 
   const handlePrint = () => {
@@ -512,6 +493,54 @@ export function JobHeaderCard({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Uncompleted Visits Guardrail — shown when close fails due to open visits */}
+      <AlertDialog
+        open={!!uncompletedVisitsGuardrail}
+        onOpenChange={(open) => { if (!open) setUncompletedVisitsGuardrail(null); }}
+      >
+        <AlertDialogContent data-testid="dialog-uncompleted-visits">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Uncompleted Visits</AlertDialogTitle>
+            <AlertDialogDescription>
+              This job has {uncompletedVisitsGuardrail?.visitCount || "open"} uncompleted visit{(uncompletedVisitsGuardrail?.visitCount ?? 0) !== 1 ? "s" : ""}.
+              You can review them first or mark them all as completed to proceed with closing.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-col sm:flex-row gap-2">
+            <AlertDialogCancel data-testid="button-cancel-guardrail">Cancel</AlertDialogCancel>
+            <Button
+              variant="outline"
+              onClick={() => {
+                // Navigate to visits section (scroll to visits on this page)
+                setUncompletedVisitsGuardrail(null);
+                document.getElementById("visits-section")?.scrollIntoView({ behavior: "smooth" });
+              }}
+              data-testid="button-go-to-visits"
+            >
+              Go to Visits
+            </Button>
+            <AlertDialogAction
+              onClick={() => {
+                if (!uncompletedVisitsGuardrail) return;
+                // Retry close with auto-complete flag
+                closeJobMutation.mutate({
+                  mode: uncompletedVisitsGuardrail.mode,
+                  autoCompleteOpenVisits: true,
+                });
+              }}
+              disabled={closeJobMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              data-testid="button-auto-complete-and-close"
+            >
+              {closeJobMutation.isPending ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : null}
+              Mark Visits Completed & Close
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Delete Confirmation */}
       <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>

@@ -305,6 +305,8 @@ export default function InvoiceDetailPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices/dashboard"] });
       setShowSendConfirm(false);
       qboOverride.closeModal();
       setQboOverridePending(false);
@@ -331,6 +333,8 @@ export default function InvoiceDetailPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices/dashboard"] });
       setShowVoidConfirm(false);
       qboOverride.closeModal();
       setQboOverridePending(false);
@@ -392,6 +396,7 @@ export default function InvoiceDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/list"] });
       queryClient.invalidateQueries({ queryKey: ["/api/invoices/stats"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices/dashboard"] });
       setShowPaymentDialog(false);
       setPaymentAmount("");
       setPaymentMethod("e-transfer");
