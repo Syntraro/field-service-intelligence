@@ -298,26 +298,26 @@ export default function Jobs() {
     },
   });
 
-  const filteredAndSortedJobs = useMemo(() => {
+  // Enriched jobs — single pass of predicate computation, depends only on [jobs].
+  // Extracted so filter/sort changes don't re-enrich, and counts/devBuckets reuse
+  // pre-computed booleans instead of calling predicates redundantly.
+  const enrichedJobs = useMemo(() => {
     const now = new Date();
-    let result = jobs.map(job => {
-      // Phase 2 Step 5: Use canonical getJobStatusDisplay from jobUtils
+    return jobs.map(job => {
       const statusInfo = getJobStatusDisplay(job);
-      // Compute ALL derived states using canonical predicates only.
-      // These booleans are the single source of truth for filtering and display.
-      const scheduled = isJobScheduled(job);
-      const assigned = isJobAssigned(job);
-      const backlog = isBacklogEligible(job);
-      const overdue = isJobOverdue(job, now);
       return {
         ...job,
         statusInfo,
-        _scheduled: scheduled,
-        _assigned: assigned,
-        _backlog: backlog,
-        _overdue: overdue,
+        _scheduled: isJobScheduled(job),
+        _assigned: isJobAssigned(job),
+        _backlog: isBacklogEligible(job),
+        _overdue: isJobOverdue(job, now),
       };
     });
+  }, [jobs]);
+
+  const filteredAndSortedJobs = useMemo(() => {
+    let result = enrichedJobs.slice();
 
     // 1. Apply lifecycle status filter (canonical 4 values)
     if (lifecycleFilter !== "all") {
@@ -413,7 +413,7 @@ export default function Jobs() {
     });
 
     return result;
-  }, [jobs, lifecycleFilter, derivedFilters, openSubStatusFilter, searchQuery, sortField, sortDirection]);
+  }, [enrichedJobs, lifecycleFilter, derivedFilters, openSubStatusFilter, searchQuery, sortField, sortDirection]);
 
   useEffect(() => {
     setVisibleCount(ITEMS_PER_PAGE);
@@ -476,54 +476,28 @@ export default function Jobs() {
   // =============================================================================
   // Counts using canonical predicates
   // =============================================================================
+  // Counts — reads pre-computed booleans from enrichedJobs (no redundant predicate calls)
   const counts = useMemo(() => {
     const result = {
-      // Lifecycle status counts
-      lifecycle: {
-        open: 0,
-        completed: 0,
-        invoiced: 0,
-        archived: 0,
-      },
-      // Derived state counts
-      derived: {
-        scheduled: 0,
-        backlog: 0,
-        assigned: 0,
-        unassigned: 0,
-        allDay: 0,
-        overdue: 0,
-      },
-      // OpenSubStatus counts (only when status=open)
-      openSubStatus: {
-        in_progress: 0,
-        on_hold: 0,
-        on_route: 0,
-        needs_review: 0,
-      },
+      lifecycle: { open: 0, completed: 0, invoiced: 0, archived: 0 },
+      derived: { scheduled: 0, backlog: 0, assigned: 0, unassigned: 0, allDay: 0, overdue: 0 },
+      openSubStatus: { in_progress: 0, on_hold: 0, on_route: 0, needs_review: 0 },
     };
 
-    const now = new Date();
-
-    jobs.forEach(job => {
+    for (const job of enrichedJobs) {
       // Lifecycle counts
       if (job.status === "open") result.lifecycle.open++;
       else if (job.status === "completed") result.lifecycle.completed++;
       else if (job.status === "invoiced") result.lifecycle.invoiced++;
       else if (job.status === "archived") result.lifecycle.archived++;
 
-      // Derived counts using canonical predicates
-      const scheduled = isJobScheduled(job);
-      const assigned = isJobAssigned(job);
-
-      if (scheduled) result.derived.scheduled++;
-      if (isBacklogEligible(job)) result.derived.backlog++;
-      if (assigned) result.derived.assigned++;
-      if (!assigned) result.derived.unassigned++;
+      // Derived counts from pre-computed booleans
+      if (job._scheduled) result.derived.scheduled++;
+      if (job._backlog) result.derived.backlog++;
+      if (job._assigned) result.derived.assigned++;
+      if (!job._assigned) result.derived.unassigned++;
       if (job.isAllDay) result.derived.allDay++;
-
-      // Overdue: uses canonical isJobOverdue predicate
-      if (isJobOverdue(job, now)) result.derived.overdue++;
+      if (job._overdue) result.derived.overdue++;
 
       // OpenSubStatus counts (only for open jobs)
       if (job.status === "open" && job.openSubStatus) {
@@ -532,28 +506,28 @@ export default function Jobs() {
           result.openSubStatus[subStatus]++;
         }
       }
-    });
+    }
 
     return result;
-  }, [jobs]);
+  }, [enrichedJobs]);
 
-  // Dev-only: client-side bucket sample for reconciliation
+  // Dev-only: client-side bucket sample for reconciliation (reads pre-computed booleans)
   const devBuckets = useMemo(() => {
     if (!import.meta.env.DEV) return null;
     const openScheduled: string[] = [];
     const openBacklog: string[] = [];
     const overdue: string[] = [];
-    jobs.forEach(job => {
-      if (job.status === "open" && isJobScheduled(job)) openScheduled.push(job.id);
-      if (isBacklogEligible(job)) openBacklog.push(job.id);
-      if (isJobOverdue(job, new Date())) overdue.push(job.id);
-    });
+    for (const job of enrichedJobs) {
+      if (job.status === "open" && job._scheduled) openScheduled.push(job.id);
+      if (job._backlog) openBacklog.push(job.id);
+      if (job._overdue) overdue.push(job.id);
+    }
     return {
       openScheduled: { count: openScheduled.length, sample: openScheduled.slice(0, 10) },
       openBacklog: { count: openBacklog.length, sample: openBacklog.slice(0, 10) },
       overdue: { count: overdue.length, sample: overdue.slice(0, 10) },
     };
-  }, [jobs]);
+  }, [enrichedJobs]);
 
   const totalCount = jobs.length;
 

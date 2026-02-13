@@ -1290,66 +1290,6 @@ export default function Calendar() {
     }
   };
 
-  const handleRemove = (assignmentId: string, version?: number) => {
-    // Find the assignment to get its version if not provided
-    const assignment = events.find((a: any) => a.id === assignmentId);
-    const resolvedVersion = version ?? assignment?.version;
-
-    // Validate version before mutation - no silent 0 fallback
-    if (typeof resolvedVersion !== 'number' || !Number.isFinite(resolvedVersion)) {
-      if (IS_DEV) {
-        console.warn('[Calendar] handleRemove: Missing or invalid version', { assignmentId, version, assignment });
-      }
-      toast({
-        title: "Refreshing data...",
-        description: "Calendar data was stale. Please try again.",
-        duration: 3000,
-      });
-      invalidateCalendarQueries();
-      return;
-    }
-
-    deleteAssignmentMutation.mutate({
-      id: assignmentId,
-      version: resolvedVersion,
-    });
-  };
-
-  const handleClearDay = (day: number, dayAssignments: any[]) => {
-    // Each assignment in dayAssignments should have version for optimistic locking
-    clearDay.mutate({ day, dayAssignments });
-  };
-
-  const handleClientClick = (client: any, eventOrAssignment: CalendarEvent | any, focusSchedule: boolean = false) => {
-    // Handle both CalendarEvent (normalized) and raw assignment shapes
-    const rawAssignment = eventOrAssignment.raw ?? eventOrAssignment;
-
-    // Build enriched assignment with correct IDs to prevent modal from using wrong ID
-    const enrichedAssignment = {
-      ...rawAssignment,
-      // Ensure assignmentId is properly set (this is the calendar assignment ID)
-      assignmentId: rawAssignment.assignmentId ?? rawAssignment.id,
-      // Ensure jobId is properly set (this is the actual job ID for API calls)
-      jobId: rawAssignment.jobId ?? rawAssignment.job_id ?? rawAssignment.job?.id ?? rawAssignment.jobIdFromJoin ?? rawAssignment.id,
-      // Ensure locationId is properly set for client lookup
-      locationId: rawAssignment.locationId ?? getLocationId(rawAssignment),
-    };
-
-    // Harden selected client - use fallback if client is falsy or looks like placeholder
-    let selectedClientValue = client;
-    if (!client || client.companyName === "Unknown Client" || !client.companyName) {
-      const fallbackClient = findClientByLocationId(clients, enrichedAssignment.locationId);
-      if (fallbackClient) {
-        selectedClientValue = fallbackClient;
-      }
-    }
-
-    setSelectedClient(selectedClientValue);
-    setSelectedAssignment(enrichedAssignment);
-    setFocusScheduleSection(focusSchedule);
-    setClientDetailOpen(true);
-  };
-
   const { data: clientsQueryData, isLoading: isLoadingClients } = useQuery<any>({
     queryKey: ["/api/clients"],
   });
@@ -1547,6 +1487,68 @@ export default function Calendar() {
   }
   // Use allClients (from /api/clients) as the client lookup source
   const clients = allClients;
+
+  // ========================================
+  // Stabilized event handlers — useCallback prevents grid re-renders on unrelated state changes
+  // ========================================
+
+  // Ref for events allows handleRemove to read latest data without re-creating
+  const eventsRef = useRef(events);
+  eventsRef.current = events;
+
+  // Stabilized — passed to CalendarGridMonth (28-31 DroppableDay cells).
+  const handleRemove = useCallback((assignmentId: string, version?: number) => {
+    const assignment = eventsRef.current.find((a: any) => a.id === assignmentId);
+    const resolvedVersion = version ?? assignment?.version;
+
+    if (typeof resolvedVersion !== 'number' || !Number.isFinite(resolvedVersion)) {
+      if (IS_DEV) {
+        console.warn('[Calendar] handleRemove: Missing or invalid version', { assignmentId, version, assignment });
+      }
+      toast({
+        title: "Refreshing data...",
+        description: "Calendar data was stale. Please try again.",
+        duration: 3000,
+      });
+      invalidateCalendarQueries();
+      return;
+    }
+
+    deleteAssignmentMutation.mutate({
+      id: assignmentId,
+      version: resolvedVersion,
+    });
+  }, [deleteAssignmentMutation, invalidateCalendarQueries, toast]);
+
+  const handleClearDay = useCallback((day: number, dayAssignments: any[]) => {
+    clearDay.mutate({ day, dayAssignments });
+  }, [clearDay]);
+
+  // Stabilized — passed to every grid component (Month/Week/Day).
+  // Deps: clients (stable useMemo), state setters (stable per React).
+  const handleClientClick = useCallback((client: any, eventOrAssignment: CalendarEvent | any, focusSchedule: boolean = false) => {
+    const rawAssignment = eventOrAssignment.raw ?? eventOrAssignment;
+
+    const enrichedAssignment = {
+      ...rawAssignment,
+      assignmentId: rawAssignment.assignmentId ?? rawAssignment.id,
+      jobId: rawAssignment.jobId ?? rawAssignment.job_id ?? rawAssignment.job?.id ?? rawAssignment.jobIdFromJoin ?? rawAssignment.id,
+      locationId: rawAssignment.locationId ?? getLocationId(rawAssignment),
+    };
+
+    let selectedClientValue = client;
+    if (!client || client.companyName === "Unknown Client" || !client.companyName) {
+      const fallbackClient = findClientByLocationId(clients, enrichedAssignment.locationId);
+      if (fallbackClient) {
+        selectedClientValue = fallbackClient;
+      }
+    }
+
+    setSelectedClient(selectedClientValue);
+    setSelectedAssignment(enrichedAssignment);
+    setFocusScheduleSection(focusSchedule);
+    setClientDetailOpen(true);
+  }, [clients]);
 
   // DEV LOGGING: Log scheduled jobs received from API
   if (IS_DEV) {

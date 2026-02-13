@@ -11,14 +11,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
 import { TablePageShell } from "@/components/ui/table-page-shell";
 import { cn } from "@/lib/utils";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { FixedSizeList } from "react-window";
 import {
   Select,
   SelectContent,
@@ -86,6 +79,12 @@ function formatCurrency(amount: string | number): string {
   return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(num);
 }
 
+// Virtualization constants — comfortable rows accommodate 2-line client cells
+const ROW_HEIGHT_COMFORTABLE = 56;
+const ROW_HEIGHT_COMPACT = 40;
+const MAX_LIST_HEIGHT = 700;
+const INVOICES_GRID_COLS = "1.5fr 1fr 1fr 1fr 1fr 0.8fr 0.8fr 50px";
+
 export default function InvoicesListPage() {
   const [, setLocation] = useLocation();
   const search = useSearch();
@@ -140,12 +139,19 @@ export default function InvoicesListPage() {
   const autoCompact = invoices.length <= 10;
   const effectiveDensity: ViewDensity = userDensityPreference ?? (autoCompact ? "compact" : "comfortable");
   const isCompact = effectiveDensity === "compact";
+  const rowHeight = isCompact ? ROW_HEIGHT_COMPACT : ROW_HEIGHT_COMFORTABLE;
+
+  // Enriched invoices — single pass of getStatusBadge, depends only on [invoices].
+  // Both filteredInvoices and statusCounts read pre-computed statusInfo.
+  const enrichedInvoices = useMemo(() => {
+    return invoices.map(inv => ({
+      ...inv,
+      statusInfo: getStatusBadge(inv.status, inv.dueDate, inv.balance),
+    }));
+  }, [invoices]);
 
   const filteredInvoices = useMemo(() => {
-    let result = invoices.map(inv => {
-      const statusInfo = getStatusBadge(inv.status, inv.dueDate, inv.balance);
-      return { ...inv, statusInfo };
-    });
+    let result = enrichedInvoices.slice();
 
     if (activeFilter !== "all") {
       result = result.filter(inv => {
@@ -180,21 +186,19 @@ export default function InvoicesListPage() {
     }
 
     return result;
-  }, [invoices, activeFilter, searchQuery]);
+  }, [enrichedInvoices, activeFilter, searchQuery]);
 
+  // Status counts — reads pre-computed statusInfo from enrichedInvoices
   const statusCounts = useMemo(() => {
-    const counts: Record<string, number> = { all: invoices.length, awaiting_payment: 0 };
-    for (const inv of invoices) {
-      const statusInfo = getStatusBadge(inv.status, inv.dueDate, inv.balance);
-      // Count individual statuses (except awaiting_payment which we handle specially)
+    const counts: Record<string, number> = { all: enrichedInvoices.length, awaiting_payment: 0 };
+    for (const inv of enrichedInvoices) {
       if (inv.status !== "awaiting_payment" && inv.status !== "sent") {
         counts[inv.status] = (counts[inv.status] || 0) + 1;
       }
-      // Combine awaiting_payment + sent (legacy) for the "Unpaid" filter count
       if (inv.status === "awaiting_payment" || inv.status === "sent") {
         counts["awaiting_payment"] = (counts["awaiting_payment"] || 0) + 1;
       }
-      if (statusInfo.isOverdue) {
+      if (inv.statusInfo.isOverdue) {
         counts["overdue"] = (counts["overdue"] || 0) + 1;
       }
       // Phase 10A: Count QBO sync states
@@ -207,7 +211,7 @@ export default function InvoicesListPage() {
       }
     }
     return counts;
-  }, [invoices]);
+  }, [enrichedInvoices]);
 
   return (
     <TablePageShell
@@ -400,88 +404,100 @@ export default function InvoicesListPage() {
                 : "No invoices found. Create your first invoice to get started."}
             </div>
           ) : (
-            <Table className={isCompact ? "text-sm" : ""}>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Client</TableHead>
-                  <TableHead>Invoice #</TableHead>
-                  <TableHead>Issue Date</TableHead>
-                  <TableHead>Due Date</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Total</TableHead>
-                  <TableHead className="text-right">Balance</TableHead>
-                  <TableHead className="w-[50px]"></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredInvoices.map((invoice) => (
-                  <TableRow
-                    key={invoice.id}
-                    className={cn(tableRowClass, isCompact && "h-10")}
-                    onClick={() => setLocation(`/invoices/${invoice.id}`)}
-                    data-testid={`row-invoice-${invoice.id}`}
-                  >
-                    <TableCell className={isCompact ? "py-1" : ""}>
-                      <div>
-                        <p className="font-medium" data-testid={`text-invoice-client-${invoice.id}`}>
+            <>
+              {/* Virtualized grid header */}
+              <div
+                className={cn(
+                  "grid items-center border-b border-gray-200 dark:border-gray-800 py-3 text-sm font-medium text-muted-foreground",
+                  isCompact && "text-sm"
+                )}
+                style={{ gridTemplateColumns: INVOICES_GRID_COLS }}
+              >
+                <div className="px-4">Client</div>
+                <div className="px-4">Invoice #</div>
+                <div className="px-4">Issue Date</div>
+                <div className="px-4">Due Date</div>
+                <div className="px-4">Status</div>
+                <div className="px-4 text-right">Total</div>
+                <div className="px-4 text-right">Balance</div>
+                <div className="w-[50px]"></div>
+              </div>
+
+              <FixedSizeList
+                height={Math.min(filteredInvoices.length * rowHeight, MAX_LIST_HEIGHT)}
+                itemCount={filteredInvoices.length}
+                itemSize={rowHeight}
+                width="100%"
+              >
+                {({ index, style }) => {
+                  const invoice = filteredInvoices[index];
+                  return (
+                    <div
+                      style={{ ...style, gridTemplateColumns: INVOICES_GRID_COLS }}
+                      className={cn("grid items-center", tableRowClass, isCompact && "text-sm")}
+                      onClick={() => setLocation(`/invoices/${invoice.id}`)}
+                      data-testid={`row-invoice-${invoice.id}`}
+                    >
+                      <div className={cn("px-4 min-w-0", isCompact ? "py-1" : "")}>
+                        <p className="font-medium truncate" data-testid={`text-invoice-client-${invoice.id}`}>
                           {invoice.customerCompanyName || invoice.locationName || "Unknown"}
                         </p>
                         {!isCompact && invoice.customerCompanyName && invoice.locationName && (
-                          <p className="text-sm text-muted-foreground">{invoice.locationName}</p>
+                          <p className="text-sm text-muted-foreground truncate">{invoice.locationName}</p>
                         )}
                       </div>
-                    </TableCell>
-                    <TableCell className={isCompact ? "py-1" : ""}>
-                      <span className="font-mono" data-testid={`text-invoice-number-${invoice.id}`}>
-                        {invoice.invoiceNumber || `INV-${invoice.id.slice(0, 8)}`}
-                      </span>
-                    </TableCell>
-                    <TableCell className={isCompact ? "py-1" : ""}>
-                      {safeFormatDate(invoice.issueDate)}
-                    </TableCell>
-                    <TableCell className={isCompact ? "py-1" : ""}>
-                      {safeFormatDate(invoice.dueDate)}
-                    </TableCell>
-                    <TableCell className={isCompact ? "py-1" : ""}>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <Badge variant={invoice.statusInfo.variant}>
-                          {invoice.statusInfo.label}
-                        </Badge>
-                        <QboSyncBadge invoice={invoice} />
+                      <div className={cn("px-4", isCompact ? "py-1" : "")}>
+                        <span className="font-mono" data-testid={`text-invoice-number-${invoice.id}`}>
+                          {invoice.invoiceNumber || `INV-${invoice.id.slice(0, 8)}`}
+                        </span>
                       </div>
-                    </TableCell>
-                    <TableCell className={`text-right ${isCompact ? "py-1" : ""}`}>
-                      {formatCurrency(invoice.total)}
-                    </TableCell>
-                    <TableCell className={`text-right ${isCompact ? "py-1" : ""}`}>
-                      <span className={parseFloat(invoice.balance) > 0 ? "font-medium" : "text-muted-foreground"}>
-                        {formatCurrency(invoice.balance)}
-                      </span>
-                    </TableCell>
-                    <TableCell className={isCompact ? "py-1" : ""} onClick={(e) => e.stopPropagation()}>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" data-testid={`button-invoice-menu-${invoice.id}`}>
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => setLocation(`/invoices/${invoice.id}`)}>
-                            View
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => setLocation(`/invoices/${invoice.id}?edit=true`)}>
-                            Edit
-                          </DropdownMenuItem>
-                          <DropdownMenuItem>Send</DropdownMenuItem>
-                          <DropdownMenuItem>Collect Payment</DropdownMenuItem>
-                          <DropdownMenuItem>Download PDF</DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                      <div className={cn("px-4", isCompact ? "py-1" : "")}>
+                        {safeFormatDate(invoice.issueDate)}
+                      </div>
+                      <div className={cn("px-4", isCompact ? "py-1" : "")}>
+                        {safeFormatDate(invoice.dueDate)}
+                      </div>
+                      <div className={cn("px-4", isCompact ? "py-1" : "")}>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <Badge variant={invoice.statusInfo.variant}>
+                            {invoice.statusInfo.label}
+                          </Badge>
+                          <QboSyncBadge invoice={invoice} />
+                        </div>
+                      </div>
+                      <div className={cn("px-4 text-right", isCompact ? "py-1" : "")}>
+                        {formatCurrency(invoice.total)}
+                      </div>
+                      <div className={cn("px-4 text-right", isCompact ? "py-1" : "")}>
+                        <span className={parseFloat(invoice.balance) > 0 ? "font-medium" : "text-muted-foreground"}>
+                          {formatCurrency(invoice.balance)}
+                        </span>
+                      </div>
+                      <div className={cn(isCompact ? "py-1" : "")} onClick={(e) => e.stopPropagation()}>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="icon" data-testid={`button-invoice-menu-${invoice.id}`}>
+                              <MoreHorizontal className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => setLocation(`/invoices/${invoice.id}`)}>
+                              View
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => setLocation(`/invoices/${invoice.id}?edit=true`)}>
+                              Edit
+                            </DropdownMenuItem>
+                            <DropdownMenuItem>Send</DropdownMenuItem>
+                            <DropdownMenuItem>Collect Payment</DropdownMenuItem>
+                            <DropdownMenuItem>Download PDF</DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    </div>
+                  );
+                }}
+              </FixedSizeList>
+            </>
           )}
       </ListSurface>
     </TablePageShell>

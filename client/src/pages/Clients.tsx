@@ -11,14 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { FixedSizeList } from "react-window";
 import { apiRequest } from "@/lib/queryClient";
 import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
 import { TablePageShell } from "@/components/ui/table-page-shell";
@@ -49,6 +42,11 @@ interface CompanyGroup {
   hasActiveLocation: boolean;
   allInactive: boolean;
 }
+
+// Virtualization constants — row height matches original table row padding
+const ROW_HEIGHT = 52;
+const MAX_LIST_HEIGHT = 700;
+const CLIENTS_GRID_COLS = "40px repeat(5, minmax(0, 1fr))";
 
 export default function Clients() {
   const [, setLocation] = useLocation();
@@ -308,49 +306,55 @@ export default function Clients() {
 
         <TabsContent value={activeTab} className="mt-4">
           <ListSurface>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-10">
-                    <Checkbox
-                      checked={allVisibleSelected}
-                      onCheckedChange={toggleSelectAll}
-                      aria-label="Select all visible rows"
-                    />
-                  </TableHead>
-                  <TableHead>Company</TableHead>
-                  <TableHead>Tags</TableHead>
-                  <TableHead>Location</TableHead>
-                  <TableHead>Address</TableHead>
-                  <TableHead>Maintenance Months</TableHead>
-                </TableRow>
-              </TableHeader>
+            {/* Virtualized grid header */}
+            <div
+              className="grid items-center border-b border-gray-200 dark:border-gray-800 py-3 text-sm font-medium text-muted-foreground"
+              style={{ gridTemplateColumns: CLIENTS_GRID_COLS }}
+            >
+              <div className="flex justify-center">
+                <Checkbox
+                  checked={allVisibleSelected}
+                  onCheckedChange={toggleSelectAll}
+                  aria-label="Select all visible rows"
+                />
+              </div>
+              <div className="px-4">Company</div>
+              <div className="px-4">Tags</div>
+              <div className="px-4">Location</div>
+              <div className="px-4">Address</div>
+              <div className="px-4">Maintenance Months</div>
+            </div>
 
-              <TableBody>
-                {filteredGroups.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
-                      No {activeTab} clients found
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  filteredGroups.map((group) => (
-                    <TableRow
-                      key={group.companyId}
-                      className={tableRowClass}
+            {filteredGroups.length === 0 ? (
+              <div className="text-center text-muted-foreground py-8">
+                No {activeTab} clients found
+              </div>
+            ) : (
+              <FixedSizeList
+                height={Math.min(filteredGroups.length * ROW_HEIGHT, MAX_LIST_HEIGHT)}
+                itemCount={filteredGroups.length}
+                itemSize={ROW_HEIGHT}
+                width="100%"
+              >
+                {({ index, style }) => {
+                  const group = filteredGroups[index];
+                  return (
+                    <div
+                      style={{ ...style, gridTemplateColumns: CLIENTS_GRID_COLS }}
+                      className={`grid items-center ${tableRowClass}`}
                       onClick={() => handleRowClick(group.primaryLocationId)}
                       data-testid={`row-client-${group.companyId}`}
                       title={group.locationCount > 1 ? `${group.locationCount} locations` : undefined}
                     >
-                      <TableCell className="w-10" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex justify-center" onClick={(e) => e.stopPropagation()}>
                         <Checkbox
                           checked={selectedRows.has(group.companyId)}
                           onCheckedChange={() => toggleRow(group.companyId)}
                           aria-label={`Select ${group.companyName}`}
                         />
-                      </TableCell>
-                      <TableCell className="font-medium">{group.companyName}</TableCell>
-                      <TableCell>
+                      </div>
+                      <div className="px-4 font-medium truncate">{group.companyName}</div>
+                      <div className="px-4">
                         <div className="flex flex-wrap gap-1">
                           {(companyTagsList.get(group.companyId) ?? []).map((t) => (
                             <span
@@ -362,15 +366,15 @@ export default function Clients() {
                             </span>
                           ))}
                         </div>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">{group.location}</TableCell>
-                      <TableCell className="text-muted-foreground">{group.address}</TableCell>
-                      <TableCell className="text-sm">{group.maintenanceMonths}</TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
+                      </div>
+                      <div className="px-4 text-muted-foreground truncate">{group.location}</div>
+                      <div className="px-4 text-muted-foreground truncate">{group.address}</div>
+                      <div className="px-4 text-sm truncate">{group.maintenanceMonths}</div>
+                    </div>
+                  );
+                }}
+              </FixedSizeList>
+            )}
           </ListSurface>
 
           <div className="text-sm text-muted-foreground mt-4">
