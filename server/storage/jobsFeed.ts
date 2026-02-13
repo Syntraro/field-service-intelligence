@@ -112,6 +112,9 @@ export interface JobHeaderDetail extends JobFeedItem {
   arrivedOnSiteAt: string | null;
   qboInvoiceId: string | null;
   recurringSeriesId: string | null;
+  recurrenceTemplateId: string | null;
+  recurrenceInstanceDate: string | null;
+  deletedAt: string | null;
   previousStatus: string | null;
   closedBy: string | null;
   actionRequiredReason: string | null;
@@ -186,6 +189,9 @@ const detailSelectFields = {
   arrivedOnSiteAt: jobs.arrivedOnSiteAt,
   qboInvoiceId: jobs.qboInvoiceId,
   recurringSeriesId: jobs.recurringSeriesId,
+  recurrenceTemplateId: jobs.recurrenceTemplateId,
+  recurrenceInstanceDate: jobs.recurrenceInstanceDate,
+  deletedAt: jobs.deletedAt,
   previousStatus: jobs.previousStatus,
   closedBy: jobs.closedBy,
   actionRequiredReason: jobs.actionRequiredReason,
@@ -265,6 +271,9 @@ function mapDetailRow(row: any): JobHeaderDetail {
     arrivedOnSiteAt: toISOOrNull(row.arrivedOnSiteAt),
     qboInvoiceId: row.qboInvoiceId ?? null,
     recurringSeriesId: row.recurringSeriesId ?? null,
+    recurrenceTemplateId: row.recurrenceTemplateId ?? null,
+    recurrenceInstanceDate: row.recurrenceInstanceDate ?? null,
+    deletedAt: toISOOrNull(row.deletedAt),
     previousStatus: row.previousStatus ?? null,
     closedBy: row.closedBy ?? null,
     actionRequiredReason: row.actionRequiredReason ?? null,

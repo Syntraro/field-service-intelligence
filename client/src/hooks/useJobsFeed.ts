@@ -59,6 +59,9 @@ export interface JobHeaderDetail extends JobFeedItem {
   arrivedOnSiteAt: string | null;
   qboInvoiceId: string | null;
   recurringSeriesId: string | null;
+  recurrenceTemplateId: string | null;
+  recurrenceInstanceDate: string | null;
+  deletedAt: string | null;
   previousStatus: string | null;
   closedBy: string | null;
   actionRequiredReason: string | null;

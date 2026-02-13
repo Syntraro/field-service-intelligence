@@ -1776,7 +1776,7 @@ export default function JobDetailPage() {
       <QuickAddJobDialog
         open={showEditDialog}
         onOpenChange={setShowEditDialog}
-        editJob={job}
+        editJob={job as any}
         onSuccess={() => {
           queryClient.invalidateQueries({ queryKey: ["jobs"] });
         }}

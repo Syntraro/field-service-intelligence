@@ -636,7 +636,7 @@ export class InvoiceRepository extends BaseRepository {
       })
       .from(invoices)
       .leftJoin(clients, eq(invoices.locationId, clients.id))
-      .leftJoin(customerCompanies, eq(clients.customerCompanyId, customerCompanies.id))
+      .leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))
       .where(
         and(
           eq(invoices.companyId, companyId),
