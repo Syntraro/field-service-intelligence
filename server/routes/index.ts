@@ -55,6 +55,9 @@ import taxRouter from "./tax";
 import searchRouter from "./search";
 import pmPartsRouter from "./pm-parts";
 import { tagCrudRouter, customerCompanyTagRouter, locationTagRouter } from "./tags";
+import techFieldRouter from "./techField";
+import adminTimesheetsRouter from "./adminTimesheets";
+import visitsRouter from "./visits";
 
 /**
  * Register all API routes in a single place.
@@ -225,6 +228,15 @@ export function registerRoutes(app: Express): Server {
   // File uploads & secure streaming
   app.use("/api/uploads", uploadsRouter);
   app.use("/api/files", filesRouter);
+
+  // Canonical visit feed: GET /api/visits with RBAC + filters (Phase 3)
+  app.use("/api/visits", visitsRouter);
+
+  // Technician field app: mobile-first API for assigned visits + time
+  app.use("/api/tech", techFieldRouter);
+
+  // Admin timesheets: day/week views, edit/delete time entries
+  app.use("/api/admin/timesheets", adminTimesheetsRouter);
 
   // ========================================
   // ADMIN ROUTES (owner-only)
