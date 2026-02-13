@@ -1461,6 +1461,8 @@ export default function Calendar() {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
       // Phase 4 Step C5: canonical family key
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      // Phase 5.2: dashboard counts stale after archiving old job
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       toast({
         title: "Job archived",
         description: "The old job has been marked as complete",
