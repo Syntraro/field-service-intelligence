@@ -8,26 +8,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
-#### Phase 6.2 — Standardize Remaining Pages to Canonical Hooks (2026-02-13)
-
-**Part A — Canonical Invoice Hooks + Page Migrations:**
-- Created `client/src/hooks/useInvoicesFeed.ts`: canonical hooks (`useInvoicesFeed`, `useInvoiceStats`, `useInvoiceByJob`, `useDashboardInvoices`) with `["invoices", ...]` family key.
-- Fixed bug: `InvoicesListPage` stats query had no `queryFn` — stats never loaded. Now properly fetches from `/api/invoices/stats` with `select` transform for aggregates.
-- Migrated `InvoicesListPage` to canonical hooks, removed local `EnrichedInvoice` and `InvoiceStats` types.
-- Migrated `JobDetailPage` invoice query to `useInvoiceByJob` hook (10-line useQuery → 1-line hook call).
-- Updated `JobHeaderCard` prop type: `Invoice` → `InvoiceFeedItem` (only `.id` is accessed).
-- Broadened `QboSyncBanner` to accept `boolean | null` for `qboOutOfSync` field.
-  - Files: `client/src/hooks/useInvoicesFeed.ts` (new), `client/src/pages/InvoicesListPage.tsx`, `client/src/pages/JobDetailPage.tsx`, `client/src/components/JobHeaderCard.tsx`, `client/src/components/invoice/QboSyncBanner.tsx`
-
-**Part B — Canonical Dashboard Hooks + Migration:**
-- Created `client/src/hooks/useDashboard.ts`: canonical hooks (`useWorkflowSummary`, `useNeedsAttention`) with `["dashboard", ...]` family key.
-- Migrated `Dashboard.tsx`: replaced 3 direct `useQuery` calls with canonical hooks, removed 4 local types (`Job`, `Invoice`, `WorkflowSummary`, `AttentionJob`).
-  - Files: `client/src/hooks/useDashboard.ts` (new), `client/src/pages/Dashboard.tsx`
-
-**Part C — Codebase Audit + Docs:**
-- Audited all remaining `useQuery` calls codebase-wide: zero remaining family-based direct queries that should use canonical hooks.
-- Updated `docs/ARCHITECTURE.md`: restored invoice hooks section, added dashboard hooks section, updated Client-Side Hooks table (9 hooks across 4 files), updated Key Files Reference.
-
 #### Phase 5 — Remaining Canonicalization + Structural Cleanup (2026-02-13)
 
 **Part A — Invoice Family Canonicalization (Steps A1-A7):**

@@ -20,15 +20,34 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
-import { useWorkflowSummary, useNeedsAttention, type WorkflowSummary, type DashboardJobItem } from "@/hooks/useDashboard";
-import { useDashboardInvoices, type InvoiceFeedItem } from "@/hooks/useInvoicesFeed";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AsyncBlock } from "@/components/AsyncBlock";
 import { TaskDialog } from "@/components/TaskDialog";
+import type { Job as SchemaJob, Invoice as SchemaInvoice } from "@shared/schema";
 
 // ============================================================================
-// Types (Task is local — not part of a canonical module)
+// Types
 // ============================================================================
+
+// Dashboard API response shapes — extend schema types with API enrichments
+// scheduledStart comes as ISO string from JSON API (not Date)
+interface Job extends Pick<SchemaJob, "id" | "jobNumber" | "summary" | "status"> {
+  scheduledStart: string | null;
+  locationName?: string;
+  location?: { companyName?: string; location?: string };
+}
+
+interface Invoice extends Pick<SchemaInvoice, "id" | "invoiceNumber" | "total" | "balance" | "dueDate" | "status"> {
+  locationName?: string;
+  isPastDue?: boolean;
+}
+
+interface WorkflowSummary {
+  quotes: { approvedCount: number; draftCount: number };
+  jobs: { requiresInvoicingCount: number; activeCount: number; onHoldCount: number };
+  invoices: { outstandingCount: number; pastDueCount: number };
+  fourth: null;
+}
 
 type Task = {
   id: string;
@@ -150,6 +169,11 @@ function WorkflowStrip({ data, isLoading, isError }: {
 // Widget Components - flat rows with dividers
 // ============================================================================
 
+interface AttentionJob extends Job {
+  attentionType?: string;
+  scheduledEnd?: string | null;
+}
+
 function NeedsAttentionWidget({
   jobs,
   isLoading,
@@ -157,7 +181,7 @@ function NeedsAttentionWidget({
   error,
   onRetry,
 }: {
-  jobs: DashboardJobItem[];
+  jobs: AttentionJob[];
   isLoading: boolean;
   isError: boolean;
   error?: unknown;
@@ -165,11 +189,16 @@ function NeedsAttentionWidget({
 }) {
   const [, setLocation] = useLocation();
 
-  const formatSchedule = (start: string | null) => {
+  const formatSchedule = (start: string | null, end?: string | null) => {
     if (!start) return null;
     const startDate = new Date(start);
     const dateStr = startDate.toLocaleDateString("en-CA", { month: "short", day: "numeric" });
     const startTime = startDate.toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit" });
+    if (end) {
+      const endDate = new Date(end);
+      const endTime = endDate.toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit" });
+      return `${dateStr} · ${startTime} – ${endTime}`;
+    }
     return `${dateStr} · ${startTime}`;
   };
 
@@ -193,7 +222,7 @@ function NeedsAttentionWidget({
         >
           <div>
             {displayJobs.map((job, index) => {
-              const schedule = formatSchedule(job.scheduledStart);
+              const schedule = formatSchedule(job.scheduledStart, job.scheduledEnd);
               const companyName = job.location?.companyName || job.locationName || "No location";
               const isLast = index === displayJobs.length - 1;
 
@@ -246,7 +275,7 @@ function InvoicesWidget({
   error,
   onRetry,
 }: {
-  invoices: InvoiceFeedItem[];
+  invoices: Invoice[];
   isLoading: boolean;
   isError: boolean;
   error?: unknown;
@@ -261,7 +290,7 @@ function InvoicesWidget({
   const displayedInvoices = invoices.slice(0, displayLimit);
   const hasMore = invoices.length > COLLAPSED_LIMIT;
 
-  const formatCurrency = (amount: string | null) => {
+  const formatCurrency = (amount: string) => {
     const num = parseFloat(amount || "0");
     return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(num);
   };
@@ -321,7 +350,7 @@ function InvoicesWidget({
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-foreground truncate">
-                        {invoice.locationDisplayName || invoice.locationName || "Invoice"}
+                        {invoice.locationName || "Invoice"}
                       </p>
                       <p className="text-xs text-muted-foreground mt-0.5">
                         {invoice.invoiceNumber && <span>#{invoice.invoiceNumber} · </span>}
@@ -613,10 +642,33 @@ export default function Dashboard() {
     try { localStorage.setItem(TASKS_COLLAPSE_KEY, tasksCollapsed ? "1" : "0"); } catch {}
   }, [tasksCollapsed]);
 
-  // Phase 6.2 Step B3: canonical hooks replace direct useQuery
-  const { data: workflowData, isLoading: workflowLoading, isError: workflowError } = useWorkflowSummary();
-  const { jobs: needsAttentionJobs, isLoading: needsAttentionLoading, isError: needsAttentionError, error: needsAttentionErrorObj, refetch: refetchNeedsAttention } = useNeedsAttention();
-  const { invoices: dashboardInvoices, isLoading: dashboardInvoicesLoading, isError: dashboardInvoicesError, error: dashboardInvoicesErrorObj, refetch: refetchDashboardInvoices } = useDashboardInvoices();
+  // Queries
+  // Phase 5 Step B3: canonical dashboard family key prefix
+  const { data: workflowData, isLoading: workflowLoading, isError: workflowError } = useQuery<WorkflowSummary>({
+    queryKey: ["dashboard", "workflow"],
+    queryFn: () => apiRequest(`/api/dashboard/workflow`),
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+
+  const today = new Date().toISOString().slice(0, 10);
+  // Phase 5 Step B3: canonical dashboard family key prefix
+  const { data: needsAttentionResponse, isLoading: needsAttentionLoading, isError: needsAttentionError, error: needsAttentionErrorObj, refetch: refetchNeedsAttention } = useQuery<{ data: (Job & { attentionType?: string })[] }>({
+    queryKey: ["dashboard", "needs-attention", { date: today }],
+    queryFn: () => apiRequest(`/api/dashboard/needs-attention?date=${today}&limit=5`),
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const needsAttentionJobs = needsAttentionResponse?.data || [];
+
+  const { data: dashboardInvoicesResponse, isLoading: dashboardInvoicesLoading, isError: dashboardInvoicesError, error: dashboardInvoicesErrorObj, refetch: refetchDashboardInvoices } = useQuery<{ data: Invoice[] }>({
+    // Phase 5 Step A7: canonical family key prefix
+    queryKey: ["invoices", "dashboard"],
+    queryFn: () => apiRequest(`/api/invoices/dashboard`),
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const dashboardInvoices = dashboardInvoicesResponse?.data || [];
 
   // Frame contrast: main content uses darker bg, cards (white) sit on top
   // Sidebar + header use bg-background (white) - unified frame

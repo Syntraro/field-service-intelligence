@@ -26,7 +26,7 @@ interface QboSyncBannerProps {
     qboSyncStatus?: string | null;
     billingLockedAt?: Date | string | null;
     billingLockReason?: string | null;
-    qboOutOfSync?: boolean | null;
+    qboOutOfSync?: boolean;
     qboOutOfSyncAt?: Date | string | null;
     qboOutOfSyncReason?: string | null;
   };

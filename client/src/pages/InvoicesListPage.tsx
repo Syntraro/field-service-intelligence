@@ -1,9 +1,9 @@
 import { useState, useMemo, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { format, isValid, parseISO } from "date-fns";
 import { useLocation, useSearch, Link } from "wouter";
 import { Search, Plus, FileText, DollarSign, Clock, AlertTriangle, LayoutGrid, List, MoreHorizontal, RefreshCw } from "lucide-react";
 import { QboSyncBadge, isQboSynced } from "@/components/invoice/QboSyncBanner";
-import { useInvoicesFeed, useInvoiceStats, type InvoiceFeedItem } from "@/hooks/useInvoicesFeed";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -32,6 +32,19 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import type { Invoice } from "@shared/schema";
+
+interface EnrichedInvoice extends Invoice {
+  locationName?: string;
+  customerCompanyName?: string;
+}
+
+interface InvoiceStats {
+  outstanding: { amount: number; count: number };
+  issuedLast30Days: { count: number };
+  averageInvoice: number;
+  overdue: { amount: number; count: number };
+}
 
 type InvoiceStatusFilter = "all" | "draft" | "awaiting_payment" | "sent" | "viewed" | "partial_paid" | "paid" | "voided" | "overdue" | "qbo_synced" | "qbo_out_of_sync";
 type ViewDensity = "comfortable" | "compact";
@@ -90,17 +103,28 @@ export default function InvoicesListPage() {
     }
   }, [search]);
 
-  // Phase 6.2 Step A2: canonical hooks replace direct useQuery
-  const { invoices, isLoading } = useInvoicesFeed();
-  const { stats } = useInvoiceStats();
+  const { data: invoices = [], isLoading } = useQuery<{ data: EnrichedInvoice[]; meta: { limit: number; hasMore: boolean; nextOffset?: number } }, Error, EnrichedInvoice[]>({
+    // Phase 5 Step A7: canonical family key prefix
+    queryKey: ["invoices", "feed", { offset: 0, limit: 200 }],
+    queryFn: async () => {
+      const res = await fetch("/api/invoices/list?offset=0&limit=200", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch invoices");
+      return res.json();
+    },
+    select: (response) => response.data,
+  });
+
+  const { data: stats } = useQuery<InvoiceStats>({
+    // Phase 5 Step A7: canonical family key prefix
+    queryKey: ["invoices", "stats"],
+  });
 
   const outstandingAmount = stats?.outstanding?.amount ?? 0;
   const outstandingCount = stats?.outstanding?.count ?? 0;
+  const issuedCount30d = stats?.issuedLast30Days?.count ?? 0;
   const overdueAmount = stats?.overdue?.amount ?? 0;
   const overdueCount = stats?.overdue?.count ?? 0;
-  // Not available from byStatus aggregate — server enhancement needed
-  const issuedCount30d = 0;
-  const averageInvoiceAmount = 0;
+  const averageInvoiceAmount = stats?.averageInvoice ?? 0;
 
   const safeFormatDate = (value: unknown): string => {
     if (!value) return "-";
@@ -119,7 +143,7 @@ export default function InvoicesListPage() {
 
   const filteredInvoices = useMemo(() => {
     let result = invoices.map(inv => {
-      const statusInfo = getStatusBadge(inv.status ?? "", inv.dueDate, inv.balance ?? "0");
+      const statusInfo = getStatusBadge(inv.status, inv.dueDate, inv.balance);
       return { ...inv, statusInfo };
     });
 
@@ -148,7 +172,7 @@ export default function InvoicesListPage() {
       result = result.filter(inv => {
         const invoiceNumber = inv.invoiceNumber?.toLowerCase() || "";
         const locationName = inv.locationName?.toLowerCase() || "";
-        const customerName = inv.locationDisplayName?.toLowerCase() || "";
+        const customerName = inv.customerCompanyName?.toLowerCase() || "";
         return invoiceNumber.includes(query) ||
                locationName.includes(query) ||
                customerName.includes(query);
@@ -161,14 +185,13 @@ export default function InvoicesListPage() {
   const statusCounts = useMemo(() => {
     const counts: Record<string, number> = { all: invoices.length, awaiting_payment: 0 };
     for (const inv of invoices) {
-      const statusInfo = getStatusBadge(inv.status ?? "", inv.dueDate, inv.balance ?? "0");
-      const status = inv.status ?? "";
+      const statusInfo = getStatusBadge(inv.status, inv.dueDate, inv.balance);
       // Count individual statuses (except awaiting_payment which we handle specially)
-      if (status !== "awaiting_payment" && status !== "sent") {
-        counts[status] = (counts[status] || 0) + 1;
+      if (inv.status !== "awaiting_payment" && inv.status !== "sent") {
+        counts[inv.status] = (counts[inv.status] || 0) + 1;
       }
       // Combine awaiting_payment + sent (legacy) for the "Unpaid" filter count
-      if (status === "awaiting_payment" || status === "sent") {
+      if (inv.status === "awaiting_payment" || inv.status === "sent") {
         counts["awaiting_payment"] = (counts["awaiting_payment"] || 0) + 1;
       }
       if (statusInfo.isOverdue) {
@@ -401,9 +424,9 @@ export default function InvoicesListPage() {
                     <TableCell className={isCompact ? "py-1" : ""}>
                       <div>
                         <p className="font-medium" data-testid={`text-invoice-client-${invoice.id}`}>
-                          {invoice.locationDisplayName || invoice.locationName || "Unknown"}
+                          {invoice.customerCompanyName || invoice.locationName || "Unknown"}
                         </p>
-                        {!isCompact && invoice.locationDisplayName && invoice.locationName && invoice.locationDisplayName !== invoice.locationName && (
+                        {!isCompact && invoice.customerCompanyName && invoice.locationName && (
                           <p className="text-sm text-muted-foreground">{invoice.locationName}</p>
                         )}
                       </div>
@@ -428,11 +451,11 @@ export default function InvoicesListPage() {
                       </div>
                     </TableCell>
                     <TableCell className={`text-right ${isCompact ? "py-1" : ""}`}>
-                      {formatCurrency(invoice.total ?? "0")}
+                      {formatCurrency(invoice.total)}
                     </TableCell>
                     <TableCell className={`text-right ${isCompact ? "py-1" : ""}`}>
-                      <span className={parseFloat(invoice.balance ?? "0") > 0 ? "font-medium" : "text-muted-foreground"}>
-                        {formatCurrency(invoice.balance ?? "0")}
+                      <span className={parseFloat(invoice.balance) > 0 ? "font-medium" : "text-muted-foreground"}>
+                        {formatCurrency(invoice.balance)}
                       </span>
                     </TableCell>
                     <TableCell className={isCompact ? "py-1" : ""} onClick={(e) => e.stopPropagation()}>
