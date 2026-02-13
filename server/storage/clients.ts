@@ -410,7 +410,8 @@ export class ClientRepository extends BaseRepository {
     const [assignments, parts, equipmentList] = await Promise.all([
       this.getAssignmentsByClient(companyId, clientId),
       this.getClientParts(companyId, clientId),
-      this.getClientEquipment(companyId, clientId),
+      // Phase 6 D1: use canonical locationEquipment directly
+      this.getLocationEquipment(companyId, clientId),
     ]);
 
     return {
@@ -579,39 +580,6 @@ export class ClientRepository extends BaseRepository {
           }))
         )
         .returning();
-    });
-  }
-
-  /**
-   * Get location equipment (legacy alias).
-   * Phase 6 C1: Redirected to query canonical locationEquipment table.
-   * @deprecated Use getLocationEquipment() instead.
-   */
-  async getClientEquipment(companyId: string, locationId: string) {
-    return this.getLocationEquipment(companyId, locationId);
-  }
-
-  /**
-   * Create equipment (legacy alias for bulk import).
-   * Phase 6 C1: Redirected to insert into canonical locationEquipment table.
-   * @deprecated Use createLocationEquipment() instead.
-   */
-  async createEquipment(
-    companyId: string,
-    _userId: string,
-    data: {
-      clientId: string;
-      name: string;
-      modelNumber?: string | null;
-      serialNumber?: string | null;
-      notes?: string | null;
-    }
-  ) {
-    return this.createLocationEquipment(companyId, data.clientId, {
-      name: data.name,
-      modelNumber: data.modelNumber ?? null,
-      serialNumber: data.serialNumber ?? null,
-      notes: data.notes ?? null,
     });
   }
 

@@ -85,8 +85,6 @@ export interface IStorage {
   addClientPart: typeof clientRepository.addClientPart;
   deleteAllClientParts: typeof clientRepository.deleteAllClientParts;
   upsertClientPartsBulk: typeof clientRepository.upsertClientPartsBulk;
-  getClientEquipment: typeof clientRepository.getClientEquipment;
-  createEquipment: typeof clientRepository.createEquipment;
   cleanupInvalidCalendarAssignments: typeof clientRepository.cleanupInvalidCalendarAssignments;
   getLocationEquipment: typeof clientRepository.getLocationEquipment;
   getLocationEquipmentById: typeof clientRepository.getLocationEquipmentById;
@@ -285,8 +283,6 @@ export const storage: IStorage = {
   addClientPart: clientRepository.addClientPart.bind(clientRepository),
   deleteAllClientParts: clientRepository.deleteAllClientParts.bind(clientRepository),
   upsertClientPartsBulk: clientRepository.upsertClientPartsBulk.bind(clientRepository),
-  getClientEquipment: clientRepository.getClientEquipment.bind(clientRepository),
-  createEquipment: clientRepository.createEquipment.bind(clientRepository),
   cleanupInvalidCalendarAssignments: clientRepository.cleanupInvalidCalendarAssignments.bind(clientRepository),
   getLocationEquipment: clientRepository.getLocationEquipment.bind(clientRepository),
   getLocationEquipmentById: clientRepository.getLocationEquipmentById.bind(clientRepository),

@@ -572,12 +572,11 @@ router.post("/import", requireRole(MANAGER_ROLES), asyncHandler(async (req: Auth
     }
   }
 
-  // Phase 4: Create equipment (collect all then bulk insert would be ideal, but sequential for now)
+  // Phase 6: Create equipment in canonical locationEquipment table
   for (const { client, equipment } of createdClients) {
     for (const equipData of equipment) {
       try {
-        await storage.createEquipment(req.companyId!, req.user!.id, {
-          clientId: client.id,
+        await storage.createLocationEquipment(req.companyId!, client.id, {
           name: equipData.name,
           modelNumber: equipData.modelNumber || null,
           serialNumber: equipData.serialNumber || null,
