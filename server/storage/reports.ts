@@ -18,10 +18,12 @@ export interface ARAgingInvoice {
     name: string | null;
   };
   location: {
-    id: string;
-    companyName: string;
+    id: string | null;
+    companyName: string | null;
     location: string | null;
   };
+  /** Phase 5 Step A5: COALESCE'd display name */
+  locationDisplayName: string | null;
 }
 
 export interface ARAgingBucket {
@@ -70,10 +72,13 @@ export class ReportsRepository extends BaseRepository {
         // Customer company fields
         customerCompanyId: customerCompanies.id,
         customerCompanyName: customerCompanies.name,
+        // Phase 5 Step A5: canonical COALESCE pattern
+        locationDisplayName: sql<string>`COALESCE(${customerCompanies.name}, ${clientLocations.companyName})`,
       })
       .from(invoices)
-      .innerJoin(clientLocations, eq(invoices.locationId, clientLocations.id))
-      .leftJoin(customerCompanies, eq(invoices.customerCompanyId, customerCompanies.id))
+      // Phase 5 Step A5: LEFT JOIN to include invoices with no/deleted locations
+      .leftJoin(clientLocations, eq(invoices.locationId, clientLocations.id))
+      .leftJoin(customerCompanies, eq(clientLocations.parentCompanyId, customerCompanies.id))
       .where(
         and(
           eq(invoices.companyId, companyId),
@@ -138,10 +143,11 @@ export class ReportsRepository extends BaseRepository {
           name: row.customerCompanyName,
         },
         location: {
-          id: row.locationId,
-          companyName: row.locationCompanyName,
-          location: row.locationName,
+          id: row.locationId ?? null,
+          companyName: row.locationCompanyName ?? null,
+          location: row.locationName ?? null,
         },
+        locationDisplayName: row.locationDisplayName ?? null,
       });
     }
 
