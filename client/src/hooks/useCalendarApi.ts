@@ -372,8 +372,9 @@ export function useScheduleJob() {
 /**
  * Hook to reschedule a job
  *
- * INVALIDATION: calendar only + jobs (NOT unscheduled)
- * Reason: Job stays on calendar, just moved to different slot
+ * INVALIDATION: calendar + unscheduled + jobs
+ * Reason: Reschedule may affect backlog sidebar (e.g. moving to a date
+ * that changes which jobs appear in the unscheduled list)
  */
 export function useRescheduleJob() {
   const queryClient = useQueryClient();
@@ -382,8 +383,7 @@ export function useRescheduleJob() {
     mutationFn: ({ jobId, payload }: { jobId: string; payload: RescheduleJobPayload }) =>
       rescheduleJob(jobId, payload),
     onSuccess: (_, variables) => {
-      // Job stays on calendar - no need to invalidate unscheduled
-      invalidateCalendarQueries(queryClient, "reschedule", variables.jobId);
+      invalidateCalendarAndUnscheduledQueries(queryClient, "reschedule", variables.jobId);
       invalidateJobQueries(queryClient, "reschedule", variables.jobId);
     },
   });
