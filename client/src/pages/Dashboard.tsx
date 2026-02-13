@@ -30,7 +30,9 @@ import type { Job as SchemaJob, Invoice as SchemaInvoice } from "@shared/schema"
 // ============================================================================
 
 // Dashboard API response shapes — extend schema types with API enrichments
-interface Job extends Pick<SchemaJob, "id" | "jobNumber" | "summary" | "status" | "scheduledStart"> {
+// scheduledStart comes as ISO string from JSON API (not Date)
+interface Job extends Pick<SchemaJob, "id" | "jobNumber" | "summary" | "status"> {
+  scheduledStart: string | null;
   locationName?: string;
   location?: { companyName?: string; location?: string };
 }

@@ -8,6 +8,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### Phase 2 — Data Freshness + Type Cleanup (2026-02-12)
+
+**Part A — Bonus Hotfixes from Phase 1 Sweep:**
+- **A1: Reports.tsx getMonth() off-by-one**: Added `+ 1` to two `getMonth()` calls so reports fetch correct month data.
+  - File: `client/src/pages/Reports.tsx`
+- **A2: Missing soft-delete/isActive filters (10 queries)**: Added `activeJobFilter()` to job queries in reports.ts, clients.ts (3 queries), invoices.ts (3 queries), timeTracking.ts, and jobVisits.ts (2 queries). Prevents returning deleted/inactive jobs.
+  - Files: `server/routes/reports.ts`, `server/storage/clients.ts`, `server/storage/invoices.ts`, `server/storage/timeTracking.ts`, `server/storage/jobVisits.ts`
+- **A3: Stale column name comments**: Fixed comments referencing `estimated_duration_minutes` → `duration_minutes`.
+  - Files: `server/storage/maintenance.ts`, `server/storage/dashboard.ts`
+
+**Part B — Cache Invalidation Gaps:**
+- **B1**: Tech mobile mutations now invalidate calendar, jobs, and dashboard query keys.
+- **B2**: Calendar reschedule now invalidates unscheduled sidebar.
+- **B3**: Invoice send/void/payment/create mutations now invalidate `/api/invoices/stats` and `/api/invoices/dashboard`.
+- **B4**: Job escalate/updateActionRequired now invalidate specific job detail cache. Reopen and updateStatus now invalidate calendar + dashboard.
+- **B5**: `jobScheduling.ts` helper now invalidates `/api/calendar/range` and `/api/calendar/unscheduled`.
+- **B6**: `useCompleteJob` now invalidates `/api/dashboard` and `/api/dashboard/needs-attention`.
+
+**Part C — Type Cleanup:**
+- Created `shared/types/visits.ts` with canonical `VisitJob` and `VisitLocation` types.
+- Replaced local `Job` interfaces in Dashboard.tsx and TaskDialog.tsx with shared schema types.
+- Deduplicated `ScheduleJobPayload` — jobScheduling.ts now extends the useCalendarApi.ts definition.
+- Consolidated `TERMINAL_STATUSES` — scheduling.ts and dashboard.ts now import from statusRules.ts.
+
+**Part D — Dead Code Removal:**
+- Removed dead `getVisitsForUserInRange` from `jobVisitsRepository` (canonical version in `visits.ts`).
+
 #### Phase 1 — Correctness Hotfixes from Canonical Query Audit (2026-02-12)
 
 - **Fix 1: Tech mobile visit sync**: `techField.ts` en_route/start/complete handlers now call `syncJobScheduleFromVisits` after updating visit status, matching the pattern used by every other visit mutation. Previously, tech mobile status changes never propagated to the parent `jobs` table, causing stale data on calendar, dashboard, and job detail pages.
