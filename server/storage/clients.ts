@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { eq, and, inArray, sql, or, ilike, gte, lte, isNull, isNotNull, desc } from "drizzle-orm";
-import { clients, clientParts, equipment, jobs, locationEquipment } from "@shared/schema";
+import { clients, clientParts, jobs, locationEquipment } from "@shared/schema";
 import type { InsertClient, Client, InsertLocationEquipment, UpdateLocationEquipment } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset, escapeLike } from "./base";
 import { activeJobFilter } from "./jobFilters";
@@ -583,28 +583,22 @@ export class ClientRepository extends BaseRepository {
   }
 
   /**
-   * Get location equipment
-   * Uses locationId as the canonical reference
+   * Get location equipment (legacy alias).
+   * Phase 6 C1: Redirected to query canonical locationEquipment table.
+   * @deprecated Use getLocationEquipment() instead.
    */
   async getClientEquipment(companyId: string, locationId: string) {
-    return await db
-      .select()
-      .from(equipment)
-      .where(
-        and(
-          eq(equipment.companyId, companyId),
-          eq(equipment.locationId, locationId)
-        )
-      );
+    return this.getLocationEquipment(companyId, locationId);
   }
 
   /**
-   * Create equipment
-   * Uses locationId as the canonical reference
+   * Create equipment (legacy alias for bulk import).
+   * Phase 6 C1: Redirected to insert into canonical locationEquipment table.
+   * @deprecated Use createLocationEquipment() instead.
    */
   async createEquipment(
     companyId: string,
-    userId: string,
+    _userId: string,
     data: {
       clientId: string;
       name: string;
@@ -613,19 +607,12 @@ export class ClientRepository extends BaseRepository {
       notes?: string | null;
     }
   ) {
-    const rows = await db
-      .insert(equipment)
-      .values({
-        companyId,
-        userId,
-        locationId: data.clientId, // locationId is the canonical reference
-        name: data.name,
-        modelNumber: data.modelNumber,
-        serialNumber: data.serialNumber,
-        notes: data.notes,
-      })
-      .returning();
-    return rows[0];
+    return this.createLocationEquipment(companyId, data.clientId, {
+      name: data.name,
+      modelNumber: data.modelNumber ?? null,
+      serialNumber: data.serialNumber ?? null,
+      notes: data.notes ?? null,
+    });
   }
 
   /**
