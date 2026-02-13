@@ -422,9 +422,8 @@ export function useCompleteJob() {
       // Job stays on calendar - no need to invalidate unscheduled
       invalidateCalendarQueries(queryClient, "complete", variables.jobId);
       invalidateJobQueries(queryClient, "complete", variables.jobId);
-      // Completing a job affects dashboard needs-attention counts
-      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/dashboard/needs-attention"] });
+      // Phase 5 Step B3: canonical dashboard family key
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
   });
 }

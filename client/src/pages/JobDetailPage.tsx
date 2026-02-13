@@ -1173,7 +1173,8 @@ export default function JobDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
+      // Phase 5 Step B3: canonical dashboard family key
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       toast({
         title: "Status Updated",
         description: "Job status has been updated.",
@@ -1230,7 +1231,8 @@ export default function JobDetailPage() {
       // (covered by family-wide ["jobs"] invalidation)
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       queryClient.invalidateQueries({ queryKey: ["/api/maintenance"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
+      // Phase 5 Step B3: canonical dashboard family key
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
       // Prefix-matches ["/api/clients", id, "overview"] so Client Detail page updates
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });

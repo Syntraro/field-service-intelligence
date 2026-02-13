@@ -128,7 +128,8 @@ export default function TechVisitDetailPage() {
     queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
     // Phase 4 Step C5: canonical family key
     queryClient.invalidateQueries({ queryKey: ["jobs"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
+    // Phase 5 Step B3: canonical dashboard family key
+    queryClient.invalidateQueries({ queryKey: ["dashboard"] });
   };
 
   const enRouteMutation = useMutation({

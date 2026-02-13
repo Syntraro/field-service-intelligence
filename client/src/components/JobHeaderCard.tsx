@@ -224,7 +224,8 @@ export function JobHeaderCard({
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/dashboard"] });
+      // Phase 5 Step B3: canonical dashboard family key
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       toast({ title: "Job Reopened", description: "Job has been reopened and is now in progress." });
     },
     onError: (error: Error) => {

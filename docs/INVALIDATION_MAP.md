@@ -13,7 +13,7 @@
 |---|---|---|
 | **Calendar** | `/api/calendar`, `/api/calendar/range`, `/api/calendar/unscheduled` | Scheduled events, date-range view, backlog sidebar |
 | **Jobs** | `["jobs"]` (family prefix) | Canonical feed `["jobs","feed",…]`, detail `["jobs","detail",jobId]`. Sub-resources still use `/api/jobs/:id/*` keys. |
-| **Dashboard** | `/api/dashboard`, `/api/dashboard/needs-attention` | Workflow counts and attention jobs |
+| **Dashboard** | `["dashboard"]` (family prefix) | Canonical keys `["dashboard","workflow"]`, `["dashboard","needs-attention",{date}]`. Dashboard-specific computed views only; invoice/job data use their own families. |
 | **Invoices** | `["invoices"]` (family prefix) | Canonical feed `["invoices","feed",…]`, stats `["invoices","stats"]`, dashboard `["invoices","dashboard"]`, by-job `["invoices","by-job",jobId]`. |
 | **Visits** | `["visits"]` (family prefix) | Canonical visit keys `["visits", jobId, "all"]`. Tech feed: `/api/tech/visits/today`, `/api/tech/visits/:id` |
 | **Clients** | `/api/clients`, `/api/clients/:id` | Client locations and detail |
@@ -62,7 +62,7 @@
 | `invoices` | `["invoices"]` (Phase 5 canonical family key) |
 | `equipment` | `/api/equipment` |
 | `parts` | `/api/items`, `/api/client-parts/bulk` |
-| `dashboard` | `/api/dashboard` |
+| `dashboard` | `["dashboard"]` (Phase 5 canonical family key) |
 
 ---
 

@@ -643,15 +643,18 @@ export default function Dashboard() {
   }, [tasksCollapsed]);
 
   // Queries
+  // Phase 5 Step B3: canonical dashboard family key prefix
   const { data: workflowData, isLoading: workflowLoading, isError: workflowError } = useQuery<WorkflowSummary>({
-    queryKey: ["/api/dashboard/workflow"],
+    queryKey: ["dashboard", "workflow"],
+    queryFn: () => apiRequest(`/api/dashboard/workflow`),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
 
   const today = new Date().toISOString().slice(0, 10);
+  // Phase 5 Step B3: canonical dashboard family key prefix
   const { data: needsAttentionResponse, isLoading: needsAttentionLoading, isError: needsAttentionError, error: needsAttentionErrorObj, refetch: refetchNeedsAttention } = useQuery<{ data: (Job & { attentionType?: string })[] }>({
-    queryKey: ["/api/dashboard/needs-attention", { date: today }],
+    queryKey: ["dashboard", "needs-attention", { date: today }],
     queryFn: () => apiRequest(`/api/dashboard/needs-attention?date=${today}&limit=5`),
     staleTime: 60_000,
     refetchOnWindowFocus: false,

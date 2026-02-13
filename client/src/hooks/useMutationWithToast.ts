@@ -32,8 +32,9 @@ export const QUERY_GROUPS = {
     ["/api/items"],
     ["/api/client-parts/bulk"],
   ],
+  // Phase 5 Step B3: canonical family key
   dashboard: [
-    ["/api/dashboard"],
+    ["dashboard"],
   ],
 } as const;
 
