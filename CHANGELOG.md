@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### Deleted jobs still visible in Jobs list after delete from JobDetailPage (2026-02-14)
+- **Root cause**: `JobDetailPage.tsx` `deleteJobMutation.onSuccess` invalidated calendar, maintenance, dashboard, recurring-templates, and clients query keys — but **never invalidated `["jobs"]`**. The comment claimed "covered by family-wide ['jobs'] invalidation" but the actual call was missing. The Jobs list (`useJobsFeed`) uses `["jobs", "feed", ...]` keys, so without `["jobs"]` invalidation the stale cache persisted until a full page refresh.
+- **Fix**: Added `queryClient.invalidateQueries({ queryKey: ["jobs"] })` to the `onSuccess` handler, matching the pattern already used in `JobDetailDialog.tsx` and `Calendar.tsx`.
+  - Files: `client/src/pages/JobDetailPage.tsx`
+
 ### Added
 
 #### Auto-Create Initial Visit on Job Creation (2026-02-14)

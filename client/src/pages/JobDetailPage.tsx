@@ -1230,7 +1230,8 @@ export default function JobDetailPage() {
     },
     onSuccess: () => {
       // Invalidate ALL related queries so deleted job disappears from all views
-      // (covered by family-wide ["jobs"] invalidation)
+      // Family-wide ["jobs"] invalidation covers Jobs list, detail, and all feed variants
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       queryClient.invalidateQueries({ queryKey: ["/api/maintenance"] });
       // Phase 5 Step B3: canonical dashboard family key
