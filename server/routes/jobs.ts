@@ -1,12 +1,15 @@
 import { Router, Response } from "express";
 import { z } from "zod";
+import { eq } from "drizzle-orm";
 import { storage } from "../storage/index";
+import { db } from "../db";
 import {
   insertJobSchema,
   updateJobSchema,
   insertRecurringJobSeriesSchema,
   insertRecurringJobPhaseSchema,
   normalizeJobStatus,
+  jobVisits,
 } from "@shared/schema";
 import { assertJobStatusTransition } from "../statusRules";
 import { jobStatusEnum, holdReasonEnum, openSubStatusEnum, legacyJobStatusEnum } from "../schemas";
@@ -25,6 +28,7 @@ import {
   type SchedulingPatchIntent,
 } from "../domain/scheduling";
 import { assertCanEditSchedule } from "../guards/schedulingPermissions";
+import { IS_DEV } from "../utils/devFlags";
 import {
   LifecycleTransitionError,
   LIFECYCLE_ROLES,
@@ -157,9 +161,9 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
     jobData.scheduledEnd = schedulingResult.scheduledEnd;
     jobData.isAllDay = schedulingResult.isAllDay;
     jobData.status = schedulingResult.status;
-
-    // Remove durationMinutes from job data (it's computed, not stored)
-    delete jobData.durationMinutes;
+    // Preserve derived durationMinutes — stored on jobs.duration_minutes column
+    // and forwarded to the initial visit's estimatedDurationMinutes
+    jobData.durationMinutes = schedulingResult.durationMinutes;
   } else {
     // No scheduling fields - just normalize status
     const rawStatus = parsed.status || "open";
@@ -167,6 +171,18 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
   }
 
   const job = await storage.createJob(companyId, jobData as any);
+
+  // DEV-ONLY: Assert initial visit was created (diagnostic log)
+  if (IS_DEV) {
+    const visitRows = await db.select({ id: jobVisits.id })
+      .from(jobVisits)
+      .where(eq(jobVisits.jobId, job.id));
+    console.log(
+      `[POST /api/jobs DEV] payload scheduledStart: ${req.body.scheduledStart ?? "undefined"}`,
+      `| returned job scheduledStart: ${job.scheduledStart ?? "null"}`,
+      `| visit count for jobId ${job.id}: ${visitRows.length}`
+    );
+  }
 
   res.status(201).json(job);
 }));

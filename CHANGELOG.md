@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### Auto-Create Initial Visit on Job Creation (2026-02-14)
+- **Root cause**: `createJob()` only inserted a job row — no `job_visits` row was created, so new jobs were invisible on calendar/dashboard visit surfaces.
+- **Fix**: Wrapped job insert in a DB transaction that atomically creates an initial `job_visits` row.
+  - Scheduled jobs (with `scheduledStart`) produce a visit with matching start/end/isAllDay.
+  - Unscheduled jobs produce a placeholder visit (`scheduledStart=null`, `scheduledDate=now`).
+  - Technician assignment forwarded from job payload (`primaryTechnicianId`, `assignedTechnicianIds`).
+- **Secondary fix**: Route handler was deleting `durationMinutes` from job data before insert (comment said "computed, not stored" — incorrect, `jobs.duration_minutes` is a real column). Now preserves the derived value from scheduling domain logic, which also flows to the visit's `estimatedDurationMinutes`.
+- **DEV diagnostic**: POST handler logs payload scheduledStart, returned job scheduledStart, and visit count for each created job. All diagnostic logs gated behind `IS_DEV` (`NODE_ENV === "development"` only — silent in test and production).
+- **Invariant test**: `tests/job-creation-visit.test.ts` — locks the "createJob always creates initial visit" contract:
+  - Test A: Scheduled job → 1 visit with matching `scheduledStart`, `estimatedDurationMinutes`
+  - Test B: Unscheduled job → 1 placeholder visit with `scheduledStart=null`, default duration 60
+  - Files: `server/storage/jobs.ts`, `server/routes/jobs.ts`, `tests/job-creation-visit.test.ts`
+
 #### Phase 5 — Remaining Canonicalization + Structural Cleanup (2026-02-13)
 
 **Part A — Invoice Family Canonicalization (Steps A1-A7):**

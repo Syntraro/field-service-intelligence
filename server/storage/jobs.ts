@@ -5,6 +5,7 @@ import {
   jobs,
   jobParts,
   jobEquipment,
+  jobVisits,
   locationEquipment,
   recurringJobSeries,
   recurringJobPhases,
@@ -18,6 +19,7 @@ import {
 import type { InsertJob, Job, InsertJobPart, JobPart, InsertJobStatusEvent, JobStatusEvent } from "@shared/schema";
 import { BaseRepository } from "./base";
 import { sanitizeAllDayTimestamps } from "../utils/allDaySanitizer";
+import { IS_DEV } from "../utils/devFlags";
 import { resolveTechnicianName } from "../lib/resolveTechnicianName";
 import { encodeCursor, decodeCursor } from "../utils/cursor";
 import type { PaginationParams } from "../utils/pagination";
@@ -381,7 +383,14 @@ export class JobRepository extends BaseRepository {
   }
 
   /**
-   * Create job with auto-generated job number
+   * Create job with auto-generated job number.
+   * Atomically creates an initial visit so the job is immediately visible
+   * on calendar / dashboard surfaces.
+   *
+   * Visit scheduling logic:
+   *   - scheduledStart present → "scheduled" visit with matching start/end/isAllDay
+   *   - scheduledStart absent  → "scheduled" visit with scheduledDate = now (unscheduled placeholder)
+   * Technician assignment is forwarded from job payload when present.
    */
   async createJob(companyId: string, jobData: InsertJob): Promise<Job> {
     this.assertCompanyId(companyId);
@@ -394,16 +403,74 @@ export class JobRepository extends BaseRepository {
     // Sanitize all-day timestamps for UTC-safe DB write (prevents constraint violation)
     sanitizeAllDayTimestamps(normalizedData, normalizedData.id ?? 'new-job');
 
-    const rows = await db
-      .insert(jobs)
-      .values({
-        ...normalizedData,
-        companyId,
-        jobNumber,
-      })
-      .returning();
+    const job = await db.transaction(async (tx) => {
+      // 1. Insert the job row
+      const [createdJob] = await tx
+        .insert(jobs)
+        .values({
+          ...normalizedData,
+          companyId,
+          jobNumber,
+        })
+        .returning();
 
-    return rows[0];
+      // 2. Build initial visit from job scheduling fields
+      const hasSchedule = !!createdJob.scheduledStart;
+      const isAllDay = Boolean(createdJob.isAllDay);
+      const now = new Date();
+
+      let visitStart: Date;
+      let visitEnd: Date;
+
+      if (hasSchedule) {
+        visitStart = new Date(createdJob.scheduledStart as any);
+        if (createdJob.scheduledEnd) {
+          visitEnd = new Date(createdJob.scheduledEnd as any);
+        } else if (isAllDay) {
+          const end = new Date(visitStart);
+          end.setHours(23, 59, 59, 0);
+          visitEnd = end;
+        } else {
+          const durationMs = (createdJob.durationMinutes ?? 60) * 60_000;
+          visitEnd = new Date(visitStart.getTime() + durationMs);
+        }
+      } else {
+        // Unscheduled job: use current timestamp as placeholder for legacy scheduledDate
+        visitStart = now;
+        visitEnd = now;
+      }
+
+      // Forward technician assignment from job payload
+      const assignedTechnicianId =
+        (normalizedData as any).primaryTechnicianId ?? null;
+      const assignedTechnicianIds =
+        (normalizedData as any).assignedTechnicianIds ??
+        (assignedTechnicianId ? [assignedTechnicianId] : null);
+
+      await tx.insert(jobVisits).values({
+        companyId,
+        jobId: createdJob.id,
+        scheduledDate: visitStart,          // legacy required field
+        scheduledStart: hasSchedule ? visitStart : null,
+        scheduledEnd: hasSchedule ? visitEnd : null,
+        isAllDay: hasSchedule ? isAllDay : false,
+        estimatedDurationMinutes: createdJob.durationMinutes ?? 60,
+        assignedTechnicianId,
+        assignedTechnicianIds,
+        status: "scheduled",
+        visitNumber: 1,
+      });
+
+      if (IS_DEV) {
+        console.log(
+          `[createJob] Job #${createdJob.jobNumber} (${createdJob.id}): initial visit created, scheduled=${hasSchedule}`
+        );
+      }
+
+      return createdJob;
+    });
+
+    return job;
   }
 
  /**
