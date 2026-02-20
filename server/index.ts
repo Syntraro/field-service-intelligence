@@ -13,6 +13,7 @@ import { setupVite, serveStatic, log } from "./vite";
 import passport from "passport";
 import "./auth";  // Register passport strategies
 import { enforceSchemaOrExit } from "./utils/schemaGuard";
+import { validateEmailConfig } from "./resendClient";
 
 /**
  * Production security defaults.
@@ -126,6 +127,9 @@ app.use((req, _res, next) => {
   }
   next();
 });
+
+// Validate email config at startup (warns if portal emails won't work)
+validateEmailConfig();
 
 // Register API routes and create server
 const server = registerRoutes(app);

@@ -487,7 +487,7 @@ describe("Visit Selection & Calendar Invariant Tests", () => {
   // TEST 6: unschedule removes eligibility; job becomes unscheduled
   // ============================================================================
   describe("unschedule operation", () => {
-    it("sets is_active=false on current visit and job becomes unscheduled", async () => {
+    it("converts visit to placeholder and job becomes unscheduled", async () => {
       const jobId = await createTestJob("unschedule_test");
 
       // Create a single eligible visit
@@ -504,12 +504,14 @@ describe("Visit Selection & Calendar Invariant Tests", () => {
       // Unschedule via calendar repository
       await calendarRepository.unscheduleJob(testCompanyId, jobId);
 
-      // Verify visit is now inactive
+      // Verify visit is now a placeholder (isActive=true, scheduledStart=null)
       const [visit] = await db
         .select()
         .from(jobVisits)
         .where(eq(jobVisits.id, visitId));
-      expect(visit.isActive).toBe(false);
+      expect(visit.isActive).toBe(true);
+      expect(visit.scheduledStart).toBeNull();
+      expect(visit.scheduledEnd).toBeNull();
 
       // Verify job is now unscheduled
       [job] = await db.select().from(jobs).where(eq(jobs.id, jobId));
@@ -531,12 +533,13 @@ describe("Visit Selection & Calendar Invariant Tests", () => {
         visitNumber: 2,
       });
 
-      // Unschedule (soft-deletes visit1)
+      // Unschedule (converts visit1 to placeholder)
       await calendarRepository.unscheduleJob(testCompanyId, jobId);
 
-      // Verify visit1 is inactive
+      // Verify visit1 is now a placeholder (isActive=true, scheduledStart=null)
       const [v1] = await db.select().from(jobVisits).where(eq(jobVisits.id, visit1));
-      expect(v1.isActive).toBe(false);
+      expect(v1.isActive).toBe(true);
+      expect(v1.scheduledStart).toBeNull();
 
       // Verify job is now scheduled to visit2
       const [job] = await db.select().from(jobs).where(eq(jobs.id, jobId));

@@ -93,12 +93,16 @@ router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
 
 // GET /api/jobs/action-required - Get action required jobs queue
 // Prioritized by nextActionDate ASC, then by actionRequiredAt ASC (oldest first)
+// Bounded: uses lenient pagination (default offset=0, limit=50, max 200)
 router.get("/action-required", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
+  const { params, explicit } = parsePaginationLenient(req.query);
+  const offset = params.offset ?? 0;
 
-  const jobs = await storage.getActionRequiredJobs(companyId);
+  const allJobs = await storage.getActionRequiredJobs(companyId);
+  const result = applyOffsetPagination(allJobs, offset, params.limit);
 
-  res.json(jobs);
+  res.json(paginatedCompat(result.items, result.meta, explicit));
 }));
 
 // GET /api/jobs/:id - Get single job

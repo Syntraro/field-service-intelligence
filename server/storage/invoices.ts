@@ -1337,13 +1337,18 @@ export class InvoiceRepository extends BaseRepository {
           })
           .returning();
 
-        // Update job: set invoiceId AND status to 'invoiced' (DETERMINISTIC)
-        // This ensures job is always marked as invoiced when invoice is created
+        // Update job: set invoiceId (and status when NOT called from close route)
+        // When called from JOB_CLOSE_ROUTE, the lifecycle engine (transitionJobStatus)
+        // owns the status transition — setting status here would cause a conflict because
+        // transitionJobStatus re-reads the job and rejects non-open statuses.
         const jobUpdate: any = {
           invoiceId: invoice.id,
-          status: "invoiced", // ALWAYS set to invoiced
           updatedAt: new Date(),
         };
+        if (creationSource !== "JOB_CLOSE_ROUTE") {
+          // Standalone invoice creation: set status to invoiced directly
+          jobUpdate.status = "invoiced";
+        }
 
         await tx
           .update(jobs)

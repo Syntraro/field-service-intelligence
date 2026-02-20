@@ -680,16 +680,54 @@ export class CalendarRepository extends BaseRepository {
       }
     }
 
-    // PHASE 4: Create job_visit row
-    const visit = await jobVisitsRepository.createJobVisit(companyId, data.jobId, {
-      scheduledStart,
-      scheduledEnd,
-      isAllDay,
-      assignedTechnicianId: techAssignment.primaryTechnicianId,
-      assignedTechnicianIds: techAssignment.assignedTechnicianIds,
-      status: 'scheduled',
-      visitNotes: data.notes,
-    });
+    // PHASE 4: Schedule via job_visits.
+    // If a placeholder visit exists (scheduledStart IS NULL, from createJob),
+    // UPDATE it rather than inserting a duplicate that would violate
+    // job_visits_job_visit_number_uq.
+    const [placeholder] = await db
+      .select({ id: jobVisits.id, version: jobVisits.version })
+      .from(jobVisits)
+      .where(
+        and(
+          eq(jobVisits.jobId, data.jobId),
+          eq(jobVisits.companyId, companyId),
+          isNull(jobVisits.scheduledStart),
+          eq(jobVisits.isActive, true),
+        )
+      )
+      .orderBy(asc(jobVisits.visitNumber))
+      .limit(1);
+
+    let visit;
+    if (placeholder) {
+      // Update the existing placeholder visit with schedule data
+      visit = await jobVisitsRepository.updateJobVisit(
+        companyId,
+        placeholder.id,
+        placeholder.version,
+        {
+          scheduledStart,
+          scheduledEnd,
+          scheduledDate: scheduledStart,
+          isAllDay,
+          assignedTechnicianId: techAssignment.primaryTechnicianId,
+          assignedTechnicianIds: techAssignment.assignedTechnicianIds,
+          status: 'scheduled',
+          visitNotes: data.notes,
+        }
+      );
+    } else {
+      // No placeholder — insert new visit (follow-up visits, etc.)
+      visit = await jobVisitsRepository.createJobVisit(companyId, data.jobId, {
+        scheduledStart,
+        scheduledEnd,
+        isAllDay,
+        assignedTechnicianId: techAssignment.primaryTechnicianId,
+        assignedTechnicianIds: techAssignment.assignedTechnicianIds,
+        status: 'scheduled',
+        visitNotes: data.notes,
+      });
+    }
 
     // JOBBER-LIKE BEHAVIOR: Reopen completed jobs when scheduling a follow-up visit.
     // Rationale: A completed job means "the work is done". Scheduling another visit
@@ -988,9 +1026,11 @@ export class CalendarRepository extends BaseRepository {
    *
    * BEHAVIOR:
    * - Finds the "current eligible visit" (same selection as calendar read)
-   * - Sets is_active=false to soft-delete the visit (consistent with repository pattern)
+   * - Converts it to a placeholder: clears scheduledStart/scheduledEnd, keeps isActive=true
+   *   This preserves the visit row and visitNumber so re-scheduling UPDATEs
+   *   the placeholder instead of INSERTing a duplicate (avoids visit_number collisions)
    * - Calls syncJobScheduleFromVisits to update jobs table
-   *   (which will clear schedule fields if no other eligible visits exist)
+   *   (which will clear schedule fields since no eligible scheduled visits exist)
    * - Returns the job row (after sync) for API response compatibility
    */
   async unscheduleJob(companyId: string, jobId: string, expectedVersion?: number) {
@@ -1022,20 +1062,27 @@ export class CalendarRepository extends BaseRepository {
       }
     }
 
-    // PHASE 4: Find current eligible visit to soft-delete
+    // PHASE 4: Convert current visit to placeholder (keep isActive=true)
+    // Instead of soft-deleting, we clear schedule fields so the visit can be
+    // re-scheduled later without causing duplicate visit_number collisions.
     const currentVisit = await jobVisitsRepository.getCurrentEligibleVisit(companyId, jobId);
     if (currentVisit) {
-      // Set is_active=false (consistent with repository's soft-delete pattern)
-      // This calls syncJobScheduleFromVisits internally, which will update jobs table
+      // Clear schedule fields, keep isActive=true as placeholder
+      // syncJobScheduleFromVisits (called internally) will clear jobs table schedule
       await jobVisitsRepository.updateJobVisit(
         companyId,
         currentVisit.id,
         currentVisit.version,
-        { isActive: false }
+        {
+          scheduledStart: null,
+          scheduledEnd: null,
+          scheduledDate: new Date(),
+          isAllDay: false,
+        }
       );
 
       if (IS_DEV) {
-        console.log(`[Calendar] unscheduleJob (PHASE 4): soft-deleted visitId=${currentVisit.id}`);
+        console.log(`[Calendar] unscheduleJob (PHASE 4): converted visitId=${currentVisit.id} to placeholder`);
       }
     } else {
       // No eligible visit exists - just ensure jobs table is synced
@@ -1052,7 +1099,7 @@ export class CalendarRepository extends BaseRepository {
       oldFields: null,
       newFields: {
         visitId: currentVisit?.id || null,
-        action: 'soft-delete',
+        action: 'convert-to-placeholder',
       },
     });
 

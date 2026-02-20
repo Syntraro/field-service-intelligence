@@ -64,6 +64,14 @@ import Signup from "@/pages/Signup";
 import RequestReset from "@/pages/RequestReset";
 import ResetPassword from "@/pages/ResetPassword";
 import NotFound from "@/pages/not-found";
+// Customer Portal imports
+import PortalLogin from "@/pages/portal/PortalLogin";
+import PortalVerify from "@/pages/portal/PortalVerify";
+import PortalDashboard from "@/pages/portal/PortalDashboard";
+import PortalInvoicesList from "@/pages/portal/PortalInvoicesList";
+import PortalInvoiceDetail from "@/pages/portal/PortalInvoiceDetail";
+import PortalLayout from "@/components/PortalLayout";
+import { PortalAuthProvider, usePortalAuth } from "@/lib/portalAuth";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { SubscriptionBanner } from "@/components/SubscriptionBanner";
@@ -372,6 +380,60 @@ function Router() {
   );
 }
 
+/**
+ * PortalRouter — Customer portal routes, completely separate from staff app.
+ * Renders portal layout + pages when authenticated, otherwise redirects to login.
+ */
+function PortalRouter() {
+  return (
+    <Switch>
+      <Route path="/portal/login" component={PortalLogin} />
+      <Route path="/portal/verify" component={PortalVerify} />
+      <Route path="/portal">
+        <PortalProtected>
+          <PortalLayout><PortalDashboard /></PortalLayout>
+        </PortalProtected>
+      </Route>
+      <Route path="/portal/invoices">
+        <PortalProtected>
+          <PortalLayout><PortalInvoicesList /></PortalLayout>
+        </PortalProtected>
+      </Route>
+      <Route path="/portal/invoices/:invoiceId">
+        <PortalProtected>
+          <PortalLayout><PortalInvoiceDetail /></PortalLayout>
+        </PortalProtected>
+      </Route>
+      <Route>
+        <PortalProtected>
+          <PortalLayout><NotFound /></PortalLayout>
+        </PortalProtected>
+      </Route>
+    </Switch>
+  );
+}
+
+/** Guard: redirects to /portal/login if no portal session */
+function PortalProtected({ children }: { children: React.ReactNode }) {
+  const { user, isLoading } = usePortalAuth();
+  const [, setLocation] = useLocation();
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    setLocation("/portal/login");
+    return null;
+  }
+
+  return <>{children}</>;
+}
+
 function AppContent() {
   const [location, setLocation] = useLocation();
   const { user } = useAuth();
@@ -410,7 +472,17 @@ function AppContent() {
   }).length;
 
   const isAuthPage = ['/login', '/signup', '/request-reset', '/reset-password'].includes(location);
+  const isPortalPage = location.startsWith('/portal');
   const isTechnicianPage = location === '/technician' || location === '/daily-parts';
+
+  // Portal pages use a completely separate layout and auth
+  if (isPortalPage) {
+    return (
+      <PortalAuthProvider>
+        <PortalRouter />
+      </PortalAuthProvider>
+    );
+  }
 
   const handleDashboardClick = () => {
     // Navigate to dashboard and clear query params

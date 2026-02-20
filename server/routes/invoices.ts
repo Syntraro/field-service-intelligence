@@ -64,9 +64,11 @@ const updateInvoiceSchema = z.object({
   // Status changes should use dedicated endpoints (send, void) - this allows notes-only updates
   status: z.enum(["draft", "sent", "partial_paid", "paid", "voided"]).optional(),
   issueDate: z.string().datetime().optional(),
-  dueDate: z.string().datetime().optional(),
-  // Payment terms - when changed, dueDate is recalculated
-  paymentTermsDays: z.number().int().min(0).max(365).optional(),
+  dueDate: z.string().optional().nullable(), // Accepts date string or null (for custom terms)
+  // Payment terms - when changed, dueDate is recalculated; null = custom terms
+  paymentTermsDays: z.number().int().min(0).max(365).optional().nullable(),
+  // Invoice number editing (uniqueness enforced per tenant)
+  invoiceNumber: z.string().min(1).max(100).optional(),
   notesInternal: z.string().max(2000).optional(),
   notesCustomer: z.string().max(2000).optional(),
   workDescription: z.string().max(2000).optional(),
@@ -262,12 +264,53 @@ router.get("/:id/details", asyncHandler(async (req: AuthedRequest, res: Response
     job = await storage.getJob(companyId, invoice.jobId);
   }
 
+  // 6. Build structured address + contact fields for Jobber-style header
+  // Billing address: prefer customerCompany billing address, fall back to location
+  const billingAddress = customerCompany?.billingStreet
+    ? {
+        street: customerCompany.billingStreet,
+        city: customerCompany.billingCity || "",
+        province: customerCompany.billingProvince || "",
+        postalCode: customerCompany.billingPostalCode || "",
+        country: customerCompany.billingCountry || "",
+      }
+    : location.address
+      ? {
+          street: location.address,
+          city: location.city || "",
+          province: location.province || "",
+          postalCode: location.postalCode || "",
+          country: "",
+        }
+      : null;
+
+  // Service address: prefer job's location address; fallback to invoice location
+  const serviceAddress = location.address
+    ? {
+        street: location.address,
+        city: location.city || "",
+        province: location.province || "",
+        postalCode: location.postalCode || "",
+        locationName: location.location || "",
+      }
+    : null;
+
+  // Primary contact from the service location
+  const primaryContact = {
+    name: location.contactName || "",
+    email: location.email || "",
+    phone: location.phone || "",
+  };
+
   res.json({
     invoice,
     lines,
     location,
     customerCompany,
     job,
+    billingAddress,
+    serviceAddress,
+    primaryContact,
   });
 }));
 
@@ -490,8 +533,12 @@ router.patch("/:id", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async
     let finalPatch = { ...patch };
     let warning: string | undefined;
 
-    // When paymentTermsDays changes, recalculate dueDate
-    if (patch.paymentTermsDays !== undefined && !patch.dueDate) {
+    // Invoice number uniqueness check (enforced per tenant via DB unique index)
+    // The DB index invoices_company_invoice_number_uq handles this, but we catch
+    // the constraint violation and return a clear 409 error.
+
+    // When paymentTermsDays is a number (standard terms), recalculate dueDate
+    if (patch.paymentTermsDays !== undefined && patch.paymentTermsDays !== null && !patch.dueDate) {
       const issuedAt = invoice.issuedAt
         ? new Date(invoice.issuedAt)
         : invoice.issueDate
@@ -499,6 +546,10 @@ router.patch("/:id", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async
           : new Date();
       const dueDate = new Date(issuedAt.getTime() + patch.paymentTermsDays * 24 * 60 * 60 * 1000);
       finalPatch.dueDate = dueDate.toISOString().split("T")[0];
+    }
+    // When paymentTermsDays is null (custom terms), dueDate must be provided directly
+    if (patch.paymentTermsDays === null && patch.dueDate) {
+      finalPatch.dueDate = patch.dueDate;
     }
 
     if (hasBillingChanges && isQboSynced(invoice) && overrideQboLock && overrideReason) {
@@ -538,6 +589,13 @@ router.patch("/:id", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async
       return res.status(409).json({
         error: error.message,
         code: 'VERSION_MISMATCH'
+      });
+    }
+    // Invoice number uniqueness violation (DB constraint: invoices_company_invoice_number_uq)
+    if (error.code === '23505' && error.constraint?.includes('invoice_number')) {
+      return res.status(409).json({
+        error: 'Invoice number is already in use. Please choose a different number.',
+        code: 'DUPLICATE_INVOICE_NUMBER'
       });
     }
     throw error;

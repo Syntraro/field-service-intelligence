@@ -5,10 +5,10 @@ import { format } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
-  ArrowLeft, Send, MoreHorizontal, Plus, Trash2, DollarSign,
-  FileText, GripVertical, Check, X, RefreshCw, Phone, Mail, MapPin,
+  Send, Plus, DollarSign,
+  FileText, GripVertical, Check, X,
   MessageSquare, User, Clock, Edit, ChevronDown, ChevronRight, Settings,
-  Percent, Tag, Briefcase, Calendar, AlertTriangle
+  Percent, Tag, AlertTriangle
 } from "lucide-react";
 import {
   DndContext,
@@ -33,8 +33,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
@@ -90,12 +88,30 @@ interface InvoiceWithDerived extends Omit<Invoice, 'paymentTermsDays' | 'issuedA
   issuedAt?: string | Date | null;
 }
 
+// Structured address/contact types from details DTO
+interface StructuredAddress {
+  street: string;
+  city: string;
+  province: string;
+  postalCode: string;
+  country?: string;
+  locationName?: string;
+}
+interface PrimaryContact {
+  name: string;
+  email: string;
+  phone: string;
+}
+
 interface InvoiceDetails {
   invoice: InvoiceWithDerived;
   lines: InvoiceLine[];
   location: Client;
   customerCompany?: CustomerCompany;
   job?: Job;
+  billingAddress?: StructuredAddress | null;
+  serviceAddress?: StructuredAddress | null;
+  primaryContact?: PrimaryContact | null;
 }
 
 function formatCurrency(amount: string | number): string {
@@ -127,15 +143,6 @@ function getBalanceColor(balance: string, isPastDue: boolean): string {
   return "text-amber-600";
 }
 
-const PAYMENT_TERMS_OPTIONS = [
-  { value: 0, label: "Due on Receipt" },
-  { value: 7, label: "Net 7" },
-  { value: 15, label: "Net 15" },
-  { value: 30, label: "Net 30" },
-  { value: 45, label: "Net 45" },
-  { value: 60, label: "Net 60" },
-  { value: 90, label: "Net 90" },
-];
 
 // Sortable line item row component
 function SortableLineRow({ line, isEditing }: { line: InvoiceLine; isEditing: boolean }) {
@@ -243,7 +250,8 @@ export default function InvoiceDetailPage() {
   const [toggleSentPending, setToggleSentPending] = useState(false);
 
   const { data: details, isLoading } = useQuery<InvoiceDetails>({
-    queryKey: ["invoice", invoiceId, "details"],
+    // Canonical namespace: ["invoices", "detail", id] — invalidating ["invoices"] refreshes all invoice views
+    queryKey: ["invoices", "detail", invoiceId],
     queryFn: async () => {
       const res = await fetch(`/api/invoices/${invoiceId}/details`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch invoice details");
@@ -253,7 +261,7 @@ export default function InvoiceDetailPage() {
   });
 
   const { data: payments = [] } = useQuery<Payment[]>({
-    queryKey: ["invoice", invoiceId, "payments"],
+    queryKey: ["invoices", "detail", invoiceId, "payments"],
     queryFn: async () => {
       const res = await fetch(`/api/invoices/${invoiceId}/payments`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch payments");
@@ -303,7 +311,7 @@ export default function InvoiceDetailPage() {
     mutationFn: (overrideReason?: string) =>
       makeQboAwareRequest(`/api/invoices/${invoiceId}/send`, "POST", overrideReason),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       // Phase 5 Step A7: canonical family key (covers feed + stats + dashboard)
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       setShowSendConfirm(false);
@@ -330,7 +338,7 @@ export default function InvoiceDetailPage() {
     mutationFn: (overrideReason?: string) =>
       makeQboAwareRequest(`/api/invoices/${invoiceId}/void`, "POST", overrideReason),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       // Phase 5 Step A7: canonical family key (covers feed + stats + dashboard)
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       setShowVoidConfirm(false);
@@ -361,7 +369,7 @@ export default function InvoiceDetailPage() {
       return await apiRequest(`/api/invoices/${invoiceId}/refresh-from-job`, { method: "POST", body });
     },
     onSuccess: (response) => {
-      queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       // Refresh from job can change line items/totals — invalidate invoices list + dashboard
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       qboOverride.closeModal();
@@ -393,7 +401,7 @@ export default function InvoiceDetailPage() {
     mutationFn: (data: { amount: string; method: string; reference?: string; notes?: string }) =>
       apiRequest(`/api/invoices/${invoiceId}/payments`, { method: "POST", body: JSON.stringify(data) }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       // Phase 5 Step A7: canonical family key (covers feed + stats + dashboard)
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       setShowPaymentDialog(false);
@@ -410,7 +418,7 @@ export default function InvoiceDetailPage() {
     mutationFn: (orderData: { id: string; lineNumber: number }[]) =>
       apiRequest(`/api/invoices/${invoiceId}/lines/reorder`, { method: "PATCH", body: JSON.stringify(orderData) }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
     },
     onError: () => toast({ title: "Failed to reorder items", variant: "destructive" }),
   });
@@ -430,7 +438,7 @@ export default function InvoiceDetailPage() {
       });
     },
     onSuccess: (response: any) => {
-      queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       qboOverride.closeModal();
       setQboOverridePending(false);
@@ -461,20 +469,43 @@ export default function InvoiceDetailPage() {
     },
   });
 
-  // Payment terms update mutation
+  // Payment terms update mutation (supports standard terms and custom due dates)
   const updatePaymentTermsMutation = useMutation({
-    mutationFn: async (data: { paymentTermsDays: number }) => {
+    mutationFn: async (data: { paymentTermsDays: number | null; dueDate?: string }) => {
       return apiRequest(`/api/invoices/${invoiceId}`, {
         method: "PATCH",
         body: JSON.stringify(data),
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       toast({ title: "Payment terms updated" });
     },
     onError: (error: Error) => {
       toast({ title: "Failed to update payment terms", description: error.message, variant: "destructive" });
+    },
+  });
+
+  // Invoice number update mutation (uniqueness enforced per tenant)
+  const updateInvoiceNumberMutation = useMutation({
+    mutationFn: async (invoiceNumber: string) => {
+      return apiRequest(`/api/invoices/${invoiceId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ invoiceNumber }),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
+      queryClient.invalidateQueries({ queryKey: ["invoices"] });
+      toast({ title: "Invoice number updated" });
+    },
+    onError: (error: Error) => {
+      const isDuplicate = error.message?.includes("already in use");
+      toast({
+        title: isDuplicate ? "Invoice number conflict" : "Failed to update invoice number",
+        description: error.message,
+        variant: "destructive",
+      });
     },
   });
 
@@ -546,7 +577,7 @@ export default function InvoiceDetailPage() {
         body: JSON.stringify({ isSent }),
       });
       // Invalidate queries to refresh data
-      queryClient.invalidateQueries({ queryKey: ["invoice", invoiceId, "details"] });
+      queryClient.invalidateQueries({ queryKey: ["invoices", "detail", invoiceId] });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       toast({ title: isSent ? "Invoice marked as sent" : "Sent status removed" });
     } catch (error: any) {
@@ -675,7 +706,7 @@ export default function InvoiceDetailPage() {
     return <div className="p-6">Invoice not found</div>;
   }
 
-  const { invoice, lines, location, customerCompany, job } = details;
+  const { invoice, lines, location, customerCompany, job, billingAddress, serviceAddress, primaryContact } = details;
   // Use API-derived isPastDue flag for consistent behavior
   const isPastDue = invoice.isPastDue ?? false;
   const statusInfo = getStatusBadge(invoice.status, isPastDue);
@@ -745,6 +776,9 @@ export default function InvoiceDetailPage() {
             location={location}
             customerCompany={customerCompany}
             job={job}
+            billingAddress={billingAddress}
+            serviceAddress={serviceAddress}
+            primaryContact={primaryContact}
             onEdit={() => setIsEditing(!isEditing)}
             onSend={() => setShowSendConfirm(true)}
             onCollectPayment={() => setShowPaymentDialog(true)}
@@ -759,9 +793,15 @@ export default function InvoiceDetailPage() {
             toggleSentPending={toggleSentPending}
             canEdit={canEdit}
             isDraft={isDraft}
+            isEditing={isEditing}
             sendPending={sendMutation.isPending}
             statusLabel={statusInfo.label}
             statusVariant={statusInfo.variant}
+            isPastDue={isPastDue}
+            onUpdateInvoiceNumber={(num) => updateInvoiceNumberMutation.mutate(num)}
+            invoiceNumberPending={updateInvoiceNumberMutation.isPending}
+            onUpdatePaymentTerms={(data) => updatePaymentTermsMutation.mutate(data)}
+            paymentTermsPending={updatePaymentTermsMutation.isPending}
           />
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -978,69 +1018,7 @@ export default function InvoiceDetailPage() {
             </div>
 
             <div className="lg:col-span-4 xl:col-span-4 space-y-4 order-2">
-              {/* Payment Terms & Due Date Card */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm font-medium flex items-center gap-2">
-                    <Calendar className="h-4 w-4 text-muted-foreground" />
-                    Payment Terms
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="pt-0 space-y-3">
-                  <div className="grid grid-cols-2 gap-3 text-sm">
-                    <div>
-                      <span className="text-muted-foreground">Issue Date</span>
-                      <p className="font-medium">
-                        {invoice.issuedAt || invoice.issueDate
-                          ? format(new Date(invoice.issuedAt || invoice.issueDate), "MMM d, yyyy")
-                          : "Not set"}
-                      </p>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">Due Date</span>
-                      <p className={`font-medium ${isPastDue ? "text-destructive" : ""}`}>
-                        {invoice.dueDate
-                          ? format(new Date(invoice.dueDate), "MMM d, yyyy")
-                          : "Not set"}
-                        {isPastDue && <span className="ml-1 text-xs">(Past due)</span>}
-                      </p>
-                    </div>
-                  </div>
-                  {canEdit && (
-                    <div className="pt-2 border-t">
-                      <Label htmlFor="payment-terms-select" className="text-xs text-muted-foreground mb-1 block">
-                        Payment Terms
-                      </Label>
-                      <div className="flex items-center gap-2">
-                        <Select
-                          value={String(invoice.paymentTermsDays ?? 30)}
-                          onValueChange={(value) => {
-                            updatePaymentTermsMutation.mutate({ paymentTermsDays: parseInt(value, 10) });
-                          }}
-                          disabled={updatePaymentTermsMutation.isPending}
-                        >
-                          <SelectTrigger id="payment-terms-select" className="h-8 text-sm" data-testid="select-invoice-payment-terms">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {PAYMENT_TERMS_OPTIONS.map((option) => (
-                              <SelectItem key={option.value} value={String(option.value)}>
-                                {option.label}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        {updatePaymentTermsMutation.isPending && (
-                          <span className="text-xs text-muted-foreground">Saving...</span>
-                        )}
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Changing payment terms will recalculate the due date.
-                      </p>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
+              {/* Payment Terms card removed — now integrated into InvoiceHeaderCard */}
 
               {invoice.jobId && job && (
                 <Card>
@@ -1110,19 +1088,34 @@ export default function InvoiceDetailPage() {
                 </Card>
               )}
 
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm font-medium flex items-center gap-2">
-                    <MessageSquare className="h-4 w-4 text-muted-foreground" />
-                    Client Message
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="pt-0">
-                  <p className="text-sm text-muted-foreground min-h-[60px]">
-                    {invoice.notesCustomer || "No client message added."}
-                  </p>
-                </CardContent>
-              </Card>
+              {/* Internal Notes - office-only, not visible to client */}
+              {(invoice.notesInternal || isEditing) && (
+                <Card>
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <CardTitle className="text-sm font-medium flex items-center gap-2">
+                        <FileText className="h-4 w-4 text-muted-foreground" />
+                        Internal Notes
+                      </CardTitle>
+                      <span className="text-xs text-muted-foreground">Office only</span>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="pt-0">
+                    {isEditing ? (
+                      <Textarea
+                        placeholder="Add internal notes (not visible to client)..."
+                        defaultValue={invoice.notesInternal || ""}
+                        className="min-h-[80px] text-sm"
+                        data-testid="textarea-internal-notes"
+                      />
+                    ) : (
+                      <p className="text-sm text-muted-foreground whitespace-pre-wrap min-h-[40px]">
+                        {invoice.notesInternal || "No internal notes."}
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
 
               {/* Client Visibility Settings */}
               {isEditing && (

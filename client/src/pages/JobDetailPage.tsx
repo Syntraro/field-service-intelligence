@@ -5,7 +5,7 @@ import { useJobVisits } from "@/hooks/useJobVisits";
 import { useUnscheduleJob } from "@/hooks/useCalendarApi";
 import { useRoute, useLocation, Link, useSearch } from "wouter";
 import { format } from "date-fns";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
   ArrowLeft,
@@ -85,6 +85,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -830,6 +831,16 @@ const VISIT_STATUS_LABELS: Record<string, string> = {
 // ============================================================================
 // VISIT DETAIL DIALOG — Inline dialog for viewing/managing a single visit
 // ============================================================================
+/** Convert scheduledStart timestamp to datetime-local input value */
+function toDatetimeLocal(ts: string | Date | null | undefined): string {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return "";
+  // datetime-local needs YYYY-MM-DDTHH:mm
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function VisitDetailDialog({
   open,
   onOpenChange,
@@ -843,6 +854,12 @@ function VisitDetailDialog({
 }) {
   const { toast } = useToast();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+
+  // Edit form state
+  const [editStart, setEditStart] = useState("");
+  const [editTechId, setEditTechId] = useState<string | null>(null);
+  const [editDuration, setEditDuration] = useState<string>("");
 
   // Fetch single visit data — stable key gated on real visitId
   const { data: visit, isLoading } = useQuery<import("@shared/schema").JobVisit>({
@@ -855,12 +872,34 @@ function VisitDetailDialog({
     enabled: open && !!visitId && visitId.length > 0,
   });
 
+  // Reset edit state when dialog opens/closes or visit data changes
+  useEffect(() => {
+    if (!open) setIsEditing(false);
+  }, [open]);
+
+  // Initialize edit form from visit data
+  const enterEditMode = () => {
+    if (!visit) return;
+    setEditStart(toDatetimeLocal(visit.scheduledStart));
+    setEditTechId(visit.assignedTechnicianId ?? null);
+    setEditDuration(visit.estimatedDurationMinutes != null ? String(visit.estimatedDurationMinutes) : "");
+    setIsEditing(true);
+  };
+
   // Technician name resolution
   const { teamMembers } = useTechniciansDirectory();
   const getTechName = (techId: string | null) => {
     if (!techId) return "Unassigned";
     const tech = teamMembers.find((t) => String(t.id) === techId);
     return tech ? (tech.firstName && tech.lastName ? `${tech.firstName} ${tech.lastName}` : tech.email) : "Unknown";
+  };
+
+  // Shared invalidation helper
+  const invalidateVisitQueries = () => {
+    queryClient.invalidateQueries({ queryKey: ["visit-detail", visitId] });
+    queryClient.invalidateQueries({ queryKey: ["visits"] });
+    queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
   };
 
   // Status update mutation
@@ -872,11 +911,38 @@ function VisitDetailDialog({
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["visits"] });
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      invalidateVisitQueries();
       toast({ title: "Visit Updated", description: "Visit status has been updated." });
     },
     onError: (error: Error) => {
+      toast({ title: "Error", description: error.message || "Failed to update visit", variant: "destructive" });
+    },
+  });
+
+  // Edit visit mutation — PATCH /api/jobs/:jobId/visits/:visitId
+  const editMutation = useMutation({
+    mutationFn: async (payload: Record<string, unknown>) => {
+      return apiRequest(`/api/jobs/${jobId}/visits/${visitId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ ...payload, version: visit?.version }),
+      });
+    },
+    onSuccess: () => {
+      invalidateVisitQueries();
+      toast({ title: "Visit Updated" });
+      setIsEditing(false);
+    },
+    onError: (error: Error) => {
+      // Optimistic-lock conflict: version mismatch from concurrent edit
+      const isVersionConflict =
+        (isApiError(error) && error.status === 409) ||
+        /version|optimistic/i.test(error.message);
+      if (isVersionConflict) {
+        toast({ title: "Conflict", description: "This visit was updated elsewhere. Refreshing\u2026" });
+        invalidateVisitQueries();
+        setIsEditing(false);
+        return;
+      }
       toast({ title: "Error", description: error.message || "Failed to update visit", variant: "destructive" });
     },
   });
@@ -887,9 +953,7 @@ function VisitDetailDialog({
       return apiRequest(`/api/jobs/${jobId}/visits/${visitId}`, { method: "DELETE" });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["visits"] });
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      invalidateVisitQueries();
       toast({ title: "Visit Deleted", description: "Visit has been removed." });
       onOpenChange(false);
     },
@@ -897,6 +961,46 @@ function VisitDetailDialog({
       toast({ title: "Error", description: error.message || "Failed to delete visit", variant: "destructive" });
     },
   });
+
+  // Save handler — build PATCH payload from form state
+  const handleSave = () => {
+    const payload: Record<string, unknown> = {};
+
+    // Date/time
+    if (editStart) {
+      const dt = new Date(editStart);
+      payload.scheduledStart = dt.toISOString();
+      // Compute scheduledEnd from duration if available
+      const dur = editDuration ? parseInt(editDuration, 10) : null;
+      if (dur && dur > 0) {
+        payload.scheduledEnd = new Date(dt.getTime() + dur * 60000).toISOString();
+      } else {
+        payload.scheduledEnd = null;
+      }
+      payload.isAllDay = false;
+    } else {
+      // Clearing schedule
+      payload.scheduledStart = null;
+      payload.scheduledEnd = null;
+    }
+
+    // Technician
+    payload.assignedTechnicianId = editTechId;
+
+    // Duration
+    const durVal = editDuration ? parseInt(editDuration, 10) : null;
+    payload.estimatedDurationMinutes = durVal && durVal > 0 ? durVal : null;
+
+    editMutation.mutate(payload);
+  };
+
+  // Clear schedule handler
+  const handleClearSchedule = () => {
+    editMutation.mutate({
+      scheduledStart: null,
+      scheduledEnd: null,
+    });
+  };
 
   // Format visit date/time
   const formatVisitDate = (v: import("@shared/schema").JobVisit) => {
@@ -924,14 +1028,64 @@ function VisitDetailDialog({
         <DialogContent className="sm:max-w-md" data-testid="dialog-visit-detail">
           <DialogHeader>
             <DialogTitle>Visit #{visit?.visitNumber || ""}</DialogTitle>
-            <DialogDescription>Visit details</DialogDescription>
+            <DialogDescription>{isEditing ? "Edit visit" : "Visit details"}</DialogDescription>
           </DialogHeader>
 
           {isLoading || !visit ? (
             <div className="flex items-center justify-center py-8">
               <Loader2 className="h-5 w-5 animate-spin" />
             </div>
+          ) : isEditing ? (
+            /* ===== EDIT MODE ===== */
+            <div className="space-y-4 py-2">
+              {/* Date/Time */}
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-muted-foreground">Date / Time</label>
+                <Input
+                  type="datetime-local"
+                  value={editStart}
+                  onChange={(e) => setEditStart(e.target.value)}
+                  data-testid="input-visit-datetime"
+                />
+              </div>
+
+              {/* Technician */}
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-muted-foreground">Technician</label>
+                <Select
+                  value={editTechId ?? "__unassigned__"}
+                  onValueChange={(v) => setEditTechId(v === "__unassigned__" ? null : v)}
+                >
+                  <SelectTrigger data-testid="select-visit-technician">
+                    <SelectValue placeholder="Select technician" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__unassigned__">Unassigned</SelectItem>
+                    {teamMembers.map((t) => (
+                      <SelectItem key={t.id} value={String(t.id)}>
+                        {t.firstName && t.lastName ? `${t.firstName} ${t.lastName}` : t.email}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Duration */}
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-muted-foreground">Duration (minutes)</label>
+                <Input
+                  type="number"
+                  min={0}
+                  step={5}
+                  placeholder="e.g. 60"
+                  value={editDuration}
+                  onChange={(e) => setEditDuration(e.target.value)}
+                  data-testid="input-visit-duration"
+                />
+              </div>
+            </div>
           ) : (
+            /* ===== READ MODE ===== */
             <div className="space-y-4 py-2">
               {/* Status badge */}
               <div>
@@ -985,41 +1139,100 @@ function VisitDetailDialog({
           {/* Actions bar */}
           {visit && (
             <DialogFooter className="flex justify-between sm:justify-between">
-              <div className="flex gap-2">
-                {/* Quick status action — mark completed for scheduled visits */}
-                {visit.status === "scheduled" && (
+              {isEditing ? (
+                /* Edit mode footer: Cancel + Save */
+                <div className="flex gap-2 w-full justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsEditing(false)}
+                    disabled={editMutation.isPending}
+                  >
+                    Cancel
+                  </Button>
                   <Button
                     size="sm"
-                    onClick={() => updateStatusMutation.mutate("completed")}
-                    disabled={updateStatusMutation.isPending}
-                    data-testid="button-complete-visit"
+                    onClick={handleSave}
+                    disabled={editMutation.isPending}
+                    data-testid="button-save-visit"
                   >
-                    {updateStatusMutation.isPending ? (
+                    {editMutation.isPending ? (
                       <Loader2 className="h-4 w-4 mr-1 animate-spin" />
                     ) : (
                       <Check className="h-4 w-4 mr-1" />
                     )}
-                    Complete
+                    Save
                   </Button>
-                )}
-              </div>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" data-testid="button-visit-more-actions">
-                    <MoreVertical className="h-4 w-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem
-                    onClick={() => setShowDeleteConfirm(true)}
-                    className="text-destructive focus:text-destructive"
-                    data-testid="menuitem-delete-visit"
-                  >
-                    <Trash2 className="h-4 w-4 mr-2" />
-                    Delete Visit
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+                </div>
+              ) : (
+                /* Read mode footer: Complete + kebab menu */
+                <>
+                  <div className="flex gap-2">
+                    {/* Quick status action — mark completed for scheduled visits */}
+                    {visit.status === "scheduled" && (
+                      <Button
+                        size="sm"
+                        onClick={() => updateStatusMutation.mutate("completed")}
+                        disabled={updateStatusMutation.isPending}
+                        data-testid="button-complete-visit"
+                      >
+                        {updateStatusMutation.isPending ? (
+                          <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                        ) : (
+                          <Check className="h-4 w-4 mr-1" />
+                        )}
+                        Complete
+                      </Button>
+                    )}
+                  </div>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline" size="sm" data-testid="button-visit-more-actions">
+                        <MoreVertical className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      {/* Edit visit */}
+                      <DropdownMenuItem onClick={enterEditMode} data-testid="menuitem-edit-visit">
+                        <Pencil className="h-4 w-4 mr-2" />
+                        Edit Visit
+                      </DropdownMenuItem>
+
+                      {/* Clear schedule (only when scheduled) */}
+                      {visit.scheduledStart && (
+                        <DropdownMenuItem
+                          onClick={handleClearSchedule}
+                          disabled={editMutation.isPending}
+                          data-testid="menuitem-clear-schedule"
+                        >
+                          <CalendarMinus className="h-4 w-4 mr-2" />
+                          Clear Schedule
+                        </DropdownMenuItem>
+                      )}
+
+                      {/* Guard: placeholder visit #1 (visitNumber=1, unscheduled, active) cannot be deleted */}
+                      {visit && visit.visitNumber === 1 && !visit.scheduledStart && visit.isActive ? (
+                        <DropdownMenuItem disabled className="text-muted-foreground" data-testid="menuitem-delete-visit-disabled">
+                          <Trash2 className="h-4 w-4 mr-2" />
+                          <span className="flex flex-col">
+                            <span>Delete Visit</span>
+                            <span className="text-xs font-normal">Placeholder visit #1 can't be deleted. Unschedule/clear it instead.</span>
+                          </span>
+                        </DropdownMenuItem>
+                      ) : (
+                        <DropdownMenuItem
+                          onClick={() => setShowDeleteConfirm(true)}
+                          className="text-destructive focus:text-destructive"
+                          data-testid="menuitem-delete-visit"
+                        >
+                          <Trash2 className="h-4 w-4 mr-2" />
+                          Delete Visit
+                        </DropdownMenuItem>
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </>
+              )}
             </DialogFooter>
           )}
         </DialogContent>
@@ -1147,7 +1360,7 @@ export default function JobDetailPage() {
   // Phase 11: Fixed job/invoice cross-linking - use correct endpoint
   const { data: jobInvoice } = useQuery<Invoice | null>({
     // Phase 5 Step A7: canonical family key prefix
-    queryKey: ["invoices", "by-job", jobId],
+    queryKey: ["invoices", "byJob", jobId],
     queryFn: async () => {
       const res = await fetch(`/api/invoices/by-job/${jobId}`, { credentials: "include" });
       if (!res.ok) return null;
@@ -1182,6 +1395,19 @@ export default function JobDetailPage() {
       });
     },
     onError: (error: Error) => {
+      // Handle version conflict (409 VERSION_MISMATCH) — non-destructive recovery
+      const isVersionConflict =
+        (isApiError(error) && error.status === 409) ||
+        /version|expected version|optimistic/i.test(error.message);
+      if (isVersionConflict) {
+        toast({ title: "Conflict", description: "This job was updated elsewhere. Refreshing\u2026" });
+        queryClient.invalidateQueries({ queryKey: ["jobs"] });
+        queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+        return;
+      }
       toast({
         title: "Error",
         description: error.message || "Failed to update status",
@@ -1209,6 +1435,16 @@ export default function JobDetailPage() {
       });
     },
     onError: (error: Error) => {
+      // Handle version conflict (409 VERSION_MISMATCH) — non-destructive recovery
+      const isVersionConflict =
+        (isApiError(error) && error.status === 409) ||
+        /version|expected version|optimistic/i.test(error.message);
+      if (isVersionConflict) {
+        toast({ title: "Conflict", description: "This job was updated elsewhere. Refreshing\u2026" });
+        queryClient.invalidateQueries({ queryKey: ["jobs"] });
+        queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+        return;
+      }
       toast({
         title: "Error",
         description: error.message || "Failed to clear hold",

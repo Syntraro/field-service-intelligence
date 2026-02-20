@@ -55,10 +55,15 @@ export const ensureTenantContext: RequestHandler = (req: Request, res: Response,
     "/api/auth/logout",
     "/api/invitations/accept",
     "/api/health",
-    "/api/csrf-token"
+    "/api/csrf-token",
   ];
 
   if (publicEndpoints.some(endpoint => req.path.startsWith(endpoint))) {
+    return next();
+  }
+
+  // Portal routes manage their own tenant context via session.portal
+  if (req.path.startsWith("/api/portal")) {
     return next();
   }
 

@@ -79,13 +79,20 @@ export function JobHeaderCard({
     mode: "invoice_now" | "invoice_later" | "archive";
     visitCount: number;
   } | null>(null);
+  // Close-job communication dialog: replaces destructive toasts for user-actionable errors
+  const [closeJobError, setCloseJobError] = useState<{
+    title: string;
+    body: string;
+    showArchiveAction?: boolean;
+  } | null>(null);
 
   // Role-based permissions
   const isOfficeUser = user?.role && OFFICE_ROLES.includes(user.role);
 
-  // Check if job can be reopened
+  // Check if job can be reopened or is in a terminal state
   const canReopen = ["completed", "archived"].includes(job.status);
   const isInvoiced = job.status === "invoiced";
+  const isTerminal = ["completed", "archived", "invoiced"].includes(job.status);
 
   const locationName = job.location?.location || job.location?.companyName || "Location";
   const clientName = job.parentCompany?.name || job.location?.companyName || "Client";
@@ -201,16 +208,57 @@ export function JobHeaderCard({
       }
     },
     onError: (error: Error) => {
-      // Handle uncompleted visits guardrail (409 UNCOMPLETED_VISITS)
+      setShowCloseJobDialog(false);
+
+      // Uncompleted visits guardrail (409 UNCOMPLETED_VISITS) → dedicated dialog
       if (isApiError(error) && error.status === 409 && error.message.includes("uncompleted visit")) {
-        // Extract visit count from error message (format: "Job has N uncompleted visit(s)")
         const countMatch = error.message.match(/(\d+)\s+uncompleted/);
         const visitCount = countMatch ? parseInt(countMatch[1], 10) : 0;
-        setShowCloseJobDialog(false);
         setUncompletedVisitsGuardrail({ mode: closeOption, visitCount });
         return;
       }
-      toast({ title: "Error", description: error.message || "Failed to close job", variant: "destructive" });
+      // Version conflict (409 VERSION_MISMATCH) → silent refresh
+      const isVersionConflict =
+        (isApiError(error) && error.status === 409) ||
+        /version|expected version|optimistic/i.test(error.message);
+      if (isVersionConflict) {
+        toast({ title: "Conflict", description: "This job was updated elsewhere. Refreshing\u2026" });
+        queryClient.invalidateQueries({ queryKey: ["jobs"] });
+        queryClient.invalidateQueries({ queryKey: ["invoices"] });
+        queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+        return;
+      }
+      // Already invoiced state mismatch → refresh
+      if (/Cannot close job in status 'invoiced'/i.test(error.message)) {
+        queryClient.invalidateQueries({ queryKey: ["jobs"] });
+        queryClient.invalidateQueries({ queryKey: ["invoices"] });
+        queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+        setCloseJobError({
+          title: "Already Invoiced",
+          body: "This job is already invoiced. The page will refresh with the latest status.",
+        });
+        return;
+      }
+      // No line items / validation failures → communication dialog with archive option
+      if (/no.*(line item|billable|part)/i.test(error.message) || /validation/i.test(error.message)) {
+        setCloseJobError({
+          title: "Can't create invoice",
+          body: "This job has no line items. You need at least one line item to create an invoice.",
+          showArchiveAction: true,
+        });
+        return;
+      }
+      // Unexpected / internal errors → keep destructive toast as last resort
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      const isFriendly = error.message && !error.message.includes("is not a function") && !error.message.includes("Internal Server");
+      toast({
+        title: "Error",
+        description: isFriendly ? error.message : "Failed to close job. Please try again or contact support.",
+        variant: "destructive",
+      });
     },
   });
 
@@ -327,8 +375,8 @@ export function JobHeaderCard({
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="start">
-                    {/* Office-only: Close Job */}
-                    {isOfficeUser && (
+                    {/* Office-only: Close Job (hidden for terminal states) */}
+                    {isOfficeUser && !isTerminal && (
                       <DropdownMenuItem
                         onClick={() => setShowCloseJobDialog(true)}
                         data-testid="menu-close-job"
@@ -414,10 +462,26 @@ export function JobHeaderCard({
           <DialogHeader>
             <DialogTitle>Close Job</DialogTitle>
             <DialogDescription>
-              Closing this job will stop scheduling activity. Choose how you want to proceed with billing.
+              {isInvoiced
+                ? "This job is already invoiced and cannot be closed again."
+                : "Closing this job will stop scheduling activity. Choose how you want to proceed with billing."}
             </DialogDescription>
           </DialogHeader>
-          
+
+          {/* Guard: if job is already invoiced, show link to invoice instead of close options */}
+          {isInvoiced ? (
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setShowCloseJobDialog(false)}>
+                Cancel
+              </Button>
+              {existingInvoice && (
+                <Button onClick={() => { setShowCloseJobDialog(false); setLocation(`/invoices/${existingInvoice.id}`); }}>
+                  <Receipt className="h-4 w-4 mr-2" />
+                  View Invoice
+                </Button>
+              )}
+            </DialogFooter>
+          ) : (<>
           <div className="space-y-3 py-4">
             <label 
               className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${closeOption === "invoice_now" ? "border-primary bg-primary/5" : "hover-elevate"}`}
@@ -490,7 +554,7 @@ export function JobHeaderCard({
             <Button variant="outline" onClick={() => setShowCloseJobDialog(false)}>
               Cancel
             </Button>
-            <Button 
+            <Button
               onClick={handleCloseJob}
               disabled={closeJobMutation.isPending}
               data-testid="button-confirm-close"
@@ -498,6 +562,7 @@ export function JobHeaderCard({
               {closeJobMutation.isPending ? "Closing..." : "Close Job"}
             </Button>
           </DialogFooter>
+          </>)}
         </DialogContent>
       </Dialog>
 
@@ -548,6 +613,33 @@ export function JobHeaderCard({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Close Job — communication dialog for validation / state errors */}
+      <Dialog open={!!closeJobError} onOpenChange={(open) => { if (!open) setCloseJobError(null); }}>
+        <DialogContent className="sm:max-w-md" data-testid="dialog-close-job-error">
+          <DialogHeader>
+            <DialogTitle>{closeJobError?.title}</DialogTitle>
+            <DialogDescription>{closeJobError?.body}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex-col sm:flex-row gap-2">
+            <Button variant="outline" onClick={() => setCloseJobError(null)}>
+              Go back
+            </Button>
+            {closeJobError?.showArchiveAction && (
+              <Button
+                onClick={() => {
+                  setCloseJobError(null);
+                  closeJobMutation.mutate({ mode: "archive" });
+                }}
+                disabled={closeJobMutation.isPending}
+                data-testid="button-archive-no-invoice"
+              >
+                Close & archive (no invoice)
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Delete Confirmation */}
       <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>

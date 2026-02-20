@@ -25,10 +25,13 @@ const createVisitSchema = z.object({
 
 const updateVisitSchema = z.object({
   scheduledDate: z.string().datetime().optional(),
-  estimatedDurationMinutes: z.number().int().positive().optional(),
+  scheduledStart: z.string().datetime().nullable().optional(),
+  scheduledEnd: z.string().datetime().nullable().optional(),
+  isAllDay: z.boolean().optional(),
+  estimatedDurationMinutes: z.number().int().min(0).nullable().optional(),
   assignedTechnicianId: z.string().uuid().nullable().optional(),
   visitNotes: z.string().max(2000).nullable().optional(),
-}).strict();
+});
 
 const updateStatusSchema = z.object({
   status: z.enum(jobVisitStatusEnum),
@@ -120,12 +123,24 @@ router.patch(
     const { version, ...data } = req.body;
     const validated = validateSchema(updateVisitSchema, data);
 
+    // Convert ISO strings to Date objects for timestamp columns (Drizzle requires Date)
+    const input: Record<string, unknown> = { ...validated };
+    if ("scheduledStart" in input) {
+      input.scheduledStart = input.scheduledStart ? new Date(input.scheduledStart as string) : null;
+    }
+    if ("scheduledEnd" in input) {
+      input.scheduledEnd = input.scheduledEnd ? new Date(input.scheduledEnd as string) : null;
+    }
+    if ("scheduledDate" in input && input.scheduledDate) {
+      input.scheduledDate = new Date(input.scheduledDate as string);
+    }
+
     try {
       const updated = await service.updateJobVisit(
         companyId,
         req.params.visitId,
         version,
-        validated
+        input
       );
 
       if (!updated) {
@@ -151,6 +166,15 @@ router.delete(
   requireRole(MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
+
+    // Guard: prevent deleting placeholder visit #1 (visitNumber=1, unscheduled, active)
+    const visit = await service.getJobVisit(companyId, req.params.visitId);
+    if (!visit) {
+      throw createError(404, "Visit not found");
+    }
+    if (visit.visitNumber === 1 && !visit.scheduledStart && visit.isActive) {
+      throw createError(409, "Cannot delete placeholder visit #1. Unschedule or clear it instead.");
+    }
 
     const result = await service.deleteJobVisit(companyId, req.params.visitId);
     res.json(result);

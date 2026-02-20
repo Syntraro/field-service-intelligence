@@ -40,6 +40,8 @@ const DEFAULT_FEATURES: Omit<TenantFeatures, 'id' | 'companyId' | 'createdAt' | 
   qboEnabled: true,
   routeOptimizationEnabled: true,
   multiTechEnabled: true,
+  customerPortalEnabled: false,
+  customerPortalPaymentsEnabled: false,
 };
 
 // ============================================================================

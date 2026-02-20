@@ -172,6 +172,7 @@ function WorkflowStrip({ data, isLoading, isError }: {
 interface AttentionJob extends Job {
   attentionType?: string;
   scheduledEnd?: string | null;
+  isAllDay?: boolean;
 }
 
 function NeedsAttentionWidget({
@@ -189,17 +190,11 @@ function NeedsAttentionWidget({
 }) {
   const [, setLocation] = useLocation();
 
-  const formatSchedule = (start: string | null, end?: string | null) => {
+  // Date-only display — no time, avoids timezone confusion on the dashboard
+  const formatSchedule = (start: string | null) => {
     if (!start) return null;
     const startDate = new Date(start);
-    const dateStr = startDate.toLocaleDateString("en-CA", { month: "short", day: "numeric" });
-    const startTime = startDate.toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit" });
-    if (end) {
-      const endDate = new Date(end);
-      const endTime = endDate.toLocaleTimeString("en-CA", { hour: "numeric", minute: "2-digit" });
-      return `${dateStr} · ${startTime} – ${endTime}`;
-    }
-    return `${dateStr} · ${startTime}`;
+    return startDate.toLocaleDateString("en-CA", { month: "short", day: "numeric" });
   };
 
   const displayJobs = jobs.slice(0, 5);
@@ -222,7 +217,7 @@ function NeedsAttentionWidget({
         >
           <div>
             {displayJobs.map((job, index) => {
-              const schedule = formatSchedule(job.scheduledStart, job.scheduledEnd);
+              const schedule = formatSchedule(job.scheduledStart);
               const companyName = job.location?.companyName || job.locationName || "No location";
               const isLast = index === displayJobs.length - 1;
 

@@ -94,3 +94,19 @@ export async function checkOutJobVisit(companyId: string, visitId: string) {
 export async function listAllJobVisitsForJob(companyId: string, jobId: string) {
   return jobVisitsRepository.listAllJobVisitsForJob(companyId, jobId);
 }
+
+/**
+ * Get uncompleted visits for a job (active, non-terminal status).
+ * Used by close-job guardrail to detect visits that need resolution.
+ */
+export async function getUncompletedVisits(companyId: string, jobId: string) {
+  return jobVisitsRepository.getUncompletedVisits(companyId, jobId);
+}
+
+/**
+ * Bulk-complete all uncompleted visits for a job.
+ * Used by close-job with autoCompleteOpenVisits=true.
+ */
+export async function bulkCompleteVisits(companyId: string, jobId: string) {
+  return jobVisitsRepository.bulkCompleteVisits(companyId, jobId);
+}

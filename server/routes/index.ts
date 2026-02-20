@@ -19,6 +19,7 @@ import maintenanceRouter from "./maintenance";
 import subscriptionsRouter from "./subscriptions";
 import impersonationRouter from "./impersonation";
 import authRouter from "./auth";
+import portalRouter from "./portal";
 
 // ✅ NEW (long-term client/company detail fix)
 import customerCompaniesRouter from "./customer-companies";
@@ -123,6 +124,11 @@ export function registerRoutes(app: Express): Server {
   // CRITICAL: Auth routes MUST come FIRST
   // ========================================
   app.use("/api/auth", authRouter);
+
+  // ========================================
+  // CUSTOMER PORTAL (before staff auth guard — portal has its own auth)
+  // ========================================
+  app.use("/api/portal", portalRouter);
 
   // ========================================
   // GLOBAL MIDDLEWARE (after auth routes)

@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { format, isValid, parseISO } from "date-fns";
 import { useLocation, useSearch, Link } from "wouter";
-import { Search, Plus, FileText, DollarSign, Clock, AlertTriangle, LayoutGrid, List, MoreHorizontal, RefreshCw } from "lucide-react";
+import { Search, Plus, FileText, DollarSign, AlertTriangle, LayoutGrid, List, MoreHorizontal, RefreshCw } from "lucide-react";
 import { QboSyncBadge, isQboSynced } from "@/components/invoice/QboSyncBanner";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -11,14 +11,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
 import { TablePageShell } from "@/components/ui/table-page-shell";
 import { cn } from "@/lib/utils";
-import { FixedSizeList } from "react-window";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -30,6 +22,7 @@ import type { Invoice } from "@shared/schema";
 interface EnrichedInvoice extends Invoice {
   locationName?: string;
   customerCompanyName?: string;
+  locationDisplayName?: string;
 }
 
 interface InvoiceStats {
@@ -79,11 +72,8 @@ function formatCurrency(amount: string | number): string {
   return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(num);
 }
 
-// Virtualization constants — comfortable rows accommodate 2-line client cells
-const ROW_HEIGHT_COMFORTABLE = 56;
-const ROW_HEIGHT_COMPACT = 40;
-const MAX_LIST_HEIGHT = 700;
-const INVOICES_GRID_COLS = "1.5fr 1fr 1fr 1fr 1fr 0.8fr 0.8fr 50px";
+// Grid columns — Client gets a min-width to prevent compression
+const INVOICES_GRID_COLS = "minmax(260px, 1.8fr) 1.2fr 0.8fr 0.8fr 0.9fr 0.7fr 0.7fr 50px";
 
 export default function InvoicesListPage() {
   const [, setLocation] = useLocation();
@@ -116,6 +106,11 @@ export default function InvoicesListPage() {
   const { data: stats } = useQuery<InvoiceStats>({
     // Phase 5 Step A7: canonical family key prefix
     queryKey: ["invoices", "stats"],
+    queryFn: async () => {
+      const res = await fetch("/api/invoices/stats", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch invoice stats");
+      return res.json();
+    },
   });
 
   const outstandingAmount = stats?.outstanding?.amount ?? 0;
@@ -139,7 +134,6 @@ export default function InvoicesListPage() {
   const autoCompact = invoices.length <= 10;
   const effectiveDensity: ViewDensity = userDensityPreference ?? (autoCompact ? "compact" : "comfortable");
   const isCompact = effectiveDensity === "compact";
-  const rowHeight = isCompact ? ROW_HEIGHT_COMPACT : ROW_HEIGHT_COMFORTABLE;
 
   // Enriched invoices — single pass of getStatusBadge, depends only on [invoices].
   // Both filteredInvoices and statusCounts read pre-computed statusInfo.
@@ -178,10 +172,12 @@ export default function InvoicesListPage() {
       result = result.filter(inv => {
         const invoiceNumber = inv.invoiceNumber?.toLowerCase() || "";
         const locationName = inv.locationName?.toLowerCase() || "";
-        const customerName = inv.customerCompanyName?.toLowerCase() || "";
+        const companyName = (inv.locationDisplayName || inv.customerCompanyName || "").toLowerCase();
+        const description = (inv.workDescription || "").toLowerCase();
         return invoiceNumber.includes(query) ||
                locationName.includes(query) ||
-               customerName.includes(query);
+               companyName.includes(query) ||
+               description.includes(query);
       });
     }
 
@@ -405,17 +401,14 @@ export default function InvoicesListPage() {
             </div>
           ) : (
             <>
-              {/* Virtualized grid header */}
+              {/* Grid header */}
               <div
-                className={cn(
-                  "grid items-center border-b border-gray-200 dark:border-gray-800 py-3 text-sm font-medium text-muted-foreground",
-                  isCompact && "text-sm"
-                )}
+                className="grid items-center border-b border-gray-200 dark:border-gray-800 py-3 text-sm font-medium text-muted-foreground"
                 style={{ gridTemplateColumns: INVOICES_GRID_COLS }}
               >
                 <div className="px-4">Client</div>
+                <div className="px-4">Description</div>
                 <div className="px-4">Invoice #</div>
-                <div className="px-4">Issue Date</div>
                 <div className="px-4">Due Date</div>
                 <div className="px-4">Status</div>
                 <div className="px-4 text-right">Total</div>
@@ -423,80 +416,79 @@ export default function InvoicesListPage() {
                 <div className="w-[50px]"></div>
               </div>
 
-              <FixedSizeList
-                height={Math.min(filteredInvoices.length * rowHeight, MAX_LIST_HEIGHT)}
-                itemCount={filteredInvoices.length}
-                itemSize={rowHeight}
-                width="100%"
-              >
-                {({ index, style }) => {
-                  const invoice = filteredInvoices[index];
-                  return (
-                    <div
-                      style={{ ...style, gridTemplateColumns: INVOICES_GRID_COLS }}
-                      className={cn("grid items-center", tableRowClass, isCompact && "text-sm")}
-                      onClick={() => setLocation(`/invoices/${invoice.id}`)}
-                      data-testid={`row-invoice-${invoice.id}`}
-                    >
-                      <div className={cn("px-4 min-w-0", isCompact ? "py-1" : "")}>
-                        <p className="font-medium truncate" data-testid={`text-invoice-client-${invoice.id}`}>
-                          {invoice.customerCompanyName || invoice.locationName || "Unknown"}
-                        </p>
-                        {!isCompact && invoice.customerCompanyName && invoice.locationName && (
-                          <p className="text-sm text-muted-foreground truncate">{invoice.locationName}</p>
-                        )}
-                      </div>
-                      <div className={cn("px-4", isCompact ? "py-1" : "")}>
-                        <span className="font-mono" data-testid={`text-invoice-number-${invoice.id}`}>
-                          {invoice.invoiceNumber || `INV-${invoice.id.slice(0, 8)}`}
-                        </span>
-                      </div>
-                      <div className={cn("px-4", isCompact ? "py-1" : "")}>
-                        {safeFormatDate(invoice.issueDate)}
-                      </div>
-                      <div className={cn("px-4", isCompact ? "py-1" : "")}>
-                        {safeFormatDate(invoice.dueDate)}
-                      </div>
-                      <div className={cn("px-4", isCompact ? "py-1" : "")}>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <Badge variant={invoice.statusInfo.variant}>
-                            {invoice.statusInfo.label}
-                          </Badge>
-                          <QboSyncBadge invoice={invoice} />
-                        </div>
-                      </div>
-                      <div className={cn("px-4 text-right", isCompact ? "py-1" : "")}>
-                        {formatCurrency(invoice.total)}
-                      </div>
-                      <div className={cn("px-4 text-right", isCompact ? "py-1" : "")}>
-                        <span className={parseFloat(invoice.balance) > 0 ? "font-medium" : "text-muted-foreground"}>
-                          {formatCurrency(invoice.balance)}
-                        </span>
-                      </div>
-                      <div className={cn(isCompact ? "py-1" : "")} onClick={(e) => e.stopPropagation()}>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon" data-testid={`button-invoice-menu-${invoice.id}`}>
-                              <MoreHorizontal className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => setLocation(`/invoices/${invoice.id}`)}>
-                              View
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => setLocation(`/invoices/${invoice.id}?edit=true`)}>
-                              Edit
-                            </DropdownMenuItem>
-                            <DropdownMenuItem>Send</DropdownMenuItem>
-                            <DropdownMenuItem>Collect Payment</DropdownMenuItem>
-                            <DropdownMenuItem>Download PDF</DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
+              {/* Rows — no virtualization so page scroll handles overflow */}
+              {filteredInvoices.map((invoice) => (
+                <div
+                  key={invoice.id}
+                  className={cn(
+                    "grid items-center",
+                    tableRowClass,
+                    isCompact ? "text-sm" : ""
+                  )}
+                  style={{ gridTemplateColumns: INVOICES_GRID_COLS }}
+                  onClick={() => setLocation(`/invoices/${invoice.id}`)}
+                  data-testid={`row-invoice-${invoice.id}`}
+                >
+                  {/* Client: 2-line identity block — company name + location */}
+                  <div className={cn("px-4 min-w-0", isCompact ? "py-2" : "py-3")}>
+                    <p className="text-sm font-medium truncate" data-testid={`text-invoice-client-${invoice.id}`}>
+                      {invoice.locationDisplayName || invoice.locationName || "Unknown"}
+                    </p>
+                    {invoice.locationName && invoice.locationDisplayName && (
+                      <p className="text-xs text-muted-foreground truncate">{invoice.locationName}</p>
+                    )}
+                  </div>
+                  <div className={cn("px-4 min-w-0", isCompact ? "py-2" : "py-3")}>
+                    <p className="truncate text-sm text-muted-foreground">
+                      {invoice.workDescription || "-"}
+                    </p>
+                  </div>
+                  <div className={cn("px-4", isCompact ? "py-2" : "py-3")}>
+                    <span className="font-mono text-sm" data-testid={`text-invoice-number-${invoice.id}`}>
+                      {invoice.invoiceNumber || `INV-${invoice.id.slice(0, 8)}`}
+                    </span>
+                  </div>
+                  <div className={cn("px-4 text-sm", isCompact ? "py-2" : "py-3")}>
+                    {safeFormatDate(invoice.dueDate)}
+                  </div>
+                  <div className={cn("px-4", isCompact ? "py-2" : "py-3")}>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Badge variant={invoice.statusInfo.variant}>
+                        {invoice.statusInfo.label}
+                      </Badge>
+                      <QboSyncBadge invoice={invoice} />
                     </div>
-                  );
-                }}
-              </FixedSizeList>
+                  </div>
+                  <div className={cn("px-4 text-right whitespace-nowrap tabular-nums text-sm", isCompact ? "py-2" : "py-3")}>
+                    {formatCurrency(invoice.total)}
+                  </div>
+                  <div className={cn("px-4 text-right whitespace-nowrap tabular-nums text-sm", isCompact ? "py-2" : "py-3")}>
+                    <span className={parseFloat(invoice.balance) > 0 ? "font-medium" : "text-muted-foreground"}>
+                      {formatCurrency(invoice.balance)}
+                    </span>
+                  </div>
+                  <div className={cn(isCompact ? "py-2" : "py-3")} onClick={(e) => e.stopPropagation()}>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon" data-testid={`button-invoice-menu-${invoice.id}`}>
+                          <MoreHorizontal className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => setLocation(`/invoices/${invoice.id}`)}>
+                          View
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => setLocation(`/invoices/${invoice.id}?edit=true`)}>
+                          Edit
+                        </DropdownMenuItem>
+                        <DropdownMenuItem>Send</DropdownMenuItem>
+                        <DropdownMenuItem>Collect Payment</DropdownMenuItem>
+                        <DropdownMenuItem>Download PDF</DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                </div>
+              ))}
             </>
           )}
       </ListSurface>

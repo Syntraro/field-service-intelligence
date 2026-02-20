@@ -6,7 +6,174 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+#### Invoices List UI Polish (2026-02-20)
+- **Removed premature scrollbar**: Replaced `react-window` `FixedSizeList` virtualization with plain `.map()` rendering so the page scroll handles overflow naturally. No scrollbar appears with small result sets.
+- **Client column 2-line identity block**: Always shows company name (text-sm font-medium) on line 1 and location name (text-xs muted) on line 2 when both are available, matching the Jobs list pattern.
+- **Improved spacing**: Increased cell padding to `px-4 py-3` (comfortable) / `px-4 py-2` (compact). Client column uses `minmax(260px, 1.8fr)` to prevent compression. Total/Balance columns use `tabular-nums` + `whitespace-nowrap` for consistent alignment.
+  - **File**: `client/src/pages/InvoicesListPage.tsx`
+
+#### UX Improvements — Close Job Dialog, Jobs List, Invoices List (2026-02-18)
+- **Close Job errors → communication dialog**: User-actionable validation failures (no line items, already invoiced) now open a dialog with clear guidance and actionable choices (e.g. "Close & archive (no invoice)") instead of destructive toasts. Uncompleted visits and version conflicts retain their existing dedicated dialogs/recovery. Only truly unexpected errors still use a toast.
+  - **File**: `client/src/components/JobHeaderCard.tsx`
+- **Jobs list: removed Assignment column**: Simplifies the jobs table. Technician info is still available on the job detail page. Removed unused `useTechniciansDirectory` hook call and `techNameMap`.
+  - **File**: `client/src/pages/Jobs.tsx`
+- **Invoices list: replaced Issue Date with Description, improved Client display**: Shows Company + Location (two-line) using feed's `locationDisplayName`. Replaced Issue Date column with Description (from `workDescription`). Due Date remains. Search now includes description text.
+  - **Files**: `client/src/pages/InvoicesListPage.tsx`, `server/storage/invoicesFeed.ts`
+- **Job actions: hide Close Job for terminal states**: "Close Job" menu item is no longer shown for completed, archived, or invoiced jobs. The Close Job dialog already has an invoiced-state guard as fallback.
+  - **File**: `client/src/components/JobHeaderCard.tsx`
+
+#### Architecture Lock — Query Namespace + Audit (2026-02-16)
+- **Architecture Lock Rules** added to `docs/ARCHITECTURE.md`: query namespace rules, payload strategy, mutation standard, exception list.
+- **Hard rule**: "No new request pattern without updating canonicalization map."
+- **Audit report**: `docs/AUDIT_2026_02_16_ARCHITECTURE_LOCK.md` — covers drift check, payload classification, list scalability, mutation patterns, flow audit.
+- **3 FAIL items identified**: InvoicesListPage dead stats query (F1), unbounded `/api/jobs/action-required` (F2), unbounded `/api/reports/ar-aging` (F3).
+- **Files**: `docs/ARCHITECTURE.md`, `docs/AUDIT_2026_02_16_ARCHITECTURE_LOCK.md`
+
+#### Portal Email Sender — Verified Domain Config (2026-02-16)
+- **Breaking**: Portal magic-link emails now require `PORTAL_FROM_EMAIL` env var set to a verified Resend domain address (e.g. `noreply@yourdomain.com`). The hardcoded `onboarding@resend.dev` sender has been removed.
+- **Env vars**:
+  - `PORTAL_FROM_EMAIL` (required) — verified sender email address from your Resend domain
+  - `PORTAL_FROM_NAME` (optional, default `"Customer Portal"`) — display name for the sender
+- **Startup validation**: Server logs a warning at boot if `RESEND_API_KEY` or `PORTAL_FROM_EMAIL` is missing. Portal requests return `sent: false` when email config is incomplete.
+- **Deployment**: Verify a domain at https://resend.com/domains, then set `PORTAL_FROM_EMAIL` to an address on that domain.
+- **Files**: `server/resendClient.ts`, `server/index.ts`, `server/routes/portal.ts`, `server/emailService.ts`
+
 ### Fixed
+
+#### Job Version Conflict Recovery (2026-02-18)
+- **Handle job version conflicts (409) by refreshing and retry-safe UX.** When close/archive (or status update) hits a VERSION_MISMATCH 409, the UI now shows a non-destructive "updated elsewhere, refreshing" toast instead of a red error, invalidates job/dashboard/calendar queries, and closes the dialog cleanly.
+  - **Files**: `client/src/components/JobHeaderCard.tsx`, `client/src/pages/JobDetailPage.tsx`
+
+#### Close Job "invoice_now" Status Race Condition (2026-02-18)
+- **Root cause**: `createInvoiceFromJob()` unconditionally set `job.status = "invoiced"` in its own transaction BEFORE the lifecycle engine ran. The lifecycle engine then re-read the job, found `status = "invoiced"`, and rejected the close: "Cannot close job in status 'invoiced'". The job was stuck invoiced with incomplete close metadata.
+- **Server fix**: When `creationSource === "JOB_CLOSE_ROUTE"`, `createInvoiceFromJob()` now only sets `invoiceId` — it skips setting `status`. The lifecycle engine (`transitionJobStatus`) is the sole owner of the status transition for the close flow. Standalone invoice creation (from the Invoices page) is unaffected.
+- **Client fix**: Added "already invoiced" recovery branch in `closeJobMutation.onError` that shows a non-destructive toast and invalidates queries. Generic error path now always invalidates `["jobs"]` to prevent stale-state retry loops. Close Job dialog now detects invoiced status and shows a "View Invoice" link instead of close options.
+  - **Files**: `server/storage/invoices.ts`, `client/src/components/JobHeaderCard.tsx`
+
+#### Audit FAIL Items — Stats Dead Query + Unbounded List Endpoints (2026-02-17)
+- **F1 — InvoicesListPage stats query had no `queryFn`**: The default queryFn tried to fetch URL `"invoices"` (the family prefix), which fails. Stats cards always showed 0. Added explicit `queryFn` fetching `/api/invoices/stats`.
+  - **File**: `client/src/pages/InvoicesListPage.tsx`
+- **F2 — `/api/jobs/action-required` unbounded response**: No pagination enforced. Large tenants could receive unbounded arrays. Added lenient pagination (default limit=50, max 200) using existing `parsePaginationLenient` + `applyOffsetPagination`. Backwards-compatible: callers without pagination params still receive a raw array.
+  - **File**: `server/routes/jobs.ts`
+- **F3 — `/api/reports/ar-aging` unbounded invoices array**: Report returned all outstanding invoices with no limit. Added pagination to the `invoices` array within the response (default limit=200, max 200). Summary and buckets always returned in full. Response now includes `meta: { total, limit, offset, hasMore }`.
+  - **File**: `server/routes/reports.ts`
+
+#### Invoice Query Namespace Unification (2026-02-16)
+- **Bug**: Invoice detail page used `["invoice", id, ...]` (singular) while list/stats/dashboard used `["invoices", ...]` (plural). Invalidating `["invoices"]` did not refresh the detail view, causing stale data after mutations on other pages.
+- **Fix**: Unified all invoice query keys under `["invoices", ...]` canonical namespace:
+  - `["invoices", "detail", id]` — single invoice details
+  - `["invoices", "detail", id, "payments"]` — invoice payments
+  - `["invoices", "feed", params]` — list (already correct)
+  - `["invoices", "stats"]` — stats (already correct)
+  - `["invoices", "dashboard"]` — dashboard widget (already correct)
+  - `["invoices", "byJob", jobId]` — job cross-link (renamed from `by-job`)
+- Invalidating `["invoices"]` now correctly refreshes all invoice views site-wide.
+- **Files**: `client/src/pages/InvoiceDetailPage.tsx`, `client/src/pages/JobDetailPage.tsx`
+
+#### Visit Edit — Optimistic-Lock Conflict Handling (2026-02-16)
+- **Bug**: When two users edit the same visit concurrently, the second save returns a 409 version-mismatch error displayed as a generic "Error" toast with no recovery path.
+- **Fix**: Detect 409 status or version/optimistic keywords in error message. Show friendly "This visit was updated elsewhere. Refreshing…" toast, auto-invalidate visit/job queries, and exit edit mode so the dialog reloads fresh data.
+- **Client-only change** — no server modifications.
+- **Files**: `client/src/pages/JobDetailPage.tsx`
+
+#### Portal Magic Link — Resend SDK Error Detection (2026-02-15)
+- **Bug**: Resend SDK does not throw on API errors (403, 422, etc.) — it returns `{ data: null, error: {...} }`. The portal `request-link` handler only had `try/catch`, so delivery failures were silently swallowed: no log, no indication to the user.
+- **Fix**: Check `result.error` after `client.emails.send()`. Log the structured error via `console.error`. Return `sent: false` in the JSON response when email delivery fails.
+- **Frontend**: `PortalLogin.tsx` now reads the `sent` boolean. When `sent === false`, shows a non-enumerating "Email delivery is not configured right now. Please contact support." message instead of the misleading "Check your email" success state.
+- **Anti-enumeration preserved**: Unknown emails (no contact in DB) still return `sent: true` to prevent email enumeration.
+- **Files**: `server/routes/portal.ts`, `client/src/pages/portal/PortalLogin.tsx`, `tests/portal-magic-link.test.ts` (new)
+
+### Added
+
+#### Editable Visit Detail Dialog (2026-02-15)
+- **Feature**: Visit detail dialog on Job Detail page is now editable. Users can assign a technician, set date/time, and set estimated duration directly from the dialog.
+- **Edit mode**: "Edit Visit" added to the kebab (More) dropdown menu. Replaces read-only fields with editable inputs (datetime-local, technician select, duration number input).
+- **Clear schedule**: "Clear Schedule" menu item sets scheduledStart/scheduledEnd to null without deleting the visit. Useful for placeholder visit #1 which cannot be deleted.
+- **Save mutation**: Uses existing `PATCH /api/jobs/:jobId/visits/:visitId` endpoint. No new server endpoints created.
+- **Server schema update**: `updateVisitSchema` in `jobVisits.routes.ts` expanded to accept `scheduledStart`, `scheduledEnd`, `isAllDay` fields (repository already supported them).
+- **Files**: `client/src/pages/JobDetailPage.tsx`, `server/routes/jobVisits.routes.ts`
+
+#### Customer Portal — Phase 1 (2026-02-15)
+- **Feature**: Customer-facing portal (`/portal/*`) for viewing invoices and account info. Completely separate from the admin/technician app shell.
+- **Authentication**: Magic link authentication flow. Customers enter their email, receive a single-use link (15 min expiry), and get a persistent session. No passwords required.
+  - `POST /api/portal/auth/request-link` — sends magic link email via Resend
+  - `GET /api/portal/auth/verify?token=...` — consumes token, sets portal session
+  - `POST /api/portal/auth/logout` — clears portal session
+  - `GET /api/portal/me` — returns portal identity + payments feature flag
+- **Invoice endpoints**: Read-only, scoped to customer company + tenant.
+  - `GET /api/portal/invoices` — list invoices (sent/partial_paid/paid only; never drafts/voided)
+  - `GET /api/portal/invoices/:id` — detail with line items, tax breakdown, visibility toggles
+- **Portal UI pages**: Mobile-first design with bottom nav.
+  - `/portal/login` — email entry + magic link request
+  - `/portal/verify` — token consumption + redirect
+  - `/portal` — dashboard with balance summary + recent invoices
+  - `/portal/invoices` — filterable invoice list (All/Open/Paid)
+  - `/portal/invoices/:id` — invoice detail with line items, totals, notes
+- **Pay Invoice stub**: "Pay Invoice" button visible on unpaid invoices. Opens a modal explaining online payments are coming soon. Feature-flagged via `customerPortalPaymentsEnabled` on `tenant_features`.
+- **Feature flags**: Added `customer_portal_enabled` and `customer_portal_payments_enabled` to `tenant_features` table (both default `false`).
+- **Schema**: New `portal_magic_tokens` table for hashed, single-use, time-limited magic link tokens.
+- **Security**: Portal routes bypass staff auth middleware but enforce their own session-based auth. Strict tenant + customer company scoping on all data queries. Rate limiting on magic link requests (10/min/IP). Token hashes stored (never raw tokens). Email enumeration prevented.
+- **Files**:
+  - New: `server/routes/portal.ts`, `client/src/lib/portalAuth.tsx`, `client/src/components/PortalLayout.tsx`
+  - New: `client/src/pages/portal/PortalLogin.tsx`, `PortalVerify.tsx`, `PortalDashboard.tsx`, `PortalInvoicesList.tsx`, `PortalInvoiceDetail.tsx`, `portalUtils.ts`
+  - Modified: `shared/schema.ts` (portal_magic_tokens table + tenant_features columns), `server/routes/index.ts`, `server/auth/requireAuth.ts`, `server/auth/tenantIsolation.ts`, `server/storage/tenantFeatures.ts`, `client/src/App.tsx`
+  - Migration: `migrations/2026_02_15_customer_portal.sql`
+
+### Fixed
+
+#### Close Job endpoint — visitService.getUncompletedVisits is not a function (2026-02-15)
+- **Root cause**: The unified close-job endpoint (`POST /api/jobs/:id/close`) called `visitService.getUncompletedVisits()` and `visitService.bulkCompleteVisits()`, but these functions were never exported from `server/services/jobVisits.service.ts`. The underlying repository methods existed on `jobVisitsRepository` but had no service-layer pass-through. This caused a runtime crash (`is not a function`) when attempting "Close & Create Invoice".
+- **Server fix**: Added two pass-through exports to `server/services/jobVisits.service.ts`: `getUncompletedVisits(companyId, jobId)` and `bulkCompleteVisits(companyId, jobId)`, delegating to the existing repository methods.
+- **Client fix**: Hardened the `closeJobMutation.onError` handler in `JobHeaderCard.tsx` to filter out internal server error messages (e.g. "is not a function") and show a user-friendly fallback: "Failed to close job. Please try again or contact support." The 409 `UNCOMPLETED_VISITS` guardrail handler remains unchanged.
+  - Files: `server/services/jobVisits.service.ts`, `client/src/components/JobHeaderCard.tsx`
+
+#### Prevent deleting placeholder visit #1 — server + UI guard (2026-02-15)
+- **Problem**: Placeholder visit #1 (visitNumber=1, scheduledStart=NULL, isActive=true) is created atomically with every job. Deleting it would break the invariant that every job always has at least one visit row.
+- **Server guard**: `DELETE /api/jobs/:jobId/visits/:visitId` now fetches the visit first and rejects with 409 if it matches placeholder visit #1 definition. Message: "Cannot delete placeholder visit #1. Unschedule or clear it instead."
+- **UI guard**: `VisitDetailDialog` in `JobDetailPage.tsx` disables the "Delete Visit" menu item for placeholder visit #1 and shows helper text: "Placeholder visit #1 can't be deleted. Unschedule/clear it instead."
+  - Files: `server/routes/jobVisits.routes.ts`, `client/src/pages/JobDetailPage.tsx`
+
+### Changed
+
+#### Invoice Detail Page — Jobber-style header redesign (2026-02-15)
+- **Header redesign**: `InvoiceHeaderCard` now displays a 4-column info grid (Billing Address, Service Address, Contact, Details) matching Jobber's invoice layout.
+  - Billing address sourced from `customerCompany.billing*` fields; falls back to location address.
+  - Service address sourced from the invoice's linked `client_location`.
+  - Primary contact shows name, phone (clickable tel: link), email (clickable mailto: link).
+  - Details column shows Job # (clickable link to `/jobs/:id`), Issued date, Due date, and payment terms selector (edit mode).
+- **Payment terms moved into header**: Removed the standalone "Payment Terms" card from the right sidebar. Issue date, due date, and payment terms selector are now in the header's Details column.
+- **Payment terms options**: Replaced old 7-option list (0/7/15/30/45/60/90) with spec-compliant 5-option list: Due on receipt (0), Net 15, Net 30, Net 45, Custom. "Custom" reveals an inline date picker for direct `dueDate` entry.
+- **Invoice number editing**: Invoice number is now editable inline in the header when in edit mode. Click the pencil icon to enter edit mode; save triggers `PATCH /api/invoices/:id`. Uniqueness enforced per tenant via existing DB unique index (`invoices_company_invoice_number_uq`); 409 returned on conflict.
+- **Backend DTO extension**: `GET /api/invoices/:id/details` now returns three additional fields: `billingAddress`, `serviceAddress`, `primaryContact` — structured objects derived from `customerCompanies` and `client_locations` data.
+- **Backend PATCH update**: `PATCH /api/invoices/:id` now accepts `invoiceNumber` (string, 1-100 chars) and `paymentTermsDays: null` for custom terms with explicit `dueDate`. Catches DB unique constraint violations and returns `409 DUPLICATE_INVOICE_NUMBER`.
+- **Files**: `client/src/components/InvoiceHeaderCard.tsx`, `client/src/pages/InvoiceDetailPage.tsx`, `server/routes/invoices.ts`
+
+### Fixed
+
+#### Duplicate "Client Message" cards on Invoice Detail page (2026-02-15)
+- **Root cause**: Two cards both titled "Client Message" rendered in the right sidebar — one showing `invoice.clientMessage` and a second showing `invoice.notesCustomer`. The second card was an orphaned duplicate.
+- **Fix**: Kept the first card (customer-facing `clientMessage`, editable in edit mode). Replaced the second card with "Internal Notes" (office-only, shows `invoice.notesInternal`). Internal Notes card is editable in edit mode and hidden when empty outside edit mode.
+  - Files: `client/src/pages/InvoiceDetailPage.tsx`
+
+#### Unschedule converts visit to placeholder instead of soft-deleting (2026-02-14)
+- **Root cause**: `calendarRepository.unscheduleJob()` soft-deleted the current visit (`isActive = false`). The inactive row retained `visitNumber = 1`, but the unique constraint `job_visits_job_visit_number_uq` covers all rows (including inactive). When re-scheduling, `getNextVisitNumber()` only counted active rows, computed `visitNumber = 1`, and the INSERT collided with the inactive row.
+- **Fix**: `unscheduleJob()` now converts the visit to a placeholder (clears `scheduledStart`/`scheduledEnd`, keeps `isActive = true`) instead of soft-deleting. This preserves the visit row and `visitNumber` so re-scheduling UPDATEs the placeholder instead of INSERTing a duplicate.
+- **Regression test**: Test D in `tests/job-creation-visit.test.ts` — round-trip create → schedule → unschedule → re-schedule, asserts: 1 visit, same ID, `visitNumber = 1`, no constraint violations.
+- **Updated tests**: `tests/visit-selection-invariants.test.ts` — unschedule tests updated to assert placeholder behavior (`isActive = true`, `scheduledStart = null`) instead of soft-delete.
+  - Files: `server/storage/calendar.ts`, `tests/job-creation-visit.test.ts`, `tests/visit-selection-invariants.test.ts`
+
+#### Dashboard "Needs Attention" shows date-only to avoid timezone confusion (2026-02-14)
+- **Root cause**: `formatSchedule()` in Dashboard rendered times (e.g., "7:00 p.m.") which were misleading due to timezone differences between server UTC storage and client local time.
+- **Fix**: Simplified `formatSchedule()` to date-only display (`"MMM d"`, e.g., "Mar 20"). No time or "All day" text is shown. Removed unused `end`/`isAllDay` parameters from the function.
+  - Files: `client/src/pages/Dashboard.tsx`
+
+#### Calendar scheduling collision on unscheduled jobs with initial visit (2026-02-14)
+- **Root cause**: `calendarRepository.scheduleJob()` always called `createJobVisit()` (INSERT). With the new "createJob always creates placeholder visit #1" invariant, scheduling an unscheduled job would insert a second visit, causing `job_visits_job_visit_number_uq` violations or leaving orphan placeholder visits.
+- **Fix**: `scheduleJob()` now checks for an existing placeholder visit (`scheduledStart IS NULL`, `isActive = true`) before inserting. If found, updates it in place via `updateJobVisit()` (preserves `visitNumber = 1`). Otherwise falls through to INSERT for follow-up visits.
+- **Regression test**: Test C in `tests/job-creation-visit.test.ts` — creates unscheduled job (placeholder visit #1), schedules via `calendarRepository.scheduleJob`, asserts: still 1 visit, same ID, `visitNumber = 1`, `scheduledStart` set.
+  - Files: `server/storage/calendar.ts`, `tests/job-creation-visit.test.ts`
 
 #### Deleted jobs still visible in Jobs list after delete from JobDetailPage (2026-02-14)
 - **Root cause**: `JobDetailPage.tsx` `deleteJobMutation.onSuccess` invalidated calendar, maintenance, dashboard, recurring-templates, and clients query keys — but **never invalidated `["jobs"]`**. The comment claimed "covered by family-wide ['jobs'] invalidation" but the actual call was missing. The Jobs list (`useJobsFeed`) uses `["jobs", "feed", ...]` keys, so without `["jobs"]` invalidation the stale cache persisted until a full page refresh.

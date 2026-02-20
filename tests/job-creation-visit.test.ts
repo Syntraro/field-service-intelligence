@@ -24,6 +24,7 @@ import {
 import { eq, and, inArray } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import { storage } from "../server/storage/index";
+import { calendarRepository } from "../server/storage/calendar";
 
 const TEST_PREFIX = "visit_inv_test_";
 let companyId: string;
@@ -195,5 +196,165 @@ describe("Job Creation → Initial Visit Invariant", () => {
     expect(visit.isAllDay).toBe(false);
     expect(visit.status).toBe("scheduled");
     expect(visit.visitNumber).toBe(1);
+  });
+
+  // ==========================================================================
+  // Test C: Calendar scheduling updates placeholder visit (no duplicate)
+  // ==========================================================================
+  it("scheduling an unscheduled job updates placeholder visit #1 instead of inserting a duplicate", async () => {
+    // 1. Create unscheduled job (creates placeholder visit #1 with scheduledStart=null)
+    const job = await storage.createJob(companyId, {
+      locationId,
+      summary: `${TEST_PREFIX}schedule_placeholder`,
+      isAllDay: false,
+      status: "open",
+      jobType: "maintenance",
+      priority: "medium",
+    } as any);
+
+    createdJobIds.push(job.id);
+
+    // Verify placeholder visit exists
+    const beforeVisits = await db
+      .select({ id: jobVisits.id, scheduledStart: jobVisits.scheduledStart, visitNumber: jobVisits.visitNumber })
+      .from(jobVisits)
+      .where(and(eq(jobVisits.jobId, job.id), eq(jobVisits.isActive, true)));
+
+    expect(beforeVisits).toHaveLength(1);
+    expect(beforeVisits[0].scheduledStart).toBeNull();
+    expect(beforeVisits[0].visitNumber).toBe(1);
+
+    // 2. Schedule the job via calendar (simulates drag-drop)
+    const scheduledStart = new Date("2026-04-10T14:00:00Z");
+    const scheduledEnd = new Date("2026-04-10T15:00:00Z");
+
+    await calendarRepository.scheduleJob(companyId, {
+      jobId: job.id,
+      startAt: scheduledStart,
+      endAt: scheduledEnd,
+      expectedVersion: job.version,
+    });
+
+    // 3. Assert: still only 1 visit, visit_number=1, scheduledStart is set
+    const afterVisits = await db
+      .select({
+        id: jobVisits.id,
+        scheduledStart: jobVisits.scheduledStart,
+        scheduledEnd: jobVisits.scheduledEnd,
+        visitNumber: jobVisits.visitNumber,
+        status: jobVisits.status,
+        isActive: jobVisits.isActive,
+      })
+      .from(jobVisits)
+      .where(and(eq(jobVisits.jobId, job.id), eq(jobVisits.isActive, true)));
+
+    expect(afterVisits).toHaveLength(1);
+    expect(afterVisits[0].visitNumber).toBe(1);
+    expect(afterVisits[0].scheduledStart).not.toBeNull();
+    expect(afterVisits[0].scheduledEnd).not.toBeNull();
+    expect(afterVisits[0].status).toBe("scheduled");
+
+    // Same visit ID — was updated, not replaced
+    expect(afterVisits[0].id).toBe(beforeVisits[0].id);
+  });
+
+  // ==========================================================================
+  // Test D: Round-trip schedule → unschedule → schedule keeps same visit
+  // ==========================================================================
+  it("unschedule converts visit to placeholder; re-schedule updates it without collision", async () => {
+    // 1. Create unscheduled job (placeholder visit #1)
+    const job = await storage.createJob(companyId, {
+      locationId,
+      summary: `${TEST_PREFIX}roundtrip`,
+      isAllDay: false,
+      status: "open",
+      jobType: "maintenance",
+      priority: "medium",
+    } as any);
+
+    createdJobIds.push(job.id);
+
+    // Capture placeholder visit ID
+    const [initial] = await db
+      .select({ id: jobVisits.id, visitNumber: jobVisits.visitNumber })
+      .from(jobVisits)
+      .where(and(eq(jobVisits.jobId, job.id), eq(jobVisits.isActive, true)));
+
+    expect(initial).toBeTruthy();
+    expect(initial.visitNumber).toBe(1);
+    const originalVisitId = initial.id;
+
+    // 2. Schedule the job
+    const start1 = new Date("2026-05-01T10:00:00Z");
+    const end1 = new Date("2026-05-01T11:00:00Z");
+    await calendarRepository.scheduleJob(companyId, {
+      jobId: job.id,
+      startAt: start1,
+      endAt: end1,
+      expectedVersion: job.version,
+    });
+
+    // 3. Unschedule the job (should convert visit to placeholder, not soft-delete)
+    const afterSchedule = await db
+      .select({ version: jobs.version })
+      .from(jobs)
+      .where(eq(jobs.id, job.id));
+    const versionAfterSchedule = afterSchedule[0].version;
+
+    await calendarRepository.unscheduleJob(companyId, job.id, versionAfterSchedule!);
+
+    // Verify visit is now a placeholder (isActive=true, scheduledStart=null)
+    const afterUnschedule = await db
+      .select({
+        id: jobVisits.id,
+        scheduledStart: jobVisits.scheduledStart,
+        scheduledEnd: jobVisits.scheduledEnd,
+        visitNumber: jobVisits.visitNumber,
+        isActive: jobVisits.isActive,
+      })
+      .from(jobVisits)
+      .where(and(eq(jobVisits.jobId, job.id), eq(jobVisits.isActive, true)));
+
+    expect(afterUnschedule).toHaveLength(1);
+    expect(afterUnschedule[0].id).toBe(originalVisitId);
+    expect(afterUnschedule[0].scheduledStart).toBeNull();
+    expect(afterUnschedule[0].scheduledEnd).toBeNull();
+    expect(afterUnschedule[0].visitNumber).toBe(1);
+    expect(afterUnschedule[0].isActive).toBe(true);
+
+    // 4. Re-schedule the job (should update placeholder, no collision)
+    const afterUnscheduleJob = await db
+      .select({ version: jobs.version })
+      .from(jobs)
+      .where(eq(jobs.id, job.id));
+    const versionAfterUnschedule = afterUnscheduleJob[0].version;
+
+    const start2 = new Date("2026-05-02T14:00:00Z");
+    const end2 = new Date("2026-05-02T15:00:00Z");
+    await calendarRepository.scheduleJob(companyId, {
+      jobId: job.id,
+      startAt: start2,
+      endAt: end2,
+      expectedVersion: versionAfterUnschedule!,
+    });
+
+    // 5. Assert: still 1 visit, same ID, visitNumber=1, scheduled
+    const finalVisits = await db
+      .select({
+        id: jobVisits.id,
+        scheduledStart: jobVisits.scheduledStart,
+        scheduledEnd: jobVisits.scheduledEnd,
+        visitNumber: jobVisits.visitNumber,
+        isActive: jobVisits.isActive,
+      })
+      .from(jobVisits)
+      .where(and(eq(jobVisits.jobId, job.id), eq(jobVisits.isActive, true)));
+
+    expect(finalVisits).toHaveLength(1);
+    expect(finalVisits[0].id).toBe(originalVisitId);
+    expect(finalVisits[0].visitNumber).toBe(1);
+    expect(finalVisits[0].scheduledStart).not.toBeNull();
+    expect(finalVisits[0].scheduledEnd).not.toBeNull();
+    expect(finalVisits[0].isActive).toBe(true);
   });
 });

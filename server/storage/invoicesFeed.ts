@@ -79,6 +79,8 @@ export interface InvoiceFeedItem {
   locationDisplayName: string | null;
   /** clients.location (site name) */
   locationName: string | null;
+  /** invoices.workDescription — work performed / job summary */
+  workDescription: string | null;
   /** Computed: unpaid + past due date */
   isPastDue: boolean;
   // QBO fields
@@ -170,6 +172,7 @@ const feedSelectFields = {
   balance: invoices.balance,
   jobId: invoices.jobId,
   jobNumber: jobs.jobNumber,
+  workDescription: invoices.workDescription,
   // Phase 5: canonical COALESCE for location display name
   locationDisplayName: sql<string>`COALESCE(${customerCompanies.name}, ${clients.companyName})`,
   locationName: clients.location,
@@ -209,6 +212,7 @@ function mapFeedRow(row: any): InvoiceFeedItem {
     balance: row.balance ?? null,
     jobId: row.jobId ?? null,
     jobNumber: row.jobNumber ?? null,
+    workDescription: row.workDescription ?? null,
     locationDisplayName: row.locationDisplayName ?? null,
     locationName: row.locationName ?? null,
     isPastDue: computeIsPastDue(row.status, row.dueDate, row.balance),

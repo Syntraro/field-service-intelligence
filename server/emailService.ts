@@ -10,7 +10,7 @@ export async function sendInvitationEmail(
     const { client, fromEmail } = await getResendClient();
     
     const { data, error } = await client.emails.send({
-      from: fromEmail || 'noreply@yourdomain.com',
+      from: fromEmail,
       to: recipientEmail,
       subject: `You've been invited to join ${companyName}`,
       html: `

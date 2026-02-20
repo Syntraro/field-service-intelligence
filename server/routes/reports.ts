@@ -208,11 +208,25 @@ router.get("/action-required-kpis", requireRole(MANAGER_ROLES), asyncHandler(asy
  * GET /api/reports/ar-aging
  * Returns Accounts Receivable Aging report
  * Includes invoices with status 'sent' or 'partial_paid' and balance > 0
+ * Bounded: invoices array paginated (default limit=200, max 200)
+ * Summary and buckets always returned in full.
  */
 router.get("/ar-aging", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   const report = await reportsRepository.getARAgingReport(companyId);
-  res.json(report);
+
+  // Paginate the invoices array; summary + buckets are always small
+  const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 200);
+  const offset = Math.max(Number(req.query.offset) || 0, 0);
+  const sliced = report.invoices.slice(offset, offset + limit);
+  const hasMore = offset + limit < report.invoices.length;
+
+  res.json({
+    summary: report.summary,
+    buckets: report.buckets,
+    invoices: sliced,
+    meta: { total: report.invoices.length, limit, offset, hasMore },
+  });
 }));
 
 export default router;

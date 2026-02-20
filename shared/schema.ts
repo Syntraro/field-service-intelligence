@@ -3037,6 +3037,9 @@ export const tenantFeatures = pgTable("tenant_features", {
   // Future feature flags (placeholders)
   routeOptimizationEnabled: boolean("route_optimization_enabled").notNull().default(true),
   multiTechEnabled: boolean("multi_tech_enabled").notNull().default(true),
+  // Customer portal feature flags
+  customerPortalEnabled: boolean("customer_portal_enabled").notNull().default(false),
+  customerPortalPaymentsEnabled: boolean("customer_portal_payments_enabled").notNull().default(false),
   // Metadata
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
@@ -3055,6 +3058,8 @@ export const updateTenantFeaturesSchema = z.object({
   qboEnabled: z.boolean().optional(),
   routeOptimizationEnabled: z.boolean().optional(),
   multiTechEnabled: z.boolean().optional(),
+  customerPortalEnabled: z.boolean().optional(),
+  customerPortalPaymentsEnabled: z.boolean().optional(),
 });
 
 export type InsertTenantFeatures = z.infer<typeof insertTenantFeaturesSchema>;
@@ -3069,6 +3074,8 @@ export const featureKeys = [
   "qboEnabled",
   "routeOptimizationEnabled",
   "multiTechEnabled",
+  "customerPortalEnabled",
+  "customerPortalPaymentsEnabled",
 ] as const;
 export type FeatureKey = typeof featureKeys[number];
 
@@ -4148,3 +4155,26 @@ export const insertInvoiceTaxLineSchema = createInsertSchema(invoiceTaxLines).om
 
 export type InsertInvoiceTaxLine = z.infer<typeof insertInvoiceTaxLineSchema>;
 export type InvoiceTaxLine = typeof invoiceTaxLines.$inferSelect;
+
+// ============================================================================
+// CUSTOMER PORTAL — Magic Link Tokens
+// Single-use, time-limited tokens for customer portal authentication
+// ============================================================================
+export const portalMagicTokens = pgTable("portal_magic_tokens", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  contactId: varchar("contact_id").notNull().references(() => clientContacts.id, { onDelete: "cascade" }),
+  customerCompanyId: varchar("customer_company_id").notNull().references(() => customerCompanies.id, { onDelete: "cascade" }),
+  /** SHA-256 hash of the token (raw token is never stored) */
+  tokenHash: text("token_hash").notNull(),
+  email: text("email").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  consumedAt: timestamp("consumed_at"), // NULL = unused, set on first use
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  tokenHashIdx: uniqueIndex("portal_magic_tokens_hash_idx").on(table.tokenHash),
+  emailIdx: index("portal_magic_tokens_email_idx").on(table.email),
+  expiresIdx: index("portal_magic_tokens_expires_idx").on(table.expiresAt),
+}));
+
+export type PortalMagicToken = typeof portalMagicTokens.$inferSelect;

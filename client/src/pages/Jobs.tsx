@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useJobsFeed } from "@/hooks/useJobsFeed";
-import { useTechniciansDirectory } from "@/hooks/useTechnicians";
+// useTechniciansDirectory removed — Assignment column dropped from list view
 import { format, differenceInHours } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
@@ -39,7 +39,7 @@ import { TablePageShell } from "@/components/ui/table-page-shell";
 import type { User as UserType } from "@shared/schema";
 import { isJobScheduled, isJobAssigned, isBacklogEligible, isJobOverdue } from "@shared/schema";
 import { getJobStatusDisplay } from "@/components/job/jobUtils";
-import { getMemberDisplayName } from "@/lib/displayName";
+// getMemberDisplayName removed — Assignment column dropped from list view
 // Phase 4 Step A6: Use canonical JobFeedItem type
 import type { JobFeedItem } from "@/hooks/useJobsFeed";
 
@@ -219,16 +219,6 @@ export default function Jobs() {
     enabled: isOfficeUser,
     staleTime: 5 * 60 * 1000, // 5 minutes
   });
-
-  // Technician lookup for the Assignment column
-  const { teamMembers: technicians } = useTechniciansDirectory();
-  const techNameMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const t of technicians) {
-      map.set(t.id, getMemberDisplayName(t));
-    }
-    return map;
-  }, [technicians]);
 
   // Dev-only: fetch /api/calendar/state-snapshot for reconciliation panel
   const [showDevPanel, setShowDevPanel] = useState(false);
@@ -821,14 +811,13 @@ export default function Jobs() {
               <TableHead data-testid="header-summary">Summary</TableHead>
               <SortableHeader field="schedule" testId="header-schedule">Schedule</SortableHeader>
               <SortableHeader field="status" testId="header-status">Status</SortableHeader>
-              <TableHead data-testid="header-assignment">Assignment</TableHead>
               {isOfficeUser && <TableHead className="w-10"></TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
             {visibleJobs.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={isOfficeUser ? 7 : 6} className="text-center py-8 text-muted-foreground" data-testid="text-no-jobs">
+                <TableCell colSpan={isOfficeUser ? 6 : 5} className="text-center py-8 text-muted-foreground" data-testid="text-no-jobs">
                   {jobs.length === 0 ? (
                     <div className="flex flex-col items-center gap-2">
                       <Wrench className="h-8 w-8 opacity-50" />
@@ -1037,30 +1026,6 @@ export default function Jobs() {
                         </div>
                       )}
                     </div>
-                  </TableCell>
-                  {/* Assignment column: technician name(s) or "Unassigned" */}
-                  <TableCell data-testid={`text-assignment-${job.id}`}>
-                    {job._assigned ? (() => {
-                      const primaryName = job.primaryTechnicianId
-                        ? techNameMap.get(job.primaryTechnicianId)
-                        : undefined;
-                      const otherCount = (job.assignedTechnicianIds?.length ?? 0) - (job.primaryTechnicianId ? 1 : 0);
-                      return (
-                        <div className="flex items-center gap-1">
-                          <User className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-                          <span className="truncate max-w-[140px]">
-                            {primaryName ?? "Assigned"}
-                          </span>
-                          {otherCount > 0 && (
-                            <span className="text-xs text-muted-foreground flex-shrink-0">
-                              +{otherCount}
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })() : (
-                      <span className="text-muted-foreground">Unassigned</span>
-                    )}
                   </TableCell>
                   {isOfficeUser && (
                     <TableCell className="w-10" onClick={(e) => e.stopPropagation()}>

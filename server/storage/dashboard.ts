@@ -51,6 +51,8 @@ export interface DashboardJobItem {
   summary: string;
   status: string;
   scheduledStart: string | null;
+  scheduledEnd: string | null;
+  isAllDay: boolean;
   locationName: string | null;
   locationDisplayName: string | null;
   location: {
@@ -146,6 +148,8 @@ const dashboardJobSelect = {
   summary: jobs.summary,
   status: jobs.status,
   scheduledStart: jobs.scheduledStart,
+  scheduledEnd: jobs.scheduledEnd,
+  isAllDay: jobs.isAllDay,
   locationName: clients.location,
   locationDisplayName: sql<string>`COALESCE(${customerCompanies.name}, ${clients.companyName})`,
   location: {
@@ -167,6 +171,8 @@ function mapDashboardRow(row: any, attentionType: string): DashboardJobItem {
     summary: row.summary,
     status: row.status,
     scheduledStart: toISOOrNull(row.scheduledStart),
+    scheduledEnd: toISOOrNull(row.scheduledEnd),
+    isAllDay: Boolean(row.isAllDay),
     locationName: row.locationName ?? null,
     locationDisplayName: row.locationDisplayName ?? null,
     location: row.location?.companyName

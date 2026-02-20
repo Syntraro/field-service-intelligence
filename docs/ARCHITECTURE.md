@@ -1,6 +1,6 @@
 # Application Architecture Guide
 
-Last updated: 2026-02-13
+Last updated: 2026-02-16
 
 ---
 
@@ -96,6 +96,17 @@ Single source of truth for invoice list and stats queries. Read-only module; mut
 **Query key family:** `["invoices"]`
 
 **Client hooks:** Not yet created. Invoice pages currently use direct `useQuery` calls. A canonical `useInvoicesFeed` hook should be created when invoice pages are migrated.
+
+**Canonical query key namespace** (locked 2026-02-16):
+
+| Key | Purpose |
+|-----|---------|
+| `["invoices", "feed", params]` | Paginated invoice list |
+| `["invoices", "stats"]` | Aggregate stats (outstanding, overdue, etc.) |
+| `["invoices", "detail", id]` | Single invoice details |
+| `["invoices", "detail", id, "payments"]` | Invoice payment history |
+| `["invoices", "dashboard"]` | Dashboard widget (unpaid subset) |
+| `["invoices", "byJob", jobId]` | Invoice linked to a specific job |
 
 ### Dashboard — `server/storage/dashboard.ts`
 
@@ -248,6 +259,87 @@ Every query touching the `jobs` table must apply:
 Visit queries additionally check `eq(jobVisits.isActive, true)`.
 
 Invoice queries use `activeInvoiceFilter()` from `server/storage/invoicesFeed.ts`, which handles legacy NULL `isActive` values: `(isActive = true OR isActive IS NULL) AND deletedAt IS NULL`.
+
+---
+
+## Architecture Lock Rules (2026-02-16)
+
+These rules are HARD constraints. Violations require updating this document before merging.
+
+### Rule 1: No New Request Pattern Without Updating Canonicalization Map
+
+Every new `useQuery` call MUST either:
+1. Use an existing canonical hook (`useJobsFeed`, `useJobHeader`, `useVisitFeed`), OR
+2. Use a query key that starts with an established family prefix, OR
+3. Be added to the exception list below with justification
+
+New query key families require updating this document AND `docs/INVALIDATION_MAP.md`.
+
+### Rule 2: Query Key Namespace Rules
+
+All query keys MUST use semantic names, never URL paths as keys:
+
+```
+CORRECT:  ["jobs", "feed", { status: "open" }]
+WRONG:    ["/api/jobs?status=open"]
+```
+
+Established family prefixes (invalidating the prefix refreshes all children):
+
+| Family | Prefix | Owner Module |
+|--------|--------|-------------|
+| Jobs | `["jobs"]` | `useJobsFeed.ts` |
+| Visits | `["visits"]` | `useVisitFeed.ts` |
+| Invoices | `["invoices"]` | Direct `useQuery` (hook TBD) |
+| Dashboard | `["dashboard"]` | Direct `useQuery` in `Dashboard.tsx` |
+| Calendar | `["/api/calendar"]` | `useCalendarApi.ts` (legacy prefix, do not change) |
+
+### Rule 3: Payload Composition Strategy
+
+- **Detail pages**: May compose 2-3 parallel queries (e.g., entity + sub-resources). Conditional queries gated by `enabled: !!parentId` are acceptable.
+- **List pages**: Maximum 2 parallel above-the-fold queries (list + stats/metadata).
+- **Dashboard**: Maximum 3 parallel above-the-fold queries.
+- **Sequential waterfalls** (A→wait→B→wait→C) are FAIL conditions that must be resolved before shipping.
+
+### Rule 4: Mutation Standard
+
+The dominant mutation pattern (and the standard going forward):
+
+```typescript
+const mutation = useMutation({
+  mutationFn: async (data) => apiRequest(url, { method, body: JSON.stringify(data) }),
+  onSuccess: () => {
+    queryClient.invalidateQueries({ queryKey: ["<family>"] });
+    toast({ title: "Success message" });
+  },
+  onError: (error: Error) => {
+    toast({ title: "Error", description: error.message, variant: "destructive" });
+  },
+});
+```
+
+Required behaviors:
+- **Loading state**: Buttons show `disabled={mutation.isPending}` during mutation
+- **Success feedback**: Toast notification on success
+- **Error feedback**: Destructive toast with `error.message`
+- **Cache invalidation**: Invalidate by family prefix, not specific keys
+- **Structured errors**: Use `isApiError(error) && error.status === 409` for conflict detection where relevant
+
+### Rule 5: Allowed Direct useQuery Exceptions
+
+These pages are authorized to use direct `useQuery` instead of canonical hooks:
+
+| Page | Reason |
+|------|--------|
+| `InvoiceDetailPage` | Unique detail queries; canonical hook TBD |
+| `Calendar.tsx` | Specialized projection with DnD; own hook system |
+| Settings pages (`CompanySettings`, `ManageTeam`, etc.) | Low-traffic admin pages |
+| `TasksPanel` (in Dashboard) | Task management; own query pattern |
+| `ClientDetailPage` / `LocationDetailPage` | Multi-resource detail views |
+| Admin pages (`Admin.tsx`, `AdminTenants`, etc.) | Platform admin operations |
+| Tech field pages (`TechHomePage`, `TechSchedulePage`, etc.) | Field worker interface |
+
+All other new pages should use canonical hooks or justify the exception here.
 
 ---
 
