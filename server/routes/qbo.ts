@@ -258,32 +258,13 @@ router.get(
       return res.redirect(`${returnPath}?connected=0&error=token_exchange_error`);
     }
 
-    // Upsert qbo_connections row for this tenant
+    // Upsert qbo_connections row for this tenant (ON CONFLICT → UPDATE)
     try {
       const now = new Date();
       const expiresAt = new Date(Date.now() + tokenData.expires_in * 1000);
 
-      // Check if row exists
-      const [existing] = await db.select({ id: qboConnections.id })
-        .from(qboConnections)
-        .where(eq(qboConnections.companyId, companyId))
-        .limit(1);
-
-      if (existing) {
-        await db.update(qboConnections)
-          .set({
-            environment,
-            realmId: String(realmId),
-            accessToken: tokenData.access_token,
-            refreshToken: tokenData.refresh_token,
-            accessTokenExpiresAt: expiresAt,
-            connectedByUserId: userId,
-            connectedAt: now,
-            updatedAt: now,
-          })
-          .where(eq(qboConnections.companyId, companyId));
-      } else {
-        await db.insert(qboConnections).values({
+      await db.insert(qboConnections)
+        .values({
           companyId,
           environment,
           realmId: String(realmId),
@@ -292,9 +273,32 @@ router.get(
           accessTokenExpiresAt: expiresAt,
           connectedByUserId: userId,
           connectedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: qboConnections.companyId,
+          set: {
+            environment,
+            realmId: String(realmId),
+            accessToken: tokenData.access_token,
+            refreshToken: tokenData.refresh_token,
+            accessTokenExpiresAt: expiresAt,
+            connectedByUserId: userId,
+            connectedAt: now,
+            updatedAt: now,
+          },
         });
-      }
-    } catch {
+    } catch (dbErr: any) {
+      // Log diagnostic details (never log tokens/secrets)
+      console.error("[QBO] Failed to save connection:", {
+        message: dbErr?.message,
+        code: dbErr?.code,
+        constraint: dbErr?.constraint,
+        table: dbErr?.table,
+        column: dbErr?.column,
+        companyId,
+        userId,
+        realmId: String(realmId),
+      });
       return res.redirect(`${returnPath}?connected=0&error=db_save_failed`);
     }
 

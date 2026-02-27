@@ -18,6 +18,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Session-expired UX**: Added `SessionExpiredDialog` that shows a friendly modal when API calls return 401 after session expiry. Login page now supports `returnTo` query param to redirect users back to where they were.
   - **Files**: `client/src/components/SessionExpiredDialog.tsx` (new), `client/src/lib/queryClient.ts`, `client/src/App.tsx`, `client/src/pages/Login.tsx`
 
+#### QBO OAuth db_save_failed — Missing Table (2026-02-27)
+- **Root cause**: `qbo_connections` table did not exist in the database. The Drizzle schema and migration file existed but the migration was never executed. Every OAuth callback hit a "relation does not exist" error, which was silently swallowed by a bare `catch {}`.
+  - **Fix**: Ran `migrations/2026_02_20_qbo_connections.sql` to create the table with unique index on `company_id`.
+- **Bare catch replaced with diagnostic logging**: The `catch {}` block in the OAuth callback now logs the DB error message, code, constraint, table, and column (never secrets/tokens) so future failures are immediately diagnosable.
+  - **File**: `server/routes/qbo.ts`
+- **Manual SELECT→INSERT/UPDATE replaced with atomic upsert**: Used Drizzle's `onConflictDoUpdate` on the `companyId` unique index, eliminating the race-condition-prone check-then-write pattern.
+  - **File**: `server/routes/qbo.ts`
+- **QBO callback added to `ensureTenantContext` public endpoints**: The callback reads tenant info from session state, not `req.user`, so it doesn't need tenant context middleware.
+  - **File**: `server/auth/tenantIsolation.ts`
+
 ### Added
 
 #### Settings Page Redesign — Left Nav + Content Panel (2026-02-21)

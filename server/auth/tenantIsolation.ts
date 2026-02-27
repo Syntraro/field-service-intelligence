@@ -56,6 +56,7 @@ export const ensureTenantContext: RequestHandler = (req: Request, res: Response,
     "/api/invitations/accept",
     "/api/health",
     "/api/csrf-token",
+    "/api/qbo/oauth/callback", // OAuth callback reads tenant from session state
   ];
 
   if (publicEndpoints.some(endpoint => req.path.startsWith(endpoint))) {
