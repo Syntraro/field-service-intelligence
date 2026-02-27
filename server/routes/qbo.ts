@@ -1900,6 +1900,118 @@ router.get(
 );
 
 /**
+ * Create a QboClient for authenticated routes, returning the client or a JSON error.
+ * Handles: missing tokens, missing env vars, and auto-persists refreshed tokens.
+ */
+async function createTenantQboClient(companyId: string) {
+  const tokens = await getQboTokensForCompany(companyId);
+  if (!tokens) return { client: null, error: "QuickBooks is not connected." } as const;
+
+  const clientId = process.env.QBO_CLIENT_ID;
+  const clientSecret = process.env.QBO_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return { client: null, error: "QBO OAuth not configured." } as const;
+
+  const environment = getQboEnvironment();
+  const client = new QboClient({ clientId, clientSecret, environment }, tokens);
+
+  return {
+    client,
+    error: null,
+    /** Call after any QBO API call to persist refreshed tokens */
+    async persistIfRefreshed() {
+      const current = client.getTokens();
+      if (current.accessToken !== tokens.accessToken) {
+        await persistRefreshedTokens(companyId, current);
+      }
+    },
+  } as const;
+}
+
+/**
+ * GET /api/qbo/company-info
+ * Returns the connected QBO company name and realmId.
+ * Uses CompanyInfo read API — lightweight way to verify connection.
+ */
+router.get(
+  "/company-info",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { client, error, persistIfRefreshed } = await createTenantQboClient(req.companyId);
+    if (!client) return res.status(400).json({ error });
+
+    const result = await client.get<{ CompanyInfo: { CompanyName: string; Country?: string } }>(
+      `/companyinfo/${client.getTokens().realmId}`
+    );
+    await persistIfRefreshed!();
+
+    if (!result.success) {
+      return res.status(502).json({
+        error: "Connected but unable to fetch company info — token may be expired or permissions missing.",
+      });
+    }
+
+    const info = (result.data as any)?.CompanyInfo ?? result.data;
+    res.json({
+      companyName: info.CompanyName ?? "Unknown",
+      realmId: client.getTokens().realmId,
+      environment: getQboEnvironment(),
+    });
+  })
+);
+
+/**
+ * GET /api/qbo/items
+ * Lists all active QBO Items (Service/Inventory/NonInventory) for mapping dropdowns.
+ * Returns [{ id, name, type, active }].
+ */
+router.get(
+  "/items",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { client, error, persistIfRefreshed } = await createTenantQboClient(req.companyId);
+    if (!client) return res.status(400).json({ error });
+
+    const result = await client.get<{ QueryResponse: { Item?: Array<{ Id: string; Name: string; Type: string; Active: boolean }> } }>(
+      `/query?query=${encodeURIComponent("SELECT Id, Name, Type, Active FROM Item WHERE Active = true MAXRESULTS 1000")}`
+    );
+    await persistIfRefreshed!();
+
+    if (!result.success) {
+      return res.status(502).json({ error: "Unable to fetch QBO items." });
+    }
+
+    const raw = (result.data as any)?.QueryResponse?.Item ?? [];
+    res.json(raw.map((i: any) => ({ id: i.Id, name: i.Name, type: i.Type, active: i.Active })));
+  })
+);
+
+/**
+ * GET /api/qbo/taxcodes
+ * Lists all active QBO TaxCodes for mapping dropdowns.
+ * Returns [{ id, name, taxable }].
+ */
+router.get(
+  "/taxcodes",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { client, error, persistIfRefreshed } = await createTenantQboClient(req.companyId);
+    if (!client) return res.status(400).json({ error });
+
+    const result = await client.get<{ QueryResponse: { TaxCode?: Array<{ Id: string; Name: string; Taxable: boolean }> } }>(
+      `/query?query=${encodeURIComponent("SELECT Id, Name, Taxable FROM TaxCode WHERE Active = true MAXRESULTS 200")}`
+    );
+    await persistIfRefreshed!();
+
+    if (!result.success) {
+      return res.status(502).json({ error: "Unable to fetch QBO tax codes." });
+    }
+
+    const raw = (result.data as any)?.QueryResponse?.TaxCode ?? [];
+    res.json(raw.map((t: any) => ({ id: t.Id, name: t.Name, taxable: t.Taxable })));
+  })
+);
+
+/**
  * GET /api/qbo/preflight/import-customers
  * Comprehensive preflight check before customer import.
  * Verifies: tokens, environment safety, connectivity (with token refresh), DB indexes,

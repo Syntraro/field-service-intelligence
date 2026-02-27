@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### QBO Company Info + Item/TaxCode Dropdowns (2026-02-27)
+- **`GET /api/qbo/company-info`**: Calls QBO CompanyInfo API to return `{ companyName, realmId, environment }`. Shows the connected QBO company name and realm ID in Step 1 so users know which account is linked.
+- **`GET /api/qbo/items`**: Queries active QBO Items (`SELECT Id, Name, Type, Active FROM Item`) for mapping dropdown selectors.
+- **`GET /api/qbo/taxcodes`**: Queries active QBO TaxCodes (`SELECT Id, Name, Taxable FROM TaxCode`) for mapping dropdown selectors.
+- **Shared `createTenantQboClient` helper**: Extracted token-fetch + client-create + persist-refresh pattern into a reusable function, reducing duplication across QBO endpoints.
+  - **File**: `server/routes/qbo.ts`
+- **Step 1 UI — Company details panel**: When connected, shows the QBO company name and realm ID in a bordered card. Shows loading spinner while fetching, and a fallback message if the API call fails.
+- **Step 2 UI — Dropdown selectors**: Replaced manual ID text inputs with `<Select>` dropdowns populated from `/api/qbo/items` and `/api/qbo/taxcodes`. Shows item name + type in the dropdown, stores the QBO ID. Loading and empty states handled.
+  - **File**: `client/src/pages/QboConsolePage.tsx`
+
 ### Fixed
 
 #### Session Persistence + QBO OAuth Callback + Idle Timeout (2026-02-27)
