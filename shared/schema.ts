@@ -63,6 +63,25 @@ export type QboMappingConfig = z.infer<typeof qboMappingConfigSchema>;
 export const qboEnvironmentEnum = ["sandbox", "production"] as const;
 export type QboEnvironment = typeof qboEnvironmentEnum[number];
 
+// QBO Connections — tenant-scoped OAuth token storage
+// One row per company. Tokens are never returned to the client.
+export const qboConnections = pgTable("qbo_connections", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  environment: text("environment").notNull().default("sandbox"), // "sandbox" | "production"
+  realmId: text("realm_id").notNull(), // QBO company ID from OAuth callback
+  accessToken: text("access_token").notNull(),
+  refreshToken: text("refresh_token").notNull(),
+  accessTokenExpiresAt: timestamp("access_token_expires_at"), // computed from expires_in
+  connectedByUserId: varchar("connected_by_user_id"), // userId that initiated the OAuth flow
+  connectedAt: timestamp("connected_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+}, (table) => ({
+  companyIdUq: uniqueIndex("qbo_connections_company_id_uq").on(table.companyId),
+}));
+
+export type QboConnection = typeof qboConnections.$inferSelect;
+
 export const userStatusEnum = ["active", "invited", "deactivated"] as const;
 
 export const users = pgTable("users", {
@@ -279,7 +298,12 @@ export const customerCompanies = pgTable("customer_companies", {
   // Metadata
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
-});
+}, (table) => ({
+  // Prevent duplicate QBO customer mappings within a tenant
+  qboCustomerIdUq: uniqueIndex("customer_companies_company_qbo_customer_id_uq")
+    .on(table.companyId, table.qboCustomerId)
+    .where(sql`qbo_customer_id is not null`),
+}));
 
 export const insertCustomerCompanySchema = createInsertSchema(customerCompanies).omit({
   id: true,
@@ -369,7 +393,12 @@ export const clientLocations = pgTable("client_locations", {
   // Metadata
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+}, (table) => ({
+  // Prevent duplicate QBO sub-customer mappings within a tenant
+  qboCustomerIdUq: uniqueIndex("client_locations_company_qbo_customer_id_uq")
+    .on(table.companyId, table.qboCustomerId)
+    .where(sql`qbo_customer_id is not null`),
+}));
 
 export const insertClientLocationSchema = createInsertSchema(clientLocations).omit({
   id: true,
@@ -2646,6 +2675,8 @@ export const qboSyncEventTypeEnum = [
   "RECONCILE_DRY_RUN",
   "RECONCILE_APPLY",
   "PAYMENT_CREATED_FROM_QBO",
+  // Import events (QBO → App)
+  "CUSTOMER_IMPORT",
   // Go-live and preflight events
   "QBO_ENABLED",
   "QBO_DISABLED",

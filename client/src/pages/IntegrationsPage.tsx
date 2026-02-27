@@ -30,7 +30,7 @@ export default function IntegrationsPage() {
                 <div>
                   <CardTitle className="text-lg">QuickBooks Online</CardTitle>
                   <CardDescription>
-                    Sync customers, invoices, and payments with QuickBooks Online
+                    Connect QuickBooks and import customers.
                   </CardDescription>
                 </div>
               </div>

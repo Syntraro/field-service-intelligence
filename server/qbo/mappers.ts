@@ -38,6 +38,7 @@ export interface QBOCustomerResponse {
   PrimaryPhone?: { FreeFormNumber: string };
   PrimaryEmailAddr?: { Address: string };
   BillAddr?: QBOAddress;
+  ShipAddr?: QBOAddress; // Shipping/service address (used for location import)
   Active: boolean;
   ParentRef?: QBOParentRef;
   BillWithParent?: boolean;
@@ -228,6 +229,13 @@ export interface ParsedQBOCustomer {
     postalCode: string | null;
     country: string | null;
   };
+  shipAddress: {
+    street: string | null;
+    city: string | null;
+    province: string | null;
+    postalCode: string | null;
+    country: string | null;
+  };
   isActive: boolean;
   billWithParent: boolean;
   qboCustomerId: string;
@@ -266,6 +274,13 @@ export function parseQBOCustomerResponse(qboCustomer: QBOCustomerResponse): Pars
       province: qboCustomer.BillAddr?.CountrySubDivisionCode || null,
       postalCode: qboCustomer.BillAddr?.PostalCode || null,
       country: qboCustomer.BillAddr?.Country || null,
+    },
+    shipAddress: {
+      street: qboCustomer.ShipAddr?.Line1 || null,
+      city: qboCustomer.ShipAddr?.City || null,
+      province: qboCustomer.ShipAddr?.CountrySubDivisionCode || null,
+      postalCode: qboCustomer.ShipAddr?.PostalCode || null,
+      country: qboCustomer.ShipAddr?.Country || null,
     },
     isActive: qboCustomer.Active,
     billWithParent: qboCustomer.BillWithParent || false,

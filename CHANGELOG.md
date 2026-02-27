@@ -6,6 +6,108 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### Settings Page Redesign — Left Nav + Content Panel (2026-02-21)
+- **`SettingsShell` layout component**: New two-panel layout for all `/settings/*` routes. Left panel (280px) has a searchable, scrollable vertical nav with all 14 settings categories. Right panel renders the active sub-page. Active nav item highlighted with primary color. Search filters by title and description.
+  - **File**: `client/src/components/SettingsShell.tsx`
+- **Settings overview page**: `/settings` now shows a centered prompt to select a category from the left nav, replacing the old card grid.
+  - **File**: `client/src/pages/SettingsPage.tsx`
+- **Route-level layout wrapping**: `App.tsx` Router conditionally wraps all `/settings/*` routes with `SettingsShell`, preserving nav state (search) across sub-page navigation. All existing routes and sub-page components are preserved unchanged.
+  - **File**: `client/src/App.tsx`
+- **Test ID mapping**: Settings nav items use `nav-*-settings` test IDs (mapped from former `card-*-settings` IDs on the removed card grid).
+
+#### QBO OAuth Setup Guide (2026-02-21)
+- **Self-reporting setup endpoint**: `GET /api/qbo/oauth/setup-info` — replaces `config-status`. Detects app origin behind proxies (`x-forwarded-proto`/`x-forwarded-host`), computes the exact redirect URI, lists missing env vars by name, and returns step-by-step setup guidance. Never exposes actual secret values.
+  - **File**: `server/routes/qbo.ts`
+- **Guided setup checklist in UI**: When OAuth is not configured, Step 1 card shows a collapsible "Setup QuickBooks Connection" panel with: detected app URL, exact redirect URI to copy, missing secret names, 5-step setup checklist, and a "Copy Setup Info" button that copies a ready-to-paste block with all required values.
+- **Three-state badge**: Step 1 badge now shows "Connected" (green), "Ready" (blue, config present but not yet connected), or "Setup needed" (amber, missing config).
+  - **File**: `client/src/pages/QboConsolePage.tsx`
+- **Connect button gated**: "Connect QuickBooks" button is disabled when OAuth env vars are missing. Shows friendly message: "QuickBooks connection is not available yet. Please contact support." Technical env var names only visible in Advanced section.
+- **Softened error messages**: `/oauth/start` returns generic "Unable to start QuickBooks connection. Please contact support." instead of listing missing env var names. Client toast also uses friendly copy.
+  - **Files**: `server/routes/qbo.ts`, `client/src/pages/QboConsolePage.tsx`
+
+#### QBO OAuth Connect Flow (2026-02-20)
+- **`qbo_connections` table**: Tenant-scoped OAuth token storage. Stores `accessToken`, `refreshToken`, `realmId`, `environment`, and `accessTokenExpiresAt` per company. Unique index on `companyId`. Tokens are never returned to the client.
+  - **Files**: `shared/schema.ts`, `migrations/2026_02_20_qbo_connections.sql`
+- **OAuth endpoints**:
+  - `GET /api/qbo/oauth/start` — Initiates Intuit OAuth 2.0 flow. Stores cryptographic nonce in session for CSRF protection. Returns `{ url }` for client redirect.
+  - `GET /api/qbo/oauth/callback` — Handles Intuit redirect. Validates state nonce (10-minute expiry), exchanges authorization code for tokens via Intuit token endpoint, upserts `qbo_connections` row, redirects to QBO settings page.
+  - `POST /api/qbo/oauth/disconnect` — Deletes `qbo_connections` row for tenant. Does not delete imported customers or mappings.
+  - **File**: `server/routes/qbo.ts`
+- **DB-backed token retrieval**: `getQboTokensForCompany()` now reads from `qbo_connections` table first, with env-var fallback for dev/admin testing only.
+- **Token refresh persistence**: `persistRefreshedTokens()` helper writes updated `accessToken`, `refreshToken`, and `accessTokenExpiresAt` back to DB after QboClient auto-refreshes. Called from both `connection-status` and `preflight/import-customers` endpoints.
+  - **File**: `server/routes/qbo.ts`
+- **Connect/Disconnect UI**: Step 1 card now shows "Connect QuickBooks" button (triggers OAuth redirect) when not connected, and "Disconnect" button (with confirmation dialog) when connected. Auto-detects OAuth callback return via `?connected=` URL param and shows toast + refetches.
+  - **File**: `client/src/pages/QboConsolePage.tsx`
+- **Required env vars** for OAuth:
+  - `QBO_CLIENT_ID` — Intuit app client ID
+  - `QBO_CLIENT_SECRET` — Intuit app client secret
+  - `QBO_OAUTH_REDIRECT_URI` — Must match Intuit app redirect settings
+  - `QBO_ENVIRONMENT` — Optional, defaults to `"sandbox"`
+
+### Changed
+
+#### Step 1 Connection Status Separation (2026-02-20)
+- **New endpoint**: `GET /api/qbo/connection-status` — lightweight check returning `{connected, environment, readOnlyMode, message}` with plain English messages. Checks tokens + safe QBO read query, separate from the heavier import preflight.
+  - **File**: `server/routes/qbo.ts`
+- **Step 1 uses connection-status**: Step 1 "Connect QuickBooks" card now uses `/api/qbo/connection-status` instead of deriving status from `/api/qbo/preflight/import-customers`. Shows server-provided message. Step 3 import gating still uses import preflight.
+  - **File**: `client/src/pages/QboConsolePage.tsx`
+
+#### QuickBooks Page Redesign — Self-Serve Setup Flow (2026-02-20)
+- **Simplified page layout**: Renamed from "QuickBooks Online Console" to "QuickBooks Online" with guided subtitle. Replaced flat list of technical panels with a 4-step Setup grid.
+  - **Step 1: Connect QuickBooks** — Shows Connected/Not connected badge based on connection status. Friendly server message.
+  - **Step 2: Items & Tax** — Inline mapping form (service, labor, material, fee, discount, misc + tax codes). Disabled until connected. Shows "Complete" badge when configured.
+  - **Step 3: Import Customers** — Disabled until connected AND mapping configured. Production hard-block and IMPORT typing confirmation preserved. Friendly gating messages.
+  - **Step 4: Invoice Sync** — "Coming Soon" placeholder.
+- **Advanced section collapsed by default**: All existing heavy tooling (Go-Live panel, status dashboard, sync queue, reconciliation, drift alerts, webhooks, runs, item linking, sync events) moved into a collapsible "Advanced (Support/Admin)" section at bottom.
+- **Lazy-loaded advanced queries**: Heavy API calls (`/api/qbo/status`, `/api/qbo/events`, `/api/qbo/preflight`, `/api/qbo/webhooks`, `/api/qbo/drift-alerts`, `/api/qbo/runs`, `/api/qbo/queue`, `/api/qbo/items/local`) only fire when the Advanced section is expanded. Default page only queries `/api/qbo/connection-status`, `/api/qbo/mapping-config`, `/api/qbo/preflight/import-customers`, and `/api/qbo/read-only-status`.
+- **Import gating**: Import buttons now require `mappingStatus.configured === true` in addition to `importPreflight.ok`. Shows "Finish Items & Tax setup to enable customer import" when mapping is incomplete.
+  - **File**: `client/src/pages/QboConsolePage.tsx`
+- **IntegrationsPage copy update**: QuickBooks card description changed to "Connect QuickBooks and import customers."
+  - **File**: `client/src/pages/IntegrationsPage.tsx`
+
+### Added
+
+#### QBO Customer Import + Read-Only Mode (2026-02-20)
+- **Global QBO read-only mode**: `QBO_READ_ONLY_MODE` env var now **defaults to TRUE** — all QBO writes are blocked unless explicitly set to `false`. No env configuration required for safe operation.
+  - **Files**: `server/services/qbo/QboClient.ts`, `server/services/qbo/index.ts`
+- **QBO Customer Import endpoint**: `POST /api/qbo/import/customers` — imports customers from QBO into the app. Supports `dryRun` (preview), `limit`, and `includeInactive` options. 2-pass import: parents first (→ customerCompanies), then children (→ clientLocations). Handles hierarchy flattening for >2-level QBO nesting, soft-delete restoration, and upsert by qboCustomerId.
+  - **Files**: `server/services/qbo/QboCustomerImportService.ts` (new), `server/routes/qbo.ts`
+- **Read-only status endpoint**: `GET /api/qbo/read-only-status` — returns current QBO_READ_ONLY_MODE state.
+- **Import Customers UI**: New card in QBO Console with "Preview Import (Dry Run)" and "Run Import" buttons, summary/sample table, warnings display, and read-only mode badge.
+  - **File**: `client/src/pages/QboConsolePage.tsx`
+- **Unique constraints for QBO customer IDs**: Partial unique indexes on `(companyId, qboCustomerId) WHERE qboCustomerId IS NOT NULL` for both `customer_companies` and `client_locations` tables. Prevents duplicate QBO mappings within a tenant.
+  - **Files**: `shared/schema.ts`, `migrations/2026_02_20_qbo_customer_unique_indexes.sql`
+- **CUSTOMER_IMPORT event type**: Added to `qboSyncEventTypeEnum` for audit logging of import operations.
+  - **File**: `shared/schema.ts`
+- **ShipAddr field on QBOCustomerResponse**: Added shipping address to QBO customer response type for location service address mapping.
+  - **File**: `server/qbo/mappers.ts`
+- **Import preflight endpoint**: `GET /api/qbo/preflight/import-customers` — comprehensive 6-check validation: tokens, environment safety, import read-only override, global read-only status, QBO connectivity with token refresh, and DB unique indexes.
+  - **File**: `server/routes/qbo.ts`
+
+#### QBO Import Self-Protection (2026-02-20)
+- **Import read-only override**: `isImportReadOnlyEnforced()` — import paths ALWAYS block QBO writes regardless of `QBO_READ_ONLY_MODE` env var. Hard safety guarantee that import logic can never write to QBO.
+  - **Files**: `server/services/qbo/QboClient.ts`, `server/services/qbo/index.ts`
+- **Sandbox-only default**: `getQboEnvironment()` defaults to `"sandbox"` when `QBO_ENVIRONMENT` is unset. No manual env configuration needed.
+  - **Files**: `server/services/qbo/QboClient.ts`, `server/services/qbo/index.ts`
+- **Production import hard-block**: `POST /api/qbo/import/customers` returns 403 when `QBO_ENVIRONMENT=production`. Server-side enforcement — cannot be bypassed from UI.
+  - **File**: `server/routes/qbo.ts`
+- **Enhanced read-only-status endpoint**: `GET /api/qbo/read-only-status` now returns `readOnly`, `importReadOnly`, `environment`, and `importAllowed` fields.
+  - **File**: `server/routes/qbo.ts`
+- **UI mode indicators**: Import card shows Environment, Import Read-Only, and Global Read-Only badges. Production environment shows hard-block alert. All preflight check details visible when passed.
+  - **File**: `client/src/pages/QboConsolePage.tsx`
+
+### Fixed
+
+#### QBO Import CSRF + Safety Rails (2026-02-20)
+- **CSRF fix**: Customer import mutation in QboConsolePage now uses the standard `apiRequest` helper (which includes `x-csrf-token` header and auto-retry on CSRF 403) instead of raw `fetch()`. Fixes "Invalid CSRF token" error on Preview/Import buttons.
+  - **File**: `client/src/pages/QboConsolePage.tsx`
+- **Preflight gate**: Import buttons are disabled until the preflight check passes (QBO tokens, connectivity, DB indexes, environment all OK).
+- **Production environment hard-block**: Both server (403) and UI (buttons disabled) prevent import in production.
+- **Typing confirmation**: "Run Import" dialog now requires typing "IMPORT" to confirm, preventing accidental imports.
+  - **File**: `client/src/pages/QboConsolePage.tsx`
+
 ### Changed
 
 #### Invoices List UI Polish (2026-02-20)

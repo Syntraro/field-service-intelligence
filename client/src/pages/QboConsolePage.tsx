@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Link } from "wouter";
-import { queryClient } from "@/lib/queryClient";
+import { Link, useSearch } from "wouter";
+import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
   ArrowLeft,
@@ -34,6 +34,11 @@ import {
   Bell,
   ExternalLink,
   Info,
+  Download,
+  Link2,
+  Package,
+  Copy,
+  ClipboardCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -59,8 +64,16 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 
-// Types
+// ============================================================
+// TYPES
+// ============================================================
+
 interface MappingConfigStatus {
   configured: boolean;
   hasItemMappings: boolean;
@@ -353,8 +366,55 @@ interface SyncRunDetailResponse {
   webhookEvents: QboWebhookEvent[];
 }
 
+// Customer import result type (mirrors server response)
+interface ImportedRecord {
+  qboCustomerId: string;
+  displayName: string;
+  type: "parent" | "child";
+  action: "create" | "update" | "restore" | "skip";
+  localId?: string;
+  parentQboId?: string | null;
+}
+
+interface CustomerImportResult {
+  success: boolean;
+  dryRun: boolean;
+  totals: { fetched: number; parents: number; children: number; inactiveSkipped: number };
+  wouldCreate: { customerCompanies: number; clientLocations: number };
+  wouldUpdate: { customerCompanies: number; clientLocations: number };
+  wouldRestore: { customerCompanies: number; clientLocations: number };
+  created: { customerCompanies: number; clientLocations: number };
+  updated: { customerCompanies: number; clientLocations: number };
+  restored: { customerCompanies: number; clientLocations: number };
+  sample: ImportedRecord[];
+  warnings: string[];
+  error?: string;
+}
+
+// Import preflight types
+interface ImportPreflightCheck { name: string; ok: boolean; detail: string }
+interface ImportPreflightResult { ok: boolean; environment: string; globalReadOnly: boolean; importReadOnly: boolean; importAllowed: boolean; checks: ImportPreflightCheck[] }
+interface ReadOnlyStatusResult { readOnly: boolean; importReadOnly: boolean; environment: string; importAllowed: boolean }
+
+/** Lightweight connection check result for Step 1 */
+interface ConnectionStatusResult { connected: boolean; environment: string; readOnlyMode: boolean; message: string }
+
+/** OAuth setup info — self-reported config and computed redirect URI */
+interface OAuthSetupInfo {
+  oauthConfigured: boolean;
+  missing: string[];
+  detectedAppOrigin: string;
+  requiredRedirectUri: string;
+  environment: string;
+  nextSteps: string[];
+}
+
 // Error category type for suggested actions
 type ErrorCategory = "auth" | "rate_limit" | "validation" | "mapping" | "conflict" | "server" | "network" | "unknown";
+
+// ============================================================
+// CONSTANTS & HELPERS
+// ============================================================
 
 const EVENT_TYPE_OPTIONS = [
   { value: "all", label: "All Event Types" },
@@ -367,6 +427,7 @@ const EVENT_TYPE_OPTIONS = [
   { value: "RECONCILE_DRY_RUN", label: "Reconcile (Dry Run)" },
   { value: "RECONCILE_APPLY", label: "Reconcile (Apply)" },
   { value: "PAYMENT_CREATED_FROM_QBO", label: "Payment from QBO" },
+  { value: "CUSTOMER_IMPORT", label: "Customer Import" },
 ];
 
 const RESULT_OPTIONS = [
@@ -407,59 +468,21 @@ function ResultBadge({ result }: { result: string }) {
   return <Badge variant={variant}>{result}</Badge>;
 }
 
-/**
- * Get suggested action based on error category
- */
 function getSuggestedAction(errorCategory?: ErrorCategory, errorMessage?: string): { message: string; action: string } | null {
   if (!errorCategory && !errorMessage) return null;
-
-  // Detect category from error message if not provided
   const detectedCategory = errorCategory || detectErrorCategory(errorMessage || "");
-
   switch (detectedCategory) {
-    case "auth":
-      return {
-        message: "Authentication failed - QBO tokens may have expired",
-        action: "Re-authenticate with QuickBooks Online",
-      };
-    case "rate_limit":
-      return {
-        message: "Rate limit exceeded - too many API calls",
-        action: "Wait and retry later, or reduce sync batch size",
-      };
-    case "validation":
-      return {
-        message: "Data validation error - required fields missing or invalid",
-        action: "Review the entity data and fix validation issues",
-      };
-    case "mapping":
-      return {
-        message: "QBO mapping error - item or customer not found in QBO",
-        action: "Configure QBO item mappings in Settings below",
-      };
-    case "conflict":
-      return {
-        message: "Stale data conflict - entity was modified in QBO",
-        action: "Run Reconcile to sync latest data from QBO",
-      };
-    case "server":
-      return {
-        message: "QBO server error - temporary outage",
-        action: "Retry in a few minutes",
-      };
-    case "network":
-      return {
-        message: "Network error - connection issue",
-        action: "Check network connectivity and retry",
-      };
-    default:
-      return null;
+    case "auth": return { message: "Authentication failed - QBO tokens may have expired", action: "Re-authenticate with QuickBooks Online" };
+    case "rate_limit": return { message: "Rate limit exceeded - too many API calls", action: "Wait and retry later, or reduce sync batch size" };
+    case "validation": return { message: "Data validation error - required fields missing or invalid", action: "Review the entity data and fix validation issues" };
+    case "mapping": return { message: "QBO mapping error - item or customer not found in QBO", action: "Configure QBO item mappings in Settings below" };
+    case "conflict": return { message: "Stale data conflict - entity was modified in QBO", action: "Run Reconcile to sync latest data from QBO" };
+    case "server": return { message: "QBO server error - temporary outage", action: "Retry in a few minutes" };
+    case "network": return { message: "Network error - connection issue", action: "Check network connectivity and retry" };
+    default: return null;
   }
 }
 
-/**
- * Detect error category from error message
- */
 function detectErrorCategory(errorMessage: string): ErrorCategory {
   const msg = errorMessage.toLowerCase();
   if (msg.includes("token") || msg.includes("auth") || msg.includes("401")) return "auth";
@@ -472,14 +495,30 @@ function detectErrorCategory(errorMessage: string): ErrorCategory {
   return "unknown";
 }
 
+// ============================================================
+// MAIN COMPONENT
+// ============================================================
+
 export default function QboConsolePage() {
   const { toast } = useToast();
+  const searchString = useSearch();
+
+  // --- State: Setup flow ---
+  const [mappingConfig, setMappingConfig] = useState<QboMappingConfig>({});
+  const [customerImportResult, setCustomerImportResult] = useState<CustomerImportResult | null>(null);
+  const [showImportConfirm, setShowImportConfirm] = useState(false);
+  const [importConfirmText, setImportConfirmText] = useState("");
+  const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
+  const [setupPanelOpen, setSetupPanelOpen] = useState(false);
+  const [copiedSetup, setCopiedSetup] = useState(false);
+
+  // --- State: Advanced section ---
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [invoiceId, setInvoiceId] = useState("");
   const [eventTypeFilter, setEventTypeFilter] = useState("all");
   const [resultFilter, setResultFilter] = useState("all");
   const [showApplyConfirm, setShowApplyConfirm] = useState(false);
   const [showMappingConfig, setShowMappingConfig] = useState(false);
-  const [mappingConfig, setMappingConfig] = useState<QboMappingConfig>({});
   const [queueStatusFilter, setQueueStatusFilter] = useState("all");
   const [dryRunInvoiceId, setDryRunInvoiceId] = useState("");
   const [showEnableConfirm, setShowEnableConfirm] = useState(false);
@@ -491,20 +530,76 @@ export default function QboConsolePage() {
   const [showItemLinkDialog, setShowItemLinkDialog] = useState(false);
   const [itemLinkQboId, setItemLinkQboId] = useState("");
 
-  // Fetch QBO status
-  const { data: status, isLoading: statusLoading, refetch: refetchStatus } = useQuery<QboStatusResponse>({
-    queryKey: ["/api/qbo/status"],
+  // ============================================================
+  // QUERIES: DEFAULT (always loaded)
+  // ============================================================
+
+  // Mapping config — needed for Step 2 card
+  const { data: mappingConfigData, isLoading: mappingConfigLoading } = useQuery<QboMappingConfigResponse>({
+    queryKey: ["/api/qbo/mapping-config"],
     queryFn: async () => {
-      const response = await fetch("/api/qbo/status", { credentials: "include" });
-      if (!response.ok) {
-        if (response.status === 403) throw new Error("Access denied. Admin role required.");
-        throw new Error("Failed to fetch QBO status");
-      }
+      const response = await fetch("/api/qbo/mapping-config", { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch mapping config");
+      const data = await response.json();
+      setMappingConfig(data.config || {});
+      return data;
+    },
+  });
+
+  // Connection status — lightweight check for Step 1 (connect card)
+  const { data: connectionStatus, isLoading: connectionStatusLoading, refetch: refetchConnectionStatus } = useQuery<ConnectionStatusResult>({
+    queryKey: ["/api/qbo/connection-status"],
+    queryFn: async () => {
+      const response = await fetch("/api/qbo/connection-status", { credentials: "include" });
+      if (!response.ok) throw new Error("Connection check failed");
       return response.json();
     },
   });
 
-  // Fetch QBO events with filters
+  // OAuth setup info — gates the Connect button and provides setup checklist
+  const { data: oauthSetup, refetch: refetchOauthSetup } = useQuery<OAuthSetupInfo>({
+    queryKey: ["/api/qbo/oauth/setup-info"],
+    queryFn: async () => {
+      const response = await fetch("/api/qbo/oauth/setup-info", { credentials: "include" });
+      if (!response.ok) return { oauthConfigured: false, missing: [], detectedAppOrigin: "", requiredRedirectUri: "", environment: "sandbox", nextSteps: [] };
+      return response.json();
+    },
+  });
+
+  // Import preflight — needed for Step 3 (import gate)
+  const { data: importPreflight, isLoading: importPreflightLoading, refetch: refetchImportPreflight } = useQuery<ImportPreflightResult>({
+    queryKey: ["/api/qbo/preflight/import-customers"],
+    queryFn: async () => {
+      const response = await fetch("/api/qbo/preflight/import-customers", { credentials: "include" });
+      if (!response.ok) throw new Error("Preflight check failed");
+      return response.json();
+    },
+  });
+
+  // Read-only status — small, needed for safety display
+  const { data: readOnlyStatus } = useQuery<ReadOnlyStatusResult>({
+    queryKey: ["/api/qbo/read-only-status"],
+    queryFn: async () => {
+      const response = await fetch("/api/qbo/read-only-status", { credentials: "include" });
+      if (!response.ok) return { readOnly: true, importReadOnly: true, environment: "sandbox", importAllowed: true };
+      return response.json();
+    },
+  });
+
+  // ============================================================
+  // QUERIES: ADVANCED (lazy-loaded only when section opened)
+  // ============================================================
+
+  const { data: status, isLoading: statusLoading, refetch: refetchStatus } = useQuery<QboStatusResponse>({
+    queryKey: ["/api/qbo/status"],
+    queryFn: async () => {
+      const response = await fetch("/api/qbo/status", { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch QBO status");
+      return response.json();
+    },
+    enabled: advancedOpen,
+  });
+
   const eventsQueryKey = ["/api/qbo/events", eventTypeFilter, resultFilter];
   const { data: eventsData, isLoading: eventsLoading, refetch: refetchEvents } = useQuery<QboEventsResponse>({
     queryKey: eventsQueryKey,
@@ -516,21 +611,9 @@ export default function QboConsolePage() {
       if (!response.ok) throw new Error("Failed to fetch QBO events");
       return response.json();
     },
+    enabled: advancedOpen,
   });
 
-  // Fetch mapping config
-  useQuery<QboMappingConfigResponse>({
-    queryKey: ["/api/qbo/mapping-config"],
-    queryFn: async () => {
-      const response = await fetch("/api/qbo/mapping-config", { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to fetch mapping config");
-      const data = await response.json();
-      setMappingConfig(data.config || {});
-      return data;
-    },
-  });
-
-  // Fetch preflight status
   const { data: preflight, isLoading: preflightLoading, refetch: refetchPreflight } = useQuery<PreflightResult>({
     queryKey: ["/api/qbo/preflight"],
     queryFn: async () => {
@@ -538,9 +621,201 @@ export default function QboConsolePage() {
       if (!response.ok) throw new Error("Failed to fetch preflight status");
       return response.json();
     },
+    enabled: advancedOpen,
   });
 
-  // Toggle QBO enabled mutation
+  const webhooksQueryKey = ["/api/qbo/webhooks", webhookStatusFilter];
+  const { data: webhooksData, isLoading: webhooksLoading, refetch: refetchWebhooks } = useQuery<QboWebhooksResponse>({
+    queryKey: webhooksQueryKey,
+    queryFn: async () => {
+      const params = new URLSearchParams({ limit: "50" });
+      if (webhookStatusFilter && webhookStatusFilter !== "all") params.set("status", webhookStatusFilter);
+      const response = await fetch(`/api/qbo/webhooks?${params}`, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch webhooks");
+      return response.json();
+    },
+    enabled: advancedOpen,
+  });
+
+  const { data: driftAlertsData, isLoading: driftAlertsLoading, refetch: refetchDriftAlerts } = useQuery<DriftAlertsResponse>({
+    queryKey: ["/api/qbo/drift-alerts"],
+    queryFn: async () => {
+      const response = await fetch("/api/qbo/drift-alerts", { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch drift alerts");
+      return response.json();
+    },
+    enabled: advancedOpen,
+  });
+
+  const { data: runsData, isLoading: runsLoading, refetch: refetchRuns } = useQuery<SyncRunsResponse>({
+    queryKey: ["/api/qbo/runs"],
+    queryFn: async () => {
+      const response = await fetch("/api/qbo/runs?limit=20", { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch runs");
+      return response.json();
+    },
+    enabled: advancedOpen,
+  });
+
+  const { data: runDetailData, isLoading: runDetailLoading } = useQuery<SyncRunDetailResponse>({
+    queryKey: ["/api/qbo/runs", selectedRunId],
+    queryFn: async () => {
+      const response = await fetch(`/api/qbo/runs/${selectedRunId}`, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch run detail");
+      return response.json();
+    },
+    enabled: advancedOpen && !!selectedRunId,
+  });
+
+  const { data: qboItemsData, isLoading: qboItemsLoading, refetch: refetchQboItems } = useQuery<QboItemsResponse>({
+    queryKey: ["/api/qbo/items", itemSearchQuery],
+    queryFn: async () => {
+      const params = new URLSearchParams({ limit: "50" });
+      if (itemSearchQuery) params.set("q", itemSearchQuery);
+      const response = await fetch(`/api/qbo/items?${params}`, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch QBO items");
+      return response.json();
+    },
+    enabled: false, // Only fetch on demand
+  });
+
+  const { data: localItemsData, isLoading: localItemsLoading, refetch: refetchLocalItems } = useQuery<LocalItemsResponse>({
+    queryKey: ["/api/qbo/items/local", localItemsSyncStatus],
+    queryFn: async () => {
+      const params = new URLSearchParams({ limit: "50" });
+      if (localItemsSyncStatus && localItemsSyncStatus !== "all") params.set("syncStatus", localItemsSyncStatus);
+      const response = await fetch(`/api/qbo/items/local?${params}`, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch local items");
+      return response.json();
+    },
+    enabled: advancedOpen,
+  });
+
+  const queueQueryKey = ["/api/qbo/queue", queueStatusFilter];
+  const { data: queueData, isLoading: queueLoading, refetch: refetchQueue } = useQuery<QboQueueResponse>({
+    queryKey: queueQueryKey,
+    queryFn: async () => {
+      const params = new URLSearchParams({ limit: "50" });
+      if (queueStatusFilter && queueStatusFilter !== "all") params.set("status", queueStatusFilter);
+      const response = await fetch(`/api/qbo/queue?${params}`, { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch queue");
+      return response.json();
+    },
+    enabled: advancedOpen,
+  });
+
+  // ============================================================
+  // OAuth callback detection — refetch status after returning from Intuit
+  // ============================================================
+
+  useEffect(() => {
+    const params = new URLSearchParams(searchString);
+    const connected = params.get("connected");
+    if (connected === "1") {
+      toast({ title: "QuickBooks connected", description: "Your QuickBooks account has been linked." });
+      refetchConnectionStatus();
+      refetchImportPreflight();
+      // Clean up URL params
+      window.history.replaceState({}, "", window.location.pathname);
+    } else if (connected === "0") {
+      const error = params.get("error") || "Unknown error";
+      toast({ title: "Connection failed", description: error, variant: "destructive" });
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps — run once on mount
+
+  // ============================================================
+  // MUTATIONS: OAuth
+  // ============================================================
+
+  const connectMutation = useMutation({
+    mutationFn: async () => {
+      const data = await apiRequest<{ url: string }>("/api/qbo/oauth/start");
+      return data;
+    },
+    onSuccess: (data) => {
+      // Redirect to Intuit authorization page
+      window.location.href = data.url;
+    },
+    onError: () => {
+      toast({ title: "Unable to start QuickBooks connection", description: "Please try again or contact support.", variant: "destructive" });
+    },
+  });
+
+  const disconnectMutation = useMutation({
+    mutationFn: async () => {
+      return apiRequest<{ ok: boolean }>("/api/qbo/oauth/disconnect", { method: "POST" });
+    },
+    onSuccess: () => {
+      toast({ title: "QuickBooks disconnected" });
+      setShowDisconnectConfirm(false);
+      refetchConnectionStatus();
+      refetchImportPreflight();
+    },
+    onError: (err: Error) => {
+      toast({ title: "Disconnect failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  // ============================================================
+  // MUTATIONS: Setup flow
+  // ============================================================
+
+  const customerImportMutation = useMutation({
+    mutationFn: async (payload: { dryRun: boolean; includeInactive?: boolean }) => {
+      return apiRequest<CustomerImportResult>("/api/qbo/import/customers", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+    },
+    onSuccess: (data) => {
+      setCustomerImportResult(data);
+      if (data.dryRun) {
+        toast({ title: "Preview complete", description: `Found ${data.totals.fetched} customers in QuickBooks` });
+      } else {
+        const created = data.created.customerCompanies + data.created.clientLocations;
+        const updated = data.updated.customerCompanies + data.updated.clientLocations;
+        const restored = data.restored.customerCompanies + data.restored.clientLocations;
+        toast({
+          title: "Import complete",
+          description: `Created ${created}, updated ${updated}, restored ${restored} records`,
+        });
+        queryClient.invalidateQueries({ queryKey: ["/api/qbo/events"] });
+      }
+    },
+    onError: (err: Error) => {
+      toast({ title: "Import failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const saveMappingConfigMutation = useMutation({
+    mutationFn: async (config: QboMappingConfig) => {
+      const response = await fetch("/api/qbo/mapping-config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(config),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error || "Failed to save config");
+      }
+      return response.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Mapping configuration saved" });
+      queryClient.invalidateQueries({ queryKey: ["/api/qbo/mapping-config"] });
+      refetchImportPreflight();
+    },
+    onError: (err: Error) => {
+      toast({ title: "Save failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  // ============================================================
+  // MUTATIONS: Advanced section
+  // ============================================================
+
   const toggleEnabledMutation = useMutation({
     mutationFn: async (payload: { enabled: boolean; environment?: string }) => {
       const response = await fetch("/api/qbo/enabled", {
@@ -558,9 +833,7 @@ export default function QboConsolePage() {
     onSuccess: (data) => {
       toast({
         title: data.qboEnabled ? "QBO sync enabled" : "QBO sync disabled",
-        description: data.qboEnabled
-          ? `Environment: ${data.qboEnvironment}`
-          : "QBO sync has been disabled",
+        description: data.qboEnabled ? `Environment: ${data.qboEnvironment}` : "QBO sync has been disabled",
       });
       refetchPreflight();
       refetchStatus();
@@ -570,7 +843,6 @@ export default function QboConsolePage() {
     },
   });
 
-  // Connectivity test mutation
   const connectivityTestMutation = useMutation({
     mutationFn: async () => {
       const response = await fetch("/api/qbo/connectivity-test", { method: "POST", credentials: "include" });
@@ -583,9 +855,7 @@ export default function QboConsolePage() {
     onSuccess: (data) => {
       toast({
         title: data.success ? "Connection successful" : "Connection failed",
-        description: data.success
-          ? `Latency: ${data.latencyMs}ms`
-          : data.error || "Could not connect to QBO",
+        description: data.success ? `Latency: ${data.latencyMs}ms` : data.error || "Could not connect to QBO",
         variant: data.success ? "default" : "destructive",
       });
       refetchPreflight();
@@ -595,7 +865,6 @@ export default function QboConsolePage() {
     },
   });
 
-  // Dry-run invoice sync mutation
   const dryRunInvoiceMutation = useMutation({
     mutationFn: async (id: string) => {
       const response = await fetch(`/api/qbo/dry-run/invoice/${id}`, { method: "POST", credentials: "include" });
@@ -608,10 +877,7 @@ export default function QboConsolePage() {
     onSuccess: (data) => {
       toast({
         title: data.wouldSync ? "Would sync successfully" : "Would not sync",
-        description: data.wouldSync
-          ? `Invoice ${data.invoiceId} would be synced to QBO`
-          : data.skipReason || "See validation details",
-        variant: "default",
+        description: data.wouldSync ? `Invoice ${data.invoiceId} would be synced to QBO` : data.skipReason || "See validation details",
       });
     },
     onError: (err: Error) => {
@@ -619,7 +885,6 @@ export default function QboConsolePage() {
     },
   });
 
-  // Dry-run queue process mutation
   const dryRunQueueMutation = useMutation({
     mutationFn: async () => {
       const response = await fetch("/api/qbo/dry-run/queue/process", { method: "POST", credentials: "include" });
@@ -640,76 +905,6 @@ export default function QboConsolePage() {
     },
   });
 
-  // Fetch webhook events
-  const webhooksQueryKey = ["/api/qbo/webhooks", webhookStatusFilter];
-  const { data: webhooksData, isLoading: webhooksLoading, refetch: refetchWebhooks } = useQuery<QboWebhooksResponse>({
-    queryKey: webhooksQueryKey,
-    queryFn: async () => {
-      const params = new URLSearchParams({ limit: "50" });
-      if (webhookStatusFilter && webhookStatusFilter !== "all") params.set("status", webhookStatusFilter);
-      const response = await fetch(`/api/qbo/webhooks?${params}`, { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to fetch webhooks");
-      return response.json();
-    },
-  });
-
-  // Fetch drift alerts
-  const { data: driftAlertsData, isLoading: driftAlertsLoading, refetch: refetchDriftAlerts } = useQuery<DriftAlertsResponse>({
-    queryKey: ["/api/qbo/drift-alerts"],
-    queryFn: async () => {
-      const response = await fetch("/api/qbo/drift-alerts", { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to fetch drift alerts");
-      return response.json();
-    },
-  });
-
-  // Fetch recent sync runs
-  const { data: runsData, isLoading: runsLoading, refetch: refetchRuns } = useQuery<SyncRunsResponse>({
-    queryKey: ["/api/qbo/runs"],
-    queryFn: async () => {
-      const response = await fetch("/api/qbo/runs?limit=20", { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to fetch runs");
-      return response.json();
-    },
-  });
-
-  // Fetch run detail when selected
-  const { data: runDetailData, isLoading: runDetailLoading } = useQuery<SyncRunDetailResponse>({
-    queryKey: ["/api/qbo/runs", selectedRunId],
-    queryFn: async () => {
-      const response = await fetch(`/api/qbo/runs/${selectedRunId}`, { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to fetch run detail");
-      return response.json();
-    },
-    enabled: !!selectedRunId,
-  });
-
-  // Fetch QBO items (from QuickBooks)
-  const { data: qboItemsData, isLoading: qboItemsLoading, refetch: refetchQboItems } = useQuery<QboItemsResponse>({
-    queryKey: ["/api/qbo/items", itemSearchQuery],
-    queryFn: async () => {
-      const params = new URLSearchParams({ limit: "50" });
-      if (itemSearchQuery) params.set("q", itemSearchQuery);
-      const response = await fetch(`/api/qbo/items?${params}`, { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to fetch QBO items");
-      return response.json();
-    },
-    enabled: false, // Only fetch on demand
-  });
-
-  // Fetch local items with sync status
-  const { data: localItemsData, isLoading: localItemsLoading, refetch: refetchLocalItems } = useQuery<LocalItemsResponse>({
-    queryKey: ["/api/qbo/items/local", localItemsSyncStatus],
-    queryFn: async () => {
-      const params = new URLSearchParams({ limit: "50" });
-      if (localItemsSyncStatus && localItemsSyncStatus !== "all") params.set("syncStatus", localItemsSyncStatus);
-      const response = await fetch(`/api/qbo/items/local?${params}`, { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to fetch local items");
-      return response.json();
-    },
-  });
-
-  // Link item mutation
   const linkItemMutation = useMutation({
     mutationFn: async ({ itemId, qboItemId }: { itemId: string; qboItemId: string }) => {
       const response = await fetch("/api/qbo/items/link", {
@@ -736,7 +931,6 @@ export default function QboConsolePage() {
     },
   });
 
-  // Create item in QBO mutation
   const createItemInQboMutation = useMutation({
     mutationFn: async (itemId: string) => {
       const response = await fetch(`/api/qbo/items/create/${itemId}`, { method: "POST", credentials: "include" });
@@ -755,7 +949,6 @@ export default function QboConsolePage() {
     },
   });
 
-  // Bulk create items mutation
   const bulkCreateItemsMutation = useMutation({
     mutationFn: async (itemIds: string[]) => {
       const response = await fetch("/api/qbo/items/bulk-create", {
@@ -783,7 +976,6 @@ export default function QboConsolePage() {
     },
   });
 
-  // Process webhooks mutation
   const processWebhooksMutation = useMutation({
     mutationFn: async () => {
       const response = await fetch("/api/qbo/webhook/process", { method: "POST", credentials: "include" });
@@ -807,7 +999,6 @@ export default function QboConsolePage() {
     },
   });
 
-  // Enqueue reconcile for drift alert
   const reconcileDriftAlertMutation = useMutation({
     mutationFn: async (eventId: string) => {
       const response = await fetch(`/api/qbo/drift-alerts/${eventId}/reconcile`, { method: "POST", credentials: "include" });
@@ -830,45 +1021,6 @@ export default function QboConsolePage() {
     },
   });
 
-  // Save mapping config mutation
-  const saveMappingConfigMutation = useMutation({
-    mutationFn: async (config: QboMappingConfig) => {
-      const response = await fetch("/api/qbo/mapping-config", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify(config),
-      });
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        throw new Error(error.error || "Failed to save config");
-      }
-      return response.json();
-    },
-    onSuccess: () => {
-      toast({ title: "Mapping configuration saved" });
-      refetchStatus();
-      queryClient.invalidateQueries({ queryKey: ["/api/qbo/mapping-config"] });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Save failed", description: err.message, variant: "destructive" });
-    },
-  });
-
-  // Fetch queue jobs
-  const queueQueryKey = ["/api/qbo/queue", queueStatusFilter];
-  const { data: queueData, isLoading: queueLoading, refetch: refetchQueue } = useQuery<QboQueueResponse>({
-    queryKey: queueQueryKey,
-    queryFn: async () => {
-      const params = new URLSearchParams({ limit: "50" });
-      if (queueStatusFilter && queueStatusFilter !== "all") params.set("status", queueStatusFilter);
-      const response = await fetch(`/api/qbo/queue?${params}`, { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to fetch queue");
-      return response.json();
-    },
-  });
-
-  // Process queue mutation
   const processQueueMutation = useMutation({
     mutationFn: async (limit: number = 20) => {
       const response = await fetch(`/api/qbo/queue/process?limit=${limit}`, { method: "POST", credentials: "include" });
@@ -892,7 +1044,6 @@ export default function QboConsolePage() {
     },
   });
 
-  // Replay job mutation
   const replayJobMutation = useMutation({
     mutationFn: async (jobId: string) => {
       const response = await fetch(`/api/qbo/queue/${jobId}/replay`, { method: "POST", credentials: "include" });
@@ -905,9 +1056,7 @@ export default function QboConsolePage() {
     onSuccess: (data) => {
       toast({
         title: data.success ? "Job succeeded" : "Job failed",
-        description: data.success
-          ? `Entity synced: ${data.qboEntityId || "N/A"}`
-          : data.error || "Unknown error",
+        description: data.success ? `Entity synced: ${data.qboEntityId || "N/A"}` : data.error || "Unknown error",
         variant: data.success ? "default" : "destructive",
       });
       refetchQueue();
@@ -919,7 +1068,6 @@ export default function QboConsolePage() {
     },
   });
 
-  // Delete job mutation
   const deleteJobMutation = useMutation({
     mutationFn: async (jobId: string) => {
       const response = await fetch(`/api/qbo/queue/${jobId}`, { method: "DELETE", credentials: "include" });
@@ -938,7 +1086,6 @@ export default function QboConsolePage() {
     },
   });
 
-  // Enqueue job mutation
   const enqueueJobMutation = useMutation({
     mutationFn: async (payload: { entityType: string; entityId: string; action: string }) => {
       const response = await fetch("/api/qbo/queue/enqueue", {
@@ -966,7 +1113,6 @@ export default function QboConsolePage() {
     },
   });
 
-  // Mutations for sync actions
   const syncInvoiceMutation = useMutation({
     mutationFn: async (id: string) => {
       const response = await fetch(`/api/qbo/sync/invoice/${id}`, { method: "POST", credentials: "include" });
@@ -1067,7 +1213,6 @@ export default function QboConsolePage() {
       });
       refetchStatus();
       refetchEvents();
-      // Phase 5 Step A7: canonical invoice family key
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
     },
     onError: (err: Error) => {
@@ -1075,16 +1220,25 @@ export default function QboConsolePage() {
     },
   });
 
-  const isAnyMutationPending =
-    syncInvoiceMutation.isPending ||
-    syncWithDepsMutation.isPending ||
-    reconcileDryRunMutation.isPending ||
-    reconcileApplyMutation.isPending;
+  // ============================================================
+  // DERIVED STATE
+  // ============================================================
+
+  // Step 1 uses connection-status; Step 3 uses import preflight for full gate
+  const isConnected = connectionStatus?.connected ?? false;
+  const isMappingConfigured = mappingConfigData?.status?.configured ?? false;
+  const canImport = isConnected && isMappingConfigured && (importPreflight?.ok ?? false);
+  const isProduction = connectionStatus?.environment === "production";
+  const isAnyMutationPending = syncInvoiceMutation.isPending || syncWithDepsMutation.isPending || reconcileDryRunMutation.isPending || reconcileApplyMutation.isPending;
 
   const handleApplyConfirm = () => {
     setShowApplyConfirm(false);
     reconcileApplyMutation.mutate(invoiceId);
   };
+
+  // ============================================================
+  // RENDER
+  // ============================================================
 
   return (
     <div className="p-4 space-y-6">
@@ -1096,21 +1250,9 @@ export default function QboConsolePage() {
           </Button>
         </Link>
         <div className="flex-1">
-          <h1 className="text-xl font-semibold">QuickBooks Online Console</h1>
-          <p className="text-sm text-muted-foreground">Sync status, configuration, and manual tools</p>
+          <h1 className="text-xl font-semibold">QuickBooks Online</h1>
+          <p className="text-sm text-muted-foreground">Connect QuickBooks, map items & tax, import customers.</p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => {
-            refetchStatus();
-            refetchEvents();
-          }}
-          disabled={statusLoading || eventsLoading}
-        >
-          <RefreshCw className={`h-4 w-4 mr-2 ${statusLoading || eventsLoading ? "animate-spin" : ""}`} />
-          Refresh
-        </Button>
       </div>
 
       {/* How Sync Works */}
@@ -1139,1564 +1281,1253 @@ export default function QboConsolePage() {
         </CardContent>
       </Card>
 
-      {/* Go Live Panel */}
-      <Card className={preflight?.qboEnabled ? "border-green-500/50" : ""}>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Shield className="h-5 w-5" />
-              <div>
-                <CardTitle className="text-lg">QBO Go-Live Status</CardTitle>
-                <CardDescription>Requirements and controls for enabling QuickBooks sync</CardDescription>
+      {/* ============================================================ */}
+      {/* SETUP SECTION — 2-column grid */}
+      {/* ============================================================ */}
+      <div>
+        <h2 className="text-lg font-semibold mb-4">Setup</h2>
+        <div className="grid gap-4 md:grid-cols-2">
+
+          {/* Card 1 — Step 1: Connect QuickBooks (uses /api/qbo/connection-status + OAuth setup-info) */}
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Wifi className="h-4 w-4" />
+                  Step 1: Connect QuickBooks
+                </CardTitle>
+                {connectionStatusLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                ) : isConnected ? (
+                  <Badge variant="outline" className="text-green-600 border-green-300">
+                    <CheckCircle className="h-3 w-3 mr-1" />
+                    Connected
+                  </Badge>
+                ) : oauthSetup?.oauthConfigured ? (
+                  <Badge variant="outline" className="text-blue-600 border-blue-300">
+                    Ready
+                  </Badge>
+                ) : (
+                  <Badge variant="outline" className="text-amber-600 border-amber-300">
+                    Setup needed
+                  </Badge>
+                )}
               </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => refetchPreflight()}
-                disabled={preflightLoading}
-              >
-                <RefreshCw className={`h-4 w-4 ${preflightLoading ? "animate-spin" : ""}`} />
-              </Button>
-              {preflight?.qboEnabled ? (
-                <Badge variant="default" className="bg-green-600">
-                  <Power className="h-3 w-3 mr-1" />
-                  Enabled
-                </Badge>
-              ) : (
-                <Badge variant="secondary">
-                  <Power className="h-3 w-3 mr-1" />
-                  Disabled
-                </Badge>
+              <CardDescription>
+                Connect your QuickBooks Online account to enable syncing.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {/* Connection status message from server */}
+              {connectionStatus?.message && (
+                <p className="text-sm text-muted-foreground">{connectionStatus.message}</p>
               )}
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Preflight Checklist */}
-          <div className="space-y-2">
-            <h4 className="font-medium text-sm">Preflight Checklist</h4>
-            <div className="grid md:grid-cols-2 gap-2">
-              <div className="flex items-center gap-2 p-2 rounded bg-muted/50">
-                {preflight?.tokensConfigured ? (
-                  <CheckCircle className="h-4 w-4 text-green-600" />
-                ) : (
-                  <XCircle className="h-4 w-4 text-destructive" />
-                )}
-                <span className="text-sm">OAuth Tokens Configured</span>
-              </div>
-              <div className="flex items-center gap-2 p-2 rounded bg-muted/50">
-                {preflight?.mappingStatus?.configured ? (
-                  <CheckCircle className="h-4 w-4 text-green-600" />
-                ) : (
-                  <XCircle className="h-4 w-4 text-destructive" />
-                )}
-                <span className="text-sm">Item/Tax Mapping Configured</span>
-              </div>
-              <div className="flex items-center gap-2 p-2 rounded bg-muted/50">
-                {preflight?.connectivityCheck?.success ? (
-                  <CheckCircle className="h-4 w-4 text-green-600" />
-                ) : (
-                  <XCircle className="h-4 w-4 text-destructive" />
-                )}
-                <span className="text-sm">QBO Connectivity</span>
-                {preflight?.connectivityCheck?.latencyMs && (
-                  <span className="text-xs text-muted-foreground">({preflight.connectivityCheck.latencyMs}ms)</span>
-                )}
-              </div>
-              <div className="flex items-center gap-2 p-2 rounded bg-muted/50">
-                {preflight?.readyToSync ? (
-                  <CheckCircle className="h-4 w-4 text-green-600" />
-                ) : (
-                  <AlertTriangle className="h-4 w-4 text-yellow-600" />
-                )}
-                <span className="text-sm">Ready to Sync</span>
-              </div>
-            </div>
-          </div>
 
-          {/* Blockers Warning */}
-          {preflight?.blockers && preflight.blockers.length > 0 && (
-            <Alert variant="destructive">
-              <AlertTriangle className="h-4 w-4" />
-              <AlertTitle>Blockers</AlertTitle>
-              <AlertDescription>
-                <ul className="list-disc pl-4 mt-1 space-y-1">
-                  {preflight.blockers.map((blocker, i) => (
-                    <li key={i} className="text-sm">{blocker}</li>
-                  ))}
-                </ul>
-              </AlertDescription>
-            </Alert>
-          )}
-
-          {/* Environment and Actions */}
-          <div className="flex flex-wrap items-center gap-3 pt-2 border-t">
-            <div className="flex items-center gap-2">
-              <Label className="text-sm">Environment:</Label>
-              <Badge variant="outline">{preflight?.qboEnvironment || "sandbox"}</Badge>
-            </div>
-
-            <div className="flex-1" />
-
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => connectivityTestMutation.mutate()}
-              disabled={connectivityTestMutation.isPending || !preflight?.tokensConfigured}
-            >
-              {connectivityTestMutation.isPending ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <Wifi className="h-4 w-4 mr-2" />
-              )}
-              Test Connection
-            </Button>
-
-            {preflight?.qboEnabled ? (
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => toggleEnabledMutation.mutate({ enabled: false })}
-                disabled={toggleEnabledMutation.isPending}
-              >
-                {toggleEnabledMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Power className="h-4 w-4 mr-2" />
-                )}
-                Disable QBO Sync
-              </Button>
-            ) : (
-              <Button
-                variant="default"
-                size="sm"
-                onClick={() => setShowEnableConfirm(true)}
-                disabled={toggleEnabledMutation.isPending || !preflight?.readyToSync}
-                title={!preflight?.readyToSync ? "Fix blockers before enabling" : ""}
-              >
-                {toggleEnabledMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Zap className="h-4 w-4 mr-2" />
-                )}
-                Enable Sync to QuickBooks
-              </Button>
-            )}
-          </div>
-
-          {/* Dry-Run Section */}
-          <div className="pt-4 border-t space-y-3">
-            <h4 className="font-medium text-sm flex items-center gap-2">
-              <TestTube2 className="h-4 w-4" />
-              Preview &amp; Validation
-            </h4>
-            <p className="text-sm text-muted-foreground">
-              Preview what would be sent to QuickBooks without making any changes. Use this to validate data before syncing.
-            </p>
-
-            <div className="flex flex-wrap gap-2 items-end">
-              <div className="flex-1 min-w-[200px]">
-                <Label htmlFor="dryRunInvoiceId" className="text-sm">Invoice ID</Label>
-                <Input
-                  id="dryRunInvoiceId"
-                  placeholder="Enter invoice ID (UUID)"
-                  value={dryRunInvoiceId}
-                  onChange={(e) => setDryRunInvoiceId(e.target.value)}
-                  className="h-9"
-                />
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => dryRunInvoiceMutation.mutate(dryRunInvoiceId)}
-                disabled={!dryRunInvoiceId || dryRunInvoiceMutation.isPending}
-              >
-                {dryRunInvoiceMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <TestTube2 className="h-4 w-4 mr-2" />
-                )}
-                Preview Invoice Sync
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => dryRunQueueMutation.mutate()}
-                disabled={dryRunQueueMutation.isPending}
-              >
-                {dryRunQueueMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <ListTodo className="h-4 w-4 mr-2" />
-                )}
-                Preview Sync Activity
-              </Button>
-            </div>
-
-            {/* Dry-run invoice result preview */}
-            {dryRunInvoiceMutation.data && (
-              <div className="mt-3 p-3 bg-muted rounded text-sm">
-                <div className="flex items-center gap-2 mb-2">
-                  {dryRunInvoiceMutation.data.wouldSync ? (
-                    <CheckCircle className="h-4 w-4 text-green-600" />
-                  ) : (
-                    <AlertTriangle className="h-4 w-4 text-yellow-600" />
-                  )}
-                  <span className="font-medium">
-                    {dryRunInvoiceMutation.data.wouldSync ? "Would sync" : "Would NOT sync"}
-                  </span>
-                  {dryRunInvoiceMutation.data.skipReason && (
-                    <span className="text-muted-foreground">- {dryRunInvoiceMutation.data.skipReason}</span>
-                  )}
-                </div>
-                <div className="space-y-1">
-                  <div className="flex gap-4">
-                    <span>Customer Ref: {dryRunInvoiceMutation.data.validation.hasCustomerRef ? "Yes" : "No"}</span>
-                    <span>Mapping Valid: {dryRunInvoiceMutation.data.validation.mappingValid ? "Yes" : "No"}</span>
+              {isConnected ? (
+                /* ── Connected state ── */
+                <div className="space-y-3">
+                  <div className="text-sm text-muted-foreground flex items-center gap-2">
+                    <Badge variant="outline" className="text-xs">
+                      {connectionStatus?.environment || "sandbox"}
+                    </Badge>
+                    <span>environment</span>
                   </div>
-                  {dryRunInvoiceMutation.data.payload && (
-                    <details className="mt-2">
-                      <summary className="cursor-pointer text-muted-foreground">View payload preview</summary>
-                      <pre className="mt-2 p-2 bg-background rounded text-xs overflow-auto max-h-48">
-                        {JSON.stringify(dryRunInvoiceMutation.data.payload, null, 2)}
-                      </pre>
-                    </details>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Dry-run queue result preview */}
-            {dryRunQueueMutation.data && (
-              <div className="mt-3 p-3 bg-muted rounded text-sm">
-                <div className="flex items-center gap-2 mb-2">
-                  <ListTodo className="h-4 w-4" />
-                  <span className="font-medium">
-                    Would process {dryRunQueueMutation.data.wouldProcess.total} jobs
-                  </span>
-                </div>
-                <div className="space-y-1">
-                  <span className="text-muted-foreground">
-                    {dryRunQueueMutation.data.wouldProcess.queued} queued, {dryRunQueueMutation.data.wouldProcess.retriable} retriable
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Mapping Configuration Warning */}
-      {status?.mappingStatus && status.mappingStatus.warnings.length > 0 && (
-        <Alert variant="destructive">
-          <AlertTriangle className="h-4 w-4" />
-          <AlertTitle>QBO Mapping Configuration Missing</AlertTitle>
-          <AlertDescription>
-            <ul className="list-disc pl-4 mt-2 space-y-1">
-              {status.mappingStatus.warnings.map((warning, i) => (
-                <li key={i}>{warning}</li>
-              ))}
-            </ul>
-            <p className="mt-2 text-sm">
-              Configure item mappings below to enable invoice sync. Without mappings, invoices will fail to sync.
-            </p>
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {/* Status Dashboard */}
-      <div className="grid md:grid-cols-2 gap-4">
-        {/* Customer Companies Status */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-lg flex items-center gap-2">
-              <Users className="h-5 w-5" />
-              Customer Companies
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {statusLoading ? (
-              <div className="flex items-center justify-center py-4">
-                <Loader2 className="h-5 w-5 animate-spin" />
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-2">
-                {["NOT_SYNCED", "SYNCED", "PENDING", "ERROR"].map((s) => (
-                  <div key={s} className="flex items-center justify-between p-2 rounded bg-muted/50">
-                    <StatusBadge status={s} />
-                    <span className="font-mono text-lg">{status?.customerCompanies[s] ?? 0}</span>
+                  <div className="flex flex-wrap gap-2">
+                    <Button variant="outline" size="sm" onClick={() => { refetchConnectionStatus(); refetchOauthSetup(); }} disabled={connectionStatusLoading}>
+                      <RefreshCw className={`h-3 w-3 mr-1 ${connectionStatusLoading ? "animate-spin" : ""}`} />
+                      Re-check
+                    </Button>
+                    <Button variant="outline" size="sm" className="text-destructive" onClick={() => setShowDisconnectConfirm(true)} disabled={disconnectMutation.isPending}>
+                      <Power className="h-3 w-3 mr-1" />
+                      Disconnect
+                    </Button>
                   </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+                </div>
+              ) : oauthSetup?.oauthConfigured ? (
+                /* ── Config ready, not yet connected ── */
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" onClick={() => connectMutation.mutate()} disabled={connectMutation.isPending}>
+                    {connectMutation.isPending ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <ExternalLink className="h-4 w-4 mr-2" />
+                    )}
+                    Connect QuickBooks
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => { refetchConnectionStatus(); refetchOauthSetup(); }} disabled={connectionStatusLoading}>
+                    <RefreshCw className={`h-3 w-3 mr-1 ${connectionStatusLoading ? "animate-spin" : ""}`} />
+                    Re-check
+                  </Button>
+                </div>
+              ) : (
+                /* ── Not configured ── */
+                <div className="space-y-3">
+                  <p className="text-sm text-amber-600">
+                    QuickBooks connection is not available yet. Please contact your administrator or follow the setup guide below.
+                  </p>
 
-        {/* Invoices Status */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-lg flex items-center gap-2">
-              <FileText className="h-5 w-5" />
-              Invoices
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {statusLoading ? (
-              <div className="flex items-center justify-center py-4">
-                <Loader2 className="h-5 w-5 animate-spin" />
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-2">
-                {["NOT_SYNCED", "SYNCED", "PENDING", "ERROR"].map((s) => (
-                  <div key={s} className="flex items-center justify-between p-2 rounded bg-muted/50">
-                    <StatusBadge status={s} />
-                    <span className="font-mono text-lg">{status?.invoices[s] ?? 0}</span>
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" disabled>
+                      <ExternalLink className="h-4 w-4 mr-2" />
+                      Connect QuickBooks
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => { refetchConnectionStatus(); refetchOauthSetup(); setCopiedSetup(false); }} disabled={connectionStatusLoading}>
+                      <RefreshCw className={`h-3 w-3 mr-1 ${connectionStatusLoading ? "animate-spin" : ""}`} />
+                      Re-check
+                    </Button>
                   </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
 
-      {/* Recent Failures */}
-      {status?.recentFailures && status.recentFailures.length > 0 && (
-        <Card className="border-destructive/50">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-lg flex items-center gap-2 text-destructive">
-              <AlertTriangle className="h-5 w-5" />
-              Recent Failures
-            </CardTitle>
-            <CardDescription>Last 10 failed sync operations</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Time</TableHead>
-                  <TableHead>Event</TableHead>
-                  <TableHead>Entity</TableHead>
-                  <TableHead>Error</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {status.recentFailures.map((event) => (
-                  <TableRow key={event.id}>
-                    <TableCell className="text-sm">{formatDateTime(event.createdAt)}</TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{event.eventType}</Badge>
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">
-                      {event.invoiceId || event.customerCompanyId || event.clientLocationId || "-"}
-                    </TableCell>
-                    <TableCell className="text-sm text-destructive max-w-xs truncate">
-                      {event.errorMessage || event.errorCode || "Unknown error"}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Mapping Configuration */}
-      <Card>
-        <CardHeader
-          className="cursor-pointer"
-          onClick={() => setShowMappingConfig(!showMappingConfig)}
-        >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Settings className="h-5 w-5" />
-              <div>
-                <CardTitle className="text-lg">Item & Tax Mapping</CardTitle>
-                <CardDescription>Configure QBO Item IDs for invoice line types</CardDescription>
-              </div>
-            </div>
-            {showMappingConfig ? (
-              <ChevronUp className="h-5 w-5 text-muted-foreground" />
-            ) : (
-              <ChevronDown className="h-5 w-5 text-muted-foreground" />
-            )}
-          </div>
-        </CardHeader>
-        {showMappingConfig && (
-          <CardContent className="space-y-4">
-            <p className="text-sm text-muted-foreground">
-              Enter QBO Item IDs from your QuickBooks chart of accounts. These map invoice line types to QBO products/services.
-            </p>
-
-            <div className="grid md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="serviceItemId">Service Item ID</Label>
-                <Input
-                  id="serviceItemId"
-                  placeholder="e.g., 1"
-                  value={mappingConfig.serviceItemId || ""}
-                  onChange={(e) => setMappingConfig({ ...mappingConfig, serviceItemId: e.target.value || undefined })}
-                />
-                <p className="text-xs text-muted-foreground">For "service" line items (labor, work performed)</p>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="materialItemId">Material Item ID</Label>
-                <Input
-                  id="materialItemId"
-                  placeholder="e.g., 2"
-                  value={mappingConfig.materialItemId || ""}
-                  onChange={(e) => setMappingConfig({ ...mappingConfig, materialItemId: e.target.value || undefined })}
-                />
-                <p className="text-xs text-muted-foreground">For "material" line items (parts, supplies)</p>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="feeItemId">Fee Item ID</Label>
-                <Input
-                  id="feeItemId"
-                  placeholder="e.g., 3"
-                  value={mappingConfig.feeItemId || ""}
-                  onChange={(e) => setMappingConfig({ ...mappingConfig, feeItemId: e.target.value || undefined })}
-                />
-                <p className="text-xs text-muted-foreground">For "fee" line items (service call fees, etc.)</p>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="miscItemId">Misc/Fallback Item ID</Label>
-                <Input
-                  id="miscItemId"
-                  placeholder="e.g., 4"
-                  value={mappingConfig.miscItemId || ""}
-                  onChange={(e) => setMappingConfig({ ...mappingConfig, miscItemId: e.target.value || undefined })}
-                />
-                <p className="text-xs text-muted-foreground">Fallback for line items without specific mapping</p>
-              </div>
-            </div>
-
-            <div className="border-t pt-4 mt-4">
-              <h4 className="font-medium mb-2">Tax Code Mapping</h4>
-              <div className="grid md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="taxableCode">Taxable Code</Label>
-                  <Input
-                    id="taxableCode"
-                    placeholder="e.g., TAX or 1"
-                    value={mappingConfig.taxableCode || ""}
-                    onChange={(e) => setMappingConfig({ ...mappingConfig, taxableCode: e.target.value || undefined })}
-                  />
-                  <p className="text-xs text-muted-foreground">QBO TaxCode for taxable items</p>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="nonTaxableCode">Non-Taxable Code</Label>
-                  <Input
-                    id="nonTaxableCode"
-                    placeholder="e.g., NON or 0"
-                    value={mappingConfig.nonTaxableCode || ""}
-                    onChange={(e) => setMappingConfig({ ...mappingConfig, nonTaxableCode: e.target.value || undefined })}
-                  />
-                  <p className="text-xs text-muted-foreground">QBO TaxCode for non-taxable items</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex justify-end pt-2">
-              <Button
-                onClick={() => saveMappingConfigMutation.mutate(mappingConfig)}
-                disabled={saveMappingConfigMutation.isPending}
-              >
-                {saveMappingConfigMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Save className="h-4 w-4 mr-2" />
-                )}
-                Save Configuration
-              </Button>
-            </div>
-          </CardContent>
-        )}
-      </Card>
-
-      {/* Invoice Actions */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Invoice Sync Actions</CardTitle>
-          <CardDescription>Enter an invoice ID to perform sync or reconciliation operations</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex gap-2 items-end">
-            <div className="flex-1">
-              <Label htmlFor="invoiceId">Invoice ID</Label>
-              <Input
-                id="invoiceId"
-                placeholder="Enter invoice ID (UUID)"
-                value={invoiceId}
-                onChange={(e) => setInvoiceId(e.target.value)}
-              />
-            </div>
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              onClick={() => syncInvoiceMutation.mutate(invoiceId)}
-              disabled={!invoiceId || isAnyMutationPending}
-            >
-              {syncInvoiceMutation.isPending ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <CloudUpload className="h-4 w-4 mr-2" />
-              )}
-              Sync Invoice
-            </Button>
-
-            <Button
-              variant="outline"
-              onClick={() => syncWithDepsMutation.mutate(invoiceId)}
-              disabled={!invoiceId || isAnyMutationPending}
-            >
-              {syncWithDepsMutation.isPending ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <CloudUpload className="h-4 w-4 mr-2" />
-              )}
-              Sync with Dependencies
-            </Button>
-
-            <Button
-              variant="outline"
-              onClick={() => reconcileDryRunMutation.mutate(invoiceId)}
-              disabled={!invoiceId || isAnyMutationPending}
-            >
-              {reconcileDryRunMutation.isPending ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <CloudDownload className="h-4 w-4 mr-2" />
-              )}
-              Reconcile (Dry Run)
-            </Button>
-
-            <Button
-              variant="default"
-              onClick={() => setShowApplyConfirm(true)}
-              disabled={!invoiceId || isAnyMutationPending}
-            >
-              {reconcileApplyMutation.isPending ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <CloudDownload className="h-4 w-4 mr-2" />
-              )}
-              Apply Reconciliation
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Sync Queue */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <ListTodo className="h-5 w-5" />
-              <div>
-                <CardTitle className="text-lg">Sync Queue</CardTitle>
-                <CardDescription>Manage queued sync operations with retry support</CardDescription>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => refetchQueue()}
-                disabled={queueLoading}
-              >
-                <RefreshCw className={`h-4 w-4 ${queueLoading ? "animate-spin" : ""}`} />
-              </Button>
-              <Button
-                onClick={() => processQueueMutation.mutate(20)}
-                disabled={processQueueMutation.isPending || !queueData?.stats.queued}
-              >
-                {processQueueMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Play className="h-4 w-4 mr-2" />
-                )}
-                Process Queue
-              </Button>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Queue Stats */}
-          {queueData?.stats && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-              <div className="flex items-center justify-between p-2 rounded bg-muted/50">
-                <span className="text-sm text-muted-foreground">Queued</span>
-                <Badge variant="secondary">{queueData.stats.queued}</Badge>
-              </div>
-              <div className="flex items-center justify-between p-2 rounded bg-muted/50">
-                <span className="text-sm text-muted-foreground">Running</span>
-                <Badge variant="default">{queueData.stats.running}</Badge>
-              </div>
-              <div className="flex items-center justify-between p-2 rounded bg-muted/50">
-                <span className="text-sm text-muted-foreground">Failed</span>
-                <Badge variant="destructive">{queueData.stats.failed}</Badge>
-              </div>
-              <div className="flex items-center justify-between p-2 rounded bg-muted/50">
-                <span className="text-sm text-muted-foreground">Retriable</span>
-                <Badge variant="outline">{queueData.stats.retriable}</Badge>
-              </div>
-            </div>
-          )}
-
-          {/* Status Filter */}
-          <div className="flex items-center gap-2">
-            <Filter className="h-4 w-4 text-muted-foreground" />
-            <Select value={queueStatusFilter} onValueChange={setQueueStatusFilter}>
-              <SelectTrigger className="w-40">
-                <SelectValue placeholder="All Status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="QUEUED">Queued</SelectItem>
-                <SelectItem value="RUNNING">Running</SelectItem>
-                <SelectItem value="FAILED">Failed</SelectItem>
-                <SelectItem value="SUCCESS">Success</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Queue Jobs Table */}
-          {queueLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-6 w-6 animate-spin" />
-            </div>
-          ) : queueData?.jobs.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              <ListTodo className="h-12 w-12 mx-auto mb-3 opacity-50" />
-              <p>No queue jobs found</p>
-              <p className="text-sm">Jobs will appear here when syncs are enqueued</p>
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Entity</TableHead>
-                  <TableHead>Action</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Attempts</TableHead>
-                  <TableHead>Next Run</TableHead>
-                  <TableHead>Error</TableHead>
-                  <TableHead className="w-24">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {queueData?.jobs.map((job) => (
-                  <TableRow key={job.id}>
-                    <TableCell>
-                      <div className="space-y-1">
-                        <Badge variant="outline" className="text-xs">
-                          {job.entityType}
-                        </Badge>
-                        <div className="font-mono text-xs truncate max-w-[120px]" title={job.entityId}>
-                          {job.entityId.substring(0, 8)}...
-                        </div>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="secondary" className="text-xs">
-                        {job.action}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={
-                          job.status === "SUCCESS" ? "default" :
-                          job.status === "FAILED" ? "destructive" :
-                          job.status === "RUNNING" ? "secondary" :
-                          "outline"
-                        }
-                      >
-                        {job.status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      {job.attempts}/{job.maxAttempts}
-                    </TableCell>
-                    <TableCell className="text-sm whitespace-nowrap">
-                      {job.status === "SUCCESS" || job.status === "FAILED" && job.attempts >= job.maxAttempts
-                        ? "-"
-                        : formatDateTime(job.nextRunAt)}
-                    </TableCell>
-                    <TableCell className="text-sm text-destructive max-w-[200px] truncate" title={job.lastError || undefined}>
-                      {job.lastError || "-"}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-1">
-                        {job.status === "FAILED" && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => replayJobMutation.mutate(job.id)}
-                            disabled={replayJobMutation.isPending}
-                            title="Replay job"
-                          >
-                            <RotateCcw className="h-4 w-4" />
-                          </Button>
-                        )}
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => deleteJobMutation.mutate(job.id)}
-                          disabled={deleteJobMutation.isPending || job.status === "RUNNING"}
-                          title="Delete job"
-                        >
-                          <Trash2 className="h-4 w-4" />
+                  {/* Admin-only setup checklist (collapsible) */}
+                  {oauthSetup && (
+                    <Collapsible open={setupPanelOpen} onOpenChange={setSetupPanelOpen}>
+                      <CollapsibleTrigger asChild>
+                        <Button variant="ghost" size="sm" className="w-full justify-between text-muted-foreground">
+                          <span className="flex items-center gap-1">
+                            <Settings className="h-3 w-3" />
+                            Setup QuickBooks Connection
+                          </span>
+                          {setupPanelOpen ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                         </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Recent Runs Section */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Clock className="h-5 w-5" />
-              <div>
-                <CardTitle className="text-lg">Recent Sync Runs</CardTitle>
-                <CardDescription>Aggregated view of sync operations by run ID</CardDescription>
-              </div>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => refetchRuns()}
-              disabled={runsLoading}
-            >
-              <RefreshCw className={`h-4 w-4 ${runsLoading ? "animate-spin" : ""}`} />
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {runsLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-6 w-6 animate-spin" />
-            </div>
-          ) : !runsData?.runs.length ? (
-            <p className="text-sm text-muted-foreground py-4 text-center">No sync runs recorded yet.</p>
-          ) : (
-            <>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Run ID</TableHead>
-                    <TableHead>Time</TableHead>
-                    <TableHead>Events</TableHead>
-                    <TableHead>Queue Jobs</TableHead>
-                    <TableHead>Webhooks</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {runsData.runs.map((run) => {
-                    const hasFailures = run.failureCount > 0 || run.queueFailedCount > 0;
-                    return (
-                      <TableRow key={run.syncRunId} className={selectedRunId === run.syncRunId ? "bg-muted/50" : ""}>
-                        <TableCell className="font-mono text-xs">
-                          {run.syncRunId.substring(0, 20)}...
-                        </TableCell>
-                        <TableCell className="text-sm">
-                          {run.completedAt ? formatDateTime(run.completedAt) : run.startedAt ? formatDateTime(run.startedAt) : "—"}
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-1">
-                            <Badge variant={run.failureCount > 0 ? "destructive" : "default"} className="text-xs">
-                              {run.successCount}/{run.eventCount}
-                            </Badge>
-                            {run.failureCount > 0 && (
-                              <span className="text-xs text-destructive">({run.failureCount} failed)</span>
-                            )}
+                      </CollapsibleTrigger>
+                      <CollapsibleContent>
+                        <div className="rounded-md border bg-muted/30 p-3 mt-2 space-y-3 text-sm">
+                          {/* Detected app info */}
+                          <div>
+                            <p className="font-medium text-xs uppercase tracking-wide text-muted-foreground mb-1">Your App URL</p>
+                            <code className="block text-xs bg-background rounded px-2 py-1 break-all">{oauthSetup.detectedAppOrigin}</code>
                           </div>
-                        </TableCell>
-                        <TableCell>
-                          {run.queueJobCount > 0 ? (
-                            <div className="flex items-center gap-1">
-                              <Badge variant={run.queueFailedCount > 0 ? "destructive" : "default"} className="text-xs">
-                                {run.queueSuccessCount}/{run.queueJobCount}
-                              </Badge>
-                              {run.queueFailedCount > 0 && (
-                                <span className="text-xs text-destructive">({run.queueFailedCount} failed)</span>
-                              )}
+                          <div>
+                            <p className="font-medium text-xs uppercase tracking-wide text-muted-foreground mb-1">Required Redirect URI</p>
+                            <code className="block text-xs bg-background rounded px-2 py-1 break-all">{oauthSetup.requiredRedirectUri}</code>
+                          </div>
+
+                          {/* Missing secrets */}
+                          {oauthSetup.missing.length > 0 && (
+                            <div>
+                              <p className="font-medium text-xs uppercase tracking-wide text-muted-foreground mb-1">Missing Secrets</p>
+                              <ul className="list-disc pl-4 text-xs space-y-0.5">
+                                {oauthSetup.missing.map((k) => <li key={k}><code>{k}</code></li>)}
+                              </ul>
                             </div>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">—</span>
                           )}
-                        </TableCell>
-                        <TableCell>
-                          {run.webhookEventCount > 0 ? (
-                            <Badge variant="secondary" className="text-xs">
-                              {run.webhookProcessedCount}/{run.webhookEventCount}
-                            </Badge>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">—</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setSelectedRunId(selectedRunId === run.syncRunId ? null : run.syncRunId)}
-                          >
-                            {selectedRunId === run.syncRunId ? (
-                              <ChevronUp className="h-4 w-4" />
-                            ) : (
-                              <ChevronDown className="h-4 w-4" />
-                            )}
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
 
-              {/* Run Detail Panel */}
-              {selectedRunId && runDetailData && (
-                <Card className="mt-4 border-dashed">
-                  <CardHeader className="py-3">
-                    <CardTitle className="text-sm font-mono">{selectedRunId}</CardTitle>
-                    <CardDescription>
-                      {runDetailData.stats.totalEvents} events, {runDetailData.stats.totalQueueJobs} queue jobs, {runDetailData.stats.totalWebhookEvents} webhooks
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    {/* Summary Stats */}
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                      <div className="p-2 rounded bg-muted/50">
-                        <div className="text-xs text-muted-foreground">Events</div>
-                        <div className="font-medium">{runDetailData.stats.successEvents}/{runDetailData.stats.totalEvents} success</div>
-                      </div>
-                      <div className="p-2 rounded bg-muted/50">
-                        <div className="text-xs text-muted-foreground">Queue Jobs</div>
-                        <div className="font-medium">{runDetailData.stats.successQueueJobs}/{runDetailData.stats.totalQueueJobs} success</div>
-                      </div>
-                      <div className="p-2 rounded bg-muted/50">
-                        <div className="text-xs text-muted-foreground">Webhooks</div>
-                        <div className="font-medium">{runDetailData.stats.processedWebhookEvents}/{runDetailData.stats.totalWebhookEvents} processed</div>
-                      </div>
-                      <div className="p-2 rounded bg-muted/50">
-                        <div className="text-xs text-muted-foreground">Failures</div>
-                        <div className={`font-medium ${runDetailData.stats.failureEvents + runDetailData.stats.failedQueueJobs > 0 ? "text-destructive" : ""}`}>
-                          {runDetailData.stats.failureEvents + runDetailData.stats.failedQueueJobs}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Failed Events with Suggested Actions */}
-                    {runDetailData.events.filter(e => e.result === "FAILURE").length > 0 && (
-                      <div className="space-y-2">
-                        <h4 className="text-sm font-medium text-destructive">Failed Events</h4>
-                        {runDetailData.events
-                          .filter(e => e.result === "FAILURE")
-                          .slice(0, 5)
-                          .map(event => {
-                            const suggestion = getSuggestedAction(undefined, event.errorMessage || "");
-                            return (
-                              <Alert key={event.id} variant="destructive">
-                                <AlertTriangle className="h-4 w-4" />
-                                <AlertTitle className="text-sm">{event.eventType}</AlertTitle>
-                                <AlertDescription className="text-xs">
-                                  <div>{event.errorMessage || "Unknown error"}</div>
-                                  {suggestion && (
-                                    <div className="mt-2 p-2 bg-background/50 rounded">
-                                      <span className="font-medium">Suggested action:</span> {suggestion.action}
-                                    </div>
-                                  )}
-                                </AlertDescription>
-                              </Alert>
-                            );
-                          })}
-                      </div>
-                    )}
-
-                    {/* Failed Queue Jobs with Suggested Actions */}
-                    {runDetailData.queueJobs.filter(j => j.status === "FAILED").length > 0 && (
-                      <div className="space-y-2">
-                        <h4 className="text-sm font-medium text-destructive">Failed Queue Jobs</h4>
-                        {runDetailData.queueJobs
-                          .filter(j => j.status === "FAILED")
-                          .slice(0, 5)
-                          .map(job => {
-                            const suggestion = getSuggestedAction(undefined, job.lastError || "");
-                            return (
-                              <Alert key={job.id} variant="destructive">
-                                <AlertTriangle className="h-4 w-4" />
-                                <AlertTitle className="text-sm">{job.entityType} - {job.action}</AlertTitle>
-                                <AlertDescription className="text-xs">
-                                  <div>{job.lastError || "Unknown error"}</div>
-                                  {suggestion && (
-                                    <div className="mt-2 p-2 bg-background/50 rounded">
-                                      <span className="font-medium">Suggested action:</span> {suggestion.action}
-                                    </div>
-                                  )}
-                                </AlertDescription>
-                              </Alert>
-                            );
-                          })}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              )}
-
-              {runDetailLoading && selectedRunId && (
-                <div className="flex items-center justify-center py-4">
-                  <Loader2 className="h-5 w-5 animate-spin mr-2" />
-                  <span className="text-sm text-muted-foreground">Loading run details...</span>
-                </div>
-              )}
-            </>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Webhooks Section */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Webhook className="h-5 w-5" />
-              <div>
-                <CardTitle className="text-lg">QBO Webhooks</CardTitle>
-                <CardDescription>Inbound webhook events from QuickBooks Online</CardDescription>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => refetchWebhooks()}
-                disabled={webhooksLoading}
-              >
-                <RefreshCw className={`h-4 w-4 ${webhooksLoading ? "animate-spin" : ""}`} />
-              </Button>
-              <Button
-                onClick={() => processWebhooksMutation.mutate()}
-                disabled={processWebhooksMutation.isPending || !webhooksData?.events.some(e => e.status === "VERIFIED")}
-              >
-                {processWebhooksMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Play className="h-4 w-4 mr-2" />
-                )}
-                Process Webhooks
-              </Button>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Webhook Stats */}
-          {webhooksData?.events && (
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-              {["RECEIVED", "VERIFIED", "PROCESSED", "REJECTED", "IGNORED"].map(status => {
-                const count = webhooksData.events.filter(e => e.status === status).length;
-                return (
-                  <div key={status} className="flex items-center justify-between p-2 rounded bg-muted/50">
-                    <span className="text-sm text-muted-foreground">{status}</span>
-                    <Badge variant={status === "VERIFIED" ? "default" : status === "REJECTED" ? "destructive" : "secondary"}>
-                      {count}
-                    </Badge>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* Status Filter */}
-          <div className="flex items-center gap-2">
-            <Filter className="h-4 w-4 text-muted-foreground" />
-            <Select value={webhookStatusFilter} onValueChange={setWebhookStatusFilter}>
-              <SelectTrigger className="w-40">
-                <SelectValue placeholder="All Status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="RECEIVED">Received</SelectItem>
-                <SelectItem value="VERIFIED">Verified</SelectItem>
-                <SelectItem value="PROCESSED">Processed</SelectItem>
-                <SelectItem value="REJECTED">Rejected</SelectItem>
-                <SelectItem value="IGNORED">Ignored</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Webhooks Table */}
-          {webhooksLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-6 w-6 animate-spin" />
-            </div>
-          ) : webhooksData?.events.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              <Webhook className="h-12 w-12 mx-auto mb-3 opacity-50" />
-              <p>No webhook events found</p>
-              <p className="text-sm">Events will appear here when QBO sends webhooks</p>
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Received</TableHead>
-                  <TableHead>Entity</TableHead>
-                  <TableHead>Operation</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Action</TableHead>
-                  <TableHead>Error</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {webhooksData?.events.map((event) => (
-                  <TableRow key={event.id}>
-                    <TableCell className="text-sm whitespace-nowrap">
-                      {formatDateTime(event.receivedAt)}
-                    </TableCell>
-                    <TableCell>
-                      <div className="space-y-1">
-                        <Badge variant="outline" className="text-xs">
-                          {event.qboEntityType}
-                        </Badge>
-                        <div className="font-mono text-xs truncate max-w-[100px]" title={event.qboEntityId}>
-                          {event.qboEntityId}
-                        </div>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="secondary" className="text-xs">
-                        {event.operation}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={
-                          event.status === "PROCESSED" ? "default" :
-                          event.status === "VERIFIED" ? "secondary" :
-                          event.status === "REJECTED" ? "destructive" :
-                          "outline"
-                        }
-                      >
-                        {event.status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      {event.actionTaken || "-"}
-                    </TableCell>
-                    <TableCell className="text-sm text-destructive max-w-[150px] truncate" title={event.verificationError || event.processingError || undefined}>
-                      {event.verificationError || event.processingError || "-"}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Drift Alerts Section */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Bell className="h-5 w-5" />
-              <div>
-                <CardTitle className="text-lg">Drift Alerts</CardTitle>
-                <CardDescription>Invoices with QBO changes that need reconciliation</CardDescription>
-              </div>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => refetchDriftAlerts()}
-              disabled={driftAlertsLoading}
-            >
-              <RefreshCw className={`h-4 w-4 ${driftAlertsLoading ? "animate-spin" : ""}`} />
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {driftAlertsLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-6 w-6 animate-spin" />
-            </div>
-          ) : !driftAlertsData?.alerts || driftAlertsData.alerts.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              <CheckCircle className="h-12 w-12 mx-auto mb-3 opacity-50 text-green-600" />
-              <p>No drift alerts</p>
-              <p className="text-sm">All synced invoices are up to date</p>
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Invoice</TableHead>
-                  <TableHead>QBO Entity</TableHead>
-                  <TableHead>Operation</TableHead>
-                  <TableHead>Last Updated</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="w-32">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {driftAlertsData.alerts.map((alert) => (
-                  <TableRow key={alert.webhookEventId}>
-                    <TableCell>
-                      <div className="space-y-1">
-                        {alert.invoiceNumber ? (
-                          <span className="font-medium">{alert.invoiceNumber}</span>
-                        ) : (
-                          <span className="text-muted-foreground italic">Unknown</span>
-                        )}
-                        {alert.invoiceId && (
-                          <div className="font-mono text-xs truncate max-w-[100px]" title={alert.invoiceId}>
-                            {alert.invoiceId.substring(0, 8)}...
+                          {/* Step-by-step checklist */}
+                          <div>
+                            <p className="font-medium text-xs uppercase tracking-wide text-muted-foreground mb-1">Setup Steps</p>
+                            <ol className="list-decimal pl-4 text-xs space-y-1 text-muted-foreground">
+                              <li>Create an app at <a href="https://developer.intuit.com" target="_blank" rel="noopener noreferrer" className="underline text-foreground">developer.intuit.com</a> — select <strong>QuickBooks Online Accounting</strong> scope.</li>
+                              <li>In your Intuit app's Redirect URIs, add:<br /><code className="text-[11px] bg-background rounded px-1">{oauthSetup.requiredRedirectUri}</code></li>
+                              <li>Copy the <strong>Client ID</strong> and <strong>Client Secret</strong> from Intuit into Replit Secrets as <code>QBO_CLIENT_ID</code> and <code>QBO_CLIENT_SECRET</code>.</li>
+                              <li>Set <code>QBO_OAUTH_REDIRECT_URI</code> in Replit Secrets to:<br /><code className="text-[11px] bg-background rounded px-1">{oauthSetup.requiredRedirectUri}</code></li>
+                              <li>Click <strong>Re-check</strong> above to verify configuration.</li>
+                            </ol>
                           </div>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">
-                      {alert.qboEntityId}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="secondary">{alert.operation}</Badge>
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      {alert.lastUpdated ? formatDateTime(alert.lastUpdated) : "-"}
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={
-                          alert.status === "reconciled" ? "default" :
-                          alert.status === "pending" ? "secondary" :
-                          "outline"
-                        }
-                      >
-                        {alert.status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-1">
-                        {alert.status === "pending" && alert.invoiceId && (
-                          <>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => reconcileDriftAlertMutation.mutate(alert.webhookEventId)}
-                              disabled={reconcileDriftAlertMutation.isPending}
-                              title="Enqueue reconcile job"
-                            >
-                              <RotateCcw className="h-4 w-4 mr-1" />
-                              Reconcile
-                            </Button>
-                          </>
-                        )}
-                        {alert.invoiceId && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => {
-                              setInvoiceId(alert.invoiceId);
-                              reconcileDryRunMutation.mutate(alert.invoiceId);
-                            }}
-                            title="Run reconcile dry-run"
-                          >
-                            <ExternalLink className="h-4 w-4" />
-                          </Button>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
 
-      {/* QBO Items Section */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Settings className="h-5 w-5" />
-              <div>
-                <CardTitle className="text-lg">QBO Items</CardTitle>
-                <CardDescription>Manage product/service item sync with QuickBooks Online</CardDescription>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => refetchLocalItems()}
-                disabled={localItemsLoading}
-              >
-                <RefreshCw className={`h-4 w-4 ${localItemsLoading ? "animate-spin" : ""}`} />
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  const unsyncedIds = localItemsData?.items
-                    .filter(i => i.qboSyncStatus === "NOT_SYNCED")
-                    .map(i => i.id) || [];
-                  if (unsyncedIds.length > 0) {
-                    bulkCreateItemsMutation.mutate(unsyncedIds);
-                  }
-                }}
-                disabled={bulkCreateItemsMutation.isPending || !localItemsData?.items.some(i => i.qboSyncStatus === "NOT_SYNCED")}
-              >
-                {bulkCreateItemsMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <CloudUpload className="h-4 w-4 mr-2" />
-                )}
-                Sync All Unsynced
-              </Button>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Item Stats */}
-          {localItemsData?.items && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-              {["NOT_SYNCED", "SYNCED", "ERROR"].map(status => {
-                const count = localItemsData.items.filter(i => i.qboSyncStatus === status).length;
-                return (
-                  <div key={status} className="flex items-center justify-between p-2 rounded bg-muted/50">
-                    <span className="text-sm text-muted-foreground">{status.replace(/_/g, " ")}</span>
-                    <Badge
-                      variant={
-                        status === "SYNCED" ? "default" :
-                        status === "ERROR" ? "destructive" :
-                        "secondary"
-                      }
-                    >
-                      {count}
-                    </Badge>
-                  </div>
-                );
-              })}
-              <div className="flex items-center justify-between p-2 rounded bg-muted/50">
-                <span className="text-sm text-muted-foreground">Total</span>
-                <Badge variant="outline">{localItemsData.items.length}</Badge>
-              </div>
-            </div>
-          )}
-
-          {/* Filters */}
-          <div className="flex gap-4 items-center">
-            <Filter className="h-4 w-4 text-muted-foreground" />
-            <Select value={localItemsSyncStatus} onValueChange={setLocalItemsSyncStatus}>
-              <SelectTrigger className="w-40">
-                <SelectValue placeholder="All Status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="NOT_SYNCED">Not Synced</SelectItem>
-                <SelectItem value="SYNCED">Synced</SelectItem>
-                <SelectItem value="ERROR">Error</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Local Items Table */}
-          {localItemsLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-6 w-6 animate-spin" />
-            </div>
-          ) : !localItemsData?.items || localItemsData.items.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              <Settings className="h-12 w-12 mx-auto mb-3 opacity-50" />
-              <p>No items found</p>
-              <p className="text-sm">Items will appear here when created in your inventory</p>
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>SKU</TableHead>
-                  <TableHead>Type</TableHead>
-                  <TableHead>Price</TableHead>
-                  <TableHead>Sync Status</TableHead>
-                  <TableHead>QBO ID</TableHead>
-                  <TableHead className="w-40">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {localItemsData.items.map((item) => (
-                  <TableRow key={item.id}>
-                    <TableCell>
-                      <div className="space-y-1">
-                        <div className="font-medium">{item.name}</div>
-                        {item.description && (
-                          <div className="text-xs text-muted-foreground truncate max-w-[200px]" title={item.description}>
-                            {item.description}
-                          </div>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">
-                      {item.sku || "-"}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className="text-xs capitalize">
-                        {item.type}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      {item.unitPrice ? `$${parseFloat(item.unitPrice).toFixed(2)}` : "-"}
-                    </TableCell>
-                    <TableCell>
-                      <StatusBadge status={item.qboSyncStatus} />
-                      {item.qboSyncError && (
-                        <div className="text-xs text-destructive mt-1 truncate max-w-[100px]" title={item.qboSyncError}>
-                          {item.qboSyncError}
-                        </div>
-                      )}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">
-                      {item.qboItemId || "-"}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-1">
-                        {!item.qboItemId && (
-                          <>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => createItemInQboMutation.mutate(item.id)}
-                              disabled={createItemInQboMutation.isPending}
-                              title="Create in QBO"
-                            >
-                              <CloudUpload className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => {
-                                setSelectedItemForLink(item);
-                                setShowItemLinkDialog(true);
-                              }}
-                              title="Link to existing QBO item"
-                            >
-                              <Plus className="h-4 w-4" />
-                            </Button>
-                          </>
-                        )}
-                        {item.qboItemId && item.qboSyncStatus === "ERROR" && (
+                          {/* Copy setup block */}
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={() => createItemInQboMutation.mutate(item.id)}
-                            disabled={createItemInQboMutation.isPending}
-                            title="Retry sync"
+                            className="w-full"
+                            onClick={() => {
+                              const block = [
+                                "Required Redirect URI:",
+                                oauthSetup.requiredRedirectUri,
+                                "",
+                                "Replit Secrets to set:",
+                                `QBO_CLIENT_ID=<paste from Intuit>`,
+                                `QBO_CLIENT_SECRET=<paste from Intuit>`,
+                                `QBO_OAUTH_REDIRECT_URI=${oauthSetup.requiredRedirectUri}`,
+                                "",
+                                "Notes:",
+                                "- Redirect URI must match your Intuit app settings exactly.",
+                                `- Environment: ${oauthSetup.environment} (default: sandbox).`,
+                              ].join("\n");
+                              navigator.clipboard.writeText(block);
+                              setCopiedSetup(true);
+                              toast({ title: "Setup info copied to clipboard" });
+                            }}
                           >
-                            <RotateCcw className="h-4 w-4" />
+                            {copiedSetup ? (
+                              <ClipboardCheck className="h-3 w-3 mr-1" />
+                            ) : (
+                              <Copy className="h-3 w-3 mr-1" />
+                            )}
+                            {copiedSetup ? "Copied!" : "Copy Setup Info"}
                           </Button>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
+                        </div>
+                      </CollapsibleContent>
+                    </Collapsible>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
-          {/* Search QBO Items */}
-          <div className="border-t pt-4 mt-4">
-            <div className="flex items-center gap-2 mb-3">
-              <CloudDownload className="h-4 w-4 text-muted-foreground" />
-              <span className="font-medium text-sm">Search QBO Items</span>
-            </div>
-            <div className="flex gap-2">
-              <Input
-                placeholder="Search QBO items by name..."
-                value={itemSearchQuery}
-                onChange={(e) => setItemSearchQuery(e.target.value)}
-                className="max-w-xs"
-              />
-              <Button
-                variant="outline"
-                onClick={() => refetchQboItems()}
-                disabled={qboItemsLoading}
-              >
-                {qboItemsLoading ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+          {/* Card 2 — Step 2: Items & Tax Mapping */}
+          <Card className={!isConnected ? "opacity-60 pointer-events-none" : ""}>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Package className="h-4 w-4" />
+                  Step 2: Items & Tax
+                </CardTitle>
+                {isMappingConfigured ? (
+                  <Badge variant="outline" className="text-green-600 border-green-300">
+                    <CheckCircle className="h-3 w-3 mr-1" />
+                    Complete
+                  </Badge>
                 ) : (
-                  <RefreshCw className="h-4 w-4 mr-2" />
+                  <Badge variant="outline" className="text-amber-600 border-amber-300">
+                    Required
+                  </Badge>
                 )}
-                Search QBO
+              </div>
+              <CardDescription>
+                Map your line item types and tax codes to QuickBooks items.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Items mapping */}
+              <div className="space-y-3">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Item Mapping</p>
+                <div className="grid gap-2">
+                  {([
+                    { key: "serviceItemId", label: "Service" },
+                    { key: "laborItemId", label: "Labor" },
+                    { key: "materialItemId", label: "Material" },
+                    { key: "feeItemId", label: "Fee" },
+                    { key: "discountItemId", label: "Discount" },
+                    { key: "miscItemId", label: "Misc" },
+                  ] as { key: keyof QboMappingConfig; label: string }[]).map(({ key, label }) => (
+                    <div key={key} className="flex items-center gap-2">
+                      <Label className="w-20 text-xs text-right shrink-0">{label}</Label>
+                      <Input
+                        className="h-8 text-xs"
+                        placeholder={`QBO Item ID for ${label.toLowerCase()}`}
+                        value={mappingConfig[key] || ""}
+                        onChange={(e) => setMappingConfig(prev => ({ ...prev, [key]: e.target.value }))}
+                      />
+                      {mappingConfig[key] ? (
+                        <CheckCircle className="h-3.5 w-3.5 text-green-500 shrink-0" />
+                      ) : (
+                        <div className="h-3.5 w-3.5 shrink-0" />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {/* Tax mapping */}
+              <div className="space-y-3">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Tax Codes</p>
+                <div className="grid gap-2">
+                  {([
+                    { key: "taxableCode", label: "Taxable" },
+                    { key: "nonTaxableCode", label: "Non-taxable" },
+                  ] as { key: keyof QboMappingConfig; label: string }[]).map(({ key, label }) => (
+                    <div key={key} className="flex items-center gap-2">
+                      <Label className="w-20 text-xs text-right shrink-0">{label}</Label>
+                      <Input
+                        className="h-8 text-xs"
+                        placeholder={`QBO tax code for ${label.toLowerCase()}`}
+                        value={mappingConfig[key] || ""}
+                        onChange={(e) => setMappingConfig(prev => ({ ...prev, [key]: e.target.value }))}
+                      />
+                      {mappingConfig[key] ? (
+                        <CheckCircle className="h-3.5 w-3.5 text-green-500 shrink-0" />
+                      ) : (
+                        <div className="h-3.5 w-3.5 shrink-0" />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {/* Missing items warning */}
+              {mappingConfigData?.status && !mappingConfigData.status.configured && (
+                <p className="text-xs text-amber-600">
+                  Missing: {[...mappingConfigData.status.missingItemMappings, ...mappingConfigData.status.missingTaxMappings].join(", ")}
+                </p>
+              )}
+              <Button
+                size="sm"
+                onClick={() => saveMappingConfigMutation.mutate(mappingConfig)}
+                disabled={saveMappingConfigMutation.isPending}
+              >
+                {saveMappingConfigMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
+                Save Mapping
               </Button>
-            </div>
-            {qboItemsData?.items && qboItemsData.items.length > 0 && (
-              <div className="mt-3">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>QBO ID</TableHead>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Type</TableHead>
-                      <TableHead>Price</TableHead>
-                      <TableHead>Active</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {qboItemsData.items.map((item) => (
-                      <TableRow key={item.id}>
-                        <TableCell className="font-mono text-xs">{item.id}</TableCell>
-                        <TableCell>
-                          <div className="space-y-1">
-                            <div className="font-medium">{item.name}</div>
-                            {item.description && (
-                              <div className="text-xs text-muted-foreground truncate max-w-[200px]">
-                                {item.description}
-                              </div>
+            </CardContent>
+          </Card>
+
+          {/* Card 3 — Step 3: Import Customers */}
+          <Card className={!canImport && !customerImportResult ? "opacity-60" : ""}>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Download className="h-4 w-4" />
+                  Step 3: Import Customers
+                </CardTitle>
+                {importPreflight?.importReadOnly && (
+                  <Badge variant="outline" className="text-blue-600 border-blue-300 text-xs">
+                    <Shield className="h-3 w-3 mr-1" />
+                    Read-only
+                  </Badge>
+                )}
+              </div>
+              <CardDescription>
+                Pull customers from QuickBooks into your account. Parent customers become companies; sub-customers become locations.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Gating messages */}
+              {!isConnected && (
+                <p className="text-sm text-muted-foreground">Connect QuickBooks first to enable import.</p>
+              )}
+              {isConnected && !isMappingConfigured && (
+                <p className="text-sm text-amber-600">Finish Items & Tax setup to enable customer import.</p>
+              )}
+              {isProduction && (
+                <Alert variant="destructive">
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertTitle>Import Blocked</AlertTitle>
+                  <AlertDescription>Customer import is disabled in the production environment.</AlertDescription>
+                </Alert>
+              )}
+
+              {/* Action buttons */}
+              {canImport && !isProduction && (
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => customerImportMutation.mutate({ dryRun: true })}
+                    disabled={customerImportMutation.isPending}
+                  >
+                    {customerImportMutation.isPending && customerImportMutation.variables?.dryRun ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <TestTube2 className="h-4 w-4 mr-2" />
+                    )}
+                    Preview Import
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => { setImportConfirmText(""); setShowImportConfirm(true); }}
+                    disabled={customerImportMutation.isPending}
+                  >
+                    {customerImportMutation.isPending && !customerImportMutation.variables?.dryRun ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <Download className="h-4 w-4 mr-2" />
+                    )}
+                    Run Import
+                  </Button>
+                </div>
+              )}
+
+              {/* Import Results */}
+              {customerImportResult && (
+                <div className="space-y-3 pt-2">
+                  <Alert variant={customerImportResult.success ? "default" : "destructive"}>
+                    <AlertTitle>
+                      {customerImportResult.dryRun ? "Preview Results" : "Import Complete"}
+                    </AlertTitle>
+                    <AlertDescription>
+                      <div className="mt-2 space-y-1 text-sm">
+                        <div>Found <strong>{customerImportResult.totals.fetched}</strong> customers in QuickBooks</div>
+                        <div>
+                          Companies: <strong>{customerImportResult.totals.parents}</strong>{" "}
+                          | Locations: <strong>{customerImportResult.totals.children}</strong>
+                          {customerImportResult.totals.inactiveSkipped > 0 && (
+                            <> | Inactive skipped: <strong>{customerImportResult.totals.inactiveSkipped}</strong></>
+                          )}
+                        </div>
+                        {customerImportResult.dryRun ? (
+                          <div className="mt-1">
+                            Would create: <strong>{customerImportResult.wouldCreate.customerCompanies}</strong> companies, <strong>{customerImportResult.wouldCreate.clientLocations}</strong> locations
+                            {" | "}Would update: <strong>{customerImportResult.wouldUpdate.customerCompanies}</strong> companies, <strong>{customerImportResult.wouldUpdate.clientLocations}</strong> locations
+                            {(customerImportResult.wouldRestore.customerCompanies > 0 || customerImportResult.wouldRestore.clientLocations > 0) && (
+                              <>{" | "}Would restore: <strong>{customerImportResult.wouldRestore.customerCompanies}</strong> companies, <strong>{customerImportResult.wouldRestore.clientLocations}</strong> locations</>
                             )}
                           </div>
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant="outline" className="text-xs">
-                            {item.type}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-sm">
-                          {item.unitPrice ? `$${item.unitPrice.toFixed(2)}` : "-"}
-                        </TableCell>
-                        <TableCell>
-                          {item.active ? (
-                            <CheckCircle className="h-4 w-4 text-green-600" />
-                          ) : (
-                            <XCircle className="h-4 w-4 text-muted-foreground" />
+                        ) : (
+                          <div className="mt-1">
+                            Created: <strong>{customerImportResult.created.customerCompanies}</strong> companies, <strong>{customerImportResult.created.clientLocations}</strong> locations
+                            {" | "}Updated: <strong>{customerImportResult.updated.customerCompanies}</strong> companies, <strong>{customerImportResult.updated.clientLocations}</strong> locations
+                            {(customerImportResult.restored.customerCompanies > 0 || customerImportResult.restored.clientLocations > 0) && (
+                              <>{" | "}Restored: <strong>{customerImportResult.restored.customerCompanies}</strong> companies, <strong>{customerImportResult.restored.clientLocations}</strong> locations</>
+                            )}
+                          </div>
+                        )}
+                        {customerImportResult.error && (
+                          <div className="text-destructive mt-1">{customerImportResult.error}</div>
+                        )}
+                      </div>
+                    </AlertDescription>
+                  </Alert>
+
+                  {customerImportResult.warnings.length > 0 && (
+                    <Alert>
+                      <AlertTriangle className="h-4 w-4" />
+                      <AlertTitle>Warnings ({customerImportResult.warnings.length})</AlertTitle>
+                      <AlertDescription>
+                        <ul className="mt-1 text-xs space-y-1 list-disc pl-4">
+                          {customerImportResult.warnings.slice(0, 10).map((w, i) => (
+                            <li key={i}>{w}</li>
+                          ))}
+                          {customerImportResult.warnings.length > 10 && (
+                            <li>...and {customerImportResult.warnings.length - 10} more</li>
                           )}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                        </ul>
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  {customerImportResult.sample.length > 0 && (
+                    <div className="rounded-md border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Type</TableHead>
+                            <TableHead>Name</TableHead>
+                            <TableHead>Action</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {customerImportResult.sample.map((rec) => (
+                            <TableRow key={rec.qboCustomerId}>
+                              <TableCell>
+                                <Badge variant={rec.type === "parent" ? "default" : "secondary"} className="text-xs">
+                                  {rec.type === "parent" ? "Company" : "Location"}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-sm">{rec.displayName}</TableCell>
+                              <TableCell>
+                                <Badge variant={rec.action === "create" ? "default" : rec.action === "restore" ? "secondary" : "outline"} className="text-xs">
+                                  {rec.action}
+                                </Badge>
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Card 4 — Step 4: Invoice Sync */}
+          <Card className="opacity-80">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <CloudUpload className="h-4 w-4" />
+                  Step 4: Invoice Sync
+                </CardTitle>
+                <Badge variant="secondary" className="text-xs">Coming Soon</Badge>
               </div>
-            )}
-            {qboItemsData && !qboItemsData.success && (
-              <Alert variant="destructive" className="mt-3">
-                <AlertTriangle className="h-4 w-4" />
-                <AlertDescription>{qboItemsData.error}</AlertDescription>
-              </Alert>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+              <CardDescription>
+                Automatically sync invoices to QuickBooks when they are marked as completed.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                Invoice sync is being finalized. Once enabled, completed invoices will automatically push to QuickBooks with their line items, tax, and customer references.
+              </p>
+            </CardContent>
+          </Card>
 
-      {/* Sync Events Table */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">Sync Events</CardTitle>
-          <CardDescription>Recent QBO sync operations for your company</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Filters */}
-          <div className="flex gap-4 items-center">
-            <Filter className="h-4 w-4 text-muted-foreground" />
-            <Select value={eventTypeFilter} onValueChange={setEventTypeFilter}>
-              <SelectTrigger className="w-48">
-                <SelectValue placeholder="Event Type" />
-              </SelectTrigger>
-              <SelectContent>
-                {EVENT_TYPE_OPTIONS.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+        </div>
+      </div>
 
-            <Select value={resultFilter} onValueChange={setResultFilter}>
-              <SelectTrigger className="w-36">
-                <SelectValue placeholder="Result" />
-              </SelectTrigger>
-              <SelectContent>
-                {RESULT_OPTIONS.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+      {/* ============================================================ */}
+      {/* ADVANCED SECTION — Collapsed by default, lazy-loads queries */}
+      {/* ============================================================ */}
+      <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+        <CollapsibleTrigger asChild>
+          <Button variant="ghost" className="w-full justify-between py-3 px-4 text-muted-foreground hover:text-foreground">
+            <span className="flex items-center gap-2 text-sm font-medium">
+              <Settings className="h-4 w-4" />
+              Advanced (Support / Admin)
+            </span>
+            {advancedOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </Button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="space-y-6 pt-2">
+
+          {/* Refresh button for advanced data */}
+          <div className="flex justify-end">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => { refetchStatus(); refetchEvents(); refetchPreflight(); }}
+              disabled={statusLoading || eventsLoading}
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${statusLoading || eventsLoading ? "animate-spin" : ""}`} />
+              Refresh Advanced Data
+            </Button>
           </div>
 
-          {/* Events Table */}
-          {eventsLoading ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-6 w-6 animate-spin" />
-            </div>
-          ) : eventsData?.events.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              <FileText className="h-12 w-12 mx-auto mb-3 opacity-50" />
-              <p>No sync events found</p>
-              <p className="text-sm">Events will appear here after sync operations are performed</p>
-            </div>
+          {/* Go Live Panel */}
+          <Card className={preflight?.qboEnabled ? "border-green-500/50" : ""}>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Shield className="h-5 w-5" />
+                  <div>
+                    <CardTitle className="text-lg">QBO Go-Live Status</CardTitle>
+                    <CardDescription>Requirements and controls for enabling QuickBooks sync</CardDescription>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={() => refetchPreflight()} disabled={preflightLoading}>
+                    <RefreshCw className={`h-4 w-4 ${preflightLoading ? "animate-spin" : ""}`} />
+                  </Button>
+                  {preflight?.qboEnabled ? (
+                    <Badge variant="default" className="bg-green-600">
+                      <Power className="h-3 w-3 mr-1" />
+                      Enabled
+                    </Badge>
+                  ) : (
+                    <Badge variant="secondary">
+                      <Power className="h-3 w-3 mr-1" />
+                      Disabled
+                    </Badge>
+                  )}
+                </div>
+              </div>
+            </CardHeader>
+            {preflight && (
+              <CardContent className="space-y-4">
+                {/* Preflight Checklist */}
+                <div className="grid gap-2 md:grid-cols-2">
+                  <div className="flex items-center gap-2 text-sm">
+                    {preflight.tokensConfigured ? <CheckCircle className="h-4 w-4 text-green-500" /> : <XCircle className="h-4 w-4 text-red-500" />}
+                    QBO tokens configured
+                  </div>
+                  <div className="flex items-center gap-2 text-sm">
+                    {preflight.connectivityCheck.success ? <CheckCircle className="h-4 w-4 text-green-500" /> : <XCircle className="h-4 w-4 text-red-500" />}
+                    API connectivity {preflight.connectivityCheck.latencyMs && `(${preflight.connectivityCheck.latencyMs}ms)`}
+                  </div>
+                  <div className="flex items-center gap-2 text-sm">
+                    {preflight.mappingStatus.configured ? <CheckCircle className="h-4 w-4 text-green-500" /> : <XCircle className="h-4 w-4 text-red-500" />}
+                    Item/tax mappings configured
+                  </div>
+                  <div className="flex items-center gap-2 text-sm">
+                    <Info className="h-4 w-4 text-blue-500" />
+                    Environment: {preflight.qboEnvironment}
+                  </div>
+                </div>
+
+                {preflight.blockers.length > 0 && (
+                  <Alert variant="destructive">
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertTitle>Blockers</AlertTitle>
+                    <AlertDescription>
+                      <ul className="mt-1 text-xs list-disc pl-4">
+                        {preflight.blockers.map((b, i) => <li key={i}>{b}</li>)}
+                      </ul>
+                    </AlertDescription>
+                  </Alert>
+                )}
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="outline" size="sm"
+                    onClick={() => connectivityTestMutation.mutate()}
+                    disabled={connectivityTestMutation.isPending}
+                  >
+                    {connectivityTestMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Wifi className="h-4 w-4 mr-2" />}
+                    Test Connection
+                  </Button>
+                  {preflight.qboEnabled ? (
+                    <Button variant="outline" size="sm" onClick={() => toggleEnabledMutation.mutate({ enabled: false })} disabled={toggleEnabledMutation.isPending}>
+                      <Power className="h-4 w-4 mr-2" />
+                      Disable QBO Sync
+                    </Button>
+                  ) : (
+                    <Button size="sm" onClick={() => setShowEnableConfirm(true)} disabled={!preflight.readyToSync || toggleEnabledMutation.isPending}>
+                      <Zap className="h-4 w-4 mr-2" />
+                      Enable QBO Sync
+                    </Button>
+                  )}
+                </div>
+
+                {/* Dry-Run Section */}
+                <div className="border-t pt-4 space-y-3">
+                  <p className="text-sm font-medium">Dry-Run Testing</p>
+                  <div className="flex gap-2 items-end">
+                    <div className="flex-1">
+                      <Label htmlFor="dryRunInvoiceId" className="text-xs">Invoice ID</Label>
+                      <Input id="dryRunInvoiceId" placeholder="UUID" value={dryRunInvoiceId} onChange={(e) => setDryRunInvoiceId(e.target.value)} className="h-8 text-xs" />
+                    </div>
+                    <Button variant="outline" size="sm" onClick={() => dryRunInvoiceMutation.mutate(dryRunInvoiceId)} disabled={!dryRunInvoiceId || dryRunInvoiceMutation.isPending}>
+                      {dryRunInvoiceMutation.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <TestTube2 className="h-4 w-4 mr-1" />}
+                      Dry-Run Invoice
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => dryRunQueueMutation.mutate()} disabled={dryRunQueueMutation.isPending}>
+                      {dryRunQueueMutation.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <TestTube2 className="h-4 w-4 mr-1" />}
+                      Dry-Run Queue
+                    </Button>
+                  </div>
+
+                  {dryRunInvoiceMutation.data && (
+                    <Alert className="text-xs">
+                      <AlertTitle>{dryRunInvoiceMutation.data.wouldSync ? "Would sync" : "Would not sync"}</AlertTitle>
+                      <AlertDescription>
+                        {dryRunInvoiceMutation.data.skipReason && <p>Reason: {dryRunInvoiceMutation.data.skipReason}</p>}
+                        <p>Customer ref: {dryRunInvoiceMutation.data.validation.hasCustomerRef ? "yes" : "no"} | Mapping valid: {dryRunInvoiceMutation.data.validation.mappingValid ? "yes" : "no"}</p>
+                        {dryRunInvoiceMutation.data.validation.mappingWarnings.length > 0 && (
+                          <p>Warnings: {dryRunInvoiceMutation.data.validation.mappingWarnings.join(", ")}</p>
+                        )}
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  {dryRunQueueMutation.data && (
+                    <Alert className="text-xs">
+                      <AlertTitle>Queue Preview</AlertTitle>
+                      <AlertDescription>
+                        Would process: {dryRunQueueMutation.data.wouldProcess.total} ({dryRunQueueMutation.data.wouldProcess.queued} queued, {dryRunQueueMutation.data.wouldProcess.retriable} retriable)
+                      </AlertDescription>
+                    </Alert>
+                  )}
+                </div>
+              </CardContent>
+            )}
+          </Card>
+
+          {/* Mapping Configuration (expandable) */}
+          {!showMappingConfig ? (
+            <Button variant="outline" size="sm" onClick={() => setShowMappingConfig(true)}>
+              <Settings className="h-4 w-4 mr-2" />
+              Show Mapping Configuration
+            </Button>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Time</TableHead>
-                  <TableHead>Event</TableHead>
-                  <TableHead>Result</TableHead>
-                  <TableHead>Entity ID</TableHead>
-                  <TableHead>QBO ID</TableHead>
-                  <TableHead>Duration</TableHead>
-                  <TableHead>Error</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {eventsData?.events.map((event) => (
-                  <TableRow key={event.id}>
-                    <TableCell className="text-sm whitespace-nowrap">
-                      {formatDateTime(event.createdAt)}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className="text-xs">
-                        {event.eventType}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <ResultBadge result={event.result} />
-                    </TableCell>
-                    <TableCell className="font-mono text-xs max-w-[120px] truncate">
-                      {event.invoiceId || event.customerCompanyId || event.clientLocationId || "-"}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">
-                      {event.qboEntityId || "-"}
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      {event.durationMs ? `${event.durationMs}ms` : "-"}
-                    </TableCell>
-                    <TableCell className="text-sm text-destructive max-w-[200px] truncate">
-                      {event.errorMessage || "-"}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-lg">Mapping Configuration</CardTitle>
+                  <Button variant="ghost" size="sm" onClick={() => setShowMappingConfig(false)}>Hide</Button>
+                </div>
+                <CardDescription>Map app line item types to QBO Item IDs and tax codes</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-3 md:grid-cols-2">
+                  {([
+                    { key: "serviceItemId", label: "Service Item ID" },
+                    { key: "laborItemId", label: "Labor Item ID" },
+                    { key: "materialItemId", label: "Material Item ID" },
+                    { key: "feeItemId", label: "Fee Item ID" },
+                    { key: "discountItemId", label: "Discount Item ID" },
+                    { key: "miscItemId", label: "Misc Item ID" },
+                    { key: "taxableCode", label: "Taxable Code" },
+                    { key: "nonTaxableCode", label: "Non-Taxable Code" },
+                  ] as { key: keyof QboMappingConfig; label: string }[]).map(({ key, label }) => (
+                    <div key={key}>
+                      <Label className="text-xs">{label}</Label>
+                      <Input
+                        className="h-8 text-xs mt-1"
+                        value={mappingConfig[key] || ""}
+                        onChange={(e) => setMappingConfig(prev => ({ ...prev, [key]: e.target.value }))}
+                      />
+                    </div>
+                  ))}
+                </div>
+                <Button
+                  size="sm"
+                  onClick={() => saveMappingConfigMutation.mutate(mappingConfig)}
+                  disabled={saveMappingConfigMutation.isPending}
+                >
+                  {saveMappingConfigMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
+                  Save Configuration
+                </Button>
+              </CardContent>
+            </Card>
           )}
-        </CardContent>
-      </Card>
+
+          {/* Status Dashboard */}
+          <div className="grid gap-4 md:grid-cols-2">
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base flex items-center gap-2"><Users className="h-4 w-4" /> Customer Companies</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {statusLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : status ? (
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    {Object.entries(status.customerCompanies).map(([key, value]) => (
+                      <div key={key} className="flex justify-between">
+                        <span className="text-muted-foreground">{key.replace(/_/g, " ")}</span>
+                        <span className="font-medium">{value}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : <p className="text-sm text-muted-foreground">No data</p>}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base flex items-center gap-2"><FileText className="h-4 w-4" /> Invoices</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {statusLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : status ? (
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    {Object.entries(status.invoices).map(([key, value]) => (
+                      <div key={key} className="flex justify-between">
+                        <span className="text-muted-foreground">{key.replace(/_/g, " ")}</span>
+                        <span className="font-medium">{value}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : <p className="text-sm text-muted-foreground">No data</p>}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Recent Failures */}
+          {status?.recentFailures && status.recentFailures.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <AlertTriangle className="h-4 w-4 text-destructive" />
+                  Recent Failures ({status.recentFailures.length})
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Type</TableHead>
+                        <TableHead>Error</TableHead>
+                        <TableHead>Suggested Action</TableHead>
+                        <TableHead>Time</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {status.recentFailures.slice(0, 10).map((event) => {
+                        const suggestion = getSuggestedAction(undefined, event.errorMessage || undefined);
+                        return (
+                          <TableRow key={event.id}>
+                            <TableCell><Badge variant="outline" className="text-xs">{event.eventType}</Badge></TableCell>
+                            <TableCell className="text-xs max-w-[200px] truncate">{event.errorMessage || "Unknown"}</TableCell>
+                            <TableCell className="text-xs max-w-[200px]">{suggestion?.action || "—"}</TableCell>
+                            <TableCell className="text-xs whitespace-nowrap">{formatDateTime(event.createdAt)}</TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Invoice Actions */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Invoice Sync Actions</CardTitle>
+              <CardDescription>Enter an invoice ID to perform sync or reconciliation operations</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex gap-2 items-end">
+                <div className="flex-1">
+                  <Label htmlFor="invoiceId">Invoice ID</Label>
+                  <Input id="invoiceId" placeholder="Enter invoice ID (UUID)" value={invoiceId} onChange={(e) => setInvoiceId(e.target.value)} />
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" onClick={() => syncInvoiceMutation.mutate(invoiceId)} disabled={!invoiceId || isAnyMutationPending}>
+                  {syncInvoiceMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CloudUpload className="h-4 w-4 mr-2" />}
+                  Sync Invoice
+                </Button>
+                <Button variant="outline" onClick={() => syncWithDepsMutation.mutate(invoiceId)} disabled={!invoiceId || isAnyMutationPending}>
+                  {syncWithDepsMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CloudUpload className="h-4 w-4 mr-2" />}
+                  Sync with Dependencies
+                </Button>
+                <Button variant="outline" onClick={() => reconcileDryRunMutation.mutate(invoiceId)} disabled={!invoiceId || isAnyMutationPending}>
+                  {reconcileDryRunMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />}
+                  Reconcile (Preview)
+                </Button>
+                <Button variant="destructive" onClick={() => setShowApplyConfirm(true)} disabled={!invoiceId || isAnyMutationPending}>
+                  {reconcileApplyMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Zap className="h-4 w-4 mr-2" />}
+                  Reconcile (Apply)
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Sync Queue */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-lg flex items-center gap-2"><ListTodo className="h-5 w-5" /> Sync Queue</CardTitle>
+                  <CardDescription>Manage queued sync jobs</CardDescription>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={() => refetchQueue()} disabled={queueLoading}>
+                    <RefreshCw className={`h-4 w-4 ${queueLoading ? "animate-spin" : ""}`} />
+                  </Button>
+                  <Button size="sm" onClick={() => processQueueMutation.mutate(20)} disabled={processQueueMutation.isPending}>
+                    {processQueueMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Play className="h-4 w-4 mr-2" />}
+                    Process Queue
+                  </Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {queueData?.stats && (
+                <div className="flex flex-wrap gap-4 text-sm">
+                  <span>Queued: <strong>{queueData.stats.queued}</strong></span>
+                  <span>Running: <strong>{queueData.stats.running}</strong></span>
+                  <span>Failed: <strong className="text-destructive">{queueData.stats.failed}</strong></span>
+                  <span>Succeeded: <strong className="text-green-600">{queueData.stats.succeeded}</strong></span>
+                  <span>Retriable: <strong>{queueData.stats.retriable}</strong></span>
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <Select value={queueStatusFilter} onValueChange={setQueueStatusFilter}>
+                  <SelectTrigger className="w-[160px] h-8 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Status</SelectItem>
+                    <SelectItem value="queued">Queued</SelectItem>
+                    <SelectItem value="running">Running</SelectItem>
+                    <SelectItem value="succeeded">Succeeded</SelectItem>
+                    <SelectItem value="failed">Failed</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {queueLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : queueData?.jobs.length ? (
+                <div className="rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Entity</TableHead>
+                        <TableHead>Action</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Attempts</TableHead>
+                        <TableHead>Error</TableHead>
+                        <TableHead></TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {queueData.jobs.map((job) => (
+                        <TableRow key={job.id}>
+                          <TableCell className="text-xs">
+                            <Badge variant="outline" className="text-xs">{job.entityType}</Badge>
+                            <div className="text-xs text-muted-foreground mt-0.5 font-mono truncate max-w-[120px]">{job.entityId}</div>
+                          </TableCell>
+                          <TableCell className="text-xs">{job.action}</TableCell>
+                          <TableCell><StatusBadge status={job.status.toUpperCase()} /></TableCell>
+                          <TableCell className="text-xs">{job.attempts}/{job.maxAttempts}</TableCell>
+                          <TableCell className="text-xs max-w-[150px] truncate">{job.lastError || "—"}</TableCell>
+                          <TableCell>
+                            <div className="flex gap-1">
+                              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => replayJobMutation.mutate(job.id)} disabled={replayJobMutation.isPending} title="Replay">
+                                <RotateCcw className="h-3 w-3" />
+                              </Button>
+                              <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => deleteJobMutation.mutate(job.id)} disabled={deleteJobMutation.isPending} title="Delete">
+                                <Trash2 className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              ) : <p className="text-sm text-muted-foreground">No queue jobs</p>}
+            </CardContent>
+          </Card>
+
+          {/* Recent Runs */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-lg">Recent Sync Runs</CardTitle>
+                <Button variant="outline" size="sm" onClick={() => refetchRuns()} disabled={runsLoading}>
+                  <RefreshCw className={`h-4 w-4 ${runsLoading ? "animate-spin" : ""}`} />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {runsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : runsData?.runs.length ? (
+                <div className="space-y-2">
+                  <div className="rounded-md border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Run ID</TableHead>
+                          <TableHead>Events</TableHead>
+                          <TableHead>Queue Jobs</TableHead>
+                          <TableHead>Started</TableHead>
+                          <TableHead></TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {runsData.runs.map((run) => (
+                          <TableRow key={run.syncRunId} className={selectedRunId === run.syncRunId ? "bg-muted/50" : ""}>
+                            <TableCell className="font-mono text-xs">{run.syncRunId.slice(0, 20)}...</TableCell>
+                            <TableCell className="text-xs">
+                              <span className="text-green-600">{run.successCount}</span> / <span className="text-destructive">{run.failureCount}</span> / {run.eventCount}
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              <span className="text-green-600">{run.queueSuccessCount}</span> / <span className="text-destructive">{run.queueFailedCount}</span> / {run.queueJobCount}
+                            </TableCell>
+                            <TableCell className="text-xs whitespace-nowrap">{formatDateTime(run.startedAt)}</TableCell>
+                            <TableCell>
+                              <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setSelectedRunId(selectedRunId === run.syncRunId ? null : run.syncRunId)}>
+                                {selectedRunId === run.syncRunId ? "Hide" : "Details"}
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  {selectedRunId && runDetailData && (
+                    <Card className="border-dashed">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-sm">Run Detail: {selectedRunId.slice(0, 24)}...</CardTitle>
+                      </CardHeader>
+                      <CardContent className="text-xs space-y-2">
+                        <div className="grid grid-cols-3 gap-2">
+                          <div>Events: {runDetailData.stats.successEvents}/{runDetailData.stats.totalEvents}</div>
+                          <div>Queue: {runDetailData.stats.successQueueJobs}/{runDetailData.stats.totalQueueJobs}</div>
+                          <div>Webhooks: {runDetailData.stats.processedWebhookEvents}/{runDetailData.stats.totalWebhookEvents}</div>
+                        </div>
+                        {runDetailData.events.filter(e => e.result === "FAILURE").length > 0 && (
+                          <div>
+                            <p className="font-medium text-destructive">Failed Events:</p>
+                            {runDetailData.events.filter(e => e.result === "FAILURE").map(e => {
+                              const suggestion = getSuggestedAction(undefined, e.errorMessage || undefined);
+                              return (
+                                <div key={e.id} className="pl-2 border-l-2 border-destructive mt-1">
+                                  <p>{e.eventType}: {e.errorMessage}</p>
+                                  {suggestion && <p className="text-muted-foreground italic">{suggestion.action}</p>}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  )}
+                </div>
+              ) : <p className="text-sm text-muted-foreground">No sync runs</p>}
+            </CardContent>
+          </Card>
+
+          {/* Webhooks */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-lg flex items-center gap-2"><Webhook className="h-5 w-5" /> Webhooks</CardTitle>
+                  <CardDescription>Incoming QBO webhook events</CardDescription>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={() => refetchWebhooks()} disabled={webhooksLoading}>
+                    <RefreshCw className={`h-4 w-4 ${webhooksLoading ? "animate-spin" : ""}`} />
+                  </Button>
+                  <Button size="sm" onClick={() => processWebhooksMutation.mutate()} disabled={processWebhooksMutation.isPending}>
+                    {processWebhooksMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Play className="h-4 w-4 mr-2" />}
+                    Process
+                  </Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center gap-2 mb-3">
+                <Select value={webhookStatusFilter} onValueChange={setWebhookStatusFilter}>
+                  <SelectTrigger className="w-[160px] h-8 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Status</SelectItem>
+                    <SelectItem value="pending">Pending</SelectItem>
+                    <SelectItem value="processed">Processed</SelectItem>
+                    <SelectItem value="ignored">Ignored</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {webhooksLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : webhooksData?.events.length ? (
+                <div className="rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Entity</TableHead>
+                        <TableHead>Operation</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Action</TableHead>
+                        <TableHead>Received</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {webhooksData.events.map((event) => (
+                        <TableRow key={event.id}>
+                          <TableCell className="text-xs">{event.qboEntityType} {event.qboEntityId}</TableCell>
+                          <TableCell className="text-xs">{event.operation}</TableCell>
+                          <TableCell><Badge variant={event.status === "processed" ? "default" : event.status === "pending" ? "secondary" : "outline"} className="text-xs">{event.status}</Badge></TableCell>
+                          <TableCell className="text-xs">{event.actionTaken || "—"}</TableCell>
+                          <TableCell className="text-xs whitespace-nowrap">{formatDateTime(event.receivedAt)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              ) : <p className="text-sm text-muted-foreground">No webhook events</p>}
+            </CardContent>
+          </Card>
+
+          {/* Drift Alerts */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-lg flex items-center gap-2"><Bell className="h-5 w-5" /> Drift Alerts</CardTitle>
+                  <CardDescription>Invoices modified in QBO that may need reconciliation</CardDescription>
+                </div>
+                <Button variant="outline" size="sm" onClick={() => refetchDriftAlerts()} disabled={driftAlertsLoading}>
+                  <RefreshCw className={`h-4 w-4 ${driftAlertsLoading ? "animate-spin" : ""}`} />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {driftAlertsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : driftAlertsData?.alerts.length ? (
+                <div className="rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Invoice</TableHead>
+                        <TableHead>QBO Entity</TableHead>
+                        <TableHead>Operation</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead></TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {driftAlertsData.alerts.map((alert) => (
+                        <TableRow key={alert.webhookEventId}>
+                          <TableCell className="text-xs">
+                            {alert.invoiceNumber || alert.invoiceId?.slice(0, 8) || "—"}
+                          </TableCell>
+                          <TableCell className="text-xs font-mono">{alert.qboEntityId}</TableCell>
+                          <TableCell className="text-xs">{alert.operation}</TableCell>
+                          <TableCell>
+                            <Badge variant={alert.status === "pending" ? "secondary" : alert.status === "reconciled" ? "default" : "outline"} className="text-xs">
+                              {alert.status}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            {alert.status === "pending" && (
+                              <Button
+                                variant="outline" size="sm" className="h-7 text-xs"
+                                onClick={() => reconcileDriftAlertMutation.mutate(alert.webhookEventId)}
+                                disabled={reconcileDriftAlertMutation.isPending}
+                              >
+                                Reconcile
+                              </Button>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              ) : <p className="text-sm text-muted-foreground">No drift alerts</p>}
+            </CardContent>
+          </Card>
+
+          {/* QBO Items */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-lg flex items-center gap-2"><Package className="h-5 w-5" /> QBO Items</CardTitle>
+                  <CardDescription>Link local items to QuickBooks items</CardDescription>
+                </div>
+                <Button variant="outline" size="sm" onClick={() => refetchLocalItems()} disabled={localItemsLoading}>
+                  <RefreshCw className={`h-4 w-4 ${localItemsLoading ? "animate-spin" : ""}`} />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {localItemsData?.items && (
+                <>
+                  <div className="flex flex-wrap gap-4 text-sm">
+                    <span>Total: <strong>{localItemsData.count}</strong></span>
+                    <span>Synced: <strong className="text-green-600">{localItemsData.items.filter(i => i.qboSyncStatus === "SYNCED").length}</strong></span>
+                    <span>Not synced: <strong>{localItemsData.items.filter(i => i.qboSyncStatus === "NOT_SYNCED").length}</strong></span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Select value={localItemsSyncStatus} onValueChange={setLocalItemsSyncStatus}>
+                      <SelectTrigger className="w-[160px] h-8 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All Items</SelectItem>
+                        <SelectItem value="SYNCED">Synced</SelectItem>
+                        <SelectItem value="NOT_SYNCED">Not Synced</SelectItem>
+                        <SelectItem value="ERROR">Error</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {localItemsData.items.filter(i => !i.qboItemId).length > 0 && (
+                      <Button
+                        variant="outline" size="sm"
+                        onClick={() => bulkCreateItemsMutation.mutate(localItemsData.items.filter(i => !i.qboItemId).map(i => i.id))}
+                        disabled={bulkCreateItemsMutation.isPending}
+                      >
+                        {bulkCreateItemsMutation.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Plus className="h-4 w-4 mr-1" />}
+                        Bulk Create in QBO
+                      </Button>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {localItemsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : localItemsData?.items.length ? (
+                <div className="rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Name</TableHead>
+                        <TableHead>Type</TableHead>
+                        <TableHead>QBO Status</TableHead>
+                        <TableHead>QBO ID</TableHead>
+                        <TableHead></TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {localItemsData.items.map((item) => (
+                        <TableRow key={item.id}>
+                          <TableCell className="text-sm">{item.name}</TableCell>
+                          <TableCell className="text-xs">{item.type}</TableCell>
+                          <TableCell><StatusBadge status={item.qboSyncStatus} /></TableCell>
+                          <TableCell className="text-xs font-mono">{item.qboItemId || "—"}</TableCell>
+                          <TableCell>
+                            <div className="flex gap-1">
+                              {!item.qboItemId && (
+                                <>
+                                  <Button variant="ghost" size="icon" className="h-7 w-7" title="Link to QBO item" onClick={() => { setSelectedItemForLink(item); setShowItemLinkDialog(true); }}>
+                                    <Link2 className="h-3 w-3" />
+                                  </Button>
+                                  <Button variant="ghost" size="icon" className="h-7 w-7" title="Create in QBO" onClick={() => createItemInQboMutation.mutate(item.id)} disabled={createItemInQboMutation.isPending}>
+                                    <Plus className="h-3 w-3" />
+                                  </Button>
+                                </>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              ) : <p className="text-sm text-muted-foreground">No local items</p>}
+
+              {/* Search QBO Items */}
+              <div className="border-t pt-4 space-y-2">
+                <p className="text-sm font-medium">Search QBO Items</p>
+                <div className="flex gap-2">
+                  <Input
+                    className="h-8 text-xs"
+                    placeholder="Search by name..."
+                    value={itemSearchQuery}
+                    onChange={(e) => setItemSearchQuery(e.target.value)}
+                  />
+                  <Button variant="outline" size="sm" onClick={() => refetchQboItems()} disabled={qboItemsLoading}>
+                    {qboItemsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ExternalLink className="h-4 w-4" />}
+                  </Button>
+                </div>
+                {qboItemsData?.items && (
+                  <div className="rounded-md border max-h-[200px] overflow-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>ID</TableHead>
+                          <TableHead>Name</TableHead>
+                          <TableHead>Type</TableHead>
+                          <TableHead>Price</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {qboItemsData.items.map((item) => (
+                          <TableRow key={item.id}>
+                            <TableCell className="text-xs font-mono">{item.id}</TableCell>
+                            <TableCell className="text-xs">{item.name}</TableCell>
+                            <TableCell className="text-xs">{item.type}</TableCell>
+                            <TableCell className="text-xs">{item.unitPrice != null ? `$${item.unitPrice}` : "—"}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Sync Events Table */}
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-lg">Sync Events</CardTitle>
+                <Button variant="outline" size="sm" onClick={() => refetchEvents()} disabled={eventsLoading}>
+                  <RefreshCw className={`h-4 w-4 ${eventsLoading ? "animate-spin" : ""}`} />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="flex gap-2">
+                <Select value={eventTypeFilter} onValueChange={setEventTypeFilter}>
+                  <SelectTrigger className="w-[180px] h-8 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {EVENT_TYPE_OPTIONS.map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <Select value={resultFilter} onValueChange={setResultFilter}>
+                  <SelectTrigger className="w-[140px] h-8 text-xs"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {RESULT_OPTIONS.map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              {eventsLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : eventsData?.events.length ? (
+                <div className="rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Type</TableHead>
+                        <TableHead>Result</TableHead>
+                        <TableHead>QBO Entity</TableHead>
+                        <TableHead>Error</TableHead>
+                        <TableHead>Duration</TableHead>
+                        <TableHead>Time</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {eventsData.events.map((event) => (
+                        <TableRow key={event.id}>
+                          <TableCell><Badge variant="outline" className="text-xs">{event.eventType}</Badge></TableCell>
+                          <TableCell><ResultBadge result={event.result} /></TableCell>
+                          <TableCell className="text-xs font-mono">{event.qboEntityId || "—"}</TableCell>
+                          <TableCell className="text-xs max-w-[200px] truncate">{event.errorMessage || "—"}</TableCell>
+                          <TableCell className="text-xs">{event.durationMs ? `${event.durationMs}ms` : "—"}</TableCell>
+                          <TableCell className="text-xs whitespace-nowrap">{formatDateTime(event.createdAt)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              ) : <p className="text-sm text-muted-foreground">No events</p>}
+            </CardContent>
+          </Card>
+
+        </CollapsibleContent>
+      </Collapsible>
+
+      {/* ============================================================ */}
+      {/* DIALOGS */}
+      {/* ============================================================ */}
 
       {/* Apply Confirmation Dialog */}
       <AlertDialog open={showApplyConfirm} onOpenChange={setShowApplyConfirm}>
@@ -2704,13 +2535,15 @@ export default function QboConsolePage() {
           <AlertDialogHeader>
             <AlertDialogTitle>Apply Reconciliation?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will create local payment records for any payments found in QBO that don't exist locally.
-              The invoice balance will be updated accordingly. This action cannot be easily undone.
+              This will create local payment records based on QBO payment data.
+              This action modifies your local data and cannot be easily undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleApplyConfirm}>Apply Payments</AlertDialogAction>
+            <AlertDialogAction onClick={handleApplyConfirm}>
+              Apply Payments
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -2719,23 +2552,102 @@ export default function QboConsolePage() {
       <AlertDialog open={showEnableConfirm} onOpenChange={setShowEnableConfirm}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Enable Sync to QuickBooks?</AlertDialogTitle>
+            <AlertDialogTitle>Enable QuickBooks Sync?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will enable QuickBooks Online sync for your company. All sync operations will begin
-              sending data to QBO ({preflight?.qboEnvironment || "sandbox"} environment).
-              <br /><br />
-              Make sure you have tested with previews before enabling.
+              This will allow syncing data from this app to QuickBooks Online.
+              Make sure your item/tax mappings are configured correctly.
+              {preflight?.qboEnvironment === "production" && (
+                <span className="block mt-2 text-destructive font-medium">
+                  Warning: You are connecting to the PRODUCTION QuickBooks environment.
+                </span>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => {
+              setShowEnableConfirm(false);
+              toggleEnabledMutation.mutate({ enabled: true, environment: preflight?.qboEnvironment });
+            }}>
+              Enable Sync to QuickBooks
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Import Customers Confirmation Dialog — requires typing IMPORT to proceed */}
+      <AlertDialog open={showImportConfirm} onOpenChange={(open) => { setShowImportConfirm(open); if (!open) setImportConfirmText(""); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Import Customers from QuickBooks?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3">
+                <p>
+                  This will create or update Customer Companies and Locations in your account
+                  based on QuickBooks customer data. No data will be written to QuickBooks.
+                </p>
+                {importPreflight?.environment === "production" && (
+                  <p className="text-destructive font-medium">
+                    Warning: Connected to production QuickBooks environment.
+                  </p>
+                )}
+                {customerImportResult?.dryRun && customerImportResult.totals.fetched > 0 && (
+                  <p>
+                    Based on the preview: <strong>{customerImportResult.wouldCreate.customerCompanies + customerImportResult.wouldCreate.clientLocations}</strong> new records
+                    and <strong>{customerImportResult.wouldUpdate.customerCompanies + customerImportResult.wouldUpdate.clientLocations}</strong> updates.
+                  </p>
+                )}
+                <div>
+                  <Label htmlFor="importConfirmInput" className="text-sm font-medium">
+                    Type <strong>IMPORT</strong> to confirm:
+                  </Label>
+                  <Input
+                    id="importConfirmInput"
+                    value={importConfirmText}
+                    onChange={(e) => setImportConfirmText(e.target.value)}
+                    placeholder="IMPORT"
+                    className="mt-1"
+                    autoComplete="off"
+                  />
+                </div>
+              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
+              disabled={importConfirmText !== "IMPORT"}
               onClick={() => {
-                setShowEnableConfirm(false);
-                toggleEnabledMutation.mutate({ enabled: true });
+                setShowImportConfirm(false);
+                setImportConfirmText("");
+                customerImportMutation.mutate({ dryRun: false });
               }}
             >
-              Enable Sync to QuickBooks
+              Import Customers
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Disconnect Confirmation Dialog */}
+      <AlertDialog open={showDisconnectConfirm} onOpenChange={setShowDisconnectConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Disconnect QuickBooks?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will remove the QuickBooks connection for your account.
+              Imported customers and item mappings will not be deleted.
+              You can reconnect at any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => disconnectMutation.mutate()}
+              disabled={disconnectMutation.isPending}
+            >
+              {disconnectMutation.isPending ? "Disconnecting..." : "Disconnect"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

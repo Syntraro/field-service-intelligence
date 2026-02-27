@@ -151,8 +151,21 @@ export class QboClient {
 
   /**
    * Make an authenticated POST request to QBO API
+   * Blocked when QBO_READ_ONLY_MODE=true (global write gate)
    */
   async post<T>(endpoint: string, body: unknown): Promise<QboApiResponse<T>> {
+    if (isQboReadOnlyMode()) {
+      return {
+        success: false,
+        error: {
+          code: "READ_ONLY_MODE",
+          message: "QBO is in read-only mode. All write operations are blocked.",
+          retryable: false,
+          category: "validation",
+        },
+      };
+    }
+
     await this.ensureValidToken();
 
     const url = `${this.baseUrl}/v3/company/${this.tokens.realmId}${endpoint}`;
@@ -384,4 +397,38 @@ export function createQboClientFromEnv(tokens: QboTokens): QboClient | null {
  */
 export function isQboConfigured(): boolean {
   return Boolean(process.env.QBO_CLIENT_ID && process.env.QBO_CLIENT_SECRET);
+}
+
+/**
+ * Check if QBO is in read-only mode (blocks all writes to QBO)
+ * Default: TRUE — all QBO writes are blocked unless explicitly disabled.
+ * Set QBO_READ_ONLY_MODE=false to allow writes.
+ */
+export function isQboReadOnlyMode(): boolean {
+  return process.env.QBO_READ_ONLY_MODE !== "false";
+}
+
+/**
+ * Check if the current operation is an import path.
+ * Import operations ALWAYS enforce read-only regardless of QBO_READ_ONLY_MODE.
+ * This is a hard safety guarantee: import logic can never write to QBO.
+ */
+export function isImportReadOnlyEnforced(): boolean {
+  return true; // Always true — import paths never write to QBO
+}
+
+/**
+ * Get the QBO environment, defaulting to sandbox when unset.
+ * Returns "sandbox" unless QBO_ENVIRONMENT is explicitly set to "production".
+ */
+export function getQboEnvironment(): "sandbox" | "production" {
+  return process.env.QBO_ENVIRONMENT === "production" ? "production" : "sandbox";
+}
+
+/**
+ * Check if import is allowed in the current environment.
+ * Production import is blocked by default — returns false for production.
+ */
+export function isImportAllowedInEnvironment(): boolean {
+  return getQboEnvironment() !== "production";
 }

@@ -72,6 +72,7 @@ import PortalInvoicesList from "@/pages/portal/PortalInvoicesList";
 import PortalInvoiceDetail from "@/pages/portal/PortalInvoiceDetail";
 import PortalLayout from "@/components/PortalLayout";
 import { PortalAuthProvider, usePortalAuth } from "@/lib/portalAuth";
+import { SettingsShell } from "@/components/SettingsShell";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { SubscriptionBanner } from "@/components/SubscriptionBanner";
@@ -93,7 +94,10 @@ import SupplierDetailPage from "@/pages/SupplierDetailPage";
 import Locations from "@/pages/Locations";
 
 function Router() {
-  return (
+  const [loc] = useLocation();
+  const isSettingsRoute = loc === "/settings" || loc.startsWith("/settings/");
+
+  const routes = (
     <Switch>
       <Route path="/login" component={Login} />
       <Route path="/signup" component={Signup} />
@@ -378,6 +382,12 @@ function Router() {
       <Route component={NotFound} />
     </Switch>
   );
+
+  // Settings routes render inside the two-panel SettingsShell layout
+  if (isSettingsRoute) {
+    return <SettingsShell>{routes}</SettingsShell>;
+  }
+  return routes;
 }
 
 /**

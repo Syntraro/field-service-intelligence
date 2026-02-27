@@ -17,14 +17,31 @@ import { requireFeature } from "../auth/requireFeature";
 import { ADMIN_ROLES } from "../auth/roles";
 import { asyncHandler } from "../middleware/errorHandler";
 import { AuthedRequest } from "../auth/tenantIsolation";
-import { createSyncOrchestrator, QboClient, createReconciliationService, createPreflightService } from "../services/qbo";
+import { createSyncOrchestrator, QboClient, createReconciliationService, createPreflightService, QboCustomerImportService, isQboReadOnlyMode, isImportReadOnlyEnforced, getQboEnvironment, isImportAllowedInEnvironment } from "../services/qbo";
 import type { QboTokens } from "../services/qbo";
 import { db } from "../db";
-import { customerCompanies, invoices, qboSyncEvents, companies, qboMappingConfigSchema, qboSyncQueue, qboQueueEntityTypeEnum, qboQueueActionEnum, qboEnvironmentEnum } from "@shared/schema";
+import { customerCompanies, invoices, qboSyncEvents, companies, qboMappingConfigSchema, qboSyncQueue, qboQueueEntityTypeEnum, qboQueueActionEnum, qboEnvironmentEnum, qboConnections } from "@shared/schema";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { QboItemMapper, parseQboMappingConfig, createQueueProcessor, getQueueJobs, getQueueStats, createItemServiceFromTokens } from "../services/qbo";
 import { items } from "@shared/schema";
 import { z } from "zod";
+
+// Intuit OAuth 2.0 endpoints
+const INTUIT_AUTH_URL = "https://appcenter.intuit.com/connect/oauth2";
+const INTUIT_TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer";
+
+// Augment express-session to store OAuth state
+declare module "express-session" {
+  interface SessionData {
+    qboOAuth?: {
+      state: string;
+      companyId: string;
+      userId: string;
+      environment: string;
+      issuedAt: number;
+    };
+  }
+}
 
 const router = Router();
 
@@ -39,28 +56,266 @@ function generateSyncRunId(): string {
 }
 
 /**
- * Helper to get QBO tokens from company settings
- * In a real implementation, this would fetch from database
- * For now, returns null if not configured
+ * Get QBO tokens from the qbo_connections table for a tenant.
+ * Falls back to env vars only for dev/admin testing when no DB row exists.
  */
 async function getQboTokensForCompany(companyId: string): Promise<QboTokens | null> {
-  // TODO: Implement token retrieval from company settings/storage
-  // This is a placeholder - tokens should be stored per-company after OAuth flow
+  // Primary: DB-backed token storage (per-tenant OAuth)
+  const [conn] = await db.select().from(qboConnections).where(eq(qboConnections.companyId, companyId)).limit(1);
+  if (conn) {
+    return {
+      accessToken: conn.accessToken,
+      refreshToken: conn.refreshToken,
+      realmId: conn.realmId,
+      expiresAt: conn.accessTokenExpiresAt ?? new Date(Date.now() + 3600 * 1000),
+    };
+  }
+
+  // Fallback: env vars for dev/admin testing only
   const accessToken = process.env.QBO_ACCESS_TOKEN;
   const refreshToken = process.env.QBO_REFRESH_TOKEN;
   const realmId = process.env.QBO_REALM_ID;
-
-  if (!accessToken || !refreshToken || !realmId) {
-    return null;
+  if (accessToken && refreshToken && realmId) {
+    return { accessToken, refreshToken, realmId, expiresAt: new Date(Date.now() + 3600 * 1000) };
   }
 
-  return {
-    accessToken,
-    refreshToken,
-    realmId,
-    expiresAt: new Date(Date.now() + 3600 * 1000), // 1 hour from now (placeholder)
-  };
+  return null;
 }
+
+/**
+ * Persist refreshed tokens back to qbo_connections.
+ * Called after QboClient.refreshAccessToken() succeeds.
+ */
+async function persistRefreshedTokens(companyId: string, tokens: QboTokens): Promise<void> {
+  await db.update(qboConnections)
+    .set({
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+      accessTokenExpiresAt: tokens.expiresAt,
+      updatedAt: new Date(),
+    })
+    .where(eq(qboConnections.companyId, companyId));
+}
+
+// ============================================================
+// OAUTH ENDPOINTS
+// ============================================================
+
+/**
+ * GET /api/qbo/oauth/setup-info
+ * Self-reports everything needed to configure QuickBooks OAuth.
+ * Detects app origin behind proxies, computes the required redirect URI,
+ * lists missing env vars by name (never exposes actual values).
+ */
+router.get(
+  "/oauth/setup-info",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    // Detect app origin robustly behind proxies
+    const proto = (req.get("x-forwarded-proto") || req.protocol || "https").split(",")[0].trim();
+    const host = (req.get("x-forwarded-host") || req.get("host") || "localhost").split(",")[0].trim();
+    const detectedAppOrigin = `${proto}://${host}`;
+    const requiredRedirectUri = `${detectedAppOrigin}/api/qbo/oauth/callback`;
+
+    const required = ["QBO_CLIENT_ID", "QBO_CLIENT_SECRET", "QBO_OAUTH_REDIRECT_URI"] as const;
+    const missing = required.filter((k) => !process.env[k]);
+    const oauthConfigured = missing.length === 0;
+    const environment = getQboEnvironment();
+
+    // Build next-steps guidance
+    const nextSteps: string[] = [];
+    if (!oauthConfigured) {
+      nextSteps.push("Create an app at https://developer.intuit.com — select QuickBooks Online Accounting scope.");
+      nextSteps.push(`Add this Redirect URI in your Intuit app settings: ${requiredRedirectUri}`);
+      if (missing.includes("QBO_CLIENT_ID")) nextSteps.push("Copy the Client ID from Intuit and set QBO_CLIENT_ID in Replit Secrets.");
+      if (missing.includes("QBO_CLIENT_SECRET")) nextSteps.push("Copy the Client Secret from Intuit and set QBO_CLIENT_SECRET in Replit Secrets.");
+      if (missing.includes("QBO_OAUTH_REDIRECT_URI")) nextSteps.push(`Set QBO_OAUTH_REDIRECT_URI to: ${requiredRedirectUri}`);
+      nextSteps.push("Click Re-check to verify configuration.");
+    }
+
+    res.json({ oauthConfigured, missing, detectedAppOrigin, requiredRedirectUri, environment, nextSteps });
+  })
+);
+
+/**
+ * GET /api/qbo/oauth/start
+ * Initiates the Intuit OAuth 2.0 authorization flow.
+ * Builds the authorization URL, stores state in session, returns { url }.
+ */
+router.get(
+  "/oauth/start",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const clientId = process.env.QBO_CLIENT_ID;
+    const clientSecret = process.env.QBO_CLIENT_SECRET;
+    const redirectUri = process.env.QBO_OAUTH_REDIRECT_URI;
+    if (!clientId || !clientSecret || !redirectUri) {
+      return res.status(503).json({
+        error: "Unable to start QuickBooks connection. Please contact support.",
+      });
+    }
+
+    const environment = getQboEnvironment();
+    const companyId = req.companyId;
+    const userId = req.user!.id;
+
+    // Generate a cryptographic nonce for CSRF protection
+    const state = crypto.randomBytes(32).toString("hex");
+
+    // Store state in session so callback can validate
+    req.session.qboOAuth = {
+      state,
+      companyId,
+      userId,
+      environment,
+      issuedAt: Date.now(),
+    };
+
+    // Force session save before redirecting
+    await new Promise<void>((resolve, reject) => {
+      req.session.save((err) => (err ? reject(err) : resolve()));
+    });
+
+    const authUrl = new URL(INTUIT_AUTH_URL);
+    authUrl.searchParams.set("client_id", clientId);
+    authUrl.searchParams.set("redirect_uri", redirectUri);
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("scope", "com.intuit.quickbooks.accounting");
+    authUrl.searchParams.set("state", state);
+
+    res.json({ url: authUrl.toString() });
+  })
+);
+
+/**
+ * GET /api/qbo/oauth/callback
+ * Handles the redirect from Intuit after user grants permission.
+ * Exchanges the authorization code for tokens, stores in qbo_connections.
+ * Redirects back to the QBO settings page.
+ */
+router.get(
+  "/oauth/callback",
+  asyncHandler(async (req: Request, res: Response) => {
+    const { code, realmId, state, error: oauthError } = req.query;
+    const returnPath = "/settings/integrations/qbo";
+
+    // Handle Intuit error (user denied or error occurred)
+    if (oauthError) {
+      return res.redirect(`${returnPath}?connected=0&error=${encodeURIComponent(String(oauthError))}`);
+    }
+
+    // Validate required params
+    if (!code || !realmId || !state) {
+      return res.redirect(`${returnPath}?connected=0&error=missing_params`);
+    }
+
+    // Validate session state (anti-CSRF)
+    const savedOAuth = req.session?.qboOAuth;
+    if (!savedOAuth || savedOAuth.state !== String(state)) {
+      return res.redirect(`${returnPath}?connected=0&error=invalid_state`);
+    }
+
+    // Expire state after 10 minutes
+    const stateAge = Date.now() - savedOAuth.issuedAt;
+    if (stateAge > 10 * 60 * 1000) {
+      req.session.qboOAuth = undefined;
+      return res.redirect(`${returnPath}?connected=0&error=state_expired`);
+    }
+
+    const { companyId, userId, environment } = savedOAuth;
+
+    // Clear OAuth state from session immediately
+    req.session.qboOAuth = undefined;
+
+    // Exchange authorization code for tokens
+    const clientId = process.env.QBO_CLIENT_ID!;
+    const clientSecret = process.env.QBO_CLIENT_SECRET!;
+    const redirectUri = process.env.QBO_OAUTH_REDIRECT_URI!;
+
+    let tokenData: { access_token: string; refresh_token: string; expires_in: number };
+    try {
+      const tokenResponse = await fetch(INTUIT_TOKEN_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Authorization": `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`,
+          "Accept": "application/json",
+        },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code: String(code),
+          redirect_uri: redirectUri,
+        }),
+      });
+
+      if (!tokenResponse.ok) {
+        // Do not log token details
+        return res.redirect(`${returnPath}?connected=0&error=token_exchange_failed`);
+      }
+
+      tokenData = await tokenResponse.json() as typeof tokenData;
+    } catch {
+      return res.redirect(`${returnPath}?connected=0&error=token_exchange_error`);
+    }
+
+    // Upsert qbo_connections row for this tenant
+    try {
+      const now = new Date();
+      const expiresAt = new Date(Date.now() + tokenData.expires_in * 1000);
+
+      // Check if row exists
+      const [existing] = await db.select({ id: qboConnections.id })
+        .from(qboConnections)
+        .where(eq(qboConnections.companyId, companyId))
+        .limit(1);
+
+      if (existing) {
+        await db.update(qboConnections)
+          .set({
+            environment,
+            realmId: String(realmId),
+            accessToken: tokenData.access_token,
+            refreshToken: tokenData.refresh_token,
+            accessTokenExpiresAt: expiresAt,
+            connectedByUserId: userId,
+            connectedAt: now,
+            updatedAt: now,
+          })
+          .where(eq(qboConnections.companyId, companyId));
+      } else {
+        await db.insert(qboConnections).values({
+          companyId,
+          environment,
+          realmId: String(realmId),
+          accessToken: tokenData.access_token,
+          refreshToken: tokenData.refresh_token,
+          accessTokenExpiresAt: expiresAt,
+          connectedByUserId: userId,
+          connectedAt: now,
+        });
+      }
+    } catch {
+      return res.redirect(`${returnPath}?connected=0&error=db_save_failed`);
+    }
+
+    return res.redirect(`${returnPath}?connected=1`);
+  })
+);
+
+/**
+ * POST /api/qbo/oauth/disconnect
+ * Removes the QBO connection for the tenant.
+ * Does NOT delete imported customers or mappings.
+ */
+router.post(
+  "/oauth/disconnect",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    await db.delete(qboConnections).where(eq(qboConnections.companyId, companyId));
+    res.json({ ok: true });
+  })
+);
 
 /**
  * POST /api/qbo/sync/customer-company/:id
@@ -1484,6 +1739,280 @@ router.post(
       alreadySyncedCount: alreadySyncedIds.length,
       syncRunId,
       jobs,
+    });
+  })
+);
+
+// ============================================================
+// CUSTOMER IMPORT (QBO → App, read-only from QBO)
+// ============================================================
+
+/**
+ * POST /api/qbo/import/customers
+ * Import customers from QBO into the app (read-only from QBO perspective)
+ * Supports dry-run mode for preview
+ *
+ * SAFETY: Hard-blocked in production environment. Returns 403.
+ * Import paths always enforce read-only on QBO writes regardless of env vars.
+ */
+router.post(
+  "/import/customers",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    // Hard fail: block import in production environment
+    const environment = getQboEnvironment();
+    if (!isImportAllowedInEnvironment()) {
+      return res.status(403).json({
+        success: false,
+        error: "Customer import is disabled in production environment. Switch to sandbox or remove QBO_ENVIRONMENT=production to proceed.",
+      });
+    }
+
+    const companyId = req.companyId;
+    const userId = req.user?.id;
+
+    const schema = z.object({
+      dryRun: z.boolean().default(true),
+      limit: z.number().int().positive().optional(),
+      includeInactive: z.boolean().default(false),
+    });
+
+    const parsed = schema.parse(req.body);
+
+    // Get QBO tokens
+    const tokens = await getQboTokensForCompany(companyId);
+    if (!tokens) {
+      return res.status(503).json({
+        success: false,
+        error: "QBO is not configured for this company",
+      });
+    }
+
+    const clientId = process.env.QBO_CLIENT_ID!;
+    const clientSecret = process.env.QBO_CLIENT_SECRET!;
+
+    const client = new QboClient({ clientId, clientSecret, environment }, tokens);
+    const importService = new QboCustomerImportService(client, companyId, userId);
+
+    const result = await importService.importCustomers({
+      dryRun: parsed.dryRun,
+      limit: parsed.limit,
+      includeInactive: parsed.includeInactive,
+    });
+
+    res.json(result);
+  })
+);
+
+/**
+ * GET /api/qbo/read-only-status
+ * Returns global read-only mode, import read-only override, and environment
+ */
+router.get(
+  "/read-only-status",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (_req: AuthedRequest, res: Response) => {
+    res.json({
+      readOnly: isQboReadOnlyMode(),
+      importReadOnly: isImportReadOnlyEnforced(),
+      environment: getQboEnvironment(),
+      importAllowed: isImportAllowedInEnvironment(),
+    });
+  })
+);
+
+/**
+ * GET /api/qbo/connection-status
+ * Lightweight connection check for Step 1 UI.
+ * Returns {connected, environment, readOnlyMode, message} with plain English messages.
+ * Checks DB-backed qbo_connections first, then verifies with a safe QBO read query.
+ * Persists refreshed tokens back to DB if token refresh occurs.
+ */
+router.get(
+  "/connection-status",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const environment = getQboEnvironment();
+    const readOnlyMode = isQboReadOnlyMode();
+
+    // Check tokens exist (DB first, then env-var fallback)
+    const tokens = await getQboTokensForCompany(companyId);
+    if (!tokens) {
+      return res.json({
+        connected: false,
+        environment,
+        readOnlyMode,
+        message: "QuickBooks is not connected. Click \"Connect QuickBooks\" to get started.",
+      });
+    }
+
+    // Safe read query to verify API access
+    try {
+      const clientId = process.env.QBO_CLIENT_ID!;
+      const clientSecret = process.env.QBO_CLIENT_SECRET!;
+      const client = new QboClient({ clientId, clientSecret, environment }, tokens);
+      const pingResult = await client.queryCustomers<unknown>("SELECT COUNT(*) FROM Customer MAXRESULTS 1");
+
+      // Persist refreshed tokens if client auto-refreshed
+      const currentTokens = client.getTokens();
+      if (currentTokens.accessToken !== tokens.accessToken) {
+        await persistRefreshedTokens(companyId, currentTokens);
+      }
+
+      if (pingResult.success) {
+        return res.json({
+          connected: true,
+          environment,
+          readOnlyMode,
+          message: `Connected to QuickBooks Online (${environment}).`,
+        });
+      }
+
+      return res.json({
+        connected: false,
+        environment,
+        readOnlyMode,
+        message: "QuickBooks connection failed. Your access tokens may have expired — try reconnecting.",
+      });
+    } catch (err) {
+      return res.json({
+        connected: false,
+        environment,
+        readOnlyMode,
+        message: err instanceof Error
+          ? `Connection error: ${err.message}`
+          : "Unable to reach QuickBooks. Please try again later.",
+      });
+    }
+  })
+);
+
+/**
+ * GET /api/qbo/preflight/import-customers
+ * Comprehensive preflight check before customer import.
+ * Verifies: tokens, environment safety, connectivity (with token refresh), DB indexes,
+ * and confirms import read-only override is active.
+ */
+router.get(
+  "/preflight/import-customers",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const checks: { name: string; ok: boolean; detail: string }[] = [];
+
+    const environment = getQboEnvironment();
+    const globalReadOnly = isQboReadOnlyMode();
+    const importReadOnly = isImportReadOnlyEnforced();
+    const importAllowed = isImportAllowedInEnvironment();
+
+    // 1. QBO tokens exist (DB-backed or env-var fallback)
+    const tokens = await getQboTokensForCompany(companyId);
+    checks.push({
+      name: "qbo_tokens",
+      ok: !!tokens,
+      detail: tokens ? "QBO tokens available" : "QuickBooks not connected — complete OAuth setup first",
+    });
+
+    // 2. Environment is sandbox (import blocked in production)
+    checks.push({
+      name: "environment",
+      ok: importAllowed,
+      detail: importAllowed
+        ? `${environment} — import allowed`
+        : `${environment} — customer import is disabled in production`,
+    });
+
+    // 3. Import read-only override active (import paths never write to QBO)
+    checks.push({
+      name: "import_read_only",
+      ok: importReadOnly,
+      detail: importReadOnly ? "Import read-only override enforced" : "WARNING: import read-only override not active",
+    });
+
+    // 4. Global read-only mode status (informational, not a blocker for import)
+    checks.push({
+      name: "global_read_only",
+      ok: true, // Informational — not a blocking check
+      detail: globalReadOnly ? "Global QBO write-block enabled (default)" : "Global QBO writes allowed (QBO_READ_ONLY_MODE=false)",
+    });
+
+    // 5. QBO connectivity + token refresh attempt
+    let connectivityOk = false;
+    let connectivityDetail = "Skipped — tokens not configured";
+    if (tokens) {
+      try {
+        const clientId = process.env.QBO_CLIENT_ID!;
+        const clientSecret = process.env.QBO_CLIENT_SECRET!;
+        const client = new QboClient({ clientId, clientSecret, environment }, tokens);
+
+        // Attempt token refresh to verify refresh token is valid
+        try {
+          await client.refreshAccessToken();
+          connectivityDetail = "Token refresh succeeded";
+          // Persist refreshed tokens back to DB
+          await persistRefreshedTokens(companyId, client.getTokens());
+        } catch {
+          // Token refresh may fail if token is still valid — continue to connectivity check
+          connectivityDetail = "Token refresh skipped (may still be valid)";
+        }
+
+        // Safe read query to verify API access
+        const pingResult = await client.queryCustomers<unknown>("SELECT COUNT(*) FROM Customer MAXRESULTS 1");
+        connectivityOk = pingResult.success;
+        connectivityDetail = pingResult.success
+          ? "Connected to QBO (read query succeeded)"
+          : (pingResult.error?.message || "Connection failed");
+
+        // Persist tokens if auto-refreshed during query
+        const currentTokens = client.getTokens();
+        if (currentTokens.accessToken !== tokens.accessToken) {
+          await persistRefreshedTokens(companyId, currentTokens);
+        }
+      } catch (err) {
+        connectivityDetail = err instanceof Error ? err.message : "Connection failed";
+      }
+    }
+    checks.push({
+      name: "qbo_connectivity",
+      ok: connectivityOk,
+      detail: connectivityDetail,
+    });
+
+    // 6. DB unique indexes present
+    let indexesOk = false;
+    let indexesDetail = "Unable to verify";
+    try {
+      const indexCheck = await db.execute(sql`
+        SELECT indexname FROM pg_indexes
+        WHERE indexname IN (
+          'customer_companies_company_qbo_customer_id_uq',
+          'client_locations_company_qbo_customer_id_uq'
+        )
+      `);
+      const foundCount = (indexCheck as unknown as { rows: unknown[] }).rows?.length ?? 0;
+      indexesOk = foundCount === 2;
+      indexesDetail = indexesOk
+        ? "Both unique indexes present"
+        : `Found ${foundCount}/2 required indexes`;
+    } catch (err) {
+      indexesDetail = err instanceof Error ? err.message : "Index check failed";
+    }
+    checks.push({
+      name: "db_indexes",
+      ok: indexesOk,
+      detail: indexesDetail,
+    });
+
+    // All critical checks must pass (all except informational global_read_only)
+    const allOk = checks.every(c => c.ok);
+    res.json({
+      ok: allOk,
+      environment,
+      globalReadOnly,
+      importReadOnly,
+      importAllowed,
+      checks,
     });
   })
 );

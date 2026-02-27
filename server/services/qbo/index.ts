@@ -25,7 +25,7 @@
  */
 
 // Client
-export { QboClient, createQboClientFromEnv, isQboConfigured } from "./QboClient";
+export { QboClient, createQboClientFromEnv, isQboConfigured, isQboReadOnlyMode, isImportReadOnlyEnforced, getQboEnvironment, isImportAllowedInEnvironment } from "./QboClient";
 export type { QboTokens, QboClientConfig, QboApiResponse, QboApiError } from "./QboClient";
 
 // Mappers
@@ -136,6 +136,10 @@ export type {
   WebhookProcessResult,
   DriftAlert,
 } from "./QboWebhookService";
+
+// Customer Import Service (QBO → App)
+export { QboCustomerImportService } from "./QboCustomerImportService";
+export type { CustomerImportOptions, CustomerImportResult, ImportedRecord } from "./QboCustomerImportService";
 
 // Item Service
 export { QboItemService, createItemService, createItemServiceFromTokens } from "./QboItemService";
