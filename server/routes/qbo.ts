@@ -45,8 +45,14 @@ declare module "express-session" {
 
 const router = Router();
 
-// Feature gate: require qboEnabled for all QBO routes
-router.use(requireFeature("qboEnabled"));
+// Feature gate: require qboEnabled for all QBO routes EXCEPT OAuth callback.
+// The callback is an Intuit redirect that must be reachable without req.user/req.companyId;
+// it reads tenant context from the session-stored OAuth state instead.
+const qboFeatureGate = requireFeature("qboEnabled");
+router.use((req, res, next) => {
+  if (req.path === "/oauth/callback") return next();
+  return qboFeatureGate(req, res, next);
+});
 
 /**
  * Generate a unique syncRunId for correlating events in a single admin-triggered operation
@@ -196,6 +202,7 @@ router.get(
 router.get(
   "/oauth/callback",
   asyncHandler(async (req: Request, res: Response) => {
+    console.log("[QBO] callback hit");
     const { code, realmId, state, error: oauthError } = req.query;
     const returnPath = "/settings/integrations/qbo";
 

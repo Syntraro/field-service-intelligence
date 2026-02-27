@@ -28,6 +28,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **QBO callback added to `ensureTenantContext` public endpoints**: The callback reads tenant info from session state, not `req.user`, so it doesn't need tenant context middleware.
   - **File**: `server/auth/tenantIsolation.ts`
 
+#### QBO OAuth Callback 401 — Feature Gate Blocked Callback (2026-02-27)
+- **Root cause**: `router.use(requireFeature("qboEnabled"))` on the QBO router applied to ALL routes including `/oauth/callback`. The callback bypasses `requireAuth` and `ensureTenantContext` (public path), so `req.companyId` is never set. `requireFeature` checks `req.companyId` → undefined → returns 401.
+- **Fix**: Replaced blanket `router.use(requireFeature(...))` with a conditional middleware that skips the feature gate for `/oauth/callback`. The callback validates security via session-stored OAuth state instead.
+  - **File**: `server/routes/qbo.ts`
+
 ### Added
 
 #### Settings Page Redesign — Left Nav + Content Panel (2026-02-21)
