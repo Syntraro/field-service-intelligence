@@ -33,10 +33,12 @@ export default function Login() {
     },
   });
 
-  // Redirect to dashboard when user becomes authenticated
+  // Redirect when user becomes authenticated (respects returnTo for session-expired flow)
   useEffect(() => {
     if (user) {
-      setLocation("/");
+      const params = new URLSearchParams(window.location.search);
+      const returnTo = params.get("returnTo");
+      setLocation(returnTo && returnTo.startsWith("/") ? returnTo : "/");
     }
   }, [user, setLocation]);
 

@@ -44,6 +44,16 @@ export function resetCsrf(): void {
   csrfToken = null;
 }
 
+/**
+ * Dispatch a "session-expired" event when an API call gets 401.
+ * The SessionExpiredDialog listens for this to show a friendly prompt.
+ * Skip the auth-check endpoint itself (it naturally returns 401 when logged out).
+ */
+function notifySessionExpired(url: string): void {
+  if (url === "/api/auth/me") return;
+  window.dispatchEvent(new CustomEvent("session-expired"));
+}
+
 
 /**
  * Initialize CSRF token - call this when app mounts
@@ -201,6 +211,7 @@ export async function apiRequest<T = any>(
   }
 
   // Handle other errors
+  if (response.status === 401) notifySessionExpired(url);
   if (!response.ok) {
     // Read FULL raw response body for diagnostics
     const rawText = await response.text();
@@ -265,6 +276,7 @@ export async function getQueryFn<T = any>({
   });
 
   if (!response.ok) {
+    if (response.status === 401) notifySessionExpired(url);
     const errorData = await response.json().catch(() => ({
       error: response.statusText
     }));

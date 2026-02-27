@@ -50,7 +50,7 @@ export function ImpersonationBanner() {
     mutationFn: () => apiRequest("/api/admin/impersonate/stop", { method: "POST", body: JSON.stringify({}) }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/impersonate/status"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
       toast({
         title: "Support mode ended",
         description: "You've returned to your admin account",

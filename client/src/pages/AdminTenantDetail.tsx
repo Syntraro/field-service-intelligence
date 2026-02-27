@@ -464,7 +464,7 @@ export default function AdminTenantDetail() {
         description: `Now viewing as ${impersonateTarget?.fullName || impersonateTarget?.email}`,
       });
       // Invalidate user cache and redirect to dashboard
-      queryClient.invalidateQueries({ queryKey: ["/api/auth/user"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/auth/me"] });
       queryClient.invalidateQueries({ queryKey: ["/api/admin/impersonate/status"] });
       setImpersonateDialogOpen(false);
       setLocation("/");

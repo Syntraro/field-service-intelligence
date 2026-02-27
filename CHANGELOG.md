@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### Session Persistence + QBO OAuth Callback + Idle Timeout (2026-02-27)
+- **Auth endpoint mismatch**: Client was querying `GET /api/auth/user` (non-existent route) instead of `GET /api/auth/me`. After login, cached data hid the bug in the current tab, but every new tab or full page load (including QBO OAuth return) hit a 404 → appeared logged out. Fixed query key to `/api/auth/me` everywhere.
+  - **Files**: `client/src/lib/auth.tsx`, `client/src/pages/AdminTenantDetail.tsx`, `client/src/components/ImpersonationBanner.tsx`
+- **QBO OAuth callback behind auth guard**: `GET /api/qbo/oauth/callback` was blocked by `requireAuth` middleware. Added to public paths since the callback validates its own CSRF state via session.
+  - **File**: `server/auth/requireAuth.ts`
+- **2-hour rolling idle timeout**: Changed session from 14-day fixed expiry to 2-hour rolling idle timeout (`rolling: true`, `maxAge: 7200000`). Active users stay logged in indefinitely; inactive users expire after 2 hours.
+  - **File**: `server/index.ts`
+- **Session-expired UX**: Added `SessionExpiredDialog` that shows a friendly modal when API calls return 401 after session expiry. Login page now supports `returnTo` query param to redirect users back to where they were.
+  - **Files**: `client/src/components/SessionExpiredDialog.tsx` (new), `client/src/lib/queryClient.ts`, `client/src/App.tsx`, `client/src/pages/Login.tsx`
+
 ### Added
 
 #### Settings Page Redesign — Left Nav + Content Panel (2026-02-21)

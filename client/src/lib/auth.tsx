@@ -27,7 +27,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [userInitialized, setUserInitialized] = useState(false);
 
   const { data, isLoading, isError } = useQuery<User>({
-    queryKey: ["/api/auth/user"],
+    queryKey: ["/api/auth/me"],
     retry: false,
   });
 
@@ -50,7 +50,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     onSuccess: (userData) => {
       resetCsrf(); // session changed → force fresh CSRF token
       setUser(userData);
-      queryClient.setQueryData(["/api/auth/user"], userData);
+      queryClient.setQueryData(["/api/auth/me"], userData);
     },
   });
 
@@ -63,7 +63,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     onSuccess: (userData) => {
       resetCsrf(); // session changed → force fresh CSRF token
       setUser(userData);
-      queryClient.setQueryData(["/api/auth/user"], userData);
+      queryClient.setQueryData(["/api/auth/me"], userData);
     },
   });
 

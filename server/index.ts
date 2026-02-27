@@ -80,6 +80,10 @@ const pool = new Pool({
   ssl: IS_PROD ? { rejectUnauthorized: false } : undefined,
 });
 
+// 2-hour idle timeout (rolling). Cookie resets on every request so active
+// users stay logged in; inactive users expire after 2 hours.
+const SESSION_IDLE_MS = Number(process.env.SESSION_MAX_AGE_MS ?? 1000 * 60 * 60 * 2); // 2 hours
+
 app.use(
   session({
     store: new PgStore({
@@ -89,12 +93,13 @@ app.use(
     }),
     secret: sessionSecret ?? "dev-secret",
     resave: false,
+    rolling: true, // Reset maxAge on every response → idle timeout behavior
     saveUninitialized: true, // ← Create session even before login for CSRF
     cookie: {
       httpOnly: true,
       secure: IS_PROD,
       sameSite: "lax",
-      maxAge: Number(process.env.SESSION_MAX_AGE_MS ?? 1000 * 60 * 60 * 24 * 14), // 14 days
+      maxAge: SESSION_IDLE_MS,
     },
     name: process.env.SESSION_COOKIE_NAME ?? "sid",
   })

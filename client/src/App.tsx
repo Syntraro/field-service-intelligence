@@ -59,6 +59,7 @@ import BusinessHoursSettingsPage from "@/pages/BusinessHoursSettingsPage";
 import TagsSettingsPage from "@/pages/TagsSettingsPage";
 import { TimezoneSetupBanner } from "@/components/TimezoneSetupBanner";
 import { TimezoneSetupDialog } from "@/components/TimezoneSetupDialog";
+import SessionExpiredDialog from "@/components/SessionExpiredDialog";
 import Login from "@/pages/Login";
 import Signup from "@/pages/Signup";
 import RequestReset from "@/pages/RequestReset";
@@ -639,6 +640,7 @@ function App() {
       <AuthProvider>
         <TooltipProvider>
           <Toaster />
+          <SessionExpiredDialog />
           <AppContent />
         </TooltipProvider>
       </AuthProvider>

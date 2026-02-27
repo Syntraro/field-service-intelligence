@@ -6,6 +6,7 @@ const PUBLIC_PATHS = new Set([
   "/auth/me",
   "/csrf-token",
   "/health",
+  "/qbo/oauth/callback", // OAuth callback validates its own state via session
 ]);
 
 /** Portal routes handle their own auth via session.portal — skip staff auth */
