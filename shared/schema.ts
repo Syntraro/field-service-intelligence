@@ -491,9 +491,10 @@ export const items = pgTable("items", {
   isActive: boolean("is_active").default(true),
   // QBO sync fields for Items
   qboItemId: text("qbo_item_id"), // QBO Item id if/when synced
-  qboSyncToken: text("qbo_sync_token"), // QBO sync token if needed
+  qboSyncToken: text("qbo_sync_token"), // QBO sync token for optimistic locking on updates
   qboSyncStatus: text("qbo_sync_status").notNull().default("NOT_SYNCED"), // NOT_SYNCED, SYNCED, ERROR
   qboSyncError: text("qbo_sync_error"), // Last sync error message if any
+  qboLastSyncedAt: timestamp("qbo_last_synced_at"), // Timestamp of last successful sync
   // Soft delete
   deletedAt: timestamp("deleted_at"),
   // Metadata
@@ -2685,6 +2686,8 @@ export const qboSyncEventTypeEnum = [
   "PAYMENT_CREATED_FROM_QBO",
   // Import events (QBO → App)
   "CUSTOMER_IMPORT",
+  // Catalog sync events (App → QBO bulk)
+  "CATALOG_SYNC",
   // Go-live and preflight events
   "QBO_ENABLED",
   "QBO_DISABLED",
@@ -2692,7 +2695,7 @@ export const qboSyncEventTypeEnum = [
 ] as const;
 export type QboSyncEventType = typeof qboSyncEventTypeEnum[number];
 
-export const qboSyncResultEnum = ["SUCCESS", "FAILURE", "SKIPPED", "NO_CHANGES"] as const;
+export const qboSyncResultEnum = ["SUCCESS", "FAILURE", "SKIPPED", "NO_CHANGES", "PARTIAL"] as const;
 export type QboSyncResult = typeof qboSyncResultEnum[number];
 
 export const qboSyncEvents = pgTable("qbo_sync_events", {

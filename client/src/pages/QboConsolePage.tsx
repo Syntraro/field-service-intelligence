@@ -399,6 +399,24 @@ interface CustomerImportResult {
   error?: string;
 }
 
+// Catalog sync result type (mirrors server CatalogSyncResult)
+interface CatalogSyncItemSummary {
+  itemId: string;
+  name: string;
+  type: string;
+  action: "create" | "update" | "skip" | "error";
+  qboItemId?: string;
+  error?: string;
+}
+interface CatalogSyncResult {
+  success: boolean;
+  dryRun: boolean;
+  totals: { eligible: number; creates: number; updates: number; skipped: number; errors: number };
+  sample: CatalogSyncItemSummary[];
+  syncRunId?: string;
+  error?: string;
+}
+
 // Import preflight types
 interface ImportPreflightCheck { name: string; ok: boolean; detail: string }
 interface ImportPreflightResult { ok: boolean; environment: string; globalReadOnly: boolean; importReadOnly: boolean; importAllowed: boolean; checks: ImportPreflightCheck[] }
@@ -525,6 +543,8 @@ export default function QboConsolePage() {
 
   // --- State: Setup flow ---
   const [mappingConfig, setMappingConfig] = useState<QboMappingConfig>({});
+  const [catalogSyncResult, setCatalogSyncResult] = useState<CatalogSyncResult | null>(null);
+  const [showCatalogSyncConfirm, setShowCatalogSyncConfirm] = useState(false);
   const [customerImportResult, setCustomerImportResult] = useState<CustomerImportResult | null>(null);
   const [showImportConfirm, setShowImportConfirm] = useState(false);
   const [importConfirmText, setImportConfirmText] = useState("");
@@ -611,7 +631,7 @@ export default function QboConsolePage() {
   const mappingTaxCodes = taxCodesResponse?.taxCodes ?? [];
   const taxCodesHint = taxCodesResponse?.hint;
 
-  // Import preflight — needed for Step 3 (import gate)
+  // Import preflight — needed for Step 4 (import gate)
   const { data: importPreflight, isLoading: importPreflightLoading, refetch: refetchImportPreflight } = useQuery<ImportPreflightResult>({
     queryKey: ["/api/qbo/preflight/import-customers"],
     queryFn: async () => {
@@ -851,6 +871,28 @@ export default function QboConsolePage() {
         ? "Session expired — please refresh the page and try again."
         : err.message;
       toast({ title: "Save failed", description: msg, variant: "destructive" });
+    },
+  });
+
+  // Catalog sync mutation — pushes catalog items to QBO
+  const catalogSyncMutation = useMutation({
+    mutationFn: async (payload: { dryRun: boolean }) => {
+      const dryRunParam = payload.dryRun ? "1" : "0";
+      return apiRequest<CatalogSyncResult>(`/api/qbo/catalog/sync?dryRun=${dryRunParam}`, {
+        method: "POST",
+      });
+    },
+    onSuccess: (data) => {
+      setCatalogSyncResult(data);
+      if (data.dryRun) {
+        toast({ title: "Catalog preview complete", description: `${data.totals.eligible} eligible items (${data.totals.creates} new, ${data.totals.updates} updates)` });
+      } else {
+        toast({ title: "Catalog sync complete", description: `Created ${data.totals.creates}, updated ${data.totals.updates}, errors ${data.totals.errors}` });
+        queryClient.invalidateQueries({ queryKey: ["/api/qbo/events"] });
+      }
+    },
+    onError: (err: Error) => {
+      toast({ title: "Catalog sync failed", description: err.message, variant: "destructive" });
     },
   });
 
@@ -1266,7 +1308,7 @@ export default function QboConsolePage() {
   // DERIVED STATE
   // ============================================================
 
-  // Step 1 uses connection-status; Step 3 uses import preflight for full gate
+  // Step 1 uses connection-status; Step 4 uses import preflight for full gate
   const isConnected = connectionStatus?.connected ?? false;
   const isMappingConfigured = mappingConfigData?.status?.configured ?? false;
   const canImport = isConnected && isMappingConfigured && (importPreflight?.ok ?? false);
@@ -1539,7 +1581,7 @@ export default function QboConsolePage() {
                 )}
               </div>
               <CardDescription>
-                Map your line item types and tax codes to QuickBooks items.
+                Map invoice line types to QBO items: service lines use the Service item, material/parts lines use the Product item.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -1673,13 +1715,134 @@ export default function QboConsolePage() {
             </CardContent>
           </Card>
 
-          {/* Card 3 — Step 3: Import Customers */}
+          {/* Card 3 — Step 3: Catalog Sync (push items to QBO) */}
+          <Card className={!isConnected ? "opacity-60 pointer-events-none" : ""}>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <CloudUpload className="h-4 w-4" />
+                  Step 3: Catalog Sync
+                </CardTitle>
+                {catalogSyncResult && !catalogSyncResult.dryRun && catalogSyncResult.success && (
+                  <Badge variant="outline" className="text-green-600 border-green-300">
+                    <CheckCircle className="h-3 w-3 mr-1" />
+                    Synced
+                  </Badge>
+                )}
+              </div>
+              <CardDescription>
+                Push your catalog items to QuickBooks as Products & Services. Preview first, then sync.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {!isConnected && (
+                <p className="text-sm text-muted-foreground">Connect QuickBooks first to enable catalog sync.</p>
+              )}
+
+              {isConnected && (
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => catalogSyncMutation.mutate({ dryRun: true })}
+                    disabled={catalogSyncMutation.isPending}
+                  >
+                    {catalogSyncMutation.isPending && catalogSyncMutation.variables?.dryRun ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <TestTube2 className="h-4 w-4 mr-2" />
+                    )}
+                    Preview Sync
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => setShowCatalogSyncConfirm(true)}
+                    disabled={catalogSyncMutation.isPending}
+                  >
+                    {catalogSyncMutation.isPending && !catalogSyncMutation.variables?.dryRun ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <CloudUpload className="h-4 w-4 mr-2" />
+                    )}
+                    Run Sync
+                  </Button>
+                </div>
+              )}
+
+              {/* Catalog sync results */}
+              {catalogSyncResult && (
+                <div className="space-y-3 pt-2">
+                  <Alert variant={catalogSyncResult.success ? "default" : "destructive"}>
+                    <AlertTitle>
+                      {catalogSyncResult.dryRun ? "Preview Results" : "Sync Complete"}
+                    </AlertTitle>
+                    <AlertDescription>
+                      <div className="mt-2 space-y-1 text-sm">
+                        <div>Eligible items: <strong>{catalogSyncResult.totals.eligible}</strong></div>
+                        <div>
+                          {catalogSyncResult.dryRun ? "Would create" : "Created"}: <strong>{catalogSyncResult.totals.creates}</strong>
+                          {" | "}{catalogSyncResult.dryRun ? "Would update" : "Updated"}: <strong>{catalogSyncResult.totals.updates}</strong>
+                          {catalogSyncResult.totals.skipped > 0 && (
+                            <>{" | "}Skipped: <strong>{catalogSyncResult.totals.skipped}</strong></>
+                          )}
+                          {catalogSyncResult.totals.errors > 0 && (
+                            <>{" | "}Errors: <strong className="text-destructive">{catalogSyncResult.totals.errors}</strong></>
+                          )}
+                        </div>
+                        {catalogSyncResult.error && (
+                          <div className="text-destructive mt-1">{catalogSyncResult.error}</div>
+                        )}
+                      </div>
+                    </AlertDescription>
+                  </Alert>
+
+                  {catalogSyncResult.sample.length > 0 && (
+                    <div className="rounded-md border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Name</TableHead>
+                            <TableHead>Type</TableHead>
+                            <TableHead>Action</TableHead>
+                            <TableHead>QBO ID</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {catalogSyncResult.sample.map((item) => (
+                            <TableRow key={item.itemId}>
+                              <TableCell className="text-sm">{item.name}</TableCell>
+                              <TableCell>
+                                <Badge variant="secondary" className="text-xs">{item.type}</Badge>
+                              </TableCell>
+                              <TableCell>
+                                <Badge
+                                  variant={item.action === "create" ? "default" : item.action === "update" ? "secondary" : item.action === "error" ? "destructive" : "outline"}
+                                  className="text-xs"
+                                >
+                                  {item.action}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-xs text-muted-foreground">
+                                {item.qboItemId || item.error || "—"}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Card 4 — Step 4: Import Customers */}
           <Card className={!canImport && !customerImportResult ? "opacity-60" : ""}>
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-base flex items-center gap-2">
                   <Download className="h-4 w-4" />
-                  Step 3: Import Customers
+                  Step 4: Import Customers
                 </CardTitle>
                 {importPreflight?.importReadOnly && (
                   <Badge variant="outline" className="text-blue-600 border-blue-300 text-xs">
@@ -1832,13 +1995,13 @@ export default function QboConsolePage() {
             </CardContent>
           </Card>
 
-          {/* Card 4 — Step 4: Invoice Sync */}
+          {/* Card 5 — Step 5: Invoice Sync */}
           <Card className="opacity-80">
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-base flex items-center gap-2">
                   <CloudUpload className="h-4 w-4" />
-                  Step 4: Invoice Sync
+                  Step 5: Invoice Sync
                 </CardTitle>
                 <Badge variant="secondary" className="text-xs">Coming Soon</Badge>
               </div>
@@ -2735,6 +2898,39 @@ export default function QboConsolePage() {
               }}
             >
               Import Customers
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Catalog Sync Confirmation Dialog */}
+      <AlertDialog open={showCatalogSyncConfirm} onOpenChange={setShowCatalogSyncConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Sync Catalog to QuickBooks?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>
+                  This will create or update Products & Services in QuickBooks based on your catalog items.
+                </p>
+                {catalogSyncResult?.dryRun && catalogSyncResult.totals.eligible > 0 && (
+                  <p>
+                    Based on the preview: <strong>{catalogSyncResult.totals.creates}</strong> new items
+                    and <strong>{catalogSyncResult.totals.updates}</strong> updates.
+                  </p>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setShowCatalogSyncConfirm(false);
+                catalogSyncMutation.mutate({ dryRun: false });
+              }}
+            >
+              Sync Now
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

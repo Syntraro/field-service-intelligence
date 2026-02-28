@@ -79,6 +79,25 @@ export interface ItemLinkResult {
   error?: string;
 }
 
+/** Summary of a single item in a catalog sync run */
+export interface CatalogSyncItemSummary {
+  itemId: string;
+  name: string;
+  type: string;
+  action: "create" | "update" | "skip" | "error";
+  qboItemId?: string;
+  error?: string;
+}
+
+/** Result of a catalog sync (dry-run or real) */
+export interface CatalogSyncResult {
+  success: boolean;
+  dryRun: boolean;
+  totals: { eligible: number; creates: number; updates: number; skipped: number; errors: number };
+  sample: CatalogSyncItemSummary[];
+  error?: string;
+}
+
 // ============================================================
 // MAPPER FUNCTIONS
 // ============================================================
@@ -98,19 +117,34 @@ function parseQBOItem(item: QBOItemResponse): ParsedQBOItem {
   };
 }
 
-function mapLocalItemToQBO(item: Item): Record<string, unknown> {
-  // Map local item type to QBO type
+/**
+ * Build a QBO Item payload from a local catalog item.
+ * For updates, include Id + SyncToken (required by QBO for optimistic locking).
+ * Type cannot be changed after creation in QBO, so it's only set on create.
+ */
+function mapLocalItemToQBO(item: Item, forUpdate: boolean = false): Record<string, unknown> {
   const qboType = item.type === "product" ? "NonInventory" : "Service";
 
   const payload: Record<string, unknown> = {
     Name: item.name || `Item ${item.id.substring(0, 8)}`,
-    Type: qboType,
     Active: item.isActive ?? true,
   };
 
-  // Add optional fields if present
+  // Type is immutable in QBO after creation — only set on create
+  if (!forUpdate) {
+    payload.Type = qboType;
+  }
+
+  // For updates, QBO requires Id + SyncToken
+  if (forUpdate && item.qboItemId && item.qboSyncToken) {
+    payload.Id = item.qboItemId;
+    payload.SyncToken = item.qboSyncToken;
+  }
+
   if (item.description) {
     payload.Description = item.description;
+    // SalesDescription used on invoices — keep in sync with Description
+    payload.SalesDesc = item.description;
   }
   if (item.sku) {
     payload.Sku = item.sku;
@@ -118,20 +152,17 @@ function mapLocalItemToQBO(item: Item): Record<string, unknown> {
   if (item.unitPrice) {
     payload.UnitPrice = parseFloat(item.unitPrice);
   }
-  if (item.cost) {
-    payload.PurchaseCost = parseFloat(item.cost);
-  }
   if (item.isTaxable !== null && item.isTaxable !== undefined) {
     payload.Taxable = item.isTaxable;
   }
 
-  // For Service/NonInventory items, we need an IncomeAccountRef
-  // This should ideally come from company configuration, but we'll use a placeholder
-  // In production, this would be configured per-company
-  payload.IncomeAccountRef = {
-    value: "1", // Placeholder - should be configured per company
-    name: "Services",
-  };
+  // IncomeAccountRef required for Service/NonInventory on create
+  if (!forUpdate) {
+    payload.IncomeAccountRef = {
+      value: "1", // Default — should be configured per company in production
+      name: "Services",
+    };
+  }
 
   return payload;
 }
@@ -447,6 +478,131 @@ export class QboItemService {
       .orderBy(sql`${items.name} ASC NULLS LAST`)
       .limit(limit)
       .offset(offset);
+  }
+
+  /**
+   * Catalog Sync — push local catalog items to QBO as Products & Services.
+   * - dryRun=true: compute counts and sample without calling QBO API
+   * - dryRun=false: create/update each item in QBO, persist Id+SyncToken+lastSyncedAt
+   * Returns totals and a sample of the first 5 items for UI display.
+   */
+  async syncCatalog(dryRun: boolean): Promise<CatalogSyncResult> {
+    const startTime = Date.now();
+    const sample: CatalogSyncItemSummary[] = [];
+    const totals = { eligible: 0, creates: 0, updates: 0, skipped: 0, errors: 0 };
+
+    try {
+      // Fetch all active, non-deleted items for this company
+      const localItems = await db
+        .select()
+        .from(items)
+        .where(and(
+          eq(items.companyId, this.companyId),
+          isNull(items.deletedAt),
+          eq(items.isActive, true),
+        ))
+        .orderBy(sql`${items.name} ASC NULLS LAST`);
+
+      totals.eligible = localItems.length;
+
+      if (localItems.length === 0) {
+        return { success: true, dryRun, totals, sample };
+      }
+
+      for (const item of localItems) {
+        const isUpdate = !!item.qboItemId;
+        const action: CatalogSyncItemSummary["action"] = isUpdate ? "update" : "create";
+        const summaryEntry: CatalogSyncItemSummary = {
+          itemId: item.id,
+          name: item.name || `Item ${item.id.substring(0, 8)}`,
+          type: item.type || "service",
+          action,
+        };
+
+        if (dryRun) {
+          // Dry run — just tally, no QBO calls
+          if (isUpdate) { totals.updates++; } else { totals.creates++; }
+          if (sample.length < 5) sample.push(summaryEntry);
+          continue;
+        }
+
+        // Real sync — call QBO API
+        try {
+          const payload = mapLocalItemToQBO(item, isUpdate);
+
+          // For updates missing SyncToken, skip to avoid QBO rejection
+          if (isUpdate && !item.qboSyncToken) {
+            summaryEntry.action = "skip";
+            summaryEntry.error = "Missing SyncToken for update";
+            totals.skipped++;
+            if (sample.length < 5) sample.push(summaryEntry);
+            continue;
+          }
+
+          const response = await this.client.post<QBOItemResponse>("/item", payload);
+
+          if (!response.success || !response.data) {
+            summaryEntry.action = "error";
+            summaryEntry.error = response.error?.message || "QBO API error";
+            totals.errors++;
+
+            await db.update(items).set({
+              qboSyncStatus: "ERROR",
+              qboSyncError: summaryEntry.error,
+              updatedAt: new Date(),
+            }).where(eq(items.id, item.id));
+          } else {
+            const qboItem = response.data;
+            summaryEntry.qboItemId = qboItem.Id;
+            if (isUpdate) { totals.updates++; } else { totals.creates++; }
+
+            // Persist QBO references back to local item
+            await db.update(items).set({
+              qboItemId: qboItem.Id,
+              qboSyncToken: qboItem.SyncToken,
+              qboSyncStatus: "SYNCED",
+              qboSyncError: null,
+              qboLastSyncedAt: new Date(),
+              updatedAt: new Date(),
+            }).where(eq(items.id, item.id));
+          }
+
+          if (sample.length < 5) sample.push(summaryEntry);
+        } catch (itemErr) {
+          summaryEntry.action = "error";
+          summaryEntry.error = itemErr instanceof Error ? itemErr.message : "Unknown error";
+          totals.errors++;
+
+          await db.update(items).set({
+            qboSyncStatus: "ERROR",
+            qboSyncError: summaryEntry.error,
+            updatedAt: new Date(),
+          }).where(eq(items.id, item.id));
+
+          if (sample.length < 5) sample.push(summaryEntry);
+        }
+      }
+
+      await this.logger.log({
+        eventType: "CATALOG_SYNC",
+        result: totals.errors > 0 ? "PARTIAL" : "SUCCESS",
+        responsePayload: { dryRun, totals },
+        durationMs: Date.now() - startTime,
+      });
+
+      return { success: true, dryRun, totals, sample };
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "Unknown error";
+
+      await this.logger.log({
+        eventType: "CATALOG_SYNC",
+        result: "FAILURE",
+        errorMessage,
+        durationMs: Date.now() - startTime,
+      });
+
+      return { success: false, dryRun, totals, sample, error: errorMessage };
+    }
   }
 }
 

@@ -1717,6 +1717,39 @@ router.post(
 );
 
 /**
+ * POST /api/qbo/catalog/sync
+ * Catalog sync: push local catalog items to QBO as Products & Services.
+ * Query param dryRun=1 for preview (no QBO writes), dryRun=0 for real sync.
+ * Admin-only. Returns totals and a sample of first 5 items.
+ */
+router.post(
+  "/catalog/sync",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const userId = req.user?.id;
+    const dryRun = req.query.dryRun === "1" || req.query.dryRun === "true";
+
+    const tokens = await getQboTokensForCompany(companyId);
+    if (!tokens) {
+      return res.status(503).json({ success: false, error: "QBO integration not configured for this company" });
+    }
+
+    const syncRunId = generateSyncRunId();
+    const itemService = createItemServiceFromTokens(tokens, companyId, userId, syncRunId);
+    if (!itemService) {
+      return res.status(503).json({ success: false, error: "QBO integration not available" });
+    }
+
+    console.log(`[QBO Catalog Sync] dryRun=${dryRun}, companyId=${companyId}, triggeredBy=${userId}`);
+    const result = await itemService.syncCatalog(dryRun);
+    console.log(`[QBO Catalog Sync] result: ${result.totals.creates} creates, ${result.totals.updates} updates, ${result.totals.errors} errors`);
+
+    res.json({ ...result, syncRunId });
+  })
+);
+
+/**
  * POST /api/qbo/items/bulk-create
  * Enqueue bulk item creation (adds items to queue for processing)
  */

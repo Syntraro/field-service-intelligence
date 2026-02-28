@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### QBO Catalog Sync — Push Items to QuickBooks (2026-02-28)
+- **New endpoint**: `POST /api/qbo/catalog/sync?dryRun=1|0` — syncs local catalog items to QBO as Products & Services. Admin-only.
+- **Dry-run mode**: `dryRun=1` computes create/update counts and a sample of first 5 items without calling QBO API.
+- **Real sync**: Creates new QBO Items (Type=Service or NonInventory based on item type) and updates existing linked items (using Id + SyncToken for optimistic locking).
+- **Field mapping**: Name→Name, SKU→Sku, Description→Description+SalesDesc, Price→UnitPrice, Taxable→Taxable, Active→Active, Type→Service/NonInventory (immutable after creation).
+- **Schema**: Added `qbo_last_synced_at` timestamp column to `items` table. Migration: `migrations/2026_02_28_items_qbo_last_synced_at.sql`.
+- **Service method**: `QboItemService.syncCatalog(dryRun)` — iterates active items, creates/updates in QBO, persists QBO references (Id, SyncToken, lastSyncedAt) back to DB.
+- **UI**: New "Step 3: Catalog Sync" card on QBO Console page with Preview Sync and Run Sync buttons, results table, and confirmation dialog.
+- **Step renumbering**: Import Customers is now Step 4, Invoice Sync is now Step 5.
+- **Step 2 description**: Updated to explain service/product line type mapping.
+- **Files**: `server/services/qbo/QboItemService.ts`, `server/routes/qbo.ts`, `client/src/pages/QboConsolePage.tsx`, `shared/schema.ts`, `CHANGELOG.md`
+- **Migration**: `migrations/2026_02_28_items_qbo_last_synced_at.sql`
+
 ### Changed
 
 #### QBO Mapping — Two-Item Model + Tax Code Display Fix (2026-02-28)
