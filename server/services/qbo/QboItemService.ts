@@ -21,6 +21,7 @@ import { parseQboMappingConfig } from "./QboItemMapper";
 import { QboClient } from "./QboClient";
 import type { QboTokens, QboApiResponse } from "./QboClient";
 import { QboSyncLogger } from "./QboSyncLogger";
+import * as fs from "fs";
 
 // ============================================================
 // TYPES
@@ -104,6 +105,30 @@ export interface CatalogSyncResult {
 // MAPPER FUNCTIONS
 // ============================================================
 
+/**
+ * Fields that are ONLY valid for QBO Inventory items.
+ * Including these on Service or NonInventory items causes:
+ * "Request has invalid or unsupported property"
+ */
+const INVENTORY_ONLY_FIELDS = [
+  "TrackQtyOnHand",
+  "QtyOnHand",
+  "InvStartDate",
+  "AssetAccountRef",
+] as const;
+
+/**
+ * Strip undefined, null, and empty-string values from a payload.
+ * Prevents QBO from rejecting fields with no meaningful value.
+ */
+function stripEmptyFields(payload: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(payload).filter(
+      ([, v]) => v !== undefined && v !== null && v !== ""
+    )
+  );
+}
+
 function parseQBOItem(item: QBOItemResponse): ParsedQBOItem {
   return {
     id: item.Id,
@@ -126,6 +151,11 @@ function parseQBOItem(item: QBOItemResponse): ParsedQBOItem {
  *   - product items → productQboItemType (default "NonInventory")
  * For updates, include Id + SyncToken (required by QBO for optimistic locking).
  * Type cannot be changed after creation in QBO, so it's only set on create.
+ *
+ * NonInventory/Service items: only Name, Sku, Description,
+ * UnitPrice, Type, Active, Taxable, IncomeAccountRef.
+ * Inventory-only fields (TrackQtyOnHand, QtyOnHand, InvStartDate,
+ * AssetAccountRef) are stripped to avoid QBO rejection.
  */
 function mapLocalItemToQBO(item: Item, forUpdate: boolean = false, mappingConfig?: QboMappingConfig | null): Record<string, unknown> {
   // Resolve QBO Item.Type from mapping config, with sensible defaults
@@ -138,10 +168,10 @@ function mapLocalItemToQBO(item: Item, forUpdate: boolean = false, mappingConfig
     Active: item.isActive ?? true,
   };
 
-  // Type is immutable in QBO after creation — only set on create
-  if (!forUpdate) {
-    payload.Type = qboType;
-  }
+  // QBO requires Type on every write (create and update).
+  // While Type is immutable after creation, omitting it on updates
+  // causes "ItemType required in Minor Version requests".
+  payload.Type = qboType;
 
   // For updates, QBO requires Id + SyncToken
   if (forUpdate && item.qboItemId && item.qboSyncToken) {
@@ -150,29 +180,45 @@ function mapLocalItemToQBO(item: Item, forUpdate: boolean = false, mappingConfig
   }
 
   if (item.description) {
+    // QBO uses Description for purchase-side and SalesDescription for sales-side.
+    // We only set Description (appears on both) — SalesDescription not sent
+    // separately to avoid redundancy; QBO defaults it from Description.
     payload.Description = item.description;
-    // SalesDescription used on invoices — keep in sync with Description
-    payload.SalesDesc = item.description;
   }
   if (item.sku) {
     payload.Sku = item.sku;
   }
   if (item.unitPrice) {
-    payload.UnitPrice = parseFloat(item.unitPrice);
+    const parsed = parseFloat(item.unitPrice);
+    if (!isNaN(parsed)) {
+      payload.UnitPrice = parsed;
+    }
   }
   if (item.isTaxable !== null && item.isTaxable !== undefined) {
     payload.Taxable = item.isTaxable;
   }
 
-  // IncomeAccountRef required for Service/NonInventory on create
-  if (!forUpdate) {
+  // IncomeAccountRef required for Service/NonInventory on both create and update
+  if (qboType === "Service" || qboType === "NonInventory") {
     payload.IncomeAccountRef = {
       value: "1", // Default — should be configured per company in production
       name: "Services",
     };
   }
 
-  return payload;
+  // Strip inventory-only fields for NonInventory and Service items
+  // These cause "Request has invalid or unsupported property" in QBO
+  if (qboType === "NonInventory" || qboType === "Service") {
+    for (const field of INVENTORY_ONLY_FIELDS) {
+      delete payload[field];
+    }
+    // Also strip purchase-side fields not needed for NonInventory/Service
+    delete payload.PurchaseCost;
+    delete payload.ExpenseAccountRef;
+  }
+
+  // Strip any undefined/null/empty values to avoid QBO rejection
+  return stripEmptyFields(payload);
 }
 
 // ============================================================
@@ -301,8 +347,12 @@ export class QboItemService {
       // Map to QBO payload
       const payload = mapLocalItemToQBO(localItem);
 
+      // Temporary diagnostic: log exact payload sent to QBO (no tokens/secrets)
+      // Temporary: write payload to file for debugging (console.log goes to attached terminal)
+      fs.appendFileSync("/tmp/qbo_item_payloads.log", `\n[${new Date().toISOString()}] [QBO ITEM PAYLOAD]\n${JSON.stringify(payload, null, 2)}\n`);
+
       // Create in QBO
-      const response = await this.client.post<QBOItemResponse>("/item", payload);
+      const response = await this.client.post<QBOItemResponse>("/item?minorversion=75", payload);
 
       if (!response.success || !response.data) {
         // Update local item with error
@@ -546,6 +596,10 @@ export class QboItemService {
         try {
           const payload = mapLocalItemToQBO(item, isUpdate, mappingConfig);
 
+          // Temporary diagnostic: log exact payload sent to QBO (no tokens/secrets)
+          // Temporary: write payload to file for debugging (console.log goes to attached terminal)
+      fs.appendFileSync("/tmp/qbo_item_payloads.log", `\n[${new Date().toISOString()}] [QBO ITEM PAYLOAD]\n${JSON.stringify(payload, null, 2)}\n`);
+
           // For updates missing SyncToken, skip to avoid QBO rejection
           if (isUpdate && !item.qboSyncToken) {
             summaryEntry.action = "skip";
@@ -555,7 +609,7 @@ export class QboItemService {
             continue;
           }
 
-          const response = await this.client.post<QBOItemResponse>("/item", payload);
+          const response = await this.client.post<QBOItemResponse>("/item?minorversion=75", payload);
 
           if (!response.success || !response.data) {
             summaryEntry.action = "error";

@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### QBO NonInventory Item Sync — Strip Inventory-Only Fields + Fix SalesDesc (2026-02-28)
+- **Root cause 1**: QBO rejects NonInventory/Service items with inventory-only properties (`TrackQtyOnHand`, `QtyOnHand`, `InvStartDate`, `AssetAccountRef`) returning "Request has invalid or unsupported property".
+- **Root cause 2**: Payload included `SalesDesc` — QBO schema expects `SalesDescription`. The invalid property name triggered the same rejection error.
+- **Fix** (`mapLocalItemToQBO`): Removed `SalesDesc` entirely — QBO defaults sales-side description from `Description`. Strips inventory-only and purchase-side fields for NonInventory/Service types. Added `stripEmptyFields()` to remove undefined/null/empty values.
+- **NaN guard**: `UnitPrice` now validated with `isNaN()` check before inclusion.
+- **Diagnostic logging**: `[QBO ITEM PAYLOAD]` console.log before QBO API calls (temporary — remove after debugging).
+- **Files**: `server/services/qbo/QboItemService.ts`, `CHANGELOG.md`
+
 #### QBO Tax Code Dropdown — Hash Name Fix + Readable Labels (2026-02-28)
 - **Root cause**: QBO sandbox auto-creates TaxCode entities with `Name` set to a system-generated hash/UUID (e.g., `3f7a8b...`). The endpoint only fetched `Name`, not `Description`, so hash-named codes appeared as the dropdown label.
 - **Server fix** (`GET /api/qbo/taxcodes`): Now fetches `Description` field. Name resolution: `Name` if readable → `Description` if readable → filtered out entirely. Hash detection: skips strings matching `/^[0-9a-f-]{20,}$/i`. Diagnostic logging for first 10 codes (Id, Name, Description, Taxable).
