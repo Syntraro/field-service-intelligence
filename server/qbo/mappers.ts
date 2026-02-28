@@ -521,7 +521,8 @@ export function toQboInvoicePayload(
       },
     };
 
-    // Resolve ItemRef priority: explicit -> product's qboItemId -> company default -> none
+    // Resolve ItemRef: explicit qboItemRefId -> catalog item's qboItemId -> error
+    // No global default fallback — each catalog item must be synced to QBO individually.
     let itemRefId = line.qboItemRefId;
 
     // If no explicit mapping, check if line has productId with linked qboItemId
@@ -529,18 +530,6 @@ export function toQboInvoicePayload(
       itemRefId = itemQboIds.get(line.productId) || null;
     }
 
-    // Fall back to company default mapping config
-    if (!itemRefId && mappingConfig) {
-      // Resolve from mapping config based on line type
-      const lineType = line.lineItemType as "service" | "material" | "fee" | "discount";
-      const typeMap: Record<string, string | undefined> = {
-        service: mappingConfig.serviceItemId || mappingConfig.laborItemId,
-        material: mappingConfig.materialItemId,
-        fee: mappingConfig.feeItemId,
-        discount: mappingConfig.discountItemId,
-      };
-      itemRefId = typeMap[lineType] || mappingConfig.miscItemId || null;
-    }
     if (itemRefId) {
       qboLine.SalesItemLineDetail!.ItemRef = { value: itemRefId };
     }
@@ -550,9 +539,9 @@ export function toQboInvoicePayload(
     if (!taxCodeRefId && mappingConfig) {
       const taxRate = parseFloat(line.taxRate);
       if (taxRate > 0) {
-        taxCodeRefId = mappingConfig.taxableCode || null;
+        taxCodeRefId = mappingConfig.taxableCodeId || mappingConfig.taxableCode || null;
       } else {
-        taxCodeRefId = mappingConfig.nonTaxableCode || null;
+        taxCodeRefId = mappingConfig.nonTaxableCodeId || mappingConfig.nonTaxableCode || null;
       }
     }
     if (taxCodeRefId) {

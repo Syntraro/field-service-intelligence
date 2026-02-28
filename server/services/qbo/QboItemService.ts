@@ -15,7 +15,9 @@
 import { db } from "../../db";
 import { items } from "@shared/schema";
 import { eq, and, isNull, sql } from "drizzle-orm";
-import type { Item } from "@shared/schema";
+import type { Item, QboMappingConfig } from "@shared/schema";
+import { companies } from "@shared/schema";
+import { parseQboMappingConfig } from "./QboItemMapper";
 import { QboClient } from "./QboClient";
 import type { QboTokens, QboApiResponse } from "./QboClient";
 import { QboSyncLogger } from "./QboSyncLogger";
@@ -119,11 +121,17 @@ function parseQBOItem(item: QBOItemResponse): ParsedQBOItem {
 
 /**
  * Build a QBO Item payload from a local catalog item.
+ * Uses mapping config to determine QBO Item.Type:
+ *   - service items → serviceQboItemType (default "Service")
+ *   - product items → productQboItemType (default "NonInventory")
  * For updates, include Id + SyncToken (required by QBO for optimistic locking).
  * Type cannot be changed after creation in QBO, so it's only set on create.
  */
-function mapLocalItemToQBO(item: Item, forUpdate: boolean = false): Record<string, unknown> {
-  const qboType = item.type === "product" ? "NonInventory" : "Service";
+function mapLocalItemToQBO(item: Item, forUpdate: boolean = false, mappingConfig?: QboMappingConfig | null): Record<string, unknown> {
+  // Resolve QBO Item.Type from mapping config, with sensible defaults
+  const qboType = item.type === "product"
+    ? (mappingConfig?.productQboItemType || "NonInventory")
+    : (mappingConfig?.serviceQboItemType || "Service");
 
   const payload: Record<string, unknown> = {
     Name: item.name || `Item ${item.id.substring(0, 8)}`,
@@ -492,6 +500,14 @@ export class QboItemService {
     const totals = { eligible: 0, creates: 0, updates: 0, skipped: 0, errors: 0 };
 
     try {
+      // Fetch mapping config to resolve QBO Item.Type per catalog item type
+      const [company] = await db
+        .select({ qboMappingConfig: companies.qboMappingConfig })
+        .from(companies)
+        .where(eq(companies.id, this.companyId))
+        .limit(1);
+      const mappingConfig = parseQboMappingConfig(company?.qboMappingConfig);
+
       // Fetch all active, non-deleted items for this company
       const localItems = await db
         .select()
@@ -528,7 +544,7 @@ export class QboItemService {
 
         // Real sync — call QBO API
         try {
-          const payload = mapLocalItemToQBO(item, isUpdate);
+          const payload = mapLocalItemToQBO(item, isUpdate, mappingConfig);
 
           // For updates missing SyncToken, skip to avoid QBO rejection
           if (isUpdate && !item.qboSyncToken) {

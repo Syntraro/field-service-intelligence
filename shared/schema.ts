@@ -44,19 +44,21 @@ export type InsertCompany = z.infer<typeof insertCompanySchema>;
 export type Company = typeof companies.$inferSelect;
 
 // QBO Mapping Configuration Schema
-// Two required item mappings: serviceItemId (QBO Type=Service) and productItemId (QBO Type=NonInventory/Inventory).
-// Legacy fields kept for backwards compatibility with older saved configs.
+// TYPE mapping: how our catalog item types map to QBO Item.Types.
+// Each catalog item is synced individually to QBO; invoice lines use per-item qboItemId.
 export const qboMappingConfigSchema = z.object({
-  // Required item mappings
-  serviceItemId: z.string().optional(),      // QBO Item (Type=Service) for service/labor line items
-  productItemId: z.string().optional(),      // QBO Item (Type=NonInventory or Inventory) for product/material lines
-  // Optional item mappings
-  feeItemId: z.string().optional(),          // QBO Item for fee lines (fallback: serviceItemId)
-  discountItemId: z.string().optional(),     // QBO Item for discount lines (fallback: serviceItemId)
+  // Type mapping: our "service" items → QBO Item.Type (always "Service")
+  serviceQboItemType: z.enum(["Service"]).optional(),
+  // Type mapping: our "product" items → QBO Item.Type ("NonInventory" or "Inventory")
+  productQboItemType: z.enum(["NonInventory", "Inventory"]).optional(),
   // Tax code mappings (optional — QBO uses its own defaults if omitted)
-  taxableCodeId: z.string().optional(),      // QBO TaxCode ID for taxable items
-  nonTaxableCodeId: z.string().optional(),   // QBO TaxCode ID for non-taxable items
-  // Legacy fields (backwards compat — migrated forward by parseQboMappingConfig)
+  taxableCodeId: z.string().optional(),
+  nonTaxableCodeId: z.string().optional(),
+  // Legacy fields (backwards compat — old configs may still have these)
+  serviceItemId: z.string().optional(),
+  productItemId: z.string().optional(),
+  feeItemId: z.string().optional(),
+  discountItemId: z.string().optional(),
   productServiceItemId: z.string().optional(),
   materialItemId: z.string().optional(),
   laborItemId: z.string().optional(),

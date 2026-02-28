@@ -186,7 +186,7 @@ export class QboInvoiceService {
           .map(l => `Line ${l.lineNumber} (${l.lineItemType}): ${l.errors.join("; ")}`)
           .join("\n");
 
-        const actionableError = `Invoice sync blocked: ${preflightResult.summary}\n\n${invalidLineDetails}\n\nTo fix: Configure QBO item mappings in Settings > Integrations > QBO, or set qboItemRefId on individual invoice lines.`;
+        const actionableError = `Invoice sync blocked: ${preflightResult.summary}\n\n${invalidLineDetails}\n\nTo fix: Sync your catalog items to QuickBooks first (QBO Console > Catalog Sync), then retry.`;
 
         await this.logger.logInvoiceFailure("INVOICE_CREATE", {
           invoiceId,

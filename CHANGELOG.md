@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+#### QBO Mapping — Type-Based Mapping (replaces global default items) (2026-02-28)
+- **Conceptual correction**: Mapping config no longer stores global default QBO Item IDs (`serviceItemId`/`productItemId`). Instead, each catalog item is synced individually to QBO and carries its own `qboItemId`. Invoice lines reference the catalog item's `qboItemId` directly.
+- **New mapping fields**: `serviceQboItemType` ("Service", locked) and `productQboItemType` ("NonInventory" | "Inventory") — determines what QBO Item.Type each catalog item type maps to during catalog sync.
+- **Schema**: `qboMappingConfigSchema` updated with `serviceQboItemType`/`productQboItemType`. Legacy fields retained for backwards compat.
+- **QboItemMapper rewrite**: `resolveItemRef()` now only uses explicit `qboItemRefId` (from catalog item). Removed `getItemIdForType()` global fallback. `checkConfigStatus()` checks type mappings instead of item IDs.
+- **Invoice mapper** (`server/qbo/mappers.ts`): Removed company default item fallback. Lines without `qboItemId` from catalog will fail with clear error: "Item not synced to QuickBooks. Sync catalog first."
+- **Invoice service** error message updated to direct users to QBO Console > Catalog Sync.
+- **Catalog sync** (`QboItemService.syncCatalog`): Now reads mapping config to resolve QBO Item.Type from `productQboItemType`/`serviceQboItemType`.
+- **UI Step 2**: Replaced item name dropdowns with type-only dropdowns. Service locked to "Service"; Product dropdown: Non-inventory / Inventory. Removed `/api/qbo/items` query for Step 2.
+- **Tax code display**: Renders human-readable name (not raw ID) via explicit name lookup.
+- **Files**: `shared/schema.ts`, `server/services/qbo/QboItemMapper.ts`, `server/services/qbo/QboItemService.ts`, `server/services/qbo/QboInvoiceService.ts`, `server/qbo/mappers.ts`, `client/src/pages/QboConsolePage.tsx`
+
 ### Added
 
 #### QBO Catalog Sync — Push Items to QuickBooks (2026-02-28)

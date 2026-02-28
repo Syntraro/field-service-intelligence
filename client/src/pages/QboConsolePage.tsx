@@ -112,16 +112,17 @@ interface QboEventsResponse {
 }
 
 interface QboMappingConfig {
-  // Required mappings
-  serviceItemId?: string;     // QBO Item (Type=Service) for service/labor lines
-  productItemId?: string;     // QBO Item (Type=NonInventory/Inventory) for material/product lines
-  // Optional mappings
-  feeItemId?: string;
-  discountItemId?: string;
+  // Type mapping: how our catalog types map to QBO Item.Types
+  serviceQboItemType?: "Service";
+  productQboItemType?: "NonInventory" | "Inventory";
   // Tax codes (optional)
   taxableCodeId?: string;
   nonTaxableCodeId?: string;
   // Legacy fields (kept for backwards compat with saved configs)
+  serviceItemId?: string;
+  productItemId?: string;
+  feeItemId?: string;
+  discountItemId?: string;
   productServiceItemId?: string;
   materialItemId?: string;
   laborItemId?: string;
@@ -609,12 +610,6 @@ export default function QboConsolePage() {
   // QBO company info — shows company name + realmId when connected
   const { data: companyInfo, isLoading: companyInfoLoading } = useQuery<QboCompanyInfo>({
     queryKey: ["/api/qbo/company-info"],
-    enabled: connectionStatus?.connected === true,
-  });
-
-  // QBO items — for Step 2 mapping dropdowns (distinct from Advanced qboItemsData)
-  const { data: mappingItems, isLoading: mappingItemsLoading } = useQuery<QboItem[]>({
-    queryKey: ["/api/qbo/items"],
     enabled: connectionStatus?.connected === true,
   });
 
@@ -1561,13 +1556,13 @@ export default function QboConsolePage() {
             </CardContent>
           </Card>
 
-          {/* Card 2 — Step 2: Items & Tax Mapping */}
+          {/* Card 2 — Step 2: Type & Tax Mapping */}
           <Card className={!isConnected ? "opacity-60 pointer-events-none" : ""}>
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-base flex items-center gap-2">
                   <Package className="h-4 w-4" />
-                  Step 2: Items & Tax
+                  Step 2: Type & Tax Mapping
                 </CardTitle>
                 {isMappingConfigured ? (
                   <Badge variant="outline" className="text-green-600 border-green-300">
@@ -1581,72 +1576,56 @@ export default function QboConsolePage() {
                 )}
               </div>
               <CardDescription>
-                Map invoice line types to QBO items: service lines use the Service item, material/parts lines use the Product item.
+                Map your catalog item types to QBO Item Types. Each catalog item will be synced individually in Step 3.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {/* Item mappings — Service + Product dropdowns */}
+              {/* Type mapping — Service + Product */}
               <div className="space-y-3">
-                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Item Mapping</p>
-                {mappingItemsLoading ? (
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading QBO items...
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Item Type Mapping</p>
+                <div className="grid gap-2">
+                  {/* Service type — locked to "Service" */}
+                  <div className="flex items-center gap-2">
+                    <Label className="w-28 text-xs text-right shrink-0">Service items</Label>
+                    <Select
+                      value={mappingConfig.serviceQboItemType || "Service"}
+                      onValueChange={() => setMappingConfig(prev => ({ ...prev, serviceQboItemType: "Service" as const }))}
+                    >
+                      <SelectTrigger className="h-8 text-xs">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Service" className="text-xs">Service</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <CheckCircle className="h-3.5 w-3.5 text-green-500 shrink-0" />
                   </div>
-                ) : !mappingItems?.length ? (
-                  <p className="text-xs text-amber-600">No items found in QBO — create items in QuickBooks first.</p>
-                ) : (
-                  <div className="grid gap-2">
-                    {/* Service item dropdown — only QBO items with Type=Service */}
-                    <div className="flex items-center gap-2">
-                      <Label className="w-28 text-xs text-right shrink-0">Service default</Label>
-                      <Select
-                        value={mappingConfig.serviceItemId || ""}
-                        onValueChange={(val) => setMappingConfig(prev => ({ ...prev, serviceItemId: val }))}
-                      >
-                        <SelectTrigger className="h-8 text-xs">
-                          <SelectValue placeholder="Select a Service-type item" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {mappingItems.filter(i => i.type === "Service").map((item) => (
-                            <SelectItem key={item.id} value={item.id} className="text-xs">
-                              {item.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      {mappingConfig.serviceItemId ? (
-                        <CheckCircle className="h-3.5 w-3.5 text-green-500 shrink-0" />
-                      ) : (
-                        <div className="h-3.5 w-3.5 shrink-0" />
-                      )}
-                    </div>
-                    {/* Product item dropdown — only QBO items with Type=NonInventory or Inventory */}
-                    <div className="flex items-center gap-2">
-                      <Label className="w-28 text-xs text-right shrink-0">Product default</Label>
-                      <Select
-                        value={mappingConfig.productItemId || ""}
-                        onValueChange={(val) => setMappingConfig(prev => ({ ...prev, productItemId: val }))}
-                      >
-                        <SelectTrigger className="h-8 text-xs">
-                          <SelectValue placeholder="Select a Product-type item" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {mappingItems.filter(i => i.type === "NonInventory" || i.type === "Inventory").map((item) => (
-                            <SelectItem key={item.id} value={item.id} className="text-xs">
-                              {item.name} <span className="text-muted-foreground ml-1">({item.type})</span>
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      {mappingConfig.productItemId ? (
-                        <CheckCircle className="h-3.5 w-3.5 text-green-500 shrink-0" />
-                      ) : (
-                        <div className="h-3.5 w-3.5 shrink-0" />
-                      )}
-                    </div>
+                  {/* Product type — NonInventory or Inventory */}
+                  <div className="flex items-center gap-2">
+                    <Label className="w-28 text-xs text-right shrink-0">Product items</Label>
+                    <Select
+                      value={mappingConfig.productQboItemType || ""}
+                      onValueChange={(val) => setMappingConfig(prev => ({ ...prev, productQboItemType: val as "NonInventory" | "Inventory" }))}
+                    >
+                      <SelectTrigger className="h-8 text-xs">
+                        <SelectValue placeholder="Select QBO type for products" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="NonInventory" className="text-xs">Non-inventory</SelectItem>
+                        <SelectItem value="Inventory" className="text-xs">Inventory</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {mappingConfig.productQboItemType ? (
+                      <CheckCircle className="h-3.5 w-3.5 text-green-500 shrink-0" />
+                    ) : (
+                      <div className="h-3.5 w-3.5 shrink-0" />
+                    )}
                   </div>
-                )}
-                <p className="text-xs text-muted-foreground">Service lines map to the Service item; material/parts lines map to the Product item.</p>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Your "service" catalog items become QBO Service items. Your "product" catalog items become the selected QBO type.
+                  Each item is synced individually in Step 3.
+                </p>
               </div>
               {/* Tax code mapping */}
               <div className="space-y-3">
@@ -1665,7 +1644,7 @@ export default function QboConsolePage() {
                       { key: "taxableCodeId" as keyof QboMappingConfig, label: "Taxable" },
                       { key: "nonTaxableCodeId" as keyof QboMappingConfig, label: "Non-taxable" },
                     ]).map(({ key, label }) => {
-                      const selectedId = mappingConfig[key] || "";
+                      const selectedId = (mappingConfig[key] as string) || "";
                       const selectedName = mappingTaxCodes.find(tc => tc.id === selectedId)?.name;
                       return (
                         <div key={key} className="flex items-center gap-2">
@@ -1701,12 +1680,16 @@ export default function QboConsolePage() {
               {/* Missing mapping warning */}
               {mappingConfigData?.status && !mappingConfigData.status.configured && (
                 <p className="text-xs text-amber-600">
-                  Required: select both a Service item and a Product item above to enable invoice sync.
+                  Required: select a product QBO type above to enable catalog sync.
                 </p>
               )}
               <Button
                 size="sm"
-                onClick={() => saveMappingConfigMutation.mutate(mappingConfig)}
+                onClick={() => {
+                  // Auto-set serviceQboItemType if not set (it's always "Service")
+                  const configToSave = { ...mappingConfig, serviceQboItemType: "Service" as const };
+                  saveMappingConfigMutation.mutate(configToSave);
+                }}
                 disabled={saveMappingConfigMutation.isPending}
               >
                 {saveMappingConfigMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
