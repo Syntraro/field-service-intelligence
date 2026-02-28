@@ -167,11 +167,11 @@ export class QboItemService {
     const startTime = Date.now();
 
     try {
-      // Build QBO query
-      let qboQuery = `SELECT * FROM Item WHERE Active = true`;
+      // Build QBO query — no Active filter; let caller filter if needed
+      let qboQuery = `SELECT * FROM Item`;
       if (query) {
         // Search by name (case-insensitive LIKE)
-        qboQuery += ` AND Name LIKE '%${query.replace(/'/g, "''")}%'`;
+        qboQuery += ` WHERE Name LIKE '%${query.replace(/'/g, "''")}%'`;
       }
       qboQuery += ` STARTPOSITION ${offset + 1} MAXRESULTS ${limit}`;
 

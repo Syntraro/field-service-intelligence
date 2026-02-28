@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### QBO Items Endpoint — Route Shadowing + Query Filter Fix (2026-02-28)
+- **Route shadowing bug**: Two `GET /api/qbo/items` handlers were registered on the same Express router. The first (advanced sync, wrapped format) shadowed the second (dropdown, flat array). The mapping dropdown received `{ success, items, syncRunId }` instead of `[{ id, name, type, active }]`, causing "No items found in QBO". Merged into a single handler that detects mode by query params.
+- **Overly restrictive query**: Removed `WHERE Active = true` filter from both the dropdown query and `QboItemService.listQboItems()`. Now uses `SELECT Id, Name, Type, Active FROM Item STARTPOSITION 1 MAXRESULTS 1000` (no filter). Frontend can filter by Active if needed.
+- **Diagnostic logging**: Added temporary `console.log` statements to `GET /api/qbo/items` (realmId, environment, query string, item count, first 2 items) and `GET /api/qbo/company-info` (realmId, companyName) for realm match verification. No tokens logged.
+- **Empty QueryResponse handling**: Logs safe fields from empty QueryResponse and returns empty array instead of error.
+  - **Files**: `server/routes/qbo.ts`, `server/services/qbo/QboItemService.ts`
+
 ### Added
 
 #### QBO Company Info + Item/TaxCode Dropdowns (2026-02-27)
