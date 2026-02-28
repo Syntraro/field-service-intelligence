@@ -6,13 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+#### QBO Integration — Production Stabilization (2026-02-28)
+
+**1. Split `/api/qbo/items` endpoint (Option A)**
+- `GET /api/qbo/items` now returns ONLY a flat array `[{ id, name, type, active }]` for mapping dropdowns. No wrapped objects, no syncRunId.
+- New `GET /api/qbo/items/advanced` endpoint for sync management UI — returns wrapped `{ success, items, totalCount, syncRunId }` with search and pagination.
+- Frontend advanced query updated from `/api/qbo/items` to `/api/qbo/items/advanced`.
+- **Files**: `server/routes/qbo.ts`, `client/src/pages/QboConsolePage.tsx`
+
+**2. Simplified mapping — single Product/Service item**
+- Added `productServiceItemId` to `qboMappingConfigSchema` — one QBO Item maps ALL invoice line types (service, material, fee, discount).
+- `QboItemMapper.getItemIdForType()`: `productServiceItemId` takes priority; falls back to legacy per-type fields for backwards compatibility.
+- `QboItemMapper.checkConfigStatus()`: only requires `productServiceItemId` (or legacy `serviceItemId`). Tax codes are optional.
+- `parseQboMappingConfig()`: auto-promotes old `serviceItemId` → `productServiceItemId` for existing configs.
+- UI Step 2 card: replaced 6 item dropdowns (service/labor/material/fee/discount/misc) with single "Product/Service" dropdown.
+- Advanced section mapping card: shows only `productServiceItemId`, `taxableCode`, `nonTaxableCode`.
+- **Files**: `shared/schema.ts`, `server/services/qbo/QboItemMapper.ts`, `client/src/pages/QboConsolePage.tsx`
+
+**3. Fixed CSRF on Save Mapping**
+- `saveMappingConfigMutation` was using raw `fetch()` without CSRF token header — always failed with "Invalid CSRF token".
+- Changed to use `apiRequest()` which auto-injects CSRF token from session.
+- Added user-friendly error message for CSRF/session expiry failures.
+- **File**: `client/src/pages/QboConsolePage.tsx`
+
+**4. Tax code retrieval fix**
+- `GET /api/qbo/taxcodes` now returns structured `{ taxCodes: [...], hint?: string }` instead of flat array.
+- Removed `WHERE Active = true` filter — returns all tax codes.
+- When QBO returns no tax codes (taxes not enabled), returns `hint: "Enable Sales Tax in your QuickBooks company settings..."`.
+- Frontend displays the hint message instead of generic "No tax codes found".
+- Added diagnostic logging: count + first 3 tax codes.
+- **Files**: `server/routes/qbo.ts`, `client/src/pages/QboConsolePage.tsx`
+
 ### Fixed
 
 #### QBO Items Endpoint — Route Shadowing + Query Filter Fix (2026-02-28)
-- **Route shadowing bug**: Two `GET /api/qbo/items` handlers were registered on the same Express router. The first (advanced sync, wrapped format) shadowed the second (dropdown, flat array). The mapping dropdown received `{ success, items, syncRunId }` instead of `[{ id, name, type, active }]`, causing "No items found in QBO". Merged into a single handler that detects mode by query params.
-- **Overly restrictive query**: Removed `WHERE Active = true` filter from both the dropdown query and `QboItemService.listQboItems()`. Now uses `SELECT Id, Name, Type, Active FROM Item STARTPOSITION 1 MAXRESULTS 1000` (no filter). Frontend can filter by Active if needed.
-- **Diagnostic logging**: Added temporary `console.log` statements to `GET /api/qbo/items` (realmId, environment, query string, item count, first 2 items) and `GET /api/qbo/company-info` (realmId, companyName) for realm match verification. No tokens logged.
-- **Empty QueryResponse handling**: Logs safe fields from empty QueryResponse and returns empty array instead of error.
+- **Route shadowing bug**: Superseded by endpoint split above.
+- **Overly restrictive query**: `WHERE Active = true` filter removed from both dropdown and `QboItemService.listQboItems()`.
+- **Diagnostic logging**: realmId, environment, query string, item count logged on both endpoints (no tokens).
+- **Empty QueryResponse handling**: Logs safe fields and returns empty array instead of error.
   - **Files**: `server/routes/qbo.ts`, `server/services/qbo/QboItemService.ts`
 
 ### Added

@@ -1536,53 +1536,20 @@ router.get(
 
 /**
  * GET /api/qbo/items
- * Two modes:
- *   - No query params → returns flat array [{ id, name, type, active }] for mapping dropdowns
- *   - With ?q=&limit=&offset= → returns wrapped { success, items, syncRunId } for advanced sync UI
- * Diagnostic logging: realmId, environment, query string, response summary (no tokens).
+ * Returns ONLY a flat array [{ id, name, type, active }] for mapping dropdowns.
+ * No wrapped objects, no syncRunId. Unfiltered query — frontend filters if needed.
  */
 router.get(
   "/items",
   requireRole(ADMIN_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const companyId = req.companyId;
-    const hasAdvancedParams = req.query.q || req.query.limit || req.query.offset;
-
-    const tokens = await getQboTokensForCompany(companyId);
-    if (!tokens) {
-      return res.status(503).json({
-        success: false,
-        error: "QBO integration not configured for this company",
-      });
-    }
-
-    const environment = getQboEnvironment();
-    console.log(`[QBO Items] realmId=${tokens.realmId}, environment=${environment}, mode=${hasAdvancedParams ? "advanced" : "dropdown"}`);
-
-    // ── Advanced sync mode (with search/pagination) ──
-    if (hasAdvancedParams) {
-      const userId = req.user?.id;
-      const query = (req.query.q as string) || undefined;
-      const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 50, 1), 200);
-      const offset = Math.max(parseInt(req.query.offset as string) || 0, 0);
-
-      const syncRunId = generateSyncRunId();
-      const itemService = createItemServiceFromTokens(tokens, companyId, userId, syncRunId);
-      if (!itemService) {
-        return res.status(503).json({ success: false, error: "QBO integration not available" });
-      }
-
-      const result = await itemService.listQboItems({ query, limit, offset });
-      console.log(`[QBO Items] Advanced mode returned ${result.items?.length ?? 0} items`);
-      return res.json({ ...result, syncRunId });
-    }
-
-    // ── Simple dropdown mode — unfiltered query, flat array response ──
-    const { client, error, persistIfRefreshed } = await createTenantQboClient(companyId);
+    const { client, error, persistIfRefreshed } = await createTenantQboClient(req.companyId);
     if (!client) return res.status(400).json({ error });
 
+    const environment = getQboEnvironment();
+    const realmId = client.getTokens().realmId;
     const qboQuery = "SELECT Id, Name, Type, Active FROM Item STARTPOSITION 1 MAXRESULTS 1000";
-    console.log(`[QBO Items] Query: ${qboQuery}`);
+    console.log(`[QBO Items] realmId=${realmId}, environment=${environment}, query=${qboQuery}`);
 
     const result = await client.get<{ QueryResponse: { Item?: Array<{ Id: string; Name: string; Type: string; Active: boolean }> } }>(
       `/query?query=${encodeURIComponent(qboQuery)}`
@@ -1594,21 +1561,49 @@ router.get(
       return res.status(502).json({ error: "Unable to fetch QBO items." });
     }
 
-    // Handle both wrapped and unwrapped response formats
     const rawQueryResponse = (result.data as any)?.QueryResponse ?? (result.raw as any)?.QueryResponse;
     const rawItems = rawQueryResponse?.Item ?? [];
 
-    // Diagnostic: log count and first 2 items (id + name + type only)
-    console.log(`[QBO Items] Response: ${rawItems.length} items found`);
+    console.log(`[QBO Items] ${rawItems.length} items found`);
     if (rawItems.length > 0) {
       console.log(`[QBO Items] First 2:`, rawItems.slice(0, 2).map((i: any) => ({ id: i.Id, name: i.Name, type: i.Type })));
     } else {
-      // Log safe fields from empty QueryResponse for debugging
       console.log(`[QBO Items] Empty QueryResponse:`, JSON.stringify(rawQueryResponse ?? {}).substring(0, 500));
     }
 
-    // Return flat array — let frontend filter by Active if needed
     res.json(rawItems.map((i: any) => ({ id: i.Id, name: i.Name, type: i.Type, active: i.Active })));
+  })
+);
+
+/**
+ * GET /api/qbo/items/advanced
+ * Paginated/searchable item list for sync management UI.
+ * Returns wrapped { success, items, totalCount?, syncRunId }.
+ */
+router.get(
+  "/items/advanced",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const userId = req.user?.id;
+    const query = (req.query.q as string) || undefined;
+    const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 50, 1), 200);
+    const offset = Math.max(parseInt(req.query.offset as string) || 0, 0);
+
+    const tokens = await getQboTokensForCompany(companyId);
+    if (!tokens) {
+      return res.status(503).json({ success: false, error: "QBO integration not configured for this company" });
+    }
+
+    const syncRunId = generateSyncRunId();
+    const itemService = createItemServiceFromTokens(tokens, companyId, userId, syncRunId);
+    if (!itemService) {
+      return res.status(503).json({ success: false, error: "QBO integration not available" });
+    }
+
+    const result = await itemService.listQboItems({ query, limit, offset });
+    console.log(`[QBO Items Advanced] ${result.items?.length ?? 0} items returned`);
+    res.json({ ...result, syncRunId });
   })
 );
 
@@ -2003,13 +1998,11 @@ router.get(
   })
 );
 
-// NOTE: Removed duplicate GET /items handler that was shadowed by the handler above.
-// The unified handler now supports both dropdown (flat array) and advanced (wrapped) modes.
-
 /**
  * GET /api/qbo/taxcodes
- * Lists all active QBO TaxCodes for mapping dropdowns.
- * Returns [{ id, name, taxable }].
+ * Returns { taxCodes: [{ id, name, taxable }], hint?: string }.
+ * No Active filter — returns all tax codes. If none exist, returns a hint
+ * explaining that Sales Tax must be enabled in QBO.
  */
 router.get(
   "/taxcodes",
@@ -2018,17 +2011,35 @@ router.get(
     const { client, error, persistIfRefreshed } = await createTenantQboClient(req.companyId);
     if (!client) return res.status(400).json({ error });
 
+    const qboQuery = "SELECT Id, Name, Taxable FROM TaxCode STARTPOSITION 1 MAXRESULTS 200";
     const result = await client.get<{ QueryResponse: { TaxCode?: Array<{ Id: string; Name: string; Taxable: boolean }> } }>(
-      `/query?query=${encodeURIComponent("SELECT Id, Name, Taxable FROM TaxCode WHERE Active = true MAXRESULTS 200")}`
+      `/query?query=${encodeURIComponent(qboQuery)}`
     );
     await persistIfRefreshed!();
 
     if (!result.success) {
+      console.log(`[QBO TaxCodes] Query failed:`, result.error?.message);
       return res.status(502).json({ error: "Unable to fetch QBO tax codes." });
     }
 
-    const raw = (result.data as any)?.QueryResponse?.TaxCode ?? [];
-    res.json(raw.map((t: any) => ({ id: t.Id, name: t.Name, taxable: t.Taxable })));
+    const rawQueryResponse = (result.data as any)?.QueryResponse ?? (result.raw as any)?.QueryResponse;
+    const raw = rawQueryResponse?.TaxCode ?? [];
+
+    console.log(`[QBO TaxCodes] ${raw.length} tax codes found`);
+    if (raw.length > 0) {
+      console.log(`[QBO TaxCodes] First 3:`, raw.slice(0, 3).map((t: any) => ({ id: t.Id, name: t.Name })));
+    }
+
+    const taxCodes = raw.map((t: any) => ({ id: t.Id, name: t.Name, taxable: t.Taxable }));
+
+    if (taxCodes.length === 0) {
+      return res.json({
+        taxCodes: [],
+        hint: "No tax codes found. Enable Sales Tax in your QuickBooks company settings to configure tax code mapping.",
+      });
+    }
+
+    res.json({ taxCodes });
   })
 );
 

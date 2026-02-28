@@ -112,11 +112,18 @@ export class QboItemMapper {
   }
 
   /**
-   * Get item ID from config by line item type
+   * Get item ID from config by line item type.
+   * Priority: productServiceItemId (universal) → legacy per-type field → miscItemId → null
    */
   private getItemIdForType(lineType: LineItemType): string | null {
     if (!this.config) return null;
 
+    // Universal mapping — if productServiceItemId is set, use it for all types
+    if (this.config.productServiceItemId) {
+      return this.config.productServiceItemId;
+    }
+
+    // Legacy per-type fallback (backwards compat with old configs)
     const typeMap: Record<LineItemType, keyof QboMappingConfig | null> = {
       service: "serviceItemId",
       material: "materialItemId",
@@ -231,6 +238,11 @@ export class QboItemMapper {
    * Check the status of the mapping configuration
    * Returns which mappings are configured and which are missing
    */
+  /**
+   * Check mapping config status.
+   * Only productServiceItemId is required. Tax codes are optional (QBO uses defaults).
+   * Legacy per-type fields (serviceItemId, etc.) are accepted as backwards compat.
+   */
   static checkConfigStatus(config: QboMappingConfig | null | undefined): MappingConfigStatus {
     const warnings: string[] = [];
     const missingItemMappings: string[] = [];
@@ -241,39 +253,27 @@ export class QboItemMapper {
         configured: false,
         hasItemMappings: false,
         hasTaxMappings: false,
-        missingItemMappings: ["serviceItemId", "materialItemId", "feeItemId"],
-        missingTaxMappings: ["taxableCode", "nonTaxableCode"],
-        warnings: ["No QBO mapping configuration found. Invoice line items will fail sync without explicit qboItemRefId."],
+        missingItemMappings: ["productServiceItemId"],
+        missingTaxMappings: [],
+        warnings: ["No QBO mapping configuration found. Set a Product/Service item to enable invoice sync."],
       };
     }
 
-    // Check item mappings
-    const itemKeys = ["serviceItemId", "materialItemId", "feeItemId", "discountItemId", "laborItemId", "miscItemId"] as const;
-    const configuredItems = itemKeys.filter(k => config[k]);
-    const hasItemMappings = configuredItems.length > 0;
-
-    // Primary mappings that should be configured
-    if (!config.serviceItemId && !config.laborItemId) {
-      missingItemMappings.push("serviceItemId (or laborItemId)");
-      warnings.push("No default service/labor item configured. Service line items will fail sync.");
-    }
-    if (!config.materialItemId) {
-      missingItemMappings.push("materialItemId");
-      warnings.push("No default material item configured. Material line items may fail sync.");
+    // Check item mapping — productServiceItemId OR legacy serviceItemId satisfies the requirement
+    const hasItemMappings = !!(config.productServiceItemId || config.serviceItemId || config.laborItemId);
+    if (!hasItemMappings) {
+      missingItemMappings.push("productServiceItemId");
+      warnings.push("No Product/Service item configured. Invoice line items will fail sync.");
     }
 
-    // Check tax mappings
+    // Tax mappings are optional — QBO can use its own defaults
     const hasTaxMappings = !!(config.taxableCode || config.nonTaxableCode);
-    if (!config.taxableCode) {
-      missingTaxMappings.push("taxableCode");
-      warnings.push("No taxable code configured. Taxable lines will use QBO defaults.");
-    }
-    if (!config.nonTaxableCode) {
-      missingTaxMappings.push("nonTaxableCode");
-    }
+
+    // configured = true when at least the item mapping is present
+    const configured = hasItemMappings;
 
     return {
-      configured: true,
+      configured,
       hasItemMappings,
       hasTaxMappings,
       missingItemMappings,
@@ -310,17 +310,24 @@ export function createItemMapper(config: QboMappingConfig | null | undefined): Q
 }
 
 /**
- * Parse QBO mapping config from company's jsonb field
- * Returns null if invalid or missing
+ * Parse QBO mapping config from company's jsonb field.
+ * Backwards compat: if old serviceItemId exists but productServiceItemId is absent, maps it forward.
+ * Returns null if invalid or missing.
  */
 export function parseQboMappingConfig(raw: unknown): QboMappingConfig | null {
   if (!raw) return null;
 
   try {
-    // Import the schema at runtime to avoid circular deps
     const { qboMappingConfigSchema } = require("@shared/schema");
     const parsed = qboMappingConfigSchema.safeParse(raw);
-    return parsed.success ? parsed.data : null;
+    if (!parsed.success) return null;
+
+    const config = parsed.data as QboMappingConfig;
+    // Backwards compat: promote legacy serviceItemId → productServiceItemId
+    if (!config.productServiceItemId && (config.serviceItemId || config.laborItemId)) {
+      config.productServiceItemId = config.serviceItemId || config.laborItemId;
+    }
+    return config;
   } catch {
     return null;
   }

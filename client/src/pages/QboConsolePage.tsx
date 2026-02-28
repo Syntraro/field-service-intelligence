@@ -112,12 +112,15 @@ interface QboEventsResponse {
 }
 
 interface QboMappingConfig {
+  productServiceItemId?: string; // Single QBO Item for all line types
+  // Legacy fields (backwards compat)
   serviceItemId?: string;
   materialItemId?: string;
   feeItemId?: string;
   discountItemId?: string;
   laborItemId?: string;
   miscItemId?: string;
+  // Tax codes
   taxableCode?: string;
   nonTaxableCode?: string;
 }
@@ -408,6 +411,9 @@ interface QboItem { id: string; name: string; type: string; active: boolean }
 /** QBO TaxCode for mapping dropdowns */
 interface QboTaxCode { id: string; name: string; taxable: boolean }
 
+/** Structured response from GET /api/qbo/taxcodes */
+interface QboTaxCodesResponse { taxCodes: QboTaxCode[]; hint?: string }
+
 /** OAuth setup info — self-reported config and computed redirect URI */
 interface OAuthSetupInfo {
   oauthConfigured: boolean;
@@ -587,11 +593,18 @@ export default function QboConsolePage() {
     enabled: connectionStatus?.connected === true,
   });
 
-  // QBO tax codes — for Step 2 mapping dropdowns
-  const { data: mappingTaxCodes, isLoading: mappingTaxCodesLoading } = useQuery<QboTaxCode[]>({
+  // QBO tax codes — for Step 2 mapping dropdowns (structured response with optional hint)
+  const { data: taxCodesResponse, isLoading: mappingTaxCodesLoading } = useQuery<QboTaxCodesResponse>({
     queryKey: ["/api/qbo/taxcodes"],
+    queryFn: async () => {
+      const response = await fetch("/api/qbo/taxcodes", { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch tax codes");
+      return response.json();
+    },
     enabled: connectionStatus?.connected === true,
   });
+  const mappingTaxCodes = taxCodesResponse?.taxCodes ?? [];
+  const taxCodesHint = taxCodesResponse?.hint;
 
   // Import preflight — needed for Step 3 (import gate)
   const { data: importPreflight, isLoading: importPreflightLoading, refetch: refetchImportPreflight } = useQuery<ImportPreflightResult>({
@@ -695,11 +708,11 @@ export default function QboConsolePage() {
   });
 
   const { data: qboItemsData, isLoading: qboItemsLoading, refetch: refetchQboItems } = useQuery<QboItemsResponse>({
-    queryKey: ["/api/qbo/items", itemSearchQuery],
+    queryKey: ["/api/qbo/items/advanced", itemSearchQuery],
     queryFn: async () => {
       const params = new URLSearchParams({ limit: "50" });
       if (itemSearchQuery) params.set("q", itemSearchQuery);
-      const response = await fetch(`/api/qbo/items?${params}`, { credentials: "include" });
+      const response = await fetch(`/api/qbo/items/advanced?${params}`, { credentials: "include" });
       if (!response.ok) throw new Error("Failed to fetch QBO items");
       return response.json();
     },
@@ -817,17 +830,11 @@ export default function QboConsolePage() {
 
   const saveMappingConfigMutation = useMutation({
     mutationFn: async (config: QboMappingConfig) => {
-      const response = await fetch("/api/qbo/mapping-config", {
+      // Uses apiRequest which auto-injects CSRF token (fixes "Invalid CSRF token" error)
+      return apiRequest("/api/qbo/mapping-config", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify(config),
       });
-      if (!response.ok) {
-        const error = await response.json().catch(() => ({}));
-        throw new Error(error.error || "Failed to save config");
-      }
-      return response.json();
     },
     onSuccess: () => {
       toast({ title: "Mapping configuration saved" });
@@ -835,7 +842,10 @@ export default function QboConsolePage() {
       refetchImportPreflight();
     },
     onError: (err: Error) => {
-      toast({ title: "Save failed", description: err.message, variant: "destructive" });
+      const msg = err.message.includes("CSRF") || err.message.includes("403")
+        ? "Session expired — please refresh the page and try again."
+        : err.message;
+      toast({ title: "Save failed", description: msg, variant: "destructive" });
     },
   });
 
@@ -1528,61 +1538,53 @@ export default function QboConsolePage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {/* Items mapping — dropdown selectors from QBO Items API */}
+              {/* Product/Service item mapping — single dropdown */}
               <div className="space-y-3">
-                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Item Mapping</p>
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Product / Service Item</p>
                 {mappingItemsLoading ? (
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading QBO items...
                   </div>
                 ) : !mappingItems?.length ? (
-                  <p className="text-xs text-amber-600">No items found in QBO — create items in QuickBooks first.</p>
+                  <p className="text-xs text-amber-600">No items found in QBO — create a Product or Service in QuickBooks first.</p>
                 ) : (
-                  <div className="grid gap-2">
-                    {([
-                      { key: "serviceItemId", label: "Service" },
-                      { key: "laborItemId", label: "Labor" },
-                      { key: "materialItemId", label: "Material" },
-                      { key: "feeItemId", label: "Fee" },
-                      { key: "discountItemId", label: "Discount" },
-                      { key: "miscItemId", label: "Misc" },
-                    ] as { key: keyof QboMappingConfig; label: string }[]).map(({ key, label }) => (
-                      <div key={key} className="flex items-center gap-2">
-                        <Label className="w-20 text-xs text-right shrink-0">{label}</Label>
-                        <Select
-                          value={mappingConfig[key] || ""}
-                          onValueChange={(val) => setMappingConfig(prev => ({ ...prev, [key]: val }))}
-                        >
-                          <SelectTrigger className="h-8 text-xs">
-                            <SelectValue placeholder={`Select ${label.toLowerCase()} item`} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {mappingItems.map((item) => (
-                              <SelectItem key={item.id} value={item.id} className="text-xs">
-                                {item.name} <span className="text-muted-foreground ml-1">({item.type})</span>
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        {mappingConfig[key] ? (
-                          <CheckCircle className="h-3.5 w-3.5 text-green-500 shrink-0" />
-                        ) : (
-                          <div className="h-3.5 w-3.5 shrink-0" />
-                        )}
-                      </div>
-                    ))}
+                  <div className="flex items-center gap-2">
+                    <Label className="w-28 text-xs text-right shrink-0">Product/Service</Label>
+                    <Select
+                      value={mappingConfig.productServiceItemId || ""}
+                      onValueChange={(val) => setMappingConfig(prev => ({ ...prev, productServiceItemId: val }))}
+                    >
+                      <SelectTrigger className="h-8 text-xs">
+                        <SelectValue placeholder="Select QBO item for all line types" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {mappingItems.map((item) => (
+                          <SelectItem key={item.id} value={item.id} className="text-xs">
+                            {item.name} <span className="text-muted-foreground ml-1">({item.type})</span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {mappingConfig.productServiceItemId ? (
+                      <CheckCircle className="h-3.5 w-3.5 text-green-500 shrink-0" />
+                    ) : (
+                      <div className="h-3.5 w-3.5 shrink-0" />
+                    )}
                   </div>
                 )}
+                <p className="text-xs text-muted-foreground">All invoice line types (service, material, fee, etc.) will map to this QBO item.</p>
               </div>
               {/* Tax mapping — dropdown selectors from QBO TaxCode API */}
               <div className="space-y-3">
-                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Tax Codes</p>
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Tax Codes (optional)</p>
                 {mappingTaxCodesLoading ? (
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading QBO tax codes...
                   </div>
-                ) : !mappingTaxCodes?.length ? (
-                  <p className="text-xs text-amber-600">No tax codes found in QBO.</p>
+                ) : !mappingTaxCodes.length ? (
+                  <p className="text-xs text-amber-600">
+                    {taxCodesHint || "No tax codes found in QBO."}
+                  </p>
                 ) : (
                   <div className="grid gap-2">
                     {([
@@ -1590,7 +1592,7 @@ export default function QboConsolePage() {
                       { key: "nonTaxableCode", label: "Non-taxable" },
                     ] as { key: keyof QboMappingConfig; label: string }[]).map(({ key, label }) => (
                       <div key={key} className="flex items-center gap-2">
-                        <Label className="w-20 text-xs text-right shrink-0">{label}</Label>
+                        <Label className="w-28 text-xs text-right shrink-0">{label}</Label>
                         <Select
                           value={mappingConfig[key] || ""}
                           onValueChange={(val) => setMappingConfig(prev => ({ ...prev, [key]: val }))}
@@ -1611,15 +1613,15 @@ export default function QboConsolePage() {
                         ) : (
                           <div className="h-3.5 w-3.5 shrink-0" />
                         )}
-                    </div>
-                  ))}
-                </div>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
-              {/* Missing items warning */}
+              {/* Missing mapping warning */}
               {mappingConfigData?.status && !mappingConfigData.status.configured && (
                 <p className="text-xs text-amber-600">
-                  Missing: {[...mappingConfigData.status.missingItemMappings, ...mappingConfigData.status.missingTaxMappings].join(", ")}
+                  Required: select a Product/Service item above to enable invoice sync.
                 </p>
               )}
               <Button
@@ -1986,17 +1988,12 @@ export default function QboConsolePage() {
                   <CardTitle className="text-lg">Mapping Configuration</CardTitle>
                   <Button variant="ghost" size="sm" onClick={() => setShowMappingConfig(false)}>Hide</Button>
                 </div>
-                <CardDescription>Map app line item types to QBO Item IDs and tax codes</CardDescription>
+                <CardDescription>Override mapping IDs directly (advanced use only)</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="grid gap-3 md:grid-cols-2">
                   {([
-                    { key: "serviceItemId", label: "Service Item ID" },
-                    { key: "laborItemId", label: "Labor Item ID" },
-                    { key: "materialItemId", label: "Material Item ID" },
-                    { key: "feeItemId", label: "Fee Item ID" },
-                    { key: "discountItemId", label: "Discount Item ID" },
-                    { key: "miscItemId", label: "Misc Item ID" },
+                    { key: "productServiceItemId", label: "Product/Service Item ID" },
                     { key: "taxableCode", label: "Taxable Code" },
                     { key: "nonTaxableCode", label: "Non-Taxable Code" },
                   ] as { key: keyof QboMappingConfig; label: string }[]).map(({ key, label }) => (

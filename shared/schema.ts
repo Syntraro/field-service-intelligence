@@ -26,7 +26,7 @@ export const companies = pgTable("companies", {
   taxName: text("tax_name").notNull().default("HST"), // Default tax name (e.g., HST, GST, PST, VAT)
   defaultTaxRate: numeric("default_tax_rate", { precision: 5, scale: 2 }).notNull().default("13.00"), // Default tax rate as percentage (e.g., 13.00 for 13%)
   // QBO item/tax mapping configuration
-  // JSON structure: { laborItemId, materialItemId, serviceItemId, feeItemId, discountItemId, miscItemId, taxableCode, nonTaxableCode }
+  // JSON structure: { productServiceItemId, taxableCode, nonTaxableCode } (legacy per-type fields also accepted)
   qboMappingConfig: jsonb("qbo_mapping_config"),
   // QBO Go-Live Safety Gate
   qboEnabled: boolean("qbo_enabled").notNull().default(false),
@@ -44,14 +44,18 @@ export type InsertCompany = z.infer<typeof insertCompanySchema>;
 export type Company = typeof companies.$inferSelect;
 
 // QBO Mapping Configuration Schema
+// Simplified: single Product/Service item maps ALL line types to one QBO Item.
+// Old per-type fields (serviceItemId, materialItemId, etc.) kept for backwards compatibility.
 export const qboMappingConfigSchema = z.object({
-  // Item mappings by line item type
-  serviceItemId: z.string().optional(),   // QBO Item ID for "service" line items
-  materialItemId: z.string().optional(),  // QBO Item ID for "material" line items
-  feeItemId: z.string().optional(),       // QBO Item ID for "fee" line items
-  discountItemId: z.string().optional(),  // QBO Item ID for "discount" line items
-  laborItemId: z.string().optional(),     // QBO Item ID for labor (alias for service)
-  miscItemId: z.string().optional(),      // QBO Item ID for misc/uncategorized items
+  // Primary mapping — one QBO Item for all invoice line types
+  productServiceItemId: z.string().optional(), // QBO Item ID used for all line types
+  // Legacy per-type fields (backwards compat — ignored if productServiceItemId is set)
+  serviceItemId: z.string().optional(),
+  materialItemId: z.string().optional(),
+  feeItemId: z.string().optional(),
+  discountItemId: z.string().optional(),
+  laborItemId: z.string().optional(),
+  miscItemId: z.string().optional(),
   // Tax code mappings
   taxableCode: z.string().optional(),     // QBO TaxCode for taxable items (e.g., "TAX" or "1")
   nonTaxableCode: z.string().optional(),  // QBO TaxCode for non-taxable items (e.g., "NON" or "0")
