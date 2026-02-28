@@ -187,6 +187,8 @@ const port = Number(process.env.PORT ?? 5000);
     await enforceSchemaOrExit();
     server.listen(port, "0.0.0.0", () => {
       log(`serving on port ${port}`);
+      // Temporary diagnostic — remove after confirming QBO write access
+      console.log(`[QBO] READ_ONLY_MODE = ${JSON.stringify(process.env.QBO_READ_ONLY_MODE)} (writes ${process.env.QBO_READ_ONLY_MODE === "false" ? "ALLOWED" : "BLOCKED"})`);
     });
   } catch (error) {
     console.error("Failed to start server:", error);
