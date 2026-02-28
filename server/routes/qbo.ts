@@ -2034,8 +2034,9 @@ router.get(
 /**
  * GET /api/qbo/taxcodes
  * Returns { taxCodes: [{ id, name, taxable }], hint?: string }.
- * No Active filter — returns all tax codes. If none exist, returns a hint
- * explaining that Sales Tax must be enabled in QBO.
+ * Fetches TaxCode entities (not TaxRate/TaxAgency) with Name + Description.
+ * Name resolution: Name → Description → filtered out (never show raw hash).
+ * Sorts TAX/NON to top, then alphabetical by name.
  */
 router.get(
   "/taxcodes",
@@ -2044,8 +2045,9 @@ router.get(
     const { client, error, persistIfRefreshed } = await createTenantQboClient(req.companyId);
     if (!client) return res.status(400).json({ error });
 
-    const qboQuery = "SELECT Id, Name, Taxable FROM TaxCode STARTPOSITION 1 MAXRESULTS 200";
-    const result = await client.get<{ QueryResponse: { TaxCode?: Array<{ Id: string; Name: string; Taxable: boolean }> } }>(
+    // Fetch Id, Name, Description, Taxable — Description often has the readable label
+    const qboQuery = "SELECT Id, Name, Description, Taxable FROM TaxCode STARTPOSITION 1 MAXRESULTS 200";
+    const result = await client.get<{ QueryResponse: { TaxCode?: Array<{ Id: string; Name: string; Description?: string; Taxable: boolean }> } }>(
       `/query?query=${encodeURIComponent(qboQuery)}`
     );
     await persistIfRefreshed!();
@@ -2058,17 +2060,46 @@ router.get(
     const rawQueryResponse = (result.data as any)?.QueryResponse ?? (result.raw as any)?.QueryResponse;
     const raw = rawQueryResponse?.TaxCode ?? [];
 
-    console.log(`[QBO TaxCodes] ${raw.length} tax codes found`);
+    // Diagnostic log — safe fields only (no tokens)
+    console.log(`[QBO TaxCodes] ${raw.length} raw tax codes`);
     if (raw.length > 0) {
-      console.log(`[QBO TaxCodes] First 3:`, raw.slice(0, 3).map((t: any) => ({ id: t.Id, name: t.Name })));
+      console.log(`[QBO TaxCodes] First 10:`, raw.slice(0, 10).map((t: any) => ({
+        id: t.Id, name: t.Name, desc: t.Description, taxable: t.Taxable,
+      })));
     }
 
-    const taxCodes = raw.map((t: any) => ({ id: t.Id, name: t.Name, taxable: t.Taxable }));
+    // Resolve readable name: Name if it looks human-readable, else Description, else skip.
+    // QBO sandbox often sets Name to a system-generated hash — detect and skip those.
+    const isReadable = (s: string | undefined | null): boolean => {
+      if (!s || s.trim().length === 0) return false;
+      // Skip strings that look like UUIDs/hashes (32+ hex chars, or contains dashes with hex segments)
+      if (/^[0-9a-f-]{20,}$/i.test(s.trim())) return false;
+      return true;
+    };
+
+    type TaxCodeEntry = { id: string; name: string; taxable: boolean };
+    const taxCodes: TaxCodeEntry[] = raw
+      .map((t: any) => {
+        const name = isReadable(t.Name) ? t.Name
+          : isReadable(t.Description) ? t.Description
+          : null;
+        return name ? { id: t.Id as string, name, taxable: t.Taxable as boolean } : null;
+      })
+      .filter((tc: TaxCodeEntry | null): tc is TaxCodeEntry => tc !== null)
+      // Sort: TAX and NON to top, then alphabetical
+      .sort((a: TaxCodeEntry, b: TaxCodeEntry) => {
+        const aTop = a.name === "TAX" || a.name === "NON" ? 0 : 1;
+        const bTop = b.name === "TAX" || b.name === "NON" ? 0 : 1;
+        if (aTop !== bTop) return aTop - bTop;
+        return a.name.localeCompare(b.name);
+      });
+
+    console.log(`[QBO TaxCodes] ${taxCodes.length} readable tax codes after filtering`);
 
     if (taxCodes.length === 0) {
       return res.json({
         taxCodes: [],
-        hint: "No tax codes found. Enable Sales Tax in your QuickBooks company settings to configure tax code mapping.",
+        hint: "No tax codes available from QBO. Ensure Sales Tax is enabled and configured in this QuickBooks company.",
       });
     }
 

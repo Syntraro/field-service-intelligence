@@ -1629,7 +1629,31 @@ export default function QboConsolePage() {
               </div>
               {/* Tax code mapping */}
               <div className="space-y-3">
-                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Tax Codes (optional)</p>
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Tax Codes (optional)</p>
+                  {/* "Use QBO defaults" button — auto-selects TAX/NON if they exist */}
+                  {mappingTaxCodes.length > 0 && (() => {
+                    const taxDefault = mappingTaxCodes.find(tc => tc.name === "TAX");
+                    const nonDefault = mappingTaxCodes.find(tc => tc.name === "NON");
+                    if (!taxDefault && !nonDefault) return null;
+                    return (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-6 text-xs px-2"
+                        onClick={() => {
+                          setMappingConfig(prev => ({
+                            ...prev,
+                            ...(taxDefault ? { taxableCodeId: taxDefault.id } : {}),
+                            ...(nonDefault ? { nonTaxableCodeId: nonDefault.id } : {}),
+                          }));
+                        }}
+                      >
+                        Use QBO defaults
+                      </Button>
+                    );
+                  })()}
+                </div>
                 {mappingTaxCodesLoading ? (
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading QBO tax codes...
@@ -1645,7 +1669,9 @@ export default function QboConsolePage() {
                       { key: "nonTaxableCodeId" as keyof QboMappingConfig, label: "Non-taxable" },
                     ]).map(({ key, label }) => {
                       const selectedId = (mappingConfig[key] as string) || "";
-                      const selectedName = mappingTaxCodes.find(tc => tc.id === selectedId)?.name;
+                      const selectedTc = mappingTaxCodes.find(tc => tc.id === selectedId);
+                      // Never show raw ID as label — use name or fallback placeholder
+                      const displayName = selectedTc?.name || (selectedId ? "(Unnamed tax code)" : "");
                       return (
                         <div key={key} className="flex items-center gap-2">
                           <Label className="w-28 text-xs text-right shrink-0">{label}</Label>
@@ -1654,14 +1680,14 @@ export default function QboConsolePage() {
                             onValueChange={(val) => setMappingConfig(prev => ({ ...prev, [key]: val }))}
                           >
                             <SelectTrigger className="h-8 text-xs">
-                              {selectedName
-                                ? <span className="truncate">{selectedName}</span>
+                              {displayName
+                                ? <span className="truncate">{displayName}</span>
                                 : <SelectValue placeholder={`Select ${label.toLowerCase()} code`} />}
                             </SelectTrigger>
                             <SelectContent>
                               {mappingTaxCodes.map((tc) => (
                                 <SelectItem key={tc.id} value={tc.id} className="text-xs">
-                                  {tc.name} <span className="text-muted-foreground ml-1">({tc.id})</span>
+                                  {tc.name} <span className="text-muted-foreground ml-1 text-[10px]">({tc.id})</span>
                                 </SelectItem>
                               ))}
                             </SelectContent>

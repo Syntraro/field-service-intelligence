@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### QBO Tax Code Dropdown — Hash Name Fix + Readable Labels (2026-02-28)
+- **Root cause**: QBO sandbox auto-creates TaxCode entities with `Name` set to a system-generated hash/UUID (e.g., `3f7a8b...`). The endpoint only fetched `Name`, not `Description`, so hash-named codes appeared as the dropdown label.
+- **Server fix** (`GET /api/qbo/taxcodes`): Now fetches `Description` field. Name resolution: `Name` if readable → `Description` if readable → filtered out entirely. Hash detection: skips strings matching `/^[0-9a-f-]{20,}$/i`. Diagnostic logging for first 10 codes (Id, Name, Description, Taxable).
+- **Sorting**: TAX and NON codes sorted to top, then alphabetical by name.
+- **Hint**: Empty result returns `"No tax codes available from QBO. Ensure Sales Tax is enabled and configured in this QuickBooks company."`
+- **UI fix**: Dropdown trigger always shows `name` (never raw ID). Fallback: `"(Unnamed tax code)"`. List items show `name (id)` with ID in smaller muted text.
+- **"Use QBO defaults" button**: Auto-selects TAX → taxableCodeId, NON → nonTaxableCodeId if both exist. Only appears when defaults are available.
+- **Files**: `server/routes/qbo.ts`, `client/src/pages/QboConsolePage.tsx`
+
 ### Changed
 
 #### QBO Mapping — Type-Based Mapping (replaces global default items) (2026-02-28)
