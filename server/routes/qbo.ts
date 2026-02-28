@@ -17,7 +17,7 @@ import { requireFeature } from "../auth/requireFeature";
 import { ADMIN_ROLES } from "../auth/roles";
 import { asyncHandler } from "../middleware/errorHandler";
 import { AuthedRequest } from "../auth/tenantIsolation";
-import { createSyncOrchestrator, QboClient, createReconciliationService, createPreflightService, QboCustomerImportService, isQboReadOnlyMode, isImportReadOnlyEnforced, getQboEnvironment, isImportAllowedInEnvironment } from "../services/qbo";
+import { createSyncOrchestrator, QboClient, createReconciliationService, createPreflightService, QboCustomerImportService, QboCatalogImportService, isQboReadOnlyMode, isImportReadOnlyEnforced, getQboEnvironment, isImportAllowedInEnvironment } from "../services/qbo";
 import type { QboTokens } from "../services/qbo";
 import { db } from "../db";
 import { customerCompanies, invoices, qboSyncEvents, companies, qboMappingConfigSchema, qboSyncQueue, qboQueueEntityTypeEnum, qboQueueActionEnum, qboEnvironmentEnum, qboConnections } from "@shared/schema";
@@ -1881,6 +1881,136 @@ router.post(
       includeInactive: parsed.includeInactive,
     });
 
+    res.json(result);
+  })
+);
+
+// ============================================================
+// ADVANCED IMPORT TOOLS (QBO → App)
+// ============================================================
+
+const importModeSchema = z.enum(["merge", "overwrite", "wipe"]).default("merge");
+const wipeConfirmSchema = z.object({ confirmToken: z.literal("WIPE") }).optional();
+
+/**
+ * GET /api/qbo/catalog/import/preview
+ * Preview catalog import from QBO (dry-run, no DB writes).
+ * Query param: mode=merge|overwrite|wipe
+ */
+router.get(
+  "/catalog/import/preview",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const userId = req.user?.id;
+    const mode = importModeSchema.parse(req.query.mode);
+
+    const tokens = await getQboTokensForCompany(companyId);
+    if (!tokens) {
+      return res.status(503).json({ success: false, error: "QBO integration not configured" });
+    }
+
+    const environment = getQboEnvironment();
+    const client = new QboClient({ clientId: process.env.QBO_CLIENT_ID!, clientSecret: process.env.QBO_CLIENT_SECRET!, environment }, tokens);
+    const service = new QboCatalogImportService(client, companyId, userId);
+
+    const result = await service.importCatalog({ dryRun: true, mode });
+    res.json(result);
+  })
+);
+
+/**
+ * POST /api/qbo/catalog/import/run
+ * Run catalog import from QBO (writes to DB).
+ * Query param: mode=merge|overwrite|wipe
+ * Wipe mode requires body { confirmToken: "WIPE" }
+ */
+router.post(
+  "/catalog/import/run",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const userId = req.user?.id;
+    const mode = importModeSchema.parse(req.query.mode);
+
+    // Wipe mode requires explicit confirmation
+    if (mode === "wipe") {
+      const body = z.object({ confirmToken: z.literal("WIPE", {
+        errorMap: () => ({ message: 'Wipe mode requires confirmToken: "WIPE" in request body' }),
+      }) }).parse(req.body);
+    }
+
+    const tokens = await getQboTokensForCompany(companyId);
+    if (!tokens) {
+      return res.status(503).json({ success: false, error: "QBO integration not configured" });
+    }
+
+    const environment = getQboEnvironment();
+    const client = new QboClient({ clientId: process.env.QBO_CLIENT_ID!, clientSecret: process.env.QBO_CLIENT_SECRET!, environment }, tokens);
+    const service = new QboCatalogImportService(client, companyId, userId);
+
+    const result = await service.importCatalog({ dryRun: false, mode });
+    res.json(result);
+  })
+);
+
+/**
+ * GET /api/qbo/customers/import/preview
+ * Preview customer import from QBO (dry-run, no DB writes).
+ * Query param: mode=merge|overwrite|wipe
+ */
+router.get(
+  "/customers/import/preview",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const userId = req.user?.id;
+    const mode = importModeSchema.parse(req.query.mode);
+
+    const tokens = await getQboTokensForCompany(companyId);
+    if (!tokens) {
+      return res.status(503).json({ success: false, error: "QBO integration not configured" });
+    }
+
+    const environment = getQboEnvironment();
+    const client = new QboClient({ clientId: process.env.QBO_CLIENT_ID!, clientSecret: process.env.QBO_CLIENT_SECRET!, environment }, tokens);
+    const service = new QboCustomerImportService(client, companyId, userId);
+
+    const result = await service.importCustomers({ dryRun: true, mode });
+    res.json(result);
+  })
+);
+
+/**
+ * POST /api/qbo/customers/import/run
+ * Run customer import from QBO (writes to DB).
+ * Query param: mode=merge|overwrite|wipe
+ * Wipe mode requires body { confirmToken: "WIPE" }
+ */
+router.post(
+  "/customers/import/run",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const userId = req.user?.id;
+    const mode = importModeSchema.parse(req.query.mode);
+
+    if (mode === "wipe") {
+      z.object({ confirmToken: z.literal("WIPE", {
+        errorMap: () => ({ message: 'Wipe mode requires confirmToken: "WIPE" in request body' }),
+      }) }).parse(req.body);
+    }
+
+    const tokens = await getQboTokensForCompany(companyId);
+    if (!tokens) {
+      return res.status(503).json({ success: false, error: "QBO integration not configured" });
+    }
+
+    const environment = getQboEnvironment();
+    const client = new QboClient({ clientId: process.env.QBO_CLIENT_ID!, clientSecret: process.env.QBO_CLIENT_SECRET!, environment }, tokens);
+    const service = new QboCustomerImportService(client, companyId, userId);
+
+    const result = await service.importCustomers({ dryRun: false, mode });
     res.json(result);
   })
 );

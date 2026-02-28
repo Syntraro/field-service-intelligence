@@ -571,6 +571,17 @@ export default function QboConsolePage() {
   const [showItemLinkDialog, setShowItemLinkDialog] = useState(false);
   const [itemLinkQboId, setItemLinkQboId] = useState("");
 
+  // --- State: Advanced Import Tools ---
+  const [importToolsOpen, setImportToolsOpen] = useState(false);
+  const [catalogImportMode, setCatalogImportMode] = useState<"merge" | "overwrite" | "wipe">("merge");
+  const [customerImportAdvMode, setCustomerImportAdvMode] = useState<"merge" | "overwrite" | "wipe">("merge");
+  const [catalogImportResult, setCatalogImportResult] = useState<any>(null);
+  const [customerImportAdvResult, setCustomerImportAdvResult] = useState<any>(null);
+  const [showCatalogWipeConfirm, setShowCatalogWipeConfirm] = useState(false);
+  const [catalogWipeConfirmText, setCatalogWipeConfirmText] = useState("");
+  const [showCustomerWipeConfirm, setShowCustomerWipeConfirm] = useState(false);
+  const [customerWipeConfirmText, setCustomerWipeConfirmText] = useState("");
+
   // ============================================================
   // QUERIES: DEFAULT (always loaded)
   // ============================================================
@@ -889,6 +900,68 @@ export default function QboConsolePage() {
     onError: (err: Error) => {
       toast({ title: "Catalog sync failed", description: err.message, variant: "destructive" });
     },
+  });
+
+  // ============================================================
+  // MUTATIONS: Advanced Import Tools
+  // ============================================================
+
+  const catalogImportPreviewMutation = useMutation({
+    mutationFn: async (mode: string) => {
+      const response = await fetch(`/api/qbo/catalog/import/preview?mode=${mode}`, { credentials: "include" });
+      if (!response.ok) { const e = await response.json().catch(() => ({})); throw new Error(e.error || "Preview failed"); }
+      return response.json();
+    },
+    onSuccess: (data) => {
+      setCatalogImportResult(data);
+      toast({ title: "Catalog import preview", description: `${data.totals.fetched} QBO items, ${data.totals.matched} matched, ${data.totals.created} would create` });
+    },
+    onError: (err: Error) => toast({ title: "Preview failed", description: err.message, variant: "destructive" }),
+  });
+
+  const catalogImportRunMutation = useMutation({
+    mutationFn: async ({ mode, confirmToken }: { mode: string; confirmToken?: string }) => {
+      const body = confirmToken ? JSON.stringify({ confirmToken }) : undefined;
+      return apiRequest(`/api/qbo/catalog/import/run?mode=${mode}`, {
+        method: "POST",
+        ...(body ? { body, headers: { "Content-Type": "application/json" } } : {}),
+      });
+    },
+    onSuccess: (data: any) => {
+      setCatalogImportResult(data);
+      toast({ title: "Catalog import complete", description: `Created ${data.totals.created}, updated ${data.totals.updated}, errors ${data.totals.errors}` });
+      queryClient.invalidateQueries({ queryKey: ["/api/qbo/events"] });
+    },
+    onError: (err: Error) => toast({ title: "Import failed", description: err.message, variant: "destructive" }),
+  });
+
+  const customerImportPreviewMutation = useMutation({
+    mutationFn: async (mode: string) => {
+      const response = await fetch(`/api/qbo/customers/import/preview?mode=${mode}`, { credentials: "include" });
+      if (!response.ok) { const e = await response.json().catch(() => ({})); throw new Error(e.error || "Preview failed"); }
+      return response.json();
+    },
+    onSuccess: (data) => {
+      setCustomerImportAdvResult(data);
+      toast({ title: "Customer import preview", description: `${data.totals.fetched} QBO customers (${data.totals.parents} parents, ${data.totals.children} children)` });
+    },
+    onError: (err: Error) => toast({ title: "Preview failed", description: err.message, variant: "destructive" }),
+  });
+
+  const customerImportRunMutation = useMutation({
+    mutationFn: async ({ mode, confirmToken }: { mode: string; confirmToken?: string }) => {
+      const body = confirmToken ? JSON.stringify({ confirmToken }) : undefined;
+      return apiRequest(`/api/qbo/customers/import/run?mode=${mode}`, {
+        method: "POST",
+        ...(body ? { body, headers: { "Content-Type": "application/json" } } : {}),
+      });
+    },
+    onSuccess: (data: any) => {
+      setCustomerImportAdvResult(data);
+      toast({ title: "Customer import complete", description: `Created ${data.created?.customerCompanies ?? 0} companies, ${data.created?.clientLocations ?? 0} locations` });
+      queryClient.invalidateQueries({ queryKey: ["/api/qbo/events"] });
+    },
+    onError: (err: Error) => toast({ title: "Import failed", description: err.message, variant: "destructive" }),
   });
 
   // ============================================================
@@ -2185,6 +2258,200 @@ export default function QboConsolePage() {
             )}
           </Card>
 
+          {/* ============================================================ */}
+          {/* ADVANCED IMPORT TOOLS (QBO → Local) */}
+          {/* ============================================================ */}
+          <Card>
+            <CardHeader className="pb-2">
+              <Collapsible open={importToolsOpen} onOpenChange={setImportToolsOpen}>
+                <CollapsibleTrigger asChild>
+                  <Button variant="ghost" className="w-full justify-between px-0 text-left">
+                    <div>
+                      <CardTitle className="text-base flex items-center gap-2">
+                        <Download className="h-4 w-4" />
+                        Import Tools (QBO → Local)
+                      </CardTitle>
+                      <CardDescription className="mt-1 font-normal">Pull data from QuickBooks into your local catalog and customer database.</CardDescription>
+                    </div>
+                    {importToolsOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                  </Button>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="pt-4 space-y-6">
+
+                  {/* --- Import Catalog from QuickBooks --- */}
+                  <div className="space-y-3 border rounded-md p-4">
+                    <h4 className="text-sm font-semibold flex items-center gap-2"><Package className="h-4 w-4" /> Import Catalog from QuickBooks</h4>
+                    <div className="flex items-center gap-3">
+                      <Label className="text-xs whitespace-nowrap">Mode:</Label>
+                      <Select value={catalogImportMode} onValueChange={(v: any) => setCatalogImportMode(v)}>
+                        <SelectTrigger className="w-52 h-8 text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="merge">Safe Merge (fill missing)</SelectItem>
+                          <SelectItem value="overwrite">Overwrite Local</SelectItem>
+                          <SelectItem value="wipe"><span className="text-destructive font-semibold">Wipe & Re-import</span></SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline"
+                        onClick={() => catalogImportPreviewMutation.mutate(catalogImportMode)}
+                        disabled={catalogImportPreviewMutation.isPending || catalogImportRunMutation.isPending}>
+                        {catalogImportPreviewMutation.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <FileText className="h-4 w-4 mr-1" />}
+                        Preview Import
+                      </Button>
+                      <Button size="sm"
+                        variant={catalogImportMode === "wipe" ? "destructive" : "default"}
+                        onClick={() => {
+                          if (catalogImportMode === "wipe") { setCatalogWipeConfirmText(""); setShowCatalogWipeConfirm(true); }
+                          else catalogImportRunMutation.mutate({ mode: catalogImportMode });
+                        }}
+                        disabled={catalogImportPreviewMutation.isPending || catalogImportRunMutation.isPending}>
+                        {catalogImportRunMutation.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Download className="h-4 w-4 mr-1" />}
+                        Run Import
+                      </Button>
+                    </div>
+
+                    {/* Catalog import results */}
+                    {catalogImportResult && (
+                      <div className="space-y-2 mt-3">
+                        <Alert variant={catalogImportResult.totals.errors > 0 ? "destructive" : "default"} className="text-xs">
+                          <AlertTitle>{catalogImportResult.dryRun ? "Preview" : "Import"} Results ({catalogImportResult.mode})</AlertTitle>
+                          <AlertDescription>
+                            Fetched: {catalogImportResult.totals.fetched} | Matched: {catalogImportResult.totals.matched} | Created: {catalogImportResult.totals.created} | Updated: {catalogImportResult.totals.updated} | Skipped: {catalogImportResult.totals.skipped} | Wiped: {catalogImportResult.totals.wiped} | Errors: {catalogImportResult.totals.errors}
+                          </AlertDescription>
+                        </Alert>
+                        {catalogImportResult.sample?.length > 0 && (
+                          <Table>
+                            <TableHeader><TableRow>
+                              <TableHead className="text-xs">Name</TableHead>
+                              <TableHead className="text-xs">SKU</TableHead>
+                              <TableHead className="text-xs">Type</TableHead>
+                              <TableHead className="text-xs">Action</TableHead>
+                              <TableHead className="text-xs">QBO ID</TableHead>
+                            </TableRow></TableHeader>
+                            <TableBody>
+                              {catalogImportResult.sample.map((item: any, i: number) => (
+                                <TableRow key={i} className="text-xs">
+                                  <TableCell>{item.name}</TableCell>
+                                  <TableCell>{item.sku || "—"}</TableCell>
+                                  <TableCell><Badge variant="outline" className="text-[10px]">{item.type}</Badge></TableCell>
+                                  <TableCell>
+                                    <Badge variant={item.action === "ERROR" ? "destructive" : item.action === "WIPE" ? "destructive" : item.action === "SKIP" ? "secondary" : "default"} className="text-[10px]">
+                                      {item.action}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell className="text-muted-foreground">{item.qboItemId}</TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        )}
+                        {catalogImportResult.warnings?.length > 0 && (
+                          <Alert variant="default" className="text-xs">
+                            <AlertTriangle className="h-3 w-3" />
+                            <AlertTitle>Warnings</AlertTitle>
+                            <AlertDescription>
+                              <ul className="list-disc pl-4 space-y-1">
+                                {catalogImportResult.warnings.map((w: string, i: number) => <li key={i}>{w}</li>)}
+                              </ul>
+                            </AlertDescription>
+                          </Alert>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* --- Import Customers from QuickBooks --- */}
+                  <div className="space-y-3 border rounded-md p-4">
+                    <h4 className="text-sm font-semibold flex items-center gap-2"><Users className="h-4 w-4" /> Import Customers from QuickBooks</h4>
+                    <div className="flex items-center gap-3">
+                      <Label className="text-xs whitespace-nowrap">Mode:</Label>
+                      <Select value={customerImportAdvMode} onValueChange={(v: any) => setCustomerImportAdvMode(v)}>
+                        <SelectTrigger className="w-52 h-8 text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="merge">Safe Merge (fill missing)</SelectItem>
+                          <SelectItem value="overwrite">Overwrite Local</SelectItem>
+                          <SelectItem value="wipe"><span className="text-destructive font-semibold">Wipe & Re-import</span></SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline"
+                        onClick={() => customerImportPreviewMutation.mutate(customerImportAdvMode)}
+                        disabled={customerImportPreviewMutation.isPending || customerImportRunMutation.isPending}>
+                        {customerImportPreviewMutation.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <FileText className="h-4 w-4 mr-1" />}
+                        Preview Import
+                      </Button>
+                      <Button size="sm"
+                        variant={customerImportAdvMode === "wipe" ? "destructive" : "default"}
+                        onClick={() => {
+                          if (customerImportAdvMode === "wipe") { setCustomerWipeConfirmText(""); setShowCustomerWipeConfirm(true); }
+                          else customerImportRunMutation.mutate({ mode: customerImportAdvMode });
+                        }}
+                        disabled={customerImportPreviewMutation.isPending || customerImportRunMutation.isPending}>
+                        {customerImportRunMutation.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Download className="h-4 w-4 mr-1" />}
+                        Run Import
+                      </Button>
+                    </div>
+
+                    {/* Customer import results */}
+                    {customerImportAdvResult && (
+                      <div className="space-y-2 mt-3">
+                        <Alert variant={customerImportAdvResult.error ? "destructive" : "default"} className="text-xs">
+                          <AlertTitle>{customerImportAdvResult.dryRun ? "Preview" : "Import"} Results ({customerImportAdvResult.mode})</AlertTitle>
+                          <AlertDescription>
+                            Fetched: {customerImportAdvResult.totals.fetched} | Parents: {customerImportAdvResult.totals.parents} | Children: {customerImportAdvResult.totals.children} | Wiped: {customerImportAdvResult.totals.wiped ?? 0}
+                            {customerImportAdvResult.dryRun ? (
+                              <> | Would create: {customerImportAdvResult.wouldCreate?.customerCompanies ?? 0} companies, {customerImportAdvResult.wouldCreate?.clientLocations ?? 0} locations | Would update: {customerImportAdvResult.wouldUpdate?.customerCompanies ?? 0} companies, {customerImportAdvResult.wouldUpdate?.clientLocations ?? 0} locations</>
+                            ) : (
+                              <> | Created: {customerImportAdvResult.created?.customerCompanies ?? 0} companies, {customerImportAdvResult.created?.clientLocations ?? 0} locations | Updated: {customerImportAdvResult.updated?.customerCompanies ?? 0} companies, {customerImportAdvResult.updated?.clientLocations ?? 0} locations</>
+                            )}
+                          </AlertDescription>
+                        </Alert>
+                        {customerImportAdvResult.sample?.length > 0 && (
+                          <Table>
+                            <TableHeader><TableRow>
+                              <TableHead className="text-xs">Name</TableHead>
+                              <TableHead className="text-xs">Type</TableHead>
+                              <TableHead className="text-xs">Action</TableHead>
+                              <TableHead className="text-xs">QBO ID</TableHead>
+                            </TableRow></TableHeader>
+                            <TableBody>
+                              {customerImportAdvResult.sample.map((item: any, i: number) => (
+                                <TableRow key={i} className="text-xs">
+                                  <TableCell>{item.displayName}</TableCell>
+                                  <TableCell><Badge variant="outline" className="text-[10px]">{item.type}</Badge></TableCell>
+                                  <TableCell>
+                                    <Badge variant={item.action === "create" ? "default" : item.action === "skip" ? "secondary" : "outline"} className="text-[10px]">
+                                      {item.action.toUpperCase()}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell className="text-muted-foreground">{item.qboCustomerId}</TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        )}
+                        {customerImportAdvResult.warnings?.length > 0 && (
+                          <Alert variant="default" className="text-xs">
+                            <AlertTriangle className="h-3 w-3" />
+                            <AlertTitle>Warnings</AlertTitle>
+                            <AlertDescription>
+                              <ul className="list-disc pl-4 space-y-1">
+                                {customerImportAdvResult.warnings.map((w: string, i: number) => <li key={i}>{w}</li>)}
+                              </ul>
+                            </AlertDescription>
+                          </Alert>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                </CollapsibleContent>
+              </Collapsible>
+            </CardHeader>
+          </Card>
+
           {/* Mapping Configuration (expandable) */}
           {!showMappingConfig ? (
             <Button variant="outline" size="sm" onClick={() => setShowMappingConfig(true)}>
@@ -3012,6 +3279,64 @@ export default function QboConsolePage() {
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
               ) : null}
               Link Item
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Catalog Wipe Confirmation Dialog */}
+      <AlertDialog open={showCatalogWipeConfirm} onOpenChange={(open) => { setShowCatalogWipeConfirm(open); if (!open) setCatalogWipeConfirmText(""); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-destructive">Wipe & Re-import Catalog?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3">
+                <p>This will <strong>soft-delete all QBO-linked catalog items</strong> and then re-import everything from QuickBooks as fresh records.</p>
+                <p className="text-destructive font-medium">This action cannot be easily undone.</p>
+                <div>
+                  <Label htmlFor="catalogWipeInput">Type <strong>WIPE</strong> to confirm:</Label>
+                  <Input id="catalogWipeInput" value={catalogWipeConfirmText} onChange={(e) => setCatalogWipeConfirmText(e.target.value)} placeholder="WIPE" autoComplete="off" className="mt-1" />
+                </div>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={catalogWipeConfirmText !== "WIPE" || catalogImportRunMutation.isPending}
+              onClick={() => { setShowCatalogWipeConfirm(false); setCatalogWipeConfirmText(""); catalogImportRunMutation.mutate({ mode: "wipe", confirmToken: "WIPE" }); }}
+            >
+              {catalogImportRunMutation.isPending ? "Wiping..." : "Wipe & Re-import"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Customer Wipe Confirmation Dialog */}
+      <AlertDialog open={showCustomerWipeConfirm} onOpenChange={(open) => { setShowCustomerWipeConfirm(open); if (!open) setCustomerWipeConfirmText(""); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-destructive">Wipe & Re-import Customers?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3">
+                <p>This will <strong>soft-delete all QBO-linked customer companies and locations</strong> and then re-import everything from QuickBooks as fresh records.</p>
+                <p className="text-destructive font-medium">This action cannot be easily undone.</p>
+                <div>
+                  <Label htmlFor="customerWipeInput">Type <strong>WIPE</strong> to confirm:</Label>
+                  <Input id="customerWipeInput" value={customerWipeConfirmText} onChange={(e) => setCustomerWipeConfirmText(e.target.value)} placeholder="WIPE" autoComplete="off" className="mt-1" />
+                </div>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={customerWipeConfirmText !== "WIPE" || customerImportRunMutation.isPending}
+              onClick={() => { setShowCustomerWipeConfirm(false); setCustomerWipeConfirmText(""); customerImportRunMutation.mutate({ mode: "wipe", confirmToken: "WIPE" }); }}
+            >
+              {customerImportRunMutation.isPending ? "Wiping..." : "Wipe & Re-import"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -41,6 +41,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### Advanced QBO Import Tools — Catalog + Customer Import (QBO → Local) (2026-02-28)
+- **New service**: `QboCatalogImportService` — imports items from QBO into local catalog with 3 modes:
+  - **merge**: Match by SKU then Name (case-insensitive). Link qboItemId/syncToken. Only fill null/empty local fields.
+  - **overwrite**: Same matching, but replace local fields with QBO values.
+  - **wipe**: Soft-delete all QBO-linked items, then re-import fresh from QBO.
+- **Extended service**: `QboCustomerImportService` — added `mode` parameter (merge/overwrite/wipe) with same semantics.
+- **New endpoints** (all admin-only):
+  - `GET /api/qbo/catalog/import/preview?mode=merge|overwrite|wipe` — dry-run catalog import
+  - `POST /api/qbo/catalog/import/run?mode=merge|overwrite|wipe` — execute catalog import
+  - `GET /api/qbo/customers/import/preview?mode=merge|overwrite|wipe` — dry-run customer import
+  - `POST /api/qbo/customers/import/run?mode=merge|overwrite|wipe` — execute customer import
+  - Wipe mode requires `confirmToken: "WIPE"` in POST body (server-validated).
+- **UI**: Collapsible "Import Tools (QBO → Local)" section inside Advanced panel. Mode selector dropdown, Preview/Run buttons, results display (Alert totals + sample table + warnings list), wipe confirmation dialog requiring typed "WIPE".
+- **Files**: `server/services/qbo/QboCatalogImportService.ts` (new), `server/services/qbo/QboCustomerImportService.ts`, `server/services/qbo/index.ts`, `server/routes/qbo.ts`, `client/src/pages/QboConsolePage.tsx`, `CHANGELOG.md`
+
 #### QBO Catalog Sync — Push Items to QuickBooks (2026-02-28)
 - **New endpoint**: `POST /api/qbo/catalog/sync?dryRun=1|0` — syncs local catalog items to QBO as Products & Services. Admin-only.
 - **Dry-run mode**: `dryRun=1` computes create/update counts and a sample of first 5 items without calling QBO API.

@@ -7,6 +7,7 @@
  * - Upsert logic: match by qboCustomerId, create or update
  * - Soft-delete restoration: if a local record was soft-deleted, restore it
  * - Dry-run mode: preview what would happen without writing
+ * - 3 import modes: merge (fill missing only), overwrite (replace), wipe (delete + reimport)
  *
  * IMPORTANT:
  * - This is a READ-from-QBO operation (no writes to QBO)
@@ -16,7 +17,7 @@
 
 import { db } from "../../db";
 import { customerCompanies, clientLocations } from "@shared/schema";
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and, isNull, isNotNull, sql } from "drizzle-orm";
 import { QboClient } from "./QboClient";
 import type { QBOQueryResponse } from "./QboReadService";
 import { QboSyncLogger } from "./QboSyncLogger";
@@ -30,8 +31,11 @@ import {
 // TYPES
 // ============================================================
 
+export type CustomerImportMode = "merge" | "overwrite" | "wipe";
+
 export interface CustomerImportOptions {
   dryRun: boolean;
+  mode?: CustomerImportMode;
   limit?: number;
   includeInactive?: boolean;
 }
@@ -48,11 +52,13 @@ export interface ImportedRecord {
 export interface CustomerImportResult {
   success: boolean;
   dryRun: boolean;
+  mode: CustomerImportMode;
   totals: {
     fetched: number;
     parents: number;
     children: number;
     inactiveSkipped: number;
+    wiped: number;
   };
   wouldCreate: { customerCompanies: number; clientLocations: number };
   wouldUpdate: { customerCompanies: number; clientLocations: number };
@@ -87,14 +93,15 @@ export class QboCustomerImportService {
    * Pass 3: upsert children (with ParentRef)
    */
   async importCustomers(options: CustomerImportOptions): Promise<CustomerImportResult> {
-    const { dryRun, limit, includeInactive = false } = options;
+    const { dryRun, limit, includeInactive = false, mode = "overwrite" } = options;
     const startTime = Date.now();
     const warnings: string[] = [];
 
     const result: CustomerImportResult = {
       success: true,
       dryRun,
-      totals: { fetched: 0, parents: 0, children: 0, inactiveSkipped: 0 },
+      mode,
+      totals: { fetched: 0, parents: 0, children: 0, inactiveSkipped: 0, wiped: 0 },
       wouldCreate: { customerCompanies: 0, clientLocations: 0 },
       wouldUpdate: { customerCompanies: 0, clientLocations: 0 },
       wouldRestore: { customerCompanies: 0, clientLocations: 0 },
@@ -168,6 +175,29 @@ export class QboCustomerImportService {
     result.totals.parents = parents.length;
     result.totals.children = children.length;
 
+    // Step 2b: Wipe mode — soft-delete all QBO-linked customer records first
+    if (mode === "wipe") {
+      if (dryRun) {
+        // Count what would be wiped
+        const [ccCount] = await db.select({ count: sql<number>`count(*)::int` }).from(customerCompanies)
+          .where(and(eq(customerCompanies.companyId, this.companyId), isNotNull(customerCompanies.qboCustomerId), isNull(customerCompanies.deletedAt)));
+        const [clCount] = await db.select({ count: sql<number>`count(*)::int` }).from(clientLocations)
+          .where(and(eq(clientLocations.companyId, this.companyId), isNotNull(clientLocations.qboCustomerId), isNull(clientLocations.deletedAt)));
+        result.totals.wiped = (ccCount?.count ?? 0) + (clCount?.count ?? 0);
+      } else {
+        const now = new Date();
+        const wipedLocations = await db.update(clientLocations)
+          .set({ deletedAt: now, inactive: true, updatedAt: now })
+          .where(and(eq(clientLocations.companyId, this.companyId), isNotNull(clientLocations.qboCustomerId), isNull(clientLocations.deletedAt)))
+          .returning({ id: clientLocations.id });
+        const wipedCompanies = await db.update(customerCompanies)
+          .set({ deletedAt: now, isActive: false, updatedAt: now })
+          .where(and(eq(customerCompanies.companyId, this.companyId), isNotNull(customerCompanies.qboCustomerId), isNull(customerCompanies.deletedAt)))
+          .returning({ id: customerCompanies.id });
+        result.totals.wiped = wipedLocations.length + wipedCompanies.length;
+      }
+    }
+
     // Step 3: Load existing local mappings for upsert detection
     const existingCompanies = await db
       .select({ id: customerCompanies.id, qboCustomerId: customerCompanies.qboCustomerId, deletedAt: customerCompanies.deletedAt })
@@ -216,7 +246,7 @@ export class QboCustomerImportService {
       }
 
       if (!dryRun) {
-        const localId = await this.upsertCustomerCompany(parent, existing);
+        const localId = await this.upsertCustomerCompany(parent, existing, mode);
         record.localId = localId;
         parentQboToLocalId.set(parent.qboCustomerId, localId);
 
@@ -259,7 +289,7 @@ export class QboCustomerImportService {
           );
         }
 
-        const localId = await this.upsertClientLocation(child, existing, parentLocalId || null);
+        const localId = await this.upsertClientLocation(child, existing, parentLocalId || null, mode);
         record.localId = localId;
 
         if (record.action === "create") result.created.clientLocations++;
@@ -279,6 +309,7 @@ export class QboCustomerImportService {
       result: result.success ? "SUCCESS" : "FAILURE",
       responsePayload: {
         dryRun,
+        mode,
         totals: result.totals,
         created: dryRun ? result.wouldCreate : result.created,
         updated: dryRun ? result.wouldUpdate : result.updated,
@@ -361,10 +392,21 @@ export class QboCustomerImportService {
    */
   private async upsertCustomerCompany(
     parsed: ParsedQBOCustomer,
-    existing: { id: string; deletedAt: Date | null } | undefined
+    existing: { id: string; deletedAt: Date | null } | undefined,
+    mode: CustomerImportMode = "overwrite"
   ): Promise<string> {
     const now = new Date();
-    const data = {
+    // QBO link fields always set regardless of mode
+    const qboFields = {
+      qboCustomerId: parsed.qboCustomerId,
+      qboSyncToken: parsed.qboSyncToken,
+      qboLastSyncedAt: now,
+      qboSyncStatus: "SYNCED" as const,
+      qboSyncError: null,
+      updatedAt: now,
+    };
+
+    const fullData = {
       name: parsed.companyName || parsed.displayName,
       legalName: parsed.companyName || null,
       phone: parsed.phone,
@@ -375,37 +417,39 @@ export class QboCustomerImportService {
       billingPostalCode: parsed.address.postalCode,
       billingCountry: parsed.address.country,
       isActive: parsed.isActive,
-      qboCustomerId: parsed.qboCustomerId,
-      qboSyncToken: parsed.qboSyncToken,
-      qboLastSyncedAt: now,
-      qboSyncStatus: "SYNCED" as const,
-      qboSyncError: null,
-      updatedAt: now,
+      ...qboFields,
     };
 
+    if (existing && mode === "merge") {
+      // Merge: only fill missing fields, never overwrite existing values
+      const [current] = await db.select().from(customerCompanies)
+        .where(eq(customerCompanies.id, existing.id)).limit(1);
+      const mergeData: Record<string, unknown> = { ...qboFields, deletedAt: null };
+      if (!current?.name && fullData.name) mergeData.name = fullData.name;
+      if (!current?.phone && fullData.phone) mergeData.phone = fullData.phone;
+      if (!current?.email && fullData.email) mergeData.email = fullData.email;
+      if (!current?.billingStreet && fullData.billingStreet) mergeData.billingStreet = fullData.billingStreet;
+      if (!current?.billingCity && fullData.billingCity) mergeData.billingCity = fullData.billingCity;
+      if (!current?.billingProvince && fullData.billingProvince) mergeData.billingProvince = fullData.billingProvince;
+      if (!current?.billingPostalCode && fullData.billingPostalCode) mergeData.billingPostalCode = fullData.billingPostalCode;
+      if (!current?.billingCountry && fullData.billingCountry) mergeData.billingCountry = fullData.billingCountry;
+      await db.update(customerCompanies).set(mergeData)
+        .where(and(eq(customerCompanies.id, existing.id), eq(customerCompanies.companyId, this.companyId)));
+      return existing.id;
+    }
+
     if (existing) {
-      // Update existing (and restore if soft-deleted)
-      await db
-        .update(customerCompanies)
-        .set({ ...data, deletedAt: null })
-        .where(
-          and(
-            eq(customerCompanies.id, existing.id),
-            eq(customerCompanies.companyId, this.companyId)
-          )
-        );
+      // Overwrite or wipe: replace all fields
+      await db.update(customerCompanies).set({ ...fullData, deletedAt: null })
+        .where(and(eq(customerCompanies.id, existing.id), eq(customerCompanies.companyId, this.companyId)));
       return existing.id;
     }
 
     // Create new
     const [inserted] = await db
       .insert(customerCompanies)
-      .values({
-        companyId: this.companyId,
-        ...data,
-      })
+      .values({ companyId: this.companyId, ...fullData })
       .returning({ id: customerCompanies.id });
-
     return inserted.id;
   }
 
@@ -416,20 +460,25 @@ export class QboCustomerImportService {
   private async upsertClientLocation(
     parsed: ParsedQBOCustomer,
     existing: { id: string; deletedAt: Date | null } | undefined,
-    parentLocalId: string | null
+    parentLocalId: string | null,
+    mode: CustomerImportMode = "overwrite"
   ): Promise<string> {
     const now = new Date();
-
-    // Use ShipAddr for service address, fall back to BillAddr
     const serviceAddr = (parsed.shipAddress.street || parsed.shipAddress.city)
-      ? parsed.shipAddress
-      : parsed.address;
-
-    // Extract company name and location label from DisplayName
+      ? parsed.shipAddress : parsed.address;
     const companyName = parsed.companyName || parsed.parentName || parsed.displayName;
     const locationLabel = parsed.locationName || parsed.displayName;
 
-    const data = {
+    // QBO link fields always set regardless of mode
+    const qboFields = {
+      qboCustomerId: parsed.qboCustomerId,
+      qboParentCustomerId: parsed.parentQboId,
+      qboSyncToken: parsed.qboSyncToken,
+      qboLastSyncedAt: now,
+      updatedAt: now,
+    };
+
+    const fullData = {
       parentCompanyId: parentLocalId,
       companyName,
       location: locationLabel,
@@ -442,37 +491,39 @@ export class QboCustomerImportService {
       phone: parsed.phone,
       inactive: !parsed.isActive,
       billWithParent: parsed.billWithParent,
-      qboCustomerId: parsed.qboCustomerId,
-      qboParentCustomerId: parsed.parentQboId,
-      qboSyncToken: parsed.qboSyncToken,
-      qboLastSyncedAt: now,
-      updatedAt: now,
+      ...qboFields,
     };
 
-    if (existing) {
-      // Update existing (and restore if soft-deleted)
-      await db
-        .update(clientLocations)
-        .set({ ...data, deletedAt: null })
-        .where(
-          and(
-            eq(clientLocations.id, existing.id),
-            eq(clientLocations.companyId, this.companyId)
-          )
-        );
+    if (existing && mode === "merge") {
+      // Merge: only fill missing fields, never overwrite existing values
+      const [current] = await db.select().from(clientLocations)
+        .where(eq(clientLocations.id, existing.id)).limit(1);
+      const mergeData: Record<string, unknown> = { ...qboFields, deletedAt: null, parentCompanyId: parentLocalId };
+      if (!current?.companyName && companyName) mergeData.companyName = companyName;
+      if (!current?.location && locationLabel) mergeData.location = locationLabel;
+      if (!current?.address && serviceAddr.street) mergeData.address = serviceAddr.street;
+      if (!current?.city && serviceAddr.city) mergeData.city = serviceAddr.city;
+      if (!current?.province && serviceAddr.province) mergeData.province = serviceAddr.province;
+      if (!current?.postalCode && serviceAddr.postalCode) mergeData.postalCode = serviceAddr.postalCode;
+      if (!current?.email && parsed.email) mergeData.email = parsed.email;
+      if (!current?.phone && parsed.phone) mergeData.phone = parsed.phone;
+      await db.update(clientLocations).set(mergeData)
+        .where(and(eq(clientLocations.id, existing.id), eq(clientLocations.companyId, this.companyId)));
       return existing.id;
     }
 
-    // Create new — selectedMonths is required, default to empty array
+    if (existing) {
+      // Overwrite or wipe: replace all fields
+      await db.update(clientLocations).set({ ...fullData, deletedAt: null })
+        .where(and(eq(clientLocations.id, existing.id), eq(clientLocations.companyId, this.companyId)));
+      return existing.id;
+    }
+
+    // Create new
     const [inserted] = await db
       .insert(clientLocations)
-      .values({
-        companyId: this.companyId,
-        selectedMonths: [],
-        ...data,
-      })
+      .values({ companyId: this.companyId, selectedMonths: [], ...fullData })
       .returning({ id: clientLocations.id });
-
     return inserted.id;
   }
 }

@@ -2688,6 +2688,7 @@ export const qboSyncEventTypeEnum = [
   "PAYMENT_CREATED_FROM_QBO",
   // Import events (QBO → App)
   "CUSTOMER_IMPORT",
+  "CATALOG_IMPORT",
   // Catalog sync events (App → QBO bulk)
   "CATALOG_SYNC",
   // Go-live and preflight events

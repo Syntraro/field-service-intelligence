@@ -139,7 +139,11 @@ export type {
 
 // Customer Import Service (QBO → App)
 export { QboCustomerImportService } from "./QboCustomerImportService";
-export type { CustomerImportOptions, CustomerImportResult, ImportedRecord } from "./QboCustomerImportService";
+export type { CustomerImportOptions, CustomerImportResult, CustomerImportMode, ImportedRecord } from "./QboCustomerImportService";
+
+// Catalog Import Service (QBO → App)
+export { QboCatalogImportService } from "./QboCatalogImportService";
+export type { CatalogImportOptions, CatalogImportResult, CatalogImportMode, CatalogImportItemSummary } from "./QboCatalogImportService";
 
 // Item Service
 export { QboItemService, createItemService, createItemServiceFromTokens } from "./QboItemService";
