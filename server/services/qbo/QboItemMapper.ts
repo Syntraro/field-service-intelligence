@@ -1,15 +1,17 @@
 /**
  * QboItemMapper - Maps invoice line items to QBO ItemRef and TaxCodeRef
  *
- * Provides:
- * - Item mapping by line item type (service, material, fee, discount)
- * - Tax code mapping (taxable vs non-taxable)
- * - Preflight validation for line items
+ * Two required mappings:
+ *   - serviceItemId  → QBO Item where Type="Service" (for service/labor lines)
+ *   - productItemId  → QBO Item where Type="NonInventory" or "Inventory" (for material/product lines)
+ * Optional:
+ *   - feeItemId, discountItemId → specific overrides (fallback: serviceItemId)
+ *   - taxableCodeId, nonTaxableCodeId → QBO TaxCode references
  *
  * RULES:
  * - If a line has an explicit qboItemRefId, use it
- * - Otherwise, fall back to company's default mapping for that line type
- * - If no mapping can be resolved and item is required, return validation error
+ * - Otherwise, fall back to company default by line type
+ * - Unknown line types fall back to serviceItemId
  * - Tax codes follow similar logic with qboTaxCodeRefId -> company default
  */
 
@@ -44,7 +46,7 @@ export interface PreflightValidationResult {
   invalidLines: number;
   lines: LineMappingValidation[];
   summary: string;
-  missingMappings: string[]; // e.g., ["serviceItemId", "taxableCode"]
+  missingMappings: string[]; // e.g., ["serviceItemId", "taxableCodeId"]
 }
 
 export interface MappingConfigStatus {
@@ -72,12 +74,10 @@ export class QboItemMapper {
    * Priority: explicit line mapping -> company default by type -> null
    */
   resolveItemRef(line: InvoiceLine): { itemRefId: string | null; source: "explicit" | "company_default" | "none" } {
-    // If line has explicit ItemRef, use it
     if (line.qboItemRefId) {
       return { itemRefId: line.qboItemRefId, source: "explicit" };
     }
 
-    // Otherwise, look up company default by line type
     if (this.config) {
       const itemId = this.getItemIdForType(line.lineItemType as LineItemType);
       if (itemId) {
@@ -91,20 +91,22 @@ export class QboItemMapper {
   /**
    * Resolve the QBO TaxCodeRef for a line item
    * Priority: explicit line mapping -> company default based on taxRate -> null
+   * Uses taxableCodeId/nonTaxableCodeId (with legacy fallback to taxableCode/nonTaxableCode)
    */
   resolveTaxCodeRef(line: InvoiceLine): { taxCodeRefId: string | null; source: "explicit" | "company_default" | "none" } {
-    // If line has explicit TaxCodeRef, use it
     if (line.qboTaxCodeRefId) {
       return { taxCodeRefId: line.qboTaxCodeRefId, source: "explicit" };
     }
 
-    // Otherwise, determine based on taxRate and company defaults
     if (this.config) {
       const taxRate = parseFloat(line.taxRate);
-      if (taxRate > 0 && this.config.taxableCode) {
-        return { taxCodeRefId: this.config.taxableCode, source: "company_default" };
-      } else if (taxRate === 0 && this.config.nonTaxableCode) {
-        return { taxCodeRefId: this.config.nonTaxableCode, source: "company_default" };
+      const taxableId = this.config.taxableCodeId || this.config.taxableCode;
+      const nonTaxableId = this.config.nonTaxableCodeId || this.config.nonTaxableCode;
+
+      if (taxRate > 0 && taxableId) {
+        return { taxCodeRefId: taxableId, source: "company_default" };
+      } else if (taxRate === 0 && nonTaxableId) {
+        return { taxCodeRefId: nonTaxableId, source: "company_default" };
       }
     }
 
@@ -113,35 +115,28 @@ export class QboItemMapper {
 
   /**
    * Get item ID from config by line item type.
-   * Priority: productServiceItemId (universal) → legacy per-type field → miscItemId → null
+   * service/labor → serviceItemId
+   * material      → productItemId
+   * fee           → feeItemId or serviceItemId
+   * discount      → discountItemId or serviceItemId
+   * unknown       → serviceItemId
    */
   private getItemIdForType(lineType: LineItemType): string | null {
     if (!this.config) return null;
 
-    // Universal mapping — if productServiceItemId is set, use it for all types
-    if (this.config.productServiceItemId) {
-      return this.config.productServiceItemId;
+    switch (lineType) {
+      case "service":
+        return this.config.serviceItemId || null;
+      case "material":
+        return this.config.productItemId || null;
+      case "fee":
+        return this.config.feeItemId || this.config.serviceItemId || null;
+      case "discount":
+        return this.config.discountItemId || this.config.serviceItemId || null;
+      default:
+        // Unknown line type → fall back to serviceItemId
+        return this.config.serviceItemId || null;
     }
-
-    // Legacy per-type fallback (backwards compat with old configs)
-    const typeMap: Record<LineItemType, keyof QboMappingConfig | null> = {
-      service: "serviceItemId",
-      material: "materialItemId",
-      fee: "feeItemId",
-      discount: "discountItemId",
-    };
-
-    const configKey = typeMap[lineType];
-    if (configKey && this.config[configKey]) {
-      return this.config[configKey] as string;
-    }
-
-    // Fallback to misc item if configured
-    if (this.config.miscItemId) {
-      return this.config.miscItemId;
-    }
-
-    return null;
   }
 
   /**
@@ -167,12 +162,10 @@ export class QboItemMapper {
     const errors: string[] = [];
     const warnings: string[] = [];
 
-    // Check ItemRef
     if (requireItemRef && !mapping.itemRefId) {
       errors.push(`No QBO Item mapping for line type "${line.lineItemType}". Configure a default item or set qboItemRefId on the line.`);
     }
 
-    // Check TaxCodeRef - warning only since QBO may have defaults
     if (!mapping.taxCodeRefId) {
       const taxRate = parseFloat(line.taxRate);
       if (taxRate > 0) {
@@ -194,34 +187,32 @@ export class QboItemMapper {
 
   /**
    * Preflight validation for all invoice lines
-   * Returns detailed validation results for each line and overall status
    */
   preflightValidation(lines: InvoiceLine[], requireItemRef: boolean = true): PreflightValidationResult {
     const validatedLines = lines.map(line => this.validateLine(line, requireItemRef));
     const invalidLines = validatedLines.filter(l => !l.valid);
     const validLines = validatedLines.filter(l => l.valid);
 
-    // Collect unique missing mappings
     const missingMappings = new Set<string>();
     for (const line of lines) {
       const mapping = this.resolveLineMapping(line);
       if (!mapping.itemRefId && requireItemRef) {
-        // Determine what's missing based on line type
-        const typeKey = `${line.lineItemType}ItemId`;
-        missingMappings.add(typeKey);
+        const lineType = line.lineItemType as LineItemType;
+        if (lineType === "material") {
+          missingMappings.add("productItemId");
+        } else {
+          missingMappings.add("serviceItemId");
+        }
       }
       if (!mapping.taxCodeRefId && parseFloat(line.taxRate) > 0) {
-        missingMappings.add("taxableCode");
+        missingMappings.add("taxableCodeId");
       }
     }
 
     const valid = invalidLines.length === 0;
-    let summary: string;
-    if (valid) {
-      summary = `All ${lines.length} line(s) have valid QBO mappings`;
-    } else {
-      summary = `${invalidLines.length} of ${lines.length} line(s) missing required QBO Item mapping`;
-    }
+    const summary = valid
+      ? `All ${lines.length} line(s) have valid QBO mappings`
+      : `${invalidLines.length} of ${lines.length} line(s) missing required QBO Item mapping`;
 
     return {
       valid,
@@ -235,13 +226,8 @@ export class QboItemMapper {
   }
 
   /**
-   * Check the status of the mapping configuration
-   * Returns which mappings are configured and which are missing
-   */
-  /**
    * Check mapping config status.
-   * Only productServiceItemId is required. Tax codes are optional (QBO uses defaults).
-   * Legacy per-type fields (serviceItemId, etc.) are accepted as backwards compat.
+   * Requires BOTH serviceItemId AND productItemId. Tax codes are optional.
    */
   static checkConfigStatus(config: QboMappingConfig | null | undefined): MappingConfigStatus {
     const warnings: string[] = [];
@@ -253,23 +239,26 @@ export class QboItemMapper {
         configured: false,
         hasItemMappings: false,
         hasTaxMappings: false,
-        missingItemMappings: ["productServiceItemId"],
+        missingItemMappings: ["serviceItemId", "productItemId"],
         missingTaxMappings: [],
-        warnings: ["No QBO mapping configuration found. Set a Product/Service item to enable invoice sync."],
+        warnings: ["No QBO mapping configuration found. Set Service and Product items to enable invoice sync."],
       };
     }
 
-    // Check item mapping — productServiceItemId OR legacy serviceItemId satisfies the requirement
-    const hasItemMappings = !!(config.productServiceItemId || config.serviceItemId || config.laborItemId);
-    if (!hasItemMappings) {
-      missingItemMappings.push("productServiceItemId");
-      warnings.push("No Product/Service item configured. Invoice line items will fail sync.");
+    const hasService = !!config.serviceItemId;
+    const hasProduct = !!config.productItemId;
+    const hasItemMappings = hasService && hasProduct;
+
+    if (!hasService) {
+      missingItemMappings.push("serviceItemId");
+      warnings.push("No default Service item configured. Service line items will fail sync.");
+    }
+    if (!hasProduct) {
+      missingItemMappings.push("productItemId");
+      warnings.push("No default Product item configured. Material/product line items will fail sync.");
     }
 
-    // Tax mappings are optional — QBO can use its own defaults
-    const hasTaxMappings = !!(config.taxableCode || config.nonTaxableCode);
-
-    // configured = true when at least the item mapping is present
+    const hasTaxMappings = !!(config.taxableCodeId || config.taxableCode || config.nonTaxableCodeId || config.nonTaxableCode);
     const configured = hasItemMappings;
 
     return {
@@ -284,7 +273,6 @@ export class QboItemMapper {
 
   /**
    * Apply resolved mappings to invoice lines (returns new objects, doesn't mutate)
-   * Used to enrich lines before sending to QBO
    */
   applyMappings(lines: InvoiceLine[]): Array<InvoiceLine & { resolvedItemRefId: string | null; resolvedTaxCodeRefId: string | null }> {
     return lines.map(line => {
@@ -311,7 +299,11 @@ export function createItemMapper(config: QboMappingConfig | null | undefined): Q
 
 /**
  * Parse QBO mapping config from company's jsonb field.
- * Backwards compat: if old serviceItemId exists but productServiceItemId is absent, maps it forward.
+ * Migrates legacy field names forward:
+ *   productServiceItemId / laborItemId → serviceItemId
+ *   materialItemId                     → productItemId
+ *   taxableCode                        → taxableCodeId
+ *   nonTaxableCode                     → nonTaxableCodeId
  * Returns null if invalid or missing.
  */
 export function parseQboMappingConfig(raw: unknown): QboMappingConfig | null {
@@ -323,10 +315,21 @@ export function parseQboMappingConfig(raw: unknown): QboMappingConfig | null {
     if (!parsed.success) return null;
 
     const config = parsed.data as QboMappingConfig;
-    // Backwards compat: promote legacy serviceItemId → productServiceItemId
-    if (!config.productServiceItemId && (config.serviceItemId || config.laborItemId)) {
-      config.productServiceItemId = config.serviceItemId || config.laborItemId;
+
+    // Migrate legacy → current field names
+    if (!config.serviceItemId) {
+      config.serviceItemId = config.productServiceItemId || config.laborItemId || undefined;
     }
+    if (!config.productItemId && config.materialItemId) {
+      config.productItemId = config.materialItemId;
+    }
+    if (!config.taxableCodeId && config.taxableCode) {
+      config.taxableCodeId = config.taxableCode;
+    }
+    if (!config.nonTaxableCodeId && config.nonTaxableCode) {
+      config.nonTaxableCodeId = config.nonTaxableCode;
+    }
+
     return config;
   } catch {
     return null;

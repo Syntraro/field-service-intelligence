@@ -44,21 +44,25 @@ export type InsertCompany = z.infer<typeof insertCompanySchema>;
 export type Company = typeof companies.$inferSelect;
 
 // QBO Mapping Configuration Schema
-// Simplified: single Product/Service item maps ALL line types to one QBO Item.
-// Old per-type fields (serviceItemId, materialItemId, etc.) kept for backwards compatibility.
+// Two required item mappings: serviceItemId (QBO Type=Service) and productItemId (QBO Type=NonInventory/Inventory).
+// Legacy fields kept for backwards compatibility with older saved configs.
 export const qboMappingConfigSchema = z.object({
-  // Primary mapping — one QBO Item for all invoice line types
-  productServiceItemId: z.string().optional(), // QBO Item ID used for all line types
-  // Legacy per-type fields (backwards compat — ignored if productServiceItemId is set)
-  serviceItemId: z.string().optional(),
+  // Required item mappings
+  serviceItemId: z.string().optional(),      // QBO Item (Type=Service) for service/labor line items
+  productItemId: z.string().optional(),      // QBO Item (Type=NonInventory or Inventory) for product/material lines
+  // Optional item mappings
+  feeItemId: z.string().optional(),          // QBO Item for fee lines (fallback: serviceItemId)
+  discountItemId: z.string().optional(),     // QBO Item for discount lines (fallback: serviceItemId)
+  // Tax code mappings (optional — QBO uses its own defaults if omitted)
+  taxableCodeId: z.string().optional(),      // QBO TaxCode ID for taxable items
+  nonTaxableCodeId: z.string().optional(),   // QBO TaxCode ID for non-taxable items
+  // Legacy fields (backwards compat — migrated forward by parseQboMappingConfig)
+  productServiceItemId: z.string().optional(),
   materialItemId: z.string().optional(),
-  feeItemId: z.string().optional(),
-  discountItemId: z.string().optional(),
   laborItemId: z.string().optional(),
   miscItemId: z.string().optional(),
-  // Tax code mappings
-  taxableCode: z.string().optional(),     // QBO TaxCode for taxable items (e.g., "TAX" or "1")
-  nonTaxableCode: z.string().optional(),  // QBO TaxCode for non-taxable items (e.g., "NON" or "0")
+  taxableCode: z.string().optional(),
+  nonTaxableCode: z.string().optional(),
 }).strict();
 
 export type QboMappingConfig = z.infer<typeof qboMappingConfigSchema>;

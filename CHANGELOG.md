@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### QBO Mapping — Two-Item Model + Tax Code Display Fix (2026-02-28)
+- **Two required item mappings**: Replaced single `productServiceItemId` with `serviceItemId` (QBO Type=Service for service/labor lines) and `productItemId` (QBO Type=NonInventory/Inventory for material/product lines).
+- **Type-filtered dropdowns**: Service dropdown only shows QBO items with Type=Service. Product dropdown only shows NonInventory/Inventory items.
+- **Tax code field rename**: `taxableCode`/`nonTaxableCode` → `taxableCodeId`/`nonTaxableCodeId`. Legacy fields auto-migrated by `parseQboMappingConfig()`.
+- **Tax code display fix**: Tax code dropdown now explicitly renders the human-readable name (not the ID). Shows `name (id)` in the dropdown list for clarity.
+- **QboItemMapper updated**: service→serviceItemId, material→productItemId, fee/discount→fallback to serviceItemId, unknown→serviceItemId. `checkConfigStatus` requires both service + product.
+- **Backwards compat**: `parseQboMappingConfig()` migrates old field names forward (productServiceItemId/laborItemId→serviceItemId, materialItemId→productItemId, taxableCode→taxableCodeId).
+- **Files**: `shared/schema.ts`, `server/services/qbo/QboItemMapper.ts`, `client/src/pages/QboConsolePage.tsx`
+
 #### QBO Integration — Production Stabilization (2026-02-28)
 
 **1. Split `/api/qbo/items` endpoint (Option A)**
