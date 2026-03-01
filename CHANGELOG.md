@@ -8,6 +8,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### QBO Wipe Mode — confirmToken Validation Returns 400 Instead of 500 (2026-03-01)
+- **Root cause**: Both catalog and customer import wipe endpoints used `z.literal("WIPE").parse(req.body)` to validate the confirmation token. When the token was missing/wrong, Zod threw a `ZodError` caught by the global error handler as HTTP 500 — an opaque server error instead of a client validation error.
+- **Fix**: Replaced Zod `.parse()` with explicit guard: `if (mode === "wipe" && req.body?.confirmToken !== "WIPE")` → returns `400 { success: false, error: { code: "CONFIRM_TOKEN_REQUIRED", message: ... } }`. Removed unused `wipeConfirmSchema` constant.
+- **Files**: `server/routes/qbo.ts` (catalog import run + customer import run endpoints)
+
+#### QBO Customer Import — Zero Fetch Bug in QboCustomerImportService (2026-03-01)
+- **Root cause**: `fetchAllCustomers()` accessed `response.data.QueryResponse.Customer` but `QboClient.processResponse()` already extracts the entity key from QBO's response wrapper. So `response.data` IS the `QueryResponse` content (i.e., `{ Customer: [...] }`), making `response.data.QueryResponse` always `undefined` and the customer array always `[]`.
+- **Impact**: Import preview/run always reported `fetched: 0` — no customers were ever imported from QBO.
+- **Fix**: Changed access pattern from `queryResponse.QueryResponse?.Customer` to `queryData?.Customer` to match the already-extracted structure.
+- **Files**: `server/services/qbo/QboCustomerImportService.ts`
+
+#### QBO Sandbox — Dev Seed Endpoint (2026-03-01)
+- **Feature**: Added `POST /api/qbo/dev/seed-customers` endpoint for seeding QBO sandbox with deterministic test data.
+- **Safety**: Gated by `QBO_ENVIRONMENT=sandbox` + admin role. Never available in production.
+- **Creates**: 4 parents (Acme HVAC, Acme HVAC Alt, Beta Foods, Gamma Group inactive) + 2 children (Acme HVAC - Warehouse, Beta Foods - Location 1).
+- **Idempotent**: If customers already exist (duplicate name), finds and returns existing IDs.
+- **Files**: `server/routes/qbo.ts`
+
+#### QBO Mapping Config — ESM require() Bug in parseQboMappingConfig (2026-03-01)
+- **Root cause**: `parseQboMappingConfig()` used `require("@shared/schema")` (CJS) inside an ESM module. In ESM, `require` is undefined. The `try/catch` silently swallowed the error and returned `null`, causing `mappingStatus.configured` to always report `false` even when mapping was properly saved in the database.
+- **Impact**: Step 4 (Import Customers) in QBO Console was permanently greyed out because `isMappingConfigured` was always `false`, despite mapping data being correctly persisted by the PUT endpoint.
+- **Fix**: Replaced dynamic `require("@shared/schema")` with a static ESM `import { qboMappingConfigSchema }` at the top of the file.
+- **Files**: `server/services/qbo/QboItemMapper.ts`
+
 #### QBO NonInventory Item Sync — Strip Inventory-Only Fields + Fix SalesDesc (2026-02-28)
 - **Root cause 1**: QBO rejects NonInventory/Service items with inventory-only properties (`TrackQtyOnHand`, `QtyOnHand`, `InvStartDate`, `AssetAccountRef`) returning "Request has invalid or unsupported property".
 - **Root cause 2**: Payload included `SalesDesc` — QBO schema expects `SalesDescription`. The invalid property name triggered the same rejection error.

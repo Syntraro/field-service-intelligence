@@ -344,8 +344,10 @@ export class QboCustomerImportService {
         throw new Error(response.error?.message || "Failed to query QBO customers");
       }
 
-      const queryResponse = response.data as unknown as QBOQueryResponse<QBOCustomerResponse>;
-      const customers = queryResponse.QueryResponse?.Customer || [];
+      // QboClient.processResponse extracts the entity key (QueryResponse) from QBO's
+      // response wrapper, so response.data IS the QueryResponse content directly.
+      const queryData = response.data as unknown as { Customer?: QBOCustomerResponse[] };
+      const customers = queryData?.Customer || [];
 
       allCustomers.push(...customers);
 

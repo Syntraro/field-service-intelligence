@@ -18,6 +18,7 @@
  */
 
 import type { InvoiceLine, QboMappingConfig } from "@shared/schema";
+import { qboMappingConfigSchema } from "@shared/schema";
 
 // ============================================================
 // TYPES
@@ -260,7 +261,7 @@ export function parseQboMappingConfig(raw: unknown): QboMappingConfig | null {
   if (!raw) return null;
 
   try {
-    const { qboMappingConfigSchema } = require("@shared/schema");
+    // Fix: Use static ESM import instead of dynamic require (require is unavailable in ESM)
     const parsed = qboMappingConfigSchema.safeParse(raw);
     if (!parsed.success) return null;
 

@@ -1890,7 +1890,6 @@ router.post(
 // ============================================================
 
 const importModeSchema = z.enum(["merge", "overwrite", "wipe"]).default("merge");
-const wipeConfirmSchema = z.object({ confirmToken: z.literal("WIPE") }).optional();
 
 /**
  * GET /api/qbo/catalog/import/preview
@@ -1933,11 +1932,12 @@ router.post(
     const userId = req.user?.id;
     const mode = importModeSchema.parse(req.query.mode);
 
-    // Wipe mode requires explicit confirmation
-    if (mode === "wipe") {
-      const body = z.object({ confirmToken: z.literal("WIPE", {
-        errorMap: () => ({ message: 'Wipe mode requires confirmToken: "WIPE" in request body' }),
-      }) }).parse(req.body);
+    // Wipe mode requires explicit confirmation — return 400, not 500
+    if (mode === "wipe" && req.body?.confirmToken !== "WIPE") {
+      return res.status(400).json({
+        success: false,
+        error: { code: "CONFIRM_TOKEN_REQUIRED", message: 'Wipe mode requires confirmToken: "WIPE"' },
+      });
     }
 
     const tokens = await getQboTokensForCompany(companyId);
@@ -1995,10 +1995,12 @@ router.post(
     const userId = req.user?.id;
     const mode = importModeSchema.parse(req.query.mode);
 
-    if (mode === "wipe") {
-      z.object({ confirmToken: z.literal("WIPE", {
-        errorMap: () => ({ message: 'Wipe mode requires confirmToken: "WIPE" in request body' }),
-      }) }).parse(req.body);
+    // Wipe mode requires explicit confirmation — return 400, not 500
+    if (mode === "wipe" && req.body?.confirmToken !== "WIPE") {
+      return res.status(400).json({
+        success: false,
+        error: { code: "CONFIRM_TOKEN_REQUIRED", message: 'Wipe mode requires confirmToken: "WIPE"' },
+      });
     }
 
     const tokens = await getQboTokensForCompany(companyId);
@@ -2362,6 +2364,173 @@ router.get(
       importReadOnly,
       importAllowed,
       checks,
+    });
+  })
+);
+
+// ============================================================
+// DEV ONLY — Sandbox Customer Seeding (never available in production)
+// ============================================================
+
+/**
+ * POST /api/qbo/dev/seed-customers
+ * DEV ONLY: Creates a deterministic test dataset in QBO Sandbox.
+ * Gated by: QBO_ENVIRONMENT=sandbox + admin role.
+ *
+ * Creates parents and sub-customers for testing import in merge/overwrite/wipe modes.
+ */
+router.post(
+  "/dev/seed-customers",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const environment = getQboEnvironment();
+
+    // Hard gate: sandbox only
+    if (environment !== "sandbox") {
+      return res.status(403).json({
+        error: "Seed endpoint is sandbox-only. Current environment: " + environment,
+      });
+    }
+
+    const tokens = await getQboTokensForCompany(companyId);
+    if (!tokens) {
+      return res.status(503).json({ error: "QBO not connected" });
+    }
+
+    const client = createQboClient(tokens);
+    if (!client) {
+      return res.status(503).json({ error: "QBO client credentials missing" });
+    }
+
+    const results: Array<{
+      displayName: string;
+      qboId: string;
+      syncToken: string;
+      active: boolean;
+      isChild: boolean;
+      parentId?: string;
+    }> = [];
+    const errors: string[] = [];
+
+    // Helper: create or find a customer, return its Id
+    async function seedCustomer(payload: Record<string, unknown>): Promise<{ Id: string; SyncToken: string } | null> {
+      const resp = await client!.createCustomer<{ Id: string; SyncToken: string; DisplayName: string }>(payload);
+      if (resp.success && resp.data) {
+        return { Id: resp.data.Id, SyncToken: resp.data.SyncToken };
+      }
+      // If duplicate name error, find existing by DisplayName
+      const errMsg = resp.error?.message || "";
+      if (errMsg.includes("Duplicate") || errMsg.includes("already exists") || resp.error?.code === "6240") {
+        const name = (payload.DisplayName as string) || "";
+        const escaped = name.replace(/'/g, "''");
+        const query = `SELECT * FROM Customer WHERE DisplayName = '${escaped}'`;
+        const findResp = await client!.queryCustomers<{ Customer?: Array<{ Id: string; SyncToken: string }> }>(query);
+        // QboClient extracts the entity key, so data = QueryResponse = { Customer: [...] }
+        const customers = (findResp.data as any)?.Customer || [];
+        if (customers.length > 0) {
+          return { Id: customers[0].Id, SyncToken: customers[0].SyncToken };
+        }
+      }
+      errors.push(`Failed to create "${payload.DisplayName}": ${errMsg}`);
+      return null;
+    }
+
+    // --- Parent 1: "Acme HVAC" (active, has address + phone) ---
+    const acme = await seedCustomer({
+      DisplayName: "Acme HVAC",
+      CompanyName: "Acme HVAC Inc.",
+      Active: true,
+      PrimaryPhone: { FreeFormNumber: "555-100-0001" },
+      PrimaryEmailAddr: { Address: "billing@acmehvac.test" },
+      BillAddr: {
+        Line1: "100 Industrial Pkwy",
+        City: "Toronto",
+        CountrySubDivisionCode: "ON",
+        PostalCode: "M5V 2T6",
+        Country: "CA",
+      },
+    });
+    if (acme) results.push({ displayName: "Acme HVAC", qboId: acme.Id, syncToken: acme.SyncToken, active: true, isChild: false });
+
+    // --- Parent 2: "Acme HVAC (Alt)" (active, tests near-duplicate) ---
+    const acmeAlt = await seedCustomer({
+      DisplayName: "Acme HVAC (Alt)",
+      CompanyName: "Acme HVAC Alternate",
+      Active: true,
+    });
+    if (acmeAlt) results.push({ displayName: "Acme HVAC (Alt)", qboId: acmeAlt.Id, syncToken: acmeAlt.SyncToken, active: true, isChild: false });
+
+    // --- Parent 3: "Beta Foods" (active, missing phone/address to test merge fill) ---
+    const beta = await seedCustomer({
+      DisplayName: "Beta Foods",
+      CompanyName: "Beta Foods Ltd.",
+      Active: true,
+      PrimaryEmailAddr: { Address: "orders@betafoods.test" },
+      // Intentionally no phone, no address — merge should fill these from QBO if present
+    });
+    if (beta) results.push({ displayName: "Beta Foods", qboId: beta.Id, syncToken: beta.SyncToken, active: true, isChild: false });
+
+    // --- Parent 4: "Gamma Group" (INACTIVE — tests inactiveSkipped) ---
+    const gamma = await seedCustomer({
+      DisplayName: "Gamma Group",
+      CompanyName: "Gamma Group Corp.",
+      Active: false,
+    });
+    if (gamma) results.push({ displayName: "Gamma Group", qboId: gamma.Id, syncToken: gamma.SyncToken, active: false, isChild: false });
+
+    // --- Child 1: "Acme HVAC - Warehouse" under Acme HVAC ---
+    if (acme) {
+      const acmeChild = await seedCustomer({
+        DisplayName: "Acme HVAC - Warehouse",
+        CompanyName: "Acme HVAC Inc.",
+        Active: true,
+        Job: true,
+        ParentRef: { value: acme.Id },
+        BillWithParent: true,
+        BillAddr: {
+          Line1: "200 Warehouse Dr",
+          City: "Mississauga",
+          CountrySubDivisionCode: "ON",
+          PostalCode: "L5B 3C2",
+          Country: "CA",
+        },
+      });
+      if (acmeChild) results.push({ displayName: "Acme HVAC - Warehouse", qboId: acmeChild.Id, syncToken: acmeChild.SyncToken, active: true, isChild: true, parentId: acme.Id });
+    }
+
+    // --- Child 2: "Beta Foods - Location 1" under Beta Foods ---
+    if (beta) {
+      const betaChild = await seedCustomer({
+        DisplayName: "Beta Foods - Location 1",
+        CompanyName: "Beta Foods Ltd.",
+        Active: true,
+        Job: true,
+        ParentRef: { value: beta.Id },
+        BillWithParent: true,
+        PrimaryPhone: { FreeFormNumber: "555-200-0001" },
+        BillAddr: {
+          Line1: "50 Food Court Blvd",
+          City: "Brampton",
+          CountrySubDivisionCode: "ON",
+          PostalCode: "L6T 4M1",
+          Country: "CA",
+        },
+      });
+      if (betaChild) results.push({ displayName: "Beta Foods - Location 1", qboId: betaChild.Id, syncToken: betaChild.SyncToken, active: true, isChild: true, parentId: beta.Id });
+    }
+
+    // Persist refreshed tokens if needed
+    const currentTokens = client.getTokens();
+    if (currentTokens.accessToken !== tokens.accessToken) {
+      await persistRefreshedTokens(companyId, currentTokens);
+    }
+
+    res.json({
+      success: errors.length === 0,
+      seeded: results,
+      errors,
+      summary: `Created ${results.length} customers (${results.filter(r => !r.isChild).length} parents, ${results.filter(r => r.isChild).length} children). ${errors.length} errors.`,
     });
   })
 );
