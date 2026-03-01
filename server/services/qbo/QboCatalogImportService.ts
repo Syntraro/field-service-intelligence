@@ -29,10 +29,12 @@ export type CatalogImportMode = "merge" | "overwrite" | "wipe";
 export interface CatalogImportOptions {
   dryRun: boolean;
   mode: CatalogImportMode;
+  /** User-provided conflict resolutions keyed by QBO Item Id */
+  resolutions?: Record<string, ImportResolution>;
 }
 
 /** Action taken for each item during import */
-export type CatalogImportAction = "CREATE" | "LINK" | "UPDATE" | "SKIP" | "WIPE" | "ERROR";
+export type CatalogImportAction = "CREATE" | "LINK" | "UPDATE" | "SKIP" | "WIPE" | "ERROR" | "CONFLICT";
 
 export interface CatalogImportItemSummary {
   name: string;
@@ -41,6 +43,37 @@ export interface CatalogImportItemSummary {
   action: CatalogImportAction;
   qboItemId: string;
   error?: string;
+}
+
+/** Conflict detected when a QBO item matches multiple local records */
+export interface ImportConflict {
+  kind: "catalog" | "customer";
+  qbo: {
+    id: string;
+    name: string;
+    sku?: string | null;
+    type?: string | null;
+    email?: string | null;
+  };
+  matchBasis: "SKU" | "NAME" | "EMAIL" | "QBO_ID";
+  candidates: Array<{
+    localId: string;
+    name: string;
+    sku?: string | null;
+    email?: string | null;
+    isActive?: boolean;
+    lastActivityAt?: string | null;
+    isLinked?: boolean;
+    qboId?: string | null;
+  }>;
+  defaultAction: "SKIP";
+  message: string;
+}
+
+/** User's chosen resolution for a conflict */
+export interface ImportResolution {
+  action: "MAP" | "CREATE" | "SKIP";
+  localId?: string;
 }
 
 export interface CatalogImportResult {
@@ -55,7 +88,9 @@ export interface CatalogImportResult {
     skipped: number;
     wiped: number;
     errors: number;
+    conflicts: number;
   };
+  conflicts: ImportConflict[];
   sample: CatalogImportItemSummary[];
   warnings: string[];
   error?: string;
@@ -86,7 +121,7 @@ export class QboCatalogImportService {
    * - wipe: soft-delete QBO-linked items, then import fresh
    */
   async importCatalog(options: CatalogImportOptions): Promise<CatalogImportResult> {
-    const { dryRun, mode } = options;
+    const { dryRun, mode, resolutions } = options;
     const startTime = Date.now();
     const warnings: string[] = [];
 
@@ -94,7 +129,8 @@ export class QboCatalogImportService {
       success: true,
       dryRun,
       mode,
-      totals: { fetched: 0, matched: 0, created: 0, updated: 0, skipped: 0, wiped: 0, errors: 0 },
+      totals: { fetched: 0, matched: 0, created: 0, updated: 0, skipped: 0, wiped: 0, errors: 0, conflicts: 0 },
+      conflicts: [],
       sample: [],
       warnings,
     };
@@ -130,7 +166,7 @@ export class QboCatalogImportService {
     const localItems = await this.loadLocalItems();
     const { bySku, byName } = this.buildMatchIndexes(localItems);
 
-    // Step 4: Process each QBO item
+    // Step 4: Process each QBO item with conflict detection
     // Collect non-skip items first in sample, then fill with skips up to 25
     const nonSkipSamples: CatalogImportItemSummary[] = [];
     const skipSamples: CatalogImportItemSummary[] = [];
@@ -145,38 +181,104 @@ export class QboCatalogImportService {
       };
 
       try {
-        // Match by SKU first, then by Name
-        const match = this.findMatch(qboItem, bySku, byName);
+        // Find candidates (may return 0, 1, or multiple matches)
+        const { candidates, matchBasis } = this.findCandidates(qboItem, bySku, byName);
 
-        if (match) {
+        if (candidates.length > 1) {
+          // CONFLICT: multiple local items match this QBO item
+          const conflict: ImportConflict = {
+            kind: "catalog",
+            qbo: { id: qboItem.Id, name: qboItem.Name, sku: qboItem.Sku || null, type: qboItem.Type },
+            matchBasis,
+            candidates: candidates.map(c => ({
+              localId: c.id,
+              name: c.name ?? "",
+              sku: c.sku ?? null,
+              isActive: c.isActive ?? undefined,
+              isLinked: !!c.qboItemId,
+              qboId: c.qboItemId ?? null,
+            })),
+            defaultAction: "SKIP",
+            message: `QBO item "${qboItem.Name}" matches ${candidates.length} local items by ${matchBasis}.`,
+          };
+          result.conflicts.push(conflict);
+
+          // Check if user provided a resolution for this QBO item
+          const resolution = resolutions?.[qboItem.Id];
+          if (resolution?.action === "MAP" && resolution.localId) {
+            // MAP: validate localId is in candidates
+            const target = candidates.find(c => c.id === resolution.localId);
+            if (!target) {
+              summary.action = "ERROR";
+              summary.error = `Resolution localId "${resolution.localId}" not found among candidates`;
+              result.totals.errors++;
+            } else if (!dryRun) {
+              // H1 staleness: re-fetch target from DB to guard against changes since preview
+              const fresh = await this.fetchItemForResolution(target.id);
+              if (!fresh || fresh.deletedAt || fresh.isActive === false) {
+                summary.action = "ERROR";
+                summary.error = "Selected local record is no longer eligible (deleted or inactive).";
+                result.totals.errors++;
+              } else if (fresh.qboItemId && fresh.qboItemId !== qboItem.Id) {
+                summary.action = "ERROR";
+                summary.error = `Local item already linked to QBO ${fresh.qboItemId}; cannot re-link to ${qboItem.Id}`;
+                result.totals.errors++;
+              } else {
+                result.totals.matched++;
+                if (mode === "merge") await this.mergeItem(target.id, qboItem);
+                else await this.overwriteItem(target.id, qboItem);
+                summary.action = fresh.qboItemId === qboItem.Id ? "UPDATE" : "LINK";
+                result.totals.updated++;
+              }
+            } else {
+              // Dry-run: use in-memory snapshot (no staleness concern)
+              if (target.qboItemId && target.qboItemId !== qboItem.Id) {
+                summary.action = "ERROR";
+                summary.error = `Local item already linked to QBO ${target.qboItemId}; cannot re-link to ${qboItem.Id}`;
+                result.totals.errors++;
+              } else {
+                result.totals.matched++;
+                summary.action = target.qboItemId === qboItem.Id ? "UPDATE" : "LINK";
+                result.totals.updated++;
+              }
+            }
+          } else if (resolution?.action === "CREATE") {
+            if (!dryRun) await this.createItem(qboItem);
+            summary.action = "CREATE";
+            result.totals.created++;
+          } else {
+            // No resolution or SKIP → skip (default)
+            summary.action = "CONFLICT";
+            result.totals.conflicts++;
+          }
+        } else if (candidates.length === 1) {
+          // Single match — existing behavior
+          const match = candidates[0];
           result.totals.matched++;
 
-          // Already linked to this exact QBO item with same syncToken — skip
           if (match.qboItemId === qboItem.Id && match.qboSyncToken === qboItem.SyncToken && mode !== "overwrite") {
             summary.action = "SKIP";
             result.totals.skipped++;
           } else if (mode === "merge") {
-            // Merge: link + fill missing fields only
-            if (!dryRun) {
-              await this.mergeItem(match.id, qboItem);
-            }
+            if (!dryRun) await this.mergeItem(match.id, qboItem);
             summary.action = match.qboItemId === qboItem.Id ? "UPDATE" : "LINK";
             result.totals.updated++;
           } else {
-            // Overwrite or wipe: replace local fields with QBO values
-            if (!dryRun) {
-              await this.overwriteItem(match.id, qboItem);
-            }
+            if (!dryRun) await this.overwriteItem(match.id, qboItem);
             summary.action = "UPDATE";
             result.totals.updated++;
           }
         } else {
-          // No match — create new local item
-          if (!dryRun) {
-            await this.createItem(qboItem);
+          // No match — check for resolution override, else create new
+          const resolution = resolutions?.[qboItem.Id];
+          if (resolution?.action === "SKIP") {
+            summary.action = "SKIP";
+            result.totals.skipped++;
+          } else {
+            if (!dryRun) await this.createItem(qboItem);
+            summary.action = "CREATE";
+            result.totals.created++;
           }
-          summary.action = "CREATE";
-          result.totals.created++;
         }
       } catch (err) {
         summary.action = "ERROR";
@@ -255,38 +357,47 @@ export class QboCatalogImportService {
       ));
   }
 
-  /** Build case-insensitive indexes for matching */
+  /** Build case-insensitive indexes for matching (array-valued to detect duplicates) */
   private buildMatchIndexes(localItems: Array<typeof items.$inferSelect>) {
-    const bySku = new Map<string, typeof items.$inferSelect>();
-    const byName = new Map<string, typeof items.$inferSelect>();
+    const bySku = new Map<string, Array<typeof items.$inferSelect>>();
+    const byName = new Map<string, Array<typeof items.$inferSelect>>();
 
     for (const item of localItems) {
       if (item.sku?.trim()) {
-        bySku.set(item.sku.trim().toLowerCase(), item);
+        const key = item.sku.trim().toLowerCase();
+        const arr = bySku.get(key);
+        if (arr) arr.push(item);
+        else bySku.set(key, [item]);
       }
       if (item.name?.trim()) {
-        byName.set(item.name.trim().toLowerCase(), item);
+        const key = item.name.trim().toLowerCase();
+        const arr = byName.get(key);
+        if (arr) arr.push(item);
+        else byName.set(key, [item]);
       }
     }
 
     return { bySku, byName };
   }
 
-  /** Match a QBO item to a local item: SKU first, then Name */
-  private findMatch(
+  /**
+   * Find local candidates matching a QBO item: SKU first, then Name.
+   * Returns all matching candidates and the basis used for matching.
+   */
+  private findCandidates(
     qboItem: QBOItemResponse,
-    bySku: Map<string, typeof items.$inferSelect>,
-    byName: Map<string, typeof items.$inferSelect>,
-  ): typeof items.$inferSelect | null {
+    bySku: Map<string, Array<typeof items.$inferSelect>>,
+    byName: Map<string, Array<typeof items.$inferSelect>>,
+  ): { candidates: Array<typeof items.$inferSelect>; matchBasis: "SKU" | "NAME" } {
     if (qboItem.Sku?.trim()) {
-      const match = bySku.get(qboItem.Sku.trim().toLowerCase());
-      if (match) return match;
+      const matches = bySku.get(qboItem.Sku.trim().toLowerCase());
+      if (matches?.length) return { candidates: matches, matchBasis: "SKU" };
     }
     if (qboItem.Name?.trim()) {
-      const match = byName.get(qboItem.Name.trim().toLowerCase());
-      if (match) return match;
+      const matches = byName.get(qboItem.Name.trim().toLowerCase());
+      if (matches?.length) return { candidates: matches, matchBasis: "NAME" };
     }
-    return null;
+    return { candidates: [], matchBasis: "NAME" };
   }
 
   /** Map QBO Type to local type */
@@ -370,6 +481,19 @@ export class QboCatalogImportService {
       .returning({ id: items.id });
 
     return inserted.id;
+  }
+
+  /**
+   * H1 staleness guard: re-fetch a local item by ID to verify it's still eligible for MAP resolution.
+   * Returns null if not found, otherwise the fresh row with key fields.
+   */
+  private async fetchItemForResolution(localId: string) {
+    const [row] = await db
+      .select({ id: items.id, qboItemId: items.qboItemId, isActive: items.isActive, deletedAt: items.deletedAt })
+      .from(items)
+      .where(and(eq(items.id, localId), eq(items.companyId, this.companyId)))
+      .limit(1);
+    return row ?? null;
   }
 
   /** Count QBO-linked items (for dry-run wipe preview) */

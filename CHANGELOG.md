@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### QBO Onboarding Complete Lock + Reconciliation Mode UX (2026-03-01)
+- **Schema**: Added `qbo_onboarding_catalog_imported_at` and `qbo_onboarding_customers_imported_at` nullable timestamp columns to `companies` table. Stamped once on first successful import run (fetched > 0) using `COALESCE` to preserve the original timestamp.
+- **Server**: Catalog and customer import run endpoints now stamp onboarding timestamps after successful imports. Status endpoint (`GET /api/qbo/status`) expanded with `onboarding` object exposing both timestamps and a derived `complete` boolean.
+- **UI — Onboarding badge**: QBO Console Import Tools card shows "Onboarding In Progress" (green outline) or "Onboarding Complete" (blue with CheckCircle) badge based on server state.
+- **UI — Section relabeling**: After onboarding complete, Import Tools title appends "— Reconciliation", catalog/customer sections relabel to "Catalog Reconciliation (Advanced)" / "Customer Reconciliation (Advanced)", and helper text changes to "Your app is now the source of truth."
+- **UI — Visual distinction**: Amber border and "Advanced" badge on Import Tools content area after onboarding complete.
+- **UI — Wipe escalation**: Wipe confirmation dialogs change to "Wipe & Reconcile" titles with reconciliation-focused warnings after onboarding complete. Pre-onboarding dialogs unchanged.
+- **UI — Status refetch**: Catalog and customer import run mutations now refetch status on success so onboarding state updates without reload.
+- **Migration**: `migrations/2026_03_01_qbo_onboarding_timestamps.sql` — idempotent (`ADD COLUMN IF NOT EXISTS`). Run: `psql "$DATABASE_URL" -f migrations/2026_03_01_qbo_onboarding_timestamps.sql`
+- **Files**: `shared/schema.ts`, `server/routes/qbo.ts`, `client/src/pages/QboConsolePage.tsx`, `migrations/2026_03_01_qbo_onboarding_timestamps.sql`
+
+#### QBO Import — Duplicate Resolution / Conflict Detection (2026-03-01)
+- **Catalog import**: When a QBO item matches multiple local items by SKU or Name, a conflict is detected instead of silently picking one. `buildMatchIndexes()` now uses array-valued maps (`Map<string, Item[]>`) to surface all candidates. `findMatch()` renamed to `findCandidates()` returning all matches plus `matchBasis`.
+- **Customer import**: Added name-based fallback matching for unlinked parent companies and child locations. When no `qboCustomerId` match exists, the service tries normalized name matching. Single match → auto-link; multiple matches → conflict. Existing queries expanded to include `name`, `email`, `isActive` fields for conflict display.
+- **Resolution API**: Both import run endpoints now accept an optional `resolutions` body parameter (`Record<string, { action: "MAP"|"CREATE"|"SKIP", localId?: string }>`) to resolve conflicts. MAP validates target is among candidates and prevents re-linking already-linked items. Unresolved conflicts are safely skipped.
+- **UI conflict panel**: Amber-colored conflict resolution panels appear in the Import Tools section after preview/run when conflicts are detected. Each conflict shows QBO record details, match basis badge, and a radio group for selecting MAP (to specific candidate), CREATE (new), or SKIP (default). Unresolved conflict count warning displayed. Resolutions state resets on new preview.
+- **Totals**: Added `conflicts` count to both `CatalogImportResult` and `CustomerImportResult` totals. Added `conflicts[]` array to result payloads. Added CONFLICT action type to catalog import.
+- **Staleness protection (H1)**: MAP resolutions re-fetch the target row from the database before writing during actual runs. Guards against target being deleted, deactivated, or re-linked to a different QBO ID between preview and run. Added `fetchItemForResolution()`, `fetchCompanyForResolution()`, `fetchLocationForResolution()` helper methods.
+- **Wipe + resolutions**: Fixed wipe confirm dialogs to pass resolutions state when triggering import run.
+- **Files**: `server/services/qbo/QboCatalogImportService.ts`, `server/services/qbo/QboCustomerImportService.ts`, `server/routes/qbo.ts`, `client/src/pages/QboConsolePage.tsx`
+- **Verification**: End-to-end test script (`scripts/test-conflict-resolution.ts`) covering catalog and customer conflicts with all resolution types (SKIP/MAP/CREATE) and invariant checks (no duplicate QBO IDs, no missing sync fields).
+
 ### Fixed
 
 #### QBO Wipe Mode — confirmToken Validation Returns 400 Instead of 500 (2026-03-01)

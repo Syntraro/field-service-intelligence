@@ -38,15 +38,48 @@ export interface CustomerImportOptions {
   mode?: CustomerImportMode;
   limit?: number;
   includeInactive?: boolean;
+  /** User-provided conflict resolutions keyed by QBO Customer Id */
+  resolutions?: Record<string, ImportResolution>;
 }
 
 export interface ImportedRecord {
   qboCustomerId: string;
   displayName: string;
   type: "parent" | "child";
-  action: "create" | "update" | "restore" | "skip";
+  action: "create" | "update" | "restore" | "skip" | "conflict";
   localId?: string;
   parentQboId?: string | null;
+}
+
+/** Conflict detected when a QBO customer matches multiple local records */
+export interface ImportConflict {
+  kind: "catalog" | "customer";
+  qbo: {
+    id: string;
+    name: string;
+    sku?: string | null;
+    type?: string | null;
+    email?: string | null;
+  };
+  matchBasis: "SKU" | "NAME" | "EMAIL" | "QBO_ID";
+  candidates: Array<{
+    localId: string;
+    name: string;
+    sku?: string | null;
+    email?: string | null;
+    isActive?: boolean;
+    lastActivityAt?: string | null;
+    isLinked?: boolean;
+    qboId?: string | null;
+  }>;
+  defaultAction: "SKIP";
+  message: string;
+}
+
+/** User's chosen resolution for a conflict */
+export interface ImportResolution {
+  action: "MAP" | "CREATE" | "SKIP";
+  localId?: string;
 }
 
 export interface CustomerImportResult {
@@ -58,8 +91,11 @@ export interface CustomerImportResult {
     parents: number;
     children: number;
     inactiveSkipped: number;
+    skipped: number;
     wiped: number;
+    conflicts: number;
   };
+  conflicts: ImportConflict[];
   wouldCreate: { customerCompanies: number; clientLocations: number };
   wouldUpdate: { customerCompanies: number; clientLocations: number };
   wouldRestore: { customerCompanies: number; clientLocations: number };
@@ -93,7 +129,7 @@ export class QboCustomerImportService {
    * Pass 3: upsert children (with ParentRef)
    */
   async importCustomers(options: CustomerImportOptions): Promise<CustomerImportResult> {
-    const { dryRun, limit, includeInactive = false, mode = "overwrite" } = options;
+    const { dryRun, limit, includeInactive = false, mode = "overwrite", resolutions } = options;
     const startTime = Date.now();
     const warnings: string[] = [];
 
@@ -101,7 +137,8 @@ export class QboCustomerImportService {
       success: true,
       dryRun,
       mode,
-      totals: { fetched: 0, parents: 0, children: 0, inactiveSkipped: 0, wiped: 0 },
+      totals: { fetched: 0, parents: 0, children: 0, inactiveSkipped: 0, skipped: 0, wiped: 0, conflicts: 0 },
+      conflicts: [],
       wouldCreate: { customerCompanies: 0, clientLocations: 0 },
       wouldUpdate: { customerCompanies: 0, clientLocations: 0 },
       wouldRestore: { customerCompanies: 0, clientLocations: 0 },
@@ -198,14 +235,29 @@ export class QboCustomerImportService {
       }
     }
 
-    // Step 3: Load existing local mappings for upsert detection
+    // Step 3: Load existing local mappings for upsert detection (includes extra fields for conflict display)
     const existingCompanies = await db
-      .select({ id: customerCompanies.id, qboCustomerId: customerCompanies.qboCustomerId, deletedAt: customerCompanies.deletedAt })
+      .select({
+        id: customerCompanies.id,
+        qboCustomerId: customerCompanies.qboCustomerId,
+        deletedAt: customerCompanies.deletedAt,
+        name: customerCompanies.name,
+        email: customerCompanies.email,
+        isActive: customerCompanies.isActive,
+      })
       .from(customerCompanies)
       .where(eq(customerCompanies.companyId, this.companyId));
 
     const existingLocations = await db
-      .select({ id: clientLocations.id, qboCustomerId: clientLocations.qboCustomerId, deletedAt: clientLocations.deletedAt })
+      .select({
+        id: clientLocations.id,
+        qboCustomerId: clientLocations.qboCustomerId,
+        deletedAt: clientLocations.deletedAt,
+        companyName: clientLocations.companyName,
+        location: clientLocations.location,
+        email: clientLocations.email,
+        inactive: clientLocations.inactive,
+      })
       .from(clientLocations)
       .where(eq(clientLocations.companyId, this.companyId));
 
@@ -216,8 +268,26 @@ export class QboCustomerImportService {
       existingLocations.filter(l => l.qboCustomerId).map(l => [l.qboCustomerId!, l])
     );
 
-    // Step 4: Process parents
-    // Track created parent QBO IDs → local IDs (for child linking)
+    // Build name-based fallback indexes for unlinked records (used when qboCustomerId match fails)
+    const companyByName = new Map<string, typeof existingCompanies>();
+    for (const c of existingCompanies) {
+      if (c.qboCustomerId || c.deletedAt) continue; // Only unlinked, non-deleted
+      const key = c.name.trim().toLowerCase();
+      const arr = companyByName.get(key);
+      if (arr) arr.push(c);
+      else companyByName.set(key, [c]);
+    }
+
+    const locationByName = new Map<string, typeof existingLocations>();
+    for (const l of existingLocations) {
+      if (l.qboCustomerId || l.deletedAt) continue; // Only unlinked, non-deleted
+      const key = l.companyName.trim().toLowerCase();
+      const arr = locationByName.get(key);
+      if (arr) arr.push(l);
+      else locationByName.set(key, [l]);
+    }
+
+    // Step 4: Process parents with name-based fallback matching + conflict detection
     const parentQboToLocalId = new Map<string, string>();
 
     // Preload existing parent ID map
@@ -228,7 +298,84 @@ export class QboCustomerImportService {
     }
 
     for (const parent of parents) {
-      const existing = companyByQboId.get(parent.qboCustomerId);
+      let existing = companyByQboId.get(parent.qboCustomerId);
+
+      // Name-based fallback when no qboCustomerId match
+      if (!existing) {
+        const nameKey = (parent.companyName || parent.displayName).trim().toLowerCase();
+        const nameCandidates = companyByName.get(nameKey);
+
+        if (nameCandidates && nameCandidates.length > 1) {
+          // CONFLICT: multiple unlinked local companies with the same name
+          const conflict: ImportConflict = {
+            kind: "customer",
+            qbo: { id: parent.qboCustomerId, name: parent.displayName, email: parent.email || null },
+            matchBasis: "NAME",
+            candidates: nameCandidates.map(c => ({
+              localId: c.id,
+              name: c.name,
+              email: c.email ?? null,
+              isActive: c.isActive,
+              isLinked: !!c.qboCustomerId,
+              qboId: c.qboCustomerId ?? null,
+            })),
+            defaultAction: "SKIP",
+            message: `QBO customer "${parent.displayName}" matches ${nameCandidates.length} local companies by name.`,
+          };
+          result.conflicts.push(conflict);
+
+          const resolution = resolutions?.[parent.qboCustomerId];
+          if (resolution?.action === "MAP" && resolution.localId) {
+            const target = nameCandidates.find(c => c.id === resolution.localId);
+            if (!target) {
+              const record: ImportedRecord = {
+                qboCustomerId: parent.qboCustomerId, displayName: parent.displayName, type: "parent", action: "skip",
+              };
+              warnings.push(`Resolution for "${parent.displayName}": localId not found among candidates`);
+              result.totals.skipped++;
+              if (result.sample.length < 10) result.sample.push(record);
+              continue;
+            }
+            // H1 staleness: re-fetch target when actually writing to guard against changes since preview
+            if (!dryRun) {
+              const fresh = await this.fetchCompanyForResolution(target.id);
+              if (!fresh || fresh.deletedAt || fresh.isActive === false) {
+                const record: ImportedRecord = {
+                  qboCustomerId: parent.qboCustomerId, displayName: parent.displayName, type: "parent", action: "skip",
+                };
+                warnings.push(`Resolution for "${parent.displayName}": selected local record is no longer eligible (deleted or inactive).`);
+                result.totals.skipped++;
+                if (result.sample.length < 10) result.sample.push(record);
+                continue;
+              }
+              if (fresh.qboCustomerId && fresh.qboCustomerId !== parent.qboCustomerId) {
+                const record: ImportedRecord = {
+                  qboCustomerId: parent.qboCustomerId, displayName: parent.displayName, type: "parent", action: "skip",
+                };
+                warnings.push(`Resolution for "${parent.displayName}": local record now linked to QBO ${fresh.qboCustomerId}; cannot re-link.`);
+                result.totals.skipped++;
+                if (result.sample.length < 10) result.sample.push(record);
+                continue;
+              }
+            }
+            existing = target;
+          } else if (resolution?.action === "CREATE") {
+            // Fall through to create (existing stays undefined)
+          } else {
+            // No resolution or SKIP → skip
+            const record: ImportedRecord = {
+              qboCustomerId: parent.qboCustomerId, displayName: parent.displayName, type: "parent", action: "conflict",
+            };
+            result.totals.conflicts++;
+            if (result.sample.length < 10) result.sample.push(record);
+            continue;
+          }
+        } else if (nameCandidates?.length === 1) {
+          // Single name match — use as fallback
+          existing = nameCandidates[0];
+        }
+      }
+
       const record: ImportedRecord = {
         qboCustomerId: parent.qboCustomerId,
         displayName: parent.displayName,
@@ -246,7 +393,7 @@ export class QboCustomerImportService {
       }
 
       if (!dryRun) {
-        const localId = await this.upsertCustomerCompany(parent, existing, mode);
+        const localId = await this.upsertCustomerCompany(parent, existing ? { id: existing.id, deletedAt: existing.deletedAt } : undefined, mode);
         record.localId = localId;
         parentQboToLocalId.set(parent.qboCustomerId, localId);
 
@@ -260,9 +407,86 @@ export class QboCustomerImportService {
       }
     }
 
-    // Step 5: Process children
+    // Step 5: Process children with name-based fallback matching + conflict detection
     for (const child of children) {
-      const existing = locationByQboId.get(child.qboCustomerId);
+      let existing = locationByQboId.get(child.qboCustomerId);
+
+      // Name-based fallback when no qboCustomerId match
+      if (!existing) {
+        const nameKey = (child.companyName || child.displayName).trim().toLowerCase();
+        const nameCandidates = locationByName.get(nameKey);
+
+        if (nameCandidates && nameCandidates.length > 1) {
+          // CONFLICT: multiple unlinked local locations with the same name
+          const conflict: ImportConflict = {
+            kind: "customer",
+            qbo: { id: child.qboCustomerId, name: child.displayName, email: child.email || null },
+            matchBasis: "NAME",
+            candidates: nameCandidates.map(l => ({
+              localId: l.id,
+              name: l.companyName,
+              email: l.email ?? null,
+              isActive: !l.inactive,
+              isLinked: !!l.qboCustomerId,
+              qboId: l.qboCustomerId ?? null,
+            })),
+            defaultAction: "SKIP",
+            message: `QBO sub-customer "${child.displayName}" matches ${nameCandidates.length} local locations by name.`,
+          };
+          result.conflicts.push(conflict);
+
+          const resolution = resolutions?.[child.qboCustomerId];
+          if (resolution?.action === "MAP" && resolution.localId) {
+            const target = nameCandidates.find(l => l.id === resolution.localId);
+            if (!target) {
+              const record: ImportedRecord = {
+                qboCustomerId: child.qboCustomerId, displayName: child.displayName, type: "child", action: "skip", parentQboId: child.parentQboId,
+              };
+              warnings.push(`Resolution for "${child.displayName}": localId not found among candidates`);
+              result.totals.skipped++;
+              if (result.sample.length < 10) result.sample.push(record);
+              continue;
+            }
+            // H1 staleness: re-fetch target when actually writing
+            if (!dryRun) {
+              const fresh = await this.fetchLocationForResolution(target.id);
+              if (!fresh || fresh.deletedAt || fresh.inactive === true) {
+                const record: ImportedRecord = {
+                  qboCustomerId: child.qboCustomerId, displayName: child.displayName, type: "child", action: "skip", parentQboId: child.parentQboId,
+                };
+                warnings.push(`Resolution for "${child.displayName}": selected local record is no longer eligible (deleted or inactive).`);
+                result.totals.skipped++;
+                if (result.sample.length < 10) result.sample.push(record);
+                continue;
+              }
+              if (fresh.qboCustomerId && fresh.qboCustomerId !== child.qboCustomerId) {
+                const record: ImportedRecord = {
+                  qboCustomerId: child.qboCustomerId, displayName: child.displayName, type: "child", action: "skip", parentQboId: child.parentQboId,
+                };
+                warnings.push(`Resolution for "${child.displayName}": local record now linked to QBO ${fresh.qboCustomerId}; cannot re-link.`);
+                result.totals.skipped++;
+                if (result.sample.length < 10) result.sample.push(record);
+                continue;
+              }
+            }
+            existing = target;
+          } else if (resolution?.action === "CREATE") {
+            // Fall through to create (existing stays undefined)
+          } else {
+            // No resolution or SKIP → skip
+            const record: ImportedRecord = {
+              qboCustomerId: child.qboCustomerId, displayName: child.displayName, type: "child", action: "conflict", parentQboId: child.parentQboId,
+            };
+            result.totals.conflicts++;
+            if (result.sample.length < 10) result.sample.push(record);
+            continue;
+          }
+        } else if (nameCandidates?.length === 1) {
+          // Single name match — use as fallback
+          existing = nameCandidates[0];
+        }
+      }
+
       const record: ImportedRecord = {
         qboCustomerId: child.qboCustomerId,
         displayName: child.displayName,
@@ -289,7 +513,7 @@ export class QboCustomerImportService {
           );
         }
 
-        const localId = await this.upsertClientLocation(child, existing, parentLocalId || null, mode);
+        const localId = await this.upsertClientLocation(child, existing ? { id: existing.id, deletedAt: existing.deletedAt } : undefined, parentLocalId || null, mode);
         record.localId = localId;
 
         if (record.action === "create") result.created.clientLocations++;
@@ -527,5 +751,29 @@ export class QboCustomerImportService {
       .values({ companyId: this.companyId, selectedMonths: [], ...fullData })
       .returning({ id: clientLocations.id });
     return inserted.id;
+  }
+
+  /**
+   * H1 staleness guard: re-fetch a customer_company by ID to verify eligibility for MAP resolution.
+   */
+  private async fetchCompanyForResolution(localId: string) {
+    const [row] = await db
+      .select({ id: customerCompanies.id, qboCustomerId: customerCompanies.qboCustomerId, isActive: customerCompanies.isActive, deletedAt: customerCompanies.deletedAt })
+      .from(customerCompanies)
+      .where(and(eq(customerCompanies.id, localId), eq(customerCompanies.companyId, this.companyId)))
+      .limit(1);
+    return row ?? null;
+  }
+
+  /**
+   * H1 staleness guard: re-fetch a client_location by ID to verify eligibility for MAP resolution.
+   */
+  private async fetchLocationForResolution(localId: string) {
+    const [row] = await db
+      .select({ id: clientLocations.id, qboCustomerId: clientLocations.qboCustomerId, inactive: clientLocations.inactive, deletedAt: clientLocations.deletedAt })
+      .from(clientLocations)
+      .where(and(eq(clientLocations.id, localId), eq(clientLocations.companyId, this.companyId)))
+      .limit(1);
+    return row ?? null;
   }
 }

@@ -585,9 +585,13 @@ router.get(
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
 
-    // Fetch company's QBO mapping config
+    // Fetch company's QBO mapping config + onboarding timestamps
     const [company] = await db
-      .select({ qboMappingConfig: companies.qboMappingConfig })
+      .select({
+        qboMappingConfig: companies.qboMappingConfig,
+        qboOnboardingCatalogImportedAt: companies.qboOnboardingCatalogImportedAt,
+        qboOnboardingCustomersImportedAt: companies.qboOnboardingCustomersImportedAt,
+      })
       .from(companies)
       .where(eq(companies.id, companyId))
       .limit(1);
@@ -655,6 +659,12 @@ router.get(
       invoices: invoiceCounts,
       recentFailures,
       mappingStatus,
+      // Onboarding state — indicates whether initial import has been completed
+      onboarding: {
+        catalogImportedAt: company?.qboOnboardingCatalogImportedAt ?? null,
+        customersImportedAt: company?.qboOnboardingCustomersImportedAt ?? null,
+        complete: Boolean(company?.qboOnboardingCatalogImportedAt && company?.qboOnboardingCustomersImportedAt),
+      },
     });
   })
 );
@@ -1940,6 +1950,9 @@ router.post(
       });
     }
 
+    // Parse optional conflict resolutions from request body (action must be MAP/CREATE/SKIP)
+    const resolutions = req.body?.resolutions as Record<string, { action: "MAP" | "CREATE" | "SKIP"; localId?: string }> | undefined;
+
     const tokens = await getQboTokensForCompany(companyId);
     if (!tokens) {
       return res.status(503).json({ success: false, error: "QBO integration not configured" });
@@ -1949,7 +1962,15 @@ router.post(
     const client = new QboClient({ clientId: process.env.QBO_CLIENT_ID!, clientSecret: process.env.QBO_CLIENT_SECRET!, environment }, tokens);
     const service = new QboCatalogImportService(client, companyId, userId);
 
-    const result = await service.importCatalog({ dryRun: false, mode });
+    const result = await service.importCatalog({ dryRun: false, mode, resolutions });
+
+    // Stamp onboarding timestamp on first successful catalog import (COALESCE preserves original)
+    if (result.totals.fetched > 0) {
+      await db.update(companies)
+        .set({ qboOnboardingCatalogImportedAt: sql`COALESCE(qbo_onboarding_catalog_imported_at, NOW())` })
+        .where(eq(companies.id, companyId));
+    }
+
     res.json(result);
   })
 );
@@ -2003,6 +2024,9 @@ router.post(
       });
     }
 
+    // Parse optional conflict resolutions from request body (action must be MAP/CREATE/SKIP)
+    const resolutions = req.body?.resolutions as Record<string, { action: "MAP" | "CREATE" | "SKIP"; localId?: string }> | undefined;
+
     const tokens = await getQboTokensForCompany(companyId);
     if (!tokens) {
       return res.status(503).json({ success: false, error: "QBO integration not configured" });
@@ -2012,7 +2036,15 @@ router.post(
     const client = new QboClient({ clientId: process.env.QBO_CLIENT_ID!, clientSecret: process.env.QBO_CLIENT_SECRET!, environment }, tokens);
     const service = new QboCustomerImportService(client, companyId, userId);
 
-    const result = await service.importCustomers({ dryRun: false, mode });
+    const result = await service.importCustomers({ dryRun: false, mode, resolutions });
+
+    // Stamp onboarding timestamp on first successful customer import (COALESCE preserves original)
+    if (result.totals.fetched > 0) {
+      await db.update(companies)
+        .set({ qboOnboardingCustomersImportedAt: sql`COALESCE(qbo_onboarding_customers_imported_at, NOW())` })
+        .where(eq(companies.id, companyId));
+    }
+
     res.json(result);
   })
 );

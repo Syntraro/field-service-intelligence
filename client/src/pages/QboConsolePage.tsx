@@ -69,6 +69,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 
 // ============================================================
 // TYPES
@@ -88,6 +89,11 @@ interface QboStatusResponse {
   invoices: Record<string, number>;
   recentFailures: QboSyncEvent[];
   mappingStatus: MappingConfigStatus;
+  onboarding: {
+    catalogImportedAt: string | null;
+    customersImportedAt: string | null;
+    complete: boolean;
+  };
 }
 
 interface QboSyncEvent {
@@ -291,6 +297,36 @@ interface DriftAlert {
 
 interface DriftAlertsResponse {
   alerts: DriftAlert[];
+}
+
+// Conflict resolution types for QBO imports
+interface ImportConflict {
+  kind: "catalog" | "customer";
+  qbo: {
+    id: string;
+    name: string;
+    sku?: string | null;
+    type?: string | null;
+    email?: string | null;
+  };
+  matchBasis: "SKU" | "NAME" | "EMAIL" | "QBO_ID";
+  candidates: Array<{
+    localId: string;
+    name: string;
+    sku?: string | null;
+    email?: string | null;
+    isActive?: boolean;
+    lastActivityAt?: string | null;
+    isLinked?: boolean;
+    qboId?: string | null;
+  }>;
+  defaultAction: "SKIP";
+  message: string;
+}
+
+interface ImportResolutionChoice {
+  action: "MAP" | "CREATE" | "SKIP";
+  localId?: string;
 }
 
 // QBO Item types
@@ -582,6 +618,10 @@ export default function QboConsolePage() {
   const [showCustomerWipeConfirm, setShowCustomerWipeConfirm] = useState(false);
   const [customerWipeConfirmText, setCustomerWipeConfirmText] = useState("");
 
+  // --- State: Conflict resolutions (keyed by QBO item/customer Id) ---
+  const [catalogResolutions, setCatalogResolutions] = useState<Record<string, ImportResolutionChoice>>({});
+  const [customerResolutions, setCustomerResolutions] = useState<Record<string, ImportResolutionChoice>>({});
+
   // ============================================================
   // QUERIES: DEFAULT (always loaded)
   // ============================================================
@@ -661,6 +701,7 @@ export default function QboConsolePage() {
   // QUERIES: ADVANCED (lazy-loaded only when section opened)
   // ============================================================
 
+  // Status fetched eagerly — lightweight endpoint, needed for onboarding state on Import Tools section
   const { data: status, isLoading: statusLoading, refetch: refetchStatus } = useQuery<QboStatusResponse>({
     queryKey: ["/api/qbo/status"],
     queryFn: async () => {
@@ -668,8 +709,11 @@ export default function QboConsolePage() {
       if (!response.ok) throw new Error("Failed to fetch QBO status");
       return response.json();
     },
-    enabled: advancedOpen,
+    enabled: true,
   });
+
+  // Derived: onboarding complete when both catalog and customer imports have run successfully
+  const onboardingComplete = status?.onboarding?.complete ?? false;
 
   const eventsQueryKey = ["/api/qbo/events", eventTypeFilter, resultFilter];
   const { data: eventsData, isLoading: eventsLoading, refetch: refetchEvents } = useQuery<QboEventsResponse>({
@@ -914,14 +958,19 @@ export default function QboConsolePage() {
     },
     onSuccess: (data) => {
       setCatalogImportResult(data);
-      toast({ title: "Catalog import preview", description: `${data.totals.fetched} QBO items, ${data.totals.matched} matched, ${data.totals.created} would create` });
+      setCatalogResolutions({}); // Reset resolutions on new preview
+      const conflictMsg = data.totals.conflicts > 0 ? `, ${data.totals.conflicts} conflicts` : "";
+      toast({ title: "Catalog import preview", description: `${data.totals.fetched} QBO items, ${data.totals.matched} matched, ${data.totals.created} would create${conflictMsg}` });
     },
     onError: (err: Error) => toast({ title: "Preview failed", description: err.message, variant: "destructive" }),
   });
 
   const catalogImportRunMutation = useMutation({
-    mutationFn: async ({ mode, confirmToken }: { mode: string; confirmToken?: string }) => {
-      const body = confirmToken ? JSON.stringify({ confirmToken }) : undefined;
+    mutationFn: async ({ mode, confirmToken, resolutions }: { mode: string; confirmToken?: string; resolutions?: Record<string, ImportResolutionChoice> }) => {
+      const bodyObj: Record<string, unknown> = {};
+      if (confirmToken) bodyObj.confirmToken = confirmToken;
+      if (resolutions && Object.keys(resolutions).length > 0) bodyObj.resolutions = resolutions;
+      const body = Object.keys(bodyObj).length > 0 ? JSON.stringify(bodyObj) : undefined;
       return apiRequest(`/api/qbo/catalog/import/run?mode=${mode}`, {
         method: "POST",
         ...(body ? { body, headers: { "Content-Type": "application/json" } } : {}),
@@ -931,6 +980,7 @@ export default function QboConsolePage() {
       setCatalogImportResult(data);
       toast({ title: "Catalog import complete", description: `Created ${data.totals.created}, updated ${data.totals.updated}, errors ${data.totals.errors}` });
       queryClient.invalidateQueries({ queryKey: ["/api/qbo/events"] });
+      refetchStatus(); // Update onboarding state after successful run
     },
     onError: (err: Error) => toast({ title: "Import failed", description: err.message, variant: "destructive" }),
   });
@@ -943,14 +993,19 @@ export default function QboConsolePage() {
     },
     onSuccess: (data) => {
       setCustomerImportAdvResult(data);
-      toast({ title: "Customer import preview", description: `${data.totals.fetched} QBO customers (${data.totals.parents} parents, ${data.totals.children} children)` });
+      setCustomerResolutions({}); // Reset resolutions on new preview
+      const conflictMsg = data.totals.conflicts > 0 ? `, ${data.totals.conflicts} conflicts` : "";
+      toast({ title: "Customer import preview", description: `${data.totals.fetched} QBO customers (${data.totals.parents} parents, ${data.totals.children} children)${conflictMsg}` });
     },
     onError: (err: Error) => toast({ title: "Preview failed", description: err.message, variant: "destructive" }),
   });
 
   const customerImportRunMutation = useMutation({
-    mutationFn: async ({ mode, confirmToken }: { mode: string; confirmToken?: string }) => {
-      const body = confirmToken ? JSON.stringify({ confirmToken }) : undefined;
+    mutationFn: async ({ mode, confirmToken, resolutions }: { mode: string; confirmToken?: string; resolutions?: Record<string, ImportResolutionChoice> }) => {
+      const bodyObj: Record<string, unknown> = {};
+      if (confirmToken) bodyObj.confirmToken = confirmToken;
+      if (resolutions && Object.keys(resolutions).length > 0) bodyObj.resolutions = resolutions;
+      const body = Object.keys(bodyObj).length > 0 ? JSON.stringify(bodyObj) : undefined;
       return apiRequest(`/api/qbo/customers/import/run?mode=${mode}`, {
         method: "POST",
         ...(body ? { body, headers: { "Content-Type": "application/json" } } : {}),
@@ -960,6 +1015,7 @@ export default function QboConsolePage() {
       setCustomerImportAdvResult(data);
       toast({ title: "Customer import complete", description: `Created ${data.created?.customerCompanies ?? 0} companies, ${data.created?.clientLocations ?? 0} locations` });
       queryClient.invalidateQueries({ queryKey: ["/api/qbo/events"] });
+      refetchStatus(); // Update onboarding state after successful run
     },
     onError: (err: Error) => toast({ title: "Import failed", description: err.message, variant: "destructive" }),
   });
@@ -2263,24 +2319,46 @@ export default function QboConsolePage() {
           {/* ============================================================ */}
           <Card>
             <CardHeader className="pb-2">
+              {/* Onboarding status badge */}
+              {status && (
+                <div className="mb-2">
+                  {onboardingComplete ? (
+                    <Badge variant="secondary" className="bg-blue-50 text-blue-700 border-blue-200">
+                      <CheckCircle className="h-3 w-3 mr-1" /> Onboarding Complete
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="border-green-400 text-green-700">
+                      Onboarding In Progress
+                    </Badge>
+                  )}
+                </div>
+              )}
               <Collapsible open={importToolsOpen} onOpenChange={setImportToolsOpen}>
                 <CollapsibleTrigger asChild>
                   <Button variant="ghost" className="w-full justify-between px-0 text-left">
                     <div>
                       <CardTitle className="text-base flex items-center gap-2">
                         <Download className="h-4 w-4" />
-                        Import Tools (QBO → Local)
+                        Import Tools (QBO → Local){onboardingComplete ? " — Reconciliation" : ""}
+                        {onboardingComplete && <Badge variant="outline" className="ml-1 border-amber-300 text-amber-700 text-[10px]">Advanced</Badge>}
                       </CardTitle>
-                      <CardDescription className="mt-1 font-normal">Pull data from QuickBooks into your local catalog and customer database.</CardDescription>
+                      <CardDescription className="mt-1 font-normal">
+                        {onboardingComplete
+                          ? "Your app is now the source of truth. Use reconciliation only if you need to resolve drift."
+                          : "Pull data from QuickBooks into your local catalog and customer database."}
+                      </CardDescription>
                     </div>
                     {importToolsOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
                   </Button>
                 </CollapsibleTrigger>
-                <CollapsibleContent className="pt-4 space-y-6">
+                <CollapsibleContent className={`pt-4 space-y-6${onboardingComplete ? " border border-amber-200 rounded-md p-4 mt-2" : ""}`}>
 
-                  {/* --- Import Catalog from QuickBooks --- */}
+                  {/* --- Import Catalog from QuickBooks / Catalog Reconciliation --- */}
                   <div className="space-y-3 border rounded-md p-4">
-                    <h4 className="text-sm font-semibold flex items-center gap-2"><Package className="h-4 w-4" /> Import Catalog from QuickBooks</h4>
+                    <h4 className="text-sm font-semibold flex items-center gap-2">
+                      <Package className="h-4 w-4" />
+                      {onboardingComplete ? "Catalog Reconciliation (Advanced)" : "Import Catalog from QuickBooks"}
+                    </h4>
                     <div className="flex items-center gap-3">
                       <Label className="text-xs whitespace-nowrap">Mode:</Label>
                       <Select value={catalogImportMode} onValueChange={(v: any) => setCatalogImportMode(v)}>
@@ -2303,7 +2381,7 @@ export default function QboConsolePage() {
                         variant={catalogImportMode === "wipe" ? "destructive" : "default"}
                         onClick={() => {
                           if (catalogImportMode === "wipe") { setCatalogWipeConfirmText(""); setShowCatalogWipeConfirm(true); }
-                          else catalogImportRunMutation.mutate({ mode: catalogImportMode });
+                          else catalogImportRunMutation.mutate({ mode: catalogImportMode, resolutions: Object.keys(catalogResolutions).length > 0 ? catalogResolutions : undefined });
                         }}
                         disabled={catalogImportPreviewMutation.isPending || catalogImportRunMutation.isPending}>
                         {catalogImportRunMutation.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Download className="h-4 w-4 mr-1" />}
@@ -2318,6 +2396,7 @@ export default function QboConsolePage() {
                           <AlertTitle>{catalogImportResult.dryRun ? "Preview" : "Import"} Results ({catalogImportResult.mode})</AlertTitle>
                           <AlertDescription>
                             Fetched: {catalogImportResult.totals.fetched} | Matched: {catalogImportResult.totals.matched} | Created: {catalogImportResult.totals.created} | Updated: {catalogImportResult.totals.updated} | Skipped: {catalogImportResult.totals.skipped} | Wiped: {catalogImportResult.totals.wiped} | Errors: {catalogImportResult.totals.errors}
+                            {(catalogImportResult.totals.conflicts > 0) && <> | <span className="text-amber-600 font-semibold">Conflicts: {catalogImportResult.totals.conflicts}</span></>}
                           </AlertDescription>
                         </Alert>
                         {catalogImportResult.sample?.length > 0 && (
@@ -2357,13 +2436,72 @@ export default function QboConsolePage() {
                             </AlertDescription>
                           </Alert>
                         )}
+                        {/* Conflict resolution panel for catalog */}
+                        {catalogImportResult.conflicts?.length > 0 && (
+                          <div className="border border-amber-300 bg-amber-50 dark:bg-amber-950/20 rounded-md p-3 space-y-3">
+                            <h5 className="text-xs font-semibold text-amber-700 dark:text-amber-400 flex items-center gap-1">
+                              <AlertTriangle className="h-3 w-3" /> Resolve Conflicts ({catalogImportResult.conflicts.length})
+                            </h5>
+                            {(() => {
+                              const unresolvedCount = catalogImportResult.conflicts.filter((c: ImportConflict) => !catalogResolutions[c.qbo.id]).length;
+                              return unresolvedCount > 0 ? (
+                                <p className="text-[10px] text-amber-600">{unresolvedCount} unresolved conflict{unresolvedCount > 1 ? "s" : ""} will be skipped on import.</p>
+                              ) : null;
+                            })()}
+                            {catalogImportResult.conflicts.map((conflict: ImportConflict, ci: number) => (
+                              <div key={ci} className="border rounded p-2 bg-white dark:bg-gray-900 space-y-1">
+                                <div className="flex items-center gap-2 text-xs">
+                                  <span className="font-medium">{conflict.qbo.name}</span>
+                                  {conflict.qbo.sku && <Badge variant="outline" className="text-[10px]">SKU: {conflict.qbo.sku}</Badge>}
+                                  <Badge variant="secondary" className="text-[10px]">{conflict.matchBasis}</Badge>
+                                  <span className="text-muted-foreground text-[10px]">QBO {conflict.qbo.id}</span>
+                                </div>
+                                <p className="text-[10px] text-muted-foreground">{conflict.message}</p>
+                                <RadioGroup
+                                  value={catalogResolutions[conflict.qbo.id]
+                                    ? (catalogResolutions[conflict.qbo.id].action === "MAP" ? `map:${catalogResolutions[conflict.qbo.id].localId}` : catalogResolutions[conflict.qbo.id].action)
+                                    : "SKIP"}
+                                  onValueChange={(val) => {
+                                    const updated = { ...catalogResolutions };
+                                    if (val === "CREATE") updated[conflict.qbo.id] = { action: "CREATE" };
+                                    else if (val === "SKIP") updated[conflict.qbo.id] = { action: "SKIP" };
+                                    else if (val.startsWith("map:")) updated[conflict.qbo.id] = { action: "MAP", localId: val.slice(4) };
+                                    setCatalogResolutions(updated);
+                                  }}
+                                  className="space-y-1"
+                                >
+                                  {conflict.candidates.map((c) => (
+                                    <div key={c.localId} className="flex items-center gap-2 text-[11px]">
+                                      <RadioGroupItem value={`map:${c.localId}`} id={`cat-${conflict.qbo.id}-${c.localId}`} />
+                                      <Label htmlFor={`cat-${conflict.qbo.id}-${c.localId}`} className="text-[11px] font-normal cursor-pointer">
+                                        Map to: {c.name} {c.sku ? `(${c.sku})` : ""}
+                                        {c.isLinked && <Badge variant="outline" className="ml-1 text-[9px]">linked to QBO {c.qboId}</Badge>}
+                                      </Label>
+                                    </div>
+                                  ))}
+                                  <div className="flex items-center gap-2 text-[11px]">
+                                    <RadioGroupItem value="CREATE" id={`cat-${conflict.qbo.id}-create`} />
+                                    <Label htmlFor={`cat-${conflict.qbo.id}-create`} className="text-[11px] font-normal cursor-pointer">Create new</Label>
+                                  </div>
+                                  <div className="flex items-center gap-2 text-[11px]">
+                                    <RadioGroupItem value="SKIP" id={`cat-${conflict.qbo.id}-skip`} />
+                                    <Label htmlFor={`cat-${conflict.qbo.id}-skip`} className="text-[11px] font-normal cursor-pointer">Skip (don't import)</Label>
+                                  </div>
+                                </RadioGroup>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
 
-                  {/* --- Import Customers from QuickBooks --- */}
+                  {/* --- Import Customers from QuickBooks / Customer Reconciliation --- */}
                   <div className="space-y-3 border rounded-md p-4">
-                    <h4 className="text-sm font-semibold flex items-center gap-2"><Users className="h-4 w-4" /> Import Customers from QuickBooks</h4>
+                    <h4 className="text-sm font-semibold flex items-center gap-2">
+                      <Users className="h-4 w-4" />
+                      {onboardingComplete ? "Customer Reconciliation (Advanced)" : "Import Customers from QuickBooks"}
+                    </h4>
                     <div className="flex items-center gap-3">
                       <Label className="text-xs whitespace-nowrap">Mode:</Label>
                       <Select value={customerImportAdvMode} onValueChange={(v: any) => setCustomerImportAdvMode(v)}>
@@ -2386,7 +2524,7 @@ export default function QboConsolePage() {
                         variant={customerImportAdvMode === "wipe" ? "destructive" : "default"}
                         onClick={() => {
                           if (customerImportAdvMode === "wipe") { setCustomerWipeConfirmText(""); setShowCustomerWipeConfirm(true); }
-                          else customerImportRunMutation.mutate({ mode: customerImportAdvMode });
+                          else customerImportRunMutation.mutate({ mode: customerImportAdvMode, resolutions: Object.keys(customerResolutions).length > 0 ? customerResolutions : undefined });
                         }}
                         disabled={customerImportPreviewMutation.isPending || customerImportRunMutation.isPending}>
                         {customerImportRunMutation.isPending ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Download className="h-4 w-4 mr-1" />}
@@ -2406,6 +2544,7 @@ export default function QboConsolePage() {
                             ) : (
                               <> | Created: {customerImportAdvResult.created?.customerCompanies ?? 0} companies, {customerImportAdvResult.created?.clientLocations ?? 0} locations | Updated: {customerImportAdvResult.updated?.customerCompanies ?? 0} companies, {customerImportAdvResult.updated?.clientLocations ?? 0} locations</>
                             )}
+                            {(customerImportAdvResult.totals.conflicts > 0) && <> | <span className="text-amber-600 font-semibold">Conflicts: {customerImportAdvResult.totals.conflicts}</span></>}
                           </AlertDescription>
                         </Alert>
                         {customerImportAdvResult.sample?.length > 0 && (
@@ -2442,6 +2581,63 @@ export default function QboConsolePage() {
                               </ul>
                             </AlertDescription>
                           </Alert>
+                        )}
+                        {/* Conflict resolution panel for customers */}
+                        {customerImportAdvResult.conflicts?.length > 0 && (
+                          <div className="border border-amber-300 bg-amber-50 dark:bg-amber-950/20 rounded-md p-3 space-y-3">
+                            <h5 className="text-xs font-semibold text-amber-700 dark:text-amber-400 flex items-center gap-1">
+                              <AlertTriangle className="h-3 w-3" /> Resolve Conflicts ({customerImportAdvResult.conflicts.length})
+                            </h5>
+                            {(() => {
+                              const unresolvedCount = customerImportAdvResult.conflicts.filter((c: ImportConflict) => !customerResolutions[c.qbo.id]).length;
+                              return unresolvedCount > 0 ? (
+                                <p className="text-[10px] text-amber-600">{unresolvedCount} unresolved conflict{unresolvedCount > 1 ? "s" : ""} will be skipped on import.</p>
+                              ) : null;
+                            })()}
+                            {customerImportAdvResult.conflicts.map((conflict: ImportConflict, ci: number) => (
+                              <div key={ci} className="border rounded p-2 bg-white dark:bg-gray-900 space-y-1">
+                                <div className="flex items-center gap-2 text-xs">
+                                  <span className="font-medium">{conflict.qbo.name}</span>
+                                  {conflict.qbo.email && <Badge variant="outline" className="text-[10px]">{conflict.qbo.email}</Badge>}
+                                  <Badge variant="secondary" className="text-[10px]">{conflict.matchBasis}</Badge>
+                                  <span className="text-muted-foreground text-[10px]">QBO {conflict.qbo.id}</span>
+                                </div>
+                                <p className="text-[10px] text-muted-foreground">{conflict.message}</p>
+                                <RadioGroup
+                                  value={customerResolutions[conflict.qbo.id]
+                                    ? (customerResolutions[conflict.qbo.id].action === "MAP" ? `map:${customerResolutions[conflict.qbo.id].localId}` : customerResolutions[conflict.qbo.id].action)
+                                    : "SKIP"}
+                                  onValueChange={(val) => {
+                                    const updated = { ...customerResolutions };
+                                    if (val === "CREATE") updated[conflict.qbo.id] = { action: "CREATE" };
+                                    else if (val === "SKIP") updated[conflict.qbo.id] = { action: "SKIP" };
+                                    else if (val.startsWith("map:")) updated[conflict.qbo.id] = { action: "MAP", localId: val.slice(4) };
+                                    setCustomerResolutions(updated);
+                                  }}
+                                  className="space-y-1"
+                                >
+                                  {conflict.candidates.map((c) => (
+                                    <div key={c.localId} className="flex items-center gap-2 text-[11px]">
+                                      <RadioGroupItem value={`map:${c.localId}`} id={`cust-${conflict.qbo.id}-${c.localId}`} />
+                                      <Label htmlFor={`cust-${conflict.qbo.id}-${c.localId}`} className="text-[11px] font-normal cursor-pointer">
+                                        Map to: {c.name} {c.email ? `(${c.email})` : ""}
+                                        {c.isLinked && <Badge variant="outline" className="ml-1 text-[9px]">linked to QBO {c.qboId}</Badge>}
+                                        {c.isActive === false && <Badge variant="secondary" className="ml-1 text-[9px]">inactive</Badge>}
+                                      </Label>
+                                    </div>
+                                  ))}
+                                  <div className="flex items-center gap-2 text-[11px]">
+                                    <RadioGroupItem value="CREATE" id={`cust-${conflict.qbo.id}-create`} />
+                                    <Label htmlFor={`cust-${conflict.qbo.id}-create`} className="text-[11px] font-normal cursor-pointer">Create new</Label>
+                                  </div>
+                                  <div className="flex items-center gap-2 text-[11px]">
+                                    <RadioGroupItem value="SKIP" id={`cust-${conflict.qbo.id}-skip`} />
+                                    <Label htmlFor={`cust-${conflict.qbo.id}-skip`} className="text-[11px] font-normal cursor-pointer">Skip (don't import)</Label>
+                                  </div>
+                                </RadioGroup>
+                              </div>
+                            ))}
+                          </div>
                         )}
                       </div>
                     )}
@@ -3288,11 +3484,22 @@ export default function QboConsolePage() {
       <AlertDialog open={showCatalogWipeConfirm} onOpenChange={(open) => { setShowCatalogWipeConfirm(open); if (!open) setCatalogWipeConfirmText(""); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-destructive">Wipe & Re-import Catalog?</AlertDialogTitle>
+            <AlertDialogTitle className="text-destructive">
+              {onboardingComplete ? "Wipe & Reconcile Catalog?" : "Wipe & Re-import Catalog?"}
+            </AlertDialogTitle>
             <AlertDialogDescription asChild>
               <div className="space-y-3">
-                <p>This will <strong>soft-delete all QBO-linked catalog items</strong> and then re-import everything from QuickBooks as fresh records.</p>
-                <p className="text-destructive font-medium">This action cannot be easily undone.</p>
+                {onboardingComplete ? (
+                  <>
+                    <p>Onboarding is complete — your app is the source of truth. This will <strong>wipe all QBO-linked catalog items</strong> and re-import from QuickBooks, overriding any local edits made since onboarding.</p>
+                    <p className="text-destructive font-medium">Only use this to resolve drift between your app and QuickBooks. This cannot be easily undone.</p>
+                  </>
+                ) : (
+                  <>
+                    <p>This will <strong>soft-delete all QBO-linked catalog items</strong> and then re-import everything from QuickBooks as fresh records.</p>
+                    <p className="text-destructive font-medium">This action cannot be easily undone.</p>
+                  </>
+                )}
                 <div>
                   <Label htmlFor="catalogWipeInput">Type <strong>WIPE</strong> to confirm:</Label>
                   <Input id="catalogWipeInput" value={catalogWipeConfirmText} onChange={(e) => setCatalogWipeConfirmText(e.target.value)} placeholder="WIPE" autoComplete="off" className="mt-1" />
@@ -3305,7 +3512,7 @@ export default function QboConsolePage() {
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={catalogWipeConfirmText !== "WIPE" || catalogImportRunMutation.isPending}
-              onClick={() => { setShowCatalogWipeConfirm(false); setCatalogWipeConfirmText(""); catalogImportRunMutation.mutate({ mode: "wipe", confirmToken: "WIPE" }); }}
+              onClick={() => { setShowCatalogWipeConfirm(false); setCatalogWipeConfirmText(""); catalogImportRunMutation.mutate({ mode: "wipe", confirmToken: "WIPE", resolutions: Object.keys(catalogResolutions).length > 0 ? catalogResolutions : undefined }); }}
             >
               {catalogImportRunMutation.isPending ? "Wiping..." : "Wipe & Re-import"}
             </AlertDialogAction>
@@ -3317,11 +3524,22 @@ export default function QboConsolePage() {
       <AlertDialog open={showCustomerWipeConfirm} onOpenChange={(open) => { setShowCustomerWipeConfirm(open); if (!open) setCustomerWipeConfirmText(""); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-destructive">Wipe & Re-import Customers?</AlertDialogTitle>
+            <AlertDialogTitle className="text-destructive">
+              {onboardingComplete ? "Wipe & Reconcile Customers?" : "Wipe & Re-import Customers?"}
+            </AlertDialogTitle>
             <AlertDialogDescription asChild>
               <div className="space-y-3">
-                <p>This will <strong>soft-delete all QBO-linked customer companies and locations</strong> and then re-import everything from QuickBooks as fresh records.</p>
-                <p className="text-destructive font-medium">This action cannot be easily undone.</p>
+                {onboardingComplete ? (
+                  <>
+                    <p>Onboarding is complete — your app is the source of truth. This will <strong>wipe all QBO-linked customer companies and locations</strong> and re-import from QuickBooks, overriding any local edits made since onboarding.</p>
+                    <p className="text-destructive font-medium">Only use this to resolve drift between your app and QuickBooks. This cannot be easily undone.</p>
+                  </>
+                ) : (
+                  <>
+                    <p>This will <strong>soft-delete all QBO-linked customer companies and locations</strong> and then re-import everything from QuickBooks as fresh records.</p>
+                    <p className="text-destructive font-medium">This action cannot be easily undone.</p>
+                  </>
+                )}
                 <div>
                   <Label htmlFor="customerWipeInput">Type <strong>WIPE</strong> to confirm:</Label>
                   <Input id="customerWipeInput" value={customerWipeConfirmText} onChange={(e) => setCustomerWipeConfirmText(e.target.value)} placeholder="WIPE" autoComplete="off" className="mt-1" />
@@ -3334,7 +3552,7 @@ export default function QboConsolePage() {
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               disabled={customerWipeConfirmText !== "WIPE" || customerImportRunMutation.isPending}
-              onClick={() => { setShowCustomerWipeConfirm(false); setCustomerWipeConfirmText(""); customerImportRunMutation.mutate({ mode: "wipe", confirmToken: "WIPE" }); }}
+              onClick={() => { setShowCustomerWipeConfirm(false); setCustomerWipeConfirmText(""); customerImportRunMutation.mutate({ mode: "wipe", confirmToken: "WIPE", resolutions: Object.keys(customerResolutions).length > 0 ? customerResolutions : undefined }); }}
             >
               {customerImportRunMutation.isPending ? "Wiping..." : "Wipe & Re-import"}
             </AlertDialogAction>

@@ -32,6 +32,9 @@ export const companies = pgTable("companies", {
   qboEnabled: boolean("qbo_enabled").notNull().default(false),
   qboEnvironment: text("qbo_environment").notNull().default("sandbox"), // "sandbox" | "production"
   qboRealmId: text("qbo_realm_id"), // QBO company ID for webhook mapping
+  // QBO onboarding — set once on first successful import run (fetched > 0)
+  qboOnboardingCatalogImportedAt: timestamp("qbo_onboarding_catalog_imported_at"),
+  qboOnboardingCustomersImportedAt: timestamp("qbo_onboarding_customers_imported_at"),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
