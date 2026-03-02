@@ -113,11 +113,20 @@ export function JobTemplateModal({ open, onClose, template }: JobTemplateModalPr
     queryFn: async () => {
       const res = await fetch("/api/items?limit=200", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch catalog");
-      return res.json();
+      const json = await res.json();
+      // Unwrap paginated response: backend returns { data: [...] } when ?limit is explicit
+      return Array.isArray(json) ? json : Array.isArray(json?.data) ? json.data : [];
     },
     enabled: open,
   });
-  const catalogParts = catalogData?.filter((p) => p.isActive !== false) || [];
+  // Defensive: normalize in case TanStack Query cache holds a wrapped response from a shared queryKey
+  const rawCatalog: Item[] = Array.isArray(catalogData) ? catalogData
+    : Array.isArray((catalogData as any)?.data) ? (catalogData as any).data
+    : [];
+  if (rawCatalog.length === 0 && catalogData && process.env.NODE_ENV !== "production") {
+    console.warn("[JobTemplateModal] catalogData was not an array:", typeof catalogData);
+  }
+  const catalogParts = rawCatalog.filter((p: Item) => p?.isActive !== false);
 
   const { data: templateDetails, isLoading: isLoadingDetails } = useQuery<
     JobTemplate & { lines: any[] }

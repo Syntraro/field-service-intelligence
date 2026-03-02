@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### JobTemplateModal crash: `catalogData?.filter is not a function` (2026-03-02)
+- **Root cause**: `/api/items?limit=200` returns `{ data: [...], meta: {...} }` (paginated wrapper) when `?limit` is explicit, but the component typed the response as `Item[]` and called `.filter()` on the object.
+- **Fix**: Unwrap the paginated response in `queryFn` (`json.data` fallback) and added a defensive normalization guard before `.filter()` to handle TanStack Query cache sharing with other components.
+- **Files**: `client/src/components/JobTemplateModal.tsx` (lines 111-126)
+
 #### Client Quotes tab "No quotes yet" — null customerCompanyId (2026-03-02)
 - **Root cause**: Quote creation fell back to `location.parentCompanyId` which is nullable. For unlinked/legacy locations this was NULL, so quotes were stored with `customerCompanyId = NULL`. The Client detail page queries by a non-null `customerCompanyId`, returning 0 results.
 - **Fix — quote creation**: `POST /api/quotes` now uses `resolveCustomerCompanyForLocation()` which finds-or-creates the parent customer company and links the location, guaranteeing `customerCompanyId` is always set.
