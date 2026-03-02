@@ -1858,7 +1858,7 @@ export default function QboConsolePage() {
                             <SelectContent>
                               {mappingTaxCodes.map((tc) => (
                                 <SelectItem key={tc.id} value={tc.id} className="text-xs">
-                                  {tc.name} <span className="text-muted-foreground ml-1 text-[10px]">({tc.id})</span>
+                                  {tc.name}
                                 </SelectItem>
                               ))}
                             </SelectContent>
@@ -1900,7 +1900,7 @@ export default function QboConsolePage() {
                       <SelectContent>
                         {incomeAccounts.map((account) => (
                           <SelectItem key={account.id} value={account.id} className="text-xs">
-                            {account.name} <span className="text-muted-foreground ml-1 text-[10px]">({account.id})</span>
+                            {account.name}
                           </SelectItem>
                         ))}
                       </SelectContent>

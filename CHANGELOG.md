@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### QBO Mapping Config — Remove internal IDs from dropdown labels (2026-03-02)
+- **UI**: Removed QBO internal ID suffixes (e.g., `(52)`, `(123)`) from income account and tax code dropdown option labels in Step 2 mapping config. Values still store QBO IDs internally; only display labels changed.
+- **Files**: `client/src/pages/QboConsolePage.tsx`
+
 #### QBO Item Type Mapping + Bundle Handling + Income Account Mapping (2026-03-02)
 - **Schema**: Added `defaultIncomeAccountId` to `qboMappingConfigSchema` in `shared/schema.ts`. Stores the QBO Account ID used for `IncomeAccountRef` on Service/NonInventory items.
 - **Server — Bundle skip**: `QboCatalogImportService` now explicitly tracks Bundle items as `action=SKIP` with reason "Bundle not supported" in import preview/run. Previously bundles were silently filtered. Bundles appear in the sample and are counted under `totals.skipped`.
