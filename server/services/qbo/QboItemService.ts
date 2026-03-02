@@ -158,6 +158,9 @@ function parseQBOItem(item: QBOItemResponse): ParsedQBOItem {
  * UnitPrice, Type, Active, Taxable, IncomeAccountRef.
  * Inventory-only fields (TrackQtyOnHand, QtyOnHand, InvStartDate,
  * AssetAccountRef) are stripped to avoid QBO rejection.
+ *
+ * IncomeAccountRef is set from mappingConfig.defaultIncomeAccountId.
+ * Throws if missing — callers must validate before calling.
  */
 function mapLocalItemToQBO(item: Item, forUpdate: boolean = false, mappingConfig?: QboMappingConfig | null): Record<string, unknown> {
   // Resolve QBO Item.Type from mapping config, with sensible defaults
@@ -200,12 +203,14 @@ function mapLocalItemToQBO(item: Item, forUpdate: boolean = false, mappingConfig
     payload.Taxable = item.isTaxable;
   }
 
-  // IncomeAccountRef required for Service/NonInventory on both create and update
+  // IncomeAccountRef required for Service/NonInventory on both create and update.
+  // Uses defaultIncomeAccountId from mapping config; throws if missing.
   if (qboType === "Service" || qboType === "NonInventory") {
-    payload.IncomeAccountRef = {
-      value: "1", // Default — should be configured per company in production
-      name: "Services",
-    };
+    const incomeAccountId = mappingConfig?.defaultIncomeAccountId;
+    if (!incomeAccountId) {
+      throw new Error("MAPPING_MISSING_INCOME_ACCOUNT: Select a default income account in QBO Mapping Config.");
+    }
+    payload.IncomeAccountRef = { value: incomeAccountId };
   }
 
   // Strip inventory-only fields for NonInventory and Service items
@@ -346,8 +351,16 @@ export class QboItemService {
         };
       }
 
-      // Map to QBO payload
-      const payload = mapLocalItemToQBO(localItem);
+      // Fetch mapping config for IncomeAccountRef resolution
+      const [company] = await db
+        .select({ qboMappingConfig: companies.qboMappingConfig })
+        .from(companies)
+        .where(eq(companies.id, this.companyId))
+        .limit(1);
+      const mappingConfig = parseQboMappingConfig(company?.qboMappingConfig);
+
+      // Map to QBO payload (throws if income account not configured)
+      const payload = mapLocalItemToQBO(localItem, false, mappingConfig);
 
       // Temporary diagnostic: log exact payload sent to QBO (no tokens/secrets)
       // Temporary: write payload to file for debugging (console.log goes to attached terminal)
@@ -417,6 +430,8 @@ export class QboItemService {
       };
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Unknown error";
+      // Extract error code from "CODE: message" pattern if present
+      const errorCode = errorMessage.startsWith("MAPPING_MISSING_INCOME_ACCOUNT") ? "MAPPING_MISSING_INCOME_ACCOUNT" : undefined;
 
       // Update local item with error
       await db
@@ -433,12 +448,14 @@ export class QboItemService {
         result: "FAILURE",
         itemId,
         errorMessage,
+        errorCode,
         durationMs: Date.now() - startTime,
       });
 
       return {
         success: false,
         error: errorMessage,
+        errorCode,
       };
     }
   }
@@ -560,6 +577,18 @@ export class QboItemService {
         .where(eq(companies.id, this.companyId))
         .limit(1);
       const mappingConfig = parseQboMappingConfig(company?.qboMappingConfig);
+
+      // Fail fast if income account not configured — every item would fail
+      if (!mappingConfig?.defaultIncomeAccountId) {
+        return {
+          success: false,
+          dryRun,
+          totals,
+          sample,
+          errors: [],
+          error: "MAPPING_MISSING_INCOME_ACCOUNT: Select a default income account in QBO Mapping Config.",
+        };
+      }
 
       // Fetch all active, non-deleted items for this company
       const localItems = await db

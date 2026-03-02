@@ -147,10 +147,25 @@ export class QboCatalogImportService {
       return result;
     }
 
-    // Filter to importable types only
-    const importable = qboItems.filter(i => IMPORTABLE_TYPES.has(i.Type));
-    if (importable.length < qboItems.length) {
-      warnings.push(`Skipped ${qboItems.length - importable.length} items with unsupported types (e.g., Group, Bundle).`);
+    // Separate importable items from unsupported types (Bundle, Group, etc.)
+    const importable: QBOItemResponse[] = [];
+    const bundleItems: QBOItemResponse[] = [];
+    const otherSkipped: QBOItemResponse[] = [];
+    for (const item of qboItems) {
+      if (IMPORTABLE_TYPES.has(item.Type)) {
+        importable.push(item);
+      } else if (item.Type === "Bundle") {
+        bundleItems.push(item);
+      } else {
+        otherSkipped.push(item);
+      }
+    }
+
+    if (otherSkipped.length > 0) {
+      warnings.push(`Skipped ${otherSkipped.length} items with unsupported types (e.g., Group).`);
+    }
+    if (bundleItems.length > 0) {
+      warnings.push(`Skipped ${bundleItems.length} Bundle item(s) — Bundles are not supported.`);
     }
     result.totals.fetched = importable.length;
 
@@ -170,6 +185,19 @@ export class QboCatalogImportService {
     // Collect non-skip items first in sample, then fill with skips up to 25
     const nonSkipSamples: CatalogImportItemSummary[] = [];
     const skipSamples: CatalogImportItemSummary[] = [];
+
+    // Track skipped Bundle items in totals and sample
+    for (const bundle of bundleItems) {
+      result.totals.skipped++;
+      skipSamples.push({
+        name: bundle.Name,
+        sku: bundle.Sku || null,
+        type: bundle.Type,
+        action: "SKIP",
+        qboItemId: bundle.Id,
+        error: "Bundle not supported",
+      });
+    }
 
     for (const qboItem of importable) {
       const summary: CatalogImportItemSummary = {

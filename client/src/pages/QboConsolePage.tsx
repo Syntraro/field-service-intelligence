@@ -124,6 +124,8 @@ interface QboMappingConfig {
   // Tax codes (optional)
   taxableCodeId?: string;
   nonTaxableCodeId?: string;
+  // Default income account for Service/NonInventory items synced to QBO
+  defaultIncomeAccountId?: string;
   // Legacy fields (kept for backwards compat with saved configs)
   serviceItemId?: string;
   productItemId?: string;
@@ -704,6 +706,18 @@ export default function QboConsolePage() {
   });
   const mappingTaxCodes = taxCodesResponse?.taxCodes ?? [];
   const taxCodesHint = taxCodesResponse?.hint;
+
+  // QBO income accounts — for Step 2 income account dropdown
+  const { data: accountsResponse, isLoading: accountsLoading } = useQuery<{ accounts: Array<{ id: string; name: string; accountType: string; accountSubType: string | null }> }>({
+    queryKey: ["/api/qbo/accounts"],
+    queryFn: async () => {
+      const response = await fetch("/api/qbo/accounts", { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to fetch accounts");
+      return response.json();
+    },
+    enabled: connectionStatus?.connected === true,
+  });
+  const incomeAccounts = accountsResponse?.accounts ?? [];
 
   // Import preflight — needed for Step 4 (import gate)
   const { data: importPreflight, isLoading: importPreflightLoading, refetch: refetchImportPreflight } = useQuery<ImportPreflightResult>({
@@ -1860,10 +1874,57 @@ export default function QboConsolePage() {
                   </div>
                 )}
               </div>
+              {/* Income account mapping — required for catalog sync */}
+              <div className="space-y-3">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Income Account (required)</p>
+                {accountsLoading ? (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading QBO accounts...
+                  </div>
+                ) : !incomeAccounts.length ? (
+                  <p className="text-xs text-amber-600">
+                    No income accounts found in QBO. Ensure your Chart of Accounts has at least one Income account.
+                  </p>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <Label className="w-28 text-xs text-right shrink-0">Default income account</Label>
+                    <Select
+                      value={mappingConfig.defaultIncomeAccountId || ""}
+                      onValueChange={(val) => setMappingConfig(prev => ({ ...prev, defaultIncomeAccountId: val }))}
+                    >
+                      <SelectTrigger className="h-8 text-xs">
+                        {mappingConfig.defaultIncomeAccountId
+                          ? <span className="truncate">{incomeAccounts.find(a => a.id === mappingConfig.defaultIncomeAccountId)?.name || "(Unknown account)"}</span>
+                          : <SelectValue placeholder="Select income account" />}
+                      </SelectTrigger>
+                      <SelectContent>
+                        {incomeAccounts.map((account) => (
+                          <SelectItem key={account.id} value={account.id} className="text-xs">
+                            {account.name} <span className="text-muted-foreground ml-1 text-[10px]">({account.id})</span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {mappingConfig.defaultIncomeAccountId ? (
+                      <CheckCircle className="h-3.5 w-3.5 text-green-500 shrink-0" />
+                    ) : (
+                      <div className="h-3.5 w-3.5 shrink-0" />
+                    )}
+                  </div>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  QBO requires an income account when creating Service or Non-inventory items. Select the account to use.
+                </p>
+              </div>
               {/* Missing mapping warning */}
               {mappingConfigData?.status && !mappingConfigData.status.configured && (
                 <p className="text-xs text-amber-600">
                   Required: select a product QBO type above to enable catalog sync.
+                </p>
+              )}
+              {!mappingConfig.defaultIncomeAccountId && mappingConfigData?.status?.configured && (
+                <p className="text-xs text-amber-600">
+                  Required: select a default income account above to enable catalog sync.
                 </p>
               )}
               <Button

@@ -2272,6 +2272,45 @@ router.get(
 );
 
 /**
+ * GET /api/qbo/accounts
+ * Returns { accounts: [{ id, name, accountType, accountSubType }] }.
+ * Fetches Income-type accounts from QBO for IncomeAccountRef mapping.
+ * Filters to AccountType = "Income" and sorts alphabetically by name.
+ */
+router.get(
+  "/accounts",
+  requireRole(ADMIN_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { client, error, persistIfRefreshed } = await createTenantQboClient(req.companyId);
+    if (!client) return res.status(400).json({ error });
+
+    const qboQuery = "SELECT Id, Name, AccountType, AccountSubType FROM Account WHERE AccountType = 'Income' STARTPOSITION 1 MAXRESULTS 200";
+    const result = await client.get<{ QueryResponse: { Account?: Array<{ Id: string; Name: string; AccountType: string; AccountSubType?: string }> } }>(
+      `/query?query=${encodeURIComponent(qboQuery)}`
+    );
+    await persistIfRefreshed!();
+
+    if (!result.success) {
+      return res.status(502).json({ error: "Unable to fetch QBO accounts." });
+    }
+
+    const rawQueryResponse = (result.data as any)?.QueryResponse ?? (result.raw as any)?.QueryResponse;
+    const rawAccounts = rawQueryResponse?.Account ?? [];
+
+    const accounts = rawAccounts
+      .map((a: any) => ({
+        id: a.Id as string,
+        name: a.Name as string,
+        accountType: a.AccountType as string,
+        accountSubType: (a.AccountSubType as string) || null,
+      }))
+      .sort((a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name));
+
+    res.json({ accounts });
+  })
+);
+
+/**
  * GET /api/qbo/preflight/import-customers
  * Comprehensive preflight check before customer import.
  * Verifies: tokens, environment safety, connectivity (with token refresh), DB indexes,

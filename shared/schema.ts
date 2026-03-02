@@ -57,6 +57,8 @@ export const qboMappingConfigSchema = z.object({
   // Tax code mappings (optional — QBO uses its own defaults if omitted)
   taxableCodeId: z.string().optional(),
   nonTaxableCodeId: z.string().optional(),
+  // Default income account for Service/NonInventory items synced to QBO
+  defaultIncomeAccountId: z.string().optional(),
   // Legacy fields (backwards compat — old configs may still have these)
   serviceItemId: z.string().optional(),
   productItemId: z.string().optional(),

@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### QBO Item Type Mapping + Bundle Handling + Income Account Mapping (2026-03-02)
+- **Schema**: Added `defaultIncomeAccountId` to `qboMappingConfigSchema` in `shared/schema.ts`. Stores the QBO Account ID used for `IncomeAccountRef` on Service/NonInventory items.
+- **Server — Bundle skip**: `QboCatalogImportService` now explicitly tracks Bundle items as `action=SKIP` with reason "Bundle not supported" in import preview/run. Previously bundles were silently filtered. Bundles appear in the sample and are counted under `totals.skipped`.
+- **Server — Income account validation**: `QboItemService.mapLocalItemToQBO()` now reads `defaultIncomeAccountId` from mapping config instead of hardcoding `IncomeAccountRef: { value: "1" }`. If missing, `syncCatalog()` fails fast with `MAPPING_MISSING_INCOME_ACCOUNT` error. `createQboItemFromLocalItem()` also fetches mapping config and throws with the same error code.
+- **Server — Accounts endpoint**: Added `GET /api/qbo/accounts` endpoint that fetches Income-type accounts from QBO (via `SELECT ... FROM Account WHERE AccountType = 'Income'`) for the mapping config dropdown.
+- **UI — Income account dropdown**: Step 2 (Type & Tax Mapping) now includes an "Income Account (required)" section with a dropdown populated from `GET /api/qbo/accounts`. Shows a warning if no income account is selected when mapping is otherwise configured.
+- **UI — Bundle visibility**: Bundle items appear in catalog import preview with `action=SKIP` and `error="Bundle not supported"`, giving clear visibility into why they were excluded.
+- **Type mapping preserved**: QBO→App import maps Service→"service", NonInventory/Inventory→"product". App→QBO sync maps "service"→Service, "product"→NonInventory (default).
+- **Files**: `shared/schema.ts`, `server/services/qbo/QboCatalogImportService.ts`, `server/services/qbo/QboItemService.ts`, `server/routes/qbo.ts`, `client/src/pages/QboConsolePage.tsx`
+
 #### QBO Catalog Sync — Error Surfacing + Resolution Hints (2026-03-01)
 - **Server**: Added `errors[]` array to `CatalogSyncResult` in `QboItemService.syncCatalog()`. All failed items are captured regardless of the 5-item `sample[]` cap, each with `itemId`, `name`, `type`, `qboItemId`, and `error` message.
 - **UI — Error panel**: When catalog sync (Step 3) returns errors > 0, a dedicated "X Items Failed" panel appears below the summary with a table showing: item name (linked to item edit page), type, local ID, QBO ID, error message, and a suggested fix.
