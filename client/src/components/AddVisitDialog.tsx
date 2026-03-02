@@ -39,6 +39,10 @@ interface AddVisitDialogProps {
   defaultTechnicianId?: string | null;
   /** Callback when visit is successfully created - receives new visit ID for highlighting */
   onVisitCreated?: (visitId: string) => void;
+  /** Visit Reschedule Architecture: conflict resolution mode from parent */
+  conflictMode?: 'replace' | 'complete_and_new';
+  /** Visit Reschedule Architecture: ID of the conflicting visit */
+  conflictVisitId?: string;
 }
 
 export function AddVisitDialog({
@@ -49,6 +53,8 @@ export function AddVisitDialog({
   technicians,
   defaultTechnicianId,
   onVisitCreated,
+  conflictMode,
+  conflictVisitId,
 }: AddVisitDialogProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -152,6 +158,9 @@ export function AddVisitDialog({
       technicianUserId: assignedTechnicianId === UNASSIGNED ? null : assignedTechnicianId || null,
       notes: visitNotes.trim() || undefined,
       version: jobVersion,
+      // Visit Reschedule Architecture: pass conflict resolution to backend
+      ...(conflictMode && { conflictMode }),
+      ...(conflictVisitId && { conflictVisitId }),
     });
   };
 

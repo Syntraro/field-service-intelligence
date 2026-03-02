@@ -6,7 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+#### Visit Reschedule Architecture — single active visit per job (2026-03-02)
+- **Architecture**: Simplified visit scheduling to enforce a single active visit per job. Empty/unactioned visits are silently replaced; actioned visits prompt a 2-button dialog ("Replace Visit" / "Complete & Schedule New"). Removed the "follow-up visit" concept entirely.
+- **`isVisitEmpty()` helper**: Added inverse of `isVisitActioned()` to `server/storage/jobVisits.ts` — returns true when a visit has no meaningful activity. Client-side mirror in `client/src/lib/visitUtils.ts` (new file).
+- **`getNextVisitNumber()` bug fix**: Removed `isActive` filter so soft-deleted visits are counted for the unique constraint `job_visits_job_visit_number_uq`. Prevents constraint violations when creating new visits after soft-deleting old ones.
+- **`scheduleJob()` refactored**: Replaced placeholder-only detection with 2-case model: (1) empty visit or explicit `conflictMode='replace'` → soft-delete + create new, (2) actioned visit + `conflictMode='complete_and_new'` → complete old + create new, (3) actioned visit + no mode → 409 conflict for frontend dialog.
+- **`rescheduleJob()` updated**: Added `mode` parameter. `mode='complete_and_new'` completes the old visit instead of soft-deleting. No mode = existing auto-detect behavior preserved (calendar drag-and-drop unchanged).
+- **Conflict dialog**: Replaced 3-option AlertDialog (Cancel/Reschedule/Add Follow-up) with 2-button dialog (Replace Visit / Complete & Schedule New) in `JobDetailPage.tsx`.
+- **Tech completion modal**: Simplified from 3 options to 2 — removed "Needs Follow-up" outcome from `TechVisitDetailPage.tsx`. Server still accepts `needs_followup` for backward compatibility.
+- **Label renames**: "Schedule follow-up visit" → "Schedule Visit" across UI.
+- **Files**: `server/storage/jobVisits.ts`, `server/storage/calendar.ts`, `server/routes/calendar.ts`, `client/src/lib/visitUtils.ts` (new), `client/src/pages/JobDetailPage.tsx`, `client/src/components/AddVisitDialog.tsx`, `client/src/components/JobVisitsSection.tsx`, `client/src/pages/TechVisitDetailPage.tsx`
+
+#### Empty-visit confirmation before replace (2026-03-02)
+- **Fix**: Scheduling a new visit when an empty (no-activity) visit exists now shows a confirmation dialog ("This visit has no activity. It will be removed and replaced…") instead of silently replacing. Actioned-visit dialog updated to single primary button ("Yes, Complete & Schedule New"). Backend enforcement unchanged.
+- **Files**: `client/src/pages/JobDetailPage.tsx`
+
 ### Fixed
+
+#### Dashboard overdue: remove from top strip, show only in Needs Attention (2026-03-02)
+- **Bug 1**: The workflow strip Jobs section showed an "Overdue" row — not wanted. Overdue jobs should appear only under Needs Attention.
+- **Bug 2**: Even after the overdue predicate fix (`NOW()` instead of midnight), Needs Attention still showed "All caught up!" because the composite `overdueCondition` SQL fragment was not composing correctly inside Drizzle's `and()` combinator. When a multi-clause `sql` template literal (containing AND operators) was passed as a single argument to Drizzle's `and()`, the generated SQL was malformed.
+- **Fix — workflow strip**: Removed `overdueCount` from `WorkflowSummary` type and UI. Active count reverted to counting all `status='open'` jobs.
+- **Fix — overdue SQL**: Replaced composite fragment with individual conditions (`eq(status, 'open')`, `sql\`scheduledStart IS NOT NULL\``, `sql\`effectiveEndExpr < NOW()\``) passed separately to `and()`. Extracted `effectiveEndExpr` CASE fragment for reuse.
+- **Verified**: Direct query returns overdue job #10047 (`attentionType=overdue`, `end=2026-03-02T14:15:00Z < NOW()`).
+- **Files**: `server/storage/dashboard.ts`, `server/routes/dashboard.ts`, `client/src/pages/Dashboard.tsx`
 
 #### JobTemplateModal crash: `catalogData?.filter is not a function` (2026-03-02)
 - **Root cause**: `/api/items?limit=200` returns `{ data: [...], meta: {...} }` (paginated wrapper) when `?limit` is explicit, but the component typed the response as `Item[]` and called `.filter()` on the object.

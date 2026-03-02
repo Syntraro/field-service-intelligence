@@ -192,6 +192,9 @@ const scheduleJobSchema = z.object({
   durationMinutes: z.number().int().min(15).optional(),
   notes: z.string().max(2000).optional(),
   version: z.number().int(),
+  // Visit Reschedule Architecture: conflict resolution mode from client
+  conflictMode: z.enum(['replace', 'complete_and_new']).optional(),
+  conflictVisitId: z.string().uuid().optional(),
 }).refine((data) => {
   if (data.allDay) return true;
   if (data.startAt && data.endAt) {
@@ -212,6 +215,8 @@ const rescheduleJobSchema = z.object({
   date: z.string().optional(),
   notes: z.string().max(2000).nullable().optional(),
   version: z.number().int(),
+  // Visit Reschedule Architecture: explicit mode for conflict resolution
+  mode: z.enum(['replace', 'complete_and_new']).optional(),
 }).refine((data) => {
   if (data.allDay) return true;
   if (data.startAt && data.endAt) {
@@ -396,8 +401,18 @@ router.post(
         notes: data.notes,
         allDay: isAllDay,
         expectedVersion: data.version,
+        conflictMode: data.conflictMode,
+        conflictVisitId: data.conflictVisitId,
       });
     } catch (error: any) {
+      // Visit Reschedule Architecture: actioned visit conflict — frontend should show 2-button dialog
+      if (error.code === 'VISIT_CONFLICT') {
+        return res.status(409).json({
+          error: error.message,
+          code: 'VISIT_CONFLICT',
+          conflictVisitId: error.conflictVisitId,
+        });
+      }
       // Handle version mismatch
       if (error.message?.includes('modified by another user')) {
         return res.status(409).json({ error: error.message, code: 'VERSION_MISMATCH' });
@@ -523,6 +538,7 @@ router.patch(
         notes: data.notes ?? undefined,
         allDay: data.allDay,
         expectedVersion: data.version,
+        mode: data.mode,
       });
     } catch (error: any) {
       if (error.message?.includes('modified by another user')) {

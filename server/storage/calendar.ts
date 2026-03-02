@@ -10,7 +10,7 @@ import {
   jobVisits,
 } from "@shared/schema";
 import { BaseRepository } from "./base";
-import { jobVisitsRepository, isVisitActioned } from "./jobVisits";
+import { jobVisitsRepository, isVisitActioned, isVisitEmpty } from "./jobVisits";
 import { resolveTechnicianName } from "../lib/resolveTechnicianName";
 // Phase 5 Step C2: shared query helpers for bulk resolution
 import { bulkResolveTechnicians, bulkResolveCustomerCompanies } from "../lib/queryHelpers";
@@ -631,6 +631,9 @@ export class CalendarRepository extends BaseRepository {
       allDay?: boolean;
       timezone?: string;
       expectedVersion?: number;
+      // Visit Reschedule Architecture: conflict resolution from client
+      conflictMode?: 'replace' | 'complete_and_new';
+      conflictVisitId?: string;
     }
   ) {
     // Normalize schedule times through canonical helper
@@ -680,44 +683,26 @@ export class CalendarRepository extends BaseRepository {
       }
     }
 
-    // PHASE 4: Schedule via job_visits.
-    // If a placeholder visit exists (scheduledStart IS NULL, from createJob),
-    // UPDATE it rather than inserting a duplicate that would violate
-    // job_visits_job_visit_number_uq.
-    const [placeholder] = await db
-      .select({ id: jobVisits.id, version: jobVisits.version })
+    // Visit Reschedule Architecture: 2-case model for single active visit per job.
+    // Find the open active non-terminal visit (broader than old placeholder-only check).
+    const VISIT_TERMINAL_STATUSES = ['completed', 'cancelled'];
+    const [openVisit] = await db
+      .select()
       .from(jobVisits)
       .where(
         and(
           eq(jobVisits.jobId, data.jobId),
           eq(jobVisits.companyId, companyId),
-          isNull(jobVisits.scheduledStart),
           eq(jobVisits.isActive, true),
+          notInArray(jobVisits.status, VISIT_TERMINAL_STATUSES),
         )
       )
       .orderBy(asc(jobVisits.visitNumber))
       .limit(1);
 
     let visit;
-    if (placeholder) {
-      // Update the existing placeholder visit with schedule data
-      visit = await jobVisitsRepository.updateJobVisit(
-        companyId,
-        placeholder.id,
-        placeholder.version,
-        {
-          scheduledStart,
-          scheduledEnd,
-          scheduledDate: scheduledStart,
-          isAllDay,
-          assignedTechnicianId: techAssignment.primaryTechnicianId,
-          assignedTechnicianIds: techAssignment.assignedTechnicianIds,
-          status: 'scheduled',
-          visitNotes: data.notes,
-        }
-      );
-    } else {
-      // No placeholder — insert new visit (follow-up visits, etc.)
+    if (!openVisit) {
+      // Case 1: No open visit → create new visit
       visit = await jobVisitsRepository.createJobVisit(companyId, data.jobId, {
         scheduledStart,
         scheduledEnd,
@@ -727,6 +712,56 @@ export class CalendarRepository extends BaseRepository {
         status: 'scheduled',
         visitNotes: data.notes,
       });
+    } else if (isVisitEmpty(openVisit) || data.conflictMode === 'replace') {
+      // Case 2: Empty visit OR explicit replace → soft-delete old, create new
+      await jobVisitsRepository.updateJobVisit(
+        companyId,
+        openVisit.id,
+        openVisit.version,
+        { isActive: false }
+      );
+      visit = await jobVisitsRepository.createJobVisit(companyId, data.jobId, {
+        scheduledStart,
+        scheduledEnd,
+        isAllDay,
+        assignedTechnicianId: techAssignment.primaryTechnicianId,
+        assignedTechnicianIds: techAssignment.assignedTechnicianIds,
+        status: 'scheduled',
+        visitNotes: data.notes,
+      });
+    } else if (data.conflictMode === 'complete_and_new') {
+      // Case 3: Actioned visit + explicit complete_and_new → complete old, create new
+      const now = new Date();
+      const actualDuration = openVisit.checkedInAt
+        ? Math.round((now.getTime() - new Date(openVisit.checkedInAt).getTime()) / 60000)
+        : null;
+      await jobVisitsRepository.updateJobVisit(
+        companyId,
+        openVisit.id,
+        openVisit.version,
+        {
+          status: 'completed',
+          checkedOutAt: now,
+          ...(actualDuration !== null && { actualDurationMinutes: actualDuration }),
+        }
+      );
+      visit = await jobVisitsRepository.createJobVisit(companyId, data.jobId, {
+        scheduledStart,
+        scheduledEnd,
+        isAllDay,
+        assignedTechnicianId: techAssignment.primaryTechnicianId,
+        assignedTechnicianIds: techAssignment.assignedTechnicianIds,
+        status: 'scheduled',
+        visitNotes: data.notes,
+      });
+    } else {
+      // Case 4: Actioned visit + no conflictMode → 409 conflict for frontend dialog
+      const err: any = new Error(
+        `Visit #${openVisit.visitNumber} is already active and has been actioned. Choose "Replace Visit" or "Complete & Schedule New".`
+      );
+      err.code = 'VISIT_CONFLICT';
+      err.conflictVisitId = openVisit.id;
+      throw err;
     }
 
     // JOBBER-LIKE BEHAVIOR: Reopen completed jobs when scheduling a follow-up visit.
@@ -820,6 +855,8 @@ export class CalendarRepository extends BaseRepository {
       allDay?: boolean;
       timezone?: string;
       expectedVersion?: number;
+      // Visit Reschedule Architecture: explicit mode overrides auto-detection
+      mode?: 'replace' | 'complete_and_new';
     }
   ) {
     if (IS_DEV) {
@@ -882,11 +919,15 @@ export class CalendarRepository extends BaseRepository {
 
     // SPAWN-ON-ACTION: Check if visit has been actioned
     const visitIsActioned = isVisitActioned(currentVisit);
+    // Visit Reschedule Architecture: explicit mode overrides auto-detection
+    const shouldSpawn = data.mode === 'replace' || data.mode === 'complete_and_new' || visitIsActioned;
 
     if (IS_DEV) {
       console.log('[RESCHEDULE-DEBUG] Spawn-on-action check:', {
         visitId: currentVisit.id,
         isActioned: visitIsActioned,
+        mode: data.mode,
+        shouldSpawn,
         checkedInAt: currentVisit.checkedInAt,
         checkedOutAt: currentVisit.checkedOutAt,
         actualDurationMinutes: currentVisit.actualDurationMinutes,
@@ -894,24 +935,40 @@ export class CalendarRepository extends BaseRepository {
       });
     }
 
-    if (visitIsActioned) {
-      // ACTIONED: Soft-delete old visit and create new one
-      // This preserves history of the actioned visit
-
-      // Step 1: Soft-delete old visit (is_active=false)
-      await jobVisitsRepository.updateJobVisit(
-        companyId,
-        currentVisit.id,
-        currentVisit.version,
-        { isActive: false }
-      );
+    if (shouldSpawn) {
+      // SPAWNING: Either actioned (auto-detect) or explicit mode
+      // Step 1: Handle old visit based on mode
+      if (data.mode === 'complete_and_new') {
+        // Complete the old visit instead of soft-deleting
+        const now = new Date();
+        const actualDuration = currentVisit.checkedInAt
+          ? Math.round((now.getTime() - new Date(currentVisit.checkedInAt).getTime()) / 60000)
+          : null;
+        await jobVisitsRepository.updateJobVisit(
+          companyId,
+          currentVisit.id,
+          currentVisit.version,
+          {
+            status: 'completed',
+            checkedOutAt: now,
+            ...(actualDuration !== null && { actualDurationMinutes: actualDuration }),
+          }
+        );
+      } else {
+        // Default: Soft-delete old visit (is_active=false) — preserves history
+        await jobVisitsRepository.updateJobVisit(
+          companyId,
+          currentVisit.id,
+          currentVisit.version,
+          { isActive: false }
+        );
+      }
 
       if (IS_DEV) {
-        console.log(`[RESCHEDULE-DEBUG] Soft-deleted actioned visit: ${currentVisit.id}`);
+        console.log(`[RESCHEDULE-DEBUG] ${data.mode === 'complete_and_new' ? 'Completed' : 'Soft-deleted'} visit: ${currentVisit.id}`);
       }
 
       // Step 2: Create new visit with requested schedule
-      // Normalize scheduling fields
       const normalized = normalizeScheduleTimes({
         allDay: data.allDay,
         startAt: data.startAt,
@@ -934,7 +991,7 @@ export class CalendarRepository extends BaseRepository {
       });
 
       if (IS_DEV) {
-        console.log(`[RESCHEDULE-DEBUG] Created new visit: ${newVisit.id} (spawn-on-action)`);
+        console.log(`[RESCHEDULE-DEBUG] Created new visit: ${newVisit.id} (spawn-on-action, mode=${data.mode || 'auto'})`);
       }
 
       // Write audit log for spawn-on-action
@@ -942,7 +999,7 @@ export class CalendarRepository extends BaseRepository {
         jobId,
         companyId,
         userId: null,
-        contextLabel: 'storage:rescheduleJob:spawn-on-action',
+        contextLabel: `storage:rescheduleJob:spawn-on-action:${data.mode || 'auto'}`,
         oldFields: {
           visitId: currentVisit.id,
           scheduledStart: currentVisit.scheduledStart,
@@ -951,7 +1008,7 @@ export class CalendarRepository extends BaseRepository {
         newFields: {
           visitId: newVisit.id,
           scheduledStart: newVisit.scheduledStart,
-          action: 'spawned-new-visit',
+          action: data.mode === 'complete_and_new' ? 'completed-and-spawned' : 'spawned-new-visit',
         },
       });
 

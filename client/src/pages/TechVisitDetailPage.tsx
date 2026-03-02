@@ -73,7 +73,8 @@ interface VisitDetailResponse {
   notes: VisitNote[];
 }
 
-type Outcome = "completed" | "needs_parts" | "needs_followup";
+// Visit Reschedule Architecture: removed "needs_followup" — follow-up concept replaced by single active visit model
+type Outcome = "completed" | "needs_parts";
 
 const STATUS_COLORS: Record<string, string> = {
   scheduled: "bg-blue-100 text-blue-800",
@@ -440,9 +441,7 @@ export default function TechVisitDetailPage() {
                 placeholder={
                   selectedOutcome === "needs_parts"
                     ? "What parts are needed?"
-                    : selectedOutcome === "needs_followup"
-                      ? "What follow-up is required?"
-                      : "Optional completion note..."
+                    : "Optional completion note..."
                 }
                 className="mt-1 text-sm"
                 rows={3}
@@ -480,10 +479,10 @@ export default function TechVisitDetailPage() {
 
 // -- Sub-components --
 
+// Visit Reschedule Architecture: simplified to 2 options (removed "Needs Follow-up")
 const OUTCOME_OPTIONS: Array<{ value: Outcome; label: string; description: string }> = [
   { value: "completed", label: "Completed", description: "Work finished successfully" },
   { value: "needs_parts", label: "Needs Parts", description: "Parts required to complete" },
-  { value: "needs_followup", label: "Needs Follow-up", description: "Return visit required" },
 ];
 
 function ActionButton({

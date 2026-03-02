@@ -30,7 +30,7 @@ router.get("/workflow", asyncHandler(async (req: AuthedRequest, res: Response) =
  * GET /api/dashboard/needs-attention
  *
  * Returns jobs needing attention:
- * - Overdue jobs (scheduled before today, still open)
+ * - Overdue jobs (effectiveEnd < NOW(), still open — instant cutoff)
  * - On hold jobs (status = on_hold)
  * - Jobs requiring invoicing (status = completed)
  * Sorted: overdue first (oldest), then requires_invoicing, then on_hold
@@ -38,10 +38,9 @@ router.get("/workflow", asyncHandler(async (req: AuthedRequest, res: Response) =
  */
 router.get("/needs-attention", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const ctx = getQueryCtx(req);
-  const date = req.query.date ? String(req.query.date) : new Date().toISOString().slice(0, 10);
   const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 5;
 
-  const jobs = await getNeedsAttentionJobs(ctx, date, limit);
+  const jobs = await getNeedsAttentionJobs(ctx, limit);
   res.json({ data: jobs });
 }));
 

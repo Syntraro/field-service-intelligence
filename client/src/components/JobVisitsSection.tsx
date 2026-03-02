@@ -439,10 +439,10 @@ export default function JobVisitsSection({ jobId, jobVersion, defaultOpen = fals
                     // Default technician from current visit (same as OfficeActionsStrip)
                     setIsAddDialogOpen(true);
                   }}
-                  data-testid="button-schedule-followup"
+                  data-testid="button-schedule-visit"
                 >
                   <CalendarPlus className="h-3 w-3 mr-1" />
-                  Schedule follow-up visit
+                  Schedule Visit
                 </Button>
                 {isOpen ? (
                   <ChevronDown className="h-4 w-4 text-muted-foreground" />
@@ -458,7 +458,7 @@ export default function JobVisitsSection({ jobId, jobVersion, defaultOpen = fals
                 <div className="text-center py-6 text-muted-foreground">
                   <Calendar className="h-8 w-8 mx-auto mb-2 opacity-50" />
                   <p className="text-sm">No visits scheduled</p>
-                  <p className="text-xs mt-1">Click "Schedule follow-up visit" to schedule a site visit.</p>
+                  <p className="text-xs mt-1">Click "Schedule Visit" to schedule a site visit.</p>
                 </div>
               ) : (
                 <>

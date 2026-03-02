@@ -93,6 +93,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { isVisitActioned, isVisitEmpty } from "@/lib/visitUtils";
 import { useAuth } from "@/lib/auth";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Job, Client, CustomerCompany, User as UserType, RecurringJobSeries, Invoice, JobTimeSummary, TimeEntryType } from "@shared/schema";
@@ -1288,10 +1289,13 @@ export default function JobDetailPage() {
   const [selectedVisitId, setSelectedVisitId] = useState<string | null>(null);
   // Visits collapse: show first 3 by default, toggle to show all
   const [showAllVisits, setShowAllVisits] = useState(false);
-  // Reschedule conflict dialog: holds the existing visit that conflicts
+  // Visit Reschedule Architecture: conflict resolution state
+  const [conflictMode, setConflictMode] = useState<'replace' | 'complete_and_new' | undefined>();
+  const [conflictVisitId, setConflictVisitId] = useState<string | undefined>();
+  // Conflict dialog: holds the visit that conflicts + whether it's empty or actioned
   const [rescheduleConflict, setRescheduleConflict] = useState<{
     visit: import("@shared/schema").JobVisit;
-    isEmptyDraft: boolean;
+    kind: 'empty' | 'actioned';
   } | null>(null);
   const jobId = params?.id;
 
@@ -1326,26 +1330,21 @@ export default function JobDetailPage() {
     return tech ? (tech.firstName && tech.lastName ? `${tech.firstName} ${tech.lastName}` : tech.email) : "Unknown";
   };
 
-  // Determine if a visit is an "empty draft" — no tech, no notes, still in scheduled status
-  const isEmptyDraftVisit = (v: import("@shared/schema").JobVisit) =>
-    v.status === "scheduled" && !v.assignedTechnicianId && !v.visitNotes;
-
-  // Reschedule rule: check for existing non-completed active visits before creating a new one
-  const handleScheduleFollowUp = () => {
-    // Phase 5 E1: renamed to disambiguate from job terminal statuses
+  // Visit Reschedule Architecture: check for existing active visits before scheduling.
+  // Both empty and actioned visits show a confirmation dialog before proceeding.
+  const handleScheduleVisit = () => {
     const VISIT_TERMINAL_STATUSES = ["completed", "cancelled"];
     const activeNonTerminal = allVisits.filter(
       (v) => v.isActive && !VISIT_TERMINAL_STATUSES.includes(v.status)
     );
     if (activeNonTerminal.length > 0) {
-      // Found a conflicting visit — determine if it's an empty draft
       const conflict = activeNonTerminal[0];
-      setRescheduleConflict({
-        visit: conflict,
-        isEmptyDraft: isEmptyDraftVisit(conflict),
-      });
+      const kind = isVisitActioned(conflict) ? 'actioned' : 'empty';
+      setRescheduleConflict({ visit: conflict, kind });
     } else {
-      // No conflict — open dialog directly
+      // No conflict — open schedule dialog directly
+      setConflictMode(undefined);
+      setConflictVisitId(undefined);
       setShowScheduleVisitDialog(true);
     }
   };
@@ -1608,7 +1607,7 @@ export default function JobDetailPage() {
       <OfficeActionsStrip
         job={job}
         userRole={user?.role}
-        onScheduleVisit={() => handleScheduleFollowUp()}
+        onScheduleVisit={() => handleScheduleVisit()}
         onClearHold={() => clearHoldMutation.mutate(job.version)}
         onUnschedule={() => {
           // Use canonical hook with custom toast callbacks
@@ -1673,11 +1672,11 @@ export default function JobDetailPage() {
                 variant="ghost"
                 size="sm"
                 className="text-xs h-auto py-1 px-2 text-primary"
-                onClick={() => handleScheduleFollowUp()}
+                onClick={() => handleScheduleVisit()}
                 data-testid="button-schedule-followup"
               >
                 <CalendarPlus className="h-3 w-3 mr-1" />
-                Schedule follow-up
+                Schedule Visit
               </Button>
             </div>
 
@@ -2037,8 +2036,17 @@ export default function JobDetailPage() {
         jobId={job.id}
         jobVersion={job.version}
         open={showScheduleVisitDialog}
-        onOpenChange={setShowScheduleVisitDialog}
+        onOpenChange={(open) => {
+          setShowScheduleVisitDialog(open);
+          // Clear conflict state when dialog closes
+          if (!open) {
+            setConflictMode(undefined);
+            setConflictVisitId(undefined);
+          }
+        }}
         technicians={allTechnicians}
+        conflictMode={conflictMode}
+        conflictVisitId={conflictVisitId}
       />
 
       {/* Visit Detail Dialog — opens when clicking a visit row in middle column */}
@@ -2052,49 +2060,32 @@ export default function JobDetailPage() {
         />
       )}
 
-      {/* Existing Visit Conflict Dialog — explicit Reschedule vs Add Follow-up */}
+      {/* Visit Reschedule Architecture: confirmation dialog for empty OR actioned visits */}
       <AlertDialog open={!!rescheduleConflict} onOpenChange={(open) => { if (!open) setRescheduleConflict(null); }}>
         <AlertDialogContent data-testid="dialog-reschedule-conflict">
           <AlertDialogHeader>
-            <AlertDialogTitle>Existing Visit Found</AlertDialogTitle>
+            <AlertDialogTitle>Active Visit Found</AlertDialogTitle>
             <AlertDialogDescription>
-              {rescheduleConflict?.isEmptyDraft ? (
-                <>
-                  Visit #{rescheduleConflict.visit.visitNumber || "—"} ({formatVisitDate(rescheduleConflict.visit)}) is an empty draft with no technician or notes.
-                  You can reschedule it or add a separate follow-up visit.
-                </>
-              ) : (
-                <>
-                  Visit #{rescheduleConflict?.visit.visitNumber || "—"} ({VISIT_STATUS_LABELS[rescheduleConflict?.visit.status || ""] || rescheduleConflict?.visit.status}) is already scheduled.
-                  Would you like to reschedule it, or add a new follow-up visit?
-                </>
-              )}
+              {rescheduleConflict?.kind === 'empty'
+                ? "This visit has no activity. It will be removed and replaced with the new scheduled visit."
+                : "You have an uncompleted visit with activity. The uncompleted visit will be completed, and a new visit will be scheduled."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="flex-col sm:flex-row gap-2">
             <AlertDialogCancel data-testid="button-cancel-reschedule">Cancel</AlertDialogCancel>
-            <Button
-              variant="outline"
-              onClick={() => {
-                // Reschedule existing: open visit detail for rescheduling
-                if (rescheduleConflict) {
-                  setSelectedVisitId(rescheduleConflict.visit.id);
-                }
-                setRescheduleConflict(null);
-              }}
-              data-testid="button-reschedule-existing"
-            >
-              Reschedule Existing Visit
-            </Button>
             <AlertDialogAction
               onClick={() => {
-                // Add follow-up: create a new visit (no conflict resolution needed)
+                if (rescheduleConflict) {
+                  const mode = rescheduleConflict.kind === 'empty' ? 'replace' : 'complete_and_new';
+                  setConflictMode(mode);
+                  setConflictVisitId(rescheduleConflict.visit.id);
+                }
                 setRescheduleConflict(null);
                 setShowScheduleVisitDialog(true);
               }}
-              data-testid="button-add-followup"
+              data-testid={rescheduleConflict?.kind === 'empty' ? "button-replace-visit" : "button-complete-and-new"}
             >
-              Add Follow-up Visit
+              {rescheduleConflict?.kind === 'empty' ? "Yes, Replace Visit" : "Yes, Complete & Schedule New"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

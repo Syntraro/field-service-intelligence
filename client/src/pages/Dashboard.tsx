@@ -646,11 +646,10 @@ export default function Dashboard() {
     refetchOnWindowFocus: false,
   });
 
-  const today = new Date().toISOString().slice(0, 10);
-  // Phase 5 Step B3: canonical dashboard family key prefix
+  // Needs-attention uses DB NOW() for overdue cutoff — no date param needed
   const { data: needsAttentionResponse, isLoading: needsAttentionLoading, isError: needsAttentionError, error: needsAttentionErrorObj, refetch: refetchNeedsAttention } = useQuery<{ data: (Job & { attentionType?: string })[] }>({
-    queryKey: ["dashboard", "needs-attention", { date: today }],
-    queryFn: () => apiRequest(`/api/dashboard/needs-attention?date=${today}&limit=5`),
+    queryKey: ["dashboard", "needs-attention"],
+    queryFn: () => apiRequest(`/api/dashboard/needs-attention?limit=5`),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });

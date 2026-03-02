@@ -459,7 +459,11 @@ export class JobVisitsRepository extends BaseRepository {
   }
 
   /**
-   * Compute next visit number for a job (max active + 1)
+   * Compute next visit number for a job (max across ALL visits + 1).
+   * Visit Reschedule Architecture fix: removed isActive filter because the
+   * unique constraint job_visits_job_visit_number_uq covers ALL rows including
+   * inactive ones. Without this fix, soft-deleting visit #1 then creating a
+   * new visit would try to reuse #1, causing a constraint violation.
    */
   private async getNextVisitNumber(companyId: string, jobId: string): Promise<number> {
     const [row] = await db
@@ -468,8 +472,7 @@ export class JobVisitsRepository extends BaseRepository {
       .where(
         and(
           eq(jobVisits.companyId, companyId),
-          eq(jobVisits.jobId, jobId),
-          eq(jobVisits.isActive, true)
+          eq(jobVisits.jobId, jobId)
         )
       );
     return (Number(row?.maxVisit) || 0) + 1;
@@ -841,4 +844,20 @@ export function isVisitActioned(visit: {
   if (ACTIONED_STATUSES.includes(visit.status)) return true;
 
   return false;
+}
+
+/**
+ * Inverse of isVisitActioned — returns true if the visit has no meaningful activity.
+ * An empty visit can be silently replaced when scheduling a new visit for the same job.
+ *
+ * NOTE: When visit-level checklists, expenses, or attachments are added to the schema
+ * in the future, those checks should be incorporated here (and in isVisitActioned).
+ */
+export function isVisitEmpty(visit: {
+  checkedInAt?: Date | null;
+  checkedOutAt?: Date | null;
+  actualDurationMinutes?: number | null;
+  status: string;
+}): boolean {
+  return !isVisitActioned(visit);
 }

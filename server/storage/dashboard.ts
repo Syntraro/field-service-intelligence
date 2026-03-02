@@ -84,6 +84,18 @@ export async function getWorkflowSummary(ctx: QueryCtx): Promise<WorkflowSummary
   };
 }
 
+/**
+ * SQL fragment for the effectiveEnd CASE expression.
+ * effectiveEnd = scheduledEnd ?? (scheduledStart + durationMinutes) ?? scheduledStart
+ * Used in both getJobCounts and getNeedsAttentionJobs for consistent overdue classification.
+ */
+const effectiveEndExpr = sql`CASE
+  WHEN ${jobs.scheduledEnd} IS NOT NULL THEN ${jobs.scheduledEnd}
+  WHEN ${jobs.durationMinutes} IS NOT NULL
+    THEN ${jobs.scheduledStart} + (${jobs.durationMinutes} || ' minutes')::interval
+  ELSE ${jobs.scheduledStart}
+END`;
+
 async function getJobCounts(ctx: QueryCtx) {
   const result = await ctx.db
     .select({
@@ -184,22 +196,20 @@ function mapDashboardRow(row: any, attentionType: string): DashboardJobItem {
 
 /**
  * Get jobs needing attention for the dashboard widget.
- * Phase 5 B2: Uses QueryCtx, activeJobFilter(), canonical COALESCE joins.
+ * Uses QueryCtx, activeJobFilter(), canonical COALESCE joins.
  *
  * Combines:
- *   1. Overdue jobs (effectiveEnd < now, still open)
+ *   1. Overdue jobs (effectiveEnd < NOW(), still open) — instant cutoff, matches isJobOverdue()
  *   2. On-hold + completed (needs invoicing) attention jobs
  * Sorted: overdue first (oldest), then requires_invoicing, then on_hold.
  * Deduplicates by job ID.
  */
 export async function getNeedsAttentionJobs(
   ctx: QueryCtx,
-  todayDate: string,
   limit: number = 5
 ): Promise<DashboardJobItem[]> {
-  const todayStart = new Date(`${todayDate}T00:00:00.000Z`);
-
-  // Query 1: Overdue jobs (effectiveEnd < now, still open)
+  // Query 1: Overdue jobs — inline conditions to match isJobOverdue() exactly:
+  //   status='open', scheduledStart IS NOT NULL, effectiveEnd < NOW()
   const overdueRows = await ctx.db
     .select({
       ...dashboardJobSelect,
@@ -212,13 +222,9 @@ export async function getNeedsAttentionJobs(
       and(
         eq(jobs.companyId, ctx.tenantId),
         activeJobFilter(),
+        eq(jobs.status, "open"),
         sql`${jobs.scheduledStart} IS NOT NULL`,
-        sql`CASE
-          WHEN ${jobs.scheduledEnd} IS NOT NULL THEN ${jobs.scheduledEnd}
-          WHEN ${jobs.durationMinutes} IS NOT NULL THEN ${jobs.scheduledStart} + (${jobs.durationMinutes} || ' minutes')::interval
-          ELSE ${jobs.scheduledStart}
-        END < ${todayStart}`,
-        eq(jobs.status, "open")
+        sql`${effectiveEndExpr} < NOW()`
       )
     )
     .orderBy(asc(jobs.scheduledStart));
@@ -285,9 +291,9 @@ export const dashboardRepository = {
     const ctx: QueryCtx = { db, tenantId: companyId, userId: "", role: "" };
     return getWorkflowSummary(ctx);
   },
-  getNeedsAttentionJobs: (companyId: string, todayDate: string, limit?: number) => {
+  getNeedsAttentionJobs: (companyId: string, limit?: number) => {
     const { db } = require("../db");
     const ctx: QueryCtx = { db, tenantId: companyId, userId: "", role: "" };
-    return getNeedsAttentionJobs(ctx, todayDate, limit);
+    return getNeedsAttentionJobs(ctx, limit);
   },
 };
