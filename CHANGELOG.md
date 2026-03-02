@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+#### Create Job Modal — Streamlined fields (2026-03-02)
+- **UI**: Removed Job Type dropdown, Access Instructions textarea, and Billing Notes textarea from the Create/Edit Job modal (`QuickAddJobDialog.tsx`). Modal now only shows: Location, Summary, Scheduling, and Description.
+- **Payload**: Create and update payloads no longer send `jobType`, `accessInstructions`, or `billingNotes`. Backend defaults `jobType` to `"maintenance"`; the other two fields were already optional in the insert schema.
+- **No backend changes**: DB columns, API validation, and job detail views are untouched.
+- **Files**: `client/src/components/QuickAddJobDialog.tsx`
+
 ### Added
 
 #### QBO Mapping Config — Remove internal IDs from dropdown labels (2026-03-02)

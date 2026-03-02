@@ -14,13 +14,6 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
   Command,
   CommandEmpty,
   CommandGroup,
@@ -53,13 +46,6 @@ interface QuickAddJobDialogProps {
   onSuccess?: () => void;
 }
 
-const JOB_TYPES = [
-  { value: "maintenance", label: "Maintenance" },
-  { value: "repair", label: "Repair" },
-  { value: "inspection", label: "Inspection" },
-  { value: "installation", label: "Installation" },
-  { value: "emergency", label: "Emergency" },
-];
 
 export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, editJob, onSuccess }: QuickAddJobDialogProps) {
   const { toast } = useToast();
@@ -72,9 +58,6 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     locationId: preselectedLocationId || "",
     summary: "",
     description: "",
-    jobType: "maintenance",
-    accessInstructions: "",
-    billingNotes: "",
   });
 
   const [formData, setFormData] = useState(getDefaultFormData());
@@ -88,9 +71,6 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
         locationId: editJob.locationId || "",
         summary: editJob.summary || "",
         description: editJob.description || "",
-        jobType: editJob.jobType || "maintenance",
-        accessInstructions: editJob.accessInstructions || "",
-        billingNotes: editJob.billingNotes || "",
       });
       // Parse existing job schedule
       setScheduleValue(parseJobToScheduleValue(editJob));
@@ -131,10 +111,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
           locationId: formData.locationId,
           summary: formData.summary.trim(),
           description: formData.description.trim() || null,
-          jobType: formData.jobType,
           priority: "medium",
-          accessInstructions: formData.accessInstructions.trim() || null,
-          billingNotes: formData.billingNotes.trim() || null,
         },
         scheduleValue
       );
@@ -290,10 +267,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
         locationId: formData.locationId,
         summary: formData.summary.trim(),
         description: formData.description.trim() || null,
-        jobType: formData.jobType as any,
         priority: "medium" as any,
-        accessInstructions: formData.accessInstructions.trim() || null,
-        billingNotes: formData.billingNotes.trim() || null,
       };
       updateJobMutation.mutate(jobData);
     } else {
@@ -435,25 +409,6 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               />
             </div>
 
-            <div>
-              <Label htmlFor="jobType">Job Type</Label>
-              <Select
-                value={formData.jobType}
-                onValueChange={(value) => setFormData(prev => ({ ...prev, jobType: value }))}
-              >
-                <SelectTrigger data-testid="select-job-type">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {JOB_TYPES.map(type => (
-                    <SelectItem key={type.value} value={type.value} data-testid={`option-type-${type.value}`}>
-                      {type.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
             {/* Scheduling Section */}
             <div className="col-span-2 border rounded-lg p-4 bg-muted/20">
               <Label className="text-base font-medium mb-3 block">Scheduling</Label>
@@ -475,29 +430,6 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               />
             </div>
 
-            <div className="col-span-2">
-              <Label htmlFor="accessInstructions">Access Instructions</Label>
-              <Textarea
-                id="accessInstructions"
-                value={formData.accessInstructions}
-                onChange={(e) => setFormData(prev => ({ ...prev, accessInstructions: e.target.value }))}
-                placeholder="Gate codes, parking info, contact on arrival, etc."
-                rows={2}
-                data-testid="input-access-instructions"
-              />
-            </div>
-
-            <div className="col-span-2">
-              <Label htmlFor="billingNotes">Billing Notes</Label>
-              <Textarea
-                id="billingNotes"
-                value={formData.billingNotes}
-                onChange={(e) => setFormData(prev => ({ ...prev, billingNotes: e.target.value }))}
-                placeholder="Notes for invoicing"
-                rows={2}
-                data-testid="input-billing-notes"
-              />
-            </div>
           </div>
 
           <DialogFooter>
