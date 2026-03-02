@@ -450,6 +450,8 @@ interface CatalogSyncResult {
   dryRun: boolean;
   totals: { eligible: number; creates: number; updates: number; skipped: number; errors: number };
   sample: CatalogSyncItemSummary[];
+  /** All items that failed (not capped by sample limit) */
+  errors?: CatalogSyncItemSummary[];
   syncRunId?: string;
   error?: string;
 }
@@ -568,6 +570,32 @@ function detectErrorCategory(errorMessage: string): ErrorCategory {
   if (msg.includes("500") || msg.includes("server")) return "server";
   if (msg.includes("network") || msg.includes("connection")) return "network";
   return "unknown";
+}
+
+/**
+ * Returns an actionable hint for a QBO catalog sync error message.
+ * Matches common QBO API error patterns to suggest next steps.
+ */
+function getCatalogSyncErrorHint(error?: string): string {
+  if (!error) return "Check the item in your catalog and retry.";
+  const msg = error.toLowerCase();
+  if (msg.includes("duplicate") || msg.includes("already exist"))
+    return "An item with this name/SKU already exists in QBO. Rename the local item or merge duplicates in QBO.";
+  if (msg.includes("income") || msg.includes("account") || msg.includes("accountref"))
+    return "QBO requires a valid Income Account. Go to Settings > Mapping Config and verify your account references.";
+  if (msg.includes("tax") || msg.includes("taxcode"))
+    return "Invalid or missing tax code. Check your QBO tax settings and update the item's tax config.";
+  if (msg.includes("type") || msg.includes("itemtype"))
+    return "Item type mismatch. Verify the Mapping Config type mapping (Service vs NonInventory vs Inventory).";
+  if (msg.includes("synctoken") || msg.includes("stale"))
+    return "Stale data — another edit happened in QBO. Re-import the catalog to refresh sync tokens, then retry.";
+  if (msg.includes("validation") || msg.includes("required"))
+    return "A required field is missing. Check that the item has a name and all required fields are set.";
+  if (msg.includes("rate limit") || msg.includes("throttl"))
+    return "QBO rate limit hit. Wait a few minutes and retry.";
+  if (msg.includes("unauthorized") || msg.includes("token") || msg.includes("401"))
+    return "QBO auth expired. Reconnect your QuickBooks account in Step 1.";
+  return "Review the error message. If it persists, check the item in both your catalog and QBO for inconsistencies.";
 }
 
 // ============================================================
@@ -1934,19 +1962,20 @@ export default function QboConsolePage() {
                     </AlertDescription>
                   </Alert>
 
-                  {catalogSyncResult.sample.length > 0 && (
+                  {/* Sample table (non-error items) */}
+                  {catalogSyncResult.sample.filter(i => i.action !== "error").length > 0 && (
                     <div className="rounded-md border">
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            <TableHead>Name</TableHead>
-                            <TableHead>Type</TableHead>
-                            <TableHead>Action</TableHead>
-                            <TableHead>QBO ID</TableHead>
+                            <TableHead className="text-xs">Name</TableHead>
+                            <TableHead className="text-xs">Type</TableHead>
+                            <TableHead className="text-xs">Action</TableHead>
+                            <TableHead className="text-xs">QBO ID</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {catalogSyncResult.sample.map((item) => (
+                          {catalogSyncResult.sample.filter(i => i.action !== "error").map((item) => (
                             <TableRow key={item.itemId}>
                               <TableCell className="text-sm">{item.name}</TableCell>
                               <TableCell>
@@ -1954,19 +1983,63 @@ export default function QboConsolePage() {
                               </TableCell>
                               <TableCell>
                                 <Badge
-                                  variant={item.action === "create" ? "default" : item.action === "update" ? "secondary" : item.action === "error" ? "destructive" : "outline"}
+                                  variant={item.action === "create" ? "default" : item.action === "update" ? "secondary" : "outline"}
                                   className="text-xs"
                                 >
                                   {item.action}
                                 </Badge>
                               </TableCell>
                               <TableCell className="text-xs text-muted-foreground">
-                                {item.qboItemId || item.error || "—"}
+                                {item.qboItemId || "—"}
                               </TableCell>
                             </TableRow>
                           ))}
                         </TableBody>
                       </Table>
+                    </div>
+                  )}
+
+                  {/* Error details panel — shows all errors (not capped by sample limit) */}
+                  {(catalogSyncResult.errors ?? []).length > 0 && (
+                    <div className="space-y-2">
+                      <Alert variant="destructive" className="text-xs">
+                        <AlertTriangle className="h-4 w-4" />
+                        <AlertTitle className="text-sm">{catalogSyncResult.errors!.length} Item{catalogSyncResult.errors!.length !== 1 ? "s" : ""} Failed</AlertTitle>
+                        <AlertDescription>These items could not be synced to QuickBooks. Review the errors below and fix the underlying issue before re-running.</AlertDescription>
+                      </Alert>
+                      <div className="rounded-md border border-destructive/30">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="text-xs">Item Name</TableHead>
+                              <TableHead className="text-xs">Type</TableHead>
+                              <TableHead className="text-xs">Local ID</TableHead>
+                              <TableHead className="text-xs">QBO ID</TableHead>
+                              <TableHead className="text-xs">Error</TableHead>
+                              <TableHead className="text-xs">Suggested Fix</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {catalogSyncResult.errors!.map((item) => {
+                              const hint = getCatalogSyncErrorHint(item.error);
+                              return (
+                                <TableRow key={item.itemId} className="text-xs">
+                                  <TableCell className="font-medium">
+                                    <Link href={`/items/${item.itemId}`} className="text-primary underline underline-offset-2 hover:text-primary/80">
+                                      {item.name}
+                                    </Link>
+                                  </TableCell>
+                                  <TableCell><Badge variant="secondary" className="text-[10px]">{item.type}</Badge></TableCell>
+                                  <TableCell className="text-muted-foreground font-mono text-[10px]">{item.itemId.substring(0, 8)}</TableCell>
+                                  <TableCell className="text-muted-foreground">{item.qboItemId || "—"}</TableCell>
+                                  <TableCell className="text-destructive max-w-[250px] break-words">{item.error}</TableCell>
+                                  <TableCell className="text-muted-foreground max-w-[200px]">{hint}</TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </Table>
+                      </div>
                     </div>
                   )}
                 </div>

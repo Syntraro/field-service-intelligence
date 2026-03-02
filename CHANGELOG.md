@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### QBO Catalog Sync — Error Surfacing + Resolution Hints (2026-03-01)
+- **Server**: Added `errors[]` array to `CatalogSyncResult` in `QboItemService.syncCatalog()`. All failed items are captured regardless of the 5-item `sample[]` cap, each with `itemId`, `name`, `type`, `qboItemId`, and `error` message.
+- **UI — Error panel**: When catalog sync (Step 3) returns errors > 0, a dedicated "X Items Failed" panel appears below the summary with a table showing: item name (linked to item edit page), type, local ID, QBO ID, error message, and a suggested fix.
+- **UI — Error hints**: `getCatalogSyncErrorHint()` maps common QBO error patterns (duplicate name, invalid account ref, tax code, type mismatch, stale sync token, auth expired, rate limit, validation) to plain-English next steps.
+- **UI — Sample table cleanup**: Non-error items and error items now render in separate tables — errors no longer hidden in the QBO ID column fallback.
+- **Files**: `server/services/qbo/QboItemService.ts`, `client/src/pages/QboConsolePage.tsx`
+
 #### QBO Onboarding Complete Lock + Reconciliation Mode UX (2026-03-01)
 - **Schema**: Added `qbo_onboarding_catalog_imported_at` and `qbo_onboarding_customers_imported_at` nullable timestamp columns to `companies` table. Stamped once on first successful import run (fetched > 0) using `COALESCE` to preserve the original timestamp.
 - **Server**: Catalog and customer import run endpoints now stamp onboarding timestamps after successful imports. Status endpoint (`GET /api/qbo/status`) expanded with `onboarding` object exposing both timestamps and a derived `complete` boolean.
@@ -31,6 +38,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Verification**: End-to-end test script (`scripts/test-conflict-resolution.ts`) covering catalog and customer conflicts with all resolution types (SKIP/MAP/CREATE) and invariant checks (no duplicate QBO IDs, no missing sync fields).
 
 ### Fixed
+
+#### QBO Customer Import — Parent Companies Invisible on Clients Page (2026-03-01)
+- **Root cause**: The Clients page queries `client_locations` only. QBO parent customers (no `ParentRef`) were imported into `customer_companies` but never given a `client_locations` row, making them invisible. Only QBO sub-customers (children) created `client_locations` rows.
+- **Fix**: `QboCustomerImportService` now calls `ensurePrimaryLocation()` after each parent upsert. If the parent has no `client_locations` row, a primary location named "Main" is created with the parent's address/contact data. Works for both dry-run (counting) and real runs.
+- **Backfill migration**: `migrations/2026_03_01_backfill_primary_locations_for_parent_companies.sql` — idempotent INSERT for existing orphan parent companies.
+- **DB impact**: 26 previously orphaned parent companies now have primary locations. All 30 imported parent companies visible on Clients page.
+- **Files**: `server/services/qbo/QboCustomerImportService.ts`, `migrations/2026_03_01_backfill_primary_locations_for_parent_companies.sql`
 
 #### QBO Wipe Mode — confirmToken Validation Returns 400 Instead of 500 (2026-03-01)
 - **Root cause**: Both catalog and customer import wipe endpoints used `z.literal("WIPE").parse(req.body)` to validate the confirmation token. When the token was missing/wrong, Zod threw a `ZodError` caught by the global error handler as HTTP 500 — an opaque server error instead of a client validation error.

@@ -400,6 +400,20 @@ export class QboCustomerImportService {
         if (record.action === "create") result.created.customerCompanies++;
         else if (record.action === "restore") result.restored.customerCompanies++;
         else result.updated.customerCompanies++;
+
+        // Ensure parent has at least one primary location so it appears on Clients page
+        const locationCreated = await this.ensurePrimaryLocation(localId, parent, false);
+        if (locationCreated) result.created.clientLocations++;
+      } else {
+        // Dry-run: count whether a primary location would be created
+        const checkId = existing?.id;
+        if (checkId) {
+          const wouldCreate = await this.ensurePrimaryLocation(checkId, parent, true);
+          if (wouldCreate) result.wouldCreate.clientLocations++;
+        } else {
+          // New company → will definitely need a primary location
+          result.wouldCreate.clientLocations++;
+        }
       }
 
       if (result.sample.length < 10) {
@@ -775,5 +789,49 @@ export class QboCustomerImportService {
       .where(and(eq(clientLocations.id, localId), eq(clientLocations.companyId, this.companyId)))
       .limit(1);
     return row ?? null;
+  }
+
+  /**
+   * Ensure a parent customer_company has at least one primary client_location.
+   * Without this, parent companies with no QBO sub-customers are invisible on
+   * the Clients page (which queries client_locations only).
+   * Returns true if a new location was created (for counting).
+   */
+  private async ensurePrimaryLocation(
+    parentLocalId: string,
+    parsed: ParsedQBOCustomer,
+    dryRun: boolean
+  ): Promise<boolean> {
+    const [existing] = await db
+      .select({ id: clientLocations.id })
+      .from(clientLocations)
+      .where(and(
+        eq(clientLocations.parentCompanyId, parentLocalId),
+        eq(clientLocations.companyId, this.companyId),
+        isNull(clientLocations.deletedAt),
+      ))
+      .limit(1);
+
+    if (existing) return false; // Already has a location
+
+    if (!dryRun) {
+      const addr = parsed.shipAddress.street ? parsed.shipAddress : parsed.address;
+      await db.insert(clientLocations).values({
+        companyId: this.companyId,
+        parentCompanyId: parentLocalId,
+        companyName: parsed.companyName || parsed.displayName,
+        location: "Main",
+        address: addr.street,
+        city: addr.city,
+        province: addr.province,
+        postalCode: addr.postalCode,
+        email: parsed.email,
+        phone: parsed.phone,
+        inactive: !parsed.isActive,
+        isPrimary: true,
+        selectedMonths: [],
+      });
+    }
+    return true;
   }
 }

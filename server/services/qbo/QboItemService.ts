@@ -98,6 +98,8 @@ export interface CatalogSyncResult {
   dryRun: boolean;
   totals: { eligible: number; creates: number; updates: number; skipped: number; errors: number };
   sample: CatalogSyncItemSummary[];
+  /** All items that failed (not capped by sample limit) */
+  errors: CatalogSyncItemSummary[];
   error?: string;
 }
 
@@ -547,6 +549,7 @@ export class QboItemService {
   async syncCatalog(dryRun: boolean): Promise<CatalogSyncResult> {
     const startTime = Date.now();
     const sample: CatalogSyncItemSummary[] = [];
+    const errorItems: CatalogSyncItemSummary[] = [];
     const totals = { eligible: 0, creates: 0, updates: 0, skipped: 0, errors: 0 };
 
     try {
@@ -572,7 +575,7 @@ export class QboItemService {
       totals.eligible = localItems.length;
 
       if (localItems.length === 0) {
-        return { success: true, dryRun, totals, sample };
+        return { success: true, dryRun, totals, sample, errors: [] };
       }
 
       for (const item of localItems) {
@@ -615,6 +618,7 @@ export class QboItemService {
             summaryEntry.action = "error";
             summaryEntry.error = response.error?.message || "QBO API error";
             totals.errors++;
+            errorItems.push(summaryEntry);
 
             await db.update(items).set({
               qboSyncStatus: "ERROR",
@@ -642,6 +646,7 @@ export class QboItemService {
           summaryEntry.action = "error";
           summaryEntry.error = itemErr instanceof Error ? itemErr.message : "Unknown error";
           totals.errors++;
+          errorItems.push(summaryEntry);
 
           await db.update(items).set({
             qboSyncStatus: "ERROR",
@@ -660,7 +665,7 @@ export class QboItemService {
         durationMs: Date.now() - startTime,
       });
 
-      return { success: true, dryRun, totals, sample };
+      return { success: true, dryRun, totals, sample, errors: errorItems };
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Unknown error";
 
@@ -671,7 +676,7 @@ export class QboItemService {
         durationMs: Date.now() - startTime,
       });
 
-      return { success: false, dryRun, totals, sample, error: errorMessage };
+      return { success: false, dryRun, totals, sample, errors: errorItems, error: errorMessage };
     }
   }
 }
