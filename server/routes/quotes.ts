@@ -16,6 +16,7 @@ import { clientRepository } from "../storage/clients";
 import { customerCompanyRepository } from "../storage/customerCompanies";
 import { storage } from "../storage";
 import { generateQuotePdf } from "../services/quotePdfService";
+import { resolveCustomerCompanyForLocation } from "../services/customerCompanyResolver";
 import type { QuoteStatus } from "@shared/schema";
 
 const router = Router();
@@ -136,8 +137,11 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
     throw createError(400, "Location not found");
   }
 
-  // Get customer company from location if not provided
-  const customerCompanyId = validated.customerCompanyId ?? location.parentCompanyId;
+  // Deterministically resolve customerCompanyId — never null.
+  // If the request includes it, use it; otherwise resolve from the location
+  // (find-or-create the parent customer company if location.parentCompanyId is null).
+  const customerCompanyId = validated.customerCompanyId
+    ?? await resolveCustomerCompanyForLocation(companyId, location);
 
   const { lines = [], ...quoteData } = validated;
 

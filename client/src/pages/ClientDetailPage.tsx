@@ -670,156 +670,136 @@ export default function ClientDetailPage() {
     (client as any)?.name ||
     (client as any)?.displayName ||
     "Unnamed Client";
-  const clientType = "Corporate Client";
   const isActive = !client.inactive;
   const billParent = client.billWithParent ?? true;
 
   return (
     <div className="p-6">
-      {/* Breadcrumb */}
-      <nav className="mb-4 text-sm" data-testid="breadcrumb">
-        <ol className="flex flex-wrap items-center gap-1">
-          <li>
-            <button
-              type="button"
-              className="font-medium text-primary hover:text-primary/80 hover:underline transition-colors"
-              onClick={() => setLocation("/clients")}
-              data-testid="breadcrumb-clients"
-            >
-              Clients
-            </button>
-          </li>
-          <li className="flex items-center">
-            <span className="mx-1 text-muted-foreground">/</span>
-            <span className="font-medium text-foreground">{companyName}</span>
-          </li>
-        </ol>
-      </nav>
-
-      {/* Header */}
-      <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold" data-testid="text-client-name">
-            {companyName}
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground flex items-center gap-2 flex-wrap">
-            <span>{clientType}</span>
-            <span>•</span>
-            <Badge variant={isActive ? "default" : "secondary"} className="text-xs">
-              {isActive ? "Active" : "Inactive"}
-            </Badge>
-            <span>•</span>
-            <span>
-              Bill Parent: <span className="font-medium">{billParent ? "Yes" : "No"}</span>
-            </span>
-          </p>
-          {/* Tag pills */}
-          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-            {companyTags.map((tag) => (
-              <span
-                key={tag.id}
-                className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium text-white"
-                style={{ backgroundColor: tag.color }}
-              >
-                {tag.name}
-              </span>
-            ))}
-            <button
-              type="button"
-              onClick={() => setEditTagsOpen(true)}
-              className="inline-flex items-center rounded-full border border-dashed border-muted-foreground/40 px-2 py-0.5 text-xs text-muted-foreground hover:border-muted-foreground hover:text-foreground transition-colors"
-            >
-              <Plus className="h-3 w-3 mr-0.5" />
-              {companyTags.length === 0 ? "Add Tag" : "Edit"}
-            </button>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" onClick={() => setEditDialogOpen(true)} data-testid="button-edit-client">
-            <Pencil className="h-4 w-4 mr-2" />
-            Edit Company
-          </Button>
-          <Button onClick={() => handleCreateJob()} data-testid="button-create-job">
-            <Briefcase className="h-4 w-4 mr-2" />
-            Create Job
-          </Button>
-          <Link href={`/invoices/new?clientId=${clientId}`}>
-            <Button variant="outline" data-testid="button-create-invoice">
-              <FileText className="h-4 w-4 mr-2" />
-              Create Invoice
-            </Button>
-          </Link>
-        </div>
-      </header>
-
-      {/* Main Grid: Properties + Overview (2fr) | Contact + Notes (1fr) */}
-      <div className="grid gap-6 lg:grid-cols-[2fr,1fr]">
-        {/* LEFT COLUMN: Properties + Overview */}
+      {/* Two-column grid layout */}
+      <div className="grid gap-6 lg:grid-cols-[1fr,320px]">
+        {/* LEFT COLUMN */}
         <div className="space-y-4">
-          {/* Properties / Locations */}
+          {/* Action bar — compact, above header card */}
+          <div className="flex items-center justify-end gap-2">
+            <Button size="sm" className="h-8 px-3 text-xs" onClick={() => handleCreateJob()} data-testid="button-create-job">
+              <Briefcase className="h-3.5 w-3.5 mr-1.5" />
+              Create Job
+            </Button>
+            <Button variant="outline" size="sm" className="h-8 px-3 text-xs" onClick={() => setAddLocationDialogOpen(true)} data-testid="button-add-location">
+              <Plus className="h-3.5 w-3.5 mr-1.5" />
+              Add Location
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="h-8 px-2.5 text-xs" data-testid="button-more-actions">
+                  <MoreHorizontal className="h-3.5 w-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => setEditDialogOpen(true)} data-testid="button-edit-client">
+                  <Pencil className="h-3.5 w-3.5 mr-2" />
+                  Edit Company
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href={`/invoices/new?clientId=${clientId}`} data-testid="button-create-invoice">
+                    <FileText className="h-3.5 w-3.5 mr-2" />
+                    Create Invoice
+                  </Link>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+
+          {/* Header card — left column only */}
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
-              <CardTitle className="text-sm font-semibold">Properties / Locations</CardTitle>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setAddLocationDialogOpen(true)}
-                data-testid="button-add-location"
-              >
-                <Plus className="h-4 w-4 mr-1" />
-                Add Location
-              </Button>
-            </CardHeader>
-            <CardContent className="p-0">
-              <div className="divide-y">
-                {locations.length === 0 ? (
-                  <button
-                    type="button"
-                    className="flex w-full items-center justify-between px-3 py-1.5 text-left hover-elevate"
-                    onClick={() => handleGoToLocation(clientId!)}
-                    data-testid={`row-location-${clientId}`}
+            <CardContent className="pt-5 pb-4 space-y-3">
+              {/* Row 1: Client name */}
+              <h1 className="text-xl font-semibold leading-tight" data-testid="text-client-name">
+                {companyName}
+              </h1>
+              {/* Row 2: Status + Bill Parent */}
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <Badge variant={isActive ? "default" : "secondary"} className="text-xs">
+                  {isActive ? "Active" : "Inactive"}
+                </Badge>
+                <span className="text-muted-foreground">
+                  Bill Parent: <span className="font-medium">{billParent ? "Yes" : "No"}</span>
+                </span>
+              </div>
+              {/* Row 3: Tags */}
+              <div className="flex flex-wrap items-center gap-1.5">
+                {companyTags.map((tag) => (
+                  <span
+                    key={tag.id}
+                    className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium text-white"
+                    style={{ backgroundColor: tag.color }}
                   >
-                    <div className="flex items-center gap-2 text-sm">
-                      <Star className="h-3.5 w-3.5 text-yellow-500 fill-yellow-500 flex-shrink-0" />
-                      <span className="font-medium">{client.location || "Primary Location"}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-muted-foreground">
-                        {client.address || `${client.city}, ${client.province}`}
-                      </span>
-                      <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                    </div>
-                  </button>
-                ) : (
-                  locations.map((loc) => (
+                    {tag.name}
+                  </span>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setEditTagsOpen(true)}
+                  className="inline-flex items-center rounded-full border border-dashed border-muted-foreground/40 px-2 py-0.5 text-xs text-muted-foreground hover:border-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <Plus className="h-3 w-3 mr-0.5" />
+                  {companyTags.length === 0 ? "Add Tag" : "Edit"}
+                </button>
+              </div>
+              {/* Divider */}
+              <div className="border-t" />
+              {/* Properties / Locations list */}
+              <div>
+                <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Properties / Locations</h3>
+                <div className="divide-y -mx-1">
+                  {locations.length === 0 ? (
                     <button
-                      key={loc.id}
                       type="button"
-                      className="flex w-full items-center justify-between px-3 py-1.5 text-left hover-elevate"
-                      onClick={() => handleGoToLocation(loc.id)}
-                      data-testid={`row-location-${loc.id}`}
+                      className="flex w-full items-center justify-between px-2 py-1.5 text-left rounded hover:bg-muted/50 transition-colors"
+                      onClick={() => handleGoToLocation(clientId!)}
+                      data-testid={`row-location-${clientId}`}
                     >
                       <div className="flex items-center gap-2 text-sm">
-                        {loc.isPrimary && (
-                          <Star className="h-3.5 w-3.5 text-yellow-500 fill-yellow-500 flex-shrink-0" />
-                        )}
-                        <span className="font-medium">{loc.location || loc.companyName}</span>
-                        {loc.inactive && (
-                          <Badge variant="secondary" className="text-[10px] px-1 py-0">
-                            Inactive
-                          </Badge>
-                        )}
+                        <Star className="h-3.5 w-3.5 text-yellow-500 fill-yellow-500 flex-shrink-0" />
+                        <span className="font-medium">{client.location || "Primary Location"}</span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground truncate max-w-[200px]">
-                          {loc.address || `${loc.city}, ${loc.province}`}
+                        <span className="text-xs text-muted-foreground">
+                          {client.address || `${client.city}, ${client.province}`}
                         </span>
                         <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />
                       </div>
                     </button>
-                  ))
-                )}
+                  ) : (
+                    locations.map((loc) => (
+                      <button
+                        key={loc.id}
+                        type="button"
+                        className="flex w-full items-center justify-between px-2 py-1.5 text-left rounded hover:bg-muted/50 transition-colors"
+                        onClick={() => handleGoToLocation(loc.id)}
+                        data-testid={`row-location-${loc.id}`}
+                      >
+                        <div className="flex items-center gap-2 text-sm">
+                          {loc.isPrimary && (
+                            <Star className="h-3.5 w-3.5 text-yellow-500 fill-yellow-500 flex-shrink-0" />
+                          )}
+                          <span className="font-medium">{loc.location || loc.companyName}</span>
+                          {loc.inactive && (
+                            <Badge variant="secondary" className="text-[10px] px-1 py-0">
+                              Inactive
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-muted-foreground truncate max-w-[200px]">
+                            {loc.address || `${loc.city}, ${loc.province}`}
+                          </span>
+                          <ChevronRight className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -1107,8 +1087,8 @@ export default function ClientDetailPage() {
           </Card>
         </div>
 
-        {/* RIGHT COLUMN: Contact + Notes */}
-        <div className="space-y-4">
+        {/* RIGHT COLUMN: Contact + Notes — pt aligns with header card title region */}
+        <div className="space-y-4 lg:pt-10">
           {/* Contacts — one row per person, accordion expand for associations */}
           <Card>
             <CardHeader className="pb-3 flex flex-row items-center justify-between">

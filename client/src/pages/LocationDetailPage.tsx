@@ -6,7 +6,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 
-import { ArrowLeft, Briefcase, FileText, Trash2, ChevronDown, ChevronRight, Star, User, Phone, Mail, Plus } from "lucide-react";
+import { ArrowLeft, Briefcase, FileText, Trash2, ChevronDown, ChevronRight, Star, User, Phone, Mail, Plus, Pencil, MoreHorizontal } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
@@ -265,8 +272,8 @@ export default function LocationDetailPage() {
 
   return (
     <div className="p-6 h-full flex flex-col">
-      {/* Breadcrumb */}
-      <nav className="mb-4 text-sm" data-testid="breadcrumb">
+      {/* Breadcrumb — Client Name / Location Name (no duplicate heading) */}
+      <nav className="mb-3 text-sm" data-testid="breadcrumb">
         <ol className="flex flex-wrap items-center gap-1">
           <li>
             <button
@@ -285,106 +292,112 @@ export default function LocationDetailPage() {
         </ol>
       </nav>
 
-      {/* Header */}
-      <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-semibold" data-testid="text-location-name">
-              {locationName}
-            </h1>
-            {location.isPrimary && <Star className="h-5 w-5 text-yellow-500 fill-yellow-500" />}
-          </div>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {location.address}, {location.city} {location.province} {location.postalCode}
-          </p>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-            <Badge
-              variant={isActive ? "default" : "secondary"}
-              className={isActive ? "bg-blue-50 text-blue-700 hover:bg-blue-50" : ""}
-            >
-              {isActive ? "Active" : "Inactive"}
-            </Badge>
-            {location.isPrimary && (
-              <Badge variant="outline" className="bg-yellow-50 text-yellow-700 border-yellow-200">
-                Primary
-              </Badge>
-            )}
-            <span className="text-muted-foreground">
-              Bill Parent: <span className="font-medium">{billParent ? "Yes" : "No"}</span>
-            </span>
-          </div>
-          {/* Tag pills — Phase 1B Location Tags */}
-          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-            {locationTags.map((tag) => (
-              <span
-                key={tag.id}
-                className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium text-white"
-                style={{ backgroundColor: tag.color }}
-              >
-                {tag.name}
-              </span>
-            ))}
-            <button
-              type="button"
-              onClick={() => setEditTagsOpen(true)}
-              className="inline-flex items-center rounded-full border border-dashed border-muted-foreground/40 px-2 py-0.5 text-xs text-muted-foreground hover:border-muted-foreground hover:text-foreground transition-colors"
-            >
-              <Plus className="h-3 w-3 mr-0.5" />
-              {locationTags.length === 0 ? "Add Tag" : "Edit"}
-            </button>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          {canShowSetPrimary && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPrimaryMutation.mutate()}
-              disabled={setPrimaryMutation.isPending}
-              data-testid="button-set-primary"
-            >
-              <Star className="h-3.5 w-3.5 mr-1.5" />
-              Set as Primary
+      {/* Two-column grid layout */}
+      <div className="grid gap-6 lg:grid-cols-[1fr,320px] flex-1 min-h-0">
+        {/* LEFT COLUMN */}
+        <div className="flex flex-col gap-4 min-h-0">
+          {/* Action bar — compact, above header card */}
+          <div className="flex items-center justify-end gap-2">
+            <Button size="sm" className="h-8 px-3 text-xs" onClick={() => setJobDialogOpen(true)} data-testid="button-create-job">
+              <Briefcase className="h-3.5 w-3.5 mr-1.5" />
+              Create Job
             </Button>
-          )}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="h-8 px-2.5 text-xs" data-testid="button-more-actions">
+                  <MoreHorizontal className="h-3.5 w-3.5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => setEditModalOpen(true)} data-testid="button-edit-location">
+                  <Pencil className="h-3.5 w-3.5 mr-2" />
+                  Edit Location
+                </DropdownMenuItem>
+                <DropdownMenuItem data-testid="button-create-invoice">
+                  <FileText className="h-3.5 w-3.5 mr-2" />
+                  Create Invoice
+                </DropdownMenuItem>
+                {canShowSetPrimary && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onClick={() => setPrimaryMutation.mutate()}
+                      disabled={setPrimaryMutation.isPending}
+                      data-testid="button-set-primary"
+                    >
+                      <Star className="h-3.5 w-3.5 mr-2" />
+                      Set as Primary
+                    </DropdownMenuItem>
+                  </>
+                )}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  className="text-destructive focus:text-destructive"
+                  onClick={() => setDeleteLocationDialogOpen(true)}
+                  data-testid="button-delete-location"
+                >
+                  <Trash2 className="h-3.5 w-3.5 mr-2" />
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
 
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setEditModalOpen(true)}
-            data-testid="button-edit-location"
-          >
-            Edit Location
-          </Button>
+          {/* Header card — left column only */}
+          <Card>
+            <CardContent className="pt-5 pb-4 space-y-3">
+              {/* Row 1: Location name */}
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl font-semibold leading-tight" data-testid="text-location-name">
+                  {locationName}
+                </h1>
+                {location.isPrimary && <Star className="h-4 w-4 text-yellow-500 fill-yellow-500" />}
+              </div>
+              {/* Row 2: Address */}
+              <p className="text-sm text-muted-foreground">
+                {location.address}, {location.city} {location.province} {location.postalCode}
+              </p>
+              {/* Row 3: Status + Bill Parent */}
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <Badge
+                  variant={isActive ? "default" : "secondary"}
+                  className={isActive ? "bg-blue-50 text-blue-700 hover:bg-blue-50" : ""}
+                >
+                  {isActive ? "Active" : "Inactive"}
+                </Badge>
+                {location.isPrimary && (
+                  <Badge variant="outline" className="bg-yellow-50 text-yellow-700 border-yellow-200">
+                    Primary
+                  </Badge>
+                )}
+                <span className="text-muted-foreground">
+                  Bill Parent: <span className="font-medium">{billParent ? "Yes" : "No"}</span>
+                </span>
+              </div>
+              {/* Row 4: Tags */}
+              <div className="flex flex-wrap items-center gap-1.5">
+                {locationTags.map((tag) => (
+                  <span
+                    key={tag.id}
+                    className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium text-white"
+                    style={{ backgroundColor: tag.color }}
+                  >
+                    {tag.name}
+                  </span>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setEditTagsOpen(true)}
+                  className="inline-flex items-center rounded-full border border-dashed border-muted-foreground/40 px-2 py-0.5 text-xs text-muted-foreground hover:border-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <Plus className="h-3 w-3 mr-0.5" />
+                  {locationTags.length === 0 ? "Add Tag" : "Edit"}
+                </button>
+              </div>
+            </CardContent>
+          </Card>
 
-          <Button size="sm" onClick={() => setJobDialogOpen(true)} data-testid="button-create-job">
-            <Briefcase className="h-3.5 w-3.5 mr-1.5" />
-            Create Job
-          </Button>
-
-          <Button variant="outline" size="sm" data-testid="button-create-invoice">
-            <FileText className="h-3.5 w-3.5 mr-1.5" />
-            Create Invoice
-          </Button>
-
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-destructive hover:text-destructive"
-            onClick={() => setDeleteLocationDialogOpen(true)}
-            data-testid="button-delete-location"
-          >
-            <Trash2 className="h-3.5 w-3.5 mr-1.5" />
-            Delete
-          </Button>
-        </div>
-      </header>
-
-      {/* Main 2-Column Layout */}
-      <div className="grid gap-6 lg:grid-cols-[3fr,2fr] flex-1 min-h-0">
-        {/* LEFT: Overview */}
-        <div className="flex flex-col min-h-0">
+          {/* Overview card */}
           <Card className="flex-1 flex flex-col min-h-0">
             <CardHeader className="pb-3">
               <CardTitle className="text-sm font-semibold">Overview</CardTitle>
@@ -571,7 +584,8 @@ export default function LocationDetailPage() {
         </div>
 
         {/* RIGHT column: Contacts → PM → Location Parts → Notes → Equipment */}
-        <div className="space-y-3">
+        {/* pt aligns right column with header card title region */}
+        <div className="space-y-3 lg:pt-10">
           {/* Contacts — view-only, location-scoped only */}
           <Collapsible open={contactsOpen} onOpenChange={setContactsOpen}>
             <Card>

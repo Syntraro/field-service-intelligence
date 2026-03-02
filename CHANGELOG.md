@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### Client Quotes tab "No quotes yet" — null customerCompanyId (2026-03-02)
+- **Root cause**: Quote creation fell back to `location.parentCompanyId` which is nullable. For unlinked/legacy locations this was NULL, so quotes were stored with `customerCompanyId = NULL`. The Client detail page queries by a non-null `customerCompanyId`, returning 0 results.
+- **Fix — quote creation**: `POST /api/quotes` now uses `resolveCustomerCompanyForLocation()` which finds-or-creates the parent customer company and links the location, guaranteeing `customerCompanyId` is always set.
+- **Fix — shared service**: Extracted `server/services/customerCompanyResolver.ts` with `resolveCustomerCompanyForLocation()` — reusable by quote creation, invoice creation, and any future flow that needs a customer company from a location.
+- **Fix — backfill script**: Added `server/scripts/backfillQuoteCustomerCompanyId.ts` to repair existing quotes with NULL or mismatched `customerCompanyId`. Run: `npm run backfill:quotes-customer-company -- --fix`
+- **Cleanup**: Removed all temporary debug artifacts (`[DEBUG ClientQuotes]` / `[DEBUG LocationQuotes]` console.logs, `GET /api/quotes/debug` endpoint).
+- **Files**: `server/services/customerCompanyResolver.ts` (new), `server/routes/quotes.ts`, `server/scripts/backfillQuoteCustomerCompanyId.ts` (new), `package.json`, `client/src/pages/ClientDetailPage.tsx`, `client/src/pages/LocationDetailPage.tsx`
+
+
 #### Client Overview "Active Work" not showing unscheduled jobs (2026-03-02)
 - **Bug**: Client page Active Work filtered jobs with `isJobScheduled(j) || openSubStatus === "in_progress"`, which excluded unscheduled backlog jobs. Location page Active Work only requires `status === "open"` (no schedule requirement). Aligned Client page to match Location page: all open, non-overdue jobs now appear.
 - **Files**: `client/src/pages/ClientDetailPage.tsx`
@@ -17,6 +26,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Files**: `client/src/components/NewQuoteModal.tsx`, `client/src/pages/QuoteDetailPage.tsx`, `client/src/components/ApplyQuoteTemplateModal.tsx`
 
 ### Changed
+
+#### Client + Location Detail — Jobber-style two-column layout redesign (2026-03-02)
+- **Client Detail**: Removed breadcrumb and "Corporate Client" label. Moved client name, status, tags, and locations list into a left-column header card. Actions restructured: Create Job and Add Location visible as compact buttons; Edit Company and Create Invoice moved into a More dropdown menu. Right column (Contacts, Notes) slides up to align with header card.
+- **Location Detail**: Kept breadcrumb (Client / Location) but removed duplicate heading. Moved location info into a left-column header card. Actions restructured: Create Job visible; Edit Location, Create Invoice, Set as Primary, and Delete moved into a More dropdown. Delete requires confirmation dialog. Right column (Contacts, PM Schedule, Parts, Notes, Equipment) slides up to align with header card.
+- **Layout**: Both pages now use a consistent `grid-cols-[1fr,320px]` two-column grid. Buttons use `size="sm"` with `h-8 px-3 text-xs` for compact Jobber-like appearance. Header card is constrained to left column width only.
+- **Files**: `client/src/pages/ClientDetailPage.tsx`, `client/src/pages/LocationDetailPage.tsx`
 
 #### Quotes list — Remove row actions menu (2026-03-02)
 - **UI**: Removed the "..." dropdown menu (View/Edit/Send/Mark Approved/Mark Declined) from each row in the Quotes list page. Rows remain clickable for navigation to the quote detail page.
