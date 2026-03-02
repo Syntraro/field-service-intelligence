@@ -98,6 +98,7 @@ export function NewQuoteModal({ open, onOpenChange }: NewQuoteModalProps) {
     },
     onSuccess: (quote) => {
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
       toast({
         title: "Quote created",
         description: `Quote ${quote.quoteNumber} has been created`,

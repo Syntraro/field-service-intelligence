@@ -71,6 +71,7 @@ export function ApplyQuoteTemplateModal({
       queryClient.invalidateQueries({ queryKey: ["/api/quotes", quoteId, "details"] });
       queryClient.invalidateQueries({ queryKey: ["/api/quotes", quoteId, "lines"] });
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
 
       const modeLabel = mode === "replace" ? "replaced" : "merged";
       const skipMsg = data.skippedCount > 0 ? ` (${data.skippedCount} duplicates skipped)` : "";

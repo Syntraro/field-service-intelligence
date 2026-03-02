@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { format, isValid, parseISO } from "date-fns";
 import { useLocation, useSearch, Link } from "wouter";
-import { Search, Plus, FileText, MoreHorizontal, Check, X, Send } from "lucide-react";
+import { Search, Plus } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -17,12 +17,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import type { Quote } from "@shared/schema";
 import { NewQuoteModal } from "@/components/NewQuoteModal";
 
@@ -190,7 +184,6 @@ export default function Quotes() {
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Total</TableHead>
                   <TableHead>Updated</TableHead>
-                  <TableHead className="w-[50px]"></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -231,44 +224,6 @@ export default function Quotes() {
                     </TableCell>
                     <TableCell>
                       {safeFormatDate(quote.updatedAt || quote.createdAt)}
-                    </TableCell>
-                    <TableCell onClick={(e) => e.stopPropagation()}>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="icon" data-testid={`button-quote-menu-${quote.id}`}>
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem onClick={() => setLocation(`/quotes/${quote.id}`)}>
-                            <FileText className="h-4 w-4 mr-2" />
-                            View
-                          </DropdownMenuItem>
-                          {quote.status === "draft" && (
-                            <>
-                              <DropdownMenuItem onClick={() => setLocation(`/quotes/${quote.id}?edit=true`)}>
-                                Edit
-                              </DropdownMenuItem>
-                              <DropdownMenuItem>
-                                <Send className="h-4 w-4 mr-2" />
-                                Send
-                              </DropdownMenuItem>
-                            </>
-                          )}
-                          {quote.status === "sent" && (
-                            <>
-                              <DropdownMenuItem>
-                                <Check className="h-4 w-4 mr-2" />
-                                Mark Approved
-                              </DropdownMenuItem>
-                              <DropdownMenuItem>
-                                <X className="h-4 w-4 mr-2" />
-                                Mark Declined
-                              </DropdownMenuItem>
-                            </>
-                          )}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
                     </TableCell>
                   </TableRow>
                 ))}

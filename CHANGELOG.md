@@ -6,7 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### Client Overview "Active Work" not showing unscheduled jobs (2026-03-02)
+- **Bug**: Client page Active Work filtered jobs with `isJobScheduled(j) || openSubStatus === "in_progress"`, which excluded unscheduled backlog jobs. Location page Active Work only requires `status === "open"` (no schedule requirement). Aligned Client page to match Location page: all open, non-overdue jobs now appear.
+- **Files**: `client/src/pages/ClientDetailPage.tsx`
+
+#### Quotes list not refreshing after create (2026-03-02)
+- **Bug**: Creating a quote did not refresh the Quotes list page because `NewQuoteModal` invalidated `["/api/quotes"]` but the list queries `["/api/quotes/list"]`. Added `["/api/quotes/list"]` invalidation to `NewQuoteModal`, `QuoteDetailPage` (send/approve/decline/delete/convert mutations), and `ApplyQuoteTemplateModal`.
+- **Files**: `client/src/components/NewQuoteModal.tsx`, `client/src/pages/QuoteDetailPage.tsx`, `client/src/components/ApplyQuoteTemplateModal.tsx`
+
 ### Changed
+
+#### Quotes list — Remove row actions menu (2026-03-02)
+- **UI**: Removed the "..." dropdown menu (View/Edit/Send/Mark Approved/Mark Declined) from each row in the Quotes list page. Rows remain clickable for navigation to the quote detail page.
+- **Files**: `client/src/pages/Quotes.tsx`
+
+#### Quotes tab on Client + Location Overview (2026-03-02)
+- **UI — Client page**: Added "Quotes" tab to the Overview card on Client detail page. Shows quotes scoped to the customer company (up to 5, with "more" link). Each row links to quote detail.
+- **UI — Location page**: Added "Quotes" tab to the Overview card on Location detail page. Shows quotes scoped to that location. Each row links to quote detail.
+- **Server**: Added optional `locationId` and `customerCompanyId` query params to `GET /api/quotes/list` endpoint for scoped filtering. No schema/migration changes.
+- **Files**: `client/src/pages/ClientDetailPage.tsx`, `client/src/pages/LocationDetailPage.tsx`, `server/routes/quotes.ts`, `server/storage/quotes.ts`
 
 #### Create Job Modal — Streamlined fields (2026-03-02)
 - **UI**: Removed Job Type dropdown, Access Instructions textarea, and Billing Notes textarea from the Create/Edit Job modal (`QuickAddJobDialog.tsx`). Modal now only shows: Location, Summary, Scheduling, and Description.

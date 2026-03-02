@@ -75,13 +75,18 @@ const createQuoteLineSchema = z.object({
 // ========================================
 
 // GET /api/quotes/list - List all quotes with pagination
+// Supports optional locationId and customerCompanyId query params for scoped views
 router.get("/list", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const pagination = parsePagination(req.query);
   const status = typeof req.query.status === "string" ? req.query.status : undefined;
+  const locationId = typeof req.query.locationId === "string" ? req.query.locationId : undefined;
+  const customerCompanyId = typeof req.query.customerCompanyId === "string" ? req.query.customerCompanyId : undefined;
 
   const result = await quoteRepository.getQuotes(req.companyId!, {
     ...pagination,
     status,
+    locationId,
+    customerCompanyId,
   });
 
   res.json(paginated(result.items, result.meta));

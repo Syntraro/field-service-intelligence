@@ -55,10 +55,10 @@ import EditTagsModal from "@/components/EditTagsModal";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { format } from "date-fns";
-import type { Client, CustomerCompany, Job, Invoice, ClientContact, ClientTag } from "@shared/schema";
+import type { Client, CustomerCompany, Job, Invoice, ClientContact, ClientTag, Quote } from "@shared/schema";
 import { isJobOverdue, isJobScheduled } from "@shared/schema";
 
-type OverviewTab = "activeWork" | "jobs" | "invoices";
+type OverviewTab = "activeWork" | "jobs" | "invoices" | "quotes";
 
 type CompanyOverview = {
   company: CustomerCompany;
@@ -242,6 +242,21 @@ export default function ClientDetailPage() {
   const jobs: Job[] = overview?.jobs ?? [];
   const invoices: Invoice[] = overview?.invoices ?? [];
 
+  // Quotes scoped to this customer company
+  interface EnrichedQuote extends Quote {
+    location?: { id: string; companyName: string };
+  }
+  const { data: clientQuotes = [] } = useQuery<EnrichedQuote[]>({
+    queryKey: ["/api/quotes/list", { customerCompanyId: companyId }],
+    queryFn: async () => {
+      const res = await fetch(`/api/quotes/list?customerCompanyId=${companyId}&limit=200`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch quotes");
+      const json = await res.json();
+      return json.data ?? [];
+    },
+    enabled: Boolean(companyId),
+  });
+
   /**
    * Jobs roll up by locationId (not clientId)
    */
@@ -254,12 +269,11 @@ export default function ClientDetailPage() {
   const overdueJobs = companyJobs.filter((j) => isJobOverdue(j));
 
   const overdueJobIds = new Set(overdueJobs.map((j) => j.id));
+  // Active Work = all open jobs (no scheduledStart requirement).
+  // Matches Location page Active Work: includes unscheduled jobs.
+  // Overdue jobs are shown in a separate section, so exclude them here.
   const activeJobs = companyJobs.filter(
-    // Active = open + (scheduled OR in_progress)
-    // Use canonical isJobScheduled predicate for scheduled check
-    (j) => j.status === "open" &&
-           (isJobScheduled(j) || j.openSubStatus === "in_progress") &&
-           !overdueJobIds.has(j.id)
+    (j) => j.status === "open" && !overdueJobIds.has(j.id)
   );
 
   /**
@@ -868,6 +882,7 @@ export default function ClientDetailPage() {
                     { value: "activeWork", label: "Active Work" },
                     { value: "jobs", label: "Jobs" },
                     { value: "invoices", label: "Invoices" },
+                    { value: "quotes", label: "Quotes" },
                   ].map((tab) => (
                     <button
                       key={tab.value}
@@ -1038,6 +1053,52 @@ export default function ClientDetailPage() {
                       ))}
                       {invoices.length > 5 && (
                         <p className="text-xs text-muted-foreground">+ {invoices.length - 5} more invoices</p>
+                      )}
+                    </div>
+                  ))}
+
+                {overviewTab === "quotes" &&
+                  (clientQuotes.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No quotes yet.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {clientQuotes.slice(0, 5).map((q) => (
+                        <div
+                          key={q.id}
+                          className="flex items-center justify-between p-3 border rounded-lg hover-elevate cursor-pointer"
+                          onClick={() => setLocation(`/quotes/${q.id}`)}
+                          data-testid={`row-quote-${q.id}`}
+                        >
+                          <div>
+                            <p className="font-medium text-sm text-primary hover:underline">
+                              {q.quoteNumber || `Q-${q.id.slice(0, 6)}`}
+                              {q.title ? ` • ${q.title}` : ""}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {q.location?.companyName || ""}
+                            </p>
+                          </div>
+                          <div className="text-right">
+                            <Badge
+                              variant={
+                                q.status === "approved" ? "default"
+                                : q.status === "sent" ? "secondary"
+                                : q.status === "draft" ? "outline"
+                                : "destructive"
+                              }
+                            >
+                              {q.status}
+                            </Badge>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              {new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(
+                                Number(q.total ?? 0)
+                              )}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                      {clientQuotes.length > 5 && (
+                        <p className="text-xs text-muted-foreground">+ {clientQuotes.length - 5} more quotes</p>
                       )}
                     </div>
                   ))}

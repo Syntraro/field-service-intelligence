@@ -18,7 +18,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { format } from "date-fns";
 import EditTagsModal from "@/components/EditTagsModal";
-import type { Client, CustomerCompany, LocationPMPartTemplate, LocationEquipment, ClientContact, ClientTag } from "@shared/schema";
+import type { Client, CustomerCompany, LocationPMPartTemplate, LocationEquipment, ClientContact, ClientTag, Quote } from "@shared/schema";
 import { isJobOverdue } from "@shared/schema";
 import { useJobsFeed } from "@/hooks/useJobsFeed";
 import { getJobStatusDisplay } from "@/components/job/jobUtils";
@@ -54,7 +54,7 @@ export default function LocationDetailPage() {
   const [equipmentOpen, setEquipmentOpen] = useState(false);
   const notesPanelRef = useRef<NotesPanelRef>(null);
 
-  type OverviewTab = "activeWork" | "jobs" | "invoices";
+  type OverviewTab = "activeWork" | "jobs" | "invoices" | "quotes";
   const [overviewTab, setOverviewTab] = useState<OverviewTab>("activeWork");
   const [deleteLocationDialogOpen, setDeleteLocationDialogOpen] = useState(false);
   const [editTagsOpen, setEditTagsOpen] = useState(false);
@@ -143,6 +143,18 @@ export default function LocationDetailPage() {
     j.status === "open" &&
     !overdueJobs.some(o => o.id === j.id)
   );
+
+  // Quotes scoped to this location
+  const { data: locationQuotes = [] } = useQuery<Quote[]>({
+    queryKey: ["/api/quotes/list", { locationId }],
+    queryFn: async () => {
+      const res = await fetch(`/api/quotes/list?locationId=${locationId}&limit=200`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch quotes");
+      const json = await res.json();
+      return json.data ?? [];
+    },
+    enabled: Boolean(locationId),
+  });
 
   const setPrimaryMutation = useMutation({
     mutationFn: async () => {
@@ -384,6 +396,7 @@ export default function LocationDetailPage() {
                     { value: "activeWork", label: "Active Work" },
                     { value: "jobs", label: "Jobs" },
                     { value: "invoices", label: "Invoices" },
+                    { value: "quotes", label: "Quotes" },
                   ].map((tab) => (
                     <button
                       key={tab.value}
@@ -509,6 +522,49 @@ export default function LocationDetailPage() {
                     <p className="text-sm text-muted-foreground">No invoices yet for this location.</p>
                   </div>
                 )}
+
+                {overviewTab === "quotes" &&
+                  (locationQuotes.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No quotes yet for this location.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {locationQuotes.map((q) => (
+                        <div
+                          key={q.id}
+                          className="flex items-center justify-between p-3 border rounded-lg hover-elevate cursor-pointer"
+                          onClick={() => setLocation(`/quotes/${q.id}`)}
+                          data-testid={`row-quote-${q.id}`}
+                        >
+                          <div>
+                            <p className="font-medium text-sm text-primary hover:underline">
+                              {q.quoteNumber || `Q-${q.id.slice(0, 6)}`}
+                              {q.title ? ` • ${q.title}` : ""}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {q.updatedAt ? format(new Date(q.updatedAt), "MMM d, yyyy") : ""}
+                            </p>
+                          </div>
+                          <div className="text-right">
+                            <Badge
+                              variant={
+                                q.status === "approved" ? "default"
+                                : q.status === "sent" ? "secondary"
+                                : q.status === "draft" ? "outline"
+                                : "destructive"
+                              }
+                            >
+                              {q.status}
+                            </Badge>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              {new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(
+                                Number(q.total ?? 0)
+                              )}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ))}
               </div>
             </CardContent>
           </Card>

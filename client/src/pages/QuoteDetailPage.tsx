@@ -130,6 +130,7 @@ export default function QuoteDetailPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
       setShowSendModal(false);
       setSendRecipients("");
       setSendSubject("");
@@ -146,6 +147,7 @@ export default function QuoteDetailPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
       setShowApproveConfirm(false);
       toast({ title: "Quote approved" });
     },
@@ -159,6 +161,7 @@ export default function QuoteDetailPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
       setShowDeclineConfirm(false);
       toast({ title: "Quote declined" });
     },
@@ -171,6 +174,7 @@ export default function QuoteDetailPage() {
     mutationFn: () => apiRequest(`/api/quotes/${quoteId}`, { method: "DELETE" }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
       setShowDeleteConfirm(false);
       toast({ title: "Quote deleted" });
       setLocation("/quotes");
@@ -230,6 +234,7 @@ export default function QuoteDetailPage() {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
       // Phase 4 Step C5: canonical family key
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       setShowConvertToJobConfirm(false);

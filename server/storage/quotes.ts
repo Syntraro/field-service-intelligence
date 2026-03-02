@@ -18,6 +18,8 @@ interface PaginationOptions {
   offset?: number;
   search?: string;
   status?: string;
+  locationId?: string;
+  customerCompanyId?: string;
 }
 
 interface PaginatedResult<T> {
@@ -52,6 +54,14 @@ export class QuoteRepository extends BaseRepository {
     // Add status filter
     if (options.status && options.status !== "all") {
       conditions.push(eq(quotes.status, options.status));
+    }
+
+    // Scope by location or customer company
+    if (options.locationId) {
+      conditions.push(eq(quotes.locationId, options.locationId));
+    }
+    if (options.customerCompanyId) {
+      conditions.push(eq(quotes.customerCompanyId, options.customerCompanyId));
     }
 
     // Count total
