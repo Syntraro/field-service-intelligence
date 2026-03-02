@@ -25,6 +25,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### Job reopen failing with "Required at version" validation error (2026-03-02)
+- **Root cause**: `reopenJobMutation` in `JobHeaderCard.tsx` sent `{ target: "in_progress" }` but the server `reopenJobSchema` requires `version` (optimistic locking) and the field name is `targetOpenSubStatus`, not `target`. Zod rejected the payload before the handler ran.
+- **Fix**: Send `{ targetOpenSubStatus: "in_progress", version: job.version }` matching the server schema exactly.
+- **Files**: `client/src/components/JobHeaderCard.tsx`
+
 #### Dashboard overdue: remove from top strip, show only in Needs Attention (2026-03-02)
 - **Bug 1**: The workflow strip Jobs section showed an "Overdue" row — not wanted. Overdue jobs should appear only under Needs Attention.
 - **Bug 2**: Even after the overdue predicate fix (`NOW()` instead of midnight), Needs Attention still showed "All caught up!" because the composite `overdueCondition` SQL fragment was not composing correctly inside Drizzle's `and()` combinator. When a multi-clause `sql` template literal (containing AND operators) was passed as a single argument to Drizzle's `and()`, the generated SQL was malformed.

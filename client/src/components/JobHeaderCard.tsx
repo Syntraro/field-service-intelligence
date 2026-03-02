@@ -264,9 +264,10 @@ export function JobHeaderCard({
 
   const reopenJobMutation = useMutation({
     mutationFn: async () => {
+      // Fix: send version for optimistic locking + correct field name targetOpenSubStatus
       const response = await apiRequest(`/api/jobs/${job.id}/reopen`, {
         method: "POST",
-        body: JSON.stringify({ target: "in_progress" }),
+        body: JSON.stringify({ targetOpenSubStatus: "in_progress", version: job.version }),
       });
       return response as { job: any };
     },
