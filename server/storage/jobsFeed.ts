@@ -407,20 +407,51 @@ export async function getJobsFeed(
   }
 
   // Build ORDER BY
-  let orderClause;
+  // Priority sort: CASE-based bucket ordering for dispatch-oriented default view.
+  // Bucket 1=Overdue open, 2=Completed needing invoice, 3=In Progress,
+  // 4=Scheduled open, 5=Backlog, 6=Completed (invoiced/done), 7=Archived.
+  // Secondary sort varies per bucket (see inline comments).
+
+  // Canonical effectiveEnd: matches isJobOverdue() in shared/schema.ts and
+  // overdue SQL in maintenance.ts / admin.ts.
+  // Priority: scheduledEnd → scheduledStart+duration → scheduledStart fallback.
+  const effectiveEndExpr = sql`CASE
+    WHEN ${jobs.scheduledEnd} IS NOT NULL THEN ${jobs.scheduledEnd}
+    WHEN ${jobs.durationMinutes} IS NOT NULL THEN ${jobs.scheduledStart} + (${jobs.durationMinutes} || ' minutes')::interval
+    ELSE ${jobs.scheduledStart}
+  END`;
+
+  const priorityBucket = sql<number>`CASE
+    WHEN ${jobs.status} = 'open' AND ${jobs.scheduledStart} IS NOT NULL AND ${effectiveEndExpr} < NOW() THEN 1
+    WHEN ${jobs.status} = 'completed' AND ${jobs.invoiceId} IS NULL THEN 2
+    WHEN ${jobs.status} = 'open' AND ${jobs.openSubStatus} = 'in_progress' THEN 3
+    WHEN ${jobs.status} = 'open' AND ${jobs.scheduledStart} IS NOT NULL THEN 4
+    WHEN ${jobs.status} = 'open' THEN 5
+    WHEN ${jobs.status} IN ('completed', 'invoiced') THEN 6
+    ELSE 7
+  END`;
+
+  let orderClauses: SQL[] = [];
   const dir = filters.sortOrder === "asc" ? asc : desc;
   switch (filters.sortBy) {
     case "jobNumber":
-      orderClause = dir(jobs.jobNumber);
+      orderClauses = [dir(jobs.jobNumber)];
       break;
     case "scheduledStart":
-      orderClause = dir(jobs.scheduledStart);
+      orderClauses = [dir(jobs.scheduledStart)];
       break;
     case "status":
-      orderClause = dir(jobs.status);
+      orderClauses = [dir(jobs.status)];
+      break;
+    case "priority":
+      orderClauses = [
+        asc(priorityBucket),
+        asc(jobs.scheduledStart),
+        desc(jobs.createdAt),
+      ];
       break;
     default:
-      orderClause = desc(jobs.createdAt);
+      orderClauses = [desc(jobs.createdAt)];
   }
 
   const rows = await ctx.db
@@ -429,7 +460,7 @@ export async function getJobsFeed(
     .leftJoin(clients, eq(jobs.locationId, clients.id))
     .leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))
     .where(and(...conditions))
-    .orderBy(orderClause, desc(jobs.id))
+    .orderBy(...orderClauses, desc(jobs.id))
     .limit(limit)
     .offset(offset);
 

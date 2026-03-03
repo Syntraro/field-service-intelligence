@@ -6,7 +6,7 @@ import { format, differenceInHours } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { Search, ChevronDown, ChevronUp, ArrowUpDown, Loader2, Plus, Calendar as CalendarIcon, Wrench, AlertTriangle, AlertCircle, Clock, X, CalendarDays, FileText, MoreHorizontal, User, Bug } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -69,7 +69,7 @@ interface DerivedFilters {
 // OpenSubStatus filter (only applies when status=open)
 type OpenSubStatusFilter = "any" | "in_progress" | "on_hold" | "on_route" | "needs_review";
 
-type SortField = "location" | "jobNumber" | "schedule" | "status";
+type SortField = "priority" | "location" | "jobNumber" | "schedule" | "status";
 type SortDirection = "asc" | "desc";
 
 interface SLAKPIData {
@@ -178,23 +178,49 @@ export default function Jobs() {
   const { toast } = useToast();
   const { user } = useAuth();
   const [, setLocation] = useLocation();
+  const searchString = useSearch();
+
+  // Parse URL query params for contextual navigation from dashboard links.
+  // If any context params are present, apply those filters instead of defaults.
+  const urlParams = useMemo(() => new URLSearchParams(searchString), [searchString]);
+  const hasContextParams = useMemo(() => {
+    const contextKeys = ["lifecycle", "subStatus", "status", "workflow", "show"];
+    return contextKeys.some(k => urlParams.has(k));
+  }, [urlParams]);
+
+  // Compute initial state from URL params (runs once via lazy initializers)
+  const initialLifecycle = (): LifecycleStatusFilter => {
+    const v = urlParams.get("lifecycle");
+    if (v && ["all", "open", "completed", "invoiced", "archived"].includes(v)) {
+      return v as LifecycleStatusFilter;
+    }
+    return "all";
+  };
+  const initialSubStatus = (): OpenSubStatusFilter => {
+    const v = urlParams.get("subStatus");
+    if (v && ["any", "in_progress", "on_hold", "on_route", "needs_review"].includes(v)) {
+      return v as OpenSubStatusFilter;
+    }
+    return "any";
+  };
+  const initialDerived = (): DerivedFilters => {
+    const base: DerivedFilters = { scheduled: null, assigned: null, allDay: null, overdue: false };
+    if (urlParams.get("show") === "overdue") base.overdue = true;
+    return base;
+  };
 
   // Lifecycle status filter (4 canonical values)
-  const [lifecycleFilter, setLifecycleFilter] = useState<LifecycleStatusFilter>("all");
+  const [lifecycleFilter, setLifecycleFilter] = useState<LifecycleStatusFilter>(initialLifecycle);
 
   // Derived state filters
-  const [derivedFilters, setDerivedFilters] = useState<DerivedFilters>({
-    scheduled: null,
-    assigned: null,
-    allDay: null,
-    overdue: false,
-  });
+  const [derivedFilters, setDerivedFilters] = useState<DerivedFilters>(initialDerived);
 
   // OpenSubStatus filter (only when status=open)
-  const [openSubStatusFilter, setOpenSubStatusFilter] = useState<OpenSubStatusFilter>("any");
+  const [openSubStatusFilter, setOpenSubStatusFilter] = useState<OpenSubStatusFilter>(initialSubStatus);
 
   const [searchQuery, setSearchQuery] = useState("");
-  const [sortField, setSortField] = useState<SortField>("schedule");
+  // Default sort: "priority" when no contextual query params, otherwise "schedule"
+  const [sortField, setSortField] = useState<SortField>(hasContextParams ? "schedule" : "priority");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [visibleCount, setVisibleCount] = useState(ITEMS_PER_PAGE);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -204,7 +230,13 @@ export default function Jobs() {
   const loaderRef = useRef<HTMLDivElement>(null);
 
   // Phase 4 Step A6: Use canonical useJobsFeed hook
-  const { jobs, isLoading } = useJobsFeed({ limit: 200, offset: 0 });
+  // When server-side priority sort is active, pass sortBy to API so DB does the bucket ordering.
+  const feedParams = useMemo(() => ({
+    limit: 200,
+    offset: 0,
+    ...(sortField === "priority" ? { sortBy: "priority" as const } : {}),
+  }), [sortField]);
+  const { jobs, isLoading } = useJobsFeed(feedParams);
 
   const isOfficeUser = Boolean(user?.role && OFFICE_ROLES.includes(user.role));
 
@@ -310,7 +342,10 @@ export default function Jobs() {
     let result = enrichedJobs.slice();
 
     // 1. Apply lifecycle status filter (canonical 4 values)
-    if (lifecycleFilter !== "all") {
+    // "All" excludes archived unless the user explicitly selects the Archived tab
+    if (lifecycleFilter === "all") {
+      result = result.filter(job => job.status !== "archived");
+    } else {
       result = result.filter(job => job.status === lifecycleFilter);
     }
 
@@ -367,40 +402,43 @@ export default function Jobs() {
       });
     }
 
-    // 5. Sort
-    result.sort((a, b) => {
-      let comparison = 0;
-      switch (sortField) {
-        case "location":
-          const companyCompare = (a.locationDisplayName || "").localeCompare(b.locationDisplayName || "");
-          if (companyCompare !== 0) {
-            comparison = companyCompare;
-          } else {
-            comparison = (a.locationName || "").localeCompare(b.locationName || "");
+    // 5. Sort — "priority" uses server-side ordering so we preserve fetch order
+    if (sortField !== "priority") {
+      result.sort((a, b) => {
+        let comparison = 0;
+        switch (sortField) {
+          case "location": {
+            const companyCompare = (a.locationDisplayName || "").localeCompare(b.locationDisplayName || "");
+            if (companyCompare !== 0) {
+              comparison = companyCompare;
+            } else {
+              comparison = (a.locationName || "").localeCompare(b.locationName || "");
+            }
+            break;
           }
-          break;
-        case "jobNumber":
-          comparison = a.jobNumber - b.jobNumber;
-          break;
-        case "schedule":
-          if (!a.scheduledStart && !b.scheduledStart) {
-            comparison = 0;
-          } else if (!a.scheduledStart) {
-            comparison = 1;
-          } else if (!b.scheduledStart) {
-            comparison = -1;
-          } else {
-            const dateA = new Date(a.scheduledStart);
-            const dateB = new Date(b.scheduledStart);
-            comparison = dateA.getTime() - dateB.getTime();
-          }
-          break;
-        case "status":
-          comparison = a.statusInfo.priority - b.statusInfo.priority;
-          break;
-      }
-      return sortDirection === "asc" ? comparison : -comparison;
-    });
+          case "jobNumber":
+            comparison = a.jobNumber - b.jobNumber;
+            break;
+          case "schedule":
+            if (!a.scheduledStart && !b.scheduledStart) {
+              comparison = 0;
+            } else if (!a.scheduledStart) {
+              comparison = 1;
+            } else if (!b.scheduledStart) {
+              comparison = -1;
+            } else {
+              const dateA = new Date(a.scheduledStart);
+              const dateB = new Date(b.scheduledStart);
+              comparison = dateA.getTime() - dateB.getTime();
+            }
+            break;
+          case "status":
+            comparison = a.statusInfo.priority - b.statusInfo.priority;
+            break;
+        }
+        return sortDirection === "asc" ? comparison : -comparison;
+      });
+    }
 
     return result;
   }, [enrichedJobs, lifecycleFilter, derivedFilters, openSubStatusFilter, searchQuery, sortField, sortDirection]);
@@ -519,7 +557,8 @@ export default function Jobs() {
     };
   }, [enrichedJobs]);
 
-  const totalCount = jobs.length;
+  // "All" tab count excludes archived to match the filtered view
+  const totalCount = jobs.length - (counts?.lifecycle.archived ?? 0);
 
   // Helper to toggle derived filter
   const toggleDerivedFilter = (key: keyof DerivedFilters, value: boolean | null) => {
@@ -785,6 +824,39 @@ export default function Jobs() {
               </DropdownMenu>
             </div>
           )}
+
+          {/* Sort dropdown */}
+          <div className="flex items-center gap-2">
+            <span className="text-muted-foreground">Sort:</span>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="h-7" data-testid="sort-dropdown">
+                  {sortField === "priority" ? "Priority" :
+                   sortField === "schedule" ? "Schedule" :
+                   sortField === "location" ? "Location" :
+                   sortField === "jobNumber" ? "Job #" : "Status"}
+                  <ChevronDown className="h-3 w-3 ml-1" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                <DropdownMenuItem onClick={() => { setSortField("priority"); setSortDirection("desc"); }}>
+                  Priority
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => { setSortField("schedule"); setSortDirection("desc"); }}>
+                  Schedule
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => { setSortField("status"); setSortDirection("asc"); }}>
+                  Status
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => { setSortField("jobNumber"); setSortDirection("desc"); }}>
+                  Job #
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => { setSortField("location"); setSortDirection("asc"); }}>
+                  Location
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
 
           {/* Clear filters button */}
           {hasActiveFilters && (

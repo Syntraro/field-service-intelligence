@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Jobs page default priority sort with context-aware navigation (2026-03-03)
+- **Priority sort**: New default sort when landing on `/jobs` from sidebar. Jobs ordered by dispatch priority buckets: Overdue → Requires Invoicing → In Progress → Scheduled → Backlog → Completed → Archived. Secondary sort: scheduled date ASC, then created date DESC.
+- **Priority sort fix**: Overdue bucket now uses canonical effective end time (`scheduledEnd → scheduledStart+duration → scheduledStart` fallback) instead of raw `scheduledStart`, matching `isJobOverdue()` and existing overdue SQL in `maintenance.ts`/`admin.ts`.
+- **Backend**: Added `sortBy=priority` option to `GET /api/jobs` using SQL CASE expression in `server/storage/jobsFeed.ts`. Also passes `sortBy`/`sortOrder` query params through `server/routes/jobs.ts`.
+- **Context-aware navigation**: Dashboard links (`/jobs?lifecycle=completed`, `/jobs?lifecycle=open&subStatus=on_hold`) now parsed by Jobs page and applied as initial filter state. When context params are present, default priority sort is NOT applied.
+- **Archived exclusion**: "All" status tab now excludes archived jobs by default. Archived only visible when explicitly selecting the "Archived" tab.
+- **Sort dropdown**: Added Sort control to filter row 2 with options: Priority, Schedule, Status, Job #, Location.
+- **Files**: `server/storage/jobsFeed.ts`, `server/routes/jobs.ts`, `client/src/hooks/useJobsFeed.ts`, `client/src/pages/Jobs.tsx`
+
 #### Visit Reschedule Architecture — single active visit per job (2026-03-02)
 - **Architecture**: Simplified visit scheduling to enforce a single active visit per job. Empty/unactioned visits are silently replaced; actioned visits prompt a 2-button dialog ("Replace Visit" / "Complete & Schedule New"). Removed the "follow-up visit" concept entirely.
 - **`isVisitEmpty()` helper**: Added inverse of `isVisitActioned()` to `server/storage/jobVisits.ts` — returns true when a visit has no meaningful activity. Client-side mirror in `client/src/lib/visitUtils.ts` (new file).

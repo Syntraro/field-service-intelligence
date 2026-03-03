@@ -72,12 +72,19 @@ router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
   // Parse pagination from query params
   const { params: pagination } = parsePaginationLenient(req.query);
 
+  // Sort params: sortBy (jobNumber|scheduledStart|status|priority), sortOrder (asc|desc)
+  const sortBy = req.query.sortBy ? String(req.query.sortBy) : undefined;
+  const sortOrder = req.query.sortOrder === "asc" || req.query.sortOrder === "desc"
+    ? req.query.sortOrder : undefined;
+
   const filters: JobFeedFilters = {
     status,
     technicianId,
     search,
     locationId,
     dateRange,
+    sortBy,
+    sortOrder,
     limit: pagination.limit ?? 200,
     offset: pagination.offset ?? 0,
   };

@@ -91,6 +91,8 @@ export interface JobFeedParams {
   search?: string;
   locationId?: string;
   scheduledDate?: string;
+  sortBy?: string;
+  sortOrder?: "asc" | "desc";
   limit?: number;
   offset?: number;
 }
@@ -111,6 +113,8 @@ function buildJobsFeedKey(params: JobFeedParams): unknown[] {
     params.search ?? null,
     params.locationId ?? null,
     params.scheduledDate ?? null,
+    params.sortBy ?? null,
+    params.sortOrder ?? null,
     params.limit ?? null,
     params.offset ?? null,
   ];
@@ -123,6 +127,8 @@ function buildJobsFeedUrl(params: JobFeedParams): string {
   if (params.search) sp.set("search", params.search);
   if (params.locationId) sp.set("locationId", params.locationId);
   if (params.scheduledDate) sp.set("scheduledDate", params.scheduledDate);
+  if (params.sortBy) sp.set("sortBy", params.sortBy);
+  if (params.sortOrder) sp.set("sortOrder", params.sortOrder);
   sp.set("offset", String(params.offset ?? 0));
   sp.set("limit", String(params.limit ?? 200));
   const qs = sp.toString();
