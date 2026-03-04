@@ -19,6 +19,8 @@ import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useMutationWithToast } from "@/hooks/useMutationWithToast";
 import type { Client, Item, ClientPart, LocationEquipment } from "@shared/schema";
+import AddressAutocomplete from "@/components/ui/AddressAutocomplete";
+import type { PlaceSelectPayload } from "@/components/ui/AddressAutocomplete";
 
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
@@ -51,6 +53,10 @@ export default function EditClientDialog({ client, open, onOpenChange, onSaved }
     city: client.city || "",
     province: client.province || "",
     postalCode: client.postalCode || "",
+    country: client.country || "",
+    lat: client.lat || null as string | null,
+    lng: client.lng || null as string | null,
+    placeId: client.placeId || null as string | null,
     contactName: client.contactName || "",
     email: client.email || "",
     phone: client.phone || "",
@@ -72,6 +78,10 @@ export default function EditClientDialog({ client, open, onOpenChange, onSaved }
         city: client.city || "",
         province: client.province || "",
         postalCode: client.postalCode || "",
+        country: client.country || "",
+        lat: client.lat || null,
+        lng: client.lng || null,
+        placeId: client.placeId || null,
         contactName: client.contactName || "",
         email: client.email || "",
         phone: client.phone || "",
@@ -232,10 +242,29 @@ export default function EditClientDialog({ client, open, onOpenChange, onSaved }
 
               <div className="space-y-2">
                 <Label htmlFor="address">Street Address</Label>
-                <Input
+                <AddressAutocomplete
                   id="address"
                   value={formData.address}
-                  onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+                  onChange={(val) => {
+                    setFormData((prev) => ({
+                      ...prev,
+                      address: val,
+                      ...(val.trim() ? {} : { lat: null, lng: null, placeId: null }),
+                    }));
+                  }}
+                  onPlaceSelect={(p: PlaceSelectPayload) => {
+                    setFormData((prev) => ({
+                      ...prev,
+                      address: p.street,
+                      ...(p.city ? { city: p.city } : {}),
+                      ...(p.province ? { province: p.province } : {}),
+                      ...(p.postalCode ? { postalCode: p.postalCode } : {}),
+                      country: p.country || "Canada",
+                      lat: p.lat != null ? String(p.lat) : null,
+                      lng: p.lng != null ? String(p.lng) : null,
+                      placeId: p.placeId || null,
+                    }));
+                  }}
                   placeholder="123 Main St"
                 />
               </div>

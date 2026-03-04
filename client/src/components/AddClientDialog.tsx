@@ -13,6 +13,8 @@ import { Plus, Trash2, Check, ChevronsUpDown, ChevronDown } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
 import type { Item } from "@shared/schema";
+import AddressAutocomplete from "@/components/ui/AddressAutocomplete";
+import type { PlaceSelectPayload } from "@/components/ui/AddressAutocomplete";
 
 interface Part {
   id: string;
@@ -37,6 +39,10 @@ export interface ClientFormData {
   city?: string | null;
   province?: string | null;
   postalCode?: string | null;
+  country?: string | null;
+  lat?: string | null;
+  lng?: string | null;
+  placeId?: string | null;
   contactName?: string | null;
   email?: string | null;
   phone?: string | null;
@@ -80,6 +86,10 @@ export default function AddClientDialog({ onSubmit, onCancel, editData }: AddCli
     city: "",
     province: "",
     postalCode: "",
+    country: "",
+    lat: null as string | null,
+    lng: null as string | null,
+    placeId: null as string | null,
     contactName: "",
     email: "",
     phone: "",
@@ -115,6 +125,10 @@ export default function AddClientDialog({ onSubmit, onCancel, editData }: AddCli
         city: editData.city || "",
         province: editData.province || "",
         postalCode: editData.postalCode || "",
+        country: editData.country || "",
+        lat: editData.lat || null,
+        lng: editData.lng || null,
+        placeId: editData.placeId || null,
         contactName: editData.contactName || "",
         email: editData.email || "",
         phone: editData.phone || "",
@@ -131,6 +145,10 @@ export default function AddClientDialog({ onSubmit, onCancel, editData }: AddCli
         city: "",
         province: "",
         postalCode: "",
+        country: "",
+        lat: null,
+        lng: null,
+        placeId: null,
         contactName: "",
         email: "",
         phone: "",
@@ -204,20 +222,24 @@ export default function AddClientDialog({ onSubmit, onCancel, editData }: AddCli
         parts: validParts.length > 0 ? validParts : undefined
       });
 
-      setFormData({ 
-        companyName: "", 
-        location: "", 
+      setFormData({
+        companyName: "",
+        location: "",
         address: "",
         city: "",
         province: "",
         postalCode: "",
+        country: "",
+        lat: null,
+        lng: null,
+        placeId: null,
         contactName: "",
         email: "",
         phone: "",
         roofLadderCode: "",
         notes: "",
-        selectedMonths: [], 
-        inactive: false 
+        selectedMonths: [],
+        inactive: false
       });
       setPartRows([]);
     } catch (error) {
@@ -311,11 +333,29 @@ export default function AddClientDialog({ onSubmit, onCancel, editData }: AddCli
                   
                   <div className="space-y-1.5">
                     <Label htmlFor="address" className="text-xs">Street Address</Label>
-                    <Input
+                    <AddressAutocomplete
                       id="address"
-                      data-testid="input-address"
                       value={formData.address}
-                      onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+                      onChange={(val) => {
+                        setFormData((prev) => ({
+                          ...prev,
+                          address: val,
+                          ...(val.trim() ? {} : { lat: null, lng: null, placeId: null }),
+                        }));
+                      }}
+                      onPlaceSelect={(p: PlaceSelectPayload) => {
+                        setFormData((prev) => ({
+                          ...prev,
+                          address: p.street,
+                          ...(p.city ? { city: p.city } : {}),
+                          ...(p.province ? { province: p.province } : {}),
+                          ...(p.postalCode ? { postalCode: p.postalCode } : {}),
+                          country: p.country || "Canada",
+                          lat: p.lat != null ? String(p.lat) : null,
+                          lng: p.lng != null ? String(p.lng) : null,
+                          placeId: p.placeId || null,
+                        }));
+                      }}
                       placeholder="Street Address"
                     />
                   </div>

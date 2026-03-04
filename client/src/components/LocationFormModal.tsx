@@ -16,6 +16,8 @@ import { useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { Client } from "@shared/schema";
+import AddressAutocomplete from "@/components/ui/AddressAutocomplete";
+import type { PlaceSelectPayload } from "@/components/ui/AddressAutocomplete";
 
 interface LocationFormModalProps {
   open: boolean;
@@ -59,6 +61,10 @@ export default function LocationFormModal({
   const [province, setProvince] = useState("");
   const [postalCode, setPostalCode] = useState("");
   const [country, setCountry] = useState("Canada");
+  // Geocoding fields — persisted from Google Places autocomplete
+  const [lat, setLat] = useState<string | null>(null);
+  const [lng, setLng] = useState<string | null>(null);
+  const [placeId, setPlaceId] = useState<string | null>(null);
   const [contactPhone, setContactPhone] = useState("");
   const [contactEmail, setContactEmail] = useState("");
   const [billWithParent, setBillWithParent] = useState(true);
@@ -109,7 +115,10 @@ export default function LocationFormModal({
       setCity(activeLocation.city || "");
       setProvince(activeLocation.province || "");
       setPostalCode(activeLocation.postalCode || "");
-      setCountry("Canada");
+      setCountry(activeLocation.country || "Canada");
+      setLat(activeLocation.lat || null);
+      setLng(activeLocation.lng || null);
+      setPlaceId(activeLocation.placeId || null);
       setContactPhone(activeLocation.phone || "");
       setContactEmail(activeLocation.email || "");
       setBillWithParent(activeLocation.billWithParent ?? true);
@@ -123,6 +132,9 @@ export default function LocationFormModal({
       setProvince("");
       setPostalCode("");
       setCountry("Canada");
+      setLat(null);
+      setLng(null);
+      setPlaceId(null);
       setContactPhone("");
       setContactEmail("");
       setBillWithParent(true);
@@ -197,6 +209,11 @@ export default function LocationFormModal({
     if (city.trim()) payload.city = city.trim();
     if (province.trim()) payload.province = province.trim();
     if (postalCode.trim()) payload.postalCode = postalCode.trim();
+    if (country.trim()) payload.country = country.trim();
+    // Include geocoding fields when available (from Google Places)
+    if (lat) payload.lat = lat;
+    if (lng) payload.lng = lng;
+    if (placeId) payload.placeId = placeId;
     if (contactPhone.trim()) payload.phone = contactPhone.trim();
     if (contactEmail.trim()) payload.email = contactEmail.trim();
 
@@ -251,7 +268,22 @@ export default function LocationFormModal({
           <div className="space-y-2">
             <Label>Service Address</Label>
             <div className="space-y-3">
-              <Input value={street} onChange={(e) => setStreet(e.target.value)} placeholder="Street address" disabled={isResolving} />
+              <AddressAutocomplete
+                value={street}
+                onChange={(val) => { setStreet(val); }}
+                onPlaceSelect={(place: PlaceSelectPayload) => {
+                  setStreet(place.street);
+                  setCity(place.city);
+                  setProvince(place.province);
+                  setPostalCode(place.postalCode);
+                  setCountry(place.country || "Canada");
+                  setLat(place.lat != null ? String(place.lat) : null);
+                  setLng(place.lng != null ? String(place.lng) : null);
+                  setPlaceId(place.placeId || null);
+                }}
+                placeholder="Street address"
+                disabled={isResolving}
+              />
               <div className="grid grid-cols-2 gap-3">
                 <Input value={city} onChange={(e) => setCity(e.target.value)} placeholder="City" disabled={isResolving} />
                 <Input value={province} onChange={(e) => setProvince(e.target.value)} placeholder="Province/State" disabled={isResolving} />

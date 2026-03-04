@@ -16,6 +16,8 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import type { Item } from "@shared/schema";
+import AddressAutocomplete from "@/components/ui/AddressAutocomplete";
+import type { PlaceSelectPayload } from "@/components/ui/AddressAutocomplete";
 
 interface Part {
   id: string;
@@ -63,6 +65,10 @@ export default function NewAddClientDialog({ open, onOpenChange, onSaved }: NewA
     city: "",
     province: "",
     postalCode: "",
+    country: "",
+    lat: null as string | null,
+    lng: null as string | null,
+    placeId: null as string | null,
     contactName: "",
     email: "",
     phone: "",
@@ -195,6 +201,10 @@ export default function NewAddClientDialog({ open, onOpenChange, onSaved }: NewA
         city: data.city || null,
         province: data.province || null,
         postalCode: data.postalCode || null,
+        country: data.country || null,
+        lat: data.lat || null,
+        lng: data.lng || null,
+        placeId: data.placeId || null,
         contactName: data.contactName || null,
         email: data.email || null,
         phone: data.phone || null,
@@ -266,6 +276,10 @@ export default function NewAddClientDialog({ open, onOpenChange, onSaved }: NewA
         city: "",
         province: "",
         postalCode: "",
+        country: "",
+        lat: null,
+        lng: null,
+        placeId: null,
         contactName: "",
         email: "",
         phone: "",
@@ -402,11 +416,29 @@ export default function NewAddClientDialog({ open, onOpenChange, onSaved }: NewA
                   
                   <div className="space-y-1.5">
                     <Label htmlFor="address" className="text-xs">Street Address</Label>
-                    <Input
+                    <AddressAutocomplete
                       id="address"
-                      data-testid="input-address"
                       value={formData.address}
-                      onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+                      onChange={(val) => {
+                        setFormData((prev) => ({
+                          ...prev,
+                          address: val,
+                          ...(val.trim() ? {} : { lat: null, lng: null, placeId: null }),
+                        }));
+                      }}
+                      onPlaceSelect={(p: PlaceSelectPayload) => {
+                        setFormData((prev) => ({
+                          ...prev,
+                          address: p.street,
+                          ...(p.city ? { city: p.city } : {}),
+                          ...(p.province ? { province: p.province } : {}),
+                          ...(p.postalCode ? { postalCode: p.postalCode } : {}),
+                          country: p.country || "Canada",
+                          lat: p.lat != null ? String(p.lat) : null,
+                          lng: p.lng != null ? String(p.lng) : null,
+                          placeId: p.placeId || null,
+                        }));
+                      }}
                       placeholder="Street Address"
                     />
                   </div>

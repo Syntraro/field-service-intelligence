@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### Phase 1: Google Places Address Autocomplete + Persisted Lat/Lng (2026-03-04)
+- **Database columns**: Added `country`, `lat` (numeric 10,7), `lng` (numeric 10,7), `place_id` to `client_locations`. Added `lat`, `lng`, `place_id` to `supplier_locations`. All nullable — no backfill required.
+- **Google Maps loader** (`client/src/lib/googleMapsLoader.ts`): Singleton script loader for Google Maps Places API. Loads once, resolves to `false` if key missing or script fails (graceful fallback).
+- **AddressAutocomplete component** (`client/src/components/ui/AddressAutocomplete.tsx`): Reusable address input with Google Places autocomplete. Matches shadcn Input styling. Returns structured `PlaceSelectPayload` (street, city, province, postalCode, country, lat, lng, placeId). Falls back to plain text input when API unavailable.
+- **LocationFormModal integration**: Street address input replaced with `AddressAutocomplete`. Selecting a suggestion auto-fills street, city, province, postal code, country. Lat/lng/placeId persisted to DB on save.
+- **Server route updates**: `POST /api/clients/quick-create` now uses Zod validation (was previously unvalidated). All client create/update routes and supplier location routes accept and persist `lat`, `lng`, `placeId`, `country` fields.
+- **Route optimization improvement**: `routeOptimizationService.geocodeClients()` now uses persisted lat/lng when available, skipping OpenRouteService geocoding calls.
+- **Migration**: `migrations/2026_03_04_google_places_geocoding_columns.sql`
+- **Docs**: `docs/ADDRESS_AUTOCOMPLETE.md`
+- **Dev dependency**: `@types/google.maps` added; `tsconfig.json` updated with `"google.maps"` type reference.
+- **Files (new)**: `client/src/lib/googleMapsLoader.ts`, `client/src/components/ui/AddressAutocomplete.tsx`, `migrations/2026_03_04_google_places_geocoding_columns.sql`, `docs/ADDRESS_AUTOCOMPLETE.md`
+- **Files (modified)**: `shared/schema.ts`, `server/routes/clients.ts`, `server/routeOptimizationService.ts`, `client/src/components/LocationFormModal.tsx`, `tsconfig.json`, `package.json`
+
+#### Phase 2A: Roll AddressAutocomplete into top address entry points (2026-03-04)
+- **AddressAutocomplete integration**: Replaced street address `<Input>` with `<AddressAutocomplete>` on 6 additional forms. On place selection, auto-fills street, city, province, postal code, country; persists lat/lng/placeId. Falls back to plain text input when API key is missing.
+- **Guardrails**: Manual edits to address after place selection do NOT wipe lat/lng. Clearing the address field entirely clears lat/lng/placeId. Place selection only overwrites city/province/postalCode if the Places API returns non-empty values.
+- **ClientFormData interface updated**: `AddClientDialog.tsx` exports `ClientFormData` with optional `country`, `lat`, `lng`, `placeId` fields.
+- **Files (modified)**: `client/src/components/QuickCreateDrawer.tsx`, `client/src/components/NewAddClientDialog.tsx`, `client/src/components/AddClientDialog.tsx`, `client/src/components/EditClientDialog.tsx`, `client/src/components/suppliers/AddLocationDialog.tsx`, `client/src/components/suppliers/EditLocationDialog.tsx`
+
 #### Phase 1 Architecture: Event Log + Attention Queue (2026-03-04)
 - **Events table (`events`)**: Canonical tenant-scoped append-only event log for activity feeds, entity timelines, and analytics. Fields: tenantId, actorUserId, actorType, entityType, entityId, eventType, severity, summary, meta (JSONB), createdAt. Three indexes for feed, entity, and event type queries.
 - **Event writer (`server/lib/events.ts`)**: `logEvent(ctx, params)` and `logEventAsync(ctx, params)` helpers. Failures are swallowed (never break operations). Uses existing `QueryCtx` pattern for tenant/actor context.

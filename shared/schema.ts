@@ -381,6 +381,11 @@ export const clientLocations = pgTable("client_locations", {
   city: text("city"),
   province: text("province"),
   postalCode: text("postal_code"),
+  country: text("country"), // Google Places country (Phase 1 geocoding)
+  // Geocoding — persisted from Google Places autocomplete
+  lat: numeric("lat", { precision: 10, scale: 7 }),
+  lng: numeric("lng", { precision: 10, scale: 7 }),
+  placeId: text("place_id"), // Google Places place_id
   // Contact info
   contactName: text("contact_name"),
   email: text("email"),
@@ -2590,6 +2595,10 @@ export const supplierLocations = pgTable("supplier_locations", {
   province: text("province"),
   postalCode: text("postal_code"),
   country: text("country"),
+  // Geocoding — persisted from Google Places autocomplete
+  lat: numeric("lat", { precision: 10, scale: 7 }),
+  lng: numeric("lng", { precision: 10, scale: 7 }),
+  placeId: text("place_id"), // Google Places place_id
   // Contact information
   contactName: text("contact_name"),
   email: text("email"),
@@ -2624,6 +2633,9 @@ export const updateSupplierLocationSchema = z.object({
   province: z.string().nullable().optional(),
   postalCode: z.string().nullable().optional(),
   country: z.string().nullable().optional(),
+  lat: z.string().nullable().optional(), // numeric stored as string
+  lng: z.string().nullable().optional(),
+  placeId: z.string().nullable().optional(),
   contactName: z.string().nullable().optional(),
   email: z.string().email().nullable().optional(),
   phone: z.string().nullable().optional(),

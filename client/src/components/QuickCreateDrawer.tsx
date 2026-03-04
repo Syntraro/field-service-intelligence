@@ -29,6 +29,8 @@ import { useToast } from "@/hooks/use-toast";
 import { useActivityStore } from "@/lib/activityStore";
 import { cn } from "@/lib/utils";
 import type { Client } from "@shared/schema";
+import AddressAutocomplete from "@/components/ui/AddressAutocomplete";
+import type { PlaceSelectPayload } from "@/components/ui/AddressAutocomplete";
 
 type DrawerMode = "menu" | "client" | "invoice" | "quote";
 
@@ -59,6 +61,11 @@ export function QuickCreateDrawer({ open, onOpenChange, onNewJob }: QuickCreateD
   const [clientProvince, setClientProvince] = useState("");
   const [clientPostal, setClientPostal] = useState("");
   const [clientContact, setClientContact] = useState("");
+  // Geocoding fields from Google Places
+  const [clientLat, setClientLat] = useState<string | null>(null);
+  const [clientLng, setClientLng] = useState<string | null>(null);
+  const [clientPlaceId, setClientPlaceId] = useState<string | null>(null);
+  const [clientCountry, setClientCountry] = useState<string | null>(null);
 
   // ── Invoice/Quote: searchable location picker ──────────────────────────
   const [selectedLocationId, setSelectedLocationId] = useState("");
@@ -92,6 +99,10 @@ export function QuickCreateDrawer({ open, onOpenChange, onNewJob }: QuickCreateD
     setClientProvince("");
     setClientPostal("");
     setClientContact("");
+    setClientLat(null);
+    setClientLng(null);
+    setClientPlaceId(null);
+    setClientCountry(null);
     setSelectedLocationId("");
     setPickerOpen(false);
     onOpenChange(false);
@@ -108,6 +119,10 @@ export function QuickCreateDrawer({ open, onOpenChange, onNewJob }: QuickCreateD
           city: clientCity.trim() || undefined,
           province: clientProvince.trim() || undefined,
           postalCode: clientPostal.trim() || undefined,
+          country: clientCountry || undefined,
+          lat: clientLat || undefined,
+          lng: clientLng || undefined,
+          placeId: clientPlaceId || undefined,
           contactName: clientContact.trim() || undefined,
         }),
       });
@@ -287,12 +302,25 @@ export function QuickCreateDrawer({ open, onOpenChange, onNewJob }: QuickCreateD
               {/* Address fields */}
               <div>
                 <Label htmlFor="qc-address">Street Address</Label>
-                <Input
+                <AddressAutocomplete
                   id="qc-address"
                   value={clientAddress}
-                  onChange={(e) => setClientAddress(e.target.value)}
+                  onChange={(val) => {
+                    setClientAddress(val);
+                    // Clear geo fields only when address is fully cleared
+                    if (!val.trim()) { setClientLat(null); setClientLng(null); setClientPlaceId(null); }
+                  }}
+                  onPlaceSelect={(p: PlaceSelectPayload) => {
+                    setClientAddress(p.street);
+                    if (p.city) setClientCity(p.city);
+                    if (p.province) setClientProvince(p.province);
+                    if (p.postalCode) setClientPostal(p.postalCode);
+                    setClientCountry(p.country || "Canada");
+                    setClientLat(p.lat != null ? String(p.lat) : null);
+                    setClientLng(p.lng != null ? String(p.lng) : null);
+                    setClientPlaceId(p.placeId || null);
+                  }}
                   placeholder="123 Main St"
-                  data-testid="input-qc-address"
                 />
               </div>
               <div className="grid grid-cols-2 gap-2">

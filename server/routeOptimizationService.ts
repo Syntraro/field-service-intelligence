@@ -72,11 +72,26 @@ export class RouteOptimizationService {
     const geocoded: GeocodedClient[] = [];
 
     for (const client of clients) {
+      const addressLabel = [client.address, client.city, client.province, client.postalCode]
+        .filter(Boolean)
+        .join(", ");
+
+      // Use persisted lat/lng when available — skip ORS geocoding call
+      if (client.lat && client.lng) {
+        geocoded.push({
+          client,
+          coordinates: [parseFloat(client.lng), parseFloat(client.lat)], // [longitude, latitude]
+          address: addressLabel,
+        });
+        continue;
+      }
+
       // Skip if no address information
       if (!client.address && !client.city) {
         continue;
       }
 
+      // Fall back to ORS geocoding when no persisted coordinates
       const coords = await this.geocodeAddress(
         client.address || "",
         client.city || "",
@@ -88,9 +103,7 @@ export class RouteOptimizationService {
         geocoded.push({
           client,
           coordinates: coords,
-          address: [client.address, client.city, client.province, client.postalCode]
-            .filter(Boolean)
-            .join(", ")
+          address: addressLabel,
         });
       }
 

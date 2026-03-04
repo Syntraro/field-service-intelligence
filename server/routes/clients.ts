@@ -283,6 +283,10 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
     city: primaryLocation?.serviceAddress?.city?.trim() || null,
     province: primaryLocation?.serviceAddress?.stateOrProvince?.trim() || null,
     postalCode: primaryLocation?.serviceAddress?.postalCode?.trim() || null,
+    country: primaryLocation?.serviceAddress?.country?.trim() || null,
+    lat: primaryLocation?.serviceAddress?.lat || null,
+    lng: primaryLocation?.serviceAddress?.lng || null,
+    placeId: primaryLocation?.serviceAddress?.placeId?.trim() || null,
     contactName: primaryLocation?.contactName?.trim() || null,
     email: primaryLocation?.contactEmail?.trim() || company.email?.trim() || null,
     phone: primaryLocation?.contactPhone?.trim() || company.phone?.trim() || null,
@@ -313,6 +317,10 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
       city: loc.serviceAddress?.city?.trim() || null,
       province: loc.serviceAddress?.stateOrProvince?.trim() || null,
       postalCode: loc.serviceAddress?.postalCode?.trim() || null,
+      country: loc.serviceAddress?.country?.trim() || null,
+      lat: loc.serviceAddress?.lat || null,
+      lng: loc.serviceAddress?.lng || null,
+      placeId: loc.serviceAddress?.placeId?.trim() || null,
       contactName: loc.contactName?.trim() || null,
       email: loc.contactEmail?.trim() || company.email?.trim() || null,
       phone: loc.contactPhone?.trim() || company.phone?.trim() || null,
@@ -378,11 +386,21 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
 router.post("/quick-create", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   const userId = req.user.id;
-  const { companyName, contactName, address, city, province, postalCode } = req.body;
 
-  if (!companyName?.trim()) {
-    throw createError(400, "Company name is required");
-  }
+  // Phase 1 geocoding: Zod validation for quick-create (was previously unvalidated)
+  const quickCreateSchema = z.object({
+    companyName: z.string().min(1, "Company name is required"),
+    contactName: z.string().nullable().optional(),
+    address: z.string().nullable().optional(),
+    city: z.string().nullable().optional(),
+    province: z.string().nullable().optional(),
+    postalCode: z.string().nullable().optional(),
+    country: z.string().nullable().optional(),
+    lat: z.string().nullable().optional(),
+    lng: z.string().nullable().optional(),
+    placeId: z.string().nullable().optional(),
+  });
+  const validated = validateSchema(quickCreateSchema, req.body);
 
   // Check subscription limits
   const limitCheck = await storage.canAddLocation(companyId!);
@@ -391,18 +409,22 @@ router.post("/quick-create", requireRole(MANAGER_ROLES), asyncHandler(async (req
   }
 
   // Determine if address fields were provided (reduces needsDetails flag)
-  const hasAddress = !!(address?.trim() || city?.trim());
+  const hasAddress = !!(validated.address?.trim() || validated.city?.trim());
 
   // Create client — sets needsDetails=true only when address is missing
   const clientData = {
     parentCompanyId: null,
-    companyName: companyName.trim(),
-    location: companyName.trim(),
-    address: address?.trim() || null,
-    city: city?.trim() || null,
-    province: province?.trim() || null,
-    postalCode: postalCode?.trim() || null,
-    contactName: contactName?.trim() || null,
+    companyName: validated.companyName.trim(),
+    location: validated.companyName.trim(),
+    address: validated.address?.trim() || null,
+    city: validated.city?.trim() || null,
+    province: validated.province?.trim() || null,
+    postalCode: validated.postalCode?.trim() || null,
+    country: validated.country?.trim() || null,
+    lat: validated.lat || null,
+    lng: validated.lng || null,
+    placeId: validated.placeId?.trim() || null,
+    contactName: validated.contactName?.trim() || null,
     email: null,
     phone: null,
     roofLadderCode: null,

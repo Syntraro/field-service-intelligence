@@ -16,6 +16,8 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { SupplierLocation } from "@shared/schema";
+import AddressAutocomplete from "@/components/ui/AddressAutocomplete";
+import type { PlaceSelectPayload } from "@/components/ui/AddressAutocomplete";
 
 interface EditLocationDialogProps {
   open: boolean;
@@ -39,6 +41,9 @@ export function EditLocationDialog({
     province: location.province || "",
     postalCode: location.postalCode || "",
     country: location.country || "",
+    lat: location.lat || null as string | null,
+    lng: location.lng || null as string | null,
+    placeId: location.placeId || null as string | null,
     contactName: location.contactName || "",
     email: location.email || "",
     phone: location.phone || "",
@@ -55,6 +60,9 @@ export function EditLocationDialog({
       province: location.province || "",
       postalCode: location.postalCode || "",
       country: location.country || "",
+      lat: location.lat || null,
+      lng: location.lng || null,
+      placeId: location.placeId || null,
       contactName: location.contactName || "",
       email: location.email || "",
       phone: location.phone || "",
@@ -120,10 +128,29 @@ export function EditLocationDialog({
 
             <div>
               <Label htmlFor="edit-address">Address</Label>
-              <Input
+              <AddressAutocomplete
                 id="edit-address"
                 value={formData.address}
-                onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+                onChange={(val) => {
+                  setFormData((prev) => ({
+                    ...prev,
+                    address: val,
+                    ...(val.trim() ? {} : { lat: null, lng: null, placeId: null }),
+                  }));
+                }}
+                onPlaceSelect={(p: PlaceSelectPayload) => {
+                  setFormData((prev) => ({
+                    ...prev,
+                    address: p.street,
+                    ...(p.city ? { city: p.city } : {}),
+                    ...(p.province ? { province: p.province } : {}),
+                    ...(p.postalCode ? { postalCode: p.postalCode } : {}),
+                    ...(p.country ? { country: p.country } : {}),
+                    lat: p.lat != null ? String(p.lat) : null,
+                    lng: p.lng != null ? String(p.lng) : null,
+                    placeId: p.placeId || null,
+                  }));
+                }}
                 placeholder="Street address"
               />
             </div>
