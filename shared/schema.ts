@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, integer, boolean, timestamp, date, numeric, uniqueIndex, jsonb, index, check } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, integer, boolean, timestamp, date, numeric, uniqueIndex, jsonb, index, check, unique } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -4228,3 +4228,96 @@ export const portalMagicTokens = pgTable("portal_magic_tokens", {
 }));
 
 export type PortalMagicToken = typeof portalMagicTokens.$inferSelect;
+
+// ============================================================================
+// EVENTS — Canonical tenant-scoped append-only event log
+// Used for: Recent Activity feed, entity timelines, analytics, debugging
+// Phase 1 Architecture: Event Log + Attention Queue
+// ============================================================================
+
+export const eventActorTypeEnum = ["user", "system"] as const;
+export type EventActorType = (typeof eventActorTypeEnum)[number];
+
+export const eventEntityTypeEnum = [
+  "job", "invoice", "quote", "client", "location", "payment", "item", "other",
+] as const;
+export type EventEntityType = (typeof eventEntityTypeEnum)[number];
+
+export const eventSeverityEnum = ["info", "warning", "important"] as const;
+export type EventSeverity = (typeof eventSeverityEnum)[number];
+
+export const events = pgTable("events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  actorUserId: varchar("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+  actorType: text("actor_type").notNull().default("user"), // user | system
+  entityType: text("entity_type").notNull(), // job | invoice | quote | client | ...
+  entityId: varchar("entity_id").notNull(),
+  eventType: text("event_type").notNull(), // e.g. job.created, job.completed, invoice.created
+  severity: text("severity").notNull().default("info"), // info | warning | important
+  summary: text("summary").notNull(), // Short human-readable description
+  meta: jsonb("meta"), // Small metadata: jobNumber, clientName, totals, etc.
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  tenantCreatedIdx: index("events_tenant_created_idx").on(table.tenantId, table.createdAt),
+  tenantEntityIdx: index("events_tenant_entity_idx").on(table.tenantId, table.entityType, table.entityId, table.createdAt),
+  tenantEventTypeIdx: index("events_tenant_event_type_idx").on(table.tenantId, table.eventType, table.createdAt),
+}));
+
+export const insertEventSchema = createInsertSchema(events).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertEvent = z.infer<typeof insertEventSchema>;
+export type Event = typeof events.$inferSelect;
+
+// ============================================================================
+// ATTENTION ITEMS — Materialized "needs attention" queue with rule-based detection
+// Single backend canonical queue for: requires invoicing, overdue, unassigned, unscheduled
+// Phase 1 Architecture: Event Log + Attention Queue
+// ============================================================================
+
+export const attentionRuleTypeEnum = [
+  "job.requires_invoicing",
+  "job.overdue",
+  "job.unassigned",
+  "job.unscheduled",
+  "invoice.past_due",
+] as const;
+export type AttentionRuleType = (typeof attentionRuleTypeEnum)[number];
+
+export const attentionSeverityEnum = ["high", "medium", "low"] as const;
+export type AttentionSeverity = (typeof attentionSeverityEnum)[number];
+
+export const attentionStatusEnum = ["open", "resolved"] as const;
+export type AttentionStatus = (typeof attentionStatusEnum)[number];
+
+export const attentionItems = pgTable("attention_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tenantId: varchar("tenant_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  entityType: text("entity_type").notNull(), // job | invoice | quote | client | other
+  entityId: varchar("entity_id").notNull(),
+  ruleType: text("rule_type").notNull(), // job.requires_invoicing | job.overdue | ...
+  severity: text("severity").notNull().default("medium"), // high | medium | low
+  status: text("status").notNull().default("open"), // open | resolved
+  firstDetectedAt: timestamp("first_detected_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  lastDetectedAt: timestamp("last_detected_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  resolvedAt: timestamp("resolved_at"),
+  meta: jsonb("meta"), // e.g. { jobNumber, clientName, dueDate }
+  dedupeKey: text("dedupe_key").notNull(), // "${entityType}:${entityId}:${ruleType}"
+}, (table) => ({
+  tenantDedupeIdx: unique("attention_items_tenant_dedupe_idx").on(table.tenantId, table.dedupeKey),
+  tenantStatusIdx: index("attention_items_tenant_status_idx").on(table.tenantId, table.status, table.severity, table.lastDetectedAt),
+  tenantEntityIdx: index("attention_items_tenant_entity_idx").on(table.tenantId, table.entityType, table.entityId),
+}));
+
+export const insertAttentionItemSchema = createInsertSchema(attentionItems).omit({
+  id: true,
+  firstDetectedAt: true,
+  lastDetectedAt: true,
+  resolvedAt: true,
+});
+
+export type InsertAttentionItem = z.infer<typeof insertAttentionItemSchema>;
+export type AttentionItem = typeof attentionItems.$inferSelect;

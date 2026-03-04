@@ -25,6 +25,8 @@ import {
   isBillingImpactingPatch,
 } from "../utils/qboInvoiceLock";
 import { generateInvoicePdf } from "../services/invoicePdfService";
+// Phase 1 Architecture: Event Log
+import { logEventAsync } from "../lib/events";
 // Phase 5 Step A4: canonical invoice feed builders
 import { getQueryCtx } from "../lib/queryCtx";
 import { getInvoicesFeed, getInvoiceStats as getCanonicalInvoiceStats } from "../storage/invoicesFeed";
@@ -491,6 +493,17 @@ router.post("/from-job/:jobId", requireRole(MANAGER_ROLES), asyncHandler(async (
       }
     }
 
+    // Phase 1: Log invoice creation event
+    if (result.created) {
+      logEventAsync(getQueryCtx(req), {
+        eventType: "invoice.created",
+        entityType: "invoice",
+        entityId: result.invoice.id,
+        summary: `Invoice #${result.invoice.invoiceNumber} created from job`,
+        meta: { invoiceNumber: result.invoice.invoiceNumber, jobId: req.params.jobId },
+      });
+    }
+
     // Include created flag to inform caller if this was new or existing
     res.json({ ...result.invoice, _created: result.created });
   } catch (error: any) {
@@ -673,6 +686,15 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
     undefined,
     updatePayload
   );
+
+  // Phase 1: Log invoice sent event
+  logEventAsync(getQueryCtx(req), {
+    eventType: "invoice.sent",
+    entityType: "invoice",
+    entityId: req.params.id,
+    summary: `Invoice #${invoice.invoiceNumber} sent`,
+    meta: { invoiceNumber: invoice.invoiceNumber },
+  });
 
   const response: Record<string, unknown> = { ...updated };
   if (warning) {

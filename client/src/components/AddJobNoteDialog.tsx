@@ -14,6 +14,7 @@ import { Label } from "@/components/ui/label";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useActivityStore } from "@/lib/activityStore";
 
 interface AddJobNoteDialogProps {
   jobId: string;
@@ -27,6 +28,7 @@ export function AddJobNoteDialog({
   onOpenChange,
 }: AddJobNoteDialogProps) {
   const { toast } = useToast();
+  const { logActivity } = useActivityStore();
   const [noteText, setNoteText] = useState("");
 
   useEffect(() => {
@@ -45,10 +47,14 @@ export function AddJobNoteDialog({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "notes"] });
-      toast({
-        title: "Note Added",
-        description: "The note has been added to the job.",
+      logActivity({
+        type: "created",
+        entityType: "job",
+        entityId: jobId,
+        label: "Added Note",
+        meta: noteText.slice(0, 60) || undefined,
       });
+      toast({ title: "Note Added", description: "The note has been added to the job." });
       onOpenChange(false);
     },
     onError: (error: Error) => {

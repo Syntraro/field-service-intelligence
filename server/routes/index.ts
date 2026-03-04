@@ -59,6 +59,9 @@ import { tagCrudRouter, customerCompanyTagRouter, locationTagRouter } from "./ta
 import techFieldRouter from "./techField";
 import adminTimesheetsRouter from "./adminTimesheets";
 import visitsRouter from "./visits";
+// Phase 1 Architecture: Event Log + Attention Queue
+import activityRouter from "./activity";
+import attentionRouter from "./attention";
 
 /**
  * Register all API routes in a single place.
@@ -240,6 +243,10 @@ export function registerRoutes(app: Express): Server {
 
   // Technician field app: mobile-first API for assigned visits + time
   app.use("/api/tech", techFieldRouter);
+
+  // Phase 1 Architecture: Event Log + Attention Queue
+  app.use("/api/activity", activityRouter);
+  app.use("/api/attention", attentionRouter);
 
   // Admin timesheets: day/week views, edit/delete time entries
   app.use("/api/admin/timesheets", adminTimesheetsRouter);

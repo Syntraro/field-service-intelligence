@@ -73,6 +73,8 @@ import PortalInvoicesList from "@/pages/portal/PortalInvoicesList";
 import PortalInvoiceDetail from "@/pages/portal/PortalInvoiceDetail";
 import PortalLayout from "@/components/PortalLayout";
 import { PortalAuthProvider, usePortalAuth } from "@/lib/portalAuth";
+import { ActivityProvider } from "@/lib/activityStore";
+import { QuickCreateDrawer } from "@/components/QuickCreateDrawer";
 import { SettingsShell } from "@/components/SettingsShell";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
@@ -451,6 +453,7 @@ function AppContent() {
   const [overdueAlertMinimized, setOverdueAlertMinimized] = useState(false);
   const [addClientModalOpen, setAddClientModalOpen] = useState(false);
   const [addJobModalOpen, setAddJobModalOpen] = useState(false);
+  const [quickCreateOpen, setQuickCreateOpen] = useState(false);
 
   // Fetch unscheduled backlog to check for past-month items
   const { data: unscheduledBacklog = [] } = useQuery<any[]>({
@@ -572,35 +575,19 @@ function AppContent() {
           <div className="flex items-center gap-2">
             <UniversalSearch />
 
-            {/* New dropdown and Settings - hidden on technician pages */}
+            {/* Quick Create drawer — replaces dropdown for +New */}
             {!isTechnicianPage && (
               <>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="default" size="default" data-testid="button-create-new" className="gap-1.5">
-                      <Plus className="h-4 w-4" />
-                      <span>New</span>
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-48">
-                    <DropdownMenuItem onClick={() => setAddJobModalOpen(true)} data-testid="menu-new-job">
-                      <ClipboardList className="h-4 w-4 mr-2" />
-                      New Job
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={handleAddClient} data-testid="menu-new-client">
-                      <Users className="h-4 w-4 mr-2" />
-                      New Client
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setLocation('/quotes?create=true')} data-testid="menu-new-quote">
-                      <FileText className="h-4 w-4 mr-2" />
-                      New Quote
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setLocation('/invoices?create=true')} data-testid="menu-new-invoice">
-                      <Receipt className="h-4 w-4 mr-2" />
-                      New Invoice
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                <Button
+                  variant="default"
+                  size="sm"
+                  data-testid="button-create-new"
+                  className="gap-1.5 h-8 px-3 text-sm"
+                  onClick={() => setQuickCreateOpen(true)}
+                >
+                  <Plus className="h-4 w-4" />
+                  <span>New</span>
+                </Button>
                 <Button variant="ghost" size="icon" asChild data-testid="button-settings">
                   <Link href="/company-settings">
                     <Settings className="h-4 w-4" />
@@ -632,6 +619,11 @@ function AppContent() {
         open={addJobModalOpen}
         onOpenChange={setAddJobModalOpen}
       />
+      <QuickCreateDrawer
+        open={quickCreateOpen}
+        onOpenChange={setQuickCreateOpen}
+        onNewJob={() => { setQuickCreateOpen(false); setAddJobModalOpen(true); }}
+      />
       <TimezoneSetupDialog />
     </SidebarProvider>
   );
@@ -641,11 +633,13 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <TooltipProvider>
-          <Toaster />
-          <SessionExpiredDialog />
-          <AppContent />
-        </TooltipProvider>
+        <ActivityProvider>
+          <TooltipProvider>
+            <Toaster />
+            <SessionExpiredDialog />
+            <AppContent />
+          </TooltipProvider>
+        </ActivityProvider>
       </AuthProvider>
     </QueryClientProvider>
   );

@@ -266,12 +266,11 @@ export default function Clients() {
                     });
                   }}
                   className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-all ${
-                    active ? "text-white ring-2 ring-offset-1" : "opacity-50 hover:opacity-80"
+                    active ? "text-white ring-2 ring-[var(--brand)] ring-offset-1" : "opacity-50 hover:opacity-80"
                   }`}
                   style={{
                     backgroundColor: active ? tag.color : `${tag.color}33`,
                     color: active ? "white" : tag.color,
-                    ...(active ? { boxShadow: `0 0 0 2px ${tag.color}` } : {}),
                   }}
                 >
                   {tag.name}
@@ -308,8 +307,9 @@ export default function Clients() {
         <TabsContent value={activeTab} className="mt-4">
           <ListSurface>
             {/* Virtualized grid header */}
+            {/* Phase: List Screens Cleanup — header matches shared Table component (#FAFAFA bg, semibold #6B7280) */}
             <div
-              className="grid items-center border-b border-gray-200 dark:border-gray-800 py-3 text-sm font-medium text-muted-foreground"
+              className="grid items-center border-b border-gray-200 dark:border-gray-800 py-3 text-sm font-semibold text-[#6B7280] bg-[#FAFAFA] dark:bg-gray-900/50"
               style={{ gridTemplateColumns: CLIENTS_GRID_COLS }}
             >
               <div className="flex justify-center">

@@ -6,7 +6,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### Phase 1 Architecture: Event Log + Attention Queue (2026-03-04)
+- **Events table (`events`)**: Canonical tenant-scoped append-only event log for activity feeds, entity timelines, and analytics. Fields: tenantId, actorUserId, actorType, entityType, entityId, eventType, severity, summary, meta (JSONB), createdAt. Three indexes for feed, entity, and event type queries.
+- **Event writer (`server/lib/events.ts`)**: `logEvent(ctx, params)` and `logEventAsync(ctx, params)` helpers. Failures are swallowed (never break operations). Uses existing `QueryCtx` pattern for tenant/actor context.
+- **Event instrumentation**: 12 event types instrumented across 5 route files: job (created, completed, status_changed, reopened, archived, scheduled, rescheduled, assigned, unassigned, unscheduled), invoice (created, sent), client (created), quote (created).
+- **Activity read APIs**: `GET /api/activity?limit=50&cursor=<ISO>` (tenant feed), `GET /api/activity/:entityType/:entityId` (entity timeline). Cursor-based pagination via `createdAt`.
+- **Attention items table (`attention_items`)**: Materialized "needs attention" queue with rule-based detection. Fields: tenantId, entityType, entityId, ruleType, severity, status (open/resolved), firstDetectedAt, lastDetectedAt, resolvedAt, meta (JSONB), dedupeKey (unique per tenant). Upsert-on-conflict pattern prevents duplicates.
+- **Attention rules engine (`server/lib/attentionRules.ts`)**: Four rules implemented: `job.requires_invoicing` (high), `job.overdue` (high), `job.unassigned` (medium), `job.unscheduled` (medium). Each rule has full-scan `detect()` and single-entity `detectForEntity()` methods.
+- **Incremental attention recompute**: `recomputeAttentionForEntity()` called after every job mutation (create, status change, close, reopen, schedule, reschedule, unschedule). Fire-and-forget (`.catch(() => {})`).
+- **Admin recompute endpoint**: `POST /api/attention/recompute` (owner/admin only) — full tenant-wide recompute safety valve.
+- **Attention read APIs**: `GET /api/attention?entityType=job&status=open` (filtered items), `GET /api/attention/summary` (counts by ruleType for dashboard), `GET /api/attention/:entityType/:entityId` (entity items).
+- **Dashboard server-backed activity**: `RecentActivityWidget` now fetches from `GET /api/activity?limit=20` instead of in-memory `ActivityStore`. Loading state added.
+- **Dashboard attention counts**: WorkflowStrip "Requires Invoicing", "Unassigned", "Unscheduled" counts now sourced from `/api/attention/summary` with fallback to existing workflow counts.
+- **Migration**: `migrations/2026_03_04_events_and_attention_items.sql` — creates both tables with indexes and constraints.
+- **Architecture docs**: `docs/EVENT_LOG_ATTENTION_QUEUE.md` — discovery report, schema reference, extension guide.
+- **Files (new)**: `server/lib/events.ts`, `server/lib/attentionRules.ts`, `server/storage/events.ts`, `server/storage/attention.ts`, `server/routes/activity.ts`, `server/routes/attention.ts`, `migrations/2026_03_04_events_and_attention_items.sql`, `docs/EVENT_LOG_ATTENTION_QUEUE.md`
+- **Files (modified)**: `shared/schema.ts` (2 new tables), `server/routes/index.ts` (register routes), `server/routes/jobs.ts` (logEvent + recompute), `server/routes/calendar.ts` (logEvent + recompute), `server/routes/invoices.ts` (logEvent), `server/routes/clients.ts` (logEvent), `server/routes/quotes.ts` (logEvent), `client/src/pages/Dashboard.tsx` (server-backed activity + attention counts)
+
 ### Changed
+
+#### Actionable Dashboard + Activity Feed + Smart Actions + Quick Create + List Polish (2026-03-04)
+- **Dashboard "Needs Attention" focus**: Removed "Active" count from WorkflowStrip. Added "Unassigned" and "Unscheduled" navigation items that link to `/jobs?lifecycle=open&show=unassigned` and `/jobs?lifecycle=open&show=backlog` respectively. Null-count items display a `ChevronRight` arrow instead of a number.
+- **Universal Activity Feed (UI-only)**: New `client/src/lib/activityStore.tsx` — React Context-based in-memory session store. Tracks last 20 actions (`logActivity()` / `useActivityStore()` hook). Wired into: QuickAddJobDialog (create job, create client), JobDetailPage (status update, create invoice), NewQuoteModal, AddJobNoteDialog, AddTimeEntryModal.
+- **Dashboard Recent Activity widget**: New `RecentActivityWidget` component shows session activity with entity icons, relative timestamps, and click-to-navigate links.
+- **Smart Context Actions on Job Detail**: Added `ContextActionsBar` to JobDetailPage. State-based CTAs: unscheduled→"Schedule Visit", scheduled+unassigned→"Assign Technician", completed→"Create Invoice", invoiced→"View Invoice".
+- **Quick Create Drawer**: New `client/src/components/QuickCreateDrawer.tsx` — right-side Sheet drawer from global "+New" button. Menu of entity types (Job/Client/Invoice/Quote). "New Job" delegates to existing QuickAddJobDialog. Client/Invoice/Quote have inline minimal forms with activity logging, toast, and navigation on success. Replaced dropdown menu in App.tsx header.
+- **Jobs list keyboard navigation**: Added Up/Down/Enter keyboard nav with `selectedRowIndex` state and `tableContainerRef`. Selected row styled with `ring-1 ring-inset ring-[var(--brand)] bg-[#F3F4F6]`. Input/textarea/select fields excluded from handler.
+- **Jobs list URL param handling**: `show=unassigned` and `show=backlog` URL params now parsed and applied as initial derived filter state, enabling Dashboard→Jobs navigation.
+- **Files (new)**: `client/src/lib/activityStore.tsx`, `client/src/components/QuickCreateDrawer.tsx`
+- **Files (modified)**: `client/src/App.tsx`, `client/src/pages/Dashboard.tsx`, `client/src/pages/Jobs.tsx`, `client/src/pages/JobDetailPage.tsx`, `client/src/components/QuickAddJobDialog.tsx`, `client/src/components/NewQuoteModal.tsx`, `client/src/components/AddJobNoteDialog.tsx`, `client/src/components/time/AddTimeEntryModal.tsx`
+
+#### List Screens Cleanup — status rules, filter consolidation, table consistency (2026-03-04)
+- **Global header "+New" button**: Reduced from default to `size="sm"` with `h-8 px-3 text-sm` for a more compact header CTA.
+- **Jobs list — duplicate button removed**: Removed the "New Job" button from `TablePageShell` actions; the global header "+New" dropdown already provides this.
+- **Jobs list — single-status pill**: Added `getDisplayStatus()` helper that returns one pill per row with priority: Overdue > Requires Invoicing > Archived > Invoiced > Sub-status > Lifecycle. Replaced multi-pill rendering (lifecycle + sub-status + overdue + all-day) with a single `StatusPill`. SLA aging row and quick actions preserved.
+- **Jobs list — filter row consolidation**: Merged two filter rows (lifecycle pills + search, and derived filters) into a single "Show:" row. Lifecycle status is now a compact dropdown. Sort dropdown removed (table header `SortableHeader` already handles column sorting). Default sort changed from "priority" to "schedule". Search input moved right-aligned in the same row.
+- **Job detail — Create Invoice banner**: `requires_invoicing` attention banner now shows a single "Create Invoice" button (opens invoice dialog) instead of "Schedule another visit" + "Mark Invoiced". Added `onCreateInvoice` prop to `OfficeActionsStrip`.
+- **Clients list — green active ring**: Tag filter chips now use `ring-[var(--brand)]` (green) for active state instead of per-tag-color boxShadow, matching the global green theme.
+- **Clients list — header styling**: Grid header updated to `bg-[#FAFAFA] font-semibold text-[#6B7280]` matching the shared Table component header from `table.tsx`.
+- **Table row hover**: `tableRowClass` in `list-surface.tsx` updated from `hover:bg-gray-100/60` to `hover:bg-[#F3F4F6]` matching the shared Table component hover color.
+- **Invoices list — view toggle removed**: Removed density toggle (LayoutGrid/List buttons), `userDensityPreference` state, and `effectiveDensity` computation. Always shows comfortable (cards) layout. Removed `isCompact` conditionals from row rendering. Removed `LayoutGrid`/`List` lucide imports.
+- **Files**: `client/src/App.tsx`, `client/src/pages/Jobs.tsx`, `client/src/pages/JobDetailPage.tsx`, `client/src/pages/Clients.tsx`, `client/src/components/ui/list-surface.tsx`, `client/src/pages/InvoicesListPage.tsx`
 
 #### UI polish pass — EmptyState component, filter chip consistency, micro-cleanup (2026-03-04)
 - **EmptyState component**: New `client/src/components/ui/empty-state.tsx` — shared component with optional icon (h-10 w-10, 50% opacity), message, description, and action slot. Standardizes the 28+ inline empty state patterns across the app into one reusable component with consistent py-12 spacing, text sizing, and color treatment.

@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { format, isValid, parseISO } from "date-fns";
 import { useLocation, useSearch, Link } from "wouter";
-import { Search, Plus, FileText, DollarSign, AlertTriangle, LayoutGrid, List, MoreHorizontal, RefreshCw } from "lucide-react";
+import { Search, Plus, FileText, DollarSign, AlertTriangle, MoreHorizontal, RefreshCw } from "lucide-react";
 import { QboSyncBadge, isQboSynced } from "@/components/invoice/QboSyncBanner";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -34,7 +34,6 @@ interface InvoiceStats {
 }
 
 type InvoiceStatusFilter = "all" | "draft" | "awaiting_payment" | "sent" | "viewed" | "partial_paid" | "paid" | "voided" | "overdue" | "qbo_synced" | "qbo_out_of_sync";
-type ViewDensity = "comfortable" | "compact";
 
 function getStatusBadge(status: string, dueDate: string | null, balance: string): {
   label: string;
@@ -81,8 +80,6 @@ export default function InvoicesListPage() {
   const search = useSearch();
   const [activeFilter, setActiveFilter] = useState<InvoiceStatusFilter>("all");
   const [searchQuery, setSearchQuery] = useState("");
-  const [userDensityPreference, setUserDensityPreference] = useState<ViewDensity | null>(null);
-
   // Parse URL filter param on mount
   useEffect(() => {
     const params = new URLSearchParams(search);
@@ -131,10 +128,6 @@ export default function InvoicesListPage() {
           : new Date(String(value));
     return isValid(d) ? format(d, "MMM d, yyyy") : "-";
   };
-
-  const autoCompact = invoices.length <= 10;
-  const effectiveDensity: ViewDensity = userDensityPreference ?? (autoCompact ? "compact" : "comfortable");
-  const isCompact = effectiveDensity === "compact";
 
   // Enriched invoices — single pass of getStatusBadge, depends only on [invoices].
   // Both filteredInvoices and statusCounts read pre-computed statusInfo.
@@ -222,30 +215,8 @@ export default function InvoicesListPage() {
         </Link>
       }
     >
-      {isCompact ? (
-        <div className="flex items-center gap-4 text-sm flex-wrap">
-          <div className="flex items-center gap-1.5">
-            <DollarSign className="h-4 w-4 text-amber-500" />
-            <span className="font-semibold" data-testid="text-outstanding-amount">
-              {formatCurrency(outstandingAmount)}
-            </span>
-            <span className="text-muted-foreground">Outstanding ({outstandingCount})</span>
-          </div>
-          <span className="text-muted-foreground">|</span>
-          <div className="flex items-center gap-1.5">
-            <FileText className="h-4 w-4 text-primary" />
-            <span className="font-semibold" data-testid="text-issued-count">{issuedCount30d}</span>
-            <span className="text-muted-foreground">Issued (30d)</span>
-          </div>
-          <span className="text-muted-foreground">|</span>
-          <div className="flex items-center gap-1.5">
-            <AlertTriangle className="h-4 w-4 text-destructive" />
-            <span className="font-semibold" data-testid="text-overdue-count">{overdueCount}</span>
-            <span className="text-muted-foreground">Overdue</span>
-          </div>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      {/* Phase: List Screens Cleanup — always show cards layout (view toggle removed) */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <Card>
             <CardContent className="pt-4 pb-4">
               <div className="flex items-center gap-3">
@@ -304,8 +275,7 @@ export default function InvoicesListPage() {
               </div>
             </CardContent>
           </Card>
-        </div>
-      )}
+      </div>
 
       <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
         <div className="flex items-center gap-1.5 flex-wrap">
@@ -370,38 +340,15 @@ export default function InvoicesListPage() {
           )}
         </div>
         
-        <div className="flex items-center gap-2">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Search invoices..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 w-[250px]"
-              data-testid="input-search-invoices"
-            />
-          </div>
-          
-          <div className="flex border rounded-md">
-            <Button
-              variant={effectiveDensity === "comfortable" ? "secondary" : "ghost"}
-              size="sm"
-              onClick={() => setUserDensityPreference("comfortable")}
-              className="rounded-r-none"
-              data-testid="button-view-comfortable"
-            >
-              <LayoutGrid className="h-4 w-4" />
-            </Button>
-            <Button
-              variant={effectiveDensity === "compact" ? "secondary" : "ghost"}
-              size="sm"
-              onClick={() => setUserDensityPreference("compact")}
-              className="rounded-l-none"
-              data-testid="button-view-compact"
-            >
-              <List className="h-4 w-4" />
-            </Button>
-          </div>
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search invoices..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="pl-9 w-[250px]"
+            data-testid="input-search-invoices"
+          />
         </div>
       </div>
 
@@ -437,17 +384,13 @@ export default function InvoicesListPage() {
               {filteredInvoices.map((invoice) => (
                 <div
                   key={invoice.id}
-                  className={cn(
-                    "grid items-center",
-                    tableRowClass,
-                    isCompact ? "text-sm" : ""
-                  )}
+                  className={cn("grid items-center", tableRowClass)}
                   style={{ gridTemplateColumns: INVOICES_GRID_COLS }}
                   onClick={() => setLocation(`/invoices/${invoice.id}`)}
                   data-testid={`row-invoice-${invoice.id}`}
                 >
                   {/* Client: 2-line identity block — company name + location */}
-                  <div className={cn("px-4 min-w-0", isCompact ? "py-2" : "py-3")}>
+                  <div className={cn("px-4 min-w-0", "py-3")}>
                     <p className="text-sm font-medium truncate" data-testid={`text-invoice-client-${invoice.id}`}>
                       {invoice.locationDisplayName || invoice.locationName || "Unknown"}
                     </p>
@@ -455,20 +398,20 @@ export default function InvoicesListPage() {
                       <p className="text-xs text-muted-foreground truncate">{invoice.locationName}</p>
                     )}
                   </div>
-                  <div className={cn("px-4 min-w-0", isCompact ? "py-2" : "py-3")}>
+                  <div className={cn("px-4 min-w-0", "py-3")}>
                     <p className="truncate text-sm text-muted-foreground">
                       {invoice.workDescription || "-"}
                     </p>
                   </div>
-                  <div className={cn("px-4", isCompact ? "py-2" : "py-3")}>
+                  <div className={cn("px-4", "py-3")}>
                     <span className="font-mono text-sm" data-testid={`text-invoice-number-${invoice.id}`}>
                       {invoice.invoiceNumber || `INV-${invoice.id.slice(0, 8)}`}
                     </span>
                   </div>
-                  <div className={cn("px-4 text-sm", isCompact ? "py-2" : "py-3")}>
+                  <div className={cn("px-4 text-sm", "py-3")}>
                     {safeFormatDate(invoice.dueDate)}
                   </div>
-                  <div className={cn("px-4", isCompact ? "py-2" : "py-3")}>
+                  <div className={cn("px-4", "py-3")}>
                     <div className="flex items-center gap-2 flex-wrap">
                       <Badge variant={invoice.statusInfo.variant}>
                         {invoice.statusInfo.label}
@@ -476,15 +419,15 @@ export default function InvoicesListPage() {
                       <QboSyncBadge invoice={invoice} />
                     </div>
                   </div>
-                  <div className={cn("px-4 text-right whitespace-nowrap tabular-nums text-sm", isCompact ? "py-2" : "py-3")}>
+                  <div className={cn("px-4 text-right whitespace-nowrap tabular-nums text-sm", "py-3")}>
                     {formatCurrency(invoice.total)}
                   </div>
-                  <div className={cn("px-4 text-right whitespace-nowrap tabular-nums text-sm", isCompact ? "py-2" : "py-3")}>
+                  <div className={cn("px-4 text-right whitespace-nowrap tabular-nums text-sm", "py-3")}>
                     <span className={parseFloat(invoice.balance) > 0 ? "font-medium" : "text-muted-foreground"}>
                       {formatCurrency(invoice.balance)}
                     </span>
                   </div>
-                  <div className={cn(isCompact ? "py-2" : "py-3")} onClick={(e) => e.stopPropagation()}>
+                  <div className={cn("py-3")} onClick={(e) => e.stopPropagation()}>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="icon" data-testid={`button-invoice-menu-${invoice.id}`}>

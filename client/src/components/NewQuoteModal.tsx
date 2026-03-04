@@ -3,6 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useActivityStore } from "@/lib/activityStore";
 import {
   Dialog,
   DialogContent,
@@ -52,6 +53,7 @@ interface LocationOption {
 
 export function NewQuoteModal({ open, onOpenChange }: NewQuoteModalProps) {
   const { toast } = useToast();
+  const { logActivity } = useActivityStore();
   const [, setLocation] = useLocation();
   const [selectedLocationId, setSelectedLocationId] = useState<string>("");
   const [title, setTitle] = useState("");
@@ -99,10 +101,14 @@ export function NewQuoteModal({ open, onOpenChange }: NewQuoteModalProps) {
     onSuccess: (quote) => {
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
       queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
-      toast({
-        title: "Quote created",
-        description: `Quote ${quote.quoteNumber} has been created`,
+      logActivity({
+        type: "created",
+        entityType: "quote",
+        entityId: quote.id,
+        label: `Created Quote #${quote.quoteNumber}`,
+        meta: title || undefined,
       });
+      toast({ title: "Quote created", description: `Quote ${quote.quoteNumber} has been created` });
       onOpenChange(false);
       resetForm();
       setLocation(`/quotes/${quote.id}`);

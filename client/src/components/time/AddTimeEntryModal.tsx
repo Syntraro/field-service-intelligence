@@ -13,6 +13,7 @@ import { useMutation } from "@tanstack/react-query";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { format } from "date-fns";
 import { Clock, Loader2, AlertCircle } from "lucide-react";
+import { useActivityStore } from "@/lib/activityStore";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -66,6 +67,7 @@ export function AddTimeEntryModal({
   onSuccess,
 }: AddTimeEntryModalProps) {
   const { toast } = useToast();
+  const { logActivity } = useActivityStore();
 
   // Form state
   const [technicianId, setTechnicianId] = useState<string>("");
@@ -121,11 +123,13 @@ export function AddTimeEntryModal({
       });
     },
     onSuccess: () => {
-      toast({
-        title: "Time Entry Added",
-        description: "The time entry has been created successfully.",
+      logActivity({
+        type: "created",
+        entityType: "job",
+        entityId: jobId,
+        label: "Added Labour Entry",
       });
-      // Invalidate job time sub-resource queries + canonical family
+      toast({ title: "Time Entry Added", description: "The time entry has been created successfully." });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-summary"] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-entries"] });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });

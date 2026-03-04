@@ -6,6 +6,7 @@ import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useActivityStore } from "@/lib/activityStore";
 import {
   Dialog,
   DialogContent,
@@ -49,6 +50,7 @@ interface QuickAddJobDialogProps {
 
 export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, editJob, onSuccess }: QuickAddJobDialogProps) {
   const { toast } = useToast();
+  const { logActivity } = useActivityStore();
   const [locationOpen, setLocationOpen] = useState(false);
   const [quickCreateName, setQuickCreateName] = useState("");
   const [showQuickCreate, setShowQuickCreate] = useState(false);
@@ -120,11 +122,20 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
       }
       return result.job;
     },
-    onSuccess: () => {
+    onSuccess: (job: any) => {
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
       // Phase 5.3 G1: dashboard counts stale after job creation
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+
+      const client = clients.find(c => c.id === formData.locationId);
+      logActivity({
+        type: "created",
+        entityType: "job",
+        entityId: job?.id || "",
+        label: `Created Job${job?.jobNumber ? ` #${job.jobNumber}` : ""}`,
+        meta: client?.companyName || formData.summary || undefined,
+      });
 
       toast({
         title: "Job Created",
@@ -132,8 +143,6 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
           ? "Job has been added to the backlog."
           : "Job has been created and scheduled.",
       });
-
-      const client = clients.find(c => c.id === formData.locationId);
       if (client?.needsDetails) {
         setTimeout(() => {
           toast({
@@ -207,6 +216,13 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
       if (result.client?.id) {
         setFormData(prev => ({ ...prev, locationId: result.client.id }));
+        logActivity({
+          type: "created",
+          entityType: "client",
+          entityId: result.client.id,
+          label: "Created Client",
+          meta: quickCreateName,
+        });
       }
       setShowQuickCreate(false);
       setQuickCreateName("");

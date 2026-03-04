@@ -19,6 +19,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
+// Phase 1: ActivityStore still used by mutation components for immediate feedback;
+// Dashboard now reads from server-backed /api/activity endpoint
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AsyncBlock } from "@/components/AsyncBlock";
@@ -63,10 +65,14 @@ type Task = {
 // Workflow Strip Component - half-height centered dividers
 // ============================================================================
 
-function WorkflowStrip({ data, isLoading, isError }: {
+/** Attention summary shape from GET /api/attention/summary */
+type AttentionSummary = Record<string, number>;
+
+function WorkflowStrip({ data, isLoading, isError, attention }: {
   data?: WorkflowSummary;
   isLoading: boolean;
   isError: boolean;
+  attention?: AttentionSummary;
 }) {
   const [, setLocation] = useLocation();
 
@@ -91,10 +97,11 @@ function WorkflowStrip({ data, isLoading, isError }: {
     {
       title: "Jobs",
       icon: Briefcase,
+      // Phase 1: Counts from attention queue (server-backed) with workflow fallback
       items: [
-        { label: "Requires Invoicing", count: data?.jobs.requiresInvoicingCount ?? 0, href: "/jobs?lifecycle=completed" },
-        { label: "Active", count: data?.jobs.activeCount ?? 0, href: "/jobs" },
-        { label: "On Hold", count: data?.jobs.onHoldCount ?? 0, href: "/jobs?lifecycle=open&subStatus=on_hold" },
+        { label: "Requires Invoicing", count: attention?.["job.requires_invoicing"] ?? data?.jobs.requiresInvoicingCount ?? 0, href: "/jobs?lifecycle=completed" },
+        { label: "Unassigned", count: attention?.["job.unassigned"] ?? null, href: "/jobs?lifecycle=open&show=unassigned" },
+        { label: "Unscheduled", count: attention?.["job.unscheduled"] ?? null, href: "/jobs?lifecycle=open&show=backlog" },
       ],
       color: "text-emerald-600 dark:text-emerald-400",
     },
@@ -152,7 +159,11 @@ function WorkflowStrip({ data, isLoading, isError }: {
                       <span className="text-xs text-muted-foreground group-hover:text-foreground transition-colors">
                         {item.label}
                       </span>
-                      <span className="text-sm font-semibold tabular-nums">{item.count}</span>
+                      {item.count !== null ? (
+                        <span className="text-sm font-semibold tabular-nums">{item.count}</span>
+                      ) : (
+                        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground group-hover:text-foreground transition-colors" />
+                      )}
                     </button>
                   ))}
                 </div>
@@ -634,6 +645,103 @@ function TasksPanel({
 }
 
 // ============================================================================
+// Recent Activity Widget — server-backed activity feed (Phase 1 Architecture)
+// ============================================================================
+
+/** Server event shape from GET /api/activity */
+interface ServerEvent {
+  id: string;
+  entityType: string;
+  entityId: string;
+  eventType: string;
+  summary: string;
+  meta: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+/** Relative timestamp from ISO string */
+function formatRelativeTime(iso: string): string {
+  const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (seconds < 60) return "Just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+const ENTITY_ICONS: Record<string, typeof Briefcase> = {
+  job: Briefcase,
+  invoice: DollarSign,
+  quote: FileText,
+  client: Calendar,
+};
+
+function entityPath(entityType: string, entityId: string): string | null {
+  switch (entityType) {
+    case "job": return `/jobs/${entityId}`;
+    case "invoice": return `/invoices/${entityId}`;
+    case "quote": return `/quotes/${entityId}`;
+    case "client": return `/clients/${entityId}`;
+    default: return null;
+  }
+}
+
+function RecentActivityWidget({ events, isLoading }: { events: ServerEvent[]; isLoading: boolean }) {
+  const [, setLocation] = useLocation();
+
+  if (isLoading) {
+    return (
+      <div className="bg-white dark:bg-gray-900 rounded-md border border-gray-200 dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
+        <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800">
+          <h3 className="text-sm font-semibold">Recent Activity</h3>
+        </div>
+        <div className="p-4 text-sm text-muted-foreground">Loading…</div>
+      </div>
+    );
+  }
+
+  if (events.length === 0) return null;
+
+  return (
+    <div className="bg-white dark:bg-gray-900 rounded-md border border-gray-200 dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
+      <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800">
+        <h3 className="text-sm font-semibold">Recent Activity</h3>
+      </div>
+      <div>
+        {events.slice(0, 8).map((item, index) => {
+          const Icon = ENTITY_ICONS[item.entityType] || Briefcase;
+          const path = entityPath(item.entityType, item.entityId);
+          const isLast = index === Math.min(events.length, 8) - 1;
+
+          return (
+            <button
+              key={item.id}
+              onClick={() => path && setLocation(path)}
+              disabled={!path}
+              className={`w-full text-left px-4 py-2.5 hover:bg-[#F3F4F6] dark:hover:bg-gray-800/50 transition-colors flex items-start gap-3 ${!isLast ? "border-b border-gray-200 dark:border-gray-800" : ""}`}
+            >
+              <div className="mt-0.5 p-1 rounded bg-primary/10 flex-shrink-0">
+                <Icon className="h-3.5 w-3.5 text-primary" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-foreground truncate">{item.summary}</p>
+                {item.meta?.clientName ? (
+                  <p className="text-xs text-muted-foreground truncate">{String(item.meta.clientName)}</p>
+                ) : null}
+              </div>
+              <span className="text-xs text-muted-foreground whitespace-nowrap flex-shrink-0">
+                {formatRelativeTime(item.createdAt)}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
 // Main Dashboard Component
 // ============================================================================
 
@@ -674,19 +782,36 @@ export default function Dashboard() {
   });
   const dashboardInvoices = dashboardInvoicesResponse?.data || [];
 
-  // Frame contrast: main content uses darker bg, cards (white) sit on top
-  // Sidebar + header use bg-background (white) - unified frame
+  // Phase 1 Architecture: Server-backed activity feed
+  const { data: activityData, isLoading: activityLoading } = useQuery<{ items: ServerEvent[] }>({
+    queryKey: ["activity", "feed"],
+    queryFn: () => apiRequest(`/api/activity?limit=20`),
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+  });
+  const activityEvents = activityData?.items || [];
+
+  // Phase 1 Architecture: Attention summary counts
+  const { data: attentionData } = useQuery<AttentionSummary>({
+    queryKey: ["attention", "summary"],
+    queryFn: () => apiRequest(`/api/attention/summary`),
+    staleTime: 60_000,
+    refetchOnWindowFocus: true,
+  });
+
   return (
     <div className="min-h-screen bg-background">
       <main className="mx-auto px-3 sm:px-4 lg:px-6 py-3 space-y-3">
         <div className="flex gap-4">
           {/* Left column - main content */}
           <div className="flex-1 min-w-0 space-y-3">
-            <WorkflowStrip data={workflowData} isLoading={workflowLoading} isError={workflowError} />
+            <WorkflowStrip data={workflowData} isLoading={workflowLoading} isError={workflowError} attention={attentionData} />
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
               <NeedsAttentionWidget jobs={needsAttentionJobs} isLoading={needsAttentionLoading} isError={needsAttentionError} error={needsAttentionErrorObj} onRetry={() => refetchNeedsAttention()} />
               <InvoicesWidget invoices={dashboardInvoices} isLoading={dashboardInvoicesLoading} isError={dashboardInvoicesError} error={dashboardInvoicesErrorObj} onRetry={() => refetchDashboardInvoices()} />
             </div>
+            {/* Recent Activity — server-backed event feed (Phase 1) */}
+            <RecentActivityWidget events={activityEvents} isLoading={activityLoading} />
           </div>
 
           {/* Right sidebar - Tasks (integrated styling) */}

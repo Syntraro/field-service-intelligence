@@ -9,6 +9,9 @@ import { MANAGER_ROLES } from "../auth/roles";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
+// Phase 1 Architecture: Event Log
+import { logEventAsync } from "../lib/events";
+import { getQueryCtx } from "../lib/queryCtx";
 
 const router = Router();
 
@@ -197,6 +200,15 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
     // No parts, use regular client creation
     client = await storage.createClient(req.companyId, req.user.id, validated);
   }
+
+  // Phase 1: Log client creation event
+  logEventAsync(getQueryCtx(req), {
+    eventType: "client.created",
+    entityType: "client",
+    entityId: client.id,
+    summary: `Created client ${client.companyName}`,
+    meta: { companyName: client.companyName, location: client.location },
+  });
 
   res.json(client);
 }));
@@ -400,6 +412,15 @@ router.post("/quick-create", requireRole(MANAGER_ROLES), asyncHandler(async (req
   };
 
   const client = await storage.createClient(companyId, userId, clientData);
+
+  // Phase 1: Log quick-create client event
+  logEventAsync(getQueryCtx(req), {
+    eventType: "client.created",
+    entityType: "client",
+    entityId: client.id,
+    summary: `Created client ${client.companyName} (quick)`,
+    meta: { companyName: client.companyName },
+  });
 
   res.json({ client });
 }));

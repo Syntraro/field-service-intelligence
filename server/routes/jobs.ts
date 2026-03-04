@@ -36,6 +36,9 @@ import {
   type TransitionActor,
 } from "../domain/jobLifecycle";
 import * as visitService from "../services/jobVisits.service";
+// Phase 1 Architecture: Event Log + Attention Queue
+import { logEventAsync } from "../lib/events";
+import { recomputeAttentionForEntity } from "../lib/attentionRules";
 // Phase 4 Step A5: Canonical jobs feed module
 import { getQueryCtx } from "../lib/queryCtx";
 import { getJobsFeed, getJobHeader } from "../storage/jobsFeed";
@@ -194,6 +197,16 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
       `| visit count for jobId ${job.id}: ${visitRows.length}`
     );
   }
+
+  // Phase 1: Log event + recompute attention
+  logEventAsync(getQueryCtx(req), {
+    eventType: "job.created",
+    entityType: "job",
+    entityId: job.id,
+    summary: `Created Job #${job.jobNumber}`,
+    meta: { jobNumber: job.jobNumber, summary: job.summary, status: job.status },
+  });
+  recomputeAttentionForEntity(companyId, "job", job.id).catch(() => {});
 
   res.status(201).json(job);
 }));
@@ -484,6 +497,18 @@ router.post("/:id/status", requireAuth, asyncHandler(async (req: AuthedRequest, 
     additionalUpdates,
   });
 
+  // Phase 1: Log event + recompute attention
+  const statusLabel = status === "completed" ? "Completed" : status === "open" ? (openSubStatus || "Reopened") : status;
+  logEventAsync(getQueryCtx(req), {
+    eventType: `job.${status === "completed" ? "completed" : status === "open" && fromStatus !== "open" ? "reopened" : "status_changed"}`,
+    entityType: "job",
+    entityId: req.params.id,
+    summary: `Job #${existing.jobNumber} → ${statusLabel}`,
+    severity: status === "completed" ? "important" : "info",
+    meta: { jobNumber: existing.jobNumber, fromStatus, toStatus: status, openSubStatus },
+  });
+  recomputeAttentionForEntity(companyId, "job", req.params.id).catch(() => {});
+
   res.json(updated);
 }));
 
@@ -582,6 +607,28 @@ router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
       actor
     );
 
+    // Phase 1: Log close event
+    const closeLabel = mode === "archive" ? "Archived" : mode === "invoice_now" ? "Closed & Invoiced" : "Completed (invoice later)";
+    logEventAsync(getQueryCtx(req), {
+      eventType: mode === "archive" ? "job.archived" : "job.completed",
+      entityType: "job",
+      entityId: jobId,
+      summary: `Job #${updatedJob.jobNumber} — ${closeLabel}`,
+      severity: "important",
+      meta: { jobNumber: updatedJob.jobNumber, mode, invoiceId: createdInvoice?.id },
+    });
+
+    if (createdInvoice) {
+      logEventAsync(getQueryCtx(req), {
+        eventType: "invoice.created",
+        entityType: "invoice",
+        entityId: createdInvoice.id,
+        summary: `Invoice #${createdInvoice.invoiceNumber} created from Job #${updatedJob.jobNumber}`,
+        meta: { invoiceNumber: createdInvoice.invoiceNumber, jobId, jobNumber: updatedJob.jobNumber },
+      });
+    }
+    recomputeAttentionForEntity(companyId, "job", jobId).catch(() => {});
+
     res.json({
       job: updatedJob,
       invoice: createdInvoice,
@@ -654,6 +701,16 @@ router.post("/:id/reopen", requireRole(MANAGER_ROLES), asyncHandler(async (req: 
       intent,
       actor
     );
+
+    // Phase 1: Log event + recompute attention
+    logEventAsync(getQueryCtx(req), {
+      eventType: "job.reopened",
+      entityType: "job",
+      entityId: jobId,
+      summary: `Reopened Job #${updatedJob.jobNumber}`,
+      meta: { jobNumber: updatedJob.jobNumber, targetOpenSubStatus },
+    });
+    recomputeAttentionForEntity(companyId, "job", jobId).catch(() => {});
 
     res.json({ job: updatedJob });
   } catch (error: any) {

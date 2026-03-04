@@ -18,6 +18,10 @@ import { filterSchedulableTechnicians, checkJobTechnicianVisibility, normalizeSc
 import { IS_DEV } from "../utils/devFlags";
 import type { AuthedRequest } from "../auth/tenantIsolation";
 import type { CalendarJobWithDetails } from "../storage/calendar";
+// Phase 1 Architecture: Event Log + Attention Queue
+import { logEventAsync } from "../lib/events";
+import { recomputeAttentionForEntity } from "../lib/attentionRules";
+import { getQueryCtx } from "../lib/queryCtx";
 import type { CalendarEventDto, CalendarRangeResponseDto } from "@shared/types/calendar";
 
 // ============================================================================
@@ -455,6 +459,16 @@ router.post(
       })();
     }
 
+    // Phase 1: Log event + recompute attention
+    logEventAsync(getQueryCtx(req), {
+      eventType: "job.scheduled",
+      entityType: "job",
+      entityId: data.jobId,
+      summary: `Scheduled Job #${result.jobNumber}`,
+      meta: { jobNumber: result.jobNumber, technicianUserId: data.technicianUserId },
+    });
+    recomputeAttentionForEntity(companyId, "job", data.jobId).catch(() => {});
+
     res.status(201).json({
       id: result.id,
       jobId: result.id,
@@ -552,6 +566,19 @@ router.patch(
       throw createError(404, "Job not found or access denied");
     }
 
+    // Phase 1: Log reschedule/assign event
+    const eventType = data.technicianUserId !== undefined
+      ? (data.technicianUserId ? "job.assigned" : "job.unassigned")
+      : "job.rescheduled";
+    logEventAsync(getQueryCtx(req), {
+      eventType,
+      entityType: "job",
+      entityId: jobId,
+      summary: `${eventType === "job.assigned" ? "Assigned" : eventType === "job.unassigned" ? "Unassigned" : "Rescheduled"} Job #${result.jobNumber}`,
+      meta: { jobNumber: result.jobNumber, technicianUserId: data.technicianUserId },
+    });
+    recomputeAttentionForEntity(companyId, "job", jobId).catch(() => {});
+
     // Version is NOT NULL DEFAULT 1 in DB - never null after write
     res.json({
       id: result.id,
@@ -598,6 +625,16 @@ router.post(
     if (!result) {
       throw createError(404, "Job not found or access denied");
     }
+
+    // Phase 1: Log event + recompute attention
+    logEventAsync(getQueryCtx(req), {
+      eventType: "job.unscheduled",
+      entityType: "job",
+      entityId: jobId,
+      summary: `Unscheduled Job #${result.jobNumber}`,
+      meta: { jobNumber: result.jobNumber },
+    });
+    recomputeAttentionForEntity(companyId, "job", jobId).catch(() => {});
 
     // Version is NOT NULL DEFAULT 1 in DB - never null after write
     res.json({

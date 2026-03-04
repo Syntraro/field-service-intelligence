@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import React, { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useJobsFeed } from "@/hooks/useJobsFeed";
 // useTechniciansDirectory removed — Assignment column dropped from list view
@@ -85,6 +85,24 @@ interface SLAKPIData {
 
 function formatJobNumber(jobNumber: number): string {
   return `#${jobNumber}`;
+}
+
+/**
+ * getDisplayStatus — returns a single { label, variant, icon? } for the status column.
+ * Priority: overdue > requires invoicing > archived > invoiced > sub-status > lifecycle fallback.
+ */
+function getDisplayStatus(job: { status: string; openSubStatus: string | null; _overdue: boolean }): { label: string; variant: "neutral" | "success" | "warning" | "danger" | "info"; icon?: React.ReactNode } {
+  if (job._overdue) return { label: "Overdue", variant: "danger" };
+  if (job.status === "completed") return { label: "Requires invoicing", variant: "warning" };
+  if (job.status === "archived") return { label: "Archived", variant: "neutral" };
+  if (job.status === "invoiced") return { label: "Invoiced", variant: "success" };
+  // Open jobs: prefer sub-status if present
+  if (job.status === "open" && job.openSubStatus) {
+    const subLabels: Record<string, string> = { in_progress: "In Progress", on_hold: "On Hold", on_route: "On Route", needs_review: "Needs Review" };
+    return { label: subLabels[job.openSubStatus] || job.openSubStatus, variant: statusToVariant(job.openSubStatus) };
+  }
+  // Lifecycle fallback
+  return { label: job.status === "open" ? "Open" : job.status, variant: statusToVariant(job.status) };
 }
 
 // SLA thresholds for Action Required jobs
@@ -207,7 +225,11 @@ export default function Jobs() {
   };
   const initialDerived = (): DerivedFilters => {
     const base: DerivedFilters = { scheduled: null, assigned: null, allDay: null, overdue: false };
-    if (urlParams.get("show") === "overdue") base.overdue = true;
+    const show = urlParams.get("show");
+    if (show === "overdue") base.overdue = true;
+    // Phase: Dashboard links — unassigned/backlog URL params
+    if (show === "unassigned") base.assigned = false;
+    if (show === "backlog") base.scheduled = false;
     return base;
   };
 
@@ -222,14 +244,17 @@ export default function Jobs() {
 
   const [searchQuery, setSearchQuery] = useState("");
   // Default sort: "priority" when no contextual query params, otherwise "schedule"
-  const [sortField, setSortField] = useState<SortField>(hasContextParams ? "schedule" : "priority");
+  // Phase: List Screens Cleanup — default to schedule sort (sort dropdown removed, headers handle sorting)
+  const [sortField, setSortField] = useState<SortField>("schedule");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [visibleCount, setVisibleCount] = useState(ITEMS_PER_PAGE);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [applyTemplateJob, setApplyTemplateJob] = useState<{ id: string; jobNumber: number } | null>(null);
   const [dismissedSLAWarning, setDismissedSLAWarning] = useState(false);
   const [dismissedUrgentWarning, setDismissedUrgentWarning] = useState(false);
+  const [selectedRowIndex, setSelectedRowIndex] = useState(-1);
   const loaderRef = useRef<HTMLDivElement>(null);
+  const tableContainerRef = useRef<HTMLDivElement>(null);
 
   // Phase 4 Step A6: Use canonical useJobsFeed hook
   // When server-side priority sort is active, pass sortBy to API so DB does the bucket ordering.
@@ -473,6 +498,34 @@ export default function Jobs() {
     return () => observer.disconnect();
   }, [handleObserver]);
 
+  // Keyboard navigation: Up/Down moves selection, Enter opens detail
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Skip if user is typing in an input/textarea
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (visibleJobs.length === 0) return;
+
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSelectedRowIndex(prev => Math.min(prev + 1, visibleJobs.length - 1));
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSelectedRowIndex(prev => Math.max(prev - 1, 0));
+      } else if (e.key === "Enter" && selectedRowIndex >= 0 && selectedRowIndex < visibleJobs.length) {
+        e.preventDefault();
+        setLocation(`/jobs/${visibleJobs[selectedRowIndex].id}`);
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [visibleJobs, selectedRowIndex, setLocation]);
+
+  // Reset selection when filters change
+  useEffect(() => {
+    setSelectedRowIndex(-1);
+  }, [lifecycleFilter, derivedFilters, openSubStatusFilter, searchQuery]);
+
   const handleSort = (field: SortField) => {
     if (sortField === field) {
       setSortDirection(prev => prev === "asc" ? "desc" : "asc");
@@ -596,12 +649,6 @@ export default function Jobs() {
   return (
     <TablePageShell
       title="Jobs"
-      actions={
-        <Button onClick={() => setShowCreateDialog(true)} data-testid="button-new-job-header">
-          <Plus className="h-4 w-4 mr-2" />
-          New Job
-        </Button>
-      }
       data-testid="jobs-page"
     >
       {/* SLA Breach Warning Banners - office users only */}
@@ -650,54 +697,43 @@ export default function Jobs() {
         </div>
       )}
 
-      {/* Filter Section - Phase 2 Step 4: 4-Status Model */}
+      {/* Filter Section — single row: Status dropdown + derived chips + search */}
       <div className="space-y-3">
-        {/* Row 1: Lifecycle Status Pills + Search */}
-        <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-sm font-medium text-muted-foreground mr-1">Status:</span>
-            {([
-              { key: "all" as const, label: `All (${totalCount})`, testId: "button-filter-status-all" },
-              { key: "open" as const, label: `Open (${counts.lifecycle.open})`, testId: "button-filter-status-open" },
-              { key: "completed" as const, label: `Completed (${counts.lifecycle.completed})`, testId: "button-filter-status-completed" },
-              { key: "invoiced" as const, label: `Invoiced (${counts.lifecycle.invoiced})`, testId: "button-filter-status-invoiced" },
-              { key: "archived" as const, label: `Archived (${counts.lifecycle.archived})`, testId: "button-filter-status-archived" },
-            ]).map((tab) => (
-              <Button
-                key={tab.key}
-                variant={lifecycleFilter === tab.key ? "default" : "ghost"}
-                size="sm"
-                onClick={() => setLifecycleFilter(tab.key)}
-                data-testid={tab.testId}
-                className={cn(
-                  "rounded-full h-8 px-3 text-xs",
-                  lifecycleFilter === tab.key
-                    ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent"
-                    : "text-muted-foreground"
-                )}
-              >
-                {tab.label}
-              </Button>
-            ))}
-          </div>
-
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Search jobs..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 w-[250px]"
-              data-testid="input-search-jobs"
-            />
-          </div>
-        </div>
-
-        {/* Row 2: Derived Filters + OpenSubStatus */}
         <div className="flex flex-wrap items-center gap-4 text-sm">
-          {/* Derived State Filters */}
+          {/* Derived State Filters — lifecycle dropdown + derived chips */}
           <div className="flex items-center gap-3 border-r pr-4">
             <span className="text-muted-foreground">Show:</span>
+
+            {/* Lifecycle status compact dropdown */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="h-7 text-xs" data-testid="filter-lifecycle-dropdown">
+                  {lifecycleFilter === "all" ? `Status: All (${totalCount})` :
+                   lifecycleFilter === "open" ? `Open (${counts.lifecycle.open})` :
+                   lifecycleFilter === "completed" ? `Completed (${counts.lifecycle.completed})` :
+                   lifecycleFilter === "invoiced" ? `Invoiced (${counts.lifecycle.invoiced})` :
+                   `Archived (${counts.lifecycle.archived})`}
+                  <ChevronDown className="h-3 w-3 ml-1" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                <DropdownMenuItem onClick={() => setLifecycleFilter("all")} data-testid="button-filter-status-all">
+                  All ({totalCount})
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setLifecycleFilter("open")} data-testid="button-filter-status-open">
+                  Open ({counts.lifecycle.open})
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setLifecycleFilter("completed")} data-testid="button-filter-status-completed">
+                  Completed ({counts.lifecycle.completed})
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setLifecycleFilter("invoiced")} data-testid="button-filter-status-invoiced">
+                  Invoiced ({counts.lifecycle.invoiced})
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setLifecycleFilter("archived")} data-testid="button-filter-status-archived">
+                  Archived ({counts.lifecycle.archived})
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
 
             {/* Scheduled/Backlog toggle */}
             <div className="flex items-center gap-1">
@@ -824,39 +860,6 @@ export default function Jobs() {
             </div>
           )}
 
-          {/* Sort dropdown */}
-          <div className="flex items-center gap-2">
-            <span className="text-muted-foreground">Sort:</span>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="h-7" data-testid="sort-dropdown">
-                  {sortField === "priority" ? "Priority" :
-                   sortField === "schedule" ? "Schedule" :
-                   sortField === "location" ? "Location" :
-                   sortField === "jobNumber" ? "Job #" : "Status"}
-                  <ChevronDown className="h-3 w-3 ml-1" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                <DropdownMenuItem onClick={() => { setSortField("priority"); setSortDirection("desc"); }}>
-                  Priority
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => { setSortField("schedule"); setSortDirection("desc"); }}>
-                  Schedule
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => { setSortField("status"); setSortDirection("asc"); }}>
-                  Status
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => { setSortField("jobNumber"); setSortDirection("desc"); }}>
-                  Job #
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => { setSortField("location"); setSortDirection("asc"); }}>
-                  Location
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-
           {/* Clear filters button */}
           {hasActiveFilters && (
             <Button
@@ -870,6 +873,18 @@ export default function Jobs() {
               Clear filters
             </Button>
           )}
+
+          {/* Search — right-aligned */}
+          <div className="relative ml-auto">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search jobs..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-9 w-[250px] h-8"
+              data-testid="input-search-jobs"
+            />
+          </div>
         </div>
       </div>
 
@@ -909,10 +924,13 @@ export default function Jobs() {
                 </TableCell>
               </TableRow>
             ) : (
-              visibleJobs.map((job) => (
+              visibleJobs.map((job, rowIdx) => (
                 <TableRow
                   key={job.id}
-                  className={tableRowClass}
+                  className={cn(
+                    tableRowClass,
+                    rowIdx === selectedRowIndex && "ring-1 ring-inset ring-[var(--brand)] bg-[#F3F4F6]"
+                  )}
                   onClick={() => handleRowClick(job)}
                   data-testid={`row-job-${job.id}`}
                 >
@@ -941,39 +959,19 @@ export default function Jobs() {
                   </TableCell>
                   <TableCell data-testid={`badge-status-${job.id}`}>
                     <div className="flex flex-col gap-1">
-                      {/* Row 1: Lifecycle badge + OpenSubStatus badge */}
+                      {/* Single display-status pill per row (priority: overdue > requires invoicing > archived > invoiced > sub-status > lifecycle) */}
                       <div className="flex items-center gap-1 flex-wrap">
-                        {/* Lifecycle pill (4 canonical statuses) */}
-                        <StatusPill variant={statusToVariant(job.status)}>
-                          {job.status === "open" ? "Open" :
-                           job.status === "completed" ? "Completed" :
-                           job.status === "invoiced" ? "Invoiced" :
-                           "Archived"}
-                        </StatusPill>
-
-                        {/* OpenSubStatus pill (only for open jobs with a sub-status) */}
-                        {job.status === "open" && job.openSubStatus && (
-                          <StatusPill variant={statusToVariant(job.openSubStatus)}>
-                            {job.openSubStatus === "in_progress" ? "In Progress" :
-                             job.openSubStatus === "on_route" ? "On Route" :
-                             job.openSubStatus === "on_hold" ? "On Hold" :
-                             "Needs Review"}
-                          </StatusPill>
-                        )}
-
-                        {/* Overdue indicator */}
-                        {job._overdue && (
-                          <StatusPill variant="danger" icon={<AlertTriangle className="h-3 w-3" />}>
-                            Overdue
-                          </StatusPill>
-                        )}
-
-                        {/* All-day pill */}
-                        {job.isAllDay && (
-                          <StatusPill variant="neutral">
-                            All-day
-                          </StatusPill>
-                        )}
+                        {(() => {
+                          const ds = getDisplayStatus(job);
+                          return (
+                            <StatusPill
+                              variant={ds.variant}
+                              icon={ds.icon}
+                            >
+                              {ds.label}
+                            </StatusPill>
+                          );
+                        })()}
                       </div>
 
                       {/* SLA indicators for on-hold/needs-review jobs */}

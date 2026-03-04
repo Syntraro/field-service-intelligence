@@ -18,6 +18,9 @@ import { storage } from "../storage";
 import { generateQuotePdf } from "../services/quotePdfService";
 import { resolveCustomerCompanyForLocation } from "../services/customerCompanyResolver";
 import type { QuoteStatus } from "@shared/schema";
+// Phase 1 Architecture: Event Log
+import { logEventAsync } from "../lib/events";
+import { getQueryCtx } from "../lib/queryCtx";
 
 const router = Router();
 
@@ -157,6 +160,15 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
       lineNumber: index + 1,
     }))
   );
+
+  // Phase 1: Log quote creation event
+  logEventAsync(getQueryCtx(req), {
+    eventType: "quote.created",
+    entityType: "quote",
+    entityId: quote.id,
+    summary: `Created Quote #${quote.quoteNumber}`,
+    meta: { quoteNumber: quote.quoteNumber, customerCompanyId },
+  });
 
   res.status(201).json(quote);
 }));

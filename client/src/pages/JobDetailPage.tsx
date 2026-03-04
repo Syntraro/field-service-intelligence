@@ -7,6 +7,7 @@ import { useRoute, useLocation, Link, useSearch } from "wouter";
 import { format } from "date-fns";
 import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useActivityStore } from "@/lib/activityStore";
 import {
   ArrowLeft,
   Pencil,
@@ -203,15 +204,16 @@ const ATTENTION_CONFIG: Record<Exclude<AttentionReason, null>, {
   secondaryIcon: React.ElementType;
   requiresConfirm: boolean; // Whether secondary action needs confirmation dialog
 }> = {
+  // Phase: List Screens Cleanup — single "Create Invoice" CTA replaces old dual-button layout
   requires_invoicing: {
     label: 'Requires Invoicing',
     badgeClass: 'bg-[rgba(245,158,11,0.14)] text-[#92400E] border border-[rgba(245,158,11,0.28)] dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800',
     icon: FileText,
-    primaryAction: 'Schedule another visit',
-    primaryIcon: CalendarPlus,
-    secondaryAction: 'Mark Invoiced',
-    secondaryIcon: Check,
-    requiresConfirm: true,
+    primaryAction: 'Create Invoice',
+    primaryIcon: Receipt,
+    secondaryAction: '',
+    secondaryIcon: Receipt,
+    requiresConfirm: false,
   },
   on_hold: {
     label: 'On Hold',
@@ -254,6 +256,7 @@ interface OfficeActionsStripProps {
   onClearHold: () => void;
   onUnschedule: () => void;
   onMarkInvoiced: () => void;
+  onCreateInvoice: () => void;
   isUnscheduling?: boolean;
   isMarkingInvoiced?: boolean;
   isClearingHold?: boolean;
@@ -275,6 +278,7 @@ function OfficeActionsStrip({
   onClearHold,
   onUnschedule,
   onMarkInvoiced,
+  onCreateInvoice,
   isUnscheduling,
   isMarkingInvoiced,
   isClearingHold,
@@ -303,8 +307,9 @@ function OfficeActionsStrip({
   const canUnschedule = reason === 'overdue' && isJobScheduled;
 
   // Determine if secondary action should be shown
+  // Phase: requires_invoicing only has "Create Invoice" — no secondary
   // Hide "Unschedule" for overdue jobs that aren't scheduled (edge case)
-  const showSecondaryAction = reason !== 'overdue' || canUnschedule;
+  const showSecondaryAction = reason !== 'requires_invoicing' && (reason !== 'overdue' || canUnschedule);
 
   // Compute detail text based on reason (stable computation, no layout shift)
   const getDetailText = (): string | null => {
@@ -464,13 +469,14 @@ function OfficeActionsStrip({
     return button;
   };
 
-  // Primary button tooltip for non-managers
+  // Primary button: "Create Invoice" for requires_invoicing, "Schedule another visit" / "Reschedule" otherwise
   const renderPrimaryButton = () => {
+    const primaryOnClick = reason === 'requires_invoicing' ? onCreateInvoice : onScheduleVisit;
     const button = (
       <Button
         variant="default"
         size="sm"
-        onClick={hasOfficePermission ? onScheduleVisit : undefined}
+        onClick={hasOfficePermission ? primaryOnClick : undefined}
         disabled={!hasOfficePermission}
         data-testid="button-primary-action"
         className={!hasOfficePermission ? "cursor-not-allowed" : undefined}
@@ -1269,6 +1275,7 @@ export default function JobDetailPage() {
   const [, setLocation] = useLocation();
   const searchParams = useSearch();
   const { toast } = useToast();
+  const { logActivity } = useActivityStore();
 
   // Deep link support: ?section=visits opens visits section automatically
   // This is triggered from calendar event cards via history icon
@@ -1377,21 +1384,24 @@ export default function JobDetailPage() {
         body: JSON.stringify({ status, version, source: "web" })
       });
     },
-    onSuccess: () => {
+    onSuccess: (_data: unknown, variables: { status: string; version: number }) => {
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      // (covered by family-wide ["jobs"] invalidation)
-      // Also invalidate time summary so Labour card updates immediately
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-summary"] });
-      // Refresh calendar and dashboard to reflect status change
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-      // Phase 5 Step B3: canonical dashboard family key
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      toast({
-        title: "Status Updated",
-        description: "Job status has been updated.",
+      const statusLabel = variables.status === "completed" ? "Marked Completed" :
+                          variables.status === "open" ? "Reopened" :
+                          variables.status === "invoiced" ? "Marked Invoiced" : "Updated Status";
+      logActivity({
+        type: variables.status === "completed" ? "completed" : "updated",
+        entityType: "job",
+        entityId: jobId || "",
+        label: `${statusLabel} — Job #${job?.jobNumber || ""}`,
+        meta: job?.locationDisplayName || undefined,
       });
+      toast({ title: "Status Updated", description: "Job status has been updated." });
     },
     onError: (error: Error) => {
       // Handle version conflict (409 VERSION_MISMATCH) — non-destructive recovery
@@ -1502,15 +1512,17 @@ export default function JobDetailPage() {
       return response;
     },
     onSuccess: (data: any) => {
-      // Phase 5 Step A7: canonical family key invalidation
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      // Phase 5.3 G2: dashboard invoice widget stale after creating invoice from job
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      toast({
-        title: "Invoice Created",
-        description: "Invoice has been created from this job.",
+      logActivity({
+        type: "created",
+        entityType: "invoice",
+        entityId: data.id,
+        label: `Created Invoice${data.invoiceNumber ? ` #${data.invoiceNumber}` : ""}`,
+        meta: job?.locationDisplayName || undefined,
       });
+      toast({ title: "Invoice Created", description: "Invoice has been created from this job." });
       setShowCreateInvoiceDialog(false);
       setLocation(`/invoices/${data.id}`);
     },
@@ -1598,16 +1610,12 @@ export default function JobDetailPage() {
 
   return (
     <div className="p-4" data-testid="job-detail-page">
-      {/* OFFICE ACTIONS STRIP - Shows when job needs attention */}
-      {/* Jobber-style workflow: actions depend on attention reason */}
-      {/* A) requires_invoicing: Schedule visit / Mark Invoiced (with confirm) */}
-      {/* B) on_hold: Schedule visit / Resume (clears hold) */}
-      {/* C) overdue: Reschedule / Unschedule */}
-      {/* IMPORTANT: No path archives jobs - invoiced is the only lifecycle target */}
+      {/* OFFICE ACTIONS STRIP — attention-based (requires_invoicing / on_hold / overdue) */}
       <OfficeActionsStrip
         job={job}
         userRole={user?.role}
         onScheduleVisit={() => handleScheduleVisit()}
+        onCreateInvoice={() => setShowCreateInvoiceDialog(true)}
         onClearHold={() => clearHoldMutation.mutate(job.version)}
         onUnschedule={() => {
           // Use canonical hook with custom toast callbacks
@@ -1636,6 +1644,41 @@ export default function JobDetailPage() {
         isMarkingInvoiced={updateStatusMutation.isPending}
         isClearingHold={clearHoldMutation.isPending}
       />
+
+      {/* CONTEXT ACTIONS — state-based CTAs when OfficeActionsStrip doesn't apply */}
+      {(() => {
+        const attentionReason = getAttentionReason(job);
+        // Only show context actions when the attention strip is NOT visible
+        if (attentionReason) return null;
+        const isOpen = job.status === "open";
+        const isInvoiced = job.status === "invoiced";
+        const isUnscheduled = isOpen && !job.scheduledStart;
+        const isUnassigned = isOpen && (!job.assignedTechnicianIds || job.assignedTechnicianIds.length === 0);
+        const hasContextAction = isUnscheduled || (isOpen && isUnassigned) || isInvoiced;
+        if (!hasContextAction) return null;
+        return (
+          <div className="mb-4 flex items-center gap-2" data-testid="context-actions-bar">
+            {isUnscheduled && (
+              <Button size="sm" onClick={() => handleScheduleVisit()} data-testid="context-schedule-visit">
+                <CalendarPlus className="h-4 w-4 mr-1.5" />
+                Schedule Visit
+              </Button>
+            )}
+            {isOpen && !isUnscheduled && isUnassigned && (
+              <Button size="sm" onClick={() => handleScheduleVisit()} data-testid="context-assign-tech">
+                <CalendarPlus className="h-4 w-4 mr-1.5" />
+                Assign Technician
+              </Button>
+            )}
+            {isInvoiced && job.invoiceId && (
+              <Button size="sm" variant="outline" onClick={() => setLocation(`/invoices/${job.invoiceId}`)} data-testid="context-view-invoice">
+                <Receipt className="h-4 w-4 mr-1.5" />
+                View Invoice
+              </Button>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ================================================================
           TOP SECTION — Unified Meta Card (3-column grid)
