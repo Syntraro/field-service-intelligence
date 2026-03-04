@@ -15,6 +15,7 @@ import { insertCompanySettingsSchema, type CompanySettings } from "@shared/schem
 import type { z } from "zod";
 import NewAddClientDialog from "@/components/NewAddClientDialog";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import AddressAutocompleteField from "@/components/ui/AddressAutocompleteField";
 
 interface NumberingSettings {
   nextJobNumber: number;
@@ -199,23 +200,16 @@ export default function CompanySettingsPage() {
                   )}
                 />
 
-                <FormField
-                  control={form.control}
+                <AddressAutocompleteField
                   name="address"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Street Address</FormLabel>
-                      <FormControl>
-                        <Input 
-                          {...field}
-                          value={field.value || ""}
-                          placeholder="123 Main Street"
-                          data-testid="input-address"
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
+                  label="Street Address"
+                  placeholder="123 Main Street"
+                  data-testid="input-address"
+                  fieldMapping={{
+                    city: "city",
+                    province: "provinceState",
+                    postalCode: "postalCode",
+                  }}
                 />
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">

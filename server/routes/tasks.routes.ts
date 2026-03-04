@@ -126,6 +126,9 @@ router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
     jobId: req.query.jobId as string | undefined,
     fromDate: req.query.fromDate ? new Date(req.query.fromDate as string) : undefined,
     toDate: req.query.toDate ? new Date(req.query.toDate as string) : undefined,
+    // Calendar integration: filter by scheduledStartAt date range
+    scheduledFromDate: req.query.scheduledFromDate ? new Date(req.query.scheduledFromDate as string) : undefined,
+    scheduledToDate: req.query.scheduledToDate ? new Date(req.query.scheduledToDate as string) : undefined,
     offset,
     limit,
   });

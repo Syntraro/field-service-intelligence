@@ -12,6 +12,7 @@ import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { supplierRepository } from "../storage/suppliers";
+import { normalizeServiceAddress } from "../lib/addressNormalize";
 
 const router = Router();
 
@@ -125,7 +126,8 @@ router.post(
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
     const { supplierId } = req.params;
-    const validated = validateSchema(insertSupplierLocationSchema.strict(), req.body);
+    // Phase 3: normalize province variants + postal code before validation
+    const validated = validateSchema(insertSupplierLocationSchema.strict(), normalizeServiceAddress(req.body));
 
     const location = await supplierRepository.createSupplierLocation(
       companyId,
@@ -165,7 +167,8 @@ router.patch(
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
     const { supplierId, locationId } = req.params;
-    const validated = validateSchema(updateSupplierLocationSchema.strict(), req.body);
+    // Phase 3: normalize province variants + postal code before validation
+    const validated = validateSchema(updateSupplierLocationSchema.strict(), normalizeServiceAddress(req.body));
 
     const location = await supplierRepository.updateSupplierLocation(
       companyId,

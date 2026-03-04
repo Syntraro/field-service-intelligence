@@ -15,6 +15,10 @@ export interface TaskListFilters {
   jobId?: string;
   fromDate?: Date;
   toDate?: Date;
+  /** Filter by scheduledStartAt >= date (for calendar integration) */
+  scheduledFromDate?: Date;
+  /** Filter by scheduledStartAt <= date (for calendar integration) */
+  scheduledToDate?: Date;
   offset?: number;
   limit?: number;
 }
@@ -150,6 +154,10 @@ export class TaskRepository extends BaseRepository {
 
     if (filters.fromDate) where.push(gte(tasks.checkedInAt, filters.fromDate));
     if (filters.toDate) where.push(lte(tasks.checkedInAt, filters.toDate));
+
+    // Calendar integration: filter by scheduledStartAt date range
+    if (filters.scheduledFromDate) where.push(gte(tasks.scheduledStartAt, filters.scheduledFromDate));
+    if (filters.scheduledToDate) where.push(lte(tasks.scheduledStartAt, filters.scheduledToDate));
 
     // Clamp pagination params
     const offset = clampOffset(filters.offset ?? 0);

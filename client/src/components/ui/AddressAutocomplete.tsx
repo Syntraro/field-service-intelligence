@@ -38,6 +38,7 @@ interface AddressAutocompleteProps {
   disabled?: boolean;
   className?: string;
   id?: string;
+  "data-testid"?: string;
   /** Restrict results to specific country codes (e.g. ["ca", "us"]) */
   countryRestrictions?: string[];
 }
@@ -108,6 +109,7 @@ export default function AddressAutocomplete({
   disabled = false,
   className,
   id,
+  "data-testid": testId,
   countryRestrictions = ["ca", "us"],
 }: AddressAutocompleteProps) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -177,6 +179,7 @@ export default function AddressAutocomplete({
     <input
       ref={inputRef}
       id={id}
+      data-testid={testId}
       type="text"
       value={value}
       onChange={handleChange}

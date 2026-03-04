@@ -94,8 +94,46 @@ All nullable — existing records unaffected.
 
 ## Current Integration
 
-Phase 1 integrates autocomplete into **one form only**:
-- `client/src/components/LocationFormModal.tsx` — Create/Edit location under a customer company
+Autocomplete is integrated into all address forms:
+
+| Form | Geo persistence (lat/lng/placeId) |
+|------|-----------------------------------|
+| `LocationFormModal.tsx` | Yes — service address |
+| `QuickCreateDrawer.tsx` | Yes — service address |
+| `NewAddClientDialog.tsx` | Yes — service address |
+| `AddClientDialog.tsx` | Yes — service address |
+| `EditClientDialog.tsx` | Yes — service address |
+| `AddLocationDialog.tsx` (suppliers) | Yes — supplier location |
+| `EditLocationDialog.tsx` (suppliers) | Yes — supplier location |
+| `NewClientPage.tsx` — primary + additional locations | Yes — service addresses |
+| `NewClientPage.tsx` — billing address | **No** — autocomplete fills fields but no geo columns for billing |
+| `CompanySettingsPage.tsx` | **No** — company settings has no geo columns |
+
+### Billing vs Service Address Persistence
+
+The `full-create` endpoint (`POST /api/clients/full-create`) passes `lat`/`lng`/`placeId`/`country` for service addresses (primary + additional locations). Billing address only stores `street`/`city`/`province`/`postalCode`/`country` — no geo columns exist on the `customer_companies` table.
+
+### React Hook Form Adapter
+
+For forms using React Hook Form, use `AddressAutocompleteField`:
+
+```tsx
+import AddressAutocompleteField from "@/components/ui/AddressAutocompleteField";
+
+// Inside a <Form> (FormProvider) context:
+<AddressAutocompleteField
+  name="address"
+  label="Street Address"
+  placeholder="123 Main St"
+  fieldMapping={{
+    city: "city",
+    province: "provinceState",  // maps Places "province" to your RHF field name
+    postalCode: "postalCode",
+  }}
+/>
+```
+
+The adapter uses `useFormContext()` + `Controller` internally, so it must be rendered inside a `<Form>` wrapper.
 
 ## Extending to Other Forms
 
@@ -122,6 +160,33 @@ import type { PlaceSelectPayload } from "@/components/ui/AddressAutocomplete";
 ```
 
 Ensure the form's save payload includes `lat`, `lng`, `placeId`, and `country` fields.
+
+## Postal Code Validation (Phase 3)
+
+All postal code fields are validated and normalized at the API boundary:
+
+| Format | Example | Accepted | Normalized to |
+|--------|---------|----------|---------------|
+| Canadian | `m5v1e3` | Yes | `M5V 1E3` |
+| Canadian with space | `M5V 1E3` | Yes | `M5V 1E3` |
+| US ZIP | `90210` | Yes | `90210` |
+| US ZIP+4 | `90210-1234` | Yes | `90210-1234` |
+| Empty/null | `""` / `null` | Yes | unchanged |
+| Invalid | `123` / `ABCDEF` | **Rejected** | validation error |
+
+The shared `postalCodeSchema` (in `shared/schema.ts`) handles both validation and normalization during Zod parse. Server routes additionally call `normalizePostalCode()` for paths not using the Zod schema directly.
+
+### Province Field Normalization (Phase 3)
+
+Incoming API payloads may use `province`, `provinceState`, or `stateOrProvince`. The server normalizes these at the route level:
+
+| Target table | Expected field | Server helper |
+|-------------|---------------|---------------|
+| `client_locations` | `province` | `normalizeServiceAddress()` |
+| `supplier_locations` | `province` | `normalizeServiceAddress()` |
+| `company_settings` | `provinceState` | `normalizeCompanyAddress()` |
+
+Helpers are in `server/lib/addressNormalize.ts`.
 
 ## TypeScript
 

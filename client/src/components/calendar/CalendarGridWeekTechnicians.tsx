@@ -81,8 +81,12 @@ function TechJobCard({
   onJobClick,
 }: TechJobCardProps) {
   // Build client object from event data
+  // Phase 9: Tasks use title field instead of companyName
+  const isTask = (event as any).kind === "task";
   const client = {
-    companyName: event.raw?.companyName || event.raw?.summary || "Job",
+    companyName: isTask
+      ? (event.raw?.title || "Task")
+      : (event.raw?.companyName || event.raw?.summary || "Job"),
     location: event.raw?.locationName,
   };
 
@@ -94,12 +98,13 @@ function TechJobCard({
       inCalendar
       onClick={() => onJobClick(event, technician)}
       isCompleted={event.completed}
-      isOverdue={isCalendarEventOverdue(event)}
+      isOverdue={isTask ? false : isCalendarEventOverdue(event)}
       technicianColor={color}
       densityStyle="py-1 px-1.5"
       technicians={allTechnicians}
       timeFormat={timeFormat}
       showQuickActions={false}
+      itemKind={isTask ? "task" : "visit"}
     />
   );
 }

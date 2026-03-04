@@ -15,7 +15,7 @@
  */
 
 import { useState } from "react";
-import { Calendar as CalendarIcon, RotateCcw } from "lucide-react";
+import { Calendar as CalendarIcon, RotateCcw, ClipboardList } from "lucide-react";
 import { DraggableClient } from "./DraggableClient";
 import { EventPreviewPopover } from "./EventPreviewPopover";
 import { TechnicianColor } from "./calendarUtils";
@@ -67,6 +67,8 @@ export interface JobCardProps {
   rawItem?: any;
   /** Whether to show quick action buttons on hover (default: true for calendar, false for unscheduled) */
   showQuickActions?: boolean;
+  /** Item kind for visual distinction: "visit" (default) or "task" (Phase 9 of calendar rewrite) */
+  itemKind?: "visit" | "task";
 }
 
 /**
@@ -95,6 +97,7 @@ export function JobCard({
   isPastMonth,
   rawItem,
   showQuickActions,
+  itemKind = "visit",
 }: JobCardProps) {
   const [isHovered, setIsHovered] = useState(false);
 
@@ -127,6 +130,17 @@ export function JobCard({
     }
   };
 
+  // Phase 9: Task items get distinct styling
+  const isTask = itemKind === "task";
+  const taskOverrideColor = isTask ? {
+    bg: 'bg-violet-50 dark:bg-violet-950/20',
+    border: 'border-violet-400',
+    borderLeft: 'border-l-violet-400',
+    dot: 'bg-violet-400',
+    text: 'text-violet-700 dark:text-violet-300',
+    label: 'Task',
+  } as const : undefined;
+
   return (
     <EventPreviewPopover
       event={eventData}
@@ -141,6 +155,12 @@ export function JobCard({
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
       >
+        {/* Phase 9: Task icon badge */}
+        {isTask && inCalendar && (
+          <div className="absolute top-0.5 left-0.5 z-10">
+            <ClipboardList className="h-3 w-3 text-violet-500" />
+          </div>
+        )}
         <DraggableClient
           id={id}
           client={client}
@@ -149,7 +169,7 @@ export function JobCard({
           isCompleted={isCompleted}
           isOverdue={isOverdue}
           assignment={assignment}
-          technicianColor={technicianColor}
+          technicianColor={taskOverrideColor || technicianColor}
           densityStyle={densityStyle}
           cardHeight={cardHeight}
           isSaving={isSaving}
@@ -159,6 +179,7 @@ export function JobCard({
           isPastMonth={isPastMonth}
           rawItem={rawItem}
           timeFormat={timeFormat}
+          draggable={!isTask}
         />
 
         {/* Quick action icons - visible on hover */}

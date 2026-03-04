@@ -3,6 +3,44 @@ import { pgTable, text, varchar, integer, boolean, timestamp, date, numeric, uni
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
+// =============================================================================
+// SHARED VALIDATION HELPERS
+// =============================================================================
+
+/** Canadian postal code pattern: A1A 1A1 or A1A1A1 (case-insensitive) */
+const CA_POSTAL_RE = /^[A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d$/;
+/** US ZIP code pattern: 12345 or 12345-6789 */
+const US_ZIP_RE = /^\d{5}(-\d{4})?$/;
+
+/**
+ * Optional postal/ZIP code Zod schema.
+ * Accepts Canadian (A1A 1A1) and US (12345 / 12345-6789) formats.
+ * Normalizes Canadian codes to uppercase with space. Rejects invalid non-empty values.
+ * Passes through null/undefined/empty string unchanged (postal codes are optional).
+ */
+export const postalCodeSchema = z
+  .string()
+  .nullable()
+  .optional()
+  .transform((val) => {
+    if (!val || !val.trim()) return val; // pass through blank/null/undefined
+    const trimmed = val.trim();
+    // Normalize Canadian postal to uppercase + space
+    if (CA_POSTAL_RE.test(trimmed)) {
+      const upper = trimmed.toUpperCase().replace(/\s/g, "");
+      return `${upper.slice(0, 3)} ${upper.slice(3)}`;
+    }
+    return trimmed;
+  })
+  .refine(
+    (val) => {
+      if (!val || !val.trim()) return true; // blank is valid (optional field)
+      const trimmed = val.trim();
+      return CA_POSTAL_RE.test(trimmed) || US_ZIP_RE.test(trimmed);
+    },
+    { message: "Invalid postal/ZIP code. Use Canadian (A1A 1A1) or US (12345) format." }
+  );
+
 // Companies table - each HVAC business is a company
 export const companies = pgTable("companies", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -2631,7 +2669,7 @@ export const updateSupplierLocationSchema = z.object({
   address: z.string().nullable().optional(),
   city: z.string().nullable().optional(),
   province: z.string().nullable().optional(),
-  postalCode: z.string().nullable().optional(),
+  postalCode: postalCodeSchema,
   country: z.string().nullable().optional(),
   lat: z.string().nullable().optional(), // numeric stored as string
   lng: z.string().nullable().optional(),

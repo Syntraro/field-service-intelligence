@@ -29,6 +29,8 @@ interface DraggableClientProps {
   rawItem?: any;
   /** Time format from regional settings (12h/24h) */
   timeFormat?: "12h" | "24h";
+  /** Whether this item is draggable (default: true). Tasks are click-to-schedule, not draggable. */
+  draggable?: boolean;
 }
 
 /**
@@ -56,6 +58,7 @@ export const DraggableClient = memo(function DraggableClient({
   summary,
   rawItem,
   timeFormat = "12h",
+  draggable = true,
 }: DraggableClientProps) {
   // Track if we've logged for this card (prevents spam during drag)
   const hasLoggedRef = useRef(false);
@@ -68,8 +71,8 @@ export const DraggableClient = memo(function DraggableClient({
   //   Draggable UNLESS:  DRAG_ENABLED is false  OR  isSaving is true
   //   No legacy overdue/assigned/status checks — server rejects invalid drops.
   // ---------------------------------------------------------------------------
-  // Terminal jobs (completed/invoiced/archived) are non-draggable
-  const dragDisabled = !DRAG_ENABLED || !!isSaving || !!isCompleted;
+  // Terminal jobs (completed/invoiced/archived) and tasks are non-draggable
+  const dragDisabled = !DRAG_ENABLED || !!isSaving || !!isCompleted || !draggable;
 
   // ---------------------------------------------------------------------------
   // Single useDraggable hook for ALL items (calendar + unscheduled).
@@ -307,6 +310,7 @@ export const DraggableClient = memo(function DraggableClient({
     prevProps.summary === nextProps.summary &&
     prevProps.assignment?.version === nextProps.assignment?.version &&
     prevProps.assignment?.visitNumber === nextProps.assignment?.visitNumber &&
-    prevProps.technicianColor?.borderLeft === nextProps.technicianColor?.borderLeft
+    prevProps.technicianColor?.borderLeft === nextProps.technicianColor?.borderLeft &&
+    prevProps.draggable === nextProps.draggable
   );
 });

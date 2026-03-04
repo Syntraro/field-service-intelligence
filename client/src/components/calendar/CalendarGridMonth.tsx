@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useDroppable } from "@dnd-kit/core";
-import { X } from "lucide-react";
+import { X, ClipboardList } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { CalendarEventChip } from "./CalendarEventChip";
 import { EventPreviewPopover } from "./EventPreviewPopover";
@@ -107,8 +107,21 @@ function DroppableDay({
       <div className="flex-1 flex flex-col gap-[2px]">
         {visibleEvents.map((event) => {
           const client = findClientByEvent(clients, event);
-          const title = client?.companyName || event.raw?.summary || "Untitled";
+          // Phase 9: Detect task items for distinct visual
+          const isTask = (event as any).kind === "task";
+          const title = isTask
+            ? (event.raw?.title || "Task")
+            : (client?.companyName || event.raw?.summary || "Untitled");
           const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
+          // Phase 9: Task color override
+          const taskColor = isTask ? {
+            bg: 'bg-violet-50 dark:bg-violet-950/20',
+            border: 'border-violet-400',
+            borderLeft: 'border-l-violet-400',
+            dot: 'bg-violet-400',
+            text: 'text-violet-700 dark:text-violet-300',
+            label: 'Task',
+          } as const : undefined;
           return (
             <div key={event.assignmentId} className="relative group">
               <EventPreviewPopover
@@ -116,33 +129,35 @@ function DroppableDay({
                 client={client}
                 technicians={technicians}
                 isSaving={isSaving}
-                isOverdue={isCalendarEventOverdue(event)}
+                isOverdue={isTask ? false : isCalendarEventOverdue(event)}
                 timeFormat={timeFormat}
               >
                 <CalendarEventChip
                   id={event.assignmentId}
-                  jobNumber={event.jobNumber}
-                  title={title}
+                  jobNumber={isTask ? null : event.jobNumber}
+                  title={isTask ? `📋 ${title}` : title}
                   onClick={() => onClientClick(client, event)}
                   isCompleted={event.completed}
-                  isOverdue={isCalendarEventOverdue(event)}
-                  technicianColor={getTechnicianColor?.(event.raw)}
+                  isOverdue={isTask ? false : isCalendarEventOverdue(event)}
+                  technicianColor={taskColor || getTechnicianColor?.(event.raw)}
                   isSaving={isSaving}
                 />
               </EventPreviewPopover>
-              {/* Remove button on hover — pointer guards prevent stealing drag */}
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onRemove(event.assignmentId);
-                }}
-                onPointerDown={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-                className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-destructive text-destructive-foreground opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-10"
-                data-testid={`remove-assignment-${event.assignmentId}`}
-              >
-                <X className="h-2 w-2" />
-              </button>
+              {/* Remove button on hover — not shown for tasks */}
+              {!isTask && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRemove(event.assignmentId);
+                  }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-destructive text-destructive-foreground opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-10"
+                  data-testid={`remove-assignment-${event.assignmentId}`}
+                >
+                  <X className="h-2 w-2" />
+                </button>
+              )}
             </div>
           );
         })}
@@ -174,8 +189,16 @@ function DroppableDay({
                 <div className="max-h-[200px] overflow-y-auto space-y-1">
                   {hiddenEvents.map((event) => {
                     const client = findClientByEvent(clients, event);
-                    const title = client?.companyName || event.raw?.summary || "Untitled";
+                    const isTask = (event as any).kind === "task";
+                    const title = isTask
+                      ? (event.raw?.title || "Task")
+                      : (client?.companyName || event.raw?.summary || "Untitled");
                     const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
+                    const taskColor = isTask ? {
+                      bg: 'bg-violet-50 dark:bg-violet-950/20', border: 'border-violet-400',
+                      borderLeft: 'border-l-violet-400', dot: 'bg-violet-400',
+                      text: 'text-violet-700 dark:text-violet-300', label: 'Task',
+                    } as const : undefined;
                     return (
                       <div key={event.assignmentId} className="relative group">
                         <EventPreviewPopover
@@ -183,36 +206,38 @@ function DroppableDay({
                           client={client}
                           technicians={technicians}
                           isSaving={isSaving}
-                          isOverdue={isCalendarEventOverdue(event)}
+                          isOverdue={isTask ? false : isCalendarEventOverdue(event)}
                           timeFormat={timeFormat}
                         >
                           <CalendarEventChip
                             id={event.assignmentId}
-                            jobNumber={event.jobNumber}
-                            title={title}
+                            jobNumber={isTask ? null : event.jobNumber}
+                            title={isTask ? `📋 ${title}` : title}
                             onClick={() => {
                               setPopoverOpen(false);
                               onClientClick(client, event);
                             }}
                             isCompleted={event.completed}
-                            isOverdue={isCalendarEventOverdue(event)}
-                            technicianColor={getTechnicianColor?.(event.raw)}
+                            isOverdue={isTask ? false : isCalendarEventOverdue(event)}
+                            technicianColor={taskColor || getTechnicianColor?.(event.raw)}
                             isSaving={isSaving}
                           />
                         </EventPreviewPopover>
-                        {/* Remove button on hover — pointer guards prevent stealing drag */}
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            onRemove(event.assignmentId);
-                          }}
-                          onPointerDown={(e) => e.stopPropagation()}
-                          onMouseDown={(e) => e.stopPropagation()}
-                          className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-destructive text-destructive-foreground opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-10"
-                          data-testid={`remove-assignment-popover-${event.assignmentId}`}
-                        >
-                          <X className="h-2 w-2" />
-                        </button>
+                        {/* Remove button on hover — not shown for tasks */}
+                        {!isTask && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onRemove(event.assignmentId);
+                            }}
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            className="absolute -top-0.5 -right-0.5 h-3 w-3 rounded-full bg-destructive text-destructive-foreground opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-10"
+                            data-testid={`remove-assignment-popover-${event.assignmentId}`}
+                          >
+                            <X className="h-2 w-2" />
+                          </button>
+                        )}
                       </div>
                     );
                   })}

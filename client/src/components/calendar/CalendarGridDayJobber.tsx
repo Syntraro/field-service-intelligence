@@ -265,23 +265,26 @@ function TechColumn({
             {allDayEvents.slice(0, 3).map((event) => {
               const client = findClientByEvent(clients, event);
               const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
+              // Phase 9: Detect task items for distinct visual
+              const isTask = (event as any).kind === "task";
               return client ? (
                 <JobCard
                   key={event.assignmentId}
                   id={event.assignmentId}
-                  client={client}
+                  client={isTask ? { ...client, companyName: event.raw?.title || "Task" } : client}
                   assignment={event.raw}
                   inCalendar
                   onClick={() => handleClientClick(client, event)}
-                  onReschedule={() => handleClientClick(client, event, true)}
-                  onUnschedule={onUnschedule}
+                  onReschedule={isTask ? undefined : () => handleClientClick(client, event, true)}
+                  onUnschedule={isTask ? undefined : onUnschedule}
                   isCompleted={event.completed}
-                  isOverdue={isCalendarEventOverdue(event)}
+                  isOverdue={isTask ? false : isCalendarEventOverdue(event)}
                   isSaving={isSaving}
                   technicianColor={getTechnicianColor(event.raw)}
                   densityStyle={DENSITY_STYLES[density].card}
                   technicians={technicians}
                   timeFormat={timeFormat}
+                  itemKind={isTask ? "task" : "visit"}
                 />
               ) : null;
             })}

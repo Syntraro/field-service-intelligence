@@ -9,6 +9,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import AddressAutocomplete from "@/components/ui/AddressAutocomplete";
+import type { PlaceSelectPayload } from "@/components/ui/AddressAutocomplete";
 
 /**
  * New Client Page (polished / Jobber-like density)
@@ -37,6 +39,10 @@ interface AddressForm {
   city: string;
   province: string;
   postalCode: string;
+  country?: string;
+  lat?: string | null;
+  lng?: string | null;
+  placeId?: string | null;
 }
 
 interface LocationForm {
@@ -293,6 +299,7 @@ export default function NewClientPage() {
             city: billing.city.trim() || undefined,
             stateOrProvince: billing.province.trim() || undefined,
             postalCode: billing.postalCode.trim() || undefined,
+            country: billing.country?.trim() || undefined,
           },
         },
         primaryLocation: {
@@ -302,6 +309,10 @@ export default function NewClientPage() {
             city: locations[0].address.city.trim() || undefined,
             stateOrProvince: locations[0].address.province.trim() || undefined,
             postalCode: locations[0].address.postalCode.trim() || undefined,
+            country: locations[0].address.country?.trim() || undefined,
+            lat: locations[0].address.lat || undefined,
+            lng: locations[0].address.lng || undefined,
+            placeId: locations[0].address.placeId?.trim() || undefined,
           },
           contactName: primaryFull || undefined,
           contactPhone: locations[0].phone.trim() || undefined,
@@ -318,6 +329,10 @@ export default function NewClientPage() {
             city: loc.address.city.trim() || undefined,
             stateOrProvince: loc.address.province.trim() || undefined,
             postalCode: loc.address.postalCode.trim() || undefined,
+            country: loc.address.country?.trim() || undefined,
+            lat: loc.address.lat || undefined,
+            lng: loc.address.lng || undefined,
+            placeId: loc.address.placeId?.trim() || undefined,
           },
           contactName: undefined,
           contactPhone: loc.phone.trim() || undefined,
@@ -454,11 +469,24 @@ export default function NewClientPage() {
               {/* Billing */}
               <div className="pt-4 border-t space-y-3">
                 <div className="text-sm font-semibold">Billing address</div>
-                <Input
+                <AddressAutocomplete
+                  value={billing.street}
+                  onChange={(val) => setBilling((prev) => ({
+                    ...prev,
+                    street: val,
+                  }))}
+                  onPlaceSelect={(p: PlaceSelectPayload) => {
+                    setBilling((prev) => ({
+                      ...prev,
+                      street: p.street,
+                      ...(p.city ? { city: p.city } : {}),
+                      ...(p.province ? { province: p.province } : {}),
+                      ...(p.postalCode ? { postalCode: p.postalCode } : {}),
+                      ...(p.country ? { country: p.country } : {}),
+                    }));
+                  }}
                   placeholder="Street address"
                   className="h-10"
-                  value={billing.street}
-                  onChange={(e) => setBilling((prev) => ({ ...prev, street: e.target.value }))}
                 />
                 <div className="grid grid-cols-[2fr_1fr_1fr] gap-3">
                   <Input
@@ -596,11 +624,28 @@ export default function NewClientPage() {
                       </Button>
                     </div>
 
-                    <Input
+                    <AddressAutocomplete
+                      value={selectedLocation.address.street}
+                      onChange={(val) => {
+                        updateSelectedAddress({
+                          street: val,
+                          ...(val.trim() ? {} : { lat: null, lng: null, placeId: null }),
+                        });
+                      }}
+                      onPlaceSelect={(p: PlaceSelectPayload) => {
+                        updateSelectedAddress({
+                          street: p.street,
+                          ...(p.city ? { city: p.city } : {}),
+                          ...(p.province ? { province: p.province } : {}),
+                          ...(p.postalCode ? { postalCode: p.postalCode } : {}),
+                          ...(p.country ? { country: p.country } : {}),
+                          lat: p.lat != null ? String(p.lat) : null,
+                          lng: p.lng != null ? String(p.lng) : null,
+                          placeId: p.placeId || null,
+                        });
+                      }}
                       placeholder="Service address"
                       className="h-10"
-                      value={selectedLocation.address.street}
-                      onChange={(e) => updateSelectedAddress({ street: e.target.value })}
                     />
 
                     <div className="grid grid-cols-[2fr_1fr_1fr] gap-3">

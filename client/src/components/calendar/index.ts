@@ -14,3 +14,6 @@ export { CalendarGridDay } from "./CalendarGridDay";
 export { CalendarGridDayJobber } from "./CalendarGridDayJobber";
 export { ScheduleJobModal } from "./ScheduleJobModal";
 export { DiagnosticsPanel } from "./DiagnosticsPanel";
+// Phase 5+7 of calendar rewrite (2026-03-04)
+export { TechnicianFilterPopover } from "./TechnicianFilterPopover";
+export { CalendarSidebar } from "./CalendarSidebar";

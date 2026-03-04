@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Request, Response, NextFunction } from "express";
 import { storage, customerCompanyRepository, clientContactRepository } from "../storage/index";
-import { insertClientSchema, insertLocationEquipmentSchema, updateLocationEquipmentSchema } from "@shared/schema";
+import { insertClientSchema, insertLocationEquipmentSchema, updateLocationEquipmentSchema, postalCodeSchema } from "@shared/schema";
 import { z } from "zod";
 import type { Client } from "@shared/schema";
 import { requireRole } from "../auth/requireRole";
@@ -12,6 +12,7 @@ import { AuthedRequest } from "../auth/tenantIsolation";
 // Phase 1 Architecture: Event Log
 import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
+import { normalizePostalCode } from "../lib/addressNormalize";
 
 const router = Router();
 
@@ -264,8 +265,8 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
       email: company.email?.trim() || null,
       billingStreet: company.billingAddress?.street?.trim() || null,
       billingCity: company.billingAddress?.city?.trim() || null,
-      billingProvince: company.billingAddress?.stateOrProvince?.trim() || null,
-      billingPostalCode: company.billingAddress?.postalCode?.trim() || null,
+      billingProvince: company.billingAddress?.stateOrProvince?.trim() || company.billingAddress?.province?.trim() || null,
+      billingPostalCode: company.billingAddress?.postalCode?.trim() ? normalizePostalCode(company.billingAddress.postalCode.trim()) : null,
       billingCountry: company.billingAddress?.country?.trim() || null,
       nameSource,
     }
@@ -281,8 +282,8 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
     location: primaryLocationName,
     address: primaryLocation?.serviceAddress?.street?.trim() || null,
     city: primaryLocation?.serviceAddress?.city?.trim() || null,
-    province: primaryLocation?.serviceAddress?.stateOrProvince?.trim() || null,
-    postalCode: primaryLocation?.serviceAddress?.postalCode?.trim() || null,
+    province: primaryLocation?.serviceAddress?.stateOrProvince?.trim() || primaryLocation?.serviceAddress?.province?.trim() || null,
+    postalCode: primaryLocation?.serviceAddress?.postalCode?.trim() ? normalizePostalCode(primaryLocation.serviceAddress.postalCode.trim()) : null,
     country: primaryLocation?.serviceAddress?.country?.trim() || null,
     lat: primaryLocation?.serviceAddress?.lat || null,
     lng: primaryLocation?.serviceAddress?.lng || null,
@@ -315,8 +316,8 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
       location: loc.name.trim(),
       address: loc.serviceAddress?.street?.trim() || null,
       city: loc.serviceAddress?.city?.trim() || null,
-      province: loc.serviceAddress?.stateOrProvince?.trim() || null,
-      postalCode: loc.serviceAddress?.postalCode?.trim() || null,
+      province: loc.serviceAddress?.stateOrProvince?.trim() || loc.serviceAddress?.province?.trim() || null,
+      postalCode: loc.serviceAddress?.postalCode?.trim() ? normalizePostalCode(loc.serviceAddress.postalCode.trim()) : null,
       country: loc.serviceAddress?.country?.trim() || null,
       lat: loc.serviceAddress?.lat || null,
       lng: loc.serviceAddress?.lng || null,
@@ -388,13 +389,14 @@ router.post("/quick-create", requireRole(MANAGER_ROLES), asyncHandler(async (req
   const userId = req.user.id;
 
   // Phase 1 geocoding: Zod validation for quick-create (was previously unvalidated)
+  // Phase 3: postalCodeSchema validates CA/US format and normalizes Canadian codes
   const quickCreateSchema = z.object({
     companyName: z.string().min(1, "Company name is required"),
     contactName: z.string().nullable().optional(),
     address: z.string().nullable().optional(),
     city: z.string().nullable().optional(),
     province: z.string().nullable().optional(),
-    postalCode: z.string().nullable().optional(),
+    postalCode: postalCodeSchema,
     country: z.string().nullable().optional(),
     lat: z.string().nullable().optional(),
     lng: z.string().nullable().optional(),
@@ -850,7 +852,10 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
     }
   }
 
-  const { location, address, city, province, postalCode, contactName, phone, email } = req.body;
+  const { location, address, city, province, provinceState, stateOrProvince, postalCode, contactName, phone, email } = req.body;
+  // Phase 3: resolve province from any variant + normalize postal
+  const resolvedProvince = (province || provinceState || stateOrProvince || "")?.trim() || null;
+  const resolvedPostal = postalCode?.trim() ? normalizePostalCode(postalCode.trim()) : null;
 
   const newLocation = await customerCompanyRepository.createLocationUnderCustomerCompany(
     tenantCompanyId,
@@ -860,8 +865,8 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
       location: location?.trim() || customerCompany.name,
       address: address?.trim() || null,
       city: city?.trim() || null,
-      province: province?.trim() || null,
-      postalCode: postalCode?.trim() || null,
+      province: resolvedProvince,
+      postalCode: resolvedPostal,
       contactName: contactName?.trim() || null,
       phone: phone?.trim() || null,
       email: email?.trim() || null,
@@ -906,6 +911,10 @@ router.get("/:id/report", asyncHandler(async (req: AuthedRequest, res: Response)
 // PUT /api/clients/:id - Update client with optimistic locking
 router.put("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const { version, ...data } = req.body;
+  // Phase 3: normalize postal code before validation
+  if (typeof data.postalCode === "string" && data.postalCode.trim()) {
+    data.postalCode = normalizePostalCode(data.postalCode.trim());
+  }
   const validated = insertClientSchema.partial().parse(data);
   const companyId = req.companyId;
   const clientId = req.params.id;
@@ -949,6 +958,10 @@ router.put("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRe
 // PATCH /api/clients/:id - Partial update with optimistic locking
 router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const { version, ...data } = req.body;
+  // Phase 3: normalize postal code before validation
+  if (typeof data.postalCode === "string" && data.postalCode.trim()) {
+    data.postalCode = normalizePostalCode(data.postalCode.trim());
+  }
   const validated = insertClientSchema.partial().parse(data);
   const companyId = req.companyId;
   const clientId = req.params.id;

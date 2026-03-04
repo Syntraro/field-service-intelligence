@@ -29,16 +29,19 @@ export interface CalendarPreferences {
   sidebarCollapsed: boolean;
   showFullDay: boolean;
   hiddenTechnicianIds: string[];
+  /** Whether to show tasks on the calendar (Phase 4 of calendar rewrite) */
+  showTasks: boolean;
 }
 
 const STORAGE_KEY = "calendar-preferences";
 
 const DEFAULT_PREFERENCES: CalendarPreferences = {
   view: "weekly",
-  weeklyViewMode: "time",
+  weeklyViewMode: "technician", // Phase 4: tech-first is now the default layout
   sidebarCollapsed: false,
   showFullDay: false,
   hiddenTechnicianIds: [],
+  showTasks: false,
 };
 
 // Business hours defaults
@@ -103,6 +106,7 @@ function loadPreferences(): CalendarPreferences {
       hiddenTechnicianIds: Array.isArray(parsed.hiddenTechnicianIds)
         ? parsed.hiddenTechnicianIds.filter((id: unknown) => typeof id === 'string')
         : [],
+      showTasks: typeof parsed.showTasks === 'boolean' ? parsed.showTasks : false,
     };
   } catch (error) {
     // Any other error - return defaults
@@ -170,6 +174,11 @@ export function useCalendarState() {
     setPreferences(prev => ({ ...prev, showFullDay: !prev.showFullDay }));
   }, []);
 
+  // Phase 4: Show tasks on calendar toggle
+  const toggleShowTasks = useCallback(() => {
+    setPreferences(prev => ({ ...prev, showTasks: !prev.showTasks }));
+  }, []);
+
   // Technician visibility
   const hiddenTechnicianIds = useMemo(
     () => new Set(preferences.hiddenTechnicianIds),
@@ -225,6 +234,10 @@ export function useCalendarState() {
     setShowFullDay,
     toggleShowFullDay,
     visibleHours,
+
+    // Tasks on calendar
+    showTasks: preferences.showTasks,
+    toggleShowTasks,
 
     // Technician visibility
     hiddenTechnicianIds,

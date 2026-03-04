@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { Response } from "express";
 import { storage } from "../storage/index";
 import { z } from "zod";
+import { postalCodeSchema } from "@shared/schema";
 import { requireRole } from "../auth/requireRole";
 import { RESTRICTED_MANAGER_ROLES } from "../auth/roles";
 import { asyncHandler, createError } from "../middleware/errorHandler";
@@ -21,7 +22,7 @@ const updateCompanySettingsSchema = z.object({
   address: z.string().max(500).optional(),
   city: z.string().max(100).optional(),
   provinceState: z.string().max(100).optional(),
-  postalCode: z.string().max(20).optional(),
+  postalCode: postalCodeSchema,
   email: z.string().email().max(255).optional().or(z.literal("")),
   phone: z.string().max(30).optional(),
   timezone: z.string().max(100).optional(),

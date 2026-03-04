@@ -16,9 +16,13 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { getMemberDisplayName } from "@/lib/displayName";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
-import { UnscheduledJobsSidebar } from "@/components/UnscheduledJobsSidebar";
+import { useAuth } from "@/lib/auth";
 import { useCalendarState } from "@/hooks/useCalendarState";
 import { useCalendarDnD } from "@/hooks/useCalendarDnD";
+import { useCalendarTasks, useUnscheduledTasks } from "@/hooks/useCalendarTasks";
+import { taskToCalendarItem } from "@/lib/calendarItems";
+import { CalendarSidebar } from "@/components/calendar/CalendarSidebar";
+import { TaskDialog } from "@/components/TaskDialog";
 import {
   MONTH_ABBREV,
   DENSITY_STYLES,
@@ -161,6 +165,8 @@ export default function Calendar() {
     setSelectedTechnicianId,
     expandedAllDaySlots,
     setExpandedAllDaySlots,
+    showTasks,
+    toggleShowTasks,
   } = useCalendarState();
 
   // Regional settings (timezone, date/time format, week start) from company settings
@@ -183,7 +189,12 @@ export default function Calendar() {
   const [scheduleModalTechnicianId, setScheduleModalTechnicianId] = useState<string | undefined>();
   const [scheduleModalEdit, setScheduleModalEdit] = useState<any>(null);
 
+  // Task dialog state (Phase 8 of calendar rewrite)
+  const [taskDialogOpen, setTaskDialogOpen] = useState(false);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>();
+
   const { toast } = useToast();
+  const { user } = useAuth();
   const [location, setLocation] = useLocation();
   const [addClientDialogOpen, setAddClientDialogOpen] = useState(false);
   const weeklyScrollContainerRef = useRef<HTMLDivElement>(null);
@@ -1342,6 +1353,36 @@ export default function Calendar() {
     return Array.from(seen.values());
   }, [unscheduledQueryData]);
 
+  // Phase 8: Compute date range for task calendar fetch
+  const calendarDateRange = useMemo(() => {
+    if (view === "weekly") {
+      const weekStart = getWeekStart(currentDate, regional.weekStartsOn);
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekEnd.getDate() + 6);
+      return { start: weekStart.toISOString(), end: weekEnd.toISOString() };
+    }
+    if (view === "daily") {
+      const dayStart = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate());
+      const dayEnd = new Date(dayStart);
+      dayEnd.setDate(dayEnd.getDate() + 1);
+      return { start: dayStart.toISOString(), end: dayEnd.toISOString() };
+    }
+    // monthly
+    const monthStart = new Date(year, month - 1, 1);
+    const monthEnd = new Date(year, month, 0);
+    return { start: monthStart.toISOString(), end: monthEnd.toISOString() };
+  }, [view, currentDate, year, month, regional.weekStartsOn]);
+
+  // Phase 8: Fetch scheduled tasks for calendar overlay
+  const { data: scheduledTasks = [] } = useCalendarTasks(
+    calendarDateRange.start,
+    calendarDateRange.end,
+    showTasks
+  );
+
+  // Phase 8: Fetch unscheduled tasks for sidebar Tasks tab
+  const { data: unscheduledTasks = [], isLoading: isLoadingUnscheduledTasks } = useUnscheduledTasks(true);
+
   // Query for old unscheduled items that need user action (older than previous month)
   const { data: oldUnscheduledQueryData } = useQuery<any>({
     queryKey: ["/api/calendar/old-unscheduled"],
@@ -1598,10 +1639,19 @@ export default function Calendar() {
     [events]
   );
 
-  // Build memoized indexes for efficient lookup
+  // Phase 8: Merge task-derived CalendarItems when showTasks is enabled
+  const mergedEvents = useMemo(() => {
+    if (!showTasks || scheduledTasks.length === 0) return normalizedEvents;
+    const taskItems = scheduledTasks
+      .map(taskToCalendarItem)
+      .filter((item): item is NonNullable<typeof item> => item !== null) as CalendarEvent[];
+    return [...normalizedEvents, ...taskItems];
+  }, [normalizedEvents, scheduledTasks, showTasks]);
+
+  // Build memoized indexes for efficient lookup (uses merged events when tasks enabled)
   const eventIndexes = useMemo(
-    () => buildEventIndexes(normalizedEvents),
-    [normalizedEvents]
+    () => buildEventIndexes(mergedEvents),
+    [mergedEvents]
   );
 
   // Map of events by day number (for monthly view) - uses normalized events
@@ -2076,14 +2126,14 @@ export default function Calendar() {
             onPreviousMonth={previousMonth}
             onNextMonth={nextMonth}
             onGoToToday={goToToday}
-            selectedTechnicianId={selectedTechnicianId}
-            onSelectedTechnicianChange={setSelectedTechnicianId}
             technicians={technicians}
+            hiddenTechnicianIds={hiddenTechnicianIds}
+            onToggleTechnicianVisibility={toggleTechnicianVisibility}
             onPartsClick={handlePartsClick}
             calendarStartHour={companySettings?.calendarStartHour || 8}
             onStartHourChange={handleStartHourChange}
-            hiddenTechnicianIds={hiddenTechnicianIds}
-            onToggleTechnicianVisibility={toggleTechnicianVisibility}
+            showTasks={showTasks}
+            onToggleShowTasks={toggleShowTasks}
             regional={regional}
           />
 
@@ -2110,66 +2160,20 @@ export default function Calendar() {
                       regional={regional}
                     />
                   )}
+                  {/* Phase 8a: Weekly view always shows tech-first layout (toggle removed) */}
                   {view === "weekly" && (
                     <div className="h-full flex flex-col min-h-0 max-h-full">
-                      {/* Weekly view mode toggle */}
-                      <div className="flex items-center gap-2 p-2 border-b bg-muted/30">
-                        <span className="text-xs font-medium text-muted-foreground">View:</span>
-                        <div className="flex rounded-md border bg-background">
-                          <Button
-                            variant={weeklyViewMode === "time" ? "secondary" : "ghost"}
-                            size="sm"
-                            className="h-7 px-3 text-xs rounded-r-none"
-                            onClick={() => setWeeklyViewMode("time")}
-                          >
-                            Hourly
-                          </Button>
-                          <Button
-                            variant={weeklyViewMode === "technician" ? "secondary" : "ghost"}
-                            size="sm"
-                            className="h-7 px-3 text-xs rounded-l-none border-l"
-                            onClick={() => setWeeklyViewMode("technician")}
-                          >
-                            By Technician
-                          </Button>
-                        </div>
-                      </div>
-
-                      {weeklyViewMode === "time" ? (
-                        <CalendarGridWeek
-                          currentDate={currentDate}
-                          density={density}
-                          companySettings={companySettings}
-                          clients={clients}
-                          technicians={technicians}
-                          eventIndexes={eventIndexes}
-                          selectedTechnicianId={selectedTechnicianId}
-                          expandedAllDaySlots={expandedAllDaySlots}
-                          setExpandedAllDaySlots={setExpandedAllDaySlots}
-                          getTechnicianColor={getTechnicianColor}
-                          handleClientClick={handleClientClick}
-                          handleResize={handleResize}
-                          weeklyScrollContainerRef={weeklyScrollContainerRef}
-                          visibleHours={visibleHours}
-                          showFullDay={showFullDay}
-                          onToggleFullDay={toggleShowFullDay}
-                          savingJobIds={savingJobIds}
-                          onUnschedule={handleUnschedule}
-                          regional={regional}
-                        />
-                      ) : (
-                        <CalendarGridWeekTechnicians
-                          currentDate={currentDate}
-                          density={density}
-                          technicians={technicians}
-                          eventIndexes={eventIndexes}
-                          hiddenTechnicianIds={hiddenTechnicianIds}
-                          onJobClick={handleTechWeekJobClick}
-                          onSlotClick={handleTechWeekSlotClick}
-                          onScheduleNew={handleScheduleNew}
-                          regional={regional}
-                        />
-                      )}
+                      <CalendarGridWeekTechnicians
+                        currentDate={currentDate}
+                        density={density}
+                        technicians={technicians}
+                        eventIndexes={eventIndexes}
+                        hiddenTechnicianIds={hiddenTechnicianIds}
+                        onJobClick={handleTechWeekJobClick}
+                        onSlotClick={handleTechWeekSlotClick}
+                        onScheduleNew={handleScheduleNew}
+                        regional={regional}
+                      />
                     </div>
                   )}
                   {view === "daily" && (
@@ -2197,13 +2201,42 @@ export default function Calendar() {
               </Card>
             </div>
 
+            {/* Phase 8d: CalendarSidebar with Visits + Tasks tabs */}
             <aside className="w-auto flex-shrink-0 h-full overflow-hidden">
-              <UnscheduledJobsSidebar
+              <CalendarSidebar
                 collapsed={isUnscheduledMinimized}
                 onToggleCollapsed={toggleSidebarCollapsed}
-                items={unscheduledClients}
-                isSaving={isSavingUnscheduled}
-                renderItem={renderUnscheduledItem}
+                visitItems={unscheduledClients}
+                renderVisitItem={renderUnscheduledItem}
+                isSavingVisit={isSavingUnscheduled}
+                clients={clients}
+                unscheduledTasks={unscheduledTasks}
+                isLoadingTasks={isLoadingUnscheduledTasks}
+                onTaskClick={(taskId) => {
+                  setSelectedTaskId(taskId);
+                  setTaskDialogOpen(true);
+                }}
+                onTaskToggle={(taskId, completed) => {
+                  const endpoint = completed
+                    ? `/api/tasks/${taskId}/close`
+                    : `/api/tasks/${taskId}/reopen`;
+                  const body = completed && user?.id
+                    ? JSON.stringify({ userId: user.id })
+                    : undefined;
+                  apiRequest(endpoint, {
+                    method: "POST",
+                    body,
+                    headers: body ? { "Content-Type": "application/json" } : undefined,
+                  }).then(() => {
+                    queryClient.invalidateQueries({ predicate: (q) =>
+                      typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/tasks")
+                    });
+                  });
+                }}
+                onNewTask={() => {
+                  setSelectedTaskId(undefined);
+                  setTaskDialogOpen(true);
+                }}
               />
             </aside>
 
@@ -2279,6 +2312,13 @@ export default function Calendar() {
           // Phase 4 Step C5: canonical family key
           queryClient.invalidateQueries({ queryKey: ["jobs"] });
         }}
+      />
+
+      {/* Phase 8e: TaskDialog for creating/editing tasks from calendar sidebar */}
+      <TaskDialog
+        open={taskDialogOpen}
+        onOpenChange={setTaskDialogOpen}
+        taskId={selectedTaskId}
       />
 
       {/* Diagnostics Panel - dev mode or ?diag=1 */}

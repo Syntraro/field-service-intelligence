@@ -8,6 +8,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### Calendar Page UI Rewrite (2026-03-04)
+- **Calendar header refactor**: Smaller date title (`text-lg font-semibold`), consolidated controls row
+  - Files: `client/src/components/calendar/CalendarHeader.tsx` (rewritten)
+- **Technician filter popover**: Replaces color-dot chips row with dropdown popover + checkboxes, All/None quick actions
+  - Files: `client/src/components/calendar/TechnicianFilterPopover.tsx` (new)
+- **Weekly view defaults to technician-first**: Hourly/By Technician toggle removed; weekly view always renders `CalendarGridWeekTechnicians`
+  - Files: `client/src/pages/Calendar.tsx`, `client/src/hooks/useCalendarState.ts`
+- **Unscheduled sidebar redesign**: New `CalendarSidebar` with Visits + Tasks tabs, Dashboard-style card styling
+  - Files: `client/src/components/calendar/CalendarSidebar.tsx` (new)
+- **Tasks on calendar**: Toggleable via "Show tasks" switch in header. Fetches tasks with `scheduledFromDate`/`scheduledToDate` filters
+  - Files: `client/src/lib/calendarItems.ts` (new), `client/src/hooks/useCalendarTasks.ts` (new)
+- **Task visual distinction**: Task items render with violet tint, ClipboardList icon, non-draggable
+  - Files: `client/src/components/calendar/JobCard.tsx`, `client/src/components/calendar/DraggableClient.tsx`, `client/src/components/calendar/CalendarGridWeekTechnicians.tsx`, `client/src/components/calendar/CalendarGridDayJobber.tsx`, `client/src/components/calendar/CalendarGridMonth.tsx`
+- **Backend**: `scheduledFromDate`/`scheduledToDate` filter on tasks API for calendar date-range queries
+  - Files: `server/storage/tasks.ts`, `server/routes/tasks.routes.ts`
+- **CalendarItem normalization layer**: Unified `CalendarItem` type extends `CalendarEvent` with `kind: "visit" | "task"` discriminator
+  - Files: `client/src/lib/calendarItems.ts` (new)
+
+#### Phase 3: Address Normalization + Postal Code Validation (2026-03-04)
+- **Address normalization helper** (`server/lib/addressNormalize.ts`): Resolves province naming inconsistencies at the API boundary. `normalizeServiceAddress()` maps any of `province`/`provinceState`/`stateOrProvince` → `province` (for client/supplier locations). `normalizeCompanyAddress()` maps variants → `provinceState` (for company settings). `normalizePostalCode()` normalizes Canadian postal codes to uppercase with space (A1A 1A1).
+- **Postal code Zod validation** (`postalCodeSchema` in `shared/schema.ts`): Optional Zod schema accepting Canadian (A1A 1A1) and US (12345 / 12345-6789) formats. Normalizes Canadian codes during parse. Rejects invalid non-empty values. Applied to: `quickCreateSchema` (clients), `updateCompanySettingsSchema`, `updateSupplierLocationSchema`.
+- **Route integration**: `normalizePostalCode` applied to all client create/update paths (quick-create, full-create, PUT, PATCH, create-under-company). `normalizeServiceAddress` applied to supplier location create/update. Province fallback chain added to full-create billing/service address extraction (`stateOrProvince` ∥ `province`).
+- **No migrations**: No DB column renames or schema changes. Normalization happens at the API boundary before persistence.
+- **Files (new)**: `server/lib/addressNormalize.ts`
+- **Files (modified)**: `shared/schema.ts` (postalCodeSchema), `server/routes/clients.ts`, `server/routes/companySettings.ts`, `server/routes/suppliers.ts`
+
 #### Phase 1: Google Places Address Autocomplete + Persisted Lat/Lng (2026-03-04)
 - **Database columns**: Added `country`, `lat` (numeric 10,7), `lng` (numeric 10,7), `place_id` to `client_locations`. Added `lat`, `lng`, `place_id` to `supplier_locations`. All nullable — no backfill required.
 - **Google Maps loader** (`client/src/lib/googleMapsLoader.ts`): Singleton script loader for Google Maps Places API. Loads once, resolves to `false` if key missing or script fails (graceful fallback).
@@ -20,6 +46,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Dev dependency**: `@types/google.maps` added; `tsconfig.json` updated with `"google.maps"` type reference.
 - **Files (new)**: `client/src/lib/googleMapsLoader.ts`, `client/src/components/ui/AddressAutocomplete.tsx`, `migrations/2026_03_04_google_places_geocoding_columns.sql`, `docs/ADDRESS_AUTOCOMPLETE.md`
 - **Files (modified)**: `shared/schema.ts`, `server/routes/clients.ts`, `server/routeOptimizationService.ts`, `client/src/components/LocationFormModal.tsx`, `tsconfig.json`, `package.json`
+
+#### Phase 2B: AddressAutocomplete — NewClientPage + CompanySettingsPage (2026-03-04)
+- **NewClientPage full-create integration**: Replaced street address `<Input>` with `<AddressAutocomplete>` on all three address blocks: billing address, primary service address, and additional location service addresses. Service addresses persist `lat`/`lng`/`placeId`/`country` via the existing `POST /api/clients/full-create` payload. Billing autocomplete fills street/city/province/postalCode/country but does not persist geo fields (no billing geo columns).
+- **CompanySettingsPage RHF integration**: Created `AddressAutocompleteField` (`client/src/components/ui/AddressAutocompleteField.tsx`) — a React Hook Form adapter wrapping `AddressAutocomplete` with `Controller` and `useFormContext()`. On place selection, uses `form.setValue()` to populate city, provinceState, and postalCode. No geo persistence (company settings has no lat/lng columns).
+- **AddressAutocomplete data-testid support**: Added optional `data-testid` prop passthrough to the underlying `<input>` element.
+- **Guardrails**: Same as Phase 2A — manual edits do not wipe geo fields; clearing the street field entirely clears lat/lng/placeId for service addresses.
+- **Files (new)**: `client/src/components/ui/AddressAutocompleteField.tsx`
+- **Files (modified)**: `client/src/pages/NewClientPage.tsx`, `client/src/pages/CompanySettingsPage.tsx`, `client/src/components/ui/AddressAutocomplete.tsx`
 
 #### Phase 2A: Roll AddressAutocomplete into top address entry points (2026-03-04)
 - **AddressAutocomplete integration**: Replaced street address `<Input>` with `<AddressAutocomplete>` on 6 additional forms. On place selection, auto-fills street, city, province, postal code, country; persists lat/lng/placeId. Falls back to plain text input when API key is missing.
