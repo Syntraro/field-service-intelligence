@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Sidebar navigation reordered with section dividers (2026-03-04)
+- Reordered: Dashboard, Calendar | Jobs, Invoices, Quotes, Clients, Suppliers, Reports | Settings, Admin.
+- Added two visual dividers: after Calendar (before Operations group) and after Reports (before System group).
+- **File**: `client/src/components/AppSidebar.tsx`
+
 #### Create Job modal: multi-technician assignment support (2026-03-04)
 - **Multi-tech picker**: Replaced single-technician dropdown in `JobScheduleFields` with chips + "+ Add" popover pattern (matching calendar job view modal). Supports 0, 1, or many technicians.
 - **Backward compat**: `primaryTechnicianId` auto-syncs to first element of `assignedTechnicianIds`.
@@ -23,6 +28,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **File**: `client/src/components/JobDetailDialog.tsx` (1329 → ~580 lines)
 
 ### Fixed
+
+#### Template apply: job parts now retain item reference so Product/Service displays correctly (2026-03-04)
+- **Server fix**: `applyJobTemplateToJob` now batch-fetches referenced products from `items` table. Description fallback chain: `descriptionOverride → items.name → items.description → ""`. Price fallback: `unitPriceOverride → items.unitPrice → "0"`. The `productId` field was already correctly written from `line.productId`.
+- **UI fix**: Added `resolveProductDisplay()` helper used by both `LineItemRow` and `SortableLineItemRow`. Rendering fallback: resolved item name (via `productId` catalog lookup) → stored `description` → "No product". Prevents stale "No product" when mapping useEffect hasn't re-run or catalog is paginated.
+- **Files**: `server/storage/templates.ts`, `client/src/components/PartsBillingCard.tsx`
 
 #### Calendar modal: allow closing after Unschedule; fix stale version errors (2026-03-04)
 - **Autosave-after-unschedule fix**: Unschedule success handler now resets dirty-tracking snapshot to empty-date baseline and clears validation errors, so `isDirty` is false and close is not blocked.

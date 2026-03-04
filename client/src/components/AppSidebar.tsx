@@ -91,7 +91,7 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       testId: "nav-daily-parts"
     });
   } else {
-    // Admin menu - ordered: Dashboard, Jobs, Clients, Calendar, Reports, divider, Settings, Admin
+    // Primary: Dashboard, Calendar
     menuItems.push({
       title: "Dashboard",
       icon: LayoutDashboard,
@@ -106,11 +106,20 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       testId: "nav-dashboard"
     });
     menuItems.push({
+      title: "Calendar",
+      icon: CalendarIcon,
+      href: "/calendar",
+      isActive: location === "/calendar",
+      testId: "nav-calendar"
+    });
+    // --- Divider 1 --- Operations: Jobs, Invoices, Quotes, Clients, Suppliers, Reports
+    menuItems.push({
       title: "Jobs",
       icon: ClipboardList,
       href: "/jobs",
       isActive: location === "/jobs" || location.startsWith("/jobs/"),
-      testId: "nav-jobs"
+      testId: "nav-jobs",
+      isDivider: true
     });
     menuItems.push({
       title: "Invoices",
@@ -141,21 +150,13 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       testId: "nav-suppliers"
     });
     menuItems.push({
-      title: "Calendar",
-      icon: CalendarIcon,
-      href: "/calendar",
-      isActive: location === "/calendar",
-      testId: "nav-calendar"
-    });
-    menuItems.push({
       title: "Reports",
       icon: FileText,
       href: "/reports",
       isActive: location === "/reports" || location.startsWith("/reports/"),
       testId: "nav-reports"
     });
-    
-    // Divider marker - Settings section
+    // --- Divider 2 --- System: Settings, Admin
     menuItems.push({
       title: "Settings",
       icon: Settings,

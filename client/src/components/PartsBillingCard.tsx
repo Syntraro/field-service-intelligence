@@ -704,6 +704,16 @@ interface LineItemRowProps {
   onRequestAddProduct: (name: string) => void;
 }
 
+/** Resolve display name: mapped description → live catalog lookup → "No product" */
+function resolveProductDisplay(item: LocalLineItem, catalog: Item[]): string {
+  if (item.description) return item.description;
+  if (item.productId) {
+    const cat = catalog.find((c) => c.id === item.productId);
+    if (cat) return cat.name || cat.description || "";
+  }
+  return "";
+}
+
 function LineItemRow({
   item,
   catalog,
@@ -733,6 +743,7 @@ function LineItemRow({
   }, [catalog, query]);
 
   const lineTotal = parseFloat(item.unitPrice || "0") * parseFloat(item.quantity || "0");
+  const productDisplay = resolveProductDisplay(item, catalog);
 
   if (!isEditing) {
     return (
@@ -744,7 +755,7 @@ function LineItemRow({
         <td className="py-3 pr-3 align-top">
           <div className="flex items-center gap-2">
             <div className="text-xs font-medium">
-              {item.description || <span className="italic text-muted-foreground">No product</span>}
+              {productDisplay || <span className="italic text-muted-foreground">No product</span>}
             </div>
             {item.isDraft && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 font-medium">
@@ -939,6 +950,7 @@ function SortableLineItemRow(props: LineItemRowProps) {
   }, [props.catalog, query]);
 
   const lineTotal = parseFloat(props.item.unitPrice || "0") * parseFloat(props.item.quantity || "0");
+  const productDisplay = resolveProductDisplay(props.item, props.catalog);
 
   if (!props.isEditing) {
     return (
@@ -965,7 +977,7 @@ function SortableLineItemRow(props: LineItemRowProps) {
         <td className="py-3 pr-3 align-top">
           <div className="flex items-center gap-2">
             <div className="text-xs font-medium">
-              {props.item.description || <span className="italic text-muted-foreground">No product</span>}
+              {productDisplay || <span className="italic text-muted-foreground">No product</span>}
             </div>
             {props.item.isDraft && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400 font-medium">

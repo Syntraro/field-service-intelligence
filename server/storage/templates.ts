@@ -1,6 +1,6 @@
 import { db } from "../db";
-import { eq, and } from "drizzle-orm";
-import { jobTemplates, jobTemplateLineItems, jobParts } from "@shared/schema";
+import { eq, and, inArray } from "drizzle-orm";
+import { jobTemplates, jobTemplateLineItems, jobParts, items } from "@shared/schema";
 import type { InsertJobTemplate, JobTemplate } from "@shared/schema";
 import { BaseRepository } from "./base";
 
@@ -215,6 +215,20 @@ export class TemplateRepository extends BaseRepository {
 
     const lines = await this.getJobTemplateLineItems(templateId);
 
+    // Batch-fetch referenced products so we can fall back to product name/price
+    // when the template line has no descriptionOverride or unitPriceOverride
+    const productIds = Array.from(new Set(lines.map((l) => l.productId).filter(Boolean)));
+    const productMap = new Map<string, { name: string | null; description: string | null; unitPrice: string | null }>();
+    if (productIds.length > 0) {
+      const products = await db
+        .select({ id: items.id, name: items.name, description: items.description, unitPrice: items.unitPrice })
+        .from(items)
+        .where(inArray(items.id, productIds));
+      for (const p of products) {
+        productMap.set(p.id, { name: p.name, description: p.description, unitPrice: p.unitPrice });
+      }
+    }
+
     // For merge mode, get existing job parts to check for duplicates
     let existingProductIds: Set<string> = new Set();
     if (mode === "merge") {
@@ -251,6 +265,7 @@ export class TemplateRepository extends BaseRepository {
       }
 
       const sortOrder = mode === "merge" ? maxSortOrder++ : line.sortOrder;
+      const product = productMap.get(line.productId);
 
       const [part] = await db
         .insert(jobParts)
@@ -258,9 +273,11 @@ export class TemplateRepository extends BaseRepository {
           companyId,
           jobId,
           productId: line.productId,
-          description: line.descriptionOverride || "",
+          // Fallback: template override → product name → product description
+          description: line.descriptionOverride || product?.name || product?.description || "",
           quantity: line.quantity,
-          unitPrice: line.unitPriceOverride || "0",
+          // Use template override → product price → zero fallback
+          unitPrice: line.unitPriceOverride || product?.unitPrice || "0",
           sortOrder,
         })
         .returning();
