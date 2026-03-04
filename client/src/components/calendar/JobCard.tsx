@@ -169,7 +169,7 @@ export function JobCard({
               onClick={handleReschedule}
               onPointerDown={(e) => e.stopPropagation()}
               onMouseDown={(e) => e.stopPropagation()}
-              className="p-0.5 rounded bg-white/90 text-muted-foreground hover:bg-blue-100 hover:text-blue-600 transition-colors"
+              className="p-0.5 rounded bg-white/90 text-muted-foreground hover:bg-[rgba(47,125,50,0.12)] hover:text-[#2F7D32] transition-colors"
               title="Reschedule"
             >
               <CalendarIcon className="h-3 w-3" />

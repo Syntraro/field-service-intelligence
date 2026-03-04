@@ -10,7 +10,8 @@ import { Label } from "@/components/ui/label";
 import { useForm } from "react-hook-form";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
-import { Trash2, Copy, RotateCcw, Plus } from "lucide-react";
+import { Trash2, Copy, RotateCcw, Plus, UserCheck } from "lucide-react";
+import { EmptyState } from "@/components/ui/empty-state";
 
 export default function TechnicianManagementPage() {
   const { toast } = useToast();
@@ -117,14 +118,17 @@ export default function TechnicianManagementPage() {
         </div>
 
         {isLoading ? (
-          <div className="text-center py-8">Loading technicians...</div>
+          <div className="text-center py-8 text-sm text-muted-foreground">Loading technicians...</div>
         ) : (
           <>
             {technicians.length === 0 ? (
               <Card>
-                <CardContent className="pt-12 pb-12 text-center">
-                  <p className="text-muted-foreground mb-4">No technicians added yet</p>
-                  <Button onClick={() => setInviteOpen(true)}>Invite your first technician</Button>
+                <CardContent className="pt-6 pb-6">
+                  <EmptyState
+                    icon={UserCheck}
+                    message="No technicians added yet"
+                    action={<Button onClick={() => setInviteOpen(true)}>Invite your first technician</Button>}
+                  />
                 </CardContent>
               </Card>
             ) : (

@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { FileText, Package, Calendar, Printer, DollarSign } from "lucide-react";
+import { EmptyState } from "@/components/ui/empty-state";
 
 const MONTHS = [
   "January", "February", "March", "April", "May", "June",
@@ -216,11 +217,12 @@ export default function Reports() {
         ) : reportData.length === 0 ? (
           <Card>
             <CardContent className="p-8">
-              <div className="text-center">
-                <Package className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
-                <p className="text-muted-foreground">No parts required for {MONTHS[selectedMonth]}</p>
-                <p className="text-sm text-muted-foreground mt-1">No clients have maintenance scheduled for this month</p>
-              </div>
+              <EmptyState
+                icon={Package}
+                message={`No parts required for ${MONTHS[selectedMonth]}`}
+                description="No clients have maintenance scheduled for this month"
+                className="py-4"
+              />
             </CardContent>
           </Card>
         ) : (
@@ -383,11 +385,12 @@ export default function Reports() {
             ) : scheduleData.length === 0 ? (
               <Card>
                 <CardContent className="p-8">
-                  <div className="text-center">
-                    <Calendar className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
-                    <p className="text-muted-foreground">No maintenance scheduled for {MONTHS[scheduleMonth]}</p>
-                    <p className="text-sm text-muted-foreground mt-1">No clients have PM scheduled for this month</p>
-                  </div>
+                  <EmptyState
+                    icon={Calendar}
+                    message={`No maintenance scheduled for ${MONTHS[scheduleMonth]}`}
+                    description="No clients have PM scheduled for this month"
+                    className="py-4"
+                  />
                 </CardContent>
               </Card>
             ) : (

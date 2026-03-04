@@ -6,7 +6,7 @@
 import { useState, useMemo, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Search, Plus, X, Tag, MapPin } from "lucide-react";
+import { Search, Plus, X, Tag, MapPin, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -15,6 +15,7 @@ import { FixedSizeList } from "react-window";
 import { apiRequest } from "@/lib/queryClient";
 import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
 import { TablePageShell } from "@/components/ui/table-page-shell";
+import { EmptyState } from "@/components/ui/empty-state";
 import BulkEditTagsModal from "@/components/BulkEditTagsModal";
 import type { Client, ClientTag } from "@shared/schema";
 
@@ -326,9 +327,11 @@ export default function Clients() {
             </div>
 
             {filteredGroups.length === 0 ? (
-              <div className="text-center text-muted-foreground py-8">
-                No {activeTab} clients found
-              </div>
+              <EmptyState
+                icon={Users}
+                message={`No ${activeTab} clients found`}
+                className="py-8"
+              />
             ) : (
               <FixedSizeList
                 height={Math.min(filteredGroups.length * ROW_HEIGHT, MAX_LIST_HEIGHT)}

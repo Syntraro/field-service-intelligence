@@ -672,7 +672,7 @@ export default function Jobs() {
                 className={cn(
                   "rounded-full h-8 px-3 text-xs",
                   lifecycleFilter === tab.key
-                    ? "bg-[#2F7D32] hover:bg-[#256427] text-white border-transparent"
+                    ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent"
                     : "text-muted-foreground"
                 )}
               >
@@ -706,7 +706,7 @@ export default function Jobs() {
                 size="sm"
                 className={cn(
                   "rounded-full h-7 px-2.5 text-xs",
-                  derivedFilters.scheduled === true && "bg-[rgba(47,125,50,0.12)] text-[#2F7D32] border-[rgba(47,125,50,0.25)] hover:bg-[rgba(47,125,50,0.18)]"
+                  derivedFilters.scheduled === true && "bg-[var(--brand-ring)] text-[var(--brand)] border-[rgba(47,125,50,0.25)] hover:bg-[rgba(47,125,50,0.22)]"
                 )}
                 onClick={() => toggleDerivedFilter("scheduled", derivedFilters.scheduled === true ? null : true)}
                 data-testid="filter-scheduled"
@@ -719,7 +719,7 @@ export default function Jobs() {
                 size="sm"
                 className={cn(
                   "rounded-full h-7 px-2.5 text-xs",
-                  derivedFilters.scheduled === false && "bg-[rgba(47,125,50,0.12)] text-[#2F7D32] border-[rgba(47,125,50,0.25)] hover:bg-[rgba(47,125,50,0.18)]"
+                  derivedFilters.scheduled === false && "bg-[var(--brand-ring)] text-[var(--brand)] border-[rgba(47,125,50,0.25)] hover:bg-[rgba(47,125,50,0.22)]"
                 )}
                 onClick={() => toggleDerivedFilter("scheduled", derivedFilters.scheduled === false ? null : false)}
                 data-testid="filter-backlog"
@@ -735,7 +735,7 @@ export default function Jobs() {
                 size="sm"
                 className={cn(
                   "rounded-full h-7 px-2.5 text-xs",
-                  derivedFilters.assigned === true && "bg-[rgba(47,125,50,0.12)] text-[#2F7D32] border-[rgba(47,125,50,0.25)] hover:bg-[rgba(47,125,50,0.18)]"
+                  derivedFilters.assigned === true && "bg-[var(--brand-ring)] text-[var(--brand)] border-[rgba(47,125,50,0.25)] hover:bg-[rgba(47,125,50,0.22)]"
                 )}
                 onClick={() => toggleDerivedFilter("assigned", derivedFilters.assigned === true ? null : true)}
                 data-testid="filter-assigned"
@@ -748,7 +748,7 @@ export default function Jobs() {
                 size="sm"
                 className={cn(
                   "rounded-full h-7 px-2.5 text-xs",
-                  derivedFilters.assigned === false && "bg-[rgba(47,125,50,0.12)] text-[#2F7D32] border-[rgba(47,125,50,0.25)] hover:bg-[rgba(47,125,50,0.18)]"
+                  derivedFilters.assigned === false && "bg-[var(--brand-ring)] text-[var(--brand)] border-[rgba(47,125,50,0.25)] hover:bg-[rgba(47,125,50,0.22)]"
                 )}
                 onClick={() => toggleDerivedFilter("assigned", derivedFilters.assigned === false ? null : false)}
                 data-testid="filter-unassigned"

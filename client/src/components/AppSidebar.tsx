@@ -206,10 +206,10 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
                       asChild
                       isActive={item.isActive}
                       data-testid={item.testId}
-                      className="h-10 text-sidebar-foreground data-[active=true]:bg-white/[0.08] data-[active=true]:border-l-[3px] data-[active=true]:border-l-[var(--primary-green)] data-[active=true]:font-semibold data-[active=true]:pl-[7px] hover:bg-white/[0.08]"
+                      className="h-10 text-sidebar-foreground data-[active=true]:bg-white/[0.08] data-[active=true]:border-l-[3px] data-[active=true]:border-l-[var(--brand)] data-[active=true]:font-semibold data-[active=true]:pl-[7px] hover:bg-white/[0.08]"
                     >
                       <Link href={item.href}>
-                        <item.icon className="h-4 w-4 text-gray-400" />
+                        <item.icon className="h-4 w-4 text-[var(--sidebar-muted)]" />
                         <span>{item.title}</span>
                       </Link>
                     </SidebarMenuButton>
@@ -218,9 +218,9 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
                       isActive={item.isActive}
                       onClick={item.onClick}
                       data-testid={item.testId}
-                      className="h-10 text-sidebar-foreground data-[active=true]:bg-white/[0.08] data-[active=true]:border-l-[3px] data-[active=true]:border-l-[var(--primary-green)] data-[active=true]:font-semibold data-[active=true]:pl-[7px] hover:bg-white/[0.08]"
+                      className="h-10 text-sidebar-foreground data-[active=true]:bg-white/[0.08] data-[active=true]:border-l-[3px] data-[active=true]:border-l-[var(--brand)] data-[active=true]:font-semibold data-[active=true]:pl-[7px] hover:bg-white/[0.08]"
                     >
-                      <item.icon className="h-4 w-4 text-gray-400" />
+                      <item.icon className="h-4 w-4 text-[var(--sidebar-muted)]" />
                       <span>{item.title}</span>
                     </SidebarMenuButton>
                   )}
@@ -234,13 +234,13 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton onClick={() => setFeedbackOpen(true)} data-testid="button-feedback" className="h-10 text-sidebar-foreground hover:bg-white/[0.08]">
-              <MessageCircle className="h-4 w-4 text-gray-400" />
+              <MessageCircle className="h-4 w-4 text-[var(--sidebar-muted)]" />
               <span>Feedback</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
             <SidebarMenuButton onClick={handleLogout} data-testid="button-logout" className="h-10 text-sidebar-foreground hover:bg-white/[0.08]">
-              <LogOut className="h-4 w-4 text-gray-400" />
+              <LogOut className="h-4 w-4 text-[var(--sidebar-muted)]" />
               <span>Logout</span>
             </SidebarMenuButton>
           </SidebarMenuItem>

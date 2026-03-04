@@ -522,7 +522,7 @@ function AppContent() {
     <SidebarProvider defaultOpen={true} style={style as React.CSSProperties}>
       <div className="flex flex-col h-screen w-full bg-background">
         {/* Global header — spans full width above sidebar + content */}
-        <header className="flex items-center justify-between gap-2 px-4 h-14 shrink-0 bg-white dark:bg-gray-950 border-b border-[var(--card-border)] z-20">
+        <header className="flex items-center justify-between gap-2 px-4 h-14 shrink-0 bg-white dark:bg-gray-950 border-b border-[var(--card-border)] shadow-[0_1px_0_rgba(0,0,0,0.03)] z-20">
           <SidebarTrigger data-testid="button-sidebar-toggle" />
 
           {/* Company name - hidden on technician pages */}

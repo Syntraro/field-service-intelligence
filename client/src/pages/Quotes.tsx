@@ -2,13 +2,15 @@ import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { format, isValid, parseISO } from "date-fns";
 import { useLocation, useSearch, Link } from "wouter";
-import { Search, Plus } from "lucide-react";
+import { Search, Plus, FileText } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
 import { TablePageShell } from "@/components/ui/table-page-shell";
+import { EmptyState } from "@/components/ui/empty-state";
+import { cn } from "@/lib/utils";
 import {
   Table,
   TableBody,
@@ -138,14 +140,20 @@ export default function Quotes() {
       }
     >
       <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-1.5 flex-wrap">
           {(["all", "draft", "sent", "approved", "declined", "converted"] as QuoteStatusFilter[]).map((filter) => (
             <Button
               key={filter}
-              variant={activeFilter === filter ? "default" : "outline"}
+              variant={activeFilter === filter ? "default" : "ghost"}
               size="sm"
               onClick={() => setActiveFilter(filter)}
               data-testid={`button-filter-${filter}`}
+              className={cn(
+                "rounded-full h-8 px-3 text-xs",
+                activeFilter === filter
+                  ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent"
+                  : "text-muted-foreground"
+              )}
             >
               {filter === "all" ? "All" : filter.charAt(0).toUpperCase() + filter.slice(1)}
               {statusCounts[filter] ? ` (${statusCounts[filter]})` : ""}
@@ -167,13 +175,15 @@ export default function Quotes() {
 
       <ListSurface>
           {isLoading ? (
-            <div className="text-center py-12">Loading quotes...</div>
+            <div className="text-center py-12 text-sm text-muted-foreground">Loading quotes...</div>
           ) : filteredQuotes.length === 0 ? (
-            <div className="text-center py-12 text-muted-foreground">
-              {searchQuery || activeFilter !== "all"
+            <EmptyState
+              icon={FileText}
+              message={searchQuery || activeFilter !== "all"
                 ? "No quotes match your filters"
-                : "No quotes found. Create your first quote to get started."}
-            </div>
+                : "No quotes found"}
+              description={!searchQuery && activeFilter === "all" ? "Create your first quote to get started." : undefined}
+            />
           ) : (
             <Table>
               <TableHeader>

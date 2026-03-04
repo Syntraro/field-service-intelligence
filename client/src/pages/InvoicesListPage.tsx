@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
 import { TablePageShell } from "@/components/ui/table-page-shell";
+import { EmptyState } from "@/components/ui/empty-state";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -307,14 +308,20 @@ export default function InvoicesListPage() {
       )}
 
       <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-1.5 flex-wrap">
           {(["all", "draft", "awaiting_payment", "partial_paid", "paid", "overdue", "voided"] as InvoiceStatusFilter[]).map((filter) => (
             <Button
               key={filter}
-              variant={activeFilter === filter ? "default" : "outline"}
+              variant={activeFilter === filter ? "default" : "ghost"}
               size="sm"
               onClick={() => setActiveFilter(filter)}
               data-testid={`button-filter-${filter}`}
+              className={cn(
+                "rounded-full h-8 px-3 text-xs",
+                activeFilter === filter
+                  ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent"
+                  : "text-muted-foreground"
+              )}
             >
               {filter === "all" ? "All" :
                filter === "awaiting_payment" ? "Unpaid" :
@@ -329,11 +336,16 @@ export default function InvoicesListPage() {
             <>
               <span className="text-muted-foreground mx-1">|</span>
               <Button
-                variant={activeFilter === "qbo_synced" ? "default" : "outline"}
+                variant={activeFilter === "qbo_synced" ? "default" : "ghost"}
                 size="sm"
                 onClick={() => setActiveFilter("qbo_synced")}
                 data-testid="button-filter-qbo-synced"
-                className="gap-1"
+                className={cn(
+                  "rounded-full h-8 px-3 text-xs gap-1",
+                  activeFilter === "qbo_synced"
+                    ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent"
+                    : "text-muted-foreground"
+                )}
               >
                 <RefreshCw className="h-3 w-3" />
                 Synced
@@ -341,11 +353,14 @@ export default function InvoicesListPage() {
               </Button>
               {statusCounts["qbo_out_of_sync"] > 0 && (
                 <Button
-                  variant={activeFilter === "qbo_out_of_sync" ? "destructive" : "outline"}
+                  variant={activeFilter === "qbo_out_of_sync" ? "destructive" : "ghost"}
                   size="sm"
                   onClick={() => setActiveFilter("qbo_out_of_sync")}
                   data-testid="button-filter-qbo-out-of-sync"
-                  className={activeFilter !== "qbo_out_of_sync" ? "text-destructive border-destructive/50" : ""}
+                  className={cn(
+                    "rounded-full h-8 px-3 text-xs",
+                    activeFilter !== "qbo_out_of_sync" && "text-destructive"
+                  )}
                 >
                   <AlertTriangle className="h-3 w-3 mr-1" />
                   Out of Sync ({statusCounts["qbo_out_of_sync"]})
@@ -392,13 +407,15 @@ export default function InvoicesListPage() {
 
       <ListSurface>
           {isLoading ? (
-            <div className="text-center py-12">Loading invoices...</div>
+            <div className="text-center py-12 text-sm text-muted-foreground">Loading invoices...</div>
           ) : filteredInvoices.length === 0 ? (
-            <div className="text-center py-12 text-muted-foreground">
-              {searchQuery || activeFilter !== "all"
+            <EmptyState
+              icon={FileText}
+              message={searchQuery || activeFilter !== "all"
                 ? "No invoices match your filters"
-                : "No invoices found. Create your first invoice to get started."}
-            </div>
+                : "No invoices found"}
+              description={!searchQuery && activeFilter === "all" ? "Create your first invoice to get started." : undefined}
+            />
           ) : (
             <>
               {/* Grid header */}

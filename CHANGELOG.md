@@ -8,6 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### UI polish pass — EmptyState component, filter chip consistency, micro-cleanup (2026-03-04)
+- **EmptyState component**: New `client/src/components/ui/empty-state.tsx` — shared component with optional icon (h-10 w-10, 50% opacity), message, description, and action slot. Standardizes the 28+ inline empty state patterns across the app into one reusable component with consistent py-12 spacing, text sizing, and color treatment.
+- **AsyncBlock upgraded**: Now accepts `emptyIcon` and `emptyDescription` props and delegates to EmptyState internally instead of rendering bare text.
+- **Filter chip consistency**: Invoices and Quotes filter buttons changed from `variant="outline"` rectangular to `rounded-full h-8 px-3 text-xs` pill style with green active state (`--brand`/`--brand-hover`), matching Jobs page. Dashboard TasksPanel Active/Completed toggle updated to same pill style.
+- **Empty states standardized**: Replaced inline empty state divs with EmptyState component on: InvoicesListPage, Quotes, Clients, Suppliers, Reports (parts + schedule tabs), JobTemplatesPage, TechnicianManagementPage. Consistent icon + message + description pattern.
+- **Micro consistency**: Loading text states changed from `opacity-70` to `text-muted-foreground` for consistent color treatment (Suppliers, TechnicianManagement).
+- **Files**: `client/src/components/ui/empty-state.tsx` (new), `client/src/components/AsyncBlock.tsx`, `client/src/pages/InvoicesListPage.tsx`, `client/src/pages/Quotes.tsx`, `client/src/pages/Dashboard.tsx`, `client/src/pages/Clients.tsx`, `client/src/pages/Suppliers.tsx`, `client/src/pages/Reports.tsx`, `client/src/pages/JobTemplatesPage.tsx`, `client/src/pages/TechnicianManagementPage.tsx`
+
+#### UI consistency pass — green primary theme, lighter sidebar, reduced width, header separation (2026-03-04)
+- **Green primary theme**: Changed `--primary` from blue (`220 96% 58%` / `#2D6CFB`) to green (`122 45% 34%` / `#2F7D32`) in both `:root` and `.dark`. All default buttons, focus rings (`--ring`), and active states are now green globally via CSS variables. Added `--brand`, `--brand-hover`, `--brand-ring` design tokens.
+- **Sidebar lightened + narrowed**: Background changed from `#1F2933` to `#243241` (lighter). Width reduced from `16rem` (256px) to `12.5rem` (200px). Sidebar HSL vars updated. Icon colors now use `--sidebar-muted` token. Active border uses `--brand` var.
+- **Header separation**: Added micro-shadow `shadow-[0_1px_0_rgba(0,0,0,0.03)]` to global header for clear visual separation from content.
+- **App background**: Updated `--app-bg` from `#F5F7F9` to `#F7F9FB` and `--background` HSL to match.
+- **Blue accent cleanup**: Updated Dashboard Quotes section from blue to teal, LocationDetailPage active badge from blue to green, JobCard reschedule hover from blue to green. Jobs page filter chips now reference `--brand` vars instead of hardcoded hex.
+- **Dark mode**: `--primary` and `--ring` updated to brighter green (`142 50% 45%`) for dark mode visibility.
+- **Files**: `client/src/index.css`, `client/src/components/ui/sidebar.tsx`, `client/src/App.tsx`, `client/src/components/AppSidebar.tsx`, `client/src/pages/Jobs.tsx`, `client/src/pages/Dashboard.tsx`, `client/src/pages/LocationDetailPage.tsx`, `client/src/components/calendar/JobCard.tsx`
+
 #### UI upgrade pass #2 — StatusPill, modern tables, dashboard metrics, filter chips, input focus (2026-03-04)
 - **StatusPill component**: New `client/src/components/ui/status-pill.tsx` with 5 variants (neutral, success, warning, danger, info). Includes `statusToVariant()` mapping for consistent status→color across all pages. Height 24px, rounded-full, subtle border + background.
 - **Modern table styling**: Updated `table.tsx` — header row gets `#FAFAFA` background, font-semibold `#6B7280` text; data rows 44px height (`h-11`); cells use `px-4 py-2.5` padding; hover state `#F3F4F6`.

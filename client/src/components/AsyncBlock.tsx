@@ -3,7 +3,9 @@ import { AlertCircle, RefreshCw, ChevronDown, ChevronUp } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/empty-state";
 import { isApiError } from "@/lib/queryClient";
+import type { LucideIcon } from "lucide-react";
 
 interface AsyncBlockProps {
   /** Title shown in error messages (e.g., "invoices", "jobs") */
@@ -20,6 +22,10 @@ interface AsyncBlockProps {
   isEmpty?: boolean;
   /** Message shown when data is empty */
   emptyMessage?: string;
+  /** Optional icon for empty state */
+  emptyIcon?: LucideIcon;
+  /** Optional secondary description for empty state */
+  emptyDescription?: string;
   /** Number of skeleton rows to show when loading (default: 3) */
   skeletonRows?: number;
   /** Content to render when data loads successfully */
@@ -40,6 +46,8 @@ export function AsyncBlock({
   onRetry,
   isEmpty,
   emptyMessage = "No data found",
+  emptyIcon,
+  emptyDescription,
   skeletonRows = 3,
   children,
 }: AsyncBlockProps) {
@@ -105,12 +113,15 @@ export function AsyncBlock({
     );
   }
 
-  // Empty state
+  // Empty state — delegates to shared EmptyState component
   if (isEmpty) {
     return (
-      <div className="text-center py-6 text-sm text-muted-foreground">
-        {emptyMessage}
-      </div>
+      <EmptyState
+        icon={emptyIcon}
+        message={emptyMessage}
+        description={emptyDescription}
+        className="py-6"
+      />
     );
   }
 

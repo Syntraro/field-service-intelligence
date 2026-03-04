@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
+import { Building2 } from "lucide-react";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
 
 export default function Suppliers() {
   const { data, isLoading, error } = useQuery({
@@ -28,11 +30,11 @@ export default function Suppliers() {
         </CardHeader>
         <CardContent>
           {isLoading ? (
-            <div className="text-sm opacity-70">Loading…</div>
+            <div className="text-sm text-muted-foreground">Loading…</div>
           ) : error ? (
             <div className="text-sm text-destructive">Failed to load supplier visits. Please try again.</div>
           ) : items.length === 0 ? (
-            <div className="text-sm opacity-70">No open supplier visits.</div>
+            <EmptyState icon={Building2} message="No open supplier visits" className="py-8" />
           ) : (
             <div className="space-y-2">
               {items.map((t: any) => (

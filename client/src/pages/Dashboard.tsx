@@ -86,7 +86,7 @@ function WorkflowStrip({ data, isLoading, isError }: {
         { label: "Approved", count: data?.quotes.approvedCount ?? 0, href: "/quotes?status=approved" },
         { label: "Draft", count: data?.quotes.draftCount ?? 0, href: "/quotes?status=draft" },
       ],
-      color: "text-blue-600 dark:text-blue-400",
+      color: "text-teal-600 dark:text-teal-400",
     },
     {
       title: "Jobs",
@@ -531,13 +531,13 @@ function TasksPanel({
 
         {/* Filter Controls */}
         <div className="space-y-2">
-          {/* Active/Completed Toggle */}
+          {/* Active/Completed Toggle — pill style matching Jobs filter chips */}
           <div className="flex items-center gap-1">
             <Button
               size="sm"
               variant={tab === "active" ? "default" : "ghost"}
               onClick={() => setTab("active")}
-              className="h-7 text-xs px-3"
+              className={`rounded-full h-7 text-xs px-3 ${tab === "active" ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent" : "text-muted-foreground"}`}
             >
               Active
             </Button>
@@ -545,7 +545,7 @@ function TasksPanel({
               size="sm"
               variant={tab === "completed" ? "default" : "ghost"}
               onClick={() => setTab("completed")}
-              className="h-7 text-xs px-3"
+              className={`rounded-full h-7 text-xs px-3 ${tab === "completed" ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent" : "text-muted-foreground"}`}
             >
               Completed
             </Button>
@@ -584,11 +584,11 @@ function TasksPanel({
       {/* List - flat rows with dividers */}
       <div className="flex-1 overflow-y-auto min-h-0">
         {isLoading ? (
-          <div className="p-4 text-sm opacity-70">Loading tasks…</div>
+          <div className="p-4 text-sm text-muted-foreground">Loading tasks…</div>
         ) : error ? (
           <div className="p-4 text-sm text-destructive">Failed to load tasks</div>
         ) : filteredTasks.length === 0 ? (
-          <div className="p-4 text-sm opacity-70">No tasks</div>
+          <div className="text-center py-8 text-sm text-muted-foreground">No tasks</div>
         ) : (
           <div>
             {filteredTasks.map((t, index) => {

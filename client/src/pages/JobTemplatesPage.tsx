@@ -28,6 +28,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Plus, MoreHorizontal, Pencil, Star, Power, Loader2, ArrowLeft, FileText, Copy, Trash2 } from "lucide-react";
+import { EmptyState } from "@/components/ui/empty-state";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -243,11 +244,11 @@ export default function JobTemplatesPage() {
               <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
             </div>
           ) : templates.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              <FileText className="h-10 w-10 mx-auto mb-2 opacity-50" />
-              <p>No templates found.</p>
-              <p className="text-sm">Create your first template to get started.</p>
-            </div>
+            <EmptyState
+              icon={FileText}
+              message="No templates found"
+              description="Create your first template to get started."
+            />
           ) : (
             <Table>
               <TableHeader>
