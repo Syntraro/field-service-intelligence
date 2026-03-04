@@ -92,6 +92,9 @@ import { IS_DEV } from "../utils/devFlags";
 //
 // ============================================================================
 
+/** Default duration when converting an all-day visit to a timed visit (minutes). */
+export const DEFAULT_VISIT_DURATION_MINUTES = 60;
+
 /**
  * Default calendar visible hours (6am - 7pm)
  */
@@ -281,6 +284,7 @@ export class CalendarRepository extends BaseRepository {
         AND rv.scheduled_start >= ${startDate}
         AND rv.scheduled_start < ${endDate}
         AND j.deleted_at IS NULL AND j.is_active = true
+        AND j.status != 'archived'
       ORDER BY rv.scheduled_start
     `);
 
@@ -921,6 +925,21 @@ export class CalendarRepository extends BaseRepository {
     const visitIsActioned = isVisitActioned(currentVisit);
     // Visit Reschedule Architecture: explicit mode overrides auto-detection
     const shouldSpawn = data.mode === 'replace' || data.mode === 'complete_and_new' || visitIsActioned;
+
+    // All-day → timed conversion guard: when converting from all-day to a timed
+    // event, don't trust the incoming endAt (may carry the all-day span of ~24h).
+    // Prefer the job's existing durationMinutes, else default to 60 min.
+    const wasAllDay = currentVisit.isAllDay === true;
+    const isNowTimed = data.allDay === false && data.startAt != null;
+    if (wasAllDay && isNowTimed) {
+      const duration = (existingJob.durationMinutes && existingJob.durationMinutes > 0 && existingJob.durationMinutes <= 480)
+        ? existingJob.durationMinutes
+        : DEFAULT_VISIT_DURATION_MINUTES;
+      data.endAt = new Date(data.startAt!.getTime() + duration * 60_000);
+      if (IS_DEV) {
+        console.log('[RESCHEDULE-DEBUG] All-day → timed conversion: clamped endAt to', data.endAt.toISOString(), `(${duration} min)`);
+      }
+    }
 
     if (IS_DEV) {
       console.log('[RESCHEDULE-DEBUG] Spawn-on-action check:', {

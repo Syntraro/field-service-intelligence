@@ -68,7 +68,8 @@ export const DraggableClient = memo(function DraggableClient({
   //   Draggable UNLESS:  DRAG_ENABLED is false  OR  isSaving is true
   //   No legacy overdue/assigned/status checks — server rejects invalid drops.
   // ---------------------------------------------------------------------------
-  const dragDisabled = !DRAG_ENABLED || !!isSaving;
+  // Terminal jobs (completed/invoiced/archived) are non-draggable
+  const dragDisabled = !DRAG_ENABLED || !!isSaving || !!isCompleted;
 
   // ---------------------------------------------------------------------------
   // Single useDraggable hook for ALL items (calendar + unscheduled).

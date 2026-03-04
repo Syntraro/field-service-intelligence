@@ -50,7 +50,7 @@ export const CalendarEventChip = forwardRef<HTMLDivElement, CalendarEventChipPro
   // Disable dragging while saving to prevent double-mutations
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id,
-    disabled: !DRAG_ENABLED || isSaving,
+    disabled: !DRAG_ENABLED || isSaving || isCompleted,
     data: { type: "assignment", assignmentId: id },
   });
 

@@ -33,7 +33,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
-import { CalendarIcon, Clock, Sun, User } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { CalendarIcon, Clock, Plus, Sun, User, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getMemberDisplayName } from "@/lib/displayName";
 
@@ -82,6 +83,7 @@ export function createDefaultScheduleValue(options?: {
   isAllDay?: boolean;
   durationMinutes?: number;
   primaryTechnicianId?: string;
+  assignedTechnicianIds?: string[];
 }): JobScheduleValue {
   const date = options?.date
     ? typeof options.date === "string"
@@ -89,16 +91,18 @@ export function createDefaultScheduleValue(options?: {
       : format(options.date, "yyyy-MM-dd")
     : "";
 
+  // assignedTechnicianIds takes precedence; fall back to singleton from primaryTechnicianId
+  const techIds = options?.assignedTechnicianIds
+    ?? (options?.primaryTechnicianId ? [options.primaryTechnicianId] : []);
+
   return {
     unscheduled: options?.unscheduled ?? true,
     isAllDay: options?.isAllDay ?? false,
     date,
     time: options?.time ?? "",
     durationMinutes: options?.durationMinutes ?? 60,
-    primaryTechnicianId: options?.primaryTechnicianId ?? "",
-    assignedTechnicianIds: options?.primaryTechnicianId
-      ? [options.primaryTechnicianId]
-      : [],
+    primaryTechnicianId: techIds[0] ?? "",
+    assignedTechnicianIds: techIds,
   };
 }
 
@@ -140,14 +144,19 @@ export function parseJobToScheduleValue(job: {
     );
   }
 
+  // Prefer assignedTechnicianIds; fall back to singleton from primaryTechnicianId
+  const techIds = (job.assignedTechnicianIds && job.assignedTechnicianIds.length > 0)
+    ? job.assignedTechnicianIds
+    : (job.primaryTechnicianId ? [job.primaryTechnicianId] : []);
+
   return {
     unscheduled: false,
     isAllDay,
     date: format(start, "yyyy-MM-dd"),
     time: isAllDay ? "" : format(start, "HH:mm"),
     durationMinutes: isAllDay ? 1440 : durationMinutes,
-    primaryTechnicianId: job.primaryTechnicianId || "",
-    assignedTechnicianIds: job.assignedTechnicianIds || [],
+    primaryTechnicianId: techIds[0] || "",
+    assignedTechnicianIds: techIds,
   };
 }
 
@@ -208,11 +217,9 @@ export function JobScheduleFields({
   const update = (partial: Partial<JobScheduleValue>) => {
     const newValue = { ...value, ...partial };
 
-    // Keep assignedTechnicianIds in sync with primaryTechnicianId
-    if (partial.primaryTechnicianId !== undefined) {
-      newValue.assignedTechnicianIds = partial.primaryTechnicianId
-        ? [partial.primaryTechnicianId]
-        : [];
+    // Keep primaryTechnicianId = first assigned tech (backward compat)
+    if (partial.assignedTechnicianIds !== undefined) {
+      newValue.primaryTechnicianId = partial.assignedTechnicianIds[0] || "";
     }
 
     // When switching to/from all-day, update isAllDay
@@ -221,6 +228,16 @@ export function JobScheduleFields({
     }
 
     onChange(newValue);
+  };
+
+  // Technician add/remove handlers
+  const handleAddTechnician = (techId: string) => {
+    if (value.assignedTechnicianIds.includes(techId)) return;
+    update({ assignedTechnicianIds: [...value.assignedTechnicianIds, techId] });
+  };
+
+  const handleRemoveTechnician = (techId: string) => {
+    update({ assignedTechnicianIds: value.assignedTechnicianIds.filter(id => id !== techId) });
   };
 
   // Handle unscheduled toggle
@@ -372,31 +389,86 @@ export function JobScheduleFields({
         </div>
       )}
 
-      {/* Technician Assignment */}
+      {/* Technician Assignment — multi-select chips + Add */}
       <div className={cn("space-y-2", isDisabled && "opacity-50")}>
         <Label className="flex items-center gap-1.5">
           <User className="h-4 w-4" />
-          Technician
+          Technicians
         </Label>
-        <Select
-          value={value.primaryTechnicianId || "none"}
-          onValueChange={(v) =>
-            update({ primaryTechnicianId: v === "none" ? "" : v })
-          }
-          disabled={isDisabled}
-        >
-          <SelectTrigger data-testid="select-technician">
-            <SelectValue placeholder="Select technician..." />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="none">Unassigned</SelectItem>
-            {technicianOptions.map((tech) => (
-              <SelectItem key={tech.id} value={tech.id}>
+        <div className="flex flex-wrap gap-1.5">
+          {value.assignedTechnicianIds.length === 0 && (
+            <span className="text-xs text-muted-foreground italic leading-6">Unassigned</span>
+          )}
+          {value.assignedTechnicianIds.map((techId) => {
+            const tech = technicianOptions.find(t => t.id === techId);
+            if (!tech) return null;
+            return (
+              <Badge
+                key={techId}
+                variant="secondary"
+                className="flex items-center gap-1 pr-1"
+                data-testid={`tech-chip-${techId}`}
+              >
                 {tech.displayName}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-4 w-4 ml-0.5 hover:bg-destructive/20"
+                  onClick={() => handleRemoveTechnician(techId)}
+                  disabled={isDisabled}
+                  data-testid={`button-remove-tech-${techId}`}
+                >
+                  <X className="h-3 w-3" />
+                </Button>
+              </Badge>
+            );
+          })}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-6 px-2"
+                disabled={isDisabled}
+                data-testid="button-add-technician"
+              >
+                <Plus className="h-3 w-3 mr-1" />
+                Add
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-48 p-1" align="start">
+              <div className="text-xs font-medium text-muted-foreground px-2 py-1.5 border-b mb-1">
+                Select Technician
+              </div>
+              {(() => {
+                const available = technicianOptions.filter(
+                  t => !value.assignedTechnicianIds.includes(t.id)
+                );
+                if (available.length === 0) {
+                  return (
+                    <div className="text-xs text-muted-foreground px-2 py-2">
+                      No available technicians
+                    </div>
+                  );
+                }
+                return available.map(tech => (
+                  <button
+                    key={tech.id}
+                    type="button"
+                    className="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-accent flex items-center gap-2"
+                    onClick={() => handleAddTechnician(tech.id)}
+                    data-testid={`select-tech-${tech.id}`}
+                  >
+                    <User className="h-3.5 w-3.5 text-muted-foreground" />
+                    {tech.displayName}
+                  </button>
+                ));
+              })()}
+            </PopoverContent>
+          </Popover>
+        </div>
       </div>
     </div>
   );

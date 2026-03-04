@@ -295,7 +295,8 @@ export function normalizeAssignments(rawEvents: any[]): CalendarEvent[] {
         isAllDay,
         startMinutes,
         durationMinutes,
-        completed: a.completed || a.status === 'completed' || false,
+        // Terminal statuses: muted + non-draggable on calendar
+        completed: a.completed || ['completed', 'invoiced', 'archived'].includes(a.status) || false,
         jobNumber: a.jobNumber || null,
         scheduledDate: a.scheduledDate || dateKey,
         raw: patchedRaw,

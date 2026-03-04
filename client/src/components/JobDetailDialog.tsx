@@ -1,12 +1,11 @@
-import { useState, useRef, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { useLocation } from "wouter";
 import { format } from "date-fns";
-import { Trash2, Plus, Camera, Edit2, X, AlertTriangle, Save, AlertCircle, Calendar as CalendarIcon, MapPin, Clock, User, Wrench, FileText, Image as ImageIcon, CheckCircle2, Loader2, Pencil, ExternalLink } from "lucide-react";
+import { Trash2, Plus, X, AlertTriangle, AlertCircle, Calendar as CalendarIcon, MapPin, Clock, User, Wrench, CheckCircle2, Loader2, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -88,15 +87,6 @@ interface ClientPart {
   part?: Part;
 }
 
-interface JobNote {
-  id: string;
-  assignmentId: string;
-  noteText: string;
-  imageUrl: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
 interface JobDetailDialogProps {
   assignment: CalendarAssignment | null;
   client: Client | undefined;
@@ -124,6 +114,122 @@ function getPartDisplayName(part: Part): string {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Time parsing helpers — accepts common shorthand inputs
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a free-form time string into { hour24, minute } or null if invalid.
+ *
+ * Accepted formats:
+ *   9       → 9:00 AM    930     → 9:30 AM    9:30    → 9:30 AM
+ *   9a/9am  → 9:00 AM    9p/9pm  → 9:00 PM    1230p   → 12:30 PM
+ *   21:15   → 9:15 PM    2:05pm  → 2:05 PM    0       → 12:00 AM
+ */
+function parseTimeInput(input: string): { hour24: number; minute: number } | null {
+  const s = input.trim().toLowerCase().replace(/\s+/g, '');
+  if (!s) return null;
+
+  // Extract AM/PM suffix
+  let ampm: 'am' | 'pm' | null = null;
+  let core = s;
+  if (core.endsWith('am')) {
+    ampm = 'am';
+    core = core.slice(0, -2);
+  } else if (core.endsWith('pm')) {
+    ampm = 'pm';
+    core = core.slice(0, -2);
+  } else if (core.endsWith('a')) {
+    ampm = 'am';
+    core = core.slice(0, -1);
+  } else if (core.endsWith('p')) {
+    ampm = 'pm';
+    core = core.slice(0, -1);
+  }
+
+  if (!core) return null;
+
+  let hour: number;
+  let minute: number;
+
+  if (core.includes(':')) {
+    const parts = core.split(':');
+    if (parts.length !== 2) return null;
+    hour = parseInt(parts[0], 10);
+    minute = parseInt(parts[1], 10);
+  } else if (core.length <= 2) {
+    hour = parseInt(core, 10);
+    minute = 0;
+  } else if (core.length === 3) {
+    // 930 → 9:30
+    hour = parseInt(core[0], 10);
+    minute = parseInt(core.slice(1), 10);
+  } else if (core.length === 4) {
+    // 0930 or 1230
+    hour = parseInt(core.slice(0, 2), 10);
+    minute = parseInt(core.slice(2), 10);
+  } else {
+    return null;
+  }
+
+  if (isNaN(hour) || isNaN(minute)) return null;
+  if (minute < 0 || minute > 59) return null;
+
+  if (ampm) {
+    if (hour < 1 || hour > 12) return null;
+    hour = ampm === 'am' ? (hour === 12 ? 0 : hour) : (hour === 12 ? 12 : hour + 12);
+  } else {
+    if (hour < 0 || hour > 23) return null;
+  }
+
+  return { hour24: hour, minute };
+}
+
+/** Format 24h hour + minute into display string like "9:00 AM". */
+function formatTimeDisplay(hour24: number, minute: number): string {
+  const period = hour24 >= 12 ? 'PM' : 'AM';
+  const displayHour = hour24 === 0 ? 12 : hour24 > 12 ? hour24 - 12 : hour24;
+  return `${displayHour}:${minute.toString().padStart(2, '0')} ${period}`;
+}
+
+// ---------------------------------------------------------------------------
+// Dirty-tracking snapshot
+// ---------------------------------------------------------------------------
+interface ScheduleSnapshot {
+  dateStr: string;
+  isAllDay: boolean;
+  hour: number;
+  minute: number;
+  duration: number;
+}
+
+function makeSnapshot(
+  date: Date | undefined,
+  isAllDay: boolean,
+  hour: number,
+  minute: number,
+  duration: number,
+): ScheduleSnapshot {
+  return {
+    dateStr: date ? format(date, 'yyyy-MM-dd') : '',
+    isAllDay,
+    hour,
+    minute,
+    duration,
+  };
+}
+
+function snapshotsEqual(a: ScheduleSnapshot, b: ScheduleSnapshot): boolean {
+  if (a.dateStr !== b.dateStr || a.isAllDay !== b.isAllDay) return false;
+  // When all-day, time/duration don't matter
+  if (a.isAllDay) return true;
+  return a.hour === b.hour && a.minute === b.minute && a.duration === b.duration;
+}
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
 export function JobDetailDialog({
   assignment,
   client,
@@ -136,26 +242,17 @@ export function JobDetailDialog({
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [newNoteText, setNewNoteText] = useState("");
   const scheduleSectionRef = useRef<HTMLElement>(null);
 
   // Auto-scroll to schedule section when focusSchedule is true and dialog opens
   useEffect(() => {
     if (open && focusSchedule && scheduleSectionRef.current) {
-      // Small delay to ensure dialog is rendered
       setTimeout(() => {
         scheduleSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }, 100);
     }
   }, [open, focusSchedule]);
-  const [newNoteImage, setNewNoteImage] = useState<string | null>(null);
-  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
-  const [editingNoteText, setEditingNoteText] = useState("");
-  const [editingNoteImage, setEditingNoteImage] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const editFileInputRef = useRef<HTMLInputElement>(null);
-  
+
   const [selectedTechs, setSelectedTechs] = useState<string[]>([]);
   const [isCompleted, setIsCompleted] = useState(false);
   // Popover states
@@ -169,67 +266,85 @@ export function JobDetailDialog({
   const [editMinute, setEditMinute] = useState(0);
   const [editDuration, setEditDuration] = useState(60);
 
+  // Typed time input
+  const [timeInputValue, setTimeInputValue] = useState("9:00 AM");
+  const [timeError, setTimeError] = useState<string | null>(null);
+
+  // Dirty-tracking baseline
+  const [initialSnapshot, setInitialSnapshot] = useState<ScheduleSnapshot | null>(null);
+  // Autosave-in-progress guard
+  const [isAutoSaving, setIsAutoSaving] = useState(false);
+  // Local version tracking — updated from API responses to prevent stale optimistic locks
+  const [localVersion, setLocalVersion] = useState<number>(0);
+
+  // Sync time input display whenever hour/minute change programmatically
+  const syncTimeDisplay = useCallback((h: number, m: number) => {
+    setTimeInputValue(formatTimeDisplay(h, m));
+    setTimeError(null);
+  }, []);
+
   useEffect(() => {
     if (assignment) {
       setSelectedTechs(assignment.assignedTechnicianIds || []);
       setIsCompleted(assignment.completed || false);
 
-      // ISSUE B FIX: Trust allDay field from server, not derived from times
-      // Server may return midnight-to-midnight times for all-day, but allDay is authoritative
+      // Trust allDay field from server
       const isAllDayFromServer = assignment.allDay === true;
       setEditIsAllDay(isAllDayFromServer);
 
-      // Derive date: use canonical `date` field, or extract from startAt if present
+      // Derive date
       let initialDate: Date | undefined;
       if (assignment.date) {
         initialDate = parseLocalDate(assignment.date);
       } else if (assignment.startAt) {
-        // Extract date portion from startAt (handles midnight-to-midnight all-day cases)
         initialDate = parseLocalDate(assignment.startAt.split('T')[0]);
       } else if (assignment.day !== null && assignment.scheduledDate) {
         initialDate = parseLocalDate(assignment.scheduledDate);
       } else {
-        // Unscheduled - default to today so Save isn't blocked
         initialDate = new Date();
       }
       setSelectedDate(initialDate);
 
-      // For timed events, use the scheduled time; for all-day, use sensible defaults
+      // Time values
+      let h: number, m: number, d: number;
       if (isAllDayFromServer) {
-        // All-day: time controls will be hidden, but set defaults for toggle-off
-        setEditHour(9);
-        setEditMinute(0);
-        setEditDuration(60);
+        h = 9; m = 0; d = 60;
       } else {
-        setEditHour(assignment.scheduledHour ?? 9);
-        setEditMinute(assignment.scheduledStartMinutes ?? 0);
-        setEditDuration(assignment.durationMinutes ?? 60);
+        h = assignment.scheduledHour ?? 9;
+        m = assignment.scheduledStartMinutes ?? 0;
+        d = assignment.durationMinutes ?? 60;
       }
+      setEditHour(h);
+      setEditMinute(m);
+      setEditDuration(d);
+      syncTimeDisplay(h, m);
+
+      // Capture baseline for dirty tracking
+      setInitialSnapshot(makeSnapshot(initialDate, isAllDayFromServer, h, m, d));
+      setLocalVersion(assignment.version ?? 0);
     } else {
       setSelectedTechs([]);
       setIsCompleted(false);
-      setSelectedDate(new Date()); // Default to today
+      setSelectedDate(new Date());
       setEditIsAllDay(false);
       setEditHour(9);
       setEditMinute(0);
       setEditDuration(60);
+      syncTimeDisplay(9, 0);
+      setInitialSnapshot(null);
+      setLocalVersion(0);
     }
-  }, [assignment?.id, open]);
+    setTimeError(null);
+    setIsAutoSaving(false);
+  }, [assignment?.id, open, syncTimeDisplay]);
+
+  const isDirty = useMemo(() => {
+    if (!initialSnapshot) return false;
+    const current = makeSnapshot(selectedDate, editIsAllDay, editHour, editMinute, editDuration);
+    return !snapshotsEqual(initialSnapshot, current);
+  }, [initialSnapshot, selectedDate, editIsAllDay, editHour, editMinute, editDuration]);
 
   const { teamMembers: technicians } = useTechniciansDirectory();
-
-  const { data: notes = [], isLoading: isLoadingNotes } = useQuery<JobNote[]>({
-    queryKey: ["/api/job-notes", assignment?.id],
-    queryFn: async () => {
-      if (!assignment) return [];
-      const res = await fetch(`/api/job-notes/${assignment.id}`, {
-        credentials: 'include',
-      });
-      if (!res.ok) throw new Error("Failed to fetch notes");
-      return res.json();
-    },
-    enabled: !!assignment && open,
-  });
 
   const clientParts = bulkParts[client?.id || ""] || [];
 
@@ -249,14 +364,12 @@ export function JobDetailDialog({
     mutationFn: async (completed: boolean) => {
       if (!assignment) return;
       const jobId = assignment.jobId || assignment.id;
-      // Model A: Use job-centric endpoints
       if (completed) {
         return apiRequest(`/api/jobs/${jobId}/complete`, {
           method: "POST",
           body: JSON.stringify({}),
         });
       } else {
-        // To mark incomplete, PATCH the job status
         return apiRequest(`/api/jobs/${jobId}`, {
           method: "PATCH",
           body: JSON.stringify({ status: "open" }),
@@ -265,54 +378,6 @@ export function JobDetailDialog({
     },
     successMessage: (_, completed) => completed ? "Marked as complete" : "Marked as incomplete",
     errorMessage: "Failed to update status",
-    // Invalidate jobs to sync status between calendar and jobs list
-    invalidate: { groups: ["calendar", "maintenance", "jobs"] },
-  });
-
-  const updateDate = useMutationWithToast({
-    mutationFn: async (newDate: Date) => {
-      if (!assignment) throw new Error("No job to update");
-      const jobId = assignment.jobId || assignment.id;
-
-      // Build canonical date string
-      const dateStr = format(newDate, 'yyyy-MM-dd');
-
-      // DEV logging for debugging 404s
-      if (process.env.NODE_ENV === 'development') {
-        console.log('[JobDetailDialog] updateDate:', {
-          jobId,
-          date: dateStr,
-          version: assignment.version,
-          endpoint: `/api/calendar/schedule/${jobId}`,
-        });
-      }
-
-      try {
-        // Model A: Use job-centric schedule endpoint
-        // TASK 1: No ?? 0 fallback - server must reject VERSION_NOT_INITIALIZED
-        return await apiRequest(`/api/calendar/schedule/${jobId}`, {
-          method: "PATCH",
-          body: JSON.stringify({
-            date: dateStr,
-            allDay: true, // Date picker only selects date, not time
-            version: assignment.version,
-          }),
-        });
-      } catch (error: any) {
-        // DEV logging
-        if (process.env.NODE_ENV === 'development') {
-          console.error('[JobDetailDialog] updateDate error:', error);
-        }
-        // Enhance error message for 404
-        if (error?.status === 404) {
-          throw new Error("Job not found — it may have been deleted");
-        }
-        throw error;
-      }
-    },
-    successMessage: "Rescheduled",
-    errorMessage: "Failed to reschedule",
-    // Invalidate jobs to sync status between calendar and jobs list
     invalidate: { groups: ["calendar", "maintenance", "jobs"] },
   });
 
@@ -327,7 +392,6 @@ export function JobDetailDialog({
       if (!assignment) throw new Error("No job to update");
       const jobId = assignment.jobId || assignment.id;
 
-      // Build the request body with canonical fields
       const body: {
         date: string;
         allDay: boolean;
@@ -337,23 +401,20 @@ export function JobDetailDialog({
       } = {
         date: params.date,
         allDay: params.allDay,
-        // TASK 1: No ?? 0 fallback - server must reject VERSION_NOT_INITIALIZED
-        version: assignment.version!,
+        version: localVersion,
       };
 
-      // For timed events, calculate startAt and endAt
       if (!params.allDay && params.startHour !== undefined) {
         const startHour = params.startHour;
         const startMinute = params.startMinute ?? 0;
         const duration = params.durationMinutes ?? 60;
 
-        // Build ISO timestamps (local time)
         const startDate = new Date(`${params.date}T00:00:00`);
         startDate.setHours(startHour, startMinute, 0, 0);
 
         let endDate = new Date(startDate.getTime() + duration * 60 * 1000);
 
-        // CLAMP to same day: if endAt crosses midnight, cap at 23:59:59
+        // Clamp to same day
         const startDay = startDate.toISOString().split('T')[0];
         const endDay = endDate.toISOString().split('T')[0];
         if (startDay !== endDay) {
@@ -363,26 +424,13 @@ export function JobDetailDialog({
         body.startAt = startDate.toISOString();
         body.endAt = endDate.toISOString();
       }
-      // For all-day events, server sets canonical scheduledStart=midnight, scheduledEnd=23:59:59
-
-      if (process.env.NODE_ENV === 'development') {
-        console.log('[JobDetailDialog] updateSchedule:', {
-          jobId,
-          body,
-          endpoint: `/api/calendar/schedule/${jobId}`,
-        });
-      }
 
       try {
-        // Model A: Use job-centric schedule endpoint
         return await apiRequest(`/api/calendar/schedule/${jobId}`, {
           method: "PATCH",
           body: JSON.stringify(body),
         });
       } catch (error: any) {
-        if (process.env.NODE_ENV === 'development') {
-          console.error('[JobDetailDialog] updateSchedule error:', error);
-        }
         if (error?.status === 404) {
           throw new Error("Job not found — it may have been deleted");
         }
@@ -391,7 +439,6 @@ export function JobDetailDialog({
     },
     successMessage: "Schedule updated",
     errorMessage: "Failed to update schedule",
-    // Invalidate jobs to sync status between calendar and jobs list
     invalidate: { groups: ["calendar", "maintenance", "jobs"] },
   });
 
@@ -399,27 +446,12 @@ export function JobDetailDialog({
     mutationFn: async () => {
       if (!assignment) throw new Error("No job to unschedule");
       const jobId = assignment.jobId || assignment.id;
-
-      // DEV logging
-      if (process.env.NODE_ENV === 'development') {
-        console.log('[JobDetailDialog] unscheduleJob:', {
-          jobId,
-          version: assignment.version,
-          endpoint: `/api/calendar/unschedule/${jobId}`,
-        });
-      }
-
       try {
-        // Model A: POST to unschedule endpoint with version in body
-        // TASK 1: No ?? 0 fallback - server must reject VERSION_NOT_INITIALIZED
         return await apiRequest(`/api/calendar/unschedule/${jobId}`, {
           method: "POST",
-          body: JSON.stringify({ version: assignment.version }),
+          body: JSON.stringify({ version: localVersion }),
         });
       } catch (error: any) {
-        if (process.env.NODE_ENV === 'development') {
-          console.error('[JobDetailDialog] unscheduleJob error:', error);
-        }
         if (error?.status === 404) {
           throw new Error("Job not found — it may have been deleted");
         }
@@ -428,41 +460,25 @@ export function JobDetailDialog({
     },
     successMessage: "Job unscheduled",
     errorMessage: "Failed to unschedule job",
-    // Invalidate jobs to sync status between calendar and jobs list
     invalidate: { groups: ["calendar", "maintenance", "jobs"] },
-    onSuccess: () => setSelectedDate(undefined),
+    onSuccess: (result: any) => {
+      // Clear schedule state and reset dirty tracking so close isn't blocked
+      setSelectedDate(undefined);
+      setTimeError(null);
+      const unscheduledBaseline = makeSnapshot(undefined, false, 9, 0, 60);
+      setInitialSnapshot(unscheduledBaseline);
+      // Track new version from server
+      if (result?.version != null) setLocalVersion(result.version);
+    },
   });
 
-  // ==========================================================================
-  // Model A Job-Centric Design:
-  // DELETE /api/jobs/:jobId performs soft delete of the job record.
-  // To unschedule without deleting, use POST /api/calendar/unschedule/:jobId.
-  // ==========================================================================
   const deleteJobMutation = useMutationWithToast({
     mutationFn: async () => {
       if (!assignment) throw new Error("No job to delete");
-
-      // Delete the JOB record, not just the calendar assignment
       const jobId = assignment.jobId || assignment.id;
-
-      // DEV logging
-      if (process.env.NODE_ENV === 'development') {
-        console.log('[JobDetailDialog] deleteJob:', {
-          jobId,
-          assignmentId: assignment.id,
-          endpoint: `/api/jobs/${jobId}`,
-        });
-      }
-
       try {
-        // DELETE the job record (soft delete)
-        return await apiRequest(`/api/jobs/${jobId}`, {
-          method: "DELETE",
-        });
+        return await apiRequest(`/api/jobs/${jobId}`, { method: "DELETE" });
       } catch (error: any) {
-        if (process.env.NODE_ENV === 'development') {
-          console.error('[JobDetailDialog] deleteJob error:', error);
-        }
         if (error?.status === 404) {
           throw new Error("Job not found — it may have been deleted");
         }
@@ -471,91 +487,30 @@ export function JobDetailDialog({
     },
     successMessage: "Job deleted successfully",
     errorMessage: "Failed to delete job",
-    // Invalidate both calendar AND jobs queries so both lists update
     invalidate: { groups: ["calendar", "maintenance", "jobs"] },
     onSuccess: () => onOpenChange(false),
   });
 
-  const createNoteMutation = useMutationWithToast({
-    mutationFn: async (data: { noteText: string; imageUrl: string | null }) => {
-      return apiRequest("/api/job-notes", {
-        method: "POST",
-        body: JSON.stringify({ assignmentId: assignment!.id, noteText: data.noteText, imageUrl: data.imageUrl }),
-      });
-    },
-    successMessage: "Note added successfully",
-    errorMessage: "Failed to add note",
-    invalidate: { keys: [["/api/job-notes", assignment?.id]] },
-    onSuccess: () => {
-      setNewNoteText("");
-      setNewNoteImage(null);
-    },
-  });
-
-  const updateNoteMutation = useMutationWithToast({
-    mutationFn: async ({ id, noteText, imageUrl }: { id: string; noteText: string; imageUrl?: string | null }) => {
-      const body: { noteText: string; imageUrl?: string | null } = { noteText };
-      if (imageUrl !== undefined) body.imageUrl = imageUrl;
-      return apiRequest(`/api/job-notes/${id}`, { method: "PATCH", body: JSON.stringify(body) });
-    },
-    successMessage: "Note updated successfully",
-    errorMessage: "Failed to update note",
-    invalidate: { keys: [["/api/job-notes", assignment?.id]] },
-    onSuccess: () => {
-      setEditingNoteId(null);
-      setEditingNoteText("");
-      setEditingNoteImage(null);
-    },
-  });
-
-  const deleteNoteMutation = useMutationWithToast({
-    mutationFn: async (id: string) => {
-      return apiRequest(`/api/job-notes/${id}`, { method: "DELETE" });
-    },
-    successMessage: "Note deleted successfully",
-    errorMessage: "Failed to delete note",
-    invalidate: { keys: [["/api/job-notes", assignment?.id]] },
-  });
-
-  // Direct technician assignment mutation with proper error handling
-  // 2026-01-28: Added version field for optimistic locking
+  // Direct technician assignment mutation — uses localVersion to avoid stale locks
   const assignTechnicianMutation = useMutationWithToast({
     mutationFn: async ({ technicianId, remove }: { technicianId: string; remove?: boolean }) => {
       if (!assignment) throw new Error("No job to update");
       const jobId = assignment.jobId || assignment.id;
-      const version = assignment.version;
-
-      // Validate version is present
-      if (version === undefined || version === null) {
-        throw new Error("Cannot update: job data is stale. Please refresh the page.");
-      }
-
-      // DEV logging
-      if (process.env.NODE_ENV === 'development') {
-        console.log('[JobDetailDialog] assignTechnician:', {
-          jobId,
-          technicianId,
-          remove,
-          version,
-          endpoint: `/api/calendar/schedule/${jobId}`,
-        });
-      }
-
       try {
-        // Model A: Use job-centric schedule endpoint with version for optimistic locking
         return await apiRequest(`/api/calendar/schedule/${jobId}`, {
           method: "PATCH",
           body: JSON.stringify({
             technicianUserId: remove ? null : technicianId,
-            version,
+            version: localVersion,
           }),
         });
       } catch (error: any) {
-        if (process.env.NODE_ENV === 'development') {
-          console.error('[JobDetailDialog] assignTechnician error:', error);
-        }
         if (error?.status === 404) {
           throw new Error("Job not found — it may have been deleted");
+        }
+        // Surface version conflict clearly
+        if (error?.status === 409) {
+          throw new Error("Job was updated elsewhere. Please close and reopen to refresh.");
         }
         throw error;
       }
@@ -563,110 +518,41 @@ export function JobDetailDialog({
     successMessage: "Technician updated",
     errorMessage: "Failed to update technician",
     invalidate: { groups: ["calendar"] },
+    onSuccess: (result: any) => {
+      // Track new version from server
+      if (result?.version != null) setLocalVersion(result.version);
+    },
   });
 
-  const uploadImage = async (file: File): Promise<string | null> => {
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = async () => {
-        try {
-          const res = await fetch('/api/job-notes/upload-image', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({
-              imageData: reader.result,
-              assignmentId: assignment!.id,
-            }),
-          });
-          if (res.ok) {
-            const { imageUrl } = await res.json();
-            resolve(imageUrl);
-          } else {
-            resolve(null);
-          }
-        } catch {
-          resolve(null);
-        }
-      };
-      reader.readAsDataURL(file);
-    });
-  };
-
-  const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
-
-  const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.size > MAX_FILE_SIZE) {
-      toast({ title: "File too large", description: "Maximum file size is 5MB", variant: "destructive" });
-      return;
+  // ---------------------------------------------------------------------------
+  // Time input handler — validate on blur/enter, update hour/minute state
+  // ---------------------------------------------------------------------------
+  const commitTimeInput = useCallback((value: string) => {
+    const parsed = parseTimeInput(value);
+    if (!parsed) {
+      setTimeError("Invalid time — try 9:30am, 14:00, or 930");
+      return false;
     }
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      setNewNoteImage(reader.result as string);
-    };
-    reader.readAsDataURL(file);
-  };
+    setEditHour(parsed.hour24);
+    setEditMinute(parsed.minute);
+    setTimeInputValue(formatTimeDisplay(parsed.hour24, parsed.minute));
+    setTimeError(null);
+    return true;
+  }, []);
 
-  const handleEditImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.size > MAX_FILE_SIZE) {
-      toast({ title: "File too large", description: "Maximum file size is 5MB", variant: "destructive" });
-      return;
+  const handleTimeInputBlur = useCallback(() => {
+    commitTimeInput(timeInputValue);
+  }, [timeInputValue, commitTimeInput]);
+
+  const handleTimeInputKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      commitTimeInput(timeInputValue);
     }
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      setEditingNoteImage(reader.result as string);
-    };
-    reader.readAsDataURL(file);
-  };
+  }, [timeInputValue, commitTimeInput]);
 
-  const handleAddNote = async () => {
-    if (!newNoteText.trim() && !newNoteImage) return;
-    setIsSubmitting(true);
-    try {
-      let imageUrl: string | null = null;
-      if (newNoteImage) {
-        const file = fileInputRef.current?.files?.[0];
-        if (file) imageUrl = await uploadImage(file);
-      }
-      await createNoteMutation.mutateAsync({ noteText: newNoteText.trim() || "Image note", imageUrl });
-    } finally {
-      setIsSubmitting(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
-  };
-
-  const handleSaveEdit = async () => {
-    if (!editingNoteId || !editingNoteText.trim()) return;
-    setIsSubmitting(true);
-    try {
-      let imageUrl: string | null | undefined = undefined;
-      if (editingNoteImage && editFileInputRef.current?.files?.[0]) {
-        imageUrl = await uploadImage(editFileInputRef.current.files[0]);
-      }
-      await updateNoteMutation.mutateAsync({ id: editingNoteId, noteText: editingNoteText.trim(), imageUrl });
-    } finally {
-      setIsSubmitting(false);
-      if (editFileInputRef.current) editFileInputRef.current.value = "";
-    }
-  };
-
-  const startEditing = (note: JobNote) => {
-    setEditingNoteId(note.id);
-    setEditingNoteText(note.noteText);
-    setEditingNoteImage(note.imageUrl);
-  };
-
-  const cancelEditing = () => {
-    setEditingNoteId(null);
-    setEditingNoteText("");
-    setEditingNoteImage(null);
-    if (editFileInputRef.current) editFileInputRef.current.value = "";
-  };
-
+  // ---------------------------------------------------------------------------
+  // Handlers
+  // ---------------------------------------------------------------------------
   const handleToggleComplete = () => {
     const newStatus = !isCompleted;
     setIsCompleted(newStatus);
@@ -675,71 +561,113 @@ export function JobDetailDialog({
 
   const handleTechnicianToggle = (techId: string) => {
     if (!assignment) return;
-
     const isRemoving = selectedTechs.includes(techId);
     const newTechs = isRemoving
       ? selectedTechs.filter(id => id !== techId)
       : [...selectedTechs, techId];
 
-    // Update local state immediately (optimistic)
     setSelectedTechs(newTechs);
-
-    // Use direct mutation for proper error handling
-    // 2026-01-28: Removed redundant onAssignTechnicians callback call - the mutation
-    // already handles the API call with proper version field. The callback was causing
-    // a double API call (one without version, one with), resulting in error flashes.
     assignTechnicianMutation.mutate({
       technicianId: techId,
       remove: isRemoving,
     }, {
       onError: () => {
-        // Rollback on error
         setSelectedTechs(selectedTechs);
       }
     });
   };
 
-  const handleSaveSchedule = () => {
-    if (!selectedDate) return;
+  /** Core save routine used by both Save button and autosave-on-close. */
+  const executeSave = useCallback(async (): Promise<boolean> => {
+    if (!selectedDate) return false;
+
+    // Validate time input if timed event
+    if (!editIsAllDay) {
+      const parsed = parseTimeInput(timeInputValue);
+      if (!parsed) {
+        setTimeError("Invalid time — try 9:30am, 14:00, or 930");
+        return false;
+      }
+      // Sync parsed values
+      setEditHour(parsed.hour24);
+      setEditMinute(parsed.minute);
+    }
 
     const dateStr = format(selectedDate, 'yyyy-MM-dd');
-
-    updateSchedule.mutate({
-      date: dateStr,
-      allDay: editIsAllDay,
-      startHour: editIsAllDay ? undefined : editHour,
-      startMinute: editIsAllDay ? undefined : editMinute,
-      durationMinutes: editIsAllDay ? undefined : editDuration,
-    });
-  };
-
-  const handleCancelScheduleEdit = () => {
-    // Reset to original values from assignment (keep editor visible)
-    const isAllDay = assignment?.allDay === true;
-    setEditIsAllDay(isAllDay);
-    if (isAllDay) {
-      setEditHour(9);
-      setEditMinute(0);
-      setEditDuration(60);
-    } else {
-      setEditHour(assignment?.scheduledHour ?? 9);
-      setEditMinute(assignment?.scheduledStartMinutes ?? 0);
-      setEditDuration(assignment?.durationMinutes ?? 60);
+    try {
+      const result: any = await updateSchedule.mutateAsync({
+        date: dateStr,
+        allDay: editIsAllDay,
+        startHour: editIsAllDay ? undefined : editHour,
+        startMinute: editIsAllDay ? undefined : editMinute,
+        durationMinutes: editIsAllDay ? undefined : editDuration,
+      });
+      // Update baseline so isDirty resets
+      setInitialSnapshot(makeSnapshot(selectedDate, editIsAllDay, editHour, editMinute, editDuration));
+      // Track new version from server to prevent stale optimistic locks
+      if (result?.version != null) setLocalVersion(result.version);
+      return true;
+    } catch {
+      return false;
     }
-    // Keep editor visible - no mode switch
-  };
+  }, [selectedDate, editIsAllDay, editHour, editMinute, editDuration, timeInputValue, updateSchedule]);
 
-  // Format time display for schedule section
-  const formatScheduleTime = (hour: number, minute: number): string => {
-    const period = hour >= 12 ? 'PM' : 'AM';
-    const displayHour = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
-    const displayMinute = minute.toString().padStart(2, '0');
-    return `${displayHour}:${displayMinute} ${period}`;
-  };
+  const handleSaveSchedule = useCallback(() => {
+    executeSave();
+  }, [executeSave]);
+
+  // ---------------------------------------------------------------------------
+  // Auto-save on close — intercepts dialog close when form is dirty
+  // ---------------------------------------------------------------------------
+  const handleOpenChange = useCallback(async (nextOpen: boolean) => {
+    // Opening — pass through
+    if (nextOpen) {
+      onOpenChange(true);
+      return;
+    }
+
+    // Closing while autosave in progress — ignore
+    if (isAutoSaving) return;
+
+    // Not dirty — close immediately
+    if (!isDirty) {
+      onOpenChange(false);
+      return;
+    }
+
+    // Unscheduled (no date) — nothing to save, close immediately
+    if (!selectedDate) {
+      onOpenChange(false);
+      return;
+    }
+
+    // Dirty + scheduled — validate + save, then close on success
+    if (!editIsAllDay) {
+      const parsed = parseTimeInput(timeInputValue);
+      if (!parsed) {
+        setTimeError("Invalid time — fix before closing");
+        return;
+      }
+    }
+
+    setIsAutoSaving(true);
+    const ok = await executeSave();
+    setIsAutoSaving(false);
+
+    if (ok) {
+      onOpenChange(false);
+    } else {
+      toast({
+        title: "Failed to save changes",
+        description: "Please fix any errors and try again.",
+        variant: "destructive",
+      });
+    }
+  }, [isDirty, isAutoSaving, selectedDate, editIsAllDay, timeInputValue, executeSave, onOpenChange, toast]);
 
   if (!assignment) return null;
 
-  // Use canonical `date` field first, then fall back to legacy fields
+  // Derived display state
   const hasScheduledDay = selectedDate || assignment.date || (assignment.day != null);
   const scheduledDate = hasScheduledDay && (selectedDate || assignment.date || assignment.scheduledDate)
     ? (selectedDate || parseLocalDate(assignment.date || assignment.scheduledDate))
@@ -749,7 +677,6 @@ export function JobDetailDialog({
   const isOverdue = scheduledDate && scheduledDate < today && !assignment.completed;
   const isUnscheduled = !hasScheduledDay && !assignment.completed;
 
-  // Get status info for badge
   const getStatusBadge = () => {
     if (assignment.completed) {
       return { label: 'Completed', variant: 'default' as const, icon: CheckCircle2, className: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300 border-green-200' };
@@ -764,11 +691,12 @@ export function JobDetailDialog({
   };
 
   const statusBadge = getStatusBadge();
+  const isSaving = updateSchedule.isPending || isAutoSaving;
 
   return (
     <>
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-hidden p-0" aria-describedby={undefined} data-testid="dialog-job-detail">
+      <Dialog open={open} onOpenChange={handleOpenChange}>
+        <DialogContent className="max-w-lg max-h-[90vh] overflow-hidden p-0" aria-describedby={undefined} data-testid="dialog-job-detail">
           {/* Header */}
           <div className="border-b px-6 py-4">
             <div className="flex items-start justify-between gap-4">
@@ -778,7 +706,7 @@ export function JobDetailDialog({
                     className="text-primary hover:underline cursor-pointer inline-flex items-center gap-1"
                     onClick={() => {
                       if (client?.id) {
-                        onOpenChange(false);
+                        handleOpenChange(false);
                         setLocation(`/clients/${client.id}`);
                       }
                     }}
@@ -792,7 +720,7 @@ export function JobDetailDialog({
                   <span
                     className="text-primary hover:underline cursor-pointer inline-flex items-center gap-1"
                     onClick={() => {
-                      onOpenChange(false);
+                      handleOpenChange(false);
                       setLocation(`/jobs/${assignment.jobId}`);
                     }}
                   >
@@ -802,7 +730,7 @@ export function JobDetailDialog({
                 </p>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
-                <Badge 
+                <Badge
                   variant={statusBadge.variant}
                   className={`flex items-center gap-1 ${statusBadge.className}`}
                   data-testid="badge-job-status"
@@ -812,8 +740,8 @@ export function JobDetailDialog({
                 </Badge>
               </div>
             </div>
-            
-            {/* Action buttons - simplified, scheduling is done in the Schedule section below */}
+
+            {/* Action buttons */}
             <div className="flex items-center gap-2 mt-3">
               <Button
                 onClick={handleToggleComplete}
@@ -840,446 +768,270 @@ export function JobDetailDialog({
             </div>
           </div>
 
-          {/* Body - Two columns */}
-          <div className="overflow-y-auto max-h-[calc(90vh-200px)]">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 p-6">
-              {/* Left Column */}
-              <div className="space-y-5">
-                {/* Details Section */}
-                <section>
-                  <h3 className="text-sm font-semibold flex items-center gap-2 mb-3">
-                    <MapPin className="h-4 w-4 text-muted-foreground" />
-                    Details
-                  </h3>
-                  <div className="space-y-2 text-sm">
-                    <div>
-                      <span className="text-muted-foreground">Client:</span>{" "}
-                      <span
-                        className="text-primary hover:underline cursor-pointer font-medium inline-flex items-center gap-1"
-                        onClick={() => {
-                          if (client?.id) {
-                            onOpenChange(false);
-                            setLocation(`/clients/${client.id}`);
-                          }
-                        }}
-                        data-testid="link-client-details"
-                      >
-                        {client?.companyName}
-                        <ExternalLink className="h-3 w-3" />
-                      </span>
-                    </div>
-                    {client?.location && (
-                      <div>
-                        <span className="text-muted-foreground">Location:</span>{" "}
-                        <span data-testid="text-site-location">{client.location}</span>
-                      </div>
-                    )}
-                    {fullAddress && (
-                      <div>
-                        <span className="text-muted-foreground">Address:</span>{" "}
-                        <span className="text-foreground" data-testid="text-address">{fullAddress}</span>
-                      </div>
-                    )}
+          {/* Body — single column (notes/attachments removed) */}
+          <div className="overflow-y-auto max-h-[calc(90vh-200px)] p-6 space-y-5">
+            {/* Details Section */}
+            <section>
+              <h3 className="text-sm font-semibold flex items-center gap-2 mb-3">
+                <MapPin className="h-4 w-4 text-muted-foreground" />
+                Details
+              </h3>
+              <div className="space-y-2 text-sm">
+                <div>
+                  <span className="text-muted-foreground">Client:</span>{" "}
+                  <span
+                    className="text-primary hover:underline cursor-pointer font-medium inline-flex items-center gap-1"
+                    onClick={() => {
+                      if (client?.id) {
+                        handleOpenChange(false);
+                        setLocation(`/clients/${client.id}`);
+                      }
+                    }}
+                    data-testid="link-client-details"
+                  >
+                    {client?.companyName}
+                    <ExternalLink className="h-3 w-3" />
+                  </span>
+                </div>
+                {client?.location && (
+                  <div>
+                    <span className="text-muted-foreground">Location:</span>{" "}
+                    <span data-testid="text-site-location">{client.location}</span>
                   </div>
-                </section>
-
-                {/* Schedule Section - Always show editor for quick scheduling */}
-                <section ref={scheduleSectionRef}>
-                  <h3 className="text-sm font-semibold flex items-center gap-2 mb-3">
-                    <Clock className="h-4 w-4 text-muted-foreground" />
-                    Schedule
-                  </h3>
-
-                  {/* Schedule Editor - always visible */}
-                  <div className="space-y-3 bg-muted/30 rounded-md p-3">
-                      {/* Editable Date Picker */}
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm text-muted-foreground w-12">Date:</span>
-                        <Popover open={schedulePickerOpen} onOpenChange={setSchedulePickerOpen}>
-                          <PopoverTrigger asChild>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="h-8 justify-start text-left font-normal"
-                              data-testid="button-date-picker"
-                            >
-                              <CalendarIcon className="mr-2 h-4 w-4" />
-                              {selectedDate ? format(selectedDate, "MMM d, yyyy") : "Pick a date"}
-                            </Button>
-                          </PopoverTrigger>
-                          <PopoverContent className="w-auto p-0" align="start">
-                            <Calendar
-                              mode="single"
-                              selected={selectedDate}
-                              onSelect={(date) => {
-                                if (date) {
-                                  setSelectedDate(date);
-                                  setSchedulePickerOpen(false);
-                                }
-                              }}
-                              initialFocus
-                            />
-                          </PopoverContent>
-                        </Popover>
-                      </div>
-
-                      {/* All-Day Toggle */}
-                      <div className="flex items-center gap-2">
-                        <Checkbox
-                          id="all-day"
-                          checked={editIsAllDay}
-                          onCheckedChange={(checked) => setEditIsAllDay(!!checked)}
-                          data-testid="checkbox-all-day"
-                        />
-                        <Label htmlFor="all-day" className="text-sm cursor-pointer">
-                          All-day
-                        </Label>
-                      </div>
-
-                      {/* Time Controls (only show if not all-day) */}
-                      {!editIsAllDay && (
-                        <div className="space-y-2">
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm text-muted-foreground w-12">Time:</span>
-                            <Select
-                              value={editHour.toString()}
-                              onValueChange={(val) => setEditHour(parseInt(val))}
-                            >
-                              <SelectTrigger className="w-20 h-8" data-testid="select-hour">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {Array.from({ length: 24 }, (_, i) => {
-                                  const displayHour = i === 0 ? 12 : i > 12 ? i - 12 : i;
-                                  const period = i >= 12 ? 'PM' : 'AM';
-                                  return (
-                                    <SelectItem key={i} value={i.toString()}>
-                                      {displayHour} {period}
-                                    </SelectItem>
-                                  );
-                                })}
-                              </SelectContent>
-                            </Select>
-                            <span className="text-muted-foreground">:</span>
-                            <Select
-                              value={editMinute.toString()}
-                              onValueChange={(val) => setEditMinute(parseInt(val))}
-                            >
-                              <SelectTrigger className="w-16 h-8" data-testid="select-minute">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {[0, 15, 30, 45].map((m) => (
-                                  <SelectItem key={m} value={m.toString()}>
-                                    {m.toString().padStart(2, '0')}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-
-                          {/* Duration */}
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm text-muted-foreground w-12">Duration:</span>
-                            <Select
-                              value={editDuration.toString()}
-                              onValueChange={(val) => setEditDuration(parseInt(val))}
-                            >
-                              <SelectTrigger className="w-28 h-8" data-testid="select-duration">
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="30">30 min</SelectItem>
-                                <SelectItem value="45">45 min</SelectItem>
-                                <SelectItem value="60">1 hour</SelectItem>
-                                <SelectItem value="90">1.5 hours</SelectItem>
-                                <SelectItem value="120">2 hours</SelectItem>
-                                <SelectItem value="180">3 hours</SelectItem>
-                                <SelectItem value="240">4 hours</SelectItem>
-                              </SelectContent>
-                            </Select>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Save/Cancel Buttons */}
-                      <div className="flex items-center gap-2 pt-2">
-                        <Button
-                          size="sm"
-                          onClick={handleSaveSchedule}
-                          disabled={updateSchedule.isPending || !selectedDate}
-                          data-testid="button-save-schedule"
-                        >
-                          {updateSchedule.isPending && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
-                          Save
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={handleCancelScheduleEdit}
-                          disabled={updateSchedule.isPending}
-                          data-testid="button-cancel-schedule"
-                        >
-                          Reset
-                        </Button>
-                      </div>
-                    </div>
-
-                  {/* Technicians */}
-                  {onAssignTechnicians && (
-                      <div>
-                        <span className="text-muted-foreground">Technicians:</span>
-                        <div className="flex flex-wrap gap-1.5 mt-1.5">
-                          {selectedTechs.length === 0 && !assignTechnicianMutation.isPending && (
-                            <span className="text-xs text-muted-foreground italic">None assigned</span>
-                          )}
-                          {selectedTechs.map((techId) => {
-                            const tech = technicians.find((t: any) => t.id === techId);
-                            if (!tech) return null;
-                            const isMutating = assignTechnicianMutation.isPending;
-                            return (
-                              <Badge
-                                key={techId}
-                                variant="secondary"
-                                className={`flex items-center gap-1 pr-1 transition-opacity ${isMutating ? 'opacity-70' : ''}`}
-                                data-testid={`team-member-${techId}`}
-                              >
-                                {getMemberDisplayName(tech)}
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-4 w-4 ml-0.5 hover:bg-destructive/20"
-                                  onClick={() => handleTechnicianToggle(techId)}
-                                  disabled={isMutating}
-                                  data-testid={`button-remove-tech-${techId}`}
-                                >
-                                  <X className="h-3 w-3" />
-                                </Button>
-                              </Badge>
-                            );
-                          })}
-                          {/* Loading indicator when saving */}
-                          {assignTechnicianMutation.isPending && (
-                            <Badge variant="outline" className="animate-pulse">
-                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                              Saving...
-                            </Badge>
-                          )}
-                          <Popover open={techPickerOpen} onOpenChange={setTechPickerOpen}>
-                            <PopoverTrigger asChild>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                className="h-6 px-2"
-                                disabled={assignTechnicianMutation.isPending}
-                                data-testid="button-add-technician"
-                              >
-                                <Plus className="h-3 w-3 mr-1" />
-                                Add
-                              </Button>
-                            </PopoverTrigger>
-                            <PopoverContent className="w-48 p-1" align="start">
-                              <div className="text-xs font-medium text-muted-foreground px-2 py-1.5 border-b mb-1">
-                                Select Technician
-                              </div>
-                              {(() => {
-                                const availableTechs = technicians.filter((t: any) => !selectedTechs.includes(t.id));
-                                if (availableTechs.length === 0) {
-                                  return (
-                                    <div className="text-xs text-muted-foreground px-2 py-2">
-                                      No available technicians
-                                    </div>
-                                  );
-                                }
-                                return availableTechs.map((tech: any) => (
-                                  <button
-                                    key={tech.id}
-                                    className="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-accent flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                                    onClick={() => {
-                                      handleTechnicianToggle(tech.id);
-                                      setTechPickerOpen(false);
-                                    }}
-                                    disabled={assignTechnicianMutation.isPending}
-                                    data-testid={`select-tech-${tech.id}`}
-                                  >
-                                    <User className="h-3.5 w-3.5 text-muted-foreground" />
-                                    {getMemberDisplayName(tech)}
-                                  </button>
-                                ));
-                              })()}
-                            </PopoverContent>
-                          </Popover>
-                        </div>
-                      </div>
-                    )}
-                </section>
-
-                {/* Parts Section - only show if there are parts */}
-                {partsList.length > 0 && (
-                  <section>
-                    <h3 className="text-sm font-semibold flex items-center gap-2 mb-3">
-                      <Wrench className="h-4 w-4 text-muted-foreground" />
-                      Parts
-                    </h3>
-                    <div className="space-y-1.5 bg-muted/30 rounded-md p-3">
-                      {partsList.map((item, index) => (
-                        <div 
-                          key={index} 
-                          className="flex justify-between text-sm"
-                          data-testid={`part-item-${index}`}
-                        >
-                          <span>{item.quantity} × {item.description}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </section>
+                )}
+                {fullAddress && (
+                  <div>
+                    <span className="text-muted-foreground">Address:</span>{" "}
+                    <span className="text-foreground" data-testid="text-address">{fullAddress}</span>
+                  </div>
                 )}
               </div>
+            </section>
 
-              {/* Right Column */}
-              <div className="space-y-5">
-                {/* Notes Section */}
-                <section>
-                  <h3 className="text-sm font-semibold flex items-center gap-2 mb-3">
-                    <FileText className="h-4 w-4 text-muted-foreground" />
-                    Notes
-                  </h3>
-                  
-                  {isLoadingNotes ? (
-                    <p className="text-sm text-muted-foreground">Loading notes...</p>
-                  ) : notes.length === 0 ? (
-                    <p className="text-sm text-muted-foreground mb-3">No notes yet</p>
-                  ) : (
-                    <div className="space-y-2 mb-3 max-h-48 overflow-y-auto">
-                      {notes.map((note) => (
-                        <div key={note.id} className="border rounded-md p-2.5 text-sm" data-testid={`note-${note.id}`}>
-                          {editingNoteId === note.id ? (
-                            <div className="space-y-2">
-                              <Textarea
-                                value={editingNoteText}
-                                onChange={(e) => setEditingNoteText(e.target.value)}
-                                className="resize-none text-sm min-h-[60px]"
-                                rows={2}
-                                data-testid="input-edit-note"
-                              />
-                              {(editingNoteImage || note.imageUrl) && (
-                                <div className="relative inline-block">
-                                  <img 
-                                    src={editingNoteImage || note.imageUrl || ""} 
-                                    alt="Note attachment" 
-                                    className="max-h-24 rounded border"
-                                  />
-                                  <Button
-                                    size="icon"
-                                    variant="destructive"
-                                    className="absolute top-1 right-1 h-5 w-5"
-                                    onClick={() => setEditingNoteImage(null)}
-                                  >
-                                    <X className="h-3 w-3" />
-                                  </Button>
-                                </div>
-                              )}
-                              <div className="flex items-center gap-2">
-                                <input type="file" accept="image/*" ref={editFileInputRef} onChange={handleEditImageSelect} className="hidden" />
-                                <Button size="sm" variant="ghost" className="h-7" onClick={() => editFileInputRef.current?.click()} data-testid="button-edit-add-image">
-                                  <Camera className="h-3.5 w-3.5" />
-                                </Button>
-                                <div className="flex-1" />
-                                <Button size="sm" variant="ghost" className="h-7" onClick={cancelEditing} data-testid="button-cancel-edit">Cancel</Button>
-                                <Button size="sm" className="h-7" onClick={handleSaveEdit} disabled={isSubmitting || !editingNoteText.trim()} data-testid="button-save-edit">
-                                  Save
-                                </Button>
-                              </div>
-                            </div>
-                          ) : (
-                            <>
-                              <div className="flex items-start justify-between gap-2">
-                                <p className="flex-1" data-testid={`text-note-${note.id}`}>{note.noteText}</p>
-                                <div className="flex items-center gap-0.5 flex-shrink-0">
-                                  <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => startEditing(note)} data-testid={`button-edit-note-${note.id}`}>
-                                    <Edit2 className="h-3 w-3" />
-                                  </Button>
-                                  <Button size="icon" variant="ghost" className="h-6 w-6 text-destructive hover:text-destructive" onClick={() => deleteNoteMutation.mutate(note.id)} data-testid={`button-delete-note-${note.id}`}>
-                                    <Trash2 className="h-3 w-3" />
-                                  </Button>
-                                </div>
-                              </div>
-                              {note.imageUrl && (
-                                <img src={note.imageUrl} alt="Note attachment" className="max-h-32 rounded border mt-2 cursor-pointer hover:opacity-90" onClick={() => window.open(note.imageUrl!, '_blank')} data-testid={`img-note-${note.id}`} />
-                              )}
-                              <p className="text-xs text-muted-foreground mt-1.5" data-testid={`text-note-date-${note.id}`}>
-                                {format(new Date(note.createdAt), "MMM d, yyyy 'at' h:mm a")}
-                                {note.updatedAt !== note.createdAt && " (edited)"}
-                              </p>
-                            </>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
+            {/* Schedule Section */}
+            <section ref={scheduleSectionRef}>
+              <h3 className="text-sm font-semibold flex items-center gap-2 mb-3">
+                <Clock className="h-4 w-4 text-muted-foreground" />
+                Schedule
+              </h3>
 
-                  {/* Add note form */}
-                  <div className="space-y-2 border-t pt-3">
-                    <Textarea
-                      placeholder="Add a note..."
-                      value={newNoteText}
-                      onChange={(e) => setNewNoteText(e.target.value)}
-                      className="resize-none text-sm min-h-[60px]"
-                      rows={2}
-                      data-testid="input-new-note"
-                    />
-                    {newNoteImage && (
-                      <div className="relative inline-block">
-                        <img src={newNoteImage} alt="Preview" className="max-h-24 rounded border" />
-                        <Button
-                          size="icon"
-                          variant="destructive"
-                          className="absolute top-1 right-1 h-5 w-5"
-                          onClick={() => { setNewNoteImage(null); if (fileInputRef.current) fileInputRef.current.value = ""; }}
-                        >
-                          <X className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    )}
+              <div className="space-y-3 bg-muted/30 rounded-md p-3">
+                {/* Date Picker */}
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground w-16">Date:</span>
+                  <Popover open={schedulePickerOpen} onOpenChange={setSchedulePickerOpen}>
+                    <PopoverTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 justify-start text-left font-normal"
+                        data-testid="button-date-picker"
+                      >
+                        <CalendarIcon className="mr-2 h-4 w-4" />
+                        {selectedDate ? format(selectedDate, "MMM d, yyyy") : "Pick a date"}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-auto p-0" align="start">
+                      <Calendar
+                        mode="single"
+                        selected={selectedDate}
+                        onSelect={(date) => {
+                          if (date) {
+                            setSelectedDate(date);
+                            setSchedulePickerOpen(false);
+                          }
+                        }}
+                        initialFocus
+                      />
+                    </PopoverContent>
+                  </Popover>
+                </div>
+
+                {/* All-Day Toggle */}
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="all-day"
+                    checked={editIsAllDay}
+                    onCheckedChange={(checked) => setEditIsAllDay(!!checked)}
+                    data-testid="checkbox-all-day"
+                  />
+                  <Label htmlFor="all-day" className="text-sm cursor-pointer">
+                    All-day
+                  </Label>
+                </div>
+
+                {/* Typed time input + duration (only when not all-day) */}
+                {!editIsAllDay && (
+                  <div className="space-y-2">
                     <div className="flex items-center gap-2">
-                      <input type="file" accept="image/*" ref={fileInputRef} onChange={handleImageSelect} className="hidden" />
-                      <Button size="sm" variant="outline" className="h-7" onClick={() => fileInputRef.current?.click()} data-testid="button-add-image">
-                        <Camera className="h-3.5 w-3.5 mr-1" />Image
-                      </Button>
-                      <div className="flex-1" />
-                      <Button size="sm" className="h-7" onClick={handleAddNote} disabled={isSubmitting || (!newNoteText.trim() && !newNoteImage)} data-testid="button-add-note">
-                        <Plus className="h-3.5 w-3.5 mr-1" />Add Note
-                      </Button>
+                      <span className="text-sm text-muted-foreground w-16">Time:</span>
+                      <div className="flex-1">
+                        <Input
+                          value={timeInputValue}
+                          onChange={(e) => setTimeInputValue(e.target.value)}
+                          onBlur={handleTimeInputBlur}
+                          onKeyDown={handleTimeInputKeyDown}
+                          placeholder="e.g. 9:30am"
+                          className={`h-8 w-36 text-sm ${timeError ? 'border-destructive' : ''}`}
+                          data-testid="input-time"
+                        />
+                        {timeError && (
+                          <p className="text-xs text-destructive mt-1" data-testid="text-time-error">
+                            {timeError}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Duration */}
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground w-16">Duration:</span>
+                      <Select
+                        value={editDuration.toString()}
+                        onValueChange={(val) => setEditDuration(parseInt(val))}
+                      >
+                        <SelectTrigger className="w-28 h-8" data-testid="select-duration">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="30">30 min</SelectItem>
+                          <SelectItem value="45">45 min</SelectItem>
+                          <SelectItem value="60">1 hour</SelectItem>
+                          <SelectItem value="90">1.5 hours</SelectItem>
+                          <SelectItem value="120">2 hours</SelectItem>
+                          <SelectItem value="180">3 hours</SelectItem>
+                          <SelectItem value="240">4 hours</SelectItem>
+                        </SelectContent>
+                      </Select>
                     </div>
                   </div>
-                </section>
+                )}
 
-                {/* Attachments Section */}
-                <section>
-                  <h3 className="text-sm font-semibold flex items-center gap-2 mb-3">
-                    <ImageIcon className="h-4 w-4 text-muted-foreground" />
-                    Attachments
-                  </h3>
-                  <div className="text-sm text-muted-foreground">
-                    {notes.some(n => n.imageUrl) ? (
-                      <div className="grid grid-cols-3 gap-2">
-                        {notes.filter(n => n.imageUrl).map(note => (
-                          <img 
-                            key={note.id}
-                            src={note.imageUrl!} 
-                            alt="Attachment" 
-                            className="h-16 w-full object-cover rounded border cursor-pointer hover:opacity-90"
-                            onClick={() => window.open(note.imageUrl!, '_blank')}
-                          />
-                        ))}
-                      </div>
-                    ) : (
-                      <p>No attachments</p>
-                    )}
-                  </div>
-                </section>
+                {/* Save button — explicit save; autosave-on-close is the safety net */}
+                <div className="flex items-center gap-2 pt-2">
+                  <Button
+                    size="sm"
+                    onClick={handleSaveSchedule}
+                    disabled={isSaving || !selectedDate || !!timeError}
+                    data-testid="button-save-schedule"
+                  >
+                    {isSaving && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
+                    Save
+                  </Button>
+                  {isDirty && !isSaving && (
+                    <span className="text-xs text-muted-foreground">Unsaved changes</span>
+                  )}
+                </div>
               </div>
-            </div>
+
+              {/* Technicians */}
+              {onAssignTechnicians && (
+                <div className="mt-3">
+                  <span className="text-muted-foreground text-sm">Technicians:</span>
+                  <div className="flex flex-wrap gap-1.5 mt-1.5">
+                    {selectedTechs.length === 0 && !assignTechnicianMutation.isPending && (
+                      <span className="text-xs text-muted-foreground italic">None assigned</span>
+                    )}
+                    {selectedTechs.map((techId) => {
+                      const tech = technicians.find((t: any) => t.id === techId);
+                      if (!tech) return null;
+                      const isMutating = assignTechnicianMutation.isPending;
+                      return (
+                        <Badge
+                          key={techId}
+                          variant="secondary"
+                          className={`flex items-center gap-1 pr-1 transition-opacity ${isMutating ? 'opacity-70' : ''}`}
+                          data-testid={`team-member-${techId}`}
+                        >
+                          {getMemberDisplayName(tech)}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-4 w-4 ml-0.5 hover:bg-destructive/20"
+                            onClick={() => handleTechnicianToggle(techId)}
+                            disabled={isMutating}
+                            data-testid={`button-remove-tech-${techId}`}
+                          >
+                            <X className="h-3 w-3" />
+                          </Button>
+                        </Badge>
+                      );
+                    })}
+                    {assignTechnicianMutation.isPending && (
+                      <Badge variant="outline" className="animate-pulse">
+                        <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                        Saving...
+                      </Badge>
+                    )}
+                    <Popover open={techPickerOpen} onOpenChange={setTechPickerOpen}>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-6 px-2"
+                          disabled={assignTechnicianMutation.isPending}
+                          data-testid="button-add-technician"
+                        >
+                          <Plus className="h-3 w-3 mr-1" />
+                          Add
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-48 p-1" align="start">
+                        <div className="text-xs font-medium text-muted-foreground px-2 py-1.5 border-b mb-1">
+                          Select Technician
+                        </div>
+                        {(() => {
+                          const availableTechs = technicians.filter((t: any) => !selectedTechs.includes(t.id));
+                          if (availableTechs.length === 0) {
+                            return (
+                              <div className="text-xs text-muted-foreground px-2 py-2">
+                                No available technicians
+                              </div>
+                            );
+                          }
+                          return availableTechs.map((tech: any) => (
+                            <button
+                              key={tech.id}
+                              className="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-accent flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                              onClick={() => {
+                                handleTechnicianToggle(tech.id);
+                                setTechPickerOpen(false);
+                              }}
+                              disabled={assignTechnicianMutation.isPending}
+                              data-testid={`select-tech-${tech.id}`}
+                            >
+                              <User className="h-3.5 w-3.5 text-muted-foreground" />
+                              {getMemberDisplayName(tech)}
+                            </button>
+                          ));
+                        })()}
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                </div>
+              )}
+            </section>
+
+            {/* Parts Section — only show if there are parts */}
+            {partsList.length > 0 && (
+              <section>
+                <h3 className="text-sm font-semibold flex items-center gap-2 mb-3">
+                  <Wrench className="h-4 w-4 text-muted-foreground" />
+                  Parts
+                </h3>
+                <div className="space-y-1.5 bg-muted/30 rounded-md p-3">
+                  {partsList.map((item, index) => (
+                    <div
+                      key={index}
+                      className="flex justify-between text-sm"
+                      data-testid={`part-item-${index}`}
+                    >
+                      <span>{item.quantity} × {item.description}</span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
 
           {/* Footer */}

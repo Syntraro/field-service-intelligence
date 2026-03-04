@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { getHoldReasonLabel } from "@/components/ActionRequiredModal";
+import { isJobOverdue } from "@shared/schema";
 import type { Job, Invoice, JobStatus, OpenSubStatus } from "@shared/schema";
 
 interface JobMetaCardProps {
@@ -25,17 +26,21 @@ interface JobMetaCardProps {
  * Get job status display info using normalized 4-status model
  */
 function getJobStatusDisplay(
-  status: string,
-  scheduledStart: Date | string | null,
-  openSubStatus?: string | null
+  job: {
+    status: string;
+    scheduledStart?: Date | string | null;
+    scheduledEnd?: Date | string | null;
+    durationMinutes?: number | null;
+    openSubStatus?: string | null;
+  }
 ): {
   label: string;
   variant: "default" | "destructive" | "secondary" | "outline";
   isOverdue?: boolean;
 } {
-  const now = new Date();
-  const isTerminal = ["completed", "invoiced", "archived"].includes(status);
-  const isOverdue = !isTerminal && scheduledStart && new Date(scheduledStart) < now;
+  const { status, scheduledStart, openSubStatus } = job;
+  // Use canonical isJobOverdue() predicate — terminal jobs are never overdue
+  const isOverdue = isJobOverdue(job);
 
   // Terminal statuses
   if (status === "archived") {
@@ -85,7 +90,7 @@ export function JobMetaCard({
   statusChangePending,
 }: JobMetaCardProps) {
   const [, setLocation] = useLocation();
-  const statusInfo = getJobStatusDisplay(job.status, job.scheduledStart, job.openSubStatus);
+  const statusInfo = getJobStatusDisplay(job);
 
   // Current display value combines status and sub-status
   const currentDisplayValue = job.openSubStatus

@@ -8,6 +8,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Create Job modal: multi-technician assignment support (2026-03-04)
+- **Multi-tech picker**: Replaced single-technician dropdown in `JobScheduleFields` with chips + "+ Add" popover pattern (matching calendar job view modal). Supports 0, 1, or many technicians.
+- **Backward compat**: `primaryTechnicianId` auto-syncs to first element of `assignedTechnicianIds`.
+- **`parseJobToScheduleValue` fix**: Falls back to `primaryTechnicianId` singleton when `assignedTechnicianIds` is empty/missing, so edit mode correctly shows existing assignments.
+- **Files**: `client/src/components/jobs/JobScheduleFields.tsx`
+
+#### Calendar modal simplified — removed notes/attachments/reset, added autosave + typed time input (2026-03-04)
+- **Removed from modal**: Notes section, "Add note" input, image upload button, attachments section, and Reset button. Modal is now focused on quick scheduling.
+- **Autosave on close**: If scheduling fields (date, time, duration, all-day) are dirty when modal closes (X / overlay / escape), changes save automatically. On failure, modal stays open with error toast.
+- **Typed time input**: Replaced hour/minute dropdown pair with single text input accepting shorthand (9, 9a, 930, 9:30, 21:15, 2:05pm). Validates on blur and blocks save/close if invalid.
+- **Dirty tracking**: `ScheduleSnapshot` comparison tracks date/allDay/hour/minute/duration. "Unsaved changes" hint shown next to Save button.
+- **Layout**: Narrowed dialog from `max-w-3xl` (2-column) to `max-w-lg` (single column) since right column (notes/attachments) was removed.
+- **File**: `client/src/components/JobDetailDialog.tsx` (1329 → ~580 lines)
+
+### Fixed
+
+#### Calendar modal: allow closing after Unschedule; fix stale version errors (2026-03-04)
+- **Autosave-after-unschedule fix**: Unschedule success handler now resets dirty-tracking snapshot to empty-date baseline and clears validation errors, so `isDirty` is false and close is not blocked.
+- **Autosave gate for unscheduled state**: `handleOpenChange` skips autosave when `selectedDate` is empty (unscheduled), allowing immediate close.
+- **Stale version fix**: Added `localVersion` state initialized from `assignment.version`. All mutations (`updateSchedule`, `unscheduleJob`, `assignTechnicianMutation`) use `localVersion` instead of prop value, and update it from API responses. Prevents "Expected version X, Actual version Y" errors after sequential mutations.
+- **Version conflict handling**: Technician mutation surfaces 409 errors with clear message ("Job was updated elsewhere. Please close and reopen to refresh.").
+- **File**: `client/src/components/JobDetailDialog.tsx`
+
+#### Calendar, overdue badge, and dashboard consistency fixes (2026-03-04)
+- **Calendar: archived jobs hidden** — Added `j.status != 'archived'` filter to `getScheduledJobsInRange()` SQL query so archived jobs no longer appear on the calendar.
+- **Calendar: terminal jobs styled as terminal** — Expanded `completed` flag in `calendarUtils.ts` normalizer to cover all terminal statuses (completed, invoiced, archived). Terminal jobs now render with muted opacity, strike-through, and disabled drag/drop in both `DraggableClient` and `CalendarEventChip`.
+- **Overdue badge: suppressed for terminal jobs** — Replaced simplified overdue check in `JobMetaCard.tsx` with canonical `isJobOverdue()` predicate from `shared/schema.ts`. Terminal jobs (completed/invoiced/archived) can no longer show an "Overdue" badge.
+- **Dashboard Needs Attention: reason badges** — Added "Needs invoicing" (amber) and "On hold" (orange) badges alongside existing "Overdue" (red) badge so every Needs Attention row shows its reason.
+- **Files**: `server/storage/calendar.ts`, `client/src/components/calendar/calendarUtils.ts`, `client/src/components/calendar/DraggableClient.tsx`, `client/src/components/calendar/CalendarEventChip.tsx`, `client/src/components/JobMetaCard.tsx`, `client/src/pages/Dashboard.tsx`
+
+### Changed
+
 #### Jobs page default priority sort with context-aware navigation (2026-03-03)
 - **Priority sort**: New default sort when landing on `/jobs` from sidebar. Jobs ordered by dispatch priority buckets: Overdue → Requires Invoicing → In Progress → Scheduled → Backlog → Completed → Archived. Secondary sort: scheduled date ASC, then created date DESC.
 - **Priority sort fix**: Overdue bucket now uses canonical effective end time (`scheduledEnd → scheduledStart+duration → scheduledStart` fallback) instead of raw `scheduledStart`, matching `isJobOverdue()` and existing overdue SQL in `maintenance.ts`/`admin.ts`.
@@ -33,6 +65,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Files**: `client/src/pages/JobDetailPage.tsx`
 
 ### Fixed
+
+#### Calendar: all-day → timed drag creates 24h duration (2026-03-03)
+- **Bug**: Dragging an all-day visit into a timed calendar slot produced a ~24h duration (start 9:00 AM, end next day 12:00 AM) because the all-day `endAt` was passed through to the backend without normalization.
+- **Fix**: Added all-day → timed conversion guard in `rescheduleJob()` (`server/storage/calendar.ts`). When the current visit is all-day and the new request is timed, the incoming `endAt` is replaced with `startAt + durationMinutes` (preferring the job's existing duration, else `DEFAULT_VISIT_DURATION_MINUTES = 60`). This is the backend source of truth, independent of frontend clamping.
+- **Files**: `server/storage/calendar.ts`
 
 #### Job reopen failing with "Required at version" validation error (2026-03-02)
 - **Root cause**: `reopenJobMutation` in `JobHeaderCard.tsx` sent `{ target: "in_progress" }` but the server `reopenJobSchema` requires `version` (optimistic locking) and the field name is `targetOpenSubStatus`, not `target`. Zod rejected the payload before the handler ran.

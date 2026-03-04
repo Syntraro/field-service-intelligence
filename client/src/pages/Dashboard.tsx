@@ -240,6 +240,16 @@ function NeedsAttentionWidget({
                         Overdue
                       </span>
                     )}
+                    {job.attentionType === "requires_invoicing" && (
+                      <span className="text-xs font-medium text-amber-600 dark:text-amber-400 whitespace-nowrap mt-0.5">
+                        Needs invoicing
+                      </span>
+                    )}
+                    {job.attentionType === "on_hold" && (
+                      <span className="text-xs font-medium text-orange-600 dark:text-orange-400 whitespace-nowrap mt-0.5">
+                        On hold
+                      </span>
+                    )}
                   </div>
                 </button>
               );
