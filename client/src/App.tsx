@@ -520,104 +520,107 @@ function AppContent() {
 
   return (
     <SidebarProvider defaultOpen={true} style={style as React.CSSProperties}>
-      <div className="flex h-screen w-full bg-gray-200 dark:bg-gray-900">
-        <AppSidebar onDashboardClick={handleDashboardClick} />
-        <div className="flex flex-col flex-1 overflow-hidden">
-          {/* Universal header - visible on all pages except auth pages */}
-          <header className="flex items-center justify-between gap-2 px-4 h-14 bg-gray-200 dark:bg-gray-900 shadow-sm">
-            <SidebarTrigger data-testid="button-sidebar-toggle" />
+      <div className="flex flex-col h-screen w-full bg-background">
+        {/* Global header — spans full width above sidebar + content */}
+        <header className="flex items-center justify-between gap-2 px-4 h-14 shrink-0 bg-white dark:bg-gray-950 border-b border-[var(--card-border)] z-20">
+          <SidebarTrigger data-testid="button-sidebar-toggle" />
 
-            {/* Company name - hidden on technician pages */}
-            {!isTechnicianPage && companyDisplayName && (
-              <div className="ml-3 text-base font-semibold text-foreground truncate max-w-[260px]">
-                {companyDisplayName}
-              </div>
-            )}
+          {/* Company name - hidden on technician pages */}
+          {!isTechnicianPage && companyDisplayName && (
+            <div className="ml-3 text-base font-semibold text-foreground truncate max-w-[260px]">
+              {companyDisplayName}
+            </div>
+          )}
 
-            {/* Minimizable overdue jobs alert - hidden on technician pages */}
-            {!isTechnicianPage && totalOverdueCount > 0 && (
-              overdueAlertMinimized ? (
+          {/* Minimizable overdue jobs alert - hidden on technician pages */}
+          {!isTechnicianPage && totalOverdueCount > 0 && (
+            overdueAlertMinimized ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setOverdueAlertMinimized(false)}
+                className="gap-1.5 text-destructive hover:text-destructive"
+                data-testid="button-expand-overdue-alert"
+              >
+                <AlertTriangle className="h-4 w-4" />
+                <span className="font-medium">{totalOverdueCount}</span>
+                <ChevronRight className="h-3 w-3" />
+              </Button>
+            ) : (
+              <div
+                className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-destructive/10 border border-destructive/20"
+                data-testid="alert-past-unscheduled-header"
+              >
+                <AlertTriangle className="h-4 w-4 text-destructive flex-shrink-0" />
+                <span className="text-sm font-medium">
+                  {totalOverdueCount} overdue job{totalOverdueCount > 1 ? 's' : ''} from past months
+                </span>
                 <Button
                   variant="ghost"
-                  size="sm"
-                  onClick={() => setOverdueAlertMinimized(false)}
-                  className="gap-1.5 text-destructive hover:text-destructive"
-                  data-testid="button-expand-overdue-alert"
+                  size="icon"
+                  className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                  onClick={() => setOverdueAlertMinimized(true)}
+                  data-testid="button-minimize-overdue-alert"
                 >
-                  <AlertTriangle className="h-4 w-4" />
-                  <span className="font-medium">{totalOverdueCount}</span>
-                  <ChevronRight className="h-3 w-3" />
+                  <X className="h-3 w-3" />
                 </Button>
-              ) : (
-                <div
-                  className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-destructive/10 border border-destructive/20"
-                  data-testid="alert-past-unscheduled-header"
-                >
-                  <AlertTriangle className="h-4 w-4 text-destructive flex-shrink-0" />
-                  <span className="text-sm font-medium">
-                    {totalOverdueCount} overdue job{totalOverdueCount > 1 ? 's' : ''} from past months
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-5 w-5 text-muted-foreground hover:text-foreground"
-                    onClick={() => setOverdueAlertMinimized(true)}
-                    data-testid="button-minimize-overdue-alert"
-                  >
-                    <X className="h-3 w-3" />
-                  </Button>
-                </div>
-              )
+              </div>
+            )
+          )}
+
+          {/* Universal search - visible on all pages including technician pages */}
+          <div className="flex items-center gap-2">
+            <UniversalSearch />
+
+            {/* New dropdown and Settings - hidden on technician pages */}
+            {!isTechnicianPage && (
+              <>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="default" size="default" data-testid="button-create-new" className="gap-1.5">
+                      <Plus className="h-4 w-4" />
+                      <span>New</span>
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-48">
+                    <DropdownMenuItem onClick={() => setAddJobModalOpen(true)} data-testid="menu-new-job">
+                      <ClipboardList className="h-4 w-4 mr-2" />
+                      New Job
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={handleAddClient} data-testid="menu-new-client">
+                      <Users className="h-4 w-4 mr-2" />
+                      New Client
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setLocation('/quotes?create=true')} data-testid="menu-new-quote">
+                      <FileText className="h-4 w-4 mr-2" />
+                      New Quote
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setLocation('/invoices?create=true')} data-testid="menu-new-invoice">
+                      <Receipt className="h-4 w-4 mr-2" />
+                      New Invoice
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <Button variant="ghost" size="icon" asChild data-testid="button-settings">
+                  <Link href="/company-settings">
+                    <Settings className="h-4 w-4" />
+                  </Link>
+                </Button>
+              </>
             )}
-
-            {/* Universal search - visible on all pages including technician pages */}
-            <div className="flex items-center gap-2">
-              <UniversalSearch />
-
-              {/* New dropdown and Settings - hidden on technician pages */}
-              {!isTechnicianPage && (
-                <>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="default" size="default" data-testid="button-create-new" className="gap-1.5">
-                        <Plus className="h-4 w-4" />
-                        <span>New</span>
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-48">
-                      <DropdownMenuItem onClick={() => setAddJobModalOpen(true)} data-testid="menu-new-job">
-                        <ClipboardList className="h-4 w-4 mr-2" />
-                        New Job
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={handleAddClient} data-testid="menu-new-client">
-                        <Users className="h-4 w-4 mr-2" />
-                        New Client
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setLocation('/quotes?create=true')} data-testid="menu-new-quote">
-                        <FileText className="h-4 w-4 mr-2" />
-                        New Quote
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setLocation('/invoices?create=true')} data-testid="menu-new-invoice">
-                        <Receipt className="h-4 w-4 mr-2" />
-                        New Invoice
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                  <Button variant="ghost" size="icon" asChild data-testid="button-settings">
-                    <Link href="/company-settings">
-                      <Settings className="h-4 w-4" />
-                    </Link>
-                  </Button>
-                </>
-              )}
-            </div>
-          </header>
-          <ImpersonationBanner />
-          <SubscriptionBanner />
-          <TimezoneSetupBanner />
-          <main className="flex-1 overflow-auto">
-            <Router />
-          </main>
+          </div>
+        </header>
+        {/* Sidebar + page content row */}
+        <div className="flex flex-1 overflow-hidden">
+          <AppSidebar onDashboardClick={handleDashboardClick} />
+          <div className="flex flex-col flex-1 overflow-hidden">
+            <ImpersonationBanner />
+            <SubscriptionBanner />
+            <TimezoneSetupBanner />
+            <main className="flex-1 overflow-auto">
+              <Router />
+            </main>
+          </div>
         </div>
       </div>
       <QuickAddClientModal

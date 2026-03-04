@@ -8,6 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### UI upgrade pass #2 — StatusPill, modern tables, dashboard metrics, filter chips, input focus (2026-03-04)
+- **StatusPill component**: New `client/src/components/ui/status-pill.tsx` with 5 variants (neutral, success, warning, danger, info). Includes `statusToVariant()` mapping for consistent status→color across all pages. Height 24px, rounded-full, subtle border + background.
+- **Modern table styling**: Updated `table.tsx` — header row gets `#FAFAFA` background, font-semibold `#6B7280` text; data rows 44px height (`h-11`); cells use `px-4 py-2.5` padding; hover state `#F3F4F6`.
+- **Dashboard metrics card**: WorkflowStrip converted from `rounded-xl shadow-sm` to `rounded-md border` with full-height vertical dividers. NeedsAttention/Invoices widgets get matching card treatment. Status labels in dashboard use inline pill styling. Dashboard background changed to `bg-background`.
+- **Jobs page StatusPill**: Replaced all Badge usage in status column with StatusPill (lifecycle, sub-status, overdue, all-day, SLA, escalated). Lifecycle filter tabs now use rounded-full pill chips with green active state. Derived filters (Scheduled/Backlog, Assigned/Unassigned, Overdue) use outline pill chips with green active fill.
+- **Input focus ring**: Changed from blue ring to green focus glow (`box-shadow: 0 0 0 3px rgba(47,125,50,0.18)`, `border-color: rgba(47,125,50,0.55)`).
+- **Job detail page**: Office action banner reduced from `rounded-lg border-2 p-4` to `rounded-md border px-4 py-3` with softer amber background. Badge classes updated to pill-style soft fills. Top meta card updated to `rounded-md` with micro-shadow.
+- **Files**: `client/src/components/ui/status-pill.tsx` (new), `client/src/components/ui/table.tsx`, `client/src/components/ui/input.tsx`, `client/src/pages/Dashboard.tsx`, `client/src/pages/Jobs.tsx`, `client/src/pages/JobDetailPage.tsx`
+
+#### RALPH UI modernization — design tokens, dark sidebar, global header, tighter radii (2026-03-04)
+- **Design tokens**: Added CSS custom properties (`--app-bg`, `--sidebar-bg`, `--sidebar-text`, `--sidebar-hover`, `--primary-green`, `--radius-sm`, `--spacing-page/card/gap`, `--header-height`) in `:root` for consistent theming.
+- **Dark sidebar**: Sidebar is always dark (#1F2933) regardless of light/dark mode. Updated `:root` and `.dark` sidebar CSS vars to match. Component classes use `bg-sidebar text-sidebar-foreground` with `hover:bg-white/[0.08]` and green active border.
+- **Global header**: Restructured layout so header spans full width above the sidebar. Sidebar repositioned below header via `[data-slot="sidebar-container"]` CSS override.
+- **Border radius reduction**: Changed `--radius` from `0.75rem` (12px) to `0.375rem` (6px). Updated `card.tsx`, `dialog.tsx`, `alert-dialog.tsx`, `alert.tsx`, `list-surface.tsx` from `rounded-xl`/`rounded-lg` to `rounded-md`.
+- **Shadow → border**: Replaced `shadow-sm` on cards and list surfaces with `shadow-[0_1px_2px_rgba(0,0,0,0.05)]` micro-shadow + explicit border.
+- **Files**: `client/src/index.css`, `client/src/App.tsx`, `client/src/components/AppSidebar.tsx`, `client/src/components/ui/card.tsx`, `client/src/components/ui/dialog.tsx`, `client/src/components/ui/alert-dialog.tsx`, `client/src/components/ui/alert.tsx`, `client/src/components/ui/list-surface.tsx`
+
 #### Sidebar navigation reordered with section dividers (2026-03-04)
 - Reordered: Dashboard, Calendar | Jobs, Invoices, Quotes, Clients, Suppliers, Reports | Settings, Admin.
 - Added two visual dividers: after Calendar (before Operations group) and after Reports (before System group).

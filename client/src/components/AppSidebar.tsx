@@ -190,8 +190,8 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
   }
 
   return (
-    <Sidebar collapsible="icon" className="bg-gray-50 dark:bg-gray-950">
-      <SidebarHeader className="px-2 py-2 h-14 bg-gray-50 dark:bg-gray-950" />
+    <Sidebar collapsible="icon" className="bg-sidebar text-sidebar-foreground">
+      <SidebarHeader className="px-2 py-2 h-0" />
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupContent>
@@ -199,28 +199,28 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
               {menuItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
                   {(item as any).isDivider && (
-                    <div className="my-2 mx-2 border-t border-border" />
+                    <div className="my-2 mx-2 border-t border-white/10" />
                   )}
                   {item.href ? (
-                    <SidebarMenuButton 
-                      asChild 
-                      isActive={item.isActive} 
+                    <SidebarMenuButton
+                      asChild
+                      isActive={item.isActive}
                       data-testid={item.testId}
-                      className="h-10 data-[active=true]:bg-primary/10 data-[active=true]:border-l-[3px] data-[active=true]:border-l-primary data-[active=true]:font-semibold data-[active=true]:pl-[7px] hover:bg-gray-50"
+                      className="h-10 text-sidebar-foreground data-[active=true]:bg-white/[0.08] data-[active=true]:border-l-[3px] data-[active=true]:border-l-[var(--primary-green)] data-[active=true]:font-semibold data-[active=true]:pl-[7px] hover:bg-white/[0.08]"
                     >
                       <Link href={item.href}>
-                        <item.icon className="h-4 w-4" />
+                        <item.icon className="h-4 w-4 text-gray-400" />
                         <span>{item.title}</span>
                       </Link>
                     </SidebarMenuButton>
                   ) : (
-                    <SidebarMenuButton 
-                      isActive={item.isActive} 
-                      onClick={item.onClick} 
+                    <SidebarMenuButton
+                      isActive={item.isActive}
+                      onClick={item.onClick}
                       data-testid={item.testId}
-                      className="h-10 data-[active=true]:bg-primary/10 data-[active=true]:border-l-[3px] data-[active=true]:border-l-primary data-[active=true]:font-semibold data-[active=true]:pl-[7px] hover:bg-gray-50"
+                      className="h-10 text-sidebar-foreground data-[active=true]:bg-white/[0.08] data-[active=true]:border-l-[3px] data-[active=true]:border-l-[var(--primary-green)] data-[active=true]:font-semibold data-[active=true]:pl-[7px] hover:bg-white/[0.08]"
                     >
-                      <item.icon className="h-4 w-4" />
+                      <item.icon className="h-4 w-4 text-gray-400" />
                       <span>{item.title}</span>
                     </SidebarMenuButton>
                   )}
@@ -230,17 +230,17 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
-      <SidebarFooter className="bg-gray-50 dark:bg-gray-950">
+      <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton onClick={() => setFeedbackOpen(true)} data-testid="button-feedback" className="h-10 hover:bg-gray-50">
-              <MessageCircle className="h-4 w-4" />
+            <SidebarMenuButton onClick={() => setFeedbackOpen(true)} data-testid="button-feedback" className="h-10 text-sidebar-foreground hover:bg-white/[0.08]">
+              <MessageCircle className="h-4 w-4 text-gray-400" />
               <span>Feedback</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
-            <SidebarMenuButton onClick={handleLogout} data-testid="button-logout" className="h-10 hover:bg-gray-50">
-              <LogOut className="h-4 w-4" />
+            <SidebarMenuButton onClick={handleLogout} data-testid="button-logout" className="h-10 text-sidebar-foreground hover:bg-white/[0.08]">
+              <LogOut className="h-4 w-4 text-gray-400" />
               <span>Logout</span>
             </SidebarMenuButton>
           </SidebarMenuItem>

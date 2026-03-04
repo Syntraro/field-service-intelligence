@@ -4,6 +4,20 @@
 
 /* LIGHT MODE */
 :root {
+  /* ── Design tokens ── */
+  --app-bg: #F5F7F9;
+  --card-bg: #FFFFFF;
+  --card-border: #E5E7EB;
+  --sidebar-bg: #1F2933;
+  --sidebar-text: #D1D5DB;
+  --sidebar-hover: rgba(255,255,255,0.08);
+  --primary-green: #2F7D32;
+  --radius-sm: 6px;
+  --spacing-page: 24px;
+  --spacing-card: 16px;
+  --spacing-gap: 16px;
+  --header-height: 3.5rem;
+
   --button-outline: rgba(0,0,0, .10);
   --badge-outline: rgba(0,0,0, .05);
 
@@ -14,26 +28,27 @@
   --elevate-1: rgba(0,0,0, .03);
   --elevate-2: rgba(0,0,0, .08);
 
-  /* 
+  /*
    * Custom color palette
-   * Background: #F7F8FC | Card: #FFFFFF | Border: #E0E3ED
+   * Background: #F5F7F9 | Card: #FFFFFF | Border: #E5E7EB
    * Foreground: #1F2933 | Muted: #6B7280
-   * Primary: #2D6CFB | Success: #2E7D32 | Warning: #F9A825 | Danger: #E53935
+   * Primary: #2D6CFB | Success: #2F7D32 | Warning: #F9A825 | Danger: #E53935
    */
-  --background: 228 33% 98%;
+  --background: 216 18% 97%;
   --foreground: 209 27% 16%;
-  --border: 224 25% 91%;
+  --border: 220 13% 91%;
   --card: 0 0% 100%;
   --card-foreground: 209 27% 16%;
-  --card-border: 224 25% 91%;
-  --sidebar: 228 33% 98%;
-  --sidebar-foreground: 209 27% 16%;
-  --sidebar-border: 224 25% 91%;
-  --sidebar-primary: 220 96% 58%;
+  --card-border: 220 13% 91%;
+  /* Dark sidebar — always dark regardless of theme */
+  --sidebar: 209 27% 16%;
+  --sidebar-foreground: 216 6% 85%;
+  --sidebar-border: 209 20% 22%;
+  --sidebar-primary: 122 45% 34%;
   --sidebar-primary-foreground: 0 0% 100%;
-  --sidebar-accent: 224 25% 91%;
-  --sidebar-accent-foreground: 209 27% 16%;
-  --sidebar-ring: 220 96% 58%;
+  --sidebar-accent: 209 20% 22%;
+  --sidebar-accent-foreground: 216 6% 85%;
+  --sidebar-ring: 122 45% 34%;
   --popover: 0 0% 100%;
   --popover-foreground: 209 27% 16%;
   --popover-border: 224 25% 91%;
@@ -69,7 +84,7 @@
   --font-sans: "Inter", "SF Pro", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-serif: Georgia, serif;
   --font-mono: "SF Mono", Menlo, Monaco, "Courier New", monospace;
-  --radius: 0.75rem; /* 12px - updated for softer look */
+  --radius: 0.375rem; /* 6px — tighter, modern SaaS radius */
   --shadow-2xs: 0px 1px 2px 0px hsl(220 8% 20% / 0.04);
   --shadow-xs: 0px 1px 3px 0px hsl(220 8% 20% / 0.06);
   --shadow-sm: 0px 2px 4px -1px hsl(220 8% 20% / 0.05), 0px 1px 2px -1px hsl(220 8% 20% / 0.03);
@@ -148,21 +163,15 @@
 
   --card-border: 228 14% 18%;
 
-  --sidebar: 228 22% 12%;
-
-  --sidebar-foreground: 228 12% 90%;
-
-  --sidebar-border: 228 14% 18%;
-
-  --sidebar-primary: 220 96% 58%;
-
+  /* Dark sidebar — stays dark in dark mode too */
+  --sidebar: 209 27% 16%;
+  --sidebar-foreground: 216 6% 85%;
+  --sidebar-border: 209 20% 22%;
+  --sidebar-primary: 122 45% 34%;
   --sidebar-primary-foreground: 0 0% 100%;
-
-  --sidebar-accent: 228 14% 18%;
-
-  --sidebar-accent-foreground: 228 12% 90%;
-
-  --sidebar-ring: 220 96% 58%;
+  --sidebar-accent: 209 20% 22%;
+  --sidebar-accent-foreground: 216 6% 85%;
+  --sidebar-ring: 122 45% 34%;
 
   --popover: 228 22% 11%;
 
@@ -254,6 +263,12 @@
 
   p {
     @apply text-base;
+  }
+
+  /* Header-aware sidebar: push fixed sidebar below the global header */
+  [data-slot="sidebar-container"] {
+    top: var(--header-height) !important;
+    height: calc(100svh - var(--header-height)) !important;
   }
 }
 

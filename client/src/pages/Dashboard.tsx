@@ -72,7 +72,7 @@ function WorkflowStrip({ data, isLoading, isError }: {
 
   if (isError) {
     return (
-      <div className="bg-destructive/10 border border-destructive/20 rounded-xl p-4 text-center text-sm text-destructive">
+      <div className="bg-destructive/10 border border-destructive/20 rounded-md p-4 text-center text-sm text-destructive">
         Failed to load workflow summary. Please refresh.
       </div>
     );
@@ -117,16 +117,16 @@ function WorkflowStrip({ data, isLoading, isError }: {
   ];
 
   return (
-    <div className="bg-white dark:bg-gray-900 rounded-xl shadow-sm">
+    <div className="bg-white dark:bg-gray-900 rounded-md border border-gray-200 dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
         {sections.map((section, index) => (
           <div
             key={section.title}
             className="relative px-4 py-3"
           >
-            {/* Half-height centered divider */}
+            {/* Full-height vertical divider between columns */}
             {index > 0 && (
-              <div className="hidden sm:block absolute left-0 top-1/2 -translate-y-1/2 h-1/2 w-px bg-gray-200 dark:bg-gray-700" />
+              <div className="hidden sm:block absolute left-0 inset-y-0 w-px bg-gray-200 dark:bg-gray-800" />
             )}
             <div className="flex items-center gap-2 mb-2">
               <section.icon className={`h-4 w-4 ${section.color}`} />
@@ -147,7 +147,7 @@ function WorkflowStrip({ data, isLoading, isError }: {
                     <button
                       key={item.label}
                       onClick={() => setLocation(item.href)}
-                      className="flex items-center justify-between w-full text-left py-1 px-2 -mx-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors group"
+                      className="flex items-center justify-between w-full text-left py-1 px-2 -mx-2 rounded-md hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors group"
                     >
                       <span className="text-xs text-muted-foreground group-hover:text-foreground transition-colors">
                         {item.label}
@@ -200,9 +200,9 @@ function NeedsAttentionWidget({
   const displayJobs = jobs.slice(0, 5);
 
   return (
-    <div className="bg-white dark:bg-gray-900 rounded-xl shadow-sm flex flex-col">
-      <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-800">
-        <h3 className="text-base font-medium">Needs Attention</h3>
+    <div className="bg-white dark:bg-gray-900 rounded-md border border-gray-200 dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)] flex flex-col">
+      <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800">
+        <h3 className="text-sm font-semibold">Needs Attention</h3>
       </div>
       <div className="flex-1">
         <AsyncBlock
@@ -225,7 +225,7 @@ function NeedsAttentionWidget({
                 <button
                   key={job.id}
                   onClick={() => setLocation(`/jobs/${job.id}`)}
-                  className={`w-full text-left px-4 py-2.5 hover:bg-gray-100/60 dark:hover:bg-gray-800/50 transition-colors ${!isLast ? "border-b border-gray-100 dark:border-gray-800" : ""}`}
+                  className={`w-full text-left px-4 py-2.5 hover:bg-[#F3F4F6] dark:hover:bg-gray-800/50 transition-colors ${!isLast ? "border-b border-gray-200 dark:border-gray-800" : ""}`}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex-1 min-w-0">
@@ -236,17 +236,17 @@ function NeedsAttentionWidget({
                       </p>
                     </div>
                     {job.attentionType === "overdue" && (
-                      <span className="text-xs font-medium text-red-600 dark:text-red-400 whitespace-nowrap mt-0.5">
+                      <span className="inline-flex items-center rounded-full border px-2 h-5 text-[11px] font-medium bg-[rgba(220,38,38,0.12)] text-[#B91C1C] border-[rgba(220,38,38,0.25)] dark:bg-red-950/40 dark:text-red-400 dark:border-red-800 whitespace-nowrap">
                         Overdue
                       </span>
                     )}
                     {job.attentionType === "requires_invoicing" && (
-                      <span className="text-xs font-medium text-amber-600 dark:text-amber-400 whitespace-nowrap mt-0.5">
+                      <span className="inline-flex items-center rounded-full border px-2 h-5 text-[11px] font-medium bg-[rgba(245,158,11,0.14)] text-[#92400E] border-[rgba(245,158,11,0.28)] dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800 whitespace-nowrap">
                         Needs invoicing
                       </span>
                     )}
                     {job.attentionType === "on_hold" && (
-                      <span className="text-xs font-medium text-orange-600 dark:text-orange-400 whitespace-nowrap mt-0.5">
+                      <span className="inline-flex items-center rounded-full border px-2 h-5 text-[11px] font-medium bg-[rgba(245,158,11,0.14)] text-[#92400E] border-[rgba(245,158,11,0.28)] dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800 whitespace-nowrap">
                         On hold
                       </span>
                     )}
@@ -258,7 +258,7 @@ function NeedsAttentionWidget({
         </AsyncBlock>
       </div>
       {!isError && !isLoading && jobs.length > 0 && (
-        <div className="px-4 py-2 border-t border-gray-100 dark:border-gray-800">
+        <div className="px-4 py-2 border-t border-gray-200 dark:border-gray-800">
           <Button
             variant="ghost"
             size="sm"
@@ -306,12 +306,12 @@ function InvoicesWidget({
   };
 
   return (
-    <div className="bg-white dark:bg-gray-900 rounded-xl shadow-sm flex flex-col">
-      <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-800">
+    <div className="bg-white dark:bg-gray-900 rounded-md border border-gray-200 dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)] flex flex-col">
+      <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800">
         <div className="flex items-center justify-between">
           <button
             onClick={() => setLocation("/invoices?filter=awaiting_payment")}
-            className="text-base font-medium hover:text-primary hover:underline transition-colors text-left"
+            className="text-sm font-semibold hover:text-primary hover:underline transition-colors text-left"
           >
             Invoices
           </button>
@@ -350,7 +350,7 @@ function InvoicesWidget({
                 <button
                   key={invoice.id}
                   onClick={() => setLocation(`/invoices/${invoice.id}`)}
-                  className={`w-full text-left px-4 py-2.5 hover:bg-gray-100/60 dark:hover:bg-gray-800/50 transition-colors ${!isLast ? "border-b border-gray-100 dark:border-gray-800" : ""}`}
+                  className={`w-full text-left px-4 py-2.5 hover:bg-[#F3F4F6] dark:hover:bg-gray-800/50 transition-colors ${!isLast ? "border-b border-gray-200 dark:border-gray-800" : ""}`}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 min-w-0">
@@ -364,7 +364,7 @@ function InvoicesWidget({
                     </div>
                     <div className="text-right flex-shrink-0 flex flex-col items-end">
                       {invoice.isPastDue && (
-                        <span className="text-xs font-medium text-red-600 dark:text-red-400 mb-0.5">
+                        <span className="inline-flex items-center rounded-full border px-2 h-5 text-[11px] font-medium bg-[rgba(220,38,38,0.12)] text-[#B91C1C] border-[rgba(220,38,38,0.25)] dark:bg-red-950/40 dark:text-red-400 dark:border-red-800 mb-0.5">
                           Past due
                         </span>
                       )}
@@ -383,7 +383,7 @@ function InvoicesWidget({
         </AsyncBlock>
       </div>
       {!isError && !isLoading && invoices.length > 0 && (
-        <div className="px-4 py-2 border-t border-gray-100 dark:border-gray-800">
+        <div className="px-4 py-2 border-t border-gray-200 dark:border-gray-800">
           <Button
             variant="ghost"
             size="sm"
@@ -493,13 +493,13 @@ function TasksPanel({
   // Collapsed state - matching card style
   if (collapsed) {
     return (
-      <div className="h-full w-14 bg-white dark:bg-gray-900 rounded-xl shadow-sm flex flex-col items-center py-3 gap-2">
-        <Button variant="ghost" size="icon" onClick={onToggleCollapsed} title="Expand tasks" className="rounded-xl">
+      <div className="h-full w-14 bg-white dark:bg-gray-900 rounded-md border border-gray-200 dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)] flex flex-col items-center py-3 gap-2">
+        <Button variant="ghost" size="icon" onClick={onToggleCollapsed} title="Expand tasks" className="rounded-md">
           <PanelRightOpen className="h-5 w-5" />
         </Button>
         <div className="mt-2 flex flex-col items-center gap-2">
           <ClipboardList className="h-5 w-5 opacity-70" />
-          <Button variant="ghost" size="icon" onClick={() => { onToggleCollapsed(); handleNewTask(); }} title="New task" className="rounded-xl">
+          <Button variant="ghost" size="icon" onClick={() => { onToggleCollapsed(); handleNewTask(); }} title="New task" className="rounded-md">
             <Plus className="h-5 w-5" />
           </Button>
         </div>
@@ -510,20 +510,20 @@ function TasksPanel({
 
   // Expanded state - matching card style with flat rows
   return (
-    <div className="h-full w-[380px] bg-white dark:bg-gray-900 rounded-xl shadow-sm flex flex-col">
+    <div className="h-full w-[380px] bg-white dark:bg-gray-900 rounded-md border border-gray-200 dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)] flex flex-col">
       {/* Header */}
-      <div className="px-3 py-2 border-b border-gray-100 dark:border-gray-800">
+      <div className="px-3 py-2 border-b border-gray-200 dark:border-gray-800">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
             <ClipboardList className="h-5 w-5" />
             <span className="font-semibold">Tasks</span>
-            <Badge variant="secondary" className="text-xs rounded-lg">{filteredTasks.length}</Badge>
+            <Badge variant="secondary" className="text-xs rounded-full">{filteredTasks.length}</Badge>
           </div>
           <div className="flex items-center gap-1">
-            <Button variant="ghost" size="icon" onClick={handleNewTask} title="New task" className="h-8 w-8 rounded-xl">
+            <Button variant="ghost" size="icon" onClick={handleNewTask} title="New task" className="h-8 w-8 rounded-md">
               <Plus className="h-4 w-4" />
             </Button>
-            <Button variant="ghost" size="icon" onClick={onToggleCollapsed} title="Collapse tasks" className="h-8 w-8 rounded-xl">
+            <Button variant="ghost" size="icon" onClick={onToggleCollapsed} title="Collapse tasks" className="h-8 w-8 rounded-md">
               <PanelRightClose className="h-4 w-4" />
             </Button>
           </div>
@@ -600,7 +600,7 @@ function TasksPanel({
               return (
                 <div
                   key={t.id}
-                  className={`px-4 py-2.5 flex items-start gap-2 cursor-pointer hover:bg-gray-100/60 dark:hover:bg-gray-800/50 transition-colors relative ${!isLast ? "border-b border-gray-100 dark:border-gray-800" : ""}`}
+                  className={`px-4 py-2.5 flex items-start gap-2 cursor-pointer hover:bg-[#F3F4F6] dark:hover:bg-gray-800/50 transition-colors relative ${!isLast ? "border-b border-gray-200 dark:border-gray-800" : ""}`}
                   onClick={() => handleTaskClick(t.id)}
                 >
                   <Button
@@ -677,7 +677,7 @@ export default function Dashboard() {
   // Frame contrast: main content uses darker bg, cards (white) sit on top
   // Sidebar + header use bg-background (white) - unified frame
   return (
-    <div className="min-h-screen bg-gray-200 dark:bg-gray-900">
+    <div className="min-h-screen bg-background">
       <main className="mx-auto px-3 sm:px-4 lg:px-6 py-3 space-y-3">
         <div className="flex gap-4">
           {/* Left column - main content */}

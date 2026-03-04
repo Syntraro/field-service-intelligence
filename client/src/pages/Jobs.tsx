@@ -10,7 +10,9 @@ import { useLocation, useSearch } from "wouter";
 import { Search, ChevronDown, ChevronUp, ArrowUpDown, Loader2, Plus, Calendar as CalendarIcon, Wrench, AlertTriangle, AlertCircle, Clock, X, CalendarDays, FileText, MoreHorizontal, User, Bug } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { StatusPill, statusToVariant } from "@/components/ui/status-pill";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
@@ -654,47 +656,29 @@ export default function Jobs() {
         <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm font-medium text-muted-foreground mr-1">Status:</span>
-            <Button
-              variant={lifecycleFilter === "all" ? "default" : "outline"}
-              size="sm"
-              onClick={() => setLifecycleFilter("all")}
-              data-testid="button-filter-status-all"
-            >
-              All ({totalCount})
-            </Button>
-            <Button
-              variant={lifecycleFilter === "open" ? "default" : "outline"}
-              size="sm"
-              onClick={() => setLifecycleFilter("open")}
-              data-testid="button-filter-status-open"
-            >
-              Open ({counts.lifecycle.open})
-            </Button>
-            <Button
-              variant={lifecycleFilter === "completed" ? "secondary" : "outline"}
-              size="sm"
-              onClick={() => setLifecycleFilter("completed")}
-              data-testid="button-filter-status-completed"
-            >
-              Completed ({counts.lifecycle.completed})
-            </Button>
-            <Button
-              variant={lifecycleFilter === "invoiced" ? "default" : "outline"}
-              size="sm"
-              onClick={() => setLifecycleFilter("invoiced")}
-              data-testid="button-filter-status-invoiced"
-            >
-              Invoiced ({counts.lifecycle.invoiced})
-            </Button>
-            <Button
-              variant={lifecycleFilter === "archived" ? "outline" : "outline"}
-              size="sm"
-              onClick={() => setLifecycleFilter("archived")}
-              className={lifecycleFilter === "archived" ? "bg-muted" : ""}
-              data-testid="button-filter-status-archived"
-            >
-              Archived ({counts.lifecycle.archived})
-            </Button>
+            {([
+              { key: "all" as const, label: `All (${totalCount})`, testId: "button-filter-status-all" },
+              { key: "open" as const, label: `Open (${counts.lifecycle.open})`, testId: "button-filter-status-open" },
+              { key: "completed" as const, label: `Completed (${counts.lifecycle.completed})`, testId: "button-filter-status-completed" },
+              { key: "invoiced" as const, label: `Invoiced (${counts.lifecycle.invoiced})`, testId: "button-filter-status-invoiced" },
+              { key: "archived" as const, label: `Archived (${counts.lifecycle.archived})`, testId: "button-filter-status-archived" },
+            ]).map((tab) => (
+              <Button
+                key={tab.key}
+                variant={lifecycleFilter === tab.key ? "default" : "ghost"}
+                size="sm"
+                onClick={() => setLifecycleFilter(tab.key)}
+                data-testid={tab.testId}
+                className={cn(
+                  "rounded-full h-8 px-3 text-xs",
+                  lifecycleFilter === tab.key
+                    ? "bg-[#2F7D32] hover:bg-[#256427] text-white border-transparent"
+                    : "text-muted-foreground"
+                )}
+              >
+                {tab.label}
+              </Button>
+            ))}
           </div>
 
           <div className="relative">
@@ -718,9 +702,12 @@ export default function Jobs() {
             {/* Scheduled/Backlog toggle */}
             <div className="flex items-center gap-1">
               <Button
-                variant={derivedFilters.scheduled === true ? "default" : "ghost"}
+                variant={derivedFilters.scheduled === true ? "default" : "outline"}
                 size="sm"
-                className="h-7 px-2"
+                className={cn(
+                  "rounded-full h-7 px-2.5 text-xs",
+                  derivedFilters.scheduled === true && "bg-[rgba(47,125,50,0.12)] text-[#2F7D32] border-[rgba(47,125,50,0.25)] hover:bg-[rgba(47,125,50,0.18)]"
+                )}
                 onClick={() => toggleDerivedFilter("scheduled", derivedFilters.scheduled === true ? null : true)}
                 data-testid="filter-scheduled"
               >
@@ -728,9 +715,12 @@ export default function Jobs() {
                 Scheduled ({counts.derived.scheduled})
               </Button>
               <Button
-                variant={derivedFilters.scheduled === false ? "default" : "ghost"}
+                variant={derivedFilters.scheduled === false ? "default" : "outline"}
                 size="sm"
-                className="h-7 px-2"
+                className={cn(
+                  "rounded-full h-7 px-2.5 text-xs",
+                  derivedFilters.scheduled === false && "bg-[rgba(47,125,50,0.12)] text-[#2F7D32] border-[rgba(47,125,50,0.25)] hover:bg-[rgba(47,125,50,0.18)]"
+                )}
                 onClick={() => toggleDerivedFilter("scheduled", derivedFilters.scheduled === false ? null : false)}
                 data-testid="filter-backlog"
               >
@@ -741,9 +731,12 @@ export default function Jobs() {
             {/* Assigned/Unassigned toggle */}
             <div className="flex items-center gap-1">
               <Button
-                variant={derivedFilters.assigned === true ? "default" : "ghost"}
+                variant={derivedFilters.assigned === true ? "default" : "outline"}
                 size="sm"
-                className="h-7 px-2"
+                className={cn(
+                  "rounded-full h-7 px-2.5 text-xs",
+                  derivedFilters.assigned === true && "bg-[rgba(47,125,50,0.12)] text-[#2F7D32] border-[rgba(47,125,50,0.25)] hover:bg-[rgba(47,125,50,0.18)]"
+                )}
                 onClick={() => toggleDerivedFilter("assigned", derivedFilters.assigned === true ? null : true)}
                 data-testid="filter-assigned"
               >
@@ -751,9 +744,12 @@ export default function Jobs() {
                 Assigned ({counts.derived.assigned})
               </Button>
               <Button
-                variant={derivedFilters.assigned === false ? "default" : "ghost"}
+                variant={derivedFilters.assigned === false ? "default" : "outline"}
                 size="sm"
-                className="h-7 px-2"
+                className={cn(
+                  "rounded-full h-7 px-2.5 text-xs",
+                  derivedFilters.assigned === false && "bg-[rgba(47,125,50,0.12)] text-[#2F7D32] border-[rgba(47,125,50,0.25)] hover:bg-[rgba(47,125,50,0.18)]"
+                )}
                 onClick={() => toggleDerivedFilter("assigned", derivedFilters.assigned === false ? null : false)}
                 data-testid="filter-unassigned"
               >
@@ -777,9 +773,12 @@ export default function Jobs() {
             {/* Overdue filter */}
             {counts.derived.overdue > 0 && (
               <Button
-                variant={derivedFilters.overdue ? "destructive" : "ghost"}
+                variant={derivedFilters.overdue ? "destructive" : "outline"}
                 size="sm"
-                className="h-7 px-2"
+                className={cn(
+                  "rounded-full h-7 px-2.5 text-xs",
+                  derivedFilters.overdue && "bg-[rgba(220,38,38,0.12)] text-[#B91C1C] border-[rgba(220,38,38,0.25)] hover:bg-[rgba(220,38,38,0.18)]"
+                )}
                 onClick={() => toggleDerivedFilter("overdue", !derivedFilters.overdue)}
                 data-testid="filter-overdue"
               >
@@ -944,47 +943,36 @@ export default function Jobs() {
                     <div className="flex flex-col gap-1">
                       {/* Row 1: Lifecycle badge + OpenSubStatus badge */}
                       <div className="flex items-center gap-1 flex-wrap">
-                        {/* Lifecycle badge (4 canonical statuses) */}
-                        <Badge
-                          variant={
-                            job.status === "open" ? "outline" :
-                            job.status === "completed" ? "secondary" :
-                            job.status === "invoiced" ? "default" :
-                            "outline"
-                          }
-                        >
+                        {/* Lifecycle pill (4 canonical statuses) */}
+                        <StatusPill variant={statusToVariant(job.status)}>
                           {job.status === "open" ? "Open" :
                            job.status === "completed" ? "Completed" :
                            job.status === "invoiced" ? "Invoiced" :
                            "Archived"}
-                        </Badge>
+                        </StatusPill>
 
-                        {/* OpenSubStatus badge (only for open jobs with a sub-status) */}
+                        {/* OpenSubStatus pill (only for open jobs with a sub-status) */}
                         {job.status === "open" && job.openSubStatus && (
-                          <Badge
-                            variant={job.openSubStatus === "on_hold" || job.openSubStatus === "needs_review" ? "destructive" : "default"}
-                            className="text-xs"
-                          >
+                          <StatusPill variant={statusToVariant(job.openSubStatus)}>
                             {job.openSubStatus === "in_progress" ? "In Progress" :
                              job.openSubStatus === "on_route" ? "On Route" :
                              job.openSubStatus === "on_hold" ? "On Hold" :
                              "Needs Review"}
-                          </Badge>
+                          </StatusPill>
                         )}
 
-                        {/* Overdue indicator: canonical _overdue from isJobOverdue predicate */}
+                        {/* Overdue indicator */}
                         {job._overdue && (
-                          <Badge variant="destructive" className="text-xs">
-                            <AlertTriangle className="h-3 w-3 mr-1" />
+                          <StatusPill variant="danger" icon={<AlertTriangle className="h-3 w-3" />}>
                             Overdue
-                          </Badge>
+                          </StatusPill>
                         )}
 
-                        {/* All-day badge */}
+                        {/* All-day pill */}
                         {job.isAllDay && (
-                          <Badge variant="outline" className="text-xs px-1.5 py-0 text-muted-foreground">
+                          <StatusPill variant="neutral">
                             All-day
-                          </Badge>
+                          </StatusPill>
                         )}
                       </div>
 
@@ -1005,15 +993,12 @@ export default function Jobs() {
                               Aging: {agingDisplay}
                             </span>
                             {isOverdueSLA && !isEscalated && (
-                              <Badge variant="outline" className="text-xs px-1 py-0 text-orange-600 border-orange-300">
-                                SLA
-                              </Badge>
+                              <StatusPill variant="warning">SLA</StatusPill>
                             )}
                             {isEscalated && (
-                              <Badge variant="outline" className="text-xs px-1 py-0 text-red-600 border-red-300">
-                                <AlertCircle className="h-2.5 w-2.5 mr-0.5" />
+                              <StatusPill variant="danger" icon={<AlertCircle className="h-2.5 w-2.5" />}>
                                 Escalated
-                              </Badge>
+                              </StatusPill>
                             )}
                             {needsEscalation && isOfficeUser && (
                               <Button

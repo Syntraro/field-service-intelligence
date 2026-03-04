@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils"
  * Shared class constants for list/table surfaces
  * Use these when you need the raw classes (e.g., for TableRow)
  */
-export const listSurfaceClass = "rounded-lg bg-white dark:bg-gray-900 overflow-hidden shadow-sm"
+export const listSurfaceClass = "rounded-md bg-white dark:bg-gray-900 overflow-hidden border border-gray-200 dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)]"
 
 export const listRowClass = "border-b border-gray-200 dark:border-gray-800 last:border-b-0 hover:bg-gray-100/60 dark:hover:bg-gray-800/60 transition-colors"
 

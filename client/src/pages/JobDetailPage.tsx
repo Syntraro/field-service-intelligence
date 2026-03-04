@@ -205,33 +205,33 @@ const ATTENTION_CONFIG: Record<Exclude<AttentionReason, null>, {
 }> = {
   requires_invoicing: {
     label: 'Requires Invoicing',
-    badgeClass: 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200',
+    badgeClass: 'bg-[rgba(245,158,11,0.14)] text-[#92400E] border border-[rgba(245,158,11,0.28)] dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800',
     icon: FileText,
     primaryAction: 'Schedule another visit',
     primaryIcon: CalendarPlus,
     secondaryAction: 'Mark Invoiced',
     secondaryIcon: Check,
-    requiresConfirm: true, // Lifecycle change: completed -> invoiced
+    requiresConfirm: true,
   },
   on_hold: {
     label: 'On Hold',
-    badgeClass: 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200',
+    badgeClass: 'bg-[rgba(245,158,11,0.14)] text-[#92400E] border border-[rgba(245,158,11,0.28)] dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800',
     icon: PauseCircle,
     primaryAction: 'Schedule another visit',
     primaryIcon: CalendarPlus,
     secondaryAction: 'Resume',
     secondaryIcon: Play,
-    requiresConfirm: false, // Just clears openSubStatus, no lifecycle change
+    requiresConfirm: false,
   },
   overdue: {
     label: 'Overdue',
-    badgeClass: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
+    badgeClass: 'bg-[rgba(220,38,38,0.12)] text-[#B91C1C] border border-[rgba(220,38,38,0.25)] dark:bg-red-950/40 dark:text-red-400 dark:border-red-800',
     icon: AlertCircle,
     primaryAction: 'Reschedule',
     primaryIcon: Calendar,
     secondaryAction: 'Unschedule',
     secondaryIcon: CalendarMinus,
-    requiresConfirm: false, // Unschedule is reversible, no lifecycle change
+    requiresConfirm: false,
   },
 };
 
@@ -501,7 +501,7 @@ function OfficeActionsStrip({
   return (
     <>
       <div
-        className="mb-4 rounded-lg border-2 border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/30 p-4"
+        className="mb-4 rounded-md border border-amber-200 bg-amber-50/80 dark:border-amber-800 dark:bg-amber-950/20 px-4 py-3"
         data-testid="office-actions-strip"
       >
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -512,10 +512,10 @@ function OfficeActionsStrip({
               <span className="font-semibold text-amber-900 dark:text-amber-100">
                 Office Action Required
               </span>
-              <Badge className={cn("text-xs", config.badgeClass)}>
-                <IconComponent className="h-3 w-3 mr-1" />
+              <span className={cn("inline-flex items-center rounded-full px-2.5 h-6 text-xs font-medium gap-1", config.badgeClass)}>
+                <IconComponent className="h-3 w-3" />
                 {config.label}
-              </Badge>
+              </span>
               {/* Compact detail text - reason-specific context */}
               {detailText && (
                 <span className="text-sm text-muted-foreground">
@@ -1641,7 +1641,7 @@ export default function JobDetailPage() {
           TOP SECTION — Unified Meta Card (3-column grid)
           Left: Job Identity | Middle: Visits | Right: Status Stack
           ================================================================ */}
-      <div className="rounded-lg border bg-card shadow-sm overflow-hidden mb-4" data-testid="card-top-meta">
+      <div className="rounded-md border bg-card shadow-[0_1px_2px_rgba(0,0,0,0.05)] overflow-hidden mb-4" data-testid="card-top-meta">
         <div className="grid grid-cols-1 lg:grid-cols-[2fr_1.5fr_1fr]">
           {/* LEFT COLUMN — Job Identity */}
           <div className="[&_.shadcn-card]:border-0 [&_.shadcn-card]:shadow-none [&_.shadcn-card]:rounded-none">
