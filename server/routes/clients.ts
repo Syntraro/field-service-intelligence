@@ -378,7 +378,7 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
 router.post("/quick-create", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   const userId = req.user.id;
-  const { companyName } = req.body;
+  const { companyName, contactName, address, city, province, postalCode } = req.body;
 
   if (!companyName?.trim()) {
     throw createError(400, "Company name is required");
@@ -390,16 +390,19 @@ router.post("/quick-create", requireRole(MANAGER_ROLES), asyncHandler(async (req
     throw createError(403, limitCheck.reason || "Subscription limit reached");
   }
 
-  // Create minimal client with needsDetails=true
+  // Determine if address fields were provided (reduces needsDetails flag)
+  const hasAddress = !!(address?.trim() || city?.trim());
+
+  // Create client — sets needsDetails=true only when address is missing
   const clientData = {
     parentCompanyId: null,
     companyName: companyName.trim(),
     location: companyName.trim(),
-    address: null,
-    city: null,
-    province: null,
-    postalCode: null,
-    contactName: null,
+    address: address?.trim() || null,
+    city: city?.trim() || null,
+    province: province?.trim() || null,
+    postalCode: postalCode?.trim() || null,
+    contactName: contactName?.trim() || null,
     email: null,
     phone: null,
     roofLadderCode: null,
@@ -408,7 +411,7 @@ router.post("/quick-create", requireRole(MANAGER_ROLES), asyncHandler(async (req
     inactive: false,
     nextDue: new Date("9999-12-31").toISOString(),
     billWithParent: true,
-    needsDetails: true,
+    needsDetails: !hasAddress,
   };
 
   const client = await storage.createClient(companyId, userId, clientData);

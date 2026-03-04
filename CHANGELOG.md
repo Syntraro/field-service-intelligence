@@ -25,6 +25,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Files (new)**: `server/lib/events.ts`, `server/lib/attentionRules.ts`, `server/storage/events.ts`, `server/storage/attention.ts`, `server/routes/activity.ts`, `server/routes/attention.ts`, `migrations/2026_03_04_events_and_attention_items.sql`, `docs/EVENT_LOG_ATTENTION_QUEUE.md`
 - **Files (modified)**: `shared/schema.ts` (2 new tables), `server/routes/index.ts` (register routes), `server/routes/jobs.ts` (logEvent + recompute), `server/routes/calendar.ts` (logEvent + recompute), `server/routes/invoices.ts` (logEvent), `server/routes/clients.ts` (logEvent), `server/routes/quotes.ts` (logEvent), `client/src/pages/Dashboard.tsx` (server-backed activity + attention counts)
 
+#### Quick Create Drawer Fixes — Client fields, plan limit UX, searchable pickers (2026-03-04)
+- **Quick Create Client — field reorder + address**: Form now shows Company Name → Street Address → City + Province/State (2-col) → Postal/ZIP (half-width) → Contact Name (optional). Address fields passed to server via updated `POST /api/clients/quick-create` endpoint. `needsDetails` flag set to `false` when address is provided.
+- **Plan limit graceful handling**: Client form checks `GET /api/subscriptions/can-add-location` on mount. When at limit: Create button disabled, inline amber warning with location count and "Manage Locations" link displayed. No surprise toast errors.
+- **Searchable client/location picker (Invoice + Quote)**: Replaced Select dropdown with Command+Popover combobox for client/location selection in Invoice and Quote quick create forms. Search matches on companyName, location, city, and address. Shows location + city as secondary line.
+- **New Job picker verified**: QuickAddJobDialog already uses Command+Popover searchable picker — no changes needed.
+- **Files (modified)**: `client/src/components/QuickCreateDrawer.tsx` (rewritten), `server/routes/clients.ts` (quick-create accepts address fields)
+
 ### Changed
 
 #### Actionable Dashboard + Activity Feed + Smart Actions + Quick Create + List Polish (2026-03-04)
