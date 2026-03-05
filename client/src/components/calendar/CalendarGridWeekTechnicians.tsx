@@ -111,7 +111,6 @@ function TechJobCard({
       densityStyle="py-1 px-1.5"
       technicians={allTechnicians}
       timeFormat={timeFormat}
-      showQuickActions={false}
       itemKind={isTask ? "task" : "visit"}
     />
   );

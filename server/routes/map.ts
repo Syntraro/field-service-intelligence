@@ -86,7 +86,7 @@ router.get(
         ORDER BY lp.last_seen_at DESC
       `),
 
-      // 2) Active visits for the day (timezone-aware boundaries)
+      // 2) Active visits for the day (timezone-aware boundaries, includes visits with missing coords)
       db.execute(sql`
         SELECT
           jv.id AS "visitId",
@@ -94,6 +94,7 @@ router.get(
           cl.company_name AS "locationName",
           jv.scheduled_start AS "scheduledStart",
           jv.scheduled_end AS "scheduledEnd",
+          COALESCE(jv.estimated_duration_minutes, 60) AS "durationMinutes",
           cl.lat,
           cl.lng,
           jv.status,
@@ -117,6 +118,7 @@ router.get(
           cl.company_name AS "locationName",
           j.scheduled_start AS "scheduledStart",
           j.scheduled_end AS "scheduledEnd",
+          60 AS "durationMinutes",
           cl.lat,
           cl.lng,
           j.status,
@@ -163,30 +165,42 @@ router.get(
 
     // Build visits with risk flags (real visits + job fallbacks)
     const allRows = [...(visitRows.rows as any[]), ...(jobFallbackRows.rows as any[])];
-    const visits = allRows.map((v) => ({
-      visitId: v.visitId,
-      technicianId: v.technicianId || null,
-      locationName: v.locationName || "Unknown",
-      scheduledStart: v.scheduledStart,
-      scheduledEnd: v.scheduledEnd,
-      lat: v.lat,
-      lng: v.lng,
-      status: v.status,
-      source: v.source || "visit",
-      risk: riskMap.get(v.visitId) || {},
-    }));
+    const visits = allRows.map((v) => {
+      const durationMinutes = Number(v.durationMinutes) || 60;
+      // Compute scheduledEnd if missing: scheduledStart + durationMinutes
+      let scheduledEnd = v.scheduledEnd;
+      if (!scheduledEnd && v.scheduledStart) {
+        scheduledEnd = new Date(new Date(v.scheduledStart).getTime() + durationMinutes * 60_000).toISOString();
+      }
+      return {
+        visitId: v.visitId,
+        technicianId: v.technicianId || null,
+        locationName: v.locationName || "Unknown",
+        scheduledStart: v.scheduledStart,
+        scheduledEnd,
+        durationMinutes,
+        lat: v.lat ?? null,
+        lng: v.lng ?? null,
+        status: v.status,
+        source: v.source || "visit",
+        risk: riskMap.get(v.visitId) || {},
+      };
+    });
 
     const jobFallbackCount = (jobFallbackRows.rows as any[]).length;
+    const visitsWithCoords = visits.filter((v) => v.lat && v.lng).length;
 
     // Dev debug logging
     if (process.env.NODE_ENV !== "production") {
+      const sample = visits.slice(0, 3).map((v) => ({ id: v.visitId, start: v.scheduledStart, src: v.source }));
       console.log(
         `[MAP /day] company=${companyId} date=${dateStr} tz=${tz}`,
         `bounds=[${start.toISOString()} .. ${end.toISOString()})`,
         `techs=${(techRows.rows as any[]).length}`,
-        `visits=${(visitRows.rows as any[]).length}`,
+        `visitsTotal=${visits.length} withCoords=${visitsWithCoords} missingCoords=${visits.length - visitsWithCoords}`,
         `jobFallback=${jobFallbackCount}`,
         `unassigned=${visits.filter((v) => !v.technicianId).length}`,
+        `sample=`, sample,
       );
     }
 
@@ -195,7 +209,12 @@ router.get(
       timezone: tz,
       technicians: techRows.rows,
       visits,
-      meta: { jobFallbackCount },
+      meta: {
+        jobFallbackCount,
+        visitsTotal: visits.length,
+        visitsWithCoords,
+        visitsMissingCoords: visits.length - visitsWithCoords,
+      },
     });
   }),
 );

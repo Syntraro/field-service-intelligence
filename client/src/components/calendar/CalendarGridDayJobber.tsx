@@ -555,7 +555,7 @@ export function CalendarGridDayJobber({
   };
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex flex-col flex-1 min-h-0">
       {/* DEV-only business hours badge */}
       {process.env.NODE_ENV === 'development' && devBusinessHoursBadge && (
         <div className="bg-yellow-100 border-b border-yellow-300 px-2 py-1 text-xs font-mono text-yellow-800 shrink-0">

@@ -8,6 +8,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### Calendar Day View: Full-Height, All-Day Lane, Resize Polish, Card Cleanup (2026-03-05)
+- **Day view full-height layout**: Changed CardContent to `flex flex-col`, view wrappers and grid roots to `flex-1 min-h-0` instead of `h-full`. Creates a clean flex chain from route → Card → grid → scroll container so day grids fill available viewport height.
+  - Files: `client/src/pages/Calendar.tsx`, `client/src/components/calendar/CalendarGridDayJobber.tsx`, `client/src/components/calendar/CalendarGridDayRows.tsx`
+- **Dedicated All-Day lane in Day Rows**: Moved all-day/anytime items from under the technician name into a separate 80px sticky column between the tech label and the timed grid. Added `RowAllDayDropZone` with `allday|{techId}|{date}` droppable ID (same format as Day Columns) so existing DnD handler supports drag between all-day and timed slots.
+  - Files: `client/src/components/calendar/CalendarGridDayRows.tsx`
+- **Suppress modal after resize end**: Added `lastResizeEndedAtRef` to both `ResizableJobCard` (columns) and `DraggableEventBlock` (rows). Click handlers now suppress for 250ms after resize end, matching existing drag-end suppression pattern.
+  - Root cause: `setIsResizing(false)` fires before the browser dispatches the click event from pointer-up.
+  - Files: `client/src/components/calendar/ResizableJobCard.tsx`, `client/src/components/calendar/CalendarGridDayRows.tsx`
+- **Faster resize in Day Rows**: Added `requestAnimationFrame` throttle to `DraggableEventBlock`'s horizontal resize (same pattern already used in `ResizableJobCard`). Added `transition-none` during resize. Flush pending rAF on resize end and cleanup on unmount.
+  - Files: `client/src/components/calendar/CalendarGridDayRows.tsx`
+- **Removed Unschedule/Reschedule shortcuts from all cards**: Removed quick-action hover buttons (CalendarIcon + RotateCcw) from `JobCard`. Removed `isHovered` state, handlers, `showQuickActions` prop, and unused `Calendar`/`RotateCcw` icon imports. Users click the card to open details instead.
+  - Files: `client/src/components/calendar/JobCard.tsx`, `client/src/components/calendar/ResizableJobCard.tsx`, `client/src/components/calendar/CalendarGridDayRows.tsx`, `client/src/components/calendar/CalendarGridWeekTechnicians.tsx`
+
+#### Live Map Bugfix — Missing Visits, Default Duration, Z-Index (2026-03-05)
+- **Visits with missing coordinates shown in panel**: Visits without lat/lng are still rendered in the dispatch panel under their tech/unassigned group, with an amber "No coords" badge. Pan-to-map click is disabled with tooltip "Add address/lat-lng to map this visit". Map markers are still filtered to coords-only.
+  - Files: `client/src/pages/LiveMapPage.tsx`
+- **Default duration 60 minutes**: Server now returns `durationMinutes` (COALESCE to 60) for both visit and job-fallback queries. Computes `scheduledEnd` from `scheduledStart + durationMinutes` when missing.
+  - Files: `server/routes/map.ts`
+- **Enhanced meta counts**: Response `meta` now includes `visitsTotal`, `visitsWithCoords`, `visitsMissingCoords` for client diagnostics.
+  - Files: `server/routes/map.ts`
+- **Technician filter popover z-index fix**: Changed `PopoverContent` to `z-[9999]` so it renders above Leaflet map's stacking context.
+  - Root cause: Leaflet creates high z-index stacking contexts; Radix Portal's default z-index was insufficient.
+  - Files: `client/src/pages/LiveMapPage.tsx`
+
 #### Calendar Day View Fixes: Full-Height Layout, Click-After-Drag, Rows Parity, Smoother Resize (2026-03-05)
 - **Day view fills available space**: Added `min-h-0` to root and scroll containers in both `CalendarGridDayJobber` and `CalendarGridDayRows`. Without `min-h-0`, flex children default to `min-height: auto`, preventing them from shrinking below content size.
   - Files: `client/src/components/calendar/CalendarGridDayJobber.tsx`, `client/src/components/calendar/CalendarGridDayRows.tsx`

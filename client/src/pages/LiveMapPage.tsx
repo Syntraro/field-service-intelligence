@@ -53,6 +53,7 @@ interface MapVisit {
   locationName: string;
   scheduledStart: string | null;
   scheduledEnd: string | null;
+  durationMinutes?: number;
   lat: string | null;
   lng: string | null;
   status: string;
@@ -64,12 +65,25 @@ interface MapVisit {
   };
 }
 
+/** Helper: does this visit have usable map coordinates? */
+function hasCoords(v: MapVisit): boolean {
+  if (!v.lat || !v.lng) return false;
+  const lat = parseFloat(v.lat);
+  const lng = parseFloat(v.lng);
+  return !isNaN(lat) && !isNaN(lng);
+}
+
 interface MapDayData {
   date: string;
   timezone?: string;
   technicians: MapTechnician[];
   visits: MapVisit[];
-  meta?: { jobFallbackCount?: number };
+  meta?: {
+    jobFallbackCount?: number;
+    visitsTotal?: number;
+    visitsWithCoords?: number;
+    visitsMissingCoords?: number;
+  };
 }
 
 // ============================================================================
@@ -248,7 +262,7 @@ function TechnicianFilterPopover({
           }
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-64 p-2" align="end">
+      <PopoverContent className="w-64 p-2 z-[9999]" align="end">
         {/* Search */}
         <Input
           placeholder="Search technicians..."
@@ -396,36 +410,45 @@ function DispatchPanel({
                 )}
               </div>
 
-              {!isCollapsed && techVisits.map((visit, vi) => (
-                <div
-                  key={visit.visitId}
-                  className="flex items-center gap-2 px-3 py-1.5 pl-8 border-b border-dashed cursor-pointer hover:bg-muted/30 text-xs"
-                  onClick={() => onClickVisit(visit)}
-                >
-                  <span
-                    className="w-4 h-4 rounded-full text-[9px] font-bold flex items-center justify-center text-white shrink-0"
-                    style={{ backgroundColor: tc?.color || "#6b7280" }}
+              {!isCollapsed && techVisits.map((visit, vi) => {
+                const visitHasCoords = hasCoords(visit);
+                return (
+                  <div
+                    key={visit.visitId}
+                    className={`flex items-center gap-2 px-3 py-1.5 pl-8 border-b border-dashed text-xs ${
+                      visitHasCoords ? 'cursor-pointer hover:bg-muted/30' : 'cursor-default'
+                    }`}
+                    onClick={() => visitHasCoords && onClickVisit(visit)}
+                    title={!visitHasCoords ? "Add address/lat-lng to map this visit" : undefined}
                   >
-                    {vi + 1}
-                  </span>
-                  <div className="flex-1 min-w-0">
-                    <div className="truncate font-medium">
-                      {visit.locationName}
-                      {visit.source === "job_fallback" && (
-                        <span className="text-amber-500 ml-1" title="From jobs table (no visit record)">*</span>
-                      )}
+                    <span
+                      className="w-4 h-4 rounded-full text-[9px] font-bold flex items-center justify-center text-white shrink-0"
+                      style={{ backgroundColor: tc?.color || "#6b7280" }}
+                    >
+                      {vi + 1}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <div className="truncate font-medium">
+                        {visit.locationName}
+                        {visit.source === "job_fallback" && (
+                          <span className="text-amber-500 ml-1" title="From jobs table (no visit record)">*</span>
+                        )}
+                      </div>
+                      <div className="text-muted-foreground">
+                        {formatTime(visit.scheduledStart)}
+                        {visit.scheduledEnd ? ` – ${formatTime(visit.scheduledEnd)}` : ""}
+                      </div>
                     </div>
-                    <div className="text-muted-foreground">
-                      {formatTime(visit.scheduledStart)}
-                      {visit.scheduledEnd ? ` – ${formatTime(visit.scheduledEnd)}` : ""}
-                    </div>
+                    {!visitHasCoords && (
+                      <Badge variant="outline" className="text-[9px] px-1 py-0 h-3.5 text-amber-600 border-amber-300">No coords</Badge>
+                    )}
+                    <RiskBadges risk={visit.risk} />
+                    {visit.status === "completed" && (
+                      <Badge variant="secondary" className="text-[9px] px-1 py-0 h-3.5">Done</Badge>
+                    )}
                   </div>
-                  <RiskBadges risk={visit.risk} />
-                  {visit.status === "completed" && (
-                    <Badge variant="secondary" className="text-[9px] px-1 py-0 h-3.5">Done</Badge>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
           );
         })}
@@ -448,25 +471,34 @@ function DispatchPanel({
               <Badge variant="outline" className="text-[10px] px-1 h-4">{unassignedVisits.length}</Badge>
             </div>
 
-            {!collapsed.has("__unassigned__") && unassignedVisits.map((visit) => (
-              <div
-                key={visit.visitId}
-                className="flex items-center gap-2 px-3 py-1.5 pl-8 border-b border-dashed cursor-pointer hover:bg-muted/30 text-xs"
-                onClick={() => onClickVisit(visit)}
-              >
-                <span className="w-4 h-4 rounded-full text-[9px] font-bold flex items-center justify-center text-white bg-gray-400 shrink-0">
-                  ?
-                </span>
-                <div className="flex-1 min-w-0">
-                  <div className="truncate font-medium">{visit.locationName}</div>
-                  <div className="text-muted-foreground">
-                    {formatTime(visit.scheduledStart)}
-                    {visit.scheduledEnd ? ` – ${formatTime(visit.scheduledEnd)}` : ""}
+            {!collapsed.has("__unassigned__") && unassignedVisits.map((visit) => {
+              const visitHasCoords = hasCoords(visit);
+              return (
+                <div
+                  key={visit.visitId}
+                  className={`flex items-center gap-2 px-3 py-1.5 pl-8 border-b border-dashed text-xs ${
+                    visitHasCoords ? "cursor-pointer hover:bg-muted/30" : "cursor-default opacity-75"
+                  }`}
+                  onClick={() => visitHasCoords && onClickVisit(visit)}
+                  title={!visitHasCoords ? "Add address/lat-lng to map this visit" : undefined}
+                >
+                  <span className="w-4 h-4 rounded-full text-[9px] font-bold flex items-center justify-center text-white bg-gray-400 shrink-0">
+                    ?
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="truncate font-medium">{visit.locationName}</div>
+                    <div className="text-muted-foreground">
+                      {formatTime(visit.scheduledStart)}
+                      {visit.scheduledEnd ? ` – ${formatTime(visit.scheduledEnd)}` : ""}
+                    </div>
                   </div>
+                  {!visitHasCoords && (
+                    <Badge variant="outline" className="text-[9px] px-1 py-0 h-3.5 text-amber-600 border-amber-300">No coords</Badge>
+                  )}
+                  <RiskBadges risk={visit.risk} />
                 </div>
-                <RiskBadges risk={visit.risk} />
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 

@@ -64,6 +64,8 @@ export function ResizableJobCard({
   // rAF throttle: store latest computed duration in ref, flush via rAF
   const pendingDurationRef = useRef<number | null>(null);
   const rafIdRef = useRef<number>(0);
+  // Suppress click within 250ms of resize end to prevent opening modal
+  const lastResizeEndedAtRef = useRef<number>(0);
 
   const startMinutes = getAssignmentStartMinutes(assignment);
   const startOffsetWithinHour = startMinutes % 60;
@@ -147,6 +149,7 @@ export function ResizableJobCard({
       }
 
       setIsResizing(false);
+      lastResizeEndedAtRef.current = Date.now();
       (e.target as HTMLElement).releasePointerCapture(e.pointerId);
 
       if (hitMidnightLimit) {
@@ -179,13 +182,15 @@ export function ResizableJobCard({
         width: `calc(${widthPercent}% - 2px)`,
       }}
     >
-      {/* Use shared JobCard for consistent styling, hover preview, and quick actions */}
       <JobCard
         id={assignment.id}
         client={client}
         assignment={assignment}
         inCalendar
-        onClick={onClick}
+        onClick={() => {
+          if (Date.now() - lastResizeEndedAtRef.current < 250) return;
+          onClick();
+        }}
         onReschedule={onReschedule}
         onUnschedule={onUnschedule}
         isCompleted={isCompleted}
@@ -196,7 +201,6 @@ export function ResizableJobCard({
         cardHeight={cardHeight}
         technicians={technicians}
         timeFormat={timeFormat}
-        showQuickActions={!isResizing}
       />
 
       {/* Resize handle at bottom - disabled while saving */}

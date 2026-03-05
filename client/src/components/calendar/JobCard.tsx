@@ -14,8 +14,7 @@
  * Created 2026-01-29: Unified component for visual consistency across all job cards.
  */
 
-import { useState } from "react";
-import { Calendar as CalendarIcon, RotateCcw, ClipboardList } from "lucide-react";
+import { ClipboardList } from "lucide-react";
 import { DraggableClient } from "./DraggableClient";
 import { EventPreviewPopover } from "./EventPreviewPopover";
 import { TechnicianColor } from "./calendarUtils";
@@ -65,8 +64,6 @@ export interface JobCardProps {
   isPastMonth?: boolean;
   /** Raw item from API for diagnostics (for unscheduled cards) */
   rawItem?: any;
-  /** Whether to show quick action buttons on hover (default: true for calendar, false for unscheduled) */
-  showQuickActions?: boolean;
   /** Item kind for visual distinction: "visit" (default) or "task" (Phase 9 of calendar rewrite) */
   itemKind?: "visit" | "task";
 }
@@ -96,38 +93,12 @@ export function JobCard({
   isOffMonth,
   isPastMonth,
   rawItem,
-  showQuickActions,
   itemKind = "visit",
 }: JobCardProps) {
-  const [isHovered, setIsHovered] = useState(false);
-
-  // Default: show quick actions for calendar cards, hide for unscheduled
-  const shouldShowQuickActions = showQuickActions ?? inCalendar;
-  const quickActionsVisible = isHovered && !isSaving && shouldShowQuickActions;
-
   // Build event data for preview popover
   const eventData = assignment || rawItem || {
     summary,
     jobNumber: assignment?.jobNumber,
-  };
-
-  // Handle unschedule click
-  const handleUnschedule = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    const version = assignment?.version ?? rawItem?.version;
-    if (onUnschedule && !isSaving && version !== undefined) {
-      onUnschedule(id, version);
-    }
-  };
-
-  // Handle reschedule click
-  const handleReschedule = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (onReschedule) {
-      onReschedule();
-    } else if (onClick) {
-      onClick();
-    }
   };
 
   // Phase 9: Task items get distinct styling
@@ -150,11 +121,7 @@ export function JobCard({
       isOverdue={isOverdue}
       timeFormat={timeFormat}
     >
-      <div
-        className="relative group"
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
-      >
+      <div className="relative group">
         {/* Phase 9: Task icon badge */}
         {isTask && inCalendar && (
           <div className="absolute top-0.5 left-0.5 z-10">
@@ -181,34 +148,6 @@ export function JobCard({
           timeFormat={timeFormat}
           draggable={!isTask}
         />
-
-        {/* Quick action icons - visible on hover */}
-        {quickActionsVisible && (
-          <div className="absolute top-0.5 right-0.5 flex gap-0.5 z-20">
-            {/* Reschedule */}
-            <button
-              onClick={handleReschedule}
-              onPointerDown={(e) => e.stopPropagation()}
-              onMouseDown={(e) => e.stopPropagation()}
-              className="p-0.5 rounded bg-white/90 text-muted-foreground hover:bg-[rgba(47,125,50,0.12)] hover:text-[#2F7D32] transition-colors"
-              title="Reschedule"
-            >
-              <CalendarIcon className="h-3 w-3" />
-            </button>
-            {/* Unschedule */}
-            {onUnschedule && (
-              <button
-                onClick={handleUnschedule}
-                onPointerDown={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-                className="p-0.5 rounded bg-white/90 text-muted-foreground hover:bg-orange-100 hover:text-orange-600 transition-colors"
-                title="Unschedule"
-              >
-                <RotateCcw className="h-3 w-3" />
-              </button>
-            )}
-          </div>
-        )}
       </div>
     </EventPreviewPopover>
   );

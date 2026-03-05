@@ -38,6 +38,7 @@ const HOUR_WIDTH = 100; // px per hour
 const ROW_HEIGHT = 56; // px per technician row
 const HEADER_HEIGHT = 32; // px for time header
 const TECH_LABEL_WIDTH = 120; // px for technician name column
+const ALLDAY_COL_WIDTH = 80; // px for all-day lane column
 const PX_PER_MINUTE = HOUR_WIDTH / 60;
 
 // ============================================================================
@@ -96,6 +97,28 @@ function RowDropZone({ technicianId, hour, minute, currentDate }: {
 }
 
 // ============================================================================
+// RowAllDayDropZone — droppable all-day lane per technician in row layout
+// ============================================================================
+
+function RowAllDayDropZone({ technicianId, dateKey, children }: {
+  technicianId: string;
+  dateKey: string;
+  children: React.ReactNode;
+}) {
+  // Same ID format as DayJobber AllDayDropZone for DnD handler compatibility
+  const id = `allday|${technicianId}|${dateKey}`;
+  const { setNodeRef, isOver } = useDroppable({ id });
+  return (
+    <div
+      ref={setNodeRef}
+      className={`h-full flex flex-col gap-0.5 ${isOver ? 'bg-primary/20 border border-primary rounded' : ''}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+// ============================================================================
 // DraggableEventBlock — horizontal event with drag + resize
 // ============================================================================
 
@@ -135,10 +158,13 @@ function DraggableEventBlock({ event, client, techColor, onClick, isSaving, time
     }
   }, [isDragging]);
 
-  // Horizontal resize state
+  // Horizontal resize state with rAF throttle for smooth performance
   const [isResizing, setIsResizing] = useState(false);
   const [tempDuration, setTempDuration] = useState<number | null>(null);
   const resizeRef = useRef<{ x: number; duration: number } | null>(null);
+  const pendingDurationRef = useRef<number | null>(null);
+  const rafIdRef = useRef<number>(0);
+  const lastResizeEndedAtRef = useRef<number>(0);
 
   const handleResizeStart = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
@@ -154,12 +180,29 @@ function DraggableEventBlock({ event, client, techColor, onClick, isSaving, time
     const deltaMinutes = Math.round(deltaX / PX_PER_MINUTE);
     const snapped = Math.round(deltaMinutes / 15) * 15;
     const maxDuration = Math.max(15, 1440 - startMinutes);
-    setTempDuration(Math.max(15, Math.min(maxDuration, resizeRef.current.duration + snapped)));
+    const newDuration = Math.max(15, Math.min(maxDuration, resizeRef.current.duration + snapped));
+    // rAF throttle: flush state update once per frame for smooth resize
+    pendingDurationRef.current = newDuration;
+    if (!rafIdRef.current) {
+      rafIdRef.current = requestAnimationFrame(() => {
+        if (pendingDurationRef.current !== null) {
+          setTempDuration(pendingDurationRef.current);
+        }
+        rafIdRef.current = 0;
+      });
+    }
   }, [isResizing, startMinutes]);
 
   const handleResizeEnd = useCallback((e: React.PointerEvent) => {
     if (!isResizing) return;
+    // Flush pending rAF before processing final duration
+    if (rafIdRef.current) { cancelAnimationFrame(rafIdRef.current); rafIdRef.current = 0; }
+    if (pendingDurationRef.current !== null) {
+      setTempDuration(pendingDurationRef.current);
+      pendingDurationRef.current = null;
+    }
     setIsResizing(false);
+    lastResizeEndedAtRef.current = Date.now();
     (e.target as HTMLElement).releasePointerCapture(e.pointerId);
     if (tempDuration !== null && tempDuration !== originalDuration && onResize) {
       onResize(event.assignmentId, tempDuration, event.raw);
@@ -167,6 +210,11 @@ function DraggableEventBlock({ event, client, techColor, onClick, isSaving, time
     setTempDuration(null);
     resizeRef.current = null;
   }, [isResizing, tempDuration, originalDuration, onResize, event.assignmentId, event.raw]);
+
+  // Cancel pending rAF on unmount
+  useEffect(() => {
+    return () => { if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current); };
+  }, []);
 
   const displayDuration = tempDuration ?? originalDuration;
   const left = (startMinutes / 60) * HOUR_WIDTH;
@@ -180,11 +228,12 @@ function DraggableEventBlock({ event, client, techColor, onClick, isSaving, time
       ref={setDragRef}
       {...attributes}
       {...(isResizing ? {} : listeners)}
-      className={`absolute top-1 select-none ${isDragging ? 'opacity-70 z-50 shadow-lg' : 'z-30'}`}
+      className={`absolute top-1 select-none ${isResizing ? 'transition-none' : ''} ${isDragging ? 'opacity-70 z-50 shadow-lg' : 'z-30'}`}
       style={{ left, width, height: cardHeight, ...dragStyle }}
       onClick={(e) => {
         if (isDragging || isResizing) return;
         if (Date.now() - lastDragEndedAtRef.current < 250) return;
+        if (Date.now() - lastResizeEndedAtRef.current < 250) return;
         e.stopPropagation();
         onClick();
       }}
@@ -204,7 +253,6 @@ function DraggableEventBlock({ event, client, techColor, onClick, isSaving, time
         cardHeight={cardHeight}
         technicians={technicians}
         timeFormat={timeFormat}
-        showQuickActions={!isResizing}
         itemKind={isTask ? "task" : "visit"}
       />
 
@@ -270,7 +318,7 @@ const MemoizedTechRow = memo(function TechRow({
 
   return (
     <div className="flex border-b" style={{ minHeight: ROW_HEIGHT }}>
-      {/* Tech label — sticky left, enhanced with compact summary (Calendar Improvement 2026-03-05) */}
+      {/* Tech label — sticky left */}
       <div
         className="sticky left-0 z-20 bg-background border-r flex flex-col justify-center gap-0 px-2 shrink-0"
         style={{ width: TECH_LABEL_WIDTH }}
@@ -282,31 +330,35 @@ const MemoizedTechRow = memo(function TechRow({
           <span className="text-xs font-medium truncate">{technicianName}</span>
         </div>
         <TechLaneHeader summary={techSummary} compact />
-        {/* All-day / Anytime chips */}
-        {allDayEvents.length > 0 && (
-          <div className="flex flex-wrap gap-0.5 mt-0.5">
-            {allDayEvents.slice(0, 2).map(event => {
-              const client = findClientByEvent(clients, event);
-              const isTask = (event as any).kind === "task";
-              return (
-                <div
-                  key={event.assignmentId}
-                  className={`text-[9px] px-1 rounded truncate cursor-pointer max-w-[110px] ${
-                    isTask ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300'
-                      : 'bg-primary/10 text-primary'
-                  }`}
-                  onClick={(e) => { e.stopPropagation(); handleClientClick(client, event); }}
-                  title={`Anytime: ${client?.companyName || (isTask ? event.raw?.title : 'Unknown')}`}
-                >
-                  {client?.companyName || (isTask ? event.raw?.title : 'Anytime')}
-                </div>
-              );
-            })}
-            {allDayEvents.length > 2 && (
-              <span className="text-[9px] text-muted-foreground">+{allDayEvents.length - 2}</span>
-            )}
-          </div>
-        )}
+      </div>
+
+      {/* All-day cell — sticky left after tech label, droppable for all-day/anytime items */}
+      <div
+        className="sticky z-20 bg-muted/10 border-r shrink-0 flex flex-col justify-center p-1 overflow-hidden"
+        style={{ left: TECH_LABEL_WIDTH, width: ALLDAY_COL_WIDTH }}
+      >
+        <RowAllDayDropZone technicianId={technicianId} dateKey={format(currentDate, "yyyy-MM-dd")}>
+          {allDayEvents.slice(0, 2).map(event => {
+            const client = findClientByEvent(clients, event);
+            const isTask = (event as any).kind === "task";
+            return (
+              <div
+                key={event.assignmentId}
+                className={`text-[9px] px-1 rounded truncate cursor-pointer ${
+                  isTask ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300'
+                    : 'bg-primary/10 text-primary'
+                }`}
+                onClick={(e) => { e.stopPropagation(); handleClientClick(client, event); }}
+                title={`Anytime: ${client?.companyName || (isTask ? event.raw?.title : 'Unknown')}`}
+              >
+                {client?.companyName || (isTask ? event.raw?.title : 'Anytime')}
+              </div>
+            );
+          })}
+          {allDayEvents.length > 2 && (
+            <span className="text-[9px] text-muted-foreground">+{allDayEvents.length - 2}</span>
+          )}
+        </RowAllDayDropZone>
       </div>
 
       {/* Timeline area */}
@@ -425,7 +477,7 @@ export function CalendarGridDayRows({
   }, [dateKey]);
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex flex-col flex-1 min-h-0">
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto">
         {/* Time header row — sticky top */}
         <div className="sticky top-0 z-30 flex bg-background border-b">
@@ -433,6 +485,13 @@ export function CalendarGridDayRows({
             className="sticky left-0 z-40 bg-background border-r shrink-0"
             style={{ width: TECH_LABEL_WIDTH, height: HEADER_HEIGHT }}
           />
+          {/* All-day header — sticky left after tech label */}
+          <div
+            className="sticky z-[35] bg-muted/30 border-r shrink-0 flex items-end justify-center pb-1 text-[10px] font-semibold text-muted-foreground"
+            style={{ left: TECH_LABEL_WIDTH, width: ALLDAY_COL_WIDTH, height: HEADER_HEIGHT }}
+          >
+            All Day
+          </div>
           <div className="flex" style={{ minWidth: HOURS_IN_DAY * HOUR_WIDTH }}>
             {Array.from({ length: HOURS_IN_DAY }, (_, hour) => (
               <div
