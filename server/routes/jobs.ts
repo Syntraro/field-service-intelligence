@@ -487,6 +487,17 @@ router.post("/:id/status", requireAuth, asyncHandler(async (req: AuthedRequest, 
     additionalUpdates.onHoldAt = null;
   }
 
+  // 2026-03-05: Rule C — When transitioning to 'completed', auto-complete all
+  // uncompleted visits so the job's visit history is clean.
+  let autoCompletedVisitCount = 0;
+  if (status === "completed" && fromStatus !== "completed") {
+    const completedVisits = await visitService.bulkCompleteVisits(companyId, req.params.id);
+    autoCompletedVisitCount = completedVisits.length;
+    // Also set closedAt/closedBy for consistency with close-job route
+    additionalUpdates.closedAt = new Date();
+    additionalUpdates.closedBy = userId || null;
+  }
+
   // Atomically update job status and create event in a single transaction
   const updated = await storage.updateJobStatusWithEvent(companyId, req.params.id, {
     fromStatus,
@@ -505,11 +516,11 @@ router.post("/:id/status", requireAuth, asyncHandler(async (req: AuthedRequest, 
     entityId: req.params.id,
     summary: `Job #${existing.jobNumber} → ${statusLabel}`,
     severity: status === "completed" ? "important" : "info",
-    meta: { jobNumber: existing.jobNumber, fromStatus, toStatus: status, openSubStatus },
+    meta: { jobNumber: existing.jobNumber, fromStatus, toStatus: status, openSubStatus, autoCompletedVisitCount },
   });
   recomputeAttentionForEntity(companyId, "job", req.params.id).catch(() => {});
 
-  res.json(updated);
+  res.json({ ...updated, autoCompletedVisitCount });
 }));
 
 /**
@@ -558,8 +569,11 @@ router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
   }
 
   // If auto-completing, bulk-complete visits before proceeding
+  // 2026-03-05: Track count for response (Rule C)
+  let autoCompletedVisitCount = 0;
   if (uncompletedVisits.length > 0 && autoCompleteOpenVisits) {
-    await visitService.bulkCompleteVisits(companyId, jobId);
+    const completed = await visitService.bulkCompleteVisits(companyId, jobId);
+    autoCompletedVisitCount = completed.length;
   }
 
   // Build actor for RBAC check
@@ -632,6 +646,7 @@ router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
     res.json({
       job: updatedJob,
       invoice: createdInvoice,
+      autoCompletedVisitCount,
     });
   } catch (error: any) {
     // Handle lifecycle errors

@@ -1283,6 +1283,8 @@ export default function JobDetailPage() {
   const { user } = useAuth();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showCreateInvoiceDialog, setShowCreateInvoiceDialog] = useState(false);
+  // 2026-03-05: Rule C — confirmation dialog when completing a job
+  const [showCompleteJobConfirm, setShowCompleteJobConfirm] = useState(false);
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [showActionRequiredModal, setShowActionRequiredModal] = useState(false);
   const [showScheduleVisitDialog, setShowScheduleVisitDialog] = useState(false);
@@ -1310,7 +1312,7 @@ export default function JobDetailPage() {
   const { teamMembers: allTechnicians } = useTechniciansDirectory();
 
   // Inline visits list for middle column
-  const { visits: allVisits, isLoading: visitsLoading } = useJobVisits(jobId || "", { enabled: !!jobId });
+  const { visits: allVisits, isLoading: visitsLoading, activeVisit, completedVisits } = useJobVisits(jobId || "", { enabled: !!jobId });
 
   // Sort visits: active first, then by scheduledStart descending (newest first)
   const sortedVisits = [...allVisits].sort((a, b) => {
@@ -1391,6 +1393,10 @@ export default function JobDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      // 2026-03-05: Rule C — completing a job auto-completes visits; refetch visit list
+      if (variables.status === "completed") {
+        queryClient.invalidateQueries({ queryKey: ["visits"] });
+      }
       const statusLabel = variables.status === "completed" ? "Marked Completed" :
                           variables.status === "open" ? "Reopened" :
                           variables.status === "invoiced" ? "Marked Invoiced" : "Updated Status";
@@ -1567,6 +1573,9 @@ export default function JobDetailPage() {
           toast({ title: "Error", description: error.message || "Failed to update status", variant: "destructive" });
         });
       }
+    } else if (newValue === "completed" && job.status !== "completed") {
+      // 2026-03-05: Rule C — show confirmation before completing job
+      setShowCompleteJobConfirm(true);
     } else {
       updateStatusMutation.mutate({ status: newValue, version: job.version });
     }
@@ -1704,13 +1713,11 @@ export default function JobDetailPage() {
             )}
           </div>
 
-          {/* MIDDLE COLUMN — Compact inline visits list */}
+          {/* MIDDLE COLUMN — Active Visit + Visit History (Jobber-style, 2026-03-05 Rule B) */}
           <div id="visits-section" className="lg:border-l flex flex-col" style={{ maxHeight: 'calc(100vh - 16rem)' }}>
-            {/* Header: visit count + schedule follow-up */}
+            {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b shrink-0">
-              <span className="text-sm font-semibold">
-                Visits {allVisits.length > 0 && `(${allVisits.length})`}
-              </span>
+              <span className="text-sm font-semibold">Visits</span>
               <Button
                 variant="ghost"
                 size="sm"
@@ -1723,57 +1730,91 @@ export default function JobDetailPage() {
               </Button>
             </div>
 
-            {/* Visit rows — collapsed to 3 by default, scrollable when expanded */}
-            <div className={cn(
-              "px-2 py-1",
-              showAllVisits && allVisits.length > 3 ? "overflow-y-auto flex-1" : ""
-            )}>
+            <div className="px-2 py-1 overflow-y-auto flex-1">
               {visitsLoading ? (
                 <div className="flex items-center justify-center py-4">
                   <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                 </div>
-              ) : allVisits.length === 0 ? (
-                <div className="text-center py-4 text-muted-foreground">
-                  <Calendar className="h-5 w-5 mx-auto mb-1 opacity-50" />
-                  <p className="text-xs">No visits scheduled</p>
-                </div>
               ) : (
                 <>
-                  {(showAllVisits ? sortedVisits : sortedVisits.slice(0, 3)).map((visit) => (
-                    <button
-                      key={visit.id}
-                      onClick={() => setSelectedVisitId(visit.id)}
-                      className={cn(
-                        "w-full text-left px-2 py-1.5 rounded hover:bg-accent/50 transition-colors flex items-center gap-2",
-                        !visit.isActive && "opacity-50"
-                      )}
-                      data-testid={`visit-row-${visit.id}`}
-                    >
-                      {/* Date/time */}
-                      <span className="text-[11px] font-medium truncate min-w-0 flex-1">
-                        {formatVisitDate(visit)}
+                  {/* Active Visit card */}
+                  <div className="mb-2">
+                    <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide px-2">
+                      Active Visit
+                    </span>
+                    {activeVisit ? (
+                      <button
+                        onClick={() => setSelectedVisitId(activeVisit.id)}
+                        className="w-full text-left px-2 py-2 rounded hover:bg-accent/50 transition-colors border border-border mt-1"
+                        data-testid="active-visit-card"
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] font-medium truncate flex-1">
+                            {formatVisitDate(activeVisit)}
+                          </span>
+                          <span className="text-[11px] text-muted-foreground truncate max-w-[80px] shrink-0">
+                            {getVisitTechName(activeVisit.assignedTechnicianId)}
+                          </span>
+                          <Badge className={cn("text-[9px] px-1.5 py-0 shrink-0 leading-tight", VISIT_STATUS_COLORS[activeVisit.status] || "")}>
+                            {VISIT_STATUS_LABELS[activeVisit.status] || activeVisit.status}
+                          </Badge>
+                        </div>
+                      </button>
+                    ) : (
+                      <div className="text-center py-3 text-muted-foreground mt-1">
+                        <Calendar className="h-4 w-4 mx-auto mb-1 opacity-50" />
+                        <p className="text-[11px]">No active visit</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Visit History — completed visits only (Rule B) */}
+                  {completedVisits.length > 0 && (
+                    <div className="mt-3">
+                      <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide px-2">
+                        Visit History ({completedVisits.length})
                       </span>
-                      {/* Tech name — truncated */}
-                      <span className="text-[11px] text-muted-foreground truncate max-w-[80px] shrink-0">
-                        {getVisitTechName(visit.assignedTechnicianId)}
-                      </span>
-                      {/* Status pill */}
-                      <Badge className={cn("text-[9px] px-1.5 py-0 shrink-0 leading-tight", VISIT_STATUS_COLORS[visit.status] || "")}>
-                        {VISIT_STATUS_LABELS[visit.status] || visit.status}
-                      </Badge>
-                    </button>
-                  ))}
-                  {/* Collapse toggle when more than 3 visits */}
-                  {sortedVisits.length > 3 && (
-                    <button
-                      onClick={() => setShowAllVisits(!showAllVisits)}
-                      className="w-full text-center text-[11px] text-primary hover:underline py-1.5"
-                      data-testid="toggle-show-all-visits"
-                    >
-                      {showAllVisits
-                        ? "Show less"
-                        : `Show all visits (${sortedVisits.length})`}
-                    </button>
+                      <div className="mt-1 space-y-0.5">
+                        {(showAllVisits ? completedVisits : completedVisits.slice(0, 3)).map((visit) => {
+                          const completedDate = visit.checkedOutAt
+                            ? new Date(visit.checkedOutAt)
+                            : visit.scheduledStart
+                              ? new Date(visit.scheduledStart)
+                              : visit.createdAt
+                                ? new Date(visit.createdAt)
+                                : null;
+                          return (
+                            <button
+                              key={visit.id}
+                              onClick={() => setSelectedVisitId(visit.id)}
+                              className="w-full text-left px-2 py-1.5 rounded hover:bg-accent/50 transition-colors"
+                              data-testid={`visit-row-${visit.id}`}
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="text-[11px] font-medium truncate flex-1">
+                                  {completedDate ? format(completedDate, "MMM d, yyyy") : "—"}
+                                </span>
+                                <span className="text-[11px] text-muted-foreground truncate max-w-[80px] shrink-0">
+                                  {getVisitTechName(visit.assignedTechnicianId)}
+                                </span>
+                              </div>
+                              <div className="text-[10px] text-muted-foreground mt-0.5">
+                                Completed{visit.checkedOutAt ? ` on ${format(new Date(visit.checkedOutAt), "MMM d · h:mm a")}` : ""}
+                              </div>
+                            </button>
+                          );
+                        })}
+                        {completedVisits.length > 3 && (
+                          <button
+                            onClick={() => setShowAllVisits(!showAllVisits)}
+                            className="w-full text-center text-[11px] text-primary hover:underline py-1.5"
+                            data-testid="toggle-show-all-visits"
+                          >
+                            {showAllVisits ? "Show less" : `Show all (${completedVisits.length})`}
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   )}
                 </>
               )}
@@ -2129,6 +2170,32 @@ export default function JobDetailPage() {
               data-testid={rescheduleConflict?.kind === 'empty' ? "button-replace-visit" : "button-complete-and-new"}
             >
               {rescheduleConflict?.kind === 'empty' ? "Yes, Replace Visit" : "Yes, Complete & Schedule New"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* 2026-03-05: Rule C — Confirmation dialog when completing a job */}
+      <AlertDialog open={showCompleteJobConfirm} onOpenChange={setShowCompleteJobConfirm}>
+        <AlertDialogContent data-testid="dialog-complete-job-confirm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Complete Job</AlertDialogTitle>
+            <AlertDialogDescription>
+              All uncompleted visits will be marked as completed. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel data-testid="button-cancel-complete-job">Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (job) {
+                  updateStatusMutation.mutate({ status: "completed", version: job.version });
+                }
+                setShowCompleteJobConfirm(false);
+              }}
+              data-testid="button-confirm-complete-job"
+            >
+              Yes, Complete Job
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

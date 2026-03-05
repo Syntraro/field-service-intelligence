@@ -42,7 +42,7 @@ export function useJobVisits(jobId: string, options: UseJobVisitsOptions = {}) {
   const visits = query.data || [];
 
   // Derived selectors (computed on each render, memoized)
-  const { currentEligibleVisit, upcomingVisits, historyVisits, eligibleVisits } = useMemo(() => {
+  const { currentEligibleVisit, upcomingVisits, historyVisits, eligibleVisits, activeVisit, completedVisits } = useMemo(() => {
     const now = new Date();
 
     // Eligible visits: isActive=true AND status NOT IN (completed, cancelled)
@@ -91,11 +91,25 @@ export function useJobVisits(jobId: string, options: UseJobVisitsOptions = {}) {
         return bCreated - aCreated;
       });
 
+    // 2026-03-05: Jobber-style active/completed split (Rule B).
+    // activeVisit = the single current working visit (not completed, not cancelled)
+    // completedVisits = only status='completed' visits, sorted newest first
+    const active = eligible[0] || null;
+    const completed = visits
+      .filter((v) => v.status === "completed")
+      .sort((a, b) => {
+        const aTime = a.checkedOutAt ? new Date(a.checkedOutAt).getTime() : a.scheduledStart ? new Date(a.scheduledStart).getTime() : 0;
+        const bTime = b.checkedOutAt ? new Date(b.checkedOutAt).getTime() : b.scheduledStart ? new Date(b.scheduledStart).getTime() : 0;
+        return bTime - aTime; // Newest first
+      });
+
     return {
       currentEligibleVisit: current,
       upcomingVisits: upcoming,
       historyVisits: history,
       eligibleVisits: eligible,
+      activeVisit: active,
+      completedVisits: completed,
     };
   }, [visits]);
 
@@ -118,6 +132,8 @@ export function useJobVisits(jobId: string, options: UseJobVisitsOptions = {}) {
     upcomingVisits,
     historyVisits,
     eligibleVisits,
+    activeVisit,
+    completedVisits,
 
     // Helpers
     refetchVisits,

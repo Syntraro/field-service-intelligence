@@ -796,13 +796,16 @@ export class CalendarRepository extends BaseRepository {
     // This is a valid status transition per JOB_STATUS_FLOW: completed -> open.
     // syncJobScheduleFromVisits only mirrors schedule fields, not status.
     if (existingJob.status === 'completed') {
+      // 2026-03-05: Rule D — Scheduling a visit on a completed job reopens it.
+      // Clear closedAt/closedBy so the job is fully active again.
       await db
         .update(jobs)
         .set({
           status: 'open',
-          openSubStatus: null, // Clear any sub-status
+          openSubStatus: null,
+          closedAt: null,
+          closedBy: null,
           updatedAt: new Date(),
-          // Note: version is already incremented by syncJobScheduleFromVisits
         })
         .where(and(eq(jobs.id, data.jobId), eq(jobs.companyId, companyId)));
 

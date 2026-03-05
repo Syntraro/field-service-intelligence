@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+#### Job Visit Lifecycle — Jobber-style Rules (2026-03-05)
+- **Rule B — Visit History shows completed only:** Job Detail "Visits" section now has "Active Visit" card + "Visit History" list (completed visits only, grouped newest-first with completion date/tech)
+- **Rule C — Close Job auto-completes visits:** When job status transitions to "completed" (via dropdown or close-job route), all uncompleted visits are automatically bulk-completed. Confirmation dialog added: "All uncompleted visits will be marked as completed."
+- **Rule D — Scheduling reopens completed job:** `scheduleJob()` now also clears `closedAt`/`closedBy` when reopening a completed job (previously only set status='open')
+- Server: `POST /api/jobs/:id/status` now auto-completes visits + sets `closedAt`/`closedBy` when transitioning to "completed" (`server/routes/jobs.ts`)
+- Server: `POST /api/jobs/:id/close` response now includes `autoCompletedVisitCount` field
+- Server: `scheduleJob()` clears `closedAt`/`closedBy` on reopen (`server/storage/calendar.ts`)
+- Client: `useJobVisits` hook adds `activeVisit` + `completedVisits` derived selectors (`client/src/hooks/useJobVisits.ts`)
+- Client: Job Detail visits section rewritten with Active Visit card + Visit History (completed only) (`client/src/pages/JobDetailPage.tsx`)
+- Client: "Complete Job" confirmation dialog added with warning about auto-completing visits
+
 ### Investigation
 
 #### Day View Live Diagnostic Report (2026-03-05)
