@@ -84,7 +84,7 @@ function RowDropZone({ technicianId, hour, minute, currentDate }: {
   return (
     <div
       ref={setNodeRef}
-      className={`absolute top-0 h-full pointer-events-auto ${isOver ? 'bg-primary/20 border border-primary z-50' : 'z-20'}`}
+      className={`absolute top-0 h-full pointer-events-none ${isOver ? 'bg-primary/20 border border-primary z-50' : 'z-10'}`}
       style={{
         width: '25%',
         left: `${(minute / 60) * 100}%`,
@@ -171,7 +171,7 @@ function DraggableEventBlock({ event, client, techColor, onClick, isSaving, time
       {...(isResizing ? {} : listeners)}
       className={`absolute top-1 rounded px-1.5 py-0.5 text-[11px] leading-tight cursor-grab truncate border shadow-sm select-none
         ${isSaving ? 'opacity-50 cursor-wait' : ''}
-        ${isDragging ? 'opacity-70 z-50 shadow-lg' : ''}
+        ${isDragging ? 'opacity-70 z-50 shadow-lg' : 'z-30'}
         ${isCompleted ? 'opacity-60 line-through' : ''}
         ${isOverdue ? 'border-red-400 bg-red-50 dark:bg-red-950/30' : ''}
         ${isTask ? 'border-violet-300 bg-violet-50 dark:bg-violet-950/30' : ''}

@@ -2172,9 +2172,9 @@ export default function Calendar() {
           />
 
           <div className={`flex gap-2 flex-1 min-h-0 overflow-hidden mt-2`}>
-            <div className="flex-1 min-w-0 flex flex-col h-full">
+            <div className="flex-1 min-w-0 min-h-0 flex flex-col h-full">
               <Card className="h-full flex flex-col overflow-hidden">
-                <CardContent className="flex-1 overflow-hidden p-0 h-full">
+                <CardContent className="flex-1 overflow-hidden p-0 h-full min-h-0">
                   {view === "monthly" && (
                     <CalendarGridMonth
                       year={year}
