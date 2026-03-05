@@ -12,6 +12,8 @@ export interface LiveTechnician {
   lng: string;
   speed: string | null;
   lastSeenAt: string;
+  /** true if last ping within 5 minutes (Phase 4B.1) */
+  online: boolean;
 }
 
 export function useLiveTechnicians(enabled = true) {

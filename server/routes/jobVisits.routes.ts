@@ -9,6 +9,8 @@ import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { jobVisitStatusEnum } from "../../shared/schema";
+import { logEventAsync } from "../lib/events";
+import { getQueryCtx } from "../lib/queryCtx";
 
 const router = Router();
 
@@ -196,6 +198,26 @@ router.post(
       status
     );
 
+    // Phase 4B.1: Emit milestone event for status transitions
+    const ctx = getQueryCtx(req);
+    if (status === "in_progress" || status === "on_site") {
+      logEventAsync(ctx, {
+        eventType: "visit.started",
+        entityType: "visit",
+        entityId: req.params.visitId,
+        summary: `Visit started (job ${req.params.jobId})`,
+        meta: { jobId: req.params.jobId, status },
+      });
+    } else if (status === "completed") {
+      logEventAsync(ctx, {
+        eventType: "visit.completed",
+        entityType: "visit",
+        entityId: req.params.visitId,
+        summary: `Visit completed (job ${req.params.jobId})`,
+        meta: { jobId: req.params.jobId },
+      });
+    }
+
     res.json(updated);
   })
 );
@@ -208,6 +230,17 @@ router.post(
     const companyId = req.companyId!;
 
     const visit = await service.checkInJobVisit(companyId, req.params.visitId);
+
+    // Phase 4B.1: Emit visit.started event on check-in
+    const ctx = getQueryCtx(req);
+    logEventAsync(ctx, {
+      eventType: "visit.started",
+      entityType: "visit",
+      entityId: req.params.visitId,
+      summary: `Technician checked in to visit (job ${req.params.jobId})`,
+      meta: { jobId: req.params.jobId, trigger: "check-in" },
+    });
+
     res.json(visit);
   })
 );
@@ -220,7 +253,76 @@ router.post(
     const companyId = req.companyId!;
 
     const visit = await service.checkOutJobVisit(companyId, req.params.visitId);
+
+    // Phase 4B.1: Emit visit.completed event on check-out
+    const ctx = getQueryCtx(req);
+    logEventAsync(ctx, {
+      eventType: "visit.completed",
+      entityType: "visit",
+      entityId: req.params.visitId,
+      summary: `Technician checked out from visit (job ${req.params.jobId})`,
+      meta: { jobId: req.params.jobId, trigger: "check-out" },
+    });
+
     res.json(visit);
+  })
+);
+
+// ========================================
+// POST /api/jobs/:jobId/visits/:visitId/arrived — Phase 4B.1: Technician arrived on site
+// ========================================
+
+router.post(
+  "/:jobId/visits/:visitId/arrived",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const { jobId, visitId } = req.params;
+
+    // Verify visit exists and belongs to company
+    const visit = await service.getJobVisit(companyId, visitId);
+    if (!visit) throw createError(404, "Visit not found");
+
+    // Log tech.arrived milestone event
+    const ctx = getQueryCtx(req);
+    logEventAsync(ctx, {
+      eventType: "tech.arrived",
+      entityType: "visit",
+      entityId: visitId,
+      summary: `Technician arrived at site (job ${jobId})`,
+      meta: { jobId, visitId },
+    });
+
+    res.json({ success: true, event: "tech.arrived" });
+  })
+);
+
+// ========================================
+// POST /api/jobs/:jobId/visits/:visitId/departed — Phase 4B.1: Technician departed site
+// ========================================
+
+router.post(
+  "/:jobId/visits/:visitId/departed",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const { jobId, visitId } = req.params;
+
+    // Verify visit exists and belongs to company
+    const visit = await service.getJobVisit(companyId, visitId);
+    if (!visit) throw createError(404, "Visit not found");
+
+    // Log tech.departed milestone event
+    const ctx = getQueryCtx(req);
+    logEventAsync(ctx, {
+      eventType: "tech.departed",
+      entityType: "visit",
+      entityId: visitId,
+      summary: `Technician departed from site (job ${jobId})`,
+      meta: { jobId, visitId },
+    });
+
+    res.json({ success: true, event: "tech.departed" });
   })
 );
 

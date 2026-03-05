@@ -9,6 +9,8 @@ import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { clientNotesRepository } from "../storage/clientNotes";
 import { noteAttachmentRepository } from "../storage/noteAttachments";
+import { logEventAsync } from "../lib/events";
+import { getQueryCtx } from "../lib/queryCtx";
 
 const router = Router();
 
@@ -93,6 +95,16 @@ router.post(
         body.attachmentFileIds.map((fid) => noteAttachmentRepository.attach(companyId, user!.id, created.id, fid))
       );
     }
+
+    // Phase 4B.1: Emit note.created milestone event
+    const ctx = getQueryCtx(req);
+    logEventAsync(ctx, {
+      eventType: "note.created",
+      entityType: "location",
+      entityId: locationId,
+      summary: `Note added to location ${locationId}`,
+      meta: { noteId: created.id, locationId },
+    });
 
     // Return note with attachments
     const attachments = await noteAttachmentRepository.listByNote(companyId, created.id);

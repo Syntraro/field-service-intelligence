@@ -40,21 +40,15 @@ npm run check        # Type-check TypeScript without emitting files
 
 ### Database
 ```bash
-npm run db:push      # Push Drizzle schema changes to database
+npm run db:migrate       # Apply all pending SQL migrations
+npm run db:migrate:one -- migrations/FILE.sql  # Apply a single migration
+npm run db:sanity        # Check database connectivity
+npm run db:check         # Detect schema drift (Drizzle vs live DB)
 ```
 
-**Important:** This project uses Drizzle ORM. Schema is defined in `shared/schema.ts`. Use `drizzle-kit push` for schema changes. Manual SQL migrations are in the `migrations/` directory but are not automatically run - they must be executed manually against the database.
+**Important:** All schema changes are done via plain SQL migration files in `/migrations/`. Never use `drizzle-kit push` — it is interactive and breaks CI/CD. See `docs/MIGRATIONS.md` for full rules and procedures.
 
-**Running SQL Migrations:**
-```bash
-# Standard migration (default, no transaction wrapping)
-psql "$DATABASE_URL" -f migrations/YYYY_MM_DD_migration_name.sql
-
-# NEVER use -1 or --single-transaction for migrations containing CONCURRENTLY
-# CREATE INDEX CONCURRENTLY cannot run inside a transaction block
-```
-
-Migrations containing `CREATE INDEX CONCURRENTLY` must be run without transaction wrapping. Check the migration file header for execution instructions.
+The Drizzle schema in `shared/schema.ts` is the TypeScript type source of truth, but schema changes are applied via SQL files, not `drizzle-kit push`.
 
 ### Environment Setup
 Required environment variables:

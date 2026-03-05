@@ -78,17 +78,25 @@ export default function LiveMapPage() {
             if (isNaN(lat) || isNaN(lng)) return null;
             const ago = tech.lastSeenAt ? formatTimeAgo(new Date(tech.lastSeenAt)) : "Unknown";
 
+            const isOnline = tech.online !== false;
             return (
               <CircleMarker
                 key={tech.technicianId}
                 center={[lat, lng]}
                 radius={10}
-                pathOptions={{ color: '#2563eb', fillColor: '#3b82f6', fillOpacity: 0.9, weight: 2 }}
+                pathOptions={{
+                  color: isOnline ? '#2563eb' : '#9ca3af',
+                  fillColor: isOnline ? '#3b82f6' : '#d1d5db',
+                  fillOpacity: isOnline ? 0.9 : 0.6,
+                  weight: 2,
+                }}
               >
                 <Tooltip direction="top" offset={[0, -10]} permanent={false}>
                   <div style={{ fontSize: '12px' }}>
                     <div style={{ fontWeight: 600 }}>{tech.name}</div>
-                    <div style={{ color: '#6b7280' }}>{ago}</div>
+                    <div style={{ color: isOnline ? '#16a34a' : '#9ca3af' }}>
+                      {isOnline ? 'Online' : 'Offline'} — {ago}
+                    </div>
                     {tech.speed && parseFloat(tech.speed) > 0 && (
                       <div style={{ color: '#6b7280' }}>{parseFloat(tech.speed).toFixed(0)} km/h</div>
                     )}
@@ -104,7 +112,11 @@ export default function LiveMapPage() {
       <div className="flex items-center gap-4 text-xs text-muted-foreground mt-2">
         <div className="flex items-center gap-1.5">
           <div className="w-3 h-3 rounded-full bg-blue-500 border-2 border-blue-600" />
-          Technician position
+          Online (&lt;5 min)
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div className="w-3 h-3 rounded-full bg-gray-300 border-2 border-gray-400" />
+          Offline
         </div>
         <span>Auto-refreshes every 15s</span>
       </div>

@@ -110,7 +110,7 @@ export function RouteMap({ clients, geocodedClients, startingCoordinates, showLi
           );
         })}
 
-        {/* Phase 4B: Live technician markers */}
+        {/* Phase 4B.1: Live technician markers (online=blue, offline=grey) */}
         {liveTechnicians.map((tech: LiveTechnician) => {
           const lat = parseFloat(tech.lat);
           const lng = parseFloat(tech.lng);
@@ -118,17 +118,25 @@ export function RouteMap({ clients, geocodedClients, startingCoordinates, showLi
           const ago = tech.lastSeenAt
             ? formatTimeAgo(new Date(tech.lastSeenAt))
             : "Unknown";
+          const isOnline = tech.online !== false;
           return (
             <CircleMarker
               key={tech.technicianId}
               center={[lat, lng]}
               radius={8}
-              pathOptions={{ color: '#2563eb', fillColor: '#3b82f6', fillOpacity: 0.9, weight: 2 }}
+              pathOptions={{
+                color: isOnline ? '#2563eb' : '#9ca3af',
+                fillColor: isOnline ? '#3b82f6' : '#d1d5db',
+                fillOpacity: isOnline ? 0.9 : 0.6,
+                weight: 2,
+              }}
             >
               <Tooltip direction="top" offset={[0, -8]} permanent={false}>
                 <div className="text-xs">
                   <div className="font-medium">{tech.name}</div>
-                  <div className="text-muted-foreground">{ago}</div>
+                  <div className="text-muted-foreground">
+                    {isOnline ? `Online — ${ago}` : `Offline — ${ago}`}
+                  </div>
                 </div>
               </Tooltip>
             </CircleMarker>

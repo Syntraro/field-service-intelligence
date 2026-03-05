@@ -6,8 +6,8 @@ import { RESTRICTED_MANAGER_ROLES } from "../auth/roles";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { db } from "../db";
-import { technicianPositions, users } from "@shared/schema";
-import { eq, sql } from "drizzle-orm";
+import { users } from "@shared/schema";
+import { sql } from "drizzle-orm";
 
 const router = express.Router();
 
@@ -35,25 +35,27 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
 }));
 
 // ========================================
-// GET /live — Latest position per technician (Phase 4B, 2026-03-05)
+// GET /live — Live position per technician (Phase 4B.1, 2026-03-05)
+// Reads from technician_live_positions (one row per tech, UPSERT target).
+// Includes online flag: last_seen_at >= now() - interval '5 minutes'
 // ========================================
 
 router.get("/live", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
 
-  // DISTINCT ON (technician_id) gives latest row per tech via ORDER BY recorded_at DESC
   const rows = await db.execute(sql`
-    SELECT DISTINCT ON (tp.technician_id)
-      tp.technician_id AS "technicianId",
-      COALESCE(u.first_name || ' ' || u.last_name, u.full_name, u.email) AS "name",
-      tp.lat,
-      tp.lng,
-      tp.speed,
-      tp.recorded_at AS "lastSeenAt"
-    FROM technician_positions tp
-    JOIN users u ON u.id = tp.technician_id
-    WHERE tp.company_id = ${companyId}
-    ORDER BY tp.technician_id, tp.recorded_at DESC
+    SELECT
+      lp.technician_id AS "technicianId",
+      COALESCE(NULLIF(TRIM(u.first_name || ' ' || u.last_name), ''), u.full_name, u.email) AS "name",
+      lp.lat,
+      lp.lng,
+      lp.speed,
+      lp.last_seen_at AS "lastSeenAt",
+      (lp.last_seen_at >= NOW() - INTERVAL '5 minutes') AS "online"
+    FROM technician_live_positions lp
+    JOIN users u ON u.id = lp.technician_id
+    WHERE lp.company_id = ${companyId}
+    ORDER BY lp.last_seen_at DESC
   `);
 
   res.json(rows.rows);

@@ -8,6 +8,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### Migration Rule: SQL-only Migrations (2026-03-05)
+- **Migration runner**: `server/scripts/runMigrations.ts` — non-interactive Node script that connects via DATABASE_URL, ensures `schema_migrations` tracking table, scans `/migrations/*.sql` lexically, applies pending migrations, records filename + applied_at. Auto-detects `CONCURRENTLY` to skip transaction wrapper.
+- **Tracking table**: `schema_migrations` with `filename` (UNIQUE) + `applied_at`. All existing migrations seeded as already applied.
+  - Migration: `migrations/2026_03_05_schema_migrations.sql`
+- **Package.json scripts**: `db:migrate` (apply all), `db:migrate:one` (single file), `db:sanity` (connectivity check). Removed `db:push` and `db:verify` (drizzle-kit push is banned).
+- **Documentation**: `docs/MIGRATIONS.md` — rules, procedures, guardrails. Updated `CLAUDE.md` Database section.
+
+#### Phase 4B.1: Ephemeral Live Positions + Milestone Events (2026-03-05)
+- **Live positions table**: `technician_live_positions` — one row per technician, UPSERT target. UNIQUE(company_id, technician_id). Replaces DISTINCT ON query over history for O(1) live lookups.
+  - Files: `shared/schema.ts`, migration: `migrations/2026_03_05_technician_live_positions.sql`
+- **Telemetry UPSERT**: `POST /api/telemetry/ping` now UPSERTs into live table instead of appending to history. History table preserved but not written to by default.
+  - Files: `server/routes/telemetry.ts`
+- **Live query rewrite**: `GET /api/technicians/live` reads from `technician_live_positions`. Includes `online` flag (last_seen_at within 5 minutes). No more DISTINCT ON scan.
+  - Files: `server/routes/technicians.ts`
+- **History purge**: `POST /api/telemetry/purge` — admin-only endpoint to delete old history rows by age (olderThanDays). Returns deletedCount.
+  - Files: `server/routes/telemetry.ts`
+- **Milestone events**: Emits events via canonical logEvent system for key actions:
+  - `visit.started` — on visit status → in_progress/on_site, and on check-in
+  - `visit.completed` — on visit status → completed, and on check-out
+  - `tech.arrived` / `tech.departed` — new endpoints: `POST /api/jobs/:jobId/visits/:visitId/arrived|departed`
+  - `task.completed` — on task close
+  - `note.created` — on location note creation
+  - Added "visit", "task", "technician" to `eventEntityTypeEnum`
+  - Files: `server/routes/jobVisits.routes.ts`, `server/routes/tasks.routes.ts`, `server/routes/location-notes.ts`, `shared/schema.ts`
+- **Live Map online/offline**: Markers now show blue (online) or grey (offline) based on 5-minute threshold. Tooltips display "Online"/"Offline" status.
+  - Files: `client/src/hooks/useLiveTechnicians.ts`, `client/src/components/RouteMap.tsx`, `client/src/pages/LiveMapPage.tsx`
+- **Migration workflow**: All migrations are plain SQL files, run via `psql "$DATABASE_URL" -f migrations/<file>.sql`. No drizzle-kit push required.
+
 #### Phase 4B: Technician Telemetry + Live Map Markers (2026-03-05)
 - **Database**: `technician_positions` table for GPS pings (lat, lng, accuracy, speed, heading, recordedAt). Indexes on (company_id, technician_id) and (technician_id, recorded_at DESC).
   - Files (schema): `shared/schema.ts`, migration: `migrations/2026_03_05_technician_positions.sql`

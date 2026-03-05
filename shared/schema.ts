@@ -4289,7 +4289,9 @@ export const eventActorTypeEnum = ["user", "system"] as const;
 export type EventActorType = (typeof eventActorTypeEnum)[number];
 
 export const eventEntityTypeEnum = [
-  "job", "invoice", "quote", "client", "location", "payment", "item", "other",
+  "job", "invoice", "quote", "client", "location", "payment", "item",
+  "visit", "task", "technician", // Phase 4B.1: milestone events (2026-03-05)
+  "other",
 ] as const;
 export type EventEntityType = (typeof eventEntityTypeEnum)[number];
 
@@ -4398,3 +4400,25 @@ export const insertTechnicianPositionSchema = createInsertSchema(technicianPosit
 
 export type InsertTechnicianPosition = z.infer<typeof insertTechnicianPositionSchema>;
 export type TechnicianPosition = typeof technicianPositions.$inferSelect;
+
+// =============================================================================
+// TECHNICIAN LIVE POSITIONS — Phase 4B.1: Ephemeral one-row-per-tech (2026-03-05)
+// =============================================================================
+
+export const technicianLivePositions = pgTable("technician_live_positions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  technicianId: varchar("technician_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  lat: numeric("lat").notNull(),
+  lng: numeric("lng").notNull(),
+  accuracy: numeric("accuracy"),
+  speed: numeric("speed"),
+  heading: numeric("heading"),
+  lastSeenAt: timestamp("last_seen_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  companyTechUnique: unique("tech_live_company_tech_unique").on(table.companyId, table.technicianId),
+  companyLastSeenIdx: index("tech_live_company_last_seen_idx").on(table.companyId, table.lastSeenAt),
+}));
+
+export type TechnicianLivePosition = typeof technicianLivePositions.$inferSelect;

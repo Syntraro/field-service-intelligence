@@ -8,6 +8,8 @@ import { paginatedCompat } from "../utils/paginatedResponse";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
+import { logEventAsync } from "../lib/events";
+import { getQueryCtx } from "../lib/queryCtx";
 
 const router = Router();
 
@@ -186,6 +188,16 @@ router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
 
   const validated = validateSchema(closeTaskSchema, req.body);
   const task = await service.closeTask(companyId, req.params.id, validated.userId);
+
+  // Phase 4B.1: Emit task.completed milestone event
+  const ctx = getQueryCtx(req);
+  logEventAsync(ctx, {
+    eventType: "task.completed",
+    entityType: "task",
+    entityId: req.params.id,
+    summary: `Task completed: ${(task as any).title || req.params.id}`,
+    meta: { taskId: req.params.id, closedBy: validated.userId },
+  });
 
   res.json(task);
 }));
