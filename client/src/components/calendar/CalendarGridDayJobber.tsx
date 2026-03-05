@@ -20,6 +20,8 @@ import { format } from "date-fns";
 import { useDroppable } from "@dnd-kit/core";
 import { JobCard } from "./JobCard";
 import { ResizableJobCard } from "./ResizableJobCard";
+import { TechLaneHeader } from "./TechLaneHeader";
+import type { TechDaySummary } from "@/hooks/useCalendarDaySummary";
 import {
   TECHNICIAN_COLORS,
   DENSITY_STYLES,
@@ -28,6 +30,7 @@ import {
   getTechnicianColorForAssignment,
   calculateLanes,
   isCalendarEventOverdue,
+  isAllDayEvent,
 } from "./calendarUtils";
 import type { RegionalSettings } from "@/hooks/useCompanyRegionalSettings";
 import { formatHourLabel, nowInTimezone } from "@/hooks/useCompanyRegionalSettings";
@@ -60,11 +63,17 @@ export interface CalendarGridDayJobberProps {
   hiddenTechnicianIds: Set<string>;
   getTechnicianColor: (assignment: any) => ReturnType<typeof getTechnicianColorForAssignment>;
   handleClientClick: (client: any, event: CalendarEvent, focusSchedule?: boolean) => void;
-  handleResize: (assignmentId: string, newDurationMinutes: number) => void;
+  handleResize: (assignmentId: string, newDurationMinutes: number, assignment?: any) => void;
   savingJobIds?: Set<string>;
   onUnschedule?: (assignmentId: string, version: number) => void;
   regional: RegionalSettings;
   businessHours?: BusinessHourDay[];
+  /** Per-technician day summary for lane headers (Calendar Improvement 2026-03-05) */
+  techSummaryMap?: Map<string, TechDaySummary>;
+  /** Sort lanes by risk level descending */
+  riskFirstSort?: boolean;
+  /** Only show lanes with active alerts */
+  alertsOnly?: boolean;
 }
 
 // ============================================================================
@@ -200,13 +209,15 @@ interface TechColumnProps {
   technicians: any[];
   getTechnicianColor: (assignment: any) => ReturnType<typeof getTechnicianColorForAssignment>;
   handleClientClick: (client: any, event: CalendarEvent, focusSchedule?: boolean) => void;
-  handleResize: (assignmentId: string, newDurationMinutes: number) => void;
+  handleResize: (assignmentId: string, newDurationMinutes: number, assignment?: any) => void;
   savingJobIds?: Set<string>;
   onUnschedule?: (assignmentId: string, version: number) => void;
   timeFormat: "12h" | "24h";
   businessHoursStart: number | null;
   businessHoursEnd: number | null;
   isBusinessOpen: boolean;
+  /** Day summary for this technician (Calendar Improvement 2026-03-05) */
+  techSummary?: TechDaySummary;
 }
 
 function TechColumn({
@@ -231,18 +242,16 @@ function TechColumn({
   businessHoursStart,
   businessHoursEnd,
   isBusinessOpen,
+  techSummary,
 }: TechColumnProps) {
   const rowHeight = DENSITY_STYLES[density].rowHeight;
 
-  // Calculate visit count
-  const visitCount = events.filter(e => !e.completed).length;
-
   return (
-    <div className="flex flex-col border-r" style={{ minWidth: MIN_TECH_COLUMN_WIDTH }}>
-      {/* Header cell - sticky */}
+    <div className="flex flex-col border-r flex-shrink-0" style={{ minWidth: MIN_TECH_COLUMN_WIDTH }}>
+      {/* Header cell - sticky — enhanced with day summary (Calendar Improvement 2026-03-05) */}
       <div
-        className="sticky top-0 z-30 bg-background border-b px-2 py-2 text-center flex flex-col items-center justify-center"
-        style={{ height: HEADER_HEIGHT }}
+        className="sticky top-0 z-30 bg-background border-b px-2 py-1.5 text-center flex flex-col items-center justify-center"
+        style={{ minHeight: HEADER_HEIGHT }}
       >
         <div className="flex items-center justify-center gap-1.5">
           {technicianColor && (
@@ -250,9 +259,7 @@ function TechColumn({
           )}
           <span className="text-sm font-medium truncate max-w-[100px]">{technicianName}</span>
         </div>
-        {visitCount > 0 && (
-          <span className="text-[10px] text-muted-foreground">{visitCount} visit{visitCount !== 1 ? 's' : ''}</span>
-        )}
+        <TechLaneHeader summary={techSummary} />
       </div>
 
       {/* All-day lane - sticky */}
@@ -436,12 +443,32 @@ export function CalendarGridDayJobber({
   onUnschedule,
   regional,
   businessHours,
+  techSummaryMap,
+  riskFirstSort,
+  alertsOnly,
 }: CalendarGridDayJobberProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const scrollDoneRef = useRef(false);
 
-  // Visible technicians (filter by visibility)
-  const visibleTechnicians = technicians.filter((t: any) => !hiddenTechnicianIds.has(t.id));
+  // Visible technicians (filter by visibility, with risk sort + alerts filter — Calendar Improvement 2026-03-05)
+  const visibleTechnicians = useMemo(() => {
+    let filtered = technicians.filter((t: any) => !hiddenTechnicianIds.has(t.id));
+    if (alertsOnly && techSummaryMap) {
+      filtered = filtered.filter((t: any) => {
+        const s = techSummaryMap.get(t.id);
+        return s && s.risk !== "ok";
+      });
+    }
+    if (riskFirstSort && techSummaryMap) {
+      const riskOrder: Record<string, number> = { high: 0, warn: 1, ok: 2 };
+      filtered = [...filtered].sort((a: any, b: any) => {
+        const ra = techSummaryMap.get(a.id)?.risk ?? "ok";
+        const rb = techSummaryMap.get(b.id)?.risk ?? "ok";
+        return (riskOrder[ra] ?? 2) - (riskOrder[rb] ?? 2);
+      });
+    }
+    return filtered;
+  }, [technicians, hiddenTechnicianIds, techSummaryMap, riskFirstSort, alertsOnly]);
   const showUnassigned = !hiddenTechnicianIds.has('unassigned');
 
   // Build date key for current date
@@ -572,9 +599,9 @@ export function CalendarGridDayJobber({
               technicianName="Unassigned"
               technicianColor={null}
               events={getEventsForTech(null)}
-              allDayEvents={getEventsForTech(null).filter(e => e.isAllDay)}
-              timedEvents={getEventsForTech(null).filter(e => !e.isAllDay)}
-              laneMap={calculateLanes(getEventsForTech(null).filter(e => !e.isAllDay).map(e => e.raw))}
+              allDayEvents={getEventsForTech(null).filter(isAllDayEvent)}
+              timedEvents={getEventsForTech(null).filter(e => !isAllDayEvent(e))}
+              laneMap={calculateLanes(getEventsForTech(null).filter(e => !isAllDayEvent(e)).map(e => e.raw))}
               currentDate={currentDate}
               dateKey={dateKey}
               density={density}
@@ -605,9 +632,9 @@ export function CalendarGridDayJobber({
                 technicianName={displayName}
                 technicianColor={techColor}
                 events={techEvents}
-                allDayEvents={techEvents.filter(e => e.isAllDay)}
-                timedEvents={techEvents.filter(e => !e.isAllDay)}
-                laneMap={calculateLanes(techEvents.filter(e => !e.isAllDay).map(e => e.raw))}
+                allDayEvents={techEvents.filter(isAllDayEvent)}
+                timedEvents={techEvents.filter(e => !isAllDayEvent(e))}
+                laneMap={calculateLanes(techEvents.filter(e => !isAllDayEvent(e)).map(e => e.raw))}
                 currentDate={currentDate}
                 dateKey={dateKey}
                 density={density}
@@ -622,6 +649,7 @@ export function CalendarGridDayJobber({
                 businessHoursStart={todayBusinessHours.startMinutes}
                 businessHoursEnd={todayBusinessHours.endMinutes}
                 isBusinessOpen={todayBusinessHours.isOpen}
+                techSummary={techSummaryMap?.get(tech.id)}
               />
             );
           })}

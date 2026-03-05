@@ -12,7 +12,7 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { useLocation } from "wouter";
-import { Calendar, FileText, DollarSign, Briefcase, ChevronRight, ChevronDown, ChevronUp, PanelRightClose, PanelRightOpen, Plus, ClipboardList, CheckSquare, Square } from "lucide-react";
+import { Calendar, FileText, DollarSign, Briefcase, ChevronRight, ChevronDown, ChevronUp, PanelRightClose, PanelRightOpen, Plus, ClipboardList, CheckSquare, Square, AlertTriangle, Clock, Route } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -25,6 +25,16 @@ import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AsyncBlock } from "@/components/AsyncBlock";
 import { TaskDialog } from "@/components/TaskDialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import type { Job as SchemaJob, Invoice as SchemaInvoice } from "@shared/schema";
 
 // ============================================================================
@@ -644,100 +654,218 @@ function TasksPanel({
   );
 }
 
+// RecentActivityWidget removed (2026-03-05) — activity feed moved to AppHeader ActivityFeedDrawer
+
 // ============================================================================
-// Recent Activity Widget — server-backed activity feed (Phase 1 Architecture)
+// Operational Alerts Widget — Phase 5: Visit intelligence signals
 // ============================================================================
 
-/** Server event shape from GET /api/activity */
-interface ServerEvent {
+/** Attention item shape from GET /api/attention */
+interface AttentionItem {
   id: string;
   entityType: string;
   entityId: string;
-  eventType: string;
-  summary: string;
+  ruleType: string;
+  severity: string;
+  status: string;
+  firstDetectedAt: string;
+  lastDetectedAt: string;
   meta: Record<string, unknown> | null;
-  createdAt: string;
 }
 
-/** Relative timestamp from ISO string */
-function formatRelativeTime(iso: string): string {
-  const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (seconds < 60) return "Just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
+/** Phase 5/5B operational rule types */
+const OPERATIONAL_RULE_TYPES = ["visit.running_long", "visit.late", "visit.overdue", "tech.offline", "tech.idle"];
 
-const ENTITY_ICONS: Record<string, typeof Briefcase> = {
-  job: Briefcase,
-  invoice: DollarSign,
-  quote: FileText,
-  client: Calendar,
+const ALERT_LABELS: Record<string, { label: string; color: string }> = {
+  "visit.running_long": { label: "Running Long", color: "bg-[rgba(220,38,38,0.12)] text-[#B91C1C] border-[rgba(220,38,38,0.25)] dark:bg-red-950/40 dark:text-red-400 dark:border-red-800" },
+  "visit.late": { label: "Late", color: "bg-[rgba(245,158,11,0.14)] text-[#92400E] border-[rgba(245,158,11,0.28)] dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800" },
+  "visit.overdue": { label: "Overdue", color: "bg-[rgba(220,38,38,0.12)] text-[#B91C1C] border-[rgba(220,38,38,0.25)] dark:bg-red-950/40 dark:text-red-400 dark:border-red-800" },
+  "tech.offline": { label: "Offline", color: "bg-[rgba(107,114,128,0.12)] text-[#374151] border-[rgba(107,114,128,0.25)] dark:bg-gray-800/40 dark:text-gray-400 dark:border-gray-700" },
+  "tech.idle": { label: "Idle", color: "bg-[rgba(59,130,246,0.12)] text-[#1E40AF] border-[rgba(59,130,246,0.25)] dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-800" },
 };
 
-function entityPath(entityType: string, entityId: string): string | null {
-  switch (entityType) {
-    case "job": return `/jobs/${entityId}`;
-    case "invoice": return `/invoices/${entityId}`;
-    case "quote": return `/quotes/${entityId}`;
-    case "client": return `/clients/${entityId}`;
-    default: return null;
-  }
-}
+function OperationalAlertsWidget({ alerts, isLoading }: { alerts: AttentionItem[]; isLoading: boolean }) {
+  const operationalAlerts = alerts.filter((a) => OPERATIONAL_RULE_TYPES.includes(a.ruleType));
+  const [confirmAction, setConfirmAction] = useState<{ visitId: string; action: "shift" | "optimize"; driftMinutes?: number } | null>(null);
 
-function RecentActivityWidget({ events, isLoading }: { events: ServerEvent[]; isLoading: boolean }) {
-  const [, setLocation] = useLocation();
+  const shiftMutation = useMutation({
+    mutationFn: async ({ visitId, driftMinutes }: { visitId: string; driftMinutes?: number }) =>
+      apiRequest(`/api/intelligence/visits/${visitId}/shift-remainder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ driftMinutes }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ predicate: (q) => {
+        const key = String(q.queryKey[0]);
+        return key.startsWith("/api/attention") || key.startsWith("/api/calendar") || key === "/api/attention?status=open&limit=20";
+      }});
+      queryClient.invalidateQueries({ queryKey: ["attention"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+
+  const optimizeMutation = useMutation({
+    mutationFn: async (visitId: string) =>
+      apiRequest(`/api/intelligence/visits/${visitId}/optimize-remainder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ predicate: (q) => {
+        const key = String(q.queryKey[0]);
+        return key.startsWith("/api/attention") || key.startsWith("/api/calendar");
+      }});
+      queryClient.invalidateQueries({ queryKey: ["attention"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+  });
+
+  const handleConfirm = () => {
+    if (!confirmAction) return;
+    if (confirmAction.action === "shift") {
+      shiftMutation.mutate({ visitId: confirmAction.visitId, driftMinutes: confirmAction.driftMinutes });
+    } else {
+      optimizeMutation.mutate(confirmAction.visitId);
+    }
+    setConfirmAction(null);
+  };
 
   if (isLoading) {
     return (
       <div className="bg-white dark:bg-gray-900 rounded-md border border-gray-200 dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
         <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800">
-          <h3 className="text-sm font-semibold">Recent Activity</h3>
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-amber-500" />
+            <h3 className="text-sm font-semibold">Operational Alerts</h3>
+          </div>
         </div>
-        <div className="p-4 text-sm text-muted-foreground">Loading…</div>
+        <div className="p-4 text-sm text-muted-foreground">Loading...</div>
       </div>
     );
   }
 
-  if (events.length === 0) return null;
+  if (operationalAlerts.length === 0) return null;
+
+  const isBusy = shiftMutation.isPending || optimizeMutation.isPending;
 
   return (
-    <div className="bg-white dark:bg-gray-900 rounded-md border border-gray-200 dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
-      <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800">
-        <h3 className="text-sm font-semibold">Recent Activity</h3>
-      </div>
-      <div>
-        {events.slice(0, 8).map((item, index) => {
-          const Icon = ENTITY_ICONS[item.entityType] || Briefcase;
-          const path = entityPath(item.entityType, item.entityId);
-          const isLast = index === Math.min(events.length, 8) - 1;
+    <>
+      <div className="bg-white dark:bg-gray-900 rounded-md border border-gray-200 dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
+        <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-amber-500" />
+            <h3 className="text-sm font-semibold">Operational Alerts</h3>
+            <Badge variant="secondary" className="text-xs rounded-full">{operationalAlerts.length}</Badge>
+          </div>
+        </div>
+        <div>
+          {operationalAlerts.slice(0, 8).map((alert, index) => {
+            const meta = alert.meta || {};
+            const label = ALERT_LABELS[alert.ruleType] || { label: alert.ruleType, color: "" };
+            const title = (meta.locationName as string) || (meta.techName as string) || alert.entityType;
+            const isRunningLong = alert.ruleType === "visit.running_long";
+            const driftMin = meta.driftMinutes as number | undefined;
+            const countLate = meta.countLateVisits as number | undefined;
+            const downstream = meta.downstream as Array<{ locationName: string; lateByMinutes: number }> | undefined;
+            const isLast = index === Math.min(operationalAlerts.length, 8) - 1;
 
-          return (
-            <button
-              key={item.id}
-              onClick={() => path && setLocation(path)}
-              disabled={!path}
-              className={`w-full text-left px-4 py-2.5 hover:bg-[#F3F4F6] dark:hover:bg-gray-800/50 transition-colors flex items-start gap-3 ${!isLast ? "border-b border-gray-200 dark:border-gray-800" : ""}`}
-            >
-              <div className="mt-0.5 p-1 rounded bg-primary/10 flex-shrink-0">
-                <Icon className="h-3.5 w-3.5 text-primary" />
+            // Detail line
+            let detail = "";
+            if (isRunningLong) {
+              detail = `Job #${meta.jobNumber || "?"} — ${driftMin || 0}m over`;
+              if (countLate && countLate > 0) detail += ` · ${countLate} visit${countLate > 1 ? "s" : ""} affected`;
+            } else {
+              detail = (meta.jobNumber ? `Job #${meta.jobNumber}` : "") ||
+                (meta.minutesAgo ? `${meta.minutesAgo}m ago` : "") ||
+                (meta.idleMinutes ? `Idle ${meta.idleMinutes}m` : "");
+            }
+
+            return (
+              <div
+                key={alert.id}
+                className={`px-4 py-2.5 hover:bg-[#F3F4F6] dark:hover:bg-gray-800/50 transition-colors ${!isLast ? "border-b border-gray-200 dark:border-gray-800" : ""}`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-foreground truncate">{title}</p>
+                    {detail && <p className="text-xs text-muted-foreground truncate mt-0.5">{detail}</p>}
+                    {/* Downstream impact summary for running_long */}
+                    {isRunningLong && downstream && downstream.length > 0 && (
+                      <div className="mt-1 text-xs text-muted-foreground space-y-0.5">
+                        {downstream.slice(0, 3).map((d, i) => (
+                          <div key={i} className="truncate">
+                            {d.locationName || "Visit"}: +{d.lateByMinutes}m late
+                          </div>
+                        ))}
+                        {downstream.length > 3 && (
+                          <div className="text-muted-foreground/70">+{downstream.length - 3} more</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    {/* Action buttons for running_long */}
+                    {isRunningLong && (
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-xs gap-1"
+                          disabled={isBusy}
+                          onClick={() => setConfirmAction({ visitId: alert.entityId, action: "shift", driftMinutes: driftMin })}
+                          title="Shift remaining visits forward"
+                        >
+                          <Clock className="h-3 w-3" />
+                          Shift
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 px-2 text-xs gap-1"
+                          disabled={isBusy}
+                          onClick={() => setConfirmAction({ visitId: alert.entityId, action: "optimize" })}
+                          title="Optimize remaining visits"
+                        >
+                          <Route className="h-3 w-3" />
+                          Optimize
+                        </Button>
+                      </>
+                    )}
+                    <span className={`inline-flex items-center rounded-full border px-2 h-5 text-[11px] font-medium whitespace-nowrap ${label.color}`}>
+                      {label.label}
+                    </span>
+                  </div>
+                </div>
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-foreground truncate">{item.summary}</p>
-                {item.meta?.clientName ? (
-                  <p className="text-xs text-muted-foreground truncate">{String(item.meta.clientName)}</p>
-                ) : null}
-              </div>
-              <span className="text-xs text-muted-foreground whitespace-nowrap flex-shrink-0">
-                {formatRelativeTime(item.createdAt)}
-              </span>
-            </button>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
-    </div>
+
+      {/* Confirm dialog */}
+      <AlertDialog open={!!confirmAction} onOpenChange={(open) => !open && setConfirmAction(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {confirmAction?.action === "shift" ? "Shift Remaining Visits" : "Optimize Remaining Visits"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmAction?.action === "shift"
+                ? `This will shift all remaining visits for this technician forward by ${confirmAction?.driftMinutes || "the drift"} minutes. This edits multiple visit schedules.`
+                : "This will re-optimize the order of remaining visits for this technician and update their scheduled times. This edits multiple visit schedules."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirm}>
+              {confirmAction?.action === "shift" ? "Shift" : "Optimize"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
 
@@ -782,15 +910,6 @@ export default function Dashboard() {
   });
   const dashboardInvoices = dashboardInvoicesResponse?.data || [];
 
-  // Phase 1 Architecture: Server-backed activity feed
-  const { data: activityData, isLoading: activityLoading } = useQuery<{ items: ServerEvent[] }>({
-    queryKey: ["activity", "feed"],
-    queryFn: () => apiRequest(`/api/activity?limit=20`),
-    staleTime: 30_000,
-    refetchOnWindowFocus: true,
-  });
-  const activityEvents = activityData?.items || [];
-
   // Phase 1 Architecture: Attention summary counts
   const { data: attentionData } = useQuery<AttentionSummary>({
     queryKey: ["attention", "summary"],
@@ -798,6 +917,15 @@ export default function Dashboard() {
     staleTime: 60_000,
     refetchOnWindowFocus: true,
   });
+
+  // Phase 5: Operational alerts (visit.late, visit.overdue, tech.offline, tech.idle)
+  const { data: operationalAlertsResponse, isLoading: operationalAlertsLoading } = useQuery<{ data: AttentionItem[] }>({
+    queryKey: ["attention", "operational"],
+    queryFn: () => apiRequest(`/api/attention?status=open&limit=20`),
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+  });
+  const operationalAlerts = operationalAlertsResponse?.data || [];
 
   return (
     <div className="min-h-screen bg-background">
@@ -810,8 +938,8 @@ export default function Dashboard() {
               <NeedsAttentionWidget jobs={needsAttentionJobs} isLoading={needsAttentionLoading} isError={needsAttentionError} error={needsAttentionErrorObj} onRetry={() => refetchNeedsAttention()} />
               <InvoicesWidget invoices={dashboardInvoices} isLoading={dashboardInvoicesLoading} isError={dashboardInvoicesError} error={dashboardInvoicesErrorObj} onRetry={() => refetchDashboardInvoices()} />
             </div>
-            {/* Recent Activity — server-backed event feed (Phase 1) */}
-            <RecentActivityWidget events={activityEvents} isLoading={activityLoading} />
+            {/* Phase 5: Operational Alerts — visit intelligence signals */}
+            <OperationalAlertsWidget alerts={operationalAlerts} isLoading={operationalAlertsLoading} />
           </div>
 
           {/* Right sidebar - Tasks (integrated styling) */}

@@ -4336,6 +4336,12 @@ export const attentionRuleTypeEnum = [
   "job.unassigned",
   "job.unscheduled",
   "invoice.past_due",
+  // Phase 5: Visit intelligence signals
+  "visit.late",
+  "visit.overdue",
+  "visit.running_long",
+  "tech.offline",
+  "tech.idle",
 ] as const;
 export type AttentionRuleType = (typeof attentionRuleTypeEnum)[number];
 

@@ -29,6 +29,8 @@ import type { RegionalSettings } from "@/hooks/useCompanyRegionalSettings";
 import { nowInTimezone } from "@/hooks/useCompanyRegionalSettings";
 import { Button } from "@/components/ui/button";
 import { Plus, User } from "lucide-react";
+import { TechLaneHeader } from "./TechLaneHeader";
+import type { TechDaySummary } from "@/hooks/useCalendarDaySummary";
 
 // ============================================================================
 // Types
@@ -47,6 +49,12 @@ export interface CalendarGridWeekTechniciansProps {
   onScheduleNew: (date: Date, technicianId?: string) => void;
   /** Regional settings (timezone, time format, week start) */
   regional: RegionalSettings;
+  /** Per-technician day summary for lane headers (Calendar Improvement 2026-03-05) */
+  techSummaryMap?: Map<string, TechDaySummary>;
+  /** Sort lanes by risk level descending */
+  riskFirstSort?: boolean;
+  /** Only show lanes with active alerts */
+  alertsOnly?: boolean;
 }
 
 interface WeekDayColumn {
@@ -302,6 +310,9 @@ export function CalendarGridWeekTechnicians({
   onSlotClick,
   onScheduleNew,
   regional,
+  techSummaryMap,
+  riskFirstSort,
+  alertsOnly,
 }: CalendarGridWeekTechniciansProps) {
   // Get week dates, respecting weekStartsOn setting
   const weekStart = getWeekStart(currentDate, regional.weekStartsOn);
@@ -332,11 +343,25 @@ export function CalendarGridWeekTechnicians({
     return days;
   }, [weekStart]);
 
-  // Filter visible technicians
-  const visibleTechnicians = useMemo(
-    () => technicians.filter((t) => !hiddenTechnicianIds.has(t.id)),
-    [technicians, hiddenTechnicianIds]
-  );
+  // Filter visible technicians, with optional risk sort + alerts-only filter (Calendar Improvement 2026-03-05)
+  const visibleTechnicians = useMemo(() => {
+    let filtered = technicians.filter((t) => !hiddenTechnicianIds.has(t.id));
+    if (alertsOnly && techSummaryMap) {
+      filtered = filtered.filter((t) => {
+        const s = techSummaryMap.get(t.id);
+        return s && s.risk !== "ok";
+      });
+    }
+    if (riskFirstSort && techSummaryMap) {
+      const riskOrder = { high: 0, warn: 1, ok: 2 };
+      filtered = [...filtered].sort((a, b) => {
+        const ra = techSummaryMap.get(a.id)?.risk ?? "ok";
+        const rb = techSummaryMap.get(b.id)?.risk ?? "ok";
+        return (riskOrder[ra] ?? 2) - (riskOrder[rb] ?? 2);
+      });
+    }
+    return filtered;
+  }, [technicians, hiddenTechnicianIds, techSummaryMap, riskFirstSort, alertsOnly]);
 
   const showUnassigned = !hiddenTechnicianIds.has("unassigned");
 
@@ -382,18 +407,14 @@ export function CalendarGridWeekTechnicians({
         const color = TECHNICIAN_COLORS[techIndex % TECHNICIAN_COLORS.length];
         return (
           <div key={tech.id} className={`grid ${gridCols}`}>
-            {/* Technician Name Cell */}
-            <div className="px-3 py-2 border-r border-b flex items-center gap-2 bg-muted/30">
-              <div className={`w-3 h-3 rounded-full ${color.dot}`} />
+            {/* Technician Name Cell — enhanced with day summary (Calendar Improvement 2026-03-05) */}
+            <div className="px-3 py-1.5 border-r border-b flex items-start gap-2 bg-muted/30">
+              <div className={`w-3 h-3 rounded-full shrink-0 mt-1 ${color.dot}`} />
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-medium truncate">
                   {tech.fullName || `${tech.firstName} ${tech.lastName}`}
                 </div>
-                {tech.workingHours && (
-                  <div className="text-[10px] text-muted-foreground truncate">
-                    {tech.workingHours}
-                  </div>
-                )}
+                <TechLaneHeader summary={techSummaryMap?.get(tech.id)} />
               </div>
             </div>
 

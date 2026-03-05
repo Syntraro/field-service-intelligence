@@ -35,6 +35,10 @@ export interface CalendarPreferences {
   dayLayout: DayLayout;
   /** @deprecated Tasks always shown on calendar — kept for localStorage compat */
   showTasks?: boolean;
+  /** Sort technician lanes by risk level descending (Calendar Improvement 2026-03-05) */
+  riskFirstSort?: boolean;
+  /** Only show lanes with active alerts (Calendar Improvement 2026-03-05) */
+  alertsOnly?: boolean;
 }
 
 const STORAGE_KEY = "calendar-preferences";
@@ -47,6 +51,8 @@ const DEFAULT_PREFERENCES: CalendarPreferences = {
   hiddenTechnicianIds: [],
   dayLayout: "columns", // Default: vertical tech columns (Polish Pass 2026-03-04)
   showTasks: true, // Tasks always shown (Polish Pass 2026-03-04)
+  riskFirstSort: false, // Calendar Improvement 2026-03-05
+  alertsOnly: false, // Calendar Improvement 2026-03-05
 };
 
 // Business hours defaults
@@ -121,6 +127,8 @@ function loadPreferences(): CalendarPreferences {
         : [],
       dayLayout: validateDayLayout(parsed.dayLayout),
       showTasks: true, // Tasks always shown — ignore persisted value
+      riskFirstSort: typeof parsed.riskFirstSort === 'boolean' ? parsed.riskFirstSort : false,
+      alertsOnly: typeof parsed.alertsOnly === 'boolean' ? parsed.alertsOnly : false,
     };
   } catch (error) {
     // Any other error - return defaults
@@ -200,6 +208,15 @@ export function useCalendarState() {
     }));
   }, []);
 
+  // Risk-first sort + alerts-only filter (Calendar Improvement 2026-03-05)
+  const toggleRiskFirstSort = useCallback(() => {
+    setPreferences(prev => ({ ...prev, riskFirstSort: !prev.riskFirstSort }));
+  }, []);
+
+  const toggleAlertsOnly = useCallback(() => {
+    setPreferences(prev => ({ ...prev, alertsOnly: !prev.alertsOnly }));
+  }, []);
+
   // Technician visibility
   const hiddenTechnicianIds = useMemo(
     () => new Set(preferences.hiddenTechnicianIds),
@@ -260,6 +277,12 @@ export function useCalendarState() {
     dayLayout: preferences.dayLayout,
     setDayLayout,
     toggleDayLayout,
+
+    // Risk-first sort + alerts-only filter (Calendar Improvement 2026-03-05)
+    riskFirstSort: preferences.riskFirstSort ?? false,
+    toggleRiskFirstSort,
+    alertsOnly: preferences.alertsOnly ?? false,
+    toggleAlertsOnly,
 
     // Technician visibility
     hiddenTechnicianIds,

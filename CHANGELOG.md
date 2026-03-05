@@ -8,6 +8,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### Calendar Day View Fixes — Layout, All-Day, Resize, Drag Parity (2026-03-05)
+- **Day view fills available space**: Changed CardContent from `overflow-auto` to `overflow-hidden` so day grids control their own scrolling. Both Columns and Rows layouts now fill the full content area.
+  - Files: `client/src/pages/Calendar.tsx`
+- **All-day/Anytime items in Day view**: Created shared `isAllDayEvent()` helper in calendarUtils for consistent classification of all-day vs timed events. Day Columns now uses this helper. Day Rows now renders all-day items as compact chips in the tech label area.
+  - Root cause: DayJobber used raw `e.isAllDay` which could miss edge cases with null `startMinutes`. DayRows had no all-day rendering at all.
+  - Files: `client/src/components/calendar/calendarUtils.ts`, `client/src/components/calendar/CalendarGridDayJobber.tsx`, `client/src/components/calendar/CalendarGridDayRows.tsx`
+- **Resize version error fixed**: Resize now uses `POST /api/calendar/resize` (correct endpoint) instead of `PATCH /api/calendar/schedule/:id` (reschedule endpoint that requires version and doesn't support durationMinutes). ResizableJobCard passes the raw assignment data through onResize so the mutation can compute newEndTime.
+  - Root cause: `updateDuration` mutation was calling the reschedule endpoint which validates against `rescheduleJobSchema` requiring `version: z.number().int()` — a field never passed by the resize handler.
+  - Files: `client/src/components/calendar/ResizableJobCard.tsx`, `client/src/hooks/useCalendarDnD.ts`, `client/src/pages/Calendar.tsx`
+- **Day Rows drag/drop + resize parity**: EventBlock replaced with DraggableEventBlock using `useDraggable` from dnd-kit. Added horizontal resize handle (right edge, cursor-col-resize) with 15-minute snap. Drop zones use same `daily|` ID format as Day Columns for DnD handler compatibility.
+  - Files: `client/src/components/calendar/CalendarGridDayRows.tsx`, `client/src/pages/Calendar.tsx`
+
+#### Phase 6: Auto-Gap Scheduling — Suggest Optimal Slots (2026-03-05)
+- **Gap suggestion engine**: `server/lib/autoGapScheduling.ts` — `suggestVisitSlots()` finds the best available time slots across technicians for an unscheduled visit. Batch-fetches visits, live positions, alerts, and schedulable techs in parallel. For each tech × date, computes workday gaps, evaluates travel time (haversine 30km/h), added drive vs direct, downstream late risk, and tech risk penalties (offline +50, running long +40, alerts +10). Returns top 12 scored candidates.
+  - Files: `server/lib/autoGapScheduling.ts` (NEW)
+- **Suggest-slots endpoint**: `POST /api/intelligence/suggest-slots` — accepts visitId (resolves duration + location from DB) or manual durationMinutes + location + dateFrom/dateTo. Returns `{ suggestions: SuggestedSlot[] }` ranked by score.
+  - Files: `server/routes/intelligence.ts`
+- **SuggestSlotDialog component**: Dialog with date range selector (Today/3 days/Week), results list showing technician name, time range, travel badges, risk badges, downstream late risk, score. Preview highlights a slot, Apply schedules the visit via `POST /api/calendar/schedule`.
+  - Files: `client/src/components/calendar/SuggestSlotDialog.tsx` (NEW)
+- **Calendar sidebar integration**: Per-visit "Suggest slot" button (Zap icon) in the Visits tab of CalendarSidebar. Opens SuggestSlotDialog with the visit's job/location data.
+  - Files: `client/src/components/calendar/CalendarSidebar.tsx`, `client/src/pages/Calendar.tsx`
+
+#### Dashboard & Calendar UX Fixes (2026-03-05)
+- **Dashboard: Activity moved to notification feed panel** — Removed always-visible "Recent Activity" card from Dashboard. Added Activity feed icon (pulse icon) in AppHeader that opens a right-side Sheet drawer with scrollable activity list. Reuses same `/api/activity` endpoint.
+  - Files: `client/src/components/activity/ActivityFeedDrawer.tsx` (NEW), `client/src/components/AppHeader.tsx`, `client/src/pages/Dashboard.tsx`
+- **Calendar: Technician filter shows names** — Fixed TechnicianFilterPopover to show full technician names as primary text (was showing `undefined undefined` when `firstName`/`lastName` were missing). Uses robust fallback chain: `fullName` → `displayName` → `name` → `firstName lastName` → `email`. Color dot moved to secondary position. Popover widened to 256px.
+  - Files: `client/src/components/calendar/TechnicianFilterPopover.tsx`
+  - Root cause: Popover used `{tech.firstName} {tech.lastName}` but these fields are optional in the API response. The `fullName` field (always populated by Calendar.tsx normalization) was not used.
+- **Calendar: Day view fills screen** — Removed `max-h-full` constraint from daily and weekly view wrappers that was clipping content. Added `flex-shrink-0` to TechColumn in DayJobber to prevent column compression (forces horizontal scroll instead).
+  - Files: `client/src/pages/Calendar.tsx`, `client/src/components/calendar/CalendarGridDayJobber.tsx`
+
+#### Calendar Improvement: Technician Lane Header — Capacity, Drive, Risk, Presence (2026-03-05)
+- **Day summary endpoint**: `GET /api/calendar/day-summary?date=YYYY-MM-DD` — aggregates per-technician stats: scheduledMinutes, driveMinutesEstimated (haversine 30km/h), visitCount, risk level, riskCounts, online/offline presence. Joins visits, live positions, and attention items.
+  - Files: `server/routes/calendar.ts`
+- **TechLaneHeader component**: Renders capacity stats, risk badges (Late/Overdue/Running long/Offline/Idle), and presence dot with tooltip above each technician lane in all three calendar grid views.
+  - Files: `client/src/components/calendar/TechLaneHeader.tsx` (NEW), `client/src/hooks/useCalendarDaySummary.ts` (NEW)
+- **Calendar grids enhanced**: `CalendarGridWeekTechnicians`, `CalendarGridDayJobber`, `CalendarGridDayRows` all show enhanced tech headers with day summary data.
+  - Files: `client/src/components/calendar/CalendarGridWeekTechnicians.tsx`, `client/src/components/calendar/CalendarGridDayJobber.tsx`, `client/src/components/calendar/CalendarGridDayRows.tsx`
+- **Risk-first sort + alerts-only filter**: Two toggle buttons in CalendarHeader: "Risk first" (sorts lanes by risk level descending) and "Alerts only" (hides lanes with no active alerts). Persisted in localStorage.
+  - Files: `client/src/hooks/useCalendarState.ts`, `client/src/components/calendar/CalendarHeader.tsx`, `client/src/pages/Calendar.tsx`
+
+#### Phase 5B: Running Long + Downstream Impact + One-click Fixes (2026-03-05)
+- **visit.running_long signal**: Detects active visits past their planned end. Severity tiers: +15m = medium, +45m = high. Computes downstream impact preview (ETA drift, late-by-minutes for each subsequent visit on the same tech/day).
+  - Files: `server/lib/visitIntelligence.ts`, `shared/schema.ts` (added `visit.running_long` to `attentionRuleTypeEnum`)
+- **Shift remainder endpoint**: `POST /api/intelligence/visits/:id/shift-remainder` — shifts all remaining visits forward by driftMinutes (auto-computed or provided). Logs `schedule.shift_remainder` event.
+- **Optimize remainder endpoint**: `POST /api/intelligence/visits/:id/optimize-remainder` — re-optimizes remaining stops via ORS route optimization, applies new order + recomputed start times. Logs `schedule.optimize_remainder` event.
+  - Files: `server/routes/intelligence.ts`
+- **Dashboard actions**: OperationalAlertsWidget shows "Shift" and "Optimize" buttons for running_long alerts, with inline downstream impact summary and confirm dialog before applying.
+  - Files: `client/src/pages/Dashboard.tsx`
+
+#### Phase 5: Visit Intelligence Signals + Operational Alerts (2026-03-05)
+- **Intelligence service**: `server/lib/visitIntelligence.ts` — `computeVisitStatusSignals()` evaluates scheduled visits, technician live positions, and assignments to generate operational signals.
+  - `visit.late` — visit not started 15+ min past scheduled start (severity: high)
+  - `visit.overdue` — scheduled end passed, visit not completed (severity: high)
+  - `tech.offline` — last_seen_at older than 5 min, has assigned visits (severity: medium)
+  - `tech.idle` — speed=0 and unchanged >10 min (severity: low)
+  - `tech.arrived` — distance < 50m from visit location, emits event (not attention item)
+- **Evaluate endpoint**: `POST /api/intelligence/evaluate` — manager+ role, runs signal computation and returns detected signals. Generates attention items with deduplication.
+  - Files: `server/routes/intelligence.ts`, registered in `server/routes/index.ts`
+- **Attention rule types**: Added `visit.late`, `visit.overdue`, `tech.offline`, `tech.idle` to `attentionRuleTypeEnum` in `shared/schema.ts`
+- **Dashboard integration**: "Operational Alerts" widget on Dashboard shows latest visit intelligence attention items with severity badges (Late, Overdue, Offline, Idle).
+  - Files: `client/src/pages/Dashboard.tsx`
+
 #### Migration Rule: SQL-only Migrations (2026-03-05)
 - **Migration runner**: `server/scripts/runMigrations.ts` — non-interactive Node script that connects via DATABASE_URL, ensures `schema_migrations` tracking table, scans `/migrations/*.sql` lexically, applies pending migrations, records filename + applied_at. Auto-detects `CONCURRENTLY` to skip transaction wrapper.
 - **Tracking table**: `schema_migrations` with `filename` (UNIQUE) + `applied_at`. All existing migrations seeded as already applied.

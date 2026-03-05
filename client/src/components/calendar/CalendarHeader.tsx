@@ -12,7 +12,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ChevronLeft, ChevronRight, Package, Columns3, Rows3 } from "lucide-react";
+import { ChevronLeft, ChevronRight, Package, Columns3, Rows3, ArrowUpDown, AlertTriangle } from "lucide-react";
 import type { DayLayout } from "@/hooks/useCalendarState";
 import { getWeekStart } from "./calendarUtils";
 import { TechnicianFilterPopover } from "./TechnicianFilterPopover";
@@ -53,6 +53,12 @@ export interface CalendarHeaderProps {
 
   // Regional settings (timezone, time format, week start)
   regional: RegionalSettings;
+
+  // Risk sort + alerts filter (Calendar Improvement 2026-03-05)
+  riskFirstSort?: boolean;
+  onToggleRiskFirstSort?: () => void;
+  alertsOnly?: boolean;
+  onToggleAlertsOnly?: () => void;
 }
 
 export function CalendarHeader({
@@ -74,6 +80,10 @@ export function CalendarHeader({
   dayLayout,
   onToggleDayLayout,
   regional,
+  riskFirstSort,
+  onToggleRiskFirstSort,
+  alertsOnly,
+  onToggleAlertsOnly,
 }: CalendarHeaderProps) {
   return (
     <div className="flex items-center justify-between">
@@ -137,6 +147,34 @@ export function CalendarHeader({
 
       {/* Right: controls row */}
       <div className="flex items-center gap-2">
+        {/* Risk-first sort toggle (Calendar Improvement 2026-03-05) */}
+        {(view === "weekly" || view === "daily") && onToggleRiskFirstSort && (
+          <Button
+            variant={riskFirstSort ? "default" : "outline"}
+            size="sm"
+            className="h-8 text-xs gap-1"
+            onClick={onToggleRiskFirstSort}
+            title="Sort technician lanes by risk level"
+          >
+            <ArrowUpDown className="h-3 w-3" />
+            Risk first
+          </Button>
+        )}
+
+        {/* Alerts-only filter toggle (Calendar Improvement 2026-03-05) */}
+        {(view === "weekly" || view === "daily") && onToggleAlertsOnly && (
+          <Button
+            variant={alertsOnly ? "default" : "outline"}
+            size="sm"
+            className="h-8 text-xs gap-1"
+            onClick={onToggleAlertsOnly}
+            title="Only show lanes with active alerts"
+          >
+            <AlertTriangle className="h-3 w-3" />
+            Alerts only
+          </Button>
+        )}
+
         {/* Technician filter popover (all views) */}
         <TechnicianFilterPopover
           technicians={technicians}

@@ -35,7 +35,7 @@ export interface CalendarGridWeekProps {
   setExpandedAllDaySlots: React.Dispatch<React.SetStateAction<Set<string>>>;
   getTechnicianColor: (assignment: any) => ReturnType<typeof getTechnicianColorForAssignment>;
   handleClientClick: (client: any, event: CalendarEvent, focusSchedule?: boolean) => void;
-  handleResize: (assignmentId: string, newDurationMinutes: number) => void;
+  handleResize: (assignmentId: string, newDurationMinutes: number, assignment?: any) => void;
   weeklyScrollContainerRef: React.RefObject<HTMLDivElement>;
   /** Optional: hours to render (defaults to 0-23). Pass subset for business hours. */
   visibleHours?: number[];
@@ -129,7 +129,7 @@ function HourlyDropZone({
   clients: any[];
   technicians?: any[];
   getTechnicianColor: (assignment: any) => ReturnType<typeof getTechnicianColorForAssignment>;
-  handleResize: (assignmentId: string, newDurationMinutes: number) => void;
+  handleResize: (assignmentId: string, newDurationMinutes: number, assignment?: any) => void;
   handleClientClick: (client: any, event: CalendarEvent, focusSchedule?: boolean) => void;
   savingJobIds?: Set<string>;
   onUnschedule?: (assignmentId: string, version: number) => void;

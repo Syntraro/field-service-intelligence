@@ -9,7 +9,7 @@
  */
 
 import { Button } from "@/components/ui/button";
-import { LayoutDashboard, LogOut, Shield, Settings, Calendar as CalendarIcon, Plus, Users, Package, FileText, MessageCircle } from "lucide-react";
+import { LayoutDashboard, LogOut, Shield, Settings, Calendar as CalendarIcon, Plus, Users, Package, FileText, MessageCircle, Activity } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
@@ -20,6 +20,7 @@ import FeedbackDialog from "./FeedbackDialog";
 import QuickAddClientModal from "./QuickAddClientModal";
 import NotificationBell from "./NotificationBell";
 import UniversalSearch from "./UniversalSearch";
+import { ActivityFeedDrawer } from "./activity/ActivityFeedDrawer";
 
 interface AppHeaderProps {
   onAddClient?: () => void;
@@ -32,6 +33,7 @@ export default function AppHeader({ onAddClient, onDashboardClick }: AppHeaderPr
   const { toast } = useToast();
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [addClientModalOpen, setAddClientModalOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
 
   const handleClientCreated = (clientId: string, _companyId?: string) => {
     setLocation(`/clients/${clientId}`);
@@ -167,6 +169,16 @@ export default function AppHeader({ onAddClient, onDashboardClick }: AppHeaderPr
             <Button
               variant="ghost"
               size="icon"
+              onClick={() => setActivityOpen(true)}
+              data-testid="button-activity-feed"
+              className="h-8 w-8"
+              title="Recent Activity"
+            >
+              <Activity className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={() => setFeedbackOpen(true)}
               data-testid="button-feedback"
               className="h-8 w-8"
@@ -201,6 +213,7 @@ export default function AppHeader({ onAddClient, onDashboardClick }: AppHeaderPr
         onOpenChange={setAddClientModalOpen}
         onSuccess={handleClientCreated}
       />
+      <ActivityFeedDrawer open={activityOpen} onOpenChange={setActivityOpen} />
     </header>
   );
 }

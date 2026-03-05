@@ -66,6 +66,8 @@ import attentionRouter from "./attention";
 import routesRouter from "./routes";
 // Phase 4B: Technician telemetry (GPS pings)
 import telemetryRouter from "./telemetry";
+// Phase 5: Visit intelligence signals
+import intelligenceRouter from "./intelligence";
 
 /**
  * Register all API routes in a single place.
@@ -257,6 +259,9 @@ export function registerRoutes(app: Express): Server {
 
   // Phase 4B: Technician telemetry (GPS pings)
   app.use("/api/telemetry", telemetryRouter);
+
+  // Phase 5: Visit intelligence signals
+  app.use("/api/intelligence", intelligenceRouter);
 
   // Admin timesheets: day/week views, edit/delete time entries
   app.use("/api/admin/timesheets", adminTimesheetsRouter);

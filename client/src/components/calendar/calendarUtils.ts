@@ -321,6 +321,16 @@ export function normalizeAssignments(rawEvents: any[]): CalendarEvent[] {
 }
 
 /**
+ * Shared predicate: is this event an all-day / anytime event?
+ * Uses both the explicit flag and a fallback check on startMinutes.
+ * All views (day columns, day rows, weekly) should use this helper
+ * to ensure consistent classification of all-day vs timed events.
+ */
+export function isAllDayEvent(event: CalendarEvent): boolean {
+  return event.isAllDay === true || event.startMinutes === null || event.startMinutes === undefined;
+}
+
+/**
  * Compare function for stable event ordering.
  * Sort order: all-day events first, then by startMinutes, then by assignmentId (jobId) tie-breaker.
  * This ensures deterministic rendering across re-renders and React reconciliation.

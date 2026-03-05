@@ -1,7 +1,9 @@
 import express, { Response } from "express";
 import { z } from "zod";
+import { sql } from "drizzle-orm";
 import { requireRole } from "../auth/requireRole";
 import { jobVisitsRepository } from "../storage/jobVisits";
+import { db } from "../db";
 import { requireFeature } from "../auth/requireFeature";
 import { MANAGER_ROLES } from "../auth/roles";
 import { notificationService } from "../services/notificationService";
@@ -795,6 +797,198 @@ router.post(
       version: updatedJob?.version,
       status: updatedJob?.status,
     });
+  })
+);
+
+// ============================================================================
+// GET /api/calendar/day-summary — Per-technician day stats (Phase 5B)
+// ============================================================================
+
+/** Haversine distance in meters. */
+function haversineM(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6_371_000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+interface DaySummaryVisitRow {
+  visitId: string;
+  scheduledStart: Date;
+  scheduledEnd: Date | null;
+  estimatedDurationMinutes: number | null;
+  status: string;
+  technicianId: string | null;
+  technicianIds: string[] | null;
+  locationLat: string | null;
+  locationLng: string | null;
+}
+
+router.get(
+  "/day-summary",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const dateStr = req.query.date ? String(req.query.date) : new Date().toISOString().split("T")[0];
+
+    // 1) Fetch all active visits for the date
+    const { rows: visitRows } = await db.execute(sql`
+      SELECT
+        jv.id AS "visitId",
+        jv.scheduled_start AS "scheduledStart",
+        jv.scheduled_end AS "scheduledEnd",
+        jv.estimated_duration_minutes AS "estimatedDurationMinutes",
+        jv.status,
+        jv.assigned_technician_id AS "technicianId",
+        jv.assigned_technician_ids AS "technicianIds",
+        cl.lat AS "locationLat",
+        cl.lng AS "locationLng"
+      FROM job_visits jv
+      JOIN jobs j ON j.id = jv.job_id AND j.company_id = ${companyId}
+      LEFT JOIN client_locations cl ON cl.id = j.location_id
+      WHERE jv.company_id = ${companyId}
+        AND jv.is_active = true
+        AND jv.scheduled_start IS NOT NULL
+        AND jv.scheduled_start >= ${dateStr}::date
+        AND jv.scheduled_start < ${dateStr}::date + INTERVAL '1 day'
+        AND jv.status NOT IN ('cancelled')
+      ORDER BY jv.scheduled_start ASC
+    `);
+    const visits = visitRows as unknown as DaySummaryVisitRow[];
+
+    // 2) Fetch live positions
+    const { rows: liveRows } = await db.execute(sql`
+      SELECT
+        lp.technician_id AS "technicianId",
+        lp.last_seen_at AS "lastSeenAt",
+        lp.speed
+      FROM technician_live_positions lp
+      WHERE lp.company_id = ${companyId}
+    `);
+    const liveMap = new Map<string, { lastSeenAt: Date; speed: string | null }>();
+    for (const r of liveRows as any[]) {
+      liveMap.set(r.technicianId, { lastSeenAt: r.lastSeenAt, speed: r.speed });
+    }
+
+    // 3) Fetch open attention items for operational rule types
+    const { rows: attRows } = await db.execute(sql`
+      SELECT rule_type AS "ruleType", entity_type AS "entityType", entity_id AS "entityId",
+             meta
+      FROM attention_items
+      WHERE tenant_id = ${companyId}
+        AND status = 'open'
+        AND rule_type IN ('visit.late', 'visit.overdue', 'visit.running_long', 'tech.offline', 'tech.idle')
+    `);
+
+    // Build riskCounts per technician
+    // For visit-level rules, map visitId → technicianId via visits
+    const visitTechMap = new Map<string, string>();
+    for (const v of visits) {
+      const tid = v.technicianId || (v.technicianIds?.[0] ?? null);
+      if (tid) visitTechMap.set(v.visitId, tid);
+    }
+
+    const techRisks = new Map<string, Record<string, number>>();
+    for (const att of attRows as any[]) {
+      let techId: string | null = null;
+      if (att.entityType === "technician") {
+        techId = att.entityId;
+      } else if (att.entityType === "visit") {
+        techId = visitTechMap.get(att.entityId) ||
+          (att.meta?.technicianId as string) || null;
+      }
+      if (!techId) continue;
+      if (!techRisks.has(techId)) techRisks.set(techId, {});
+      const counts = techRisks.get(techId)!;
+      const key = att.ruleType.replace("visit.", "").replace("tech.", "");
+      counts[key] = (counts[key] || 0) + 1;
+    }
+
+    // 4) Fetch technician names
+    const { rows: techRows } = await db.execute(sql`
+      SELECT id, full_name AS "fullName"
+      FROM users
+      WHERE company_id = ${companyId}
+        AND role IN ('owner', 'admin', 'manager', 'dispatcher', 'technician')
+        AND is_active = true
+    `);
+    const techNames = new Map<string, string>();
+    for (const t of techRows as any[]) {
+      techNames.set(t.id, t.fullName);
+    }
+
+    // 5) Group visits by technician and compute stats
+    const techVisitsMap = new Map<string, DaySummaryVisitRow[]>();
+    for (const v of visits) {
+      const tids = v.technicianIds?.length ? v.technicianIds : v.technicianId ? [v.technicianId] : [];
+      for (const tid of tids) {
+        if (!techVisitsMap.has(tid)) techVisitsMap.set(tid, []);
+        techVisitsMap.get(tid)!.push(v);
+      }
+    }
+
+    const now = new Date();
+    const summaries = [];
+
+    for (const [techId, techVisits] of Array.from(techVisitsMap.entries())) {
+      // scheduledMinutes: sum of each visit's duration
+      let scheduledMinutes = 0;
+      for (const v of techVisits) {
+        if (v.scheduledEnd && v.scheduledStart) {
+          scheduledMinutes += Math.round((new Date(v.scheduledEnd).getTime() - new Date(v.scheduledStart).getTime()) / 60_000);
+        } else {
+          scheduledMinutes += v.estimatedDurationMinutes ?? 60;
+        }
+      }
+
+      // driveMinutesEstimated: haversine-based 30km/h between consecutive visits
+      let driveMinutes = 0;
+      const sorted = [...techVisits].sort((a, b) => new Date(a.scheduledStart).getTime() - new Date(b.scheduledStart).getTime());
+      for (let i = 1; i < sorted.length; i++) {
+        const prev = sorted[i - 1];
+        const curr = sorted[i];
+        if (prev.locationLat && prev.locationLng && curr.locationLat && curr.locationLng) {
+          const distM = haversineM(
+            parseFloat(prev.locationLat), parseFloat(prev.locationLng),
+            parseFloat(curr.locationLat), parseFloat(curr.locationLng),
+          );
+          driveMinutes += Math.max(5, Math.round((distM / 1000) * 2)); // 2 min/km
+        }
+      }
+
+      // Risk
+      const riskCounts = techRisks.get(techId) || {};
+      const hasHigh = (riskCounts.running_long || 0) > 0 || (riskCounts.overdue || 0) > 0;
+      const hasWarn = (riskCounts.late || 0) > 0 || (riskCounts.offline || 0) > 0;
+      const risk = hasHigh ? "high" : hasWarn ? "warn" : "ok";
+
+      // Presence
+      const live = liveMap.get(techId);
+      const online = live ? (now.getTime() - new Date(live.lastSeenAt).getTime()) < 5 * 60_000 : false;
+
+      // Next visit
+      const nextVisit = sorted.find((v) => new Date(v.scheduledStart).getTime() > now.getTime());
+
+      summaries.push({
+        technicianId: techId,
+        name: techNames.get(techId) || techId,
+        scheduledMinutes,
+        driveMinutesEstimated: driveMinutes,
+        visitCount: techVisits.length,
+        risk,
+        riskCounts,
+        online,
+        lastSeenAt: live?.lastSeenAt ? new Date(live.lastSeenAt).toISOString() : undefined,
+        nextVisit: nextVisit ? {
+          visitId: nextVisit.visitId,
+          plannedStart: new Date(nextVisit.scheduledStart).toISOString(),
+        } : undefined,
+      });
+    }
+
+    res.json(summaries);
   })
 );
 

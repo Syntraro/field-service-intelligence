@@ -44,7 +44,9 @@ import {
   ScheduleJobModal,
 } from "@/components/calendar";
 import { useCompanyRegionalSettings } from "@/hooks/useCompanyRegionalSettings";
+import { useCalendarDaySummary, type TechDaySummary } from "@/hooks/useCalendarDaySummary";
 import { JobCard } from "@/components/calendar/JobCard";
+import { SuggestSlotDialog } from "@/components/calendar/SuggestSlotDialog";
 import { toClientsArray, resolveClientForCalendarEvent } from "@/components/calendar/calendarClientLookup";
 
 // ============================================================================
@@ -168,10 +170,32 @@ export default function Calendar() {
     setExpandedAllDaySlots,
     dayLayout,
     toggleDayLayout,
+    riskFirstSort,
+    toggleRiskFirstSort,
+    alertsOnly,
+    toggleAlertsOnly,
   } = useCalendarState();
 
   // Regional settings (timezone, date/time format, week start) from company settings
   const regional = useCompanyRegionalSettings();
+
+  // Calendar Improvement (2026-03-05): Technician day summary for lane headers
+  const daySummaryDate = useMemo(() => {
+    // For daily view: use currentDate. For weekly: fetch for each day as needed by grids.
+    // We fetch the single-day summary for daily view or the week's Monday for weekly view.
+    const d = view === "daily" ? currentDate : currentDate;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }, [currentDate, view]);
+  const { data: techDaySummary } = useCalendarDaySummary(daySummaryDate, view === "daily" || view === "weekly");
+
+  // Build techDaySummary lookup map
+  const techSummaryMap = useMemo(() => {
+    const map = new Map<string, TechDaySummary>();
+    if (techDaySummary) {
+      for (const s of techDaySummary) map.set(s.technicianId, s);
+    }
+    return map;
+  }, [techDaySummary]);
 
   // Local UI state (not persisted)
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -193,6 +217,10 @@ export default function Calendar() {
   // Task dialog state (Phase 8 of calendar rewrite)
   const [taskDialogOpen, setTaskDialogOpen] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>();
+
+  // Phase 6: Suggest-slot dialog state
+  const [suggestSlotOpen, setSuggestSlotOpen] = useState(false);
+  const [suggestSlotItem, setSuggestSlotItem] = useState<any>(null);
 
   const { toast } = useToast();
   const { user } = useAuth();
@@ -418,13 +446,14 @@ export default function Calendar() {
   });
 
   // Helper for resize handler (uses hook's mutation)
-  const handleResize = useCallback((assignmentId: string, newDurationMinutes: number) => {
+  const handleResize = useCallback((assignmentId: string, newDurationMinutes: number, assignment?: any) => {
     // RBAC: Block resize for view-only users
     if (!canSchedule) {
       showViewOnlyToast();
       return;
     }
-    updateDuration.mutate({ id: assignmentId, durationMinutes: newDurationMinutes });
+    // Pass raw assignment so mutation can compute newEndTime for POST /api/calendar/resize
+    updateDuration.mutate({ id: assignmentId, durationMinutes: newDurationMinutes, assignment });
   }, [updateDuration, canSchedule, showViewOnlyToast]);
 
   // Quick action: unschedule (remove from calendar)
@@ -2136,12 +2165,16 @@ export default function Calendar() {
             dayLayout={dayLayout}
             onToggleDayLayout={toggleDayLayout}
             regional={regional}
+            riskFirstSort={riskFirstSort}
+            onToggleRiskFirstSort={toggleRiskFirstSort}
+            alertsOnly={alertsOnly}
+            onToggleAlertsOnly={toggleAlertsOnly}
           />
 
           <div className={`flex gap-2 flex-1 min-h-0 overflow-hidden mt-2`}>
             <div className="flex-1 min-w-0 flex flex-col h-full">
               <Card className="h-full flex flex-col overflow-hidden">
-                <CardContent className="flex-1 overflow-auto p-0 h-full">
+                <CardContent className="flex-1 overflow-hidden p-0 h-full">
                   {view === "monthly" && (
                     <CalendarGridMonth
                       year={year}
@@ -2163,7 +2196,7 @@ export default function Calendar() {
                   )}
                   {/* Phase 8a: Weekly view always shows tech-first layout (toggle removed) */}
                   {view === "weekly" && (
-                    <div className="h-full flex flex-col min-h-0 max-h-full">
+                    <div className="h-full flex flex-col min-h-0">
                       <CalendarGridWeekTechnicians
                         currentDate={currentDate}
                         density={density}
@@ -2174,11 +2207,14 @@ export default function Calendar() {
                         onSlotClick={handleTechWeekSlotClick}
                         onScheduleNew={handleScheduleNew}
                         regional={regional}
+                        techSummaryMap={techSummaryMap}
+                        riskFirstSort={riskFirstSort}
+                        alertsOnly={alertsOnly}
                       />
                     </div>
                   )}
                   {view === "daily" && (
-                    <div className="h-full flex flex-col min-h-0 max-h-full">
+                    <div className="h-full flex flex-col min-h-0">
                       {dayLayout === "columns" ? (
                         /* Vertical tech columns (default) */
                         <CalendarGridDayJobber
@@ -2196,6 +2232,9 @@ export default function Calendar() {
                           onUnschedule={handleUnschedule}
                           regional={regional}
                           businessHours={businessHoursData?.hours}
+                          techSummaryMap={techSummaryMap}
+                          riskFirstSort={riskFirstSort}
+                          alertsOnly={alertsOnly}
                         />
                       ) : (
                         /* Horizontal tech rows (Polish Pass 2026-03-04) */
@@ -2209,9 +2248,14 @@ export default function Calendar() {
                           hiddenTechnicianIds={hiddenTechnicianIds}
                           getTechnicianColor={getTechnicianColor}
                           handleClientClick={handleClientClick}
+                          handleResize={handleResize}
                           savingJobIds={savingJobIds}
+                          onUnschedule={handleUnschedule}
                           regional={regional}
                           businessHours={businessHoursData?.hours}
+                          techSummaryMap={techSummaryMap}
+                          riskFirstSort={riskFirstSort}
+                          alertsOnly={alertsOnly}
                         />
                       )}
                     </div>
@@ -2255,6 +2299,10 @@ export default function Calendar() {
                 onNewTask={() => {
                   setSelectedTaskId(undefined);
                   setTaskDialogOpen(true);
+                }}
+                onSuggestSlot={(item) => {
+                  setSuggestSlotItem(item);
+                  setSuggestSlotOpen(true);
                 }}
               />
             </aside>
@@ -2338,6 +2386,13 @@ export default function Calendar() {
         open={taskDialogOpen}
         onOpenChange={setTaskDialogOpen}
         taskId={selectedTaskId}
+      />
+
+      {/* Phase 6: Suggest-slot dialog for auto-gap scheduling */}
+      <SuggestSlotDialog
+        open={suggestSlotOpen}
+        onOpenChange={setSuggestSlotOpen}
+        item={suggestSlotItem}
       />
 
       {/* Diagnostics Panel - dev mode or ?diag=1 */}

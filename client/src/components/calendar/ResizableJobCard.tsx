@@ -17,7 +17,7 @@ interface ResizableJobCardProps {
   assignment: any;
   client: any;
   rowHeight: number;
-  onResize: (assignmentId: string, newDurationMinutes: number) => void;
+  onResize: (assignmentId: string, newDurationMinutes: number, assignment?: any) => void;
   getTechnicianColor: (assignment: any) => TechnicianColor;
   densityStyle: string;
   onClick: () => void;
@@ -133,7 +133,7 @@ export function ResizableJobCard({
       }
 
       if (tempDuration !== null && tempDuration !== (assignment.durationMinutes || 60)) {
-        onResize(assignment.id, tempDuration);
+        onResize(assignment.id, tempDuration, assignment);
       }
       setTempDuration(null);
       setHitMidnightLimit(false);

@@ -26,6 +26,7 @@ import {
   Loader2,
   CheckSquare,
   Square,
+  Zap,
 } from "lucide-react";
 
 export interface CalendarSidebarProps {
@@ -44,6 +45,8 @@ export interface CalendarSidebarProps {
   onTaskClick: (taskId: string) => void;
   onTaskToggle: (taskId: string, completed: boolean) => void;
   onNewTask: () => void;
+  /** Phase 6: Callback to open suggest-slot dialog for an unscheduled visit item */
+  onSuggestSlot?: (item: any) => void;
 }
 
 /** Format date for task list items */
@@ -78,6 +81,7 @@ export function CalendarSidebar({
   onTaskClick,
   onTaskToggle,
   onNewTask,
+  onSuggestSlot,
 }: CalendarSidebarProps) {
   const { setNodeRef, isOver } = useDroppable({ id: "unscheduled-panel" });
 
@@ -230,6 +234,17 @@ export function CalendarSidebar({
                     }`}
                   >
                     {renderVisitItem(item)}
+                    {/* Phase 6: Suggest slot button per visit */}
+                    {onSuggestSlot && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onSuggestSlot(item); }}
+                        className="w-full text-left px-2 py-1 text-[11px] text-primary hover:bg-primary/5 flex items-center gap-1 -mt-0.5 rounded-b"
+                        title="Find best available slot"
+                      >
+                        <Zap className="h-3 w-3" />
+                        Suggest slot
+                      </button>
+                    )}
                   </div>
                 ))
               )}

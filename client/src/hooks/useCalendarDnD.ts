@@ -1043,13 +1043,33 @@ export function useCalendarDnD(
   // Update Duration Mutation
   // ========================================
   const updateDuration = useMutation({
-    mutationFn: async ({ id, durationMinutes, version }: { id: string; durationMinutes: number; version?: number }) => {
-      // Duration update doesn't change schedule, but we still need version if available
-      const payload: Record<string, unknown> = { durationMinutes };
-      if (version !== undefined) {
-        payload.version = version;
+    mutationFn: async ({ id, durationMinutes, assignment }: { id: string; durationMinutes: number; assignment?: any; version?: number }) => {
+      // Use POST /api/calendar/resize which expects { job: { id, scheduledStart, scheduledEnd }, newEndTime }
+      const scheduledStart = assignment?.scheduledStart || assignment?.startAt;
+      const scheduledEnd = assignment?.scheduledEnd || assignment?.endAt;
+      const jobId = assignment?.jobId || id;
+
+      if (scheduledStart) {
+        const newEndTime = new Date(new Date(scheduledStart).getTime() + durationMinutes * 60_000).toISOString();
+        return apiRequest(`/api/calendar/resize`, {
+          method: "POST",
+          body: JSON.stringify({
+            job: {
+              id: jobId,
+              scheduledStart: typeof scheduledStart === 'string' ? scheduledStart : new Date(scheduledStart).toISOString(),
+              scheduledEnd: scheduledEnd
+                ? (typeof scheduledEnd === 'string' ? scheduledEnd : new Date(scheduledEnd).toISOString())
+                : new Date(new Date(scheduledStart).getTime() + (assignment?.durationMinutes || 60) * 60_000).toISOString(),
+            },
+            newEndTime,
+          }),
+        });
       }
 
+      // Fallback: if no schedule data available, try PATCH with version
+      const payload: Record<string, unknown> = { durationMinutes };
+      const version = assignment?.version;
+      if (version !== undefined) payload.version = version;
       return apiRequest(`/api/calendar/schedule/${id}`, {
         method: "PATCH",
         body: JSON.stringify(payload),
@@ -1069,13 +1089,12 @@ export function useCalendarDnD(
 
       // VERSION_MISMATCH (409): Log to diagnostics and refetch
       if (isVersionMismatchError(error)) {
-        // Log detailed diagnostics for debugging
         logVersionMismatch(
           params.id,
-          params.version,
+          params.assignment?.version,
           error.message || 'Version mismatch',
-          'PATCH',
-          `/api/calendar/schedule/${params.id}`
+          'POST',
+          `/api/calendar/resize`
         );
         // Refetch calendar to get fresh versions (duration change doesn't affect unscheduled)
         await refetchCalendar();
