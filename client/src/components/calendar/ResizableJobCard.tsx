@@ -9,6 +9,7 @@
  * Uses JobCard for consistent visual styling and interactions.
  */
 import { useState, useRef, useCallback, useEffect } from "react";
+import { useDraggable } from "@dnd-kit/core";
 import { JobCard } from "./JobCard";
 import { getAssignmentStartMinutes, TechnicianColor } from "./calendarUtils";
 import { useToast } from "@/hooks/use-toast";
@@ -56,6 +57,15 @@ export function ResizableJobCard({
   timeFormat = "12h",
 }: ResizableJobCardProps) {
   const { toast } = useToast();
+
+  // 2026-03-05: Add useDraggable so timed items in Columns view can be dragged
+  // to other time slots, all-day lanes, or between technician columns.
+  const { attributes, listeners, setNodeRef: setDragRef, transform, isDragging } = useDraggable({
+    id: assignment.id,
+    disabled: isSaving || isCompleted,
+    data: { type: "assignment", assignmentId: assignment.id, client, event: assignment },
+  });
+
   const [isResizing, setIsResizing] = useState(false);
   const [tempDuration, setTempDuration] = useState<number | null>(null);
   const [hitMidnightLimit, setHitMidnightLimit] = useState(false);
@@ -64,8 +74,19 @@ export function ResizableJobCard({
   // rAF throttle: store latest computed duration in ref, flush via rAF
   const pendingDurationRef = useRef<number | null>(null);
   const rafIdRef = useRef<number>(0);
-  // Suppress click within 250ms of resize end to prevent opening modal
+  // Suppress click within 250ms of drag/resize end to prevent opening modal
   const lastResizeEndedAtRef = useRef<number>(0);
+  // 2026-03-05: Also suppress click after drag release
+  const lastDragEndedAtRef = useRef<number>(0);
+  const wasDraggingRef = useRef(false);
+  useEffect(() => {
+    if (isDragging) {
+      wasDraggingRef.current = true;
+    } else if (wasDraggingRef.current) {
+      wasDraggingRef.current = false;
+      lastDragEndedAtRef.current = Date.now();
+    }
+  }, [isDragging]);
 
   const startMinutes = getAssignmentStartMinutes(assignment);
   const startOffsetWithinHour = startMinutes % 60;
@@ -172,14 +193,23 @@ export function ResizableJobCard({
 
   const techColor = getTechnicianColor(assignment);
 
+  // 2026-03-05: Combine drag transform with absolute positioning
+  const dragStyle = transform && !isResizing
+    ? { transform: `translate(${transform.x}px, ${transform.y}px)` }
+    : undefined;
+
   return (
     <div
-      className={`absolute z-10 ${isResizing ? 'transition-none' : ''}`}
+      ref={setDragRef}
+      {...attributes}
+      {...(isResizing ? {} : listeners)}
+      className={`absolute z-10 select-none ${isResizing ? 'transition-none' : ''} ${isDragging ? 'opacity-70 z-50 shadow-lg' : ''}`}
       style={{
         top: `${topOffset}px`,
         height: `${cardHeight}px`,
         left: `calc(${leftPercent}% + 1px)`,
         width: `calc(${widthPercent}% - 2px)`,
+        ...dragStyle,
       }}
     >
       <JobCard
@@ -189,6 +219,8 @@ export function ResizableJobCard({
         inCalendar
         onClick={() => {
           if (Date.now() - lastResizeEndedAtRef.current < 250) return;
+          if (Date.now() - lastDragEndedAtRef.current < 250) return;
+          if (isDragging) return;
           onClick();
         }}
         onReschedule={onReschedule}

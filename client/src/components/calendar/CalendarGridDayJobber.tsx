@@ -17,7 +17,7 @@
  */
 import { memo, useMemo, useRef, useEffect } from "react";
 import { format } from "date-fns";
-import { useDroppable } from "@dnd-kit/core";
+import { useDroppable, useDraggable } from "@dnd-kit/core";
 import { JobCard } from "./JobCard";
 import { ResizableJobCard } from "./ResizableJobCard";
 import { TechLaneHeader } from "./TechLaneHeader";
@@ -191,6 +191,41 @@ function QuarterDropZone({
 }
 
 // ============================================================================
+// DraggableAllDayCard — wraps JobCard with useDraggable for all-day items
+// 2026-03-05: Enables dragging all-day items to timed slots or other columns
+// ============================================================================
+
+function DraggableAllDayCard({ event, client, isSaving, isTask, children, assignmentId, raw }: {
+  event: CalendarEvent;
+  client: any;
+  isSaving: boolean;
+  isTask: boolean;
+  children: React.ReactNode;
+  assignmentId: string;
+  raw: any;
+}) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: assignmentId,
+    disabled: isSaving || !!event.completed || isTask,
+    data: { type: "assignment", assignmentId, client, event: raw },
+  });
+
+  const dragStyle = transform ? { transform: `translate(${transform.x}px, ${transform.y}px)` } : undefined;
+
+  return (
+    <div
+      ref={setNodeRef}
+      {...attributes}
+      {...(isSaving ? {} : listeners)}
+      className={`select-none ${isDragging ? 'opacity-50 z-50 shadow-lg' : ''}`}
+      style={dragStyle}
+    >
+      {children}
+    </div>
+  );
+}
+
+// ============================================================================
 // Technician Column Component
 // ============================================================================
 
@@ -269,30 +304,39 @@ function TechColumn({
       >
         <AllDayDropZone technicianId={technicianId} dateKey={dateKey}>
           <div className="flex flex-wrap gap-1 overflow-hidden h-full">
+            {/* 2026-03-05: Wrapped with DraggableAllDayCard for DnD between lanes */}
             {allDayEvents.slice(0, 3).map((event) => {
               const client = findClientByEvent(clients, event);
               const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
-              // Phase 9: Detect task items for distinct visual
               const isTask = (event as any).kind === "task";
               return client ? (
-                <JobCard
+                <DraggableAllDayCard
                   key={event.assignmentId}
-                  id={event.assignmentId}
-                  client={isTask ? { ...client, companyName: event.raw?.title || "Task" } : client}
-                  assignment={event.raw}
-                  inCalendar
-                  onClick={() => handleClientClick(client, event)}
-                  onReschedule={isTask ? undefined : () => handleClientClick(client, event, true)}
-                  onUnschedule={isTask ? undefined : onUnschedule}
-                  isCompleted={event.completed}
-                  isOverdue={isTask ? false : isCalendarEventOverdue(event)}
-                  isSaving={isSaving}
-                  technicianColor={getTechnicianColor(event.raw)}
-                  densityStyle={DENSITY_STYLES[density].card}
-                  technicians={technicians}
-                  timeFormat={timeFormat}
-                  itemKind={isTask ? "task" : "visit"}
-                />
+                  event={event}
+                  client={client}
+                  isSaving={!!isSaving}
+                  isTask={isTask}
+                  assignmentId={event.assignmentId}
+                  raw={event.raw}
+                >
+                  <JobCard
+                    id={event.assignmentId}
+                    client={isTask ? { ...client, companyName: event.raw?.title || "Task" } : client}
+                    assignment={event.raw}
+                    inCalendar
+                    onClick={() => handleClientClick(client, event)}
+                    onReschedule={isTask ? undefined : () => handleClientClick(client, event, true)}
+                    onUnschedule={isTask ? undefined : onUnschedule}
+                    isCompleted={event.completed}
+                    isOverdue={isTask ? false : isCalendarEventOverdue(event)}
+                    isSaving={isSaving}
+                    technicianColor={getTechnicianColor(event.raw)}
+                    densityStyle={DENSITY_STYLES[density].card}
+                    technicians={technicians}
+                    timeFormat={timeFormat}
+                    itemKind={isTask ? "task" : "visit"}
+                  />
+                </DraggableAllDayCard>
               ) : null;
             })}
             {allDayEvents.length > 3 && (

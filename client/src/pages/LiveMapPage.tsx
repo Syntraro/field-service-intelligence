@@ -83,6 +83,8 @@ interface MapDayData {
     techniciansOnline?: number;
     jobFallbackCount?: number;
     visitsTotal?: number;
+    visitsAssigned?: number;
+    visitsUnassigned?: number;
     visitsWithCoords?: number;
     visitsMissingCoords?: number;
     visitsMissingScheduledStart?: number;
@@ -326,6 +328,7 @@ function DispatchPanel({
   onFocusTech,
   onClickVisit,
   jobFallbackCount,
+  totalVisitCount,
 }: {
   technicians: MapTechnician[];
   visits: MapVisit[];
@@ -334,6 +337,8 @@ function DispatchPanel({
   onFocusTech: (id: string | null) => void;
   onClickVisit: (v: MapVisit) => void;
   jobFallbackCount: number;
+  /** Total unfiltered visit count — used to distinguish "no visits" from "filtered out" */
+  totalVisitCount: number;
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
@@ -502,14 +507,23 @@ function DispatchPanel({
           </div>
         )}
 
-        {/* Empty state with job fallback hint */}
+        {/* Empty state — distinguish "no visits" from "hidden by filter" */}
         {visits.length === 0 && (
           <div className="text-center text-sm text-muted-foreground py-8 px-4">
-            <div>No visits for today</div>
-            {jobFallbackCount > 0 && (
-              <div className="mt-2 text-xs flex items-center justify-center gap-1 text-amber-600">
-                <AlertTriangle className="h-3 w-3" />
-                {jobFallbackCount} scheduled job{jobFallbackCount > 1 ? "s" : ""} exist but have no visit records yet.
+            {totalVisitCount > 0 ? (
+              <div>
+                <div>{totalVisitCount} visit{totalVisitCount > 1 ? "s" : ""} hidden by current filter</div>
+                <div className="text-xs mt-1">Adjust technician filter or toggle Unassigned to see visits.</div>
+              </div>
+            ) : (
+              <div>
+                <div>No visits for today</div>
+                {jobFallbackCount > 0 && (
+                  <div className="mt-2 text-xs flex items-center justify-center gap-1 text-amber-600">
+                    <AlertTriangle className="h-3 w-3" />
+                    {jobFallbackCount} scheduled job{jobFallbackCount > 1 ? "s" : ""} exist but have no visit records yet.
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -819,6 +833,7 @@ export default function LiveMapPage() {
               onFocusTech={setFocusTechId}
               onClickVisit={handleClickVisit}
               jobFallbackCount={jobFallbackCount}
+              totalVisitCount={visits.length}
             />
           </div>
         )}

@@ -172,8 +172,7 @@ export type User = typeof users.$inferSelect;
 // User Identities - Login methods (email, SSO providers)
 // ============================================================================
 
-export const identityProviderEnum = ["email", "google", "microsoft", "apple"] as const;
-export type IdentityProvider = typeof identityProviderEnum[number];
+// Phase B: identityProviderEnum / IdentityProvider removed (unused exports)
 
 /**
  * user_identities table - stores login credentials/identities for users.
@@ -230,10 +229,7 @@ export const passwordResetTokens = pgTable("password_reset_tokens", {
   requestedIp: text("requested_ip"),
 });
 
-export const insertPasswordResetTokenSchema = createInsertSchema(passwordResetTokens).omit({
-  id: true,
-  createdAt: true,
-});
+// Phase B: insertPasswordResetTokenSchema removed (unused export)
 
 // ============================================================================
 // Audit Events - Security audit trail for sensitive actions
@@ -269,8 +265,7 @@ export const insertAuditEventSchema = createInsertSchema(auditEvents).omit({
 export type InsertAuditEvent = z.infer<typeof insertAuditEventSchema>;
 export type AuditEvent = typeof auditEvents.$inferSelect;
 
-export type InsertPasswordResetToken = z.infer<typeof insertPasswordResetTokenSchema>;
-export type PasswordResetToken = typeof passwordResetTokens.$inferSelect;
+// Phase B: InsertPasswordResetToken, PasswordResetToken removed (unused exports)
 
 // Audit logs for tracking impersonation and cross-tenant actions
 export const auditLogs = pgTable("audit_logs", {
@@ -679,9 +674,7 @@ export const unscheduleJobSchema = z.object({
   version: z.number().int(), // Required for optimistic locking
 });
 
-export type ScheduleJobInput = z.infer<typeof scheduleJobSchema>;
-export type UpdateJobScheduleInput = z.infer<typeof updateJobScheduleSchema>;
-export type UnscheduleJobInput = z.infer<typeof unscheduleJobSchema>;
+// Phase B: ScheduleJobInput, UpdateJobScheduleInput, UnscheduleJobInput removed (unused type aliases)
 
 export const equipment = pgTable("equipment", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -778,8 +771,7 @@ export type CompanyBusinessHours = typeof companyBusinessHours.$inferSelect;
 // ============================================================================
 // USER INVITATIONS (dispatch software access) - single-company system
 // ============================================================================
-export const invitationStatusEnum = ["pending", "accepted", "expired", "revoked"] as const;
-export type InvitationStatus = typeof invitationStatusEnum[number];
+// Phase B: invitationStatusEnum / InvitationStatus removed (unused exports)
 
 export const invitations = pgTable("invitations", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),

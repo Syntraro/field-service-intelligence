@@ -84,13 +84,17 @@ function RowDropZone({ technicianId, hour, minute, currentDate }: {
   const droppableId = `daily|${technicianId}|${hour}|${minute}|${currentDate.getDate()}|${currentDate.getMonth()}|${currentDate.getFullYear()}`;
   const { setNodeRef, isOver } = useDroppable({ id: droppableId });
 
+  // 2026-03-05: Use explicit pixel height instead of h-full to guarantee non-zero
+  // bounding rect for dnd-kit collision detection (h-full through nested absolute
+  // parents can resolve to 0).
   return (
     <div
       ref={setNodeRef}
-      className={`absolute top-0 h-full pointer-events-none ${isOver ? 'bg-primary/20 border border-primary z-50' : 'z-10'}`}
+      className={`absolute top-0 pointer-events-none ${isOver ? 'bg-primary/20 border border-primary z-50' : 'z-10'}`}
       style={{
         width: '25%',
         left: `${(minute / 60) * 100}%`,
+        height: ROW_HEIGHT,
       }}
     />
   );
@@ -114,6 +118,46 @@ function RowAllDayDropZone({ technicianId, dateKey, children }: {
       className={`h-full flex flex-col gap-0.5 ${isOver ? 'bg-primary/20 border border-primary rounded' : ''}`}
     >
       {children}
+    </div>
+  );
+}
+
+// ============================================================================
+// DraggableAllDayChip — draggable all-day/anytime item in row layout
+// 2026-03-05: Enables drag from all-day lane to timed slots and vice versa
+// ============================================================================
+
+function DraggableAllDayChip({ event, client, onClick, isSaving, isTask }: {
+  event: CalendarEvent;
+  client: any;
+  onClick: () => void;
+  isSaving: boolean;
+  isTask: boolean;
+}) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: event.assignmentId,
+    disabled: isSaving || !!event.completed || isTask,
+    data: { type: "assignment", assignmentId: event.assignmentId, client, event: event.raw },
+  });
+
+  const dragStyle = transform ? { transform: `translate(${transform.x}px, ${transform.y}px)` } : undefined;
+
+  return (
+    <div
+      ref={setNodeRef}
+      {...attributes}
+      {...(isSaving ? {} : listeners)}
+      className={`text-[9px] px-1 rounded truncate cursor-grab active:cursor-grabbing select-none ${
+        isDragging ? 'opacity-50 z-50 shadow-lg' : ''
+      } ${
+        isTask ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300'
+          : 'bg-primary/10 text-primary'
+      }`}
+      style={dragStyle}
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      title={`Anytime: ${client?.companyName || (isTask ? event.raw?.title : 'Unknown')}`}
+    >
+      {client?.companyName || (isTask ? event.raw?.title : 'Anytime')}
     </div>
   );
 }
@@ -338,21 +382,20 @@ const MemoizedTechRow = memo(function TechRow({
         style={{ left: TECH_LABEL_WIDTH, width: ALLDAY_COL_WIDTH }}
       >
         <RowAllDayDropZone technicianId={technicianId} dateKey={format(currentDate, "yyyy-MM-dd")}>
+          {/* 2026-03-05: All-day items now use DraggableAllDayChip for DnD between lanes */}
           {allDayEvents.slice(0, 2).map(event => {
             const client = findClientByEvent(clients, event);
             const isTask = (event as any).kind === "task";
+            const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
             return (
-              <div
+              <DraggableAllDayChip
                 key={event.assignmentId}
-                className={`text-[9px] px-1 rounded truncate cursor-pointer ${
-                  isTask ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300'
-                    : 'bg-primary/10 text-primary'
-                }`}
-                onClick={(e) => { e.stopPropagation(); handleClientClick(client, event); }}
-                title={`Anytime: ${client?.companyName || (isTask ? event.raw?.title : 'Unknown')}`}
-              >
-                {client?.companyName || (isTask ? event.raw?.title : 'Anytime')}
-              </div>
+                event={event}
+                client={client}
+                onClick={() => handleClientClick(client, event)}
+                isSaving={!!isSaving}
+                isTask={isTask}
+              />
             );
           })}
           {allDayEvents.length > 2 && (
@@ -361,14 +404,14 @@ const MemoizedTechRow = memo(function TechRow({
         </RowAllDayDropZone>
       </div>
 
-      {/* Timeline area */}
-      <div className="relative flex-1" style={{ minWidth: HOURS_IN_DAY * HOUR_WIDTH }}>
+      {/* Timeline area — explicit height ensures absolute children have non-zero bounds for dnd-kit (2026-03-05) */}
+      <div className="relative flex-1" style={{ minWidth: HOURS_IN_DAY * HOUR_WIDTH, height: ROW_HEIGHT }}>
         {/* Hour grid lines */}
         {Array.from({ length: HOURS_IN_DAY }, (_, hour) => (
           <div
             key={hour}
-            className="absolute top-0 h-full border-r border-dashed border-muted/40"
-            style={{ left: hour * HOUR_WIDTH, width: HOUR_WIDTH }}
+            className="absolute top-0 border-r border-dashed border-muted/40"
+            style={{ left: hour * HOUR_WIDTH, width: HOUR_WIDTH, height: ROW_HEIGHT }}
           >
             {/* Quarter-hour drop zones */}
             {[0, 15, 30, 45].map((minute) => (

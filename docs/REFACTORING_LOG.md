@@ -4,6 +4,42 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-03-05: Phase B Dead Code Cleanup
+
+### Batch 1 — Dead Server Files (305 lines)
+| File | Lines | Reason |
+|---|---|---|
+| `server/services/qboGuards.ts` | 10 | Exported `assertInvoiceSyncAllowed()` — never imported |
+| `server/services/calendarService.ts` | 20 | Exported `resizeJobTime()` — never imported |
+| `server/stripe/stripeClient.ts` | 69 | Only referenced by other stripe files; no route mount |
+| `server/stripe/stripeService.ts` | 79 | Only referenced by other stripe files; no route mount |
+| `server/stripe/webhookHandlers.ts` | 127 | Only referenced by other stripe files; no route mount |
+
+### Batch 2 — Dead Schema Exports
+Removed from `shared/schema.ts` (exports only, no table definitions altered):
+- `identityProviderEnum` / `IdentityProvider` — never imported
+- `invitationStatusEnum` / `InvitationStatus` — never imported
+- `insertPasswordResetTokenSchema` / `InsertPasswordResetToken` / `PasswordResetToken` — never imported
+- `ScheduleJobInput` / `UpdateJobScheduleInput` / `UnscheduleJobInput` — type aliases never imported (underlying Zod schemas still used by `routes/calendar.ts`)
+
+### Batch 3A — Duplicate Migration
+- Deleted `migrations/006-fix-money-types.sql` (original, lacked `::text` casts)
+- Kept `migrations/006-fix-money-types-FIXED.sql` (corrected version with `::text` casts for NUMERIC columns)
+
+### Batch 3B — Unreferenced Assets
+- Moved 178 files (8.4 MB) from `attached_assets/` to `attached_assets/_archive/`
+- No source file imports from `@assets` alias — confirmed via grep
+
+### Batch 3C — Unused npm Dependencies (14 packages)
+Removed: `react-icons`, `react-resizable-panels`, `recharts`, `framer-motion`, `vaul`, `embla-carousel-react`, `tw-animate-css`, `next-themes`, `input-otp`, `memorystore`, `stripe`, `stripe-replit-sync`, `@stripe/react-stripe-js`, `@stripe/stripe-js`
+
+### Build Verification
+- TypeScript: Only pre-existing `adminTimesheets.ts:376` errors (unrelated)
+- Vite build: Passed all 3 batches. CSS 122.67 KB, JS 2,204.56 KB (unchanged)
+- No new errors introduced
+
+---
+
 ## 2026-02-02: Step 2.4 - Job Visits → Jobs Schedule Mirroring
 
 ### Summary

@@ -194,19 +194,23 @@ router.get(
     const jobFallbackCount = (jobFallbackRows.rows as any[]).length;
     const visitsWithCoords = visits.filter((v) => v.lat && v.lng).length;
     const visitsMissingScheduledStart = visits.filter((v) => !v.scheduledStart).length;
+    const visitsAssigned = visits.filter((v) => v.technicianId).length;
+    const visitsUnassigned = visits.filter((v) => !v.technicianId).length;
     const techniciansOnline = allTechs.filter((t) => t.online).length;
 
-    // Dev debug logging
+    // Dev debug logging — visits are independent of tech online status
     if (process.env.NODE_ENV !== "production") {
-      const sample = visits.slice(0, 3).map((v) => ({ id: v.visitId, start: v.scheduledStart, src: v.source }));
+      const sample = visits.slice(0, 5).map((v) => ({
+        id: v.visitId, start: v.scheduledStart, technicianId: v.technicianId, status: v.status, src: v.source,
+      }));
       console.log(
         `[MAP /day] company=${companyId} date=${dateStr} tz=${tz}`,
         `bounds=[${start.toISOString()} .. ${end.toISOString()})`,
         `techs=${allTechs.length} (online=${techniciansOnline})`,
-        `visitsTotal=${visits.length} withCoords=${visitsWithCoords} missingCoords=${visits.length - visitsWithCoords}`,
+        `visitsTotal=${visits.length} assigned=${visitsAssigned} unassigned=${visitsUnassigned}`,
+        `withCoords=${visitsWithCoords} missingCoords=${visits.length - visitsWithCoords}`,
         `missingScheduledStart=${visitsMissingScheduledStart}`,
         `jobFallback=${jobFallbackCount}`,
-        `unassigned=${visits.filter((v) => !v.technicianId).length}`,
         `sample=`, sample,
       );
 
@@ -234,6 +238,8 @@ router.get(
         techniciansOnline,
         jobFallbackCount,
         visitsTotal: visits.length,
+        visitsAssigned,
+        visitsUnassigned,
         visitsWithCoords,
         visitsMissingCoords: visits.length - visitsWithCoords,
         visitsMissingScheduledStart,

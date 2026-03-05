@@ -6,7 +6,48 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### Job Visit Schedule Normalization — scheduledDate→scheduledStart mirroring (2026-03-05)
+- **Root cause**: Some scheduling flows wrote `scheduledDate` but not `scheduledStart` to `job_visits`. All downstream queries (Live Map `/api/map/day`, eligible-visit lookup, list filters) depend on `scheduledStart IS NOT NULL`, causing visits to silently disappear from the map and dispatch views.
+- **Fix**: Added canonical normalization in `JobVisitsRepository.updateJobVisit()` — the single write path for all visit updates:
+  1. If `scheduledDate` provided without `scheduledStart` → mirrors `scheduledDate` to `scheduledStart`
+  2. Defaults `estimatedDurationMinutes` to 60 when null/0
+  3. Auto-computes `scheduledEnd` from start + duration (or end-of-day for all-day events) when not explicitly provided
+  4. When `scheduledStart` is explicitly cleared (unschedule), also clears `scheduledEnd`
+- **Files**: `server/storage/jobVisits.ts` (`updateJobVisit` method)
+
+#### Calendar Day View — Drag/Drop + All-Day Lane DnD + Layout Fix (2026-03-05)
+- **Fixed Day ROW view drop zones**: RowDropZone and hour grid divs used `h-full` through nested absolute positioning which could resolve to zero-height bounding rects. Changed to explicit `height: ROW_HEIGHT` px values so dnd-kit collision detection always finds valid targets.
+  - Files: `client/src/components/calendar/CalendarGridDayRows.tsx`
+- **Made all-day items draggable in Day ROW view**: All-day chips were plain `<div>` elements with no `useDraggable`. Created `DraggableAllDayChip` component wrapping them for DnD between all-day and timed lanes.
+  - Files: `client/src/components/calendar/CalendarGridDayRows.tsx`
+- **Made all-day items draggable in Day Columns view**: All-day `JobCard` items had no drag support. Created `DraggableAllDayCard` wrapper component using `useDraggable`.
+  - Files: `client/src/components/calendar/CalendarGridDayJobber.tsx`
+- **Made timed items draggable in Day Columns view**: `ResizableJobCard` only supported resize via pointer events. Added `useDraggable` hook so timed items can be dragged to other time slots, all-day lanes, or between technician columns. Includes drag-end click suppression.
+  - Files: `client/src/components/calendar/ResizableJobCard.tsx`
+
+#### Live Map Dispatch — Visits Independent of Technician Online Status (2026-03-05)
+- **Server meta enhanced**: Added `visitsAssigned` and `visitsUnassigned` counts to `/api/map/day` response `meta` object for client diagnostics.
+  - Files: `server/routes/map.ts`
+- **Dev logs improved**: Sample increased from 3 to 5 visits; now includes `technicianId` and `status` per sample for easier debugging.
+  - Files: `server/routes/map.ts`
+- **Fixed misleading "No visits for today" in dispatch panel**: When visits exist but are hidden by technician filter (e.g., "Online only" persisted when all techs are offline), panel now shows "N visits hidden by current filter" instead of "No visits for today". Only shows "No visits" when the server truly returns zero visits.
+  - Root cause: `DispatchPanel` received pre-filtered `panelVisits` and had no way to distinguish "0 visits from server" from "all visits filtered out by client-side tech filter".
+  - Files: `client/src/pages/LiveMapPage.tsx`
+- **Client meta type updated**: `MapDayData.meta` interface now includes `visitsAssigned` and `visitsUnassigned` fields.
+  - Files: `client/src/pages/LiveMapPage.tsx`
+
 ### Removed
+
+#### Phase B Dead Code Cleanup (2026-03-05)
+- **Deleted 2 dead server service files** (30 lines): `services/qboGuards.ts` (unused `assertInvoiceSyncAllowed`), `services/calendarService.ts` (unused `resizeJobTime`).
+- **Deleted `server/stripe/` directory** (275 lines, 3 files): `stripeClient.ts`, `stripeService.ts`, `webhookHandlers.ts` — only referenced each other, no route mount, no external imports.
+- **Removed 8 unused exports from `shared/schema.ts`**: `identityProviderEnum`, `IdentityProvider`, `invitationStatusEnum`, `InvitationStatus`, `insertPasswordResetTokenSchema`, `InsertPasswordResetToken`, `PasswordResetToken`, `ScheduleJobInput`, `UpdateJobScheduleInput`, `UnscheduleJobInput`.
+- **Deleted superseded migration**: `migrations/006-fix-money-types.sql` — kept `006-fix-money-types-FIXED.sql` (adds required `::text` casts).
+- **Archived 178 unreferenced attached_assets/** (8.4 MB) to `_archive/` subdirectory — no source file uses `@assets` alias.
+- **Removed 14 unused npm dependencies**: `react-icons`, `react-resizable-panels`, `recharts`, `framer-motion`, `vaul`, `embla-carousel-react`, `tw-animate-css`, `next-themes`, `input-otp`, `memorystore`, `stripe`, `stripe-replit-sync`, `@stripe/react-stripe-js`, `@stripe/stripe-js`.
+- **Total: ~305 server lines deleted, 14 packages removed, 8.4 MB assets archived.** Build verified (tsc + vite).
 
 #### Phase A Dead Code Cleanup (2026-03-05)
 - **Deleted `server/_legacy/` directory** (937 lines): `clients.ts` and `routes_storage.ts` — zero imports, referenced non-existent `subscriptionService.ts`.

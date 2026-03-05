@@ -573,22 +573,69 @@ export class JobVisitsRepository extends BaseRepository {
 
     const updates: any = { updatedAt: new Date(), version: existing.version + 1 };
 
-    // Existing fields
-    if ("scheduledDate" in input) updates.scheduledDate = input.scheduledDate;
-    if ("estimatedDurationMinutes" in input)
-      updates.estimatedDurationMinutes = input.estimatedDurationMinutes;
+    // =========================================================================
+    // Schedule field normalization (2026-03-05)
+    // Some scheduling flows write scheduledDate but not scheduledStart. The map,
+    // eligible-visit, and list-filter queries all depend on scheduledStart IS NOT
+    // NULL. Normalize here — the single canonical write path — so every caller
+    // gets consistent DB rows.
+    // =========================================================================
+
+    // 1) scheduledDate provided without scheduledStart → mirror to scheduledStart
+    if ("scheduledDate" in input && !("scheduledStart" in input) && input.scheduledDate != null) {
+      updates.scheduledStart = input.scheduledDate;
+      updates.scheduledDate = input.scheduledDate;
+    } else {
+      if ("scheduledDate" in input) updates.scheduledDate = input.scheduledDate;
+      if ("scheduledStart" in input) updates.scheduledStart = input.scheduledStart;
+    }
+
+    // 2) Default duration: ensure estimatedDurationMinutes is never null/0
+    if ("estimatedDurationMinutes" in input) {
+      updates.estimatedDurationMinutes = (input.estimatedDurationMinutes && input.estimatedDurationMinutes > 0)
+        ? input.estimatedDurationMinutes
+        : 60;
+    }
+
+    // 3) Explicit unschedule: if scheduledStart is cleared, also clear end + date
+    if ("scheduledStart" in input && input.scheduledStart == null) {
+      updates.scheduledEnd = null;
+      updates.scheduledDate = input.scheduledDate ?? existing.scheduledDate; // preserve legacy date or keep as-is
+    }
+
+    // Non-schedule fields
     if ("assignedTechnicianId" in input)
       updates.assignedTechnicianId = input.assignedTechnicianId;
     if ("status" in input) updates.status = input.status;
     if ("visitNotes" in input) updates.visitNotes = input.visitNotes;
     if ("isActive" in input) updates.isActive = input.isActive;
 
-    // Part 2: New schedule fields
-    if ("scheduledStart" in input) updates.scheduledStart = input.scheduledStart;
-    if ("scheduledEnd" in input) updates.scheduledEnd = input.scheduledEnd;
+    // Part 2: Additional schedule fields
+    if ("scheduledEnd" in input && !("scheduledStart" in input && input.scheduledStart == null)) {
+      // Only apply explicit scheduledEnd if we didn't already clear it above (unschedule path)
+      updates.scheduledEnd = input.scheduledEnd;
+    }
     if ("isAllDay" in input) updates.isAllDay = input.isAllDay;
     if ("visitNumber" in input) updates.visitNumber = input.visitNumber;
     if ("assignedTechnicianIds" in input) updates.assignedTechnicianIds = input.assignedTechnicianIds;
+
+    // 4) Compute scheduledEnd when we have a start but no explicit end yet
+    // Skip if scheduledStart was explicitly cleared (unschedule path already handled above)
+    const startWasCleared = "scheduledStart" in input && input.scheduledStart == null;
+    const finalStart = startWasCleared ? null : (updates.scheduledStart ?? existing.scheduledStart);
+    if (finalStart && !("scheduledEnd" in updates)) {
+      const isAllDay = updates.isAllDay ?? existing.isAllDay ?? false;
+      const duration = updates.estimatedDurationMinutes ?? existing.estimatedDurationMinutes ?? 60;
+      if (isAllDay) {
+        const d = finalStart instanceof Date ? finalStart : new Date(finalStart);
+        const endOfDay = new Date(d);
+        endOfDay.setUTCHours(23, 59, 59, 0);
+        updates.scheduledEnd = endOfDay;
+      } else {
+        const startMs = finalStart instanceof Date ? finalStart.getTime() : new Date(finalStart).getTime();
+        updates.scheduledEnd = new Date(startMs + Number(duration) * 60_000);
+      }
+    }
 
     const [updated] = await db
       .update(jobVisits)
