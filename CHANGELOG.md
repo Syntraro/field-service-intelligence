@@ -33,10 +33,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 #### Tasks Feature End-to-End Fix (2026-03-05)
 - **3A — Remove "Link to Client":** Removed client linking UI from TaskDialog (was deprecated). Removed `clientId` state, client fetch query, and client dropdown. "Link to Job" remains as full-width field. (`TaskDialog.tsx`)
-- **3B — Supplier location dropdown:** Verified working — query key `/api/suppliers/${supplierId}/locations` matches API route, response shape `{ items }` matches client type.
-- **3D — Calendar task click:** `handleClientClick` now detects task items (assignmentId starts with `task-`) and opens TaskDialog instead of job detail dialog. Tasks on calendar no longer show as "Job #Unknown". (`Calendar.tsx`)
+- **3B — Supplier location dropdown (RC1 FIX):** Default `getQueryFn` uses `queryKey[0]` as URL. QueryKey `["/api/suppliers", supplierId, "locations"]` fetched `/api/suppliers` (supplier LIST) instead of `/api/suppliers/${supplierId}/locations`. Fixed with explicit `queryFn` that constructs correct URL and normalizes response (handles array, `{items}`, `{data}`, `{locations}` shapes). Added `[TASKS_DIAG]` logging. (`TaskDialog.tsx:180-201`)
+- **3D — Calendar task click (RC2 FIX):** Old code read `rawAssignment.assignmentId` but `.raw` is the API task object (no `assignmentId` property). CalendarItem wrapper has `assignmentId: "task-${id}"` and `kind: "task"`. Fixed to check `kind === "task"` discriminator first, read `assignmentId` from CalendarItem (not `.raw`). Added `[TASKS_DIAG]` logging. (`Calendar.tsx:1683-1700`)
 - **3E — Task drag/drop rescheduling:** Added task drag handling in `handleDragEnd`. When a task is dragged to any calendar drop zone (month day, week timed/all-day, day timed/all-day, tech week), it PATCHes `/api/tasks/:id` with updated `scheduledStartAt`, `allDay`, and optionally `assignedToUserId`. (`Calendar.tsx`)
-- **Files:** `client/src/components/TaskDialog.tsx`, `client/src/pages/Calendar.tsx`
+- **Diagnostic instrumentation:** `[TASKS_DIAG]` logging gated behind `IS_DEV`/`NODE_ENV !== production` — silent in production. (`tasks.routes.ts`, `TaskDialog.tsx`, `Calendar.tsx`)
+- **Files:** `client/src/components/TaskDialog.tsx`, `client/src/pages/Calendar.tsx`, `server/routes/tasks.routes.ts`
+
+#### Supplier Visit Creation — 500 Error Elimination (2026-03-05)
+- **Root cause:** Unhandled DB constraint violations (FK on `supplier_id`, `supplier_location_id`) bubble up as raw Postgres errors without `statusCode`. Global error handler (`server/index.ts:166`) maps any error without `statusCode` to `500 "Internal server error"` in production, hiding the real cause.
+- **Server fix — Pre-write validation:** Added `validateSupplierRefs()` to `TaskRepository` that checks before any DB write: (1) supplier exists and belongs to company, (2) location exists and belongs to both supplier AND company. Returns 400 with descriptive message on mismatch. (`server/storage/tasks.ts`)
+- **Server fix — Route-level error catch:** `PATCH /api/tasks/:id/supplier-visit` now catches DB errors and converts FK violations (code 23503) to 400, unique violations (23505) to 409. App errors with `statusCode` are re-thrown as-is. Even unknown errors return a clear message instead of generic "Internal server error". (`server/routes/tasks.routes.ts`)
+- **Server fix — Task creation hardened:** `POST /api/tasks` also catches FK violations (bad `jobId`, `assignedToUserId`) with 400 response. (`server/routes/tasks.routes.ts`)
+- **Client fix — Supplier required:** `canSubmit` now requires `supplierId` when type is `SUPPLIER_VISIT`. Inline hint shown when missing. (`TaskDialog.tsx`)
+- **Client fix — Error surfacing:** Save errors display inline in dialog (red banner), dialog stays open so user can fix and retry. No more generic `alert()`. (`TaskDialog.tsx`)
+- **Tested scenarios (all returning 4xx, not 500):** non-existent task (404), non-existent supplier (400), location without supplier (400), location/supplier mismatch (400), cross-tenant supplier (400), FK constraint violation (400), unique constraint violation (409), valid happy path (200 with upserted row)
+- **Files:** `server/storage/tasks.ts`, `server/routes/tasks.routes.ts`, `client/src/components/TaskDialog.tsx`
 
 ### Changed
 

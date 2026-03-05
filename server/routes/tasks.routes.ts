@@ -10,6 +10,7 @@ import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
+import { IS_DEV } from "../utils/devFlags";
 
 const router = Router();
 
@@ -86,29 +87,40 @@ const updateSupplierVisitSchema = z.object({
 router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
 
+  if (IS_DEV) console.log("[TASKS_DIAG] POST /api/tasks body:", JSON.stringify(req.body));
   const validated = validateSchema(createTaskSchema, req.body);
 
   if (!req.user?.id) {
     throw createError(401, "Not authenticated");
   }
 
-  const task = await service.createTask(companyId, {
-    title: validated.title,
-    type: validated.type || "GENERAL", // Default to GENERAL if not specified
-    status: validated.status,
-    createdByUserId: req.user.id,
-    assignedToUserId: validated.assignedToUserId,
-    // Use notes if provided, otherwise fall back to description for backwards compatibility
-    notes: validated.notes ?? (validated as any).description ?? undefined,
-    clientId: validated.clientId ?? undefined,
-    jobId: validated.jobId,
-    estimatedDurationMinutes: validated.estimatedDurationMinutes ?? undefined,
-    scheduledStartAt: (validated.scheduledStartAt && typeof validated.scheduledStartAt === 'string') ? validated.scheduledStartAt : undefined,
-    scheduledEndAt: (validated.scheduledEndAt && typeof validated.scheduledEndAt === 'string') ? validated.scheduledEndAt : undefined,
-    allDay: validated.allDay ?? false,
-  });
+  try {
+    const task = await service.createTask(companyId, {
+      title: validated.title,
+      type: validated.type || "GENERAL",
+      status: validated.status,
+      createdByUserId: req.user.id,
+      assignedToUserId: validated.assignedToUserId,
+      notes: validated.notes ?? (validated as any).description ?? undefined,
+      clientId: validated.clientId ?? undefined,
+      jobId: validated.jobId,
+      estimatedDurationMinutes: validated.estimatedDurationMinutes ?? undefined,
+      scheduledStartAt: (validated.scheduledStartAt && typeof validated.scheduledStartAt === 'string') ? validated.scheduledStartAt : undefined,
+      scheduledEndAt: (validated.scheduledEndAt && typeof validated.scheduledEndAt === 'string') ? validated.scheduledEndAt : undefined,
+      allDay: validated.allDay ?? false,
+    });
 
-  res.json(task);
+    if (IS_DEV) console.log("[TASKS_DIAG] POST /api/tasks created:", { id: task.id, type: task.type });
+    res.json(task);
+  } catch (error: any) {
+    if (error.statusCode || error.status) throw error;
+    const msg = error?.message || "";
+    if (msg.includes("violates foreign key constraint") || error?.code === "23503") {
+      throw createError(400, "A referenced record (job, technician, or client) does not exist.");
+    }
+    console.error("[TASKS] create failed:", { error: msg, code: error?.code });
+    throw createError(500, "Failed to create task. Please try again.");
+  }
 }));
 
 /* LIST (FILTERED) - companyId from session ONLY */
@@ -222,17 +234,18 @@ router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authe
 router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
 
+  if (IS_DEV) console.log("[TASKS_DIAG] PATCH /api/tasks/" + req.params.id + " body:", JSON.stringify(req.body));
   const validated = validateSchema(updateTaskSchema, req.body);
 
   // Map description to notes for backwards compatibility
   const updates: any = { ...validated };
   if ('description' in validated && !('notes' in validated)) {
-    // Only use description as fallback if notes not provided
     updates.notes = (validated as any).description;
   }
-  delete updates.description; // Remove description field, we only use notes in service
+  delete updates.description;
 
   const task = await service.updateTask(companyId, req.params.id, updates);
+  if (IS_DEV) console.log("[TASKS_DIAG] PATCH /api/tasks/" + req.params.id + " updated:", { id: task.id, scheduledStartAt: task.scheduledStartAt });
 
   res.json(task);
 }));
@@ -257,11 +270,38 @@ router.get("/:id/supplier-visit", asyncHandler(async (req: AuthedRequest, res: R
 /* SUPPLIER VISIT UPDATE (OFFICE) */
 router.patch("/:id/supplier-visit", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
+  const taskId = req.params.id;
 
+  if (IS_DEV) console.log("[TASKS_DIAG] PATCH /api/tasks/" + taskId + "/supplier-visit body:", JSON.stringify(req.body));
   const validated = validateSchema(updateSupplierVisitSchema, req.body);
-  const result = await service.updateSupplierVisit(companyId, req.params.id, validated);
 
-  res.json(result);
+  try {
+    const result = await service.updateSupplierVisit(companyId, taskId, validated);
+    if (IS_DEV) console.log("[TASKS_DIAG] PATCH /api/tasks/" + taskId + "/supplier-visit OK:", { taskId: result.taskId, supplierId: result.supplierId });
+    res.json(result);
+  } catch (error: any) {
+    // Re-throw known app errors (they already have statusCode)
+    if (error.statusCode || error.status) throw error;
+
+    // Convert DB constraint violations to 4xx
+    const msg = error?.message || "";
+    const detail = error?.detail || "";
+    if (msg.includes("violates foreign key constraint") || error?.code === "23503") {
+      const hint = detail.includes("supplier_id")
+        ? "The selected supplier does not exist."
+        : detail.includes("supplier_location_id")
+        ? "The selected supplier location does not exist."
+        : "A referenced record does not exist.";
+      throw createError(400, hint);
+    }
+    if (msg.includes("violates unique constraint") || error?.code === "23505") {
+      throw createError(409, "Supplier visit details already exist for this task.");
+    }
+
+    // Unknown DB error — log and return safe message
+    console.error("[TASKS] supplier-visit update failed:", { taskId, error: msg, code: error?.code, detail });
+    throw createError(500, "Failed to save supplier visit details. Please try again.");
+  }
 }));
 
 export default router;

@@ -1681,16 +1681,25 @@ export default function Calendar() {
   // Stabilized — passed to every grid component (Month/Week/Day).
   // Deps: clients (stable useMemo), state setters (stable per React).
   const handleClientClick = useCallback((client: any, eventOrAssignment: CalendarEvent | any, focusSchedule: boolean = false) => {
-    const rawAssignment = eventOrAssignment.raw ?? eventOrAssignment;
-    const assignmentId = rawAssignment.assignmentId ?? rawAssignment.id ?? "";
+    // Check for kind discriminator first (CalendarItem), then fall back to assignmentId prefix
+    const kind = (eventOrAssignment as any).kind;
+    // assignmentId lives on the CalendarEvent/CalendarItem, NOT on .raw (which is the API object)
+    const assignmentId = eventOrAssignment.assignmentId ?? eventOrAssignment.raw?.assignmentId ?? eventOrAssignment.raw?.id ?? "";
 
-    // Task 3D: If this is a task (not a job visit), open TaskDialog instead
-    if (typeof assignmentId === "string" && assignmentId.startsWith("task-")) {
-      const taskId = assignmentId.replace("task-", "");
+    // Task click: open TaskDialog, not job modal
+    if (kind === "task" || (typeof assignmentId === "string" && assignmentId.startsWith("task-"))) {
+      const taskId = kind === "task"
+        ? (eventOrAssignment.raw?.id ?? assignmentId.replace("task-", ""))
+        : assignmentId.replace("task-", "");
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[TASKS_DIAG] calendar click kind=task opens=TaskDialog id=" + taskId);
+      }
       setSelectedTaskId(taskId);
       setTaskDialogOpen(true);
       return;
     }
+
+    const rawAssignment = eventOrAssignment.raw ?? eventOrAssignment;
 
     const enrichedAssignment = {
       ...rawAssignment,

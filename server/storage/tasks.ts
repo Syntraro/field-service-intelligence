@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { and, eq, isNull, gte, lte, desc } from "drizzle-orm";
-import { tasks, supplierVisitDetails } from "@shared/schema";
+import { tasks, supplierVisitDetails, suppliers, supplierLocations } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset } from "./base";
 
 const MAX_LIMIT = 200;
@@ -474,7 +474,52 @@ export class TaskRepository extends BaseRepository {
   }
 
   /**
-   * Update/create supplier visit details (tenant-scoped via task ownership)
+   * Validate supplier and supplier location references before writing.
+   * Ensures tenant isolation and that location belongs to supplier.
+   */
+  private async validateSupplierRefs(
+    companyId: string,
+    supplierId: string | null | undefined,
+    supplierLocationId: string | null | undefined,
+  ): Promise<void> {
+    // If clearing both, nothing to validate
+    if (!supplierId && !supplierLocationId) return;
+
+    // If locationId provided without supplierId, reject
+    if (supplierLocationId && !supplierId) {
+      throw this.validationError("Supplier location requires a supplier to be selected.");
+    }
+
+    // Validate supplierId exists and belongs to company
+    if (supplierId) {
+      const [supplier] = await db
+        .select({ id: suppliers.id })
+        .from(suppliers)
+        .where(and(eq(suppliers.id, supplierId), eq(suppliers.companyId, companyId)));
+      if (!supplier) {
+        throw this.validationError("Selected supplier not found or does not belong to your company.");
+      }
+    }
+
+    // Validate supplierLocationId belongs to supplierId and company
+    if (supplierLocationId && supplierId) {
+      const [location] = await db
+        .select({ id: supplierLocations.id })
+        .from(supplierLocations)
+        .where(and(
+          eq(supplierLocations.id, supplierLocationId),
+          eq(supplierLocations.supplierId, supplierId),
+          eq(supplierLocations.companyId, companyId),
+        ));
+      if (!location) {
+        throw this.validationError("Selected supplier location does not belong to the selected supplier.");
+      }
+    }
+  }
+
+  /**
+   * Update/create supplier visit details (tenant-scoped via task ownership).
+   * Validates supplier/location references before writing.
    */
   async updateSupplierVisit(
     companyId: string,
@@ -494,6 +539,9 @@ export class TaskRepository extends BaseRepository {
     // Verify task ownership first (tenant isolation)
     const task = await this.getTask(companyId, taskId);
     if (!task) throw this.notFoundError("Task");
+
+    // Validate supplier/location references (tenant-scoped, relationship check)
+    await this.validateSupplierRefs(companyId, input.supplierId, input.supplierLocationId);
 
     return await db.transaction(async (tx) => {
       // Check if supplier visit details exist

@@ -56,10 +56,6 @@ interface SuppliersResponse {
   total: number;
 }
 
-interface LocationsResponse {
-  items: SupplierLocation[];
-}
-
 interface TaskDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -84,6 +80,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
   const [supplierLocationId, setSupplierLocationId] = useState<string | undefined>();
   const [poNumber, setPoNumber] = useState("");
   const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Fetch task details if editing
   // Note: queryKey[0] is used as the URL by the default query function,
@@ -155,9 +152,15 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
     setSupplierId(undefined);
     setSupplierLocationId(undefined);
     setPoNumber("");
+    setSaveError(null);
   };
 
-  const canSubmit = useMemo(() => title.trim().length > 0, [title]);
+  // Supplier Visit requires a supplier selection
+  const canSubmit = useMemo(() => {
+    if (!title.trim()) return false;
+    if (type === "SUPPLIER_VISIT" && !supplierId) return false;
+    return true;
+  }, [title, type, supplierId]);
 
   // Fetch team members
   const { teamMembers, isLoading: isLoadingTeam } = useTechniciansDirectory();
@@ -179,59 +182,62 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
   });
   const suppliers = suppliersData?.items?.filter(s => s.isActive) || [];
 
-  // Fetch supplier locations
-  const { data: locationsData } = useQuery<LocationsResponse>({
+  // Fetch supplier locations — must use explicit queryFn since queryKey structure
+  // doesn't match URL (default getQueryFn uses queryKey[0] as URL)
+  const { data: locationsData } = useQuery<SupplierLocation[]>({
     queryKey: ["/api/suppliers", supplierId, "locations"],
+    queryFn: async () => {
+      if (!supplierId) return [];
+      const res = await fetch(`/api/suppliers/${supplierId}/locations`, { credentials: "include" });
+      if (!res.ok) throw new Error(`Failed to fetch locations: ${res.status}`);
+      const data = await res.json();
+      // [TASKS_DIAG] Normalize: API returns { items: Location[] }
+      const items = Array.isArray(data) ? data : data?.items ?? data?.data ?? data?.locations ?? [];
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[TASKS_DIAG] supplier locations fetch", {
+          supplierId,
+          responseShape: Array.isArray(data) ? "Array" : Object.keys(data),
+          normalizedCount: items.length,
+          firstItem: items[0] ? { id: items[0].id, name: items[0].name } : null,
+        });
+      }
+      return items;
+    },
     enabled: Boolean(supplierId),
     staleTime: 5 * 60 * 1000,
   });
-  const locations = locationsData?.items?.filter(l => l.isActive) || [];
+  const locations = (locationsData || []).filter((l: any) => l.isActive !== false);
 
   // Create or Update mutation
   const saveMutation = useMutation({
     mutationFn: async () => {
+      setSaveError(null);
       let scheduledStartAt: string | undefined;
       let scheduledEndAt: string | undefined;
 
-      // Only process dates if we have a valid startDate
       if (startDate && typeof startDate === 'string' && startDate.trim() !== "") {
-        try {
-          if (allDay) {
-            // For all-day tasks
-            const startIso = safeToISOString(startDate + "T00:00:00");
-            const endIso = safeToISOString(startDate + "T23:59:59");
-
-            if (startIso && endIso) {
-              scheduledStartAt = startIso;
-              scheduledEndAt = endIso;
-            }
-          } else if (startTime && typeof startTime === 'string' && startTime.trim() !== "") {
-            // Combine date and time
-            const iso = safeToISOString(startDate + "T" + startTime);
-            if (iso) {
-              scheduledStartAt = iso;
-            }
-          } else {
-            // Date only, no specific time - treat as all-day
-            const iso = safeToISOString(startDate + "T00:00:00");
-            if (iso) {
-              scheduledStartAt = iso;
-            }
+        if (allDay) {
+          const startIso = safeToISOString(startDate + "T00:00:00");
+          const endIso = safeToISOString(startDate + "T23:59:59");
+          if (startIso && endIso) {
+            scheduledStartAt = startIso;
+            scheduledEndAt = endIso;
           }
-        } catch (error) {
-          console.error("Date parsing error:", error);
-          throw new Error("Invalid date or time format");
+        } else if (startTime && typeof startTime === 'string' && startTime.trim() !== "") {
+          const iso = safeToISOString(startDate + "T" + startTime);
+          if (iso) scheduledStartAt = iso;
+        } else {
+          const iso = safeToISOString(startDate + "T00:00:00");
+          if (iso) scheduledStartAt = iso;
         }
       }
 
-      // Build payload, only including fields with actual values
       const payload: any = {
         title: title.trim(),
         type: type,
         status: "pending" as const,
       };
 
-      // Only add optional fields if they have values
       if (notes && notes.trim()) payload.notes = notes.trim();
       if (assignedToUserId) payload.assignedToUserId = assignedToUserId;
       if (scheduledStartAt) payload.scheduledStartAt = scheduledStartAt;
@@ -239,46 +245,40 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
       if (allDay) payload.allDay = allDay;
       if (jobId) payload.jobId = jobId;
 
+      const svPayload = type === "SUPPLIER_VISIT" ? {
+        supplierId: supplierId || null,
+        supplierLocationId: supplierLocationId || null,
+        poNumber: poNumber.trim() || null,
+      } : null;
+
       if (isEditMode) {
-        // Update existing task
         const updatedTask = await apiRequest(`/api/tasks/${taskId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
 
-        // Update supplier visit details if needed
-        if (type === "SUPPLIER_VISIT") {
+        if (svPayload) {
           await apiRequest(`/api/tasks/${taskId}/supplier-visit`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              supplierId: supplierId || null,
-              supplierLocationId: supplierLocationId || null,
-              poNumber: poNumber.trim() || null,
-            }),
+            body: JSON.stringify(svPayload),
           });
         }
 
         return updatedTask;
       } else {
-        // Create new task
         const newTask = await apiRequest<any>("/api/tasks", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
 
-        // Create supplier visit details if needed
-        if (type === "SUPPLIER_VISIT") {
+        if (svPayload && newTask?.id) {
           await apiRequest(`/api/tasks/${newTask.id}/supplier-visit`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              supplierId: supplierId || null,
-              supplierLocationId: supplierLocationId || null,
-              poNumber: poNumber.trim() || null,
-            }),
+            body: JSON.stringify(svPayload),
           });
         }
 
@@ -292,10 +292,16 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
       }});
       onOpenChange(false);
       resetForm();
+      setSaveError(null);
       onChanged?.();
     },
     onError: (error: any) => {
-      alert(`Failed to ${isEditMode ? 'update' : 'create'} task: ${error?.message || "Unknown error"}`);
+      // Surface the server's error message inline (dialog stays open)
+      const msg = error?.message || "Unknown error";
+      setSaveError(`Failed to ${isEditMode ? 'update' : 'create'} task: ${msg}`);
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("[TASKS_DIAG] save error:", { status: error?.status, message: msg });
+      }
     },
   });
 
@@ -572,6 +578,18 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
                 </div>
               )}
             </div>
+          )}
+
+          {/* Inline error banner */}
+          {saveError && (
+            <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {saveError}
+            </div>
+          )}
+
+          {/* Supplier required hint */}
+          {type === "SUPPLIER_VISIT" && !supplierId && (
+            <div className="text-xs text-amber-600">Select a supplier to create this task.</div>
           )}
 
           <DialogFooter className="pt-2 flex justify-between items-center">
