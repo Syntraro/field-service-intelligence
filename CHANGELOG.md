@@ -18,6 +18,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### Job Detail — Completed State Polish (2026-03-05)
+- **Fix A — Completed date:** Canonical field is `closedAt` (timestamp). Both `POST /api/jobs/:id/status` (completed transition) and `POST /api/jobs/:id/close` (lifecycle) set `closedAt = NOW`. Server returns it via `getJobHeader`. Client renders at `JobDetailPage.tsx:1462`. No code change needed — path was already correct.
+- **Fix B — Hide Active Visit on completed jobs:** When `job.status` is `completed`, `invoiced`, or `archived`, the "Active Visit" block is hidden. Instead, a "Last Completed Visit" preview (most recent completed visit) is shown above the history list. Open jobs still show Active Visit normally. (`JobDetailPage.tsx`)
+- **Fix C — Server guard for visit uncomplete:** `POST /api/jobs/:jobId/visits/:visitId/status` now rejects transitions away from "completed" when the parent job is in a terminal status (`completed`/`invoiced`/`archived`) with 409: "Reopen job to uncomplete a visit." (`jobVisits.routes.ts`)
+- **Files:** `client/src/pages/JobDetailPage.tsx`, `server/routes/jobVisits.routes.ts`
+
 #### Day View Fix 1 — Uniform Header Height (2026-03-05)
 - **Root cause:** Each tech column's sticky header had variable height (all-day events, TechLaneHeader badges). The timed grid started at different Y offsets per column, causing droppable rects to misalign. Drops at the same visual row could land in different time slots depending on column.
 - **Fix:** Replaced single-column `headerRef`/`headerPx` measurement with multi-column `uniformHeaderPx` system. A shared `ResizeObserver` measures every column header via `makeHeaderRef(techKey)` callback refs. The MAX height across all columns is applied as `minHeight` to every header, guaranteeing the timed grid starts at the same Y coordinate in all columns.

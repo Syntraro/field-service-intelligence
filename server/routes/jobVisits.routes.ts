@@ -11,6 +11,7 @@ import { AuthedRequest } from "../auth/tenantIsolation";
 import { jobVisitStatusEnum } from "../../shared/schema";
 import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
+import { storage } from "../storage/index";
 
 const router = Router();
 
@@ -191,6 +192,17 @@ router.post(
     const companyId = req.companyId!;
 
     const { status } = validateSchema(updateStatusSchema, req.body);
+
+    // Fix C: Reject uncompleting a visit when job is in a terminal status.
+    // Moving a visit away from "completed" on a closed job would create
+    // an inconsistent state (completed job with active visit).
+    const TERMINAL_JOB_STATUSES = ["completed", "invoiced", "archived"];
+    if (status !== "completed") {
+      const job = await storage.getJob(companyId, req.params.jobId);
+      if (job && TERMINAL_JOB_STATUSES.includes(job.status)) {
+        throw createError(409, "Reopen job to uncomplete a visit.");
+      }
+    }
 
     const updated = await service.updateJobVisitStatus(
       companyId,

@@ -1306,36 +1306,66 @@ export default function JobDetailPage() {
                 </div>
               ) : (
                 <>
-                  {/* Active Visit card */}
-                  <div className="mb-2">
-                    <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide px-2">
-                      Active Visit
-                    </span>
-                    {activeVisit ? (
+                  {/* Active Visit card — hidden when job is completed/closed (Fix B) */}
+                  {job.status !== "completed" && job.status !== "archived" && job.status !== "invoiced" ? (
+                    <div className="mb-2">
+                      <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide px-2">
+                        Active Visit
+                      </span>
+                      {activeVisit ? (
+                        <button
+                          onClick={() => setSelectedVisitId(activeVisit.id)}
+                          className="w-full text-left px-2 py-2 rounded hover:bg-accent/50 transition-colors border border-border mt-1"
+                          data-testid="active-visit-card"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="text-[11px] font-medium truncate flex-1">
+                              {formatVisitDate(activeVisit)}
+                            </span>
+                            <span className="text-[11px] text-muted-foreground truncate max-w-[80px] shrink-0">
+                              {getVisitTechName(activeVisit.assignedTechnicianId)}
+                            </span>
+                            <Badge className={cn("text-[9px] px-1.5 py-0 shrink-0 leading-tight", VISIT_STATUS_COLORS[activeVisit.status] || "")}>
+                              {VISIT_STATUS_LABELS[activeVisit.status] || activeVisit.status}
+                            </Badge>
+                          </div>
+                        </button>
+                      ) : (
+                        <div className="text-center py-3 text-muted-foreground mt-1">
+                          <Calendar className="h-4 w-4 mx-auto mb-1 opacity-50" />
+                          <p className="text-[11px]">No active visit</p>
+                        </div>
+                      )}
+                    </div>
+                  ) : completedVisits.length > 0 ? (
+                    /* Last completed visit preview for completed/closed jobs (Fix B) */
+                    <div className="mb-2">
+                      <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide px-2">
+                        Last Completed Visit
+                      </span>
                       <button
-                        onClick={() => setSelectedVisitId(activeVisit.id)}
+                        onClick={() => setSelectedVisitId(completedVisits[0].id)}
                         className="w-full text-left px-2 py-2 rounded hover:bg-accent/50 transition-colors border border-border mt-1"
-                        data-testid="active-visit-card"
+                        data-testid="last-completed-visit-card"
                       >
                         <div className="flex items-center gap-2">
                           <span className="text-[11px] font-medium truncate flex-1">
-                            {formatVisitDate(activeVisit)}
+                            {completedVisits[0].checkedOutAt
+                              ? format(new Date(completedVisits[0].checkedOutAt), "MMM d, yyyy")
+                              : completedVisits[0].scheduledStart
+                                ? format(new Date(completedVisits[0].scheduledStart), "MMM d, yyyy")
+                                : "—"}
                           </span>
                           <span className="text-[11px] text-muted-foreground truncate max-w-[80px] shrink-0">
-                            {getVisitTechName(activeVisit.assignedTechnicianId)}
+                            {getVisitTechName(completedVisits[0].assignedTechnicianId)}
                           </span>
-                          <Badge className={cn("text-[9px] px-1.5 py-0 shrink-0 leading-tight", VISIT_STATUS_COLORS[activeVisit.status] || "")}>
-                            {VISIT_STATUS_LABELS[activeVisit.status] || activeVisit.status}
+                          <Badge className="text-[9px] px-1.5 py-0 shrink-0 leading-tight bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
+                            Completed
                           </Badge>
                         </div>
                       </button>
-                    ) : (
-                      <div className="text-center py-3 text-muted-foreground mt-1">
-                        <Calendar className="h-4 w-4 mx-auto mb-1 opacity-50" />
-                        <p className="text-[11px]">No active visit</p>
-                      </div>
-                    )}
-                  </div>
+                    </div>
+                  ) : null}
 
                   {/* Visit History — completed visits only (Rule B) */}
                   {completedVisits.length > 0 && (
