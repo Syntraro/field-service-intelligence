@@ -31,7 +31,6 @@ import ClientDetailPage from "@/pages/ClientDetailPage";
 import LocationDetailPage from "@/pages/LocationDetailPage";
 import PartsManagementPage from "@/pages/PartsManagementPage";
 import CompanySettingsPage from "@/pages/CompanySettingsPage";
-import TechnicianDashboard from "@/pages/TechnicianDashboard";
 import TechnicianManagementPage from "@/pages/TechnicianManagementPage";
 import ManageTeam from "@/pages/ManageTeam";
 import ManageRoles from "@/pages/ManageRoles";
@@ -47,7 +46,6 @@ import CategoryManagementPage from "@/pages/CategoryManagementPage";
 import JobTemplatesPage from "@/pages/JobTemplatesPage";
 import RecurringJobsPage from "@/pages/RecurringJobsPage";
 import QuoteTemplatesPage from "@/pages/QuoteTemplatesPage";
-// JobStatusesPage removed - job statuses are now a fixed system enum
 import SubscriptionSettings from "@/pages/SubscriptionSettings";
 import UnassignedTimePage from "@/pages/UnassignedTimePage";
 import PayrollPage from "@/pages/PayrollPage";
@@ -85,13 +83,7 @@ import QuickAddClientModal from "@/components/QuickAddClientModal";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import UniversalSearch from "@/components/UniversalSearch";
 import { useState } from "react";
-import { Plus, Settings, AlertTriangle, X, ChevronRight, ClipboardList, Users, FileText, Receipt } from "lucide-react";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Plus, Settings, AlertTriangle, X, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import SuppliersListPage from "@/pages/SuppliersListPage";
 import SupplierDetailPage from "@/pages/SupplierDetailPage";

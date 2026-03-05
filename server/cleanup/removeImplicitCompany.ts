@@ -1,1 +1,0 @@
-// Remove implicit company logic

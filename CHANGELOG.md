@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Removed
+
+#### Phase A Dead Code Cleanup (2026-03-05)
+- **Deleted `server/_legacy/` directory** (937 lines): `clients.ts` and `routes_storage.ts` — zero imports, referenced non-existent `subscriptionService.ts`.
+- **Deleted 6 dead server files** (~290 lines): `services/invoiceSync.ts`, `services/invoiceDirty.ts`, `qbo/syncService.ts`, `auth/attachUserContext.ts`, `migrate-to-multi-tenant.ts`, `cleanup/` dir — all never imported.
+- **Deleted 21 orphaned React components** (~5,500 lines): SubscriptionOverview, ActionRequiredKPIs, JobAssignmentsCard, UnscheduledJobsSidebar, ClientNotesTab, ClientLocationsTab, ClientJobsTab, Header, AppHeader, StatsCard, NotificationBell, MaintenanceCard, MaintenanceSection, ClientListTable, TechnicianLayout, SettingsLayout, TasksSidebar, CsrfInitializer, ClientDetailDialog, PartsManagementDialog, JobMetaCard.
+- **Deleted 10 orphaned React pages** (~2,655 lines): JobStatusesPage, TechnicianDashboard, TechLoginPage, TechHomePage, TechSchedulePage, TechTimesheetPage, TechMorePage, TechVisitDetailPage, AdminTimesheetsPage, old Suppliers.tsx.
+- **Deleted orphaned route** (115 lines): `server/routes/parts.ts` — full CRUD never mounted in router, superseded by `/api/items`.
+- **Deleted `examples/` directories** (140 lines): `client/src/components/examples/`, `client/src/pages/examples/` — dead re-export wrappers.
+- **Deleted 15 unused shadcn UI wrappers** (1,862 lines): accordion, aspect-ratio, breadcrumb, carousel, chart, context-menu, drawer, input-otp, menubar, navigation-menu, pagination, resizable, slider, toggle, toggle-group.
+- **Deleted dead hook**: `useVisitFeed.ts` (144 lines) — only referenced by orphaned TechVisitDetailPage.
+- **Deleted dead barrel**: `client/src/components/jobs/index.ts` — never imported.
+- **Cleaned stale imports in `App.tsx`**: Removed `TechnicianDashboard` import, `ClipboardList`/`Users`/`FileText`/`Receipt` icons, `DropdownMenu*` components.
+- **Total removed: ~11,600 lines across 55 files**. CSS bundle: 137.41 KB → 122.67 KB (−14.74 KB). Build verified (tsc + vite).
+
 ### Added
 
 #### Live Map Fix — All Technicians + Reliable Visits + Meta Diagnostics (2026-03-05)
