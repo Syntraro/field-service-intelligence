@@ -14,7 +14,8 @@ import {
   Package,
   Receipt,
   Building2,
-  FileCheck
+  FileCheck,
+  MapPin,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/lib/auth";
@@ -111,6 +112,13 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       href: "/calendar",
       isActive: location === "/calendar",
       testId: "nav-calendar"
+    });
+    menuItems.push({
+      title: "Live Map",
+      icon: MapPin,
+      href: "/live-map",
+      isActive: location === "/live-map",
+      testId: "nav-live-map"
     });
     // --- Divider 1 --- Operations: Jobs, Invoices, Quotes, Clients, Suppliers, Reports
     menuItems.push({

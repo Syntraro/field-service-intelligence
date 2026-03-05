@@ -28,7 +28,8 @@ const TablePageShell = React.forwardRef<HTMLDivElement, TablePageShellProps>(
       >
         {/* Page Header Row */}
         <div className="flex items-center justify-between">
-          <h1 className="text-lg font-semibold text-foreground">{title}</h1>
+          {/* List Pages Refactor: upgraded from text-lg to text-2xl for stronger page headers */}
+          <h1 className="text-2xl font-semibold text-foreground">{title}</h1>
           {actions}
         </div>
 

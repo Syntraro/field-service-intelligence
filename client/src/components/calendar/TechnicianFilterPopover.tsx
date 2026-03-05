@@ -71,14 +71,14 @@ export function TechnicianFilterPopover({
             return (
               <label
                 key={tech.id}
-                className="flex items-center gap-2 px-1 py-1 rounded hover:bg-muted/50 cursor-pointer"
+                className="flex items-center gap-2 px-1.5 py-1.5 rounded hover:bg-muted/50 cursor-pointer"
               >
                 <Checkbox
                   checked={isVisible}
                   onCheckedChange={() => onToggleTechnicianVisibility(tech.id)}
                 />
-                <div className={`w-2.5 h-2.5 rounded-full ${color.dot}`} />
-                <span className="text-xs truncate">
+                <div className={`w-2 h-2 rounded-full shrink-0 ${color.dot}`} />
+                <span className="text-sm truncate">
                   {tech.firstName} {tech.lastName}
                 </span>
               </label>
@@ -86,13 +86,13 @@ export function TechnicianFilterPopover({
           })}
 
           {/* Unassigned row */}
-          <label className="flex items-center gap-2 px-1 py-1 rounded hover:bg-muted/50 cursor-pointer">
+          <label className="flex items-center gap-2 px-1.5 py-1.5 rounded hover:bg-muted/50 cursor-pointer">
             <Checkbox
               checked={!hiddenTechnicianIds.has("unassigned")}
               onCheckedChange={() => onToggleTechnicianVisibility("unassigned")}
             />
-            <div className="w-2.5 h-2.5 rounded-full bg-muted-foreground/40" />
-            <span className="text-xs">Unassigned</span>
+            <div className="w-2 h-2 rounded-full shrink-0 bg-muted-foreground/40" />
+            <span className="text-sm text-muted-foreground italic">Unassigned</span>
           </label>
         </div>
       </PopoverContent>

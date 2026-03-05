@@ -12,6 +12,8 @@ export { CalendarGridWeekTechnicians } from "./CalendarGridWeekTechnicians";
 export { CalendarGridDay } from "./CalendarGridDay";
 // Jobber-style day grid (2026-01-28): replaces CalendarGridDay with proper grid layout
 export { CalendarGridDayJobber } from "./CalendarGridDayJobber";
+// Horizontal rows day layout (Polish Pass 2026-03-04)
+export { CalendarGridDayRows } from "./CalendarGridDayRows";
 export { ScheduleJobModal } from "./ScheduleJobModal";
 export { DiagnosticsPanel } from "./DiagnosticsPanel";
 // Phase 5+7 of calendar rewrite (2026-03-04)

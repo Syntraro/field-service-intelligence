@@ -22,6 +22,8 @@ import type { CalendarDensity } from "@/components/calendar/calendarUtils";
 
 export type CalendarView = "monthly" | "weekly" | "daily";
 export type WeeklyViewMode = "time" | "technician";
+/** Day view layout: vertical tech columns (default) or horizontal tech rows */
+export type DayLayout = "columns" | "rows";
 
 export interface CalendarPreferences {
   view: CalendarView;
@@ -29,8 +31,10 @@ export interface CalendarPreferences {
   sidebarCollapsed: boolean;
   showFullDay: boolean;
   hiddenTechnicianIds: string[];
-  /** Whether to show tasks on the calendar (Phase 4 of calendar rewrite) */
-  showTasks: boolean;
+  /** Day view layout: vertical tech columns or horizontal tech rows (Polish Pass 2026-03-04) */
+  dayLayout: DayLayout;
+  /** @deprecated Tasks always shown on calendar — kept for localStorage compat */
+  showTasks?: boolean;
 }
 
 const STORAGE_KEY = "calendar-preferences";
@@ -41,7 +45,8 @@ const DEFAULT_PREFERENCES: CalendarPreferences = {
   sidebarCollapsed: false,
   showFullDay: false,
   hiddenTechnicianIds: [],
-  showTasks: false,
+  dayLayout: "columns", // Default: vertical tech columns (Polish Pass 2026-03-04)
+  showTasks: true, // Tasks always shown (Polish Pass 2026-03-04)
 };
 
 // Business hours defaults
@@ -57,6 +62,7 @@ export const BUSINESS_HOURS = {
 /** Valid view values for type safety */
 const VALID_VIEWS: CalendarView[] = ["monthly", "weekly", "daily"];
 const VALID_WEEKLY_MODES: WeeklyViewMode[] = ["time", "technician"];
+const VALID_DAY_LAYOUTS: DayLayout[] = ["columns", "rows"];
 
 /**
  * Validate and sanitize a view value from localStorage
@@ -77,6 +83,13 @@ function validateWeeklyViewMode(mode: unknown): WeeklyViewMode {
     return mode as WeeklyViewMode;
   }
   return 'time';
+}
+
+function validateDayLayout(layout: unknown): DayLayout {
+  if (typeof layout === 'string' && VALID_DAY_LAYOUTS.includes(layout as DayLayout)) {
+    return layout as DayLayout;
+  }
+  return 'columns';
 }
 
 function loadPreferences(): CalendarPreferences {
@@ -106,7 +119,8 @@ function loadPreferences(): CalendarPreferences {
       hiddenTechnicianIds: Array.isArray(parsed.hiddenTechnicianIds)
         ? parsed.hiddenTechnicianIds.filter((id: unknown) => typeof id === 'string')
         : [],
-      showTasks: typeof parsed.showTasks === 'boolean' ? parsed.showTasks : false,
+      dayLayout: validateDayLayout(parsed.dayLayout),
+      showTasks: true, // Tasks always shown — ignore persisted value
     };
   } catch (error) {
     // Any other error - return defaults
@@ -174,9 +188,16 @@ export function useCalendarState() {
     setPreferences(prev => ({ ...prev, showFullDay: !prev.showFullDay }));
   }, []);
 
-  // Phase 4: Show tasks on calendar toggle
-  const toggleShowTasks = useCallback(() => {
-    setPreferences(prev => ({ ...prev, showTasks: !prev.showTasks }));
+  // Day layout toggle (Polish Pass 2026-03-04)
+  const setDayLayout = useCallback((dayLayout: DayLayout) => {
+    setPreferences(prev => ({ ...prev, dayLayout }));
+  }, []);
+
+  const toggleDayLayout = useCallback(() => {
+    setPreferences(prev => ({
+      ...prev,
+      dayLayout: prev.dayLayout === 'columns' ? 'rows' : 'columns',
+    }));
   }, []);
 
   // Technician visibility
@@ -235,9 +256,10 @@ export function useCalendarState() {
     toggleShowFullDay,
     visibleHours,
 
-    // Tasks on calendar
-    showTasks: preferences.showTasks,
-    toggleShowTasks,
+    // Day layout (columns vs rows)
+    dayLayout: preferences.dayLayout,
+    setDayLayout,
+    toggleDayLayout,
 
     // Technician visibility
     hiddenTechnicianIds,

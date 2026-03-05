@@ -8,6 +8,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### Phase 4B: Technician Telemetry + Live Map Markers (2026-03-05)
+- **Database**: `technician_positions` table for GPS pings (lat, lng, accuracy, speed, heading, recordedAt). Indexes on (company_id, technician_id) and (technician_id, recorded_at DESC).
+  - Files (schema): `shared/schema.ts`, migration: `migrations/2026_03_05_technician_positions.sql`
+- **Telemetry ingestion**: `POST /api/telemetry/ping` — validates technician belongs to caller's company, inserts GPS position record
+  - Files (new): `server/routes/telemetry.ts`, registered in `server/routes/index.ts`
+- **Live positions API**: `GET /api/technicians/live` — returns latest position per technician using `DISTINCT ON` pattern, joined with user names
+  - Files: `server/routes/technicians.ts`
+- **Live Map page**: Standalone `/live-map` page with full-screen Leaflet map, blue circle markers for each technician with tooltip (name + time ago + speed), auto-refresh every 15s
+  - Files (new): `client/src/pages/LiveMapPage.tsx`, `client/src/hooks/useLiveTechnicians.ts`
+  - Files: `client/src/App.tsx` (route), `client/src/components/AppSidebar.tsx` (nav link)
+- **Route map integration**: Live technician markers also appear in the Route Optimization dialog map
+  - Files: `client/src/components/RouteMap.tsx`
+
+#### Calendar UI Polish Pass (2026-03-04)
+- **Tasks always shown**: Removed "Show tasks" toggle — tasks are now always visible on calendar in all views. `showTasks` preference deprecated.
+  - Files: `client/src/hooks/useCalendarState.ts`, `client/src/components/calendar/CalendarHeader.tsx`, `client/src/pages/Calendar.tsx`
+- **Technician names prominent in filter**: Upgraded TechnicianFilterPopover to show `text-sm` names (was `text-xs`), smaller color dots, italic "Unassigned" label
+  - Files: `client/src/components/calendar/TechnicianFilterPopover.tsx`
+- **Month view fills screen**: Changed month grid from `auto-rows-[minmax(52px,max-content)]` to `gridAutoRows: 1fr` so rows stretch to fill available height
+  - Files: `client/src/components/calendar/CalendarGridMonth.tsx`
+- **Day layout toggle**: New "Columns" / "Rows" toggle in Day view header. Persisted as `dayLayout` preference.
+  - Columns: existing vertical tech columns (CalendarGridDayJobber)
+  - Rows: new horizontal Gantt-style layout with time on X-axis and techs as rows
+  - Files (new): `client/src/components/calendar/CalendarGridDayRows.tsx`
+  - Files: `client/src/hooks/useCalendarState.ts`, `client/src/components/calendar/CalendarHeader.tsx`, `client/src/pages/Calendar.tsx`, `client/src/components/calendar/index.ts`
+
+#### Phase 4A: Route Optimization Endpoint + Dispatcher Route Preview (2026-03-04)
+- **Route optimization API**: `POST /api/routes/optimize` — accepts stops with lat/lng or address fields, returns optimized visiting order via OpenRouteService. Supports both `clientIds` (server-side lookup) and inline `stops` modes. Geocoding fallback when lat/lng not available. Tenant-scoped, authenticated.
+  - Files (new): `server/routes/routes.ts`
+  - Files (modified): `server/routes/index.ts` (registered `/api/routes`)
+- **Route preview UI**: Wired existing `RouteOptimizationDialog` + `RouteMap` (Leaflet) into Jobs page. "Optimize Route" button in toolbar opens dialog with currently filtered scheduled jobs. Shows optimized order, total distance/duration, and route map with numbered markers + polyline.
+  - Files (modified): `client/src/pages/Jobs.tsx` (added RouteOptimizationDialog integration)
+- **Observability**: Endpoint logs route optimization events with stop count, geocode calls skipped/made, distance, and duration
+- **No new DB tables**: Uses existing `client_locations` lat/lng columns and `routeOptimizationService` singleton
+
+#### List Pages Refactor — Consistent Layout System (2026-03-04)
+- **Shared layout components**: Created `PageHeader`, `ListToolbar`, and `FiltersButton` for consistent list page structure
+  - Files (new): `client/src/components/layout/PageHeader.tsx`, `client/src/components/layout/ListToolbar.tsx`, `client/src/components/filters/FiltersButton.tsx`
+- **Stronger page headers**: Upgraded `TablePageShell` title from `text-lg` to `text-2xl font-semibold` across all list pages
+  - Files: `client/src/components/ui/table-page-shell.tsx`
+- **Jobs page**: Replaced scattered filter chips/dropdowns with single Filters popover containing Status, Schedule, Assignment, Workflow sections
+  - Files: `client/src/pages/Jobs.tsx`
+- **Invoices page**: Replaced status pill filter row with Filters popover containing Status and QBO Sync sections. KPI cards preserved
+  - Files: `client/src/pages/InvoicesListPage.tsx`
+- **Quotes page**: Replaced status pill filter row with Filters popover containing Status section
+  - Files: `client/src/pages/Quotes.tsx`
+- **Clients page**: Replaced Active/Inactive tabs and tag filter chips with Filters popover containing Status and Tags sections. Bulk actions moved into toolbar
+  - Files: `client/src/pages/Clients.tsx`
+- **Locations page**: Replaced tag filter chips with Filters popover containing Tags section. Bulk actions moved into toolbar
+  - Files: `client/src/pages/Locations.tsx`
+- **Suppliers page**: Replaced inline search with shared `ListToolbar` component
+  - Files: `client/src/pages/SuppliersListPage.tsx`
+
 #### Calendar Page UI Rewrite (2026-03-04)
 - **Calendar header refactor**: Smaller date title (`text-lg font-semibold`), consolidated controls row
   - Files: `client/src/components/calendar/CalendarHeader.tsx` (rewritten)

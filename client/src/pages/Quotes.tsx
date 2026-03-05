@@ -2,15 +2,16 @@ import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { format, isValid, parseISO } from "date-fns";
 import { useLocation, useSearch, Link } from "wouter";
-import { Search, Plus, FileText } from "lucide-react";
-import { Input } from "@/components/ui/input";
+import { Plus, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
+import { ListToolbar } from "@/components/layout/ListToolbar";
+import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
+// Card, CardContent removed — unused after List Pages Refactor
 import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
 import { TablePageShell } from "@/components/ui/table-page-shell";
 import { EmptyState } from "@/components/ui/empty-state";
-import { cn } from "@/lib/utils";
+// cn import removed — no longer needed after List Pages Refactor
 import {
   Table,
   TableBody,
@@ -139,39 +140,36 @@ export default function Quotes() {
         </Button>
       }
     >
-      <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          {(["all", "draft", "sent", "approved", "declined", "converted"] as QuoteStatusFilter[]).map((filter) => (
-            <Button
-              key={filter}
-              variant={activeFilter === filter ? "default" : "ghost"}
-              size="sm"
-              onClick={() => setActiveFilter(filter)}
-              data-testid={`button-filter-${filter}`}
-              className={cn(
-                "rounded-full h-8 px-3 text-xs",
-                activeFilter === filter
-                  ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent"
-                  : "text-muted-foreground"
-              )}
-            >
-              {filter === "all" ? "All" : filter.charAt(0).toUpperCase() + filter.slice(1)}
-              {statusCounts[filter] ? ` (${statusCounts[filter]})` : ""}
-            </Button>
-          ))}
-        </div>
-
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Search quotes..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-9 w-[250px]"
-            data-testid="input-search-quotes"
-          />
-        </div>
-      </div>
+      {/* List Pages Refactor: Consolidated toolbar with search + filters popover */}
+      <ListToolbar
+        searchValue={searchQuery}
+        onSearchChange={setSearchQuery}
+        searchPlaceholder="Search quotes..."
+        searchTestId="input-search-quotes"
+      >
+        <FiltersButton
+          activeCount={activeFilter !== "all" ? 1 : 0}
+          onClear={() => setActiveFilter("all")}
+        >
+          <FilterSection label="Status">
+            <div className="flex flex-wrap gap-1.5">
+              {(["all", "draft", "sent", "approved", "declined", "converted"] as QuoteStatusFilter[]).map((filter) => (
+                <Button
+                  key={filter}
+                  variant={activeFilter === filter ? "default" : "outline"}
+                  size="sm"
+                  className="h-7 text-xs rounded-full"
+                  onClick={() => setActiveFilter(filter)}
+                  data-testid={`button-filter-${filter}`}
+                >
+                  {filter === "all" ? "All" : filter.charAt(0).toUpperCase() + filter.slice(1)}
+                  {statusCounts[filter] ? ` (${statusCounts[filter]})` : ""}
+                </Button>
+              ))}
+            </div>
+          </FilterSection>
+        </FiltersButton>
+      </ListToolbar>
 
       <ListSurface>
           {isLoading ? (

@@ -7,8 +7,7 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
 import { useLocation, useSearch } from "wouter";
-import { Search, ChevronDown, ChevronUp, ArrowUpDown, Loader2, Plus, Calendar as CalendarIcon, Wrench, AlertTriangle, AlertCircle, Clock, X, CalendarDays, FileText, MoreHorizontal, User, Bug } from "lucide-react";
-import { Input } from "@/components/ui/input";
+import { ChevronDown, ChevronUp, ArrowUpDown, Loader2, Plus, Calendar as CalendarIcon, Wrench, AlertTriangle, AlertCircle, Clock, X, CalendarDays, FileText, MoreHorizontal, User, Bug, Route } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -19,6 +18,8 @@ import { Calendar } from "@/components/ui/calendar";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ListToolbar } from "@/components/layout/ListToolbar";
+import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
 import {
   Table,
   TableBody,
@@ -35,6 +36,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import { ApplyTemplateModal } from "@/components/ApplyTemplateModal";
+import { RouteOptimizationDialog } from "@/components/RouteOptimizationDialog";
 import { Card, CardContent } from "@/components/ui/card";
 import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
 import { TablePageShell } from "@/components/ui/table-page-shell";
@@ -249,6 +251,7 @@ export default function Jobs() {
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [visibleCount, setVisibleCount] = useState(ITEMS_PER_PAGE);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [showRouteDialog, setShowRouteDialog] = useState(false);
   const [applyTemplateJob, setApplyTemplateJob] = useState<{ id: string; jobNumber: number } | null>(null);
   const [dismissedSLAWarning, setDismissedSLAWarning] = useState(false);
   const [dismissedUrgentWarning, setDismissedUrgentWarning] = useState(false);
@@ -697,53 +700,50 @@ export default function Jobs() {
         </div>
       )}
 
-      {/* Filter Section — single row: Status dropdown + derived chips + search */}
-      <div className="space-y-3">
-        <div className="flex flex-wrap items-center gap-4 text-sm">
-          {/* Derived State Filters — lifecycle dropdown + derived chips */}
-          <div className="flex items-center gap-3 border-r pr-4">
-            <span className="text-muted-foreground">Show:</span>
-
-            {/* Lifecycle status compact dropdown */}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="h-7 text-xs" data-testid="filter-lifecycle-dropdown">
-                  {lifecycleFilter === "all" ? `Status: All (${totalCount})` :
-                   lifecycleFilter === "open" ? `Open (${counts.lifecycle.open})` :
-                   lifecycleFilter === "completed" ? `Completed (${counts.lifecycle.completed})` :
-                   lifecycleFilter === "invoiced" ? `Invoiced (${counts.lifecycle.invoiced})` :
-                   `Archived (${counts.lifecycle.archived})`}
-                  <ChevronDown className="h-3 w-3 ml-1" />
+      {/* List Pages Refactor: Consolidated toolbar with search + filters popover */}
+      <ListToolbar
+        searchValue={searchQuery}
+        onSearchChange={setSearchQuery}
+        searchPlaceholder="Search jobs..."
+        searchTestId="input-search-jobs"
+      >
+        <FiltersButton
+          activeCount={
+            (lifecycleFilter !== "all" ? 1 : 0) +
+            (derivedFilters.scheduled !== null ? 1 : 0) +
+            (derivedFilters.assigned !== null ? 1 : 0) +
+            (derivedFilters.allDay !== null ? 1 : 0) +
+            (derivedFilters.overdue ? 1 : 0) +
+            (openSubStatusFilter !== "any" ? 1 : 0)
+          }
+          onClear={clearAllFilters}
+        >
+          {/* Status */}
+          <FilterSection label="Status">
+            <div className="flex flex-wrap gap-1.5">
+              {(["all", "open", "completed", "invoiced", "archived"] as LifecycleStatusFilter[]).map((val) => (
+                <Button
+                  key={val}
+                  variant={lifecycleFilter === val ? "default" : "outline"}
+                  size="sm"
+                  className="h-7 text-xs rounded-full"
+                  onClick={() => setLifecycleFilter(val)}
+                  data-testid={`button-filter-status-${val}`}
+                >
+                  {val === "all" ? `All (${totalCount})` :
+                   `${val.charAt(0).toUpperCase() + val.slice(1)} (${counts.lifecycle[val as keyof typeof counts.lifecycle]})`}
                 </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                <DropdownMenuItem onClick={() => setLifecycleFilter("all")} data-testid="button-filter-status-all">
-                  All ({totalCount})
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setLifecycleFilter("open")} data-testid="button-filter-status-open">
-                  Open ({counts.lifecycle.open})
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setLifecycleFilter("completed")} data-testid="button-filter-status-completed">
-                  Completed ({counts.lifecycle.completed})
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setLifecycleFilter("invoiced")} data-testid="button-filter-status-invoiced">
-                  Invoiced ({counts.lifecycle.invoiced})
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => setLifecycleFilter("archived")} data-testid="button-filter-status-archived">
-                  Archived ({counts.lifecycle.archived})
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+              ))}
+            </div>
+          </FilterSection>
 
-            {/* Scheduled/Backlog toggle */}
-            <div className="flex items-center gap-1">
+          {/* Schedule */}
+          <FilterSection label="Schedule">
+            <div className="flex flex-wrap gap-1.5">
               <Button
                 variant={derivedFilters.scheduled === true ? "default" : "outline"}
                 size="sm"
-                className={cn(
-                  "rounded-full h-7 px-2.5 text-xs",
-                  derivedFilters.scheduled === true && "bg-[var(--brand-ring)] text-[var(--brand)] border-[rgba(47,125,50,0.25)] hover:bg-[rgba(47,125,50,0.22)]"
-                )}
+                className="h-7 text-xs rounded-full"
                 onClick={() => toggleDerivedFilter("scheduled", derivedFilters.scheduled === true ? null : true)}
                 data-testid="filter-scheduled"
               >
@@ -753,26 +753,22 @@ export default function Jobs() {
               <Button
                 variant={derivedFilters.scheduled === false ? "default" : "outline"}
                 size="sm"
-                className={cn(
-                  "rounded-full h-7 px-2.5 text-xs",
-                  derivedFilters.scheduled === false && "bg-[var(--brand-ring)] text-[var(--brand)] border-[rgba(47,125,50,0.25)] hover:bg-[rgba(47,125,50,0.22)]"
-                )}
+                className="h-7 text-xs rounded-full"
                 onClick={() => toggleDerivedFilter("scheduled", derivedFilters.scheduled === false ? null : false)}
                 data-testid="filter-backlog"
               >
                 Backlog ({counts.derived.backlog})
               </Button>
             </div>
+          </FilterSection>
 
-            {/* Assigned/Unassigned toggle */}
-            <div className="flex items-center gap-1">
+          {/* Assignment */}
+          <FilterSection label="Assignment">
+            <div className="flex flex-wrap gap-1.5">
               <Button
                 variant={derivedFilters.assigned === true ? "default" : "outline"}
                 size="sm"
-                className={cn(
-                  "rounded-full h-7 px-2.5 text-xs",
-                  derivedFilters.assigned === true && "bg-[var(--brand-ring)] text-[var(--brand)] border-[rgba(47,125,50,0.25)] hover:bg-[rgba(47,125,50,0.22)]"
-                )}
+                className="h-7 text-xs rounded-full"
                 onClick={() => toggleDerivedFilter("assigned", derivedFilters.assigned === true ? null : true)}
                 data-testid="filter-assigned"
               >
@@ -782,111 +778,86 @@ export default function Jobs() {
               <Button
                 variant={derivedFilters.assigned === false ? "default" : "outline"}
                 size="sm"
-                className={cn(
-                  "rounded-full h-7 px-2.5 text-xs",
-                  derivedFilters.assigned === false && "bg-[var(--brand-ring)] text-[var(--brand)] border-[rgba(47,125,50,0.25)] hover:bg-[rgba(47,125,50,0.22)]"
-                )}
+                className="h-7 text-xs rounded-full"
                 onClick={() => toggleDerivedFilter("assigned", derivedFilters.assigned === false ? null : false)}
                 data-testid="filter-unassigned"
               >
                 Unassigned ({counts.derived.unassigned})
               </Button>
             </div>
+          </FilterSection>
 
-            {/* All-day checkbox */}
-            <div className="flex items-center gap-1.5">
-              <Checkbox
-                id="filter-allday"
-                checked={derivedFilters.allDay === true}
-                onCheckedChange={(checked) => toggleDerivedFilter("allDay", checked ? true : null)}
-                data-testid="filter-allday"
-              />
-              <label htmlFor="filter-allday" className="text-xs cursor-pointer">
-                All-day ({counts.derived.allDay})
-              </label>
+          {/* More filters */}
+          <FilterSection label="More">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="filter-allday"
+                  checked={derivedFilters.allDay === true}
+                  onCheckedChange={(checked) => toggleDerivedFilter("allDay", checked ? true : null)}
+                  data-testid="filter-allday"
+                />
+                <label htmlFor="filter-allday" className="text-xs cursor-pointer">
+                  All-day only ({counts.derived.allDay})
+                </label>
+              </div>
+              {counts.derived.overdue > 0 && (
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="filter-overdue"
+                    checked={derivedFilters.overdue}
+                    onCheckedChange={(checked) => toggleDerivedFilter("overdue", !!checked)}
+                    data-testid="filter-overdue"
+                  />
+                  <label htmlFor="filter-overdue" className="text-xs cursor-pointer text-destructive">
+                    Overdue ({counts.derived.overdue})
+                  </label>
+                </div>
+              )}
             </div>
+          </FilterSection>
 
-            {/* Overdue filter */}
-            {counts.derived.overdue > 0 && (
-              <Button
-                variant={derivedFilters.overdue ? "destructive" : "outline"}
-                size="sm"
-                className={cn(
-                  "rounded-full h-7 px-2.5 text-xs",
-                  derivedFilters.overdue && "bg-[rgba(220,38,38,0.12)] text-[#B91C1C] border-[rgba(220,38,38,0.25)] hover:bg-[rgba(220,38,38,0.18)]"
-                )}
-                onClick={() => toggleDerivedFilter("overdue", !derivedFilters.overdue)}
-                data-testid="filter-overdue"
-              >
-                <AlertTriangle className="h-3 w-3 mr-1" />
-                Overdue ({counts.derived.overdue})
-              </Button>
-            )}
-          </div>
-
-          {/* OpenSubStatus Filter (only when viewing open jobs) */}
+          {/* Workflow sub-status (open jobs only) */}
           {(lifecycleFilter === "all" || lifecycleFilter === "open") && (
-            <div className="flex items-center gap-2">
-              <span className="text-muted-foreground">Workflow:</span>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="h-7" data-testid="filter-substatus">
-                    {openSubStatusFilter === "any" ? "Any" :
-                      openSubStatusFilter === "in_progress" ? "In Progress" :
-                      openSubStatusFilter === "on_hold" ? "On Hold" :
-                      openSubStatusFilter === "on_route" ? "On Route" :
-                      "Needs Review"}
-                    <ChevronDown className="h-3 w-3 ml-1" />
+            <FilterSection label="Workflow">
+              <div className="flex flex-wrap gap-1.5">
+                {([
+                  { val: "any" as const, label: "Any" },
+                  { val: "in_progress" as const, label: `In Progress (${counts.openSubStatus.in_progress})` },
+                  { val: "on_route" as const, label: `On Route (${counts.openSubStatus.on_route})` },
+                  { val: "on_hold" as const, label: `On Hold (${counts.openSubStatus.on_hold})` },
+                  { val: "needs_review" as const, label: `Needs Review (${counts.openSubStatus.needs_review})` },
+                ]).map(({ val, label }) => (
+                  <Button
+                    key={val}
+                    variant={openSubStatusFilter === val ? "default" : "outline"}
+                    size="sm"
+                    className="h-7 text-xs rounded-full"
+                    onClick={() => setOpenSubStatusFilter(val)}
+                    data-testid={val === "any" ? "filter-substatus-any" : `filter-substatus-${val}`}
+                  >
+                    {label}
                   </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start">
-                  <DropdownMenuItem onClick={() => setOpenSubStatusFilter("any")}>
-                    Any
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => setOpenSubStatusFilter("in_progress")}>
-                    In Progress ({counts.openSubStatus.in_progress})
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => setOpenSubStatusFilter("on_route")}>
-                    On Route ({counts.openSubStatus.on_route})
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => setOpenSubStatusFilter("on_hold")}>
-                    On Hold ({counts.openSubStatus.on_hold})
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => setOpenSubStatusFilter("needs_review")}>
-                    Needs Review ({counts.openSubStatus.needs_review})
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
+                ))}
+              </div>
+            </FilterSection>
           )}
+        </FiltersButton>
 
-          {/* Clear filters button */}
-          {hasActiveFilters && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2 text-muted-foreground"
-              onClick={clearAllFilters}
-              data-testid="clear-filters"
-            >
-              <X className="h-3 w-3 mr-1" />
-              Clear filters
-            </Button>
-          )}
-
-          {/* Search — right-aligned */}
-          <div className="relative ml-auto">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Search jobs..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9 w-[250px] h-8"
-              data-testid="input-search-jobs"
-            />
-          </div>
-        </div>
-      </div>
+        {/* Phase 4A: Route optimization button — uses scheduled jobs with locations */}
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-9 gap-1.5"
+          onClick={() => setShowRouteDialog(true)}
+          disabled={filteredAndSortedJobs.filter(j => j._scheduled).length < 2}
+          data-testid="button-optimize-route"
+          title="Optimize route for scheduled jobs"
+        >
+          <Route className="h-3.5 w-3.5" />
+          Optimize Route
+        </Button>
+      </ListToolbar>
 
       <ListSurface data-testid="table-jobs">
           <Table>
@@ -1240,6 +1211,27 @@ export default function Jobs() {
           jobNumber={applyTemplateJob.jobNumber}
         />
       )}
+
+      {/* Phase 4A: Route Optimization Dialog — maps scheduled jobs to client-like stops */}
+      <RouteOptimizationDialog
+        open={showRouteDialog}
+        onOpenChange={setShowRouteDialog}
+        clients={filteredAndSortedJobs
+          .filter((j) => j._scheduled)
+          .map((j) => ({
+            id: j.locationId || j.id,
+            companyName: j.locationDisplayName || j.locationName || "Unknown",
+            location: j.locationName || null,
+            address: j.locationAddress || null,
+            city: j.locationCity || null,
+            province: null,
+            postalCode: null,
+          }))}
+        onApplyRoute={() => {
+          // Route applied — no reorder needed on jobs list (read-only preview)
+          setShowRouteDialog(false);
+        }}
+      />
     </TablePageShell>
   );
 }

@@ -40,6 +40,7 @@ import {
   CalendarGridWeekTechnicians,
   CalendarGridDay,
   CalendarGridDayJobber, // Jobber-style day grid (2026-01-28)
+  CalendarGridDayRows, // Horizontal rows day layout (Polish Pass 2026-03-04)
   ScheduleJobModal,
 } from "@/components/calendar";
 import { useCompanyRegionalSettings } from "@/hooks/useCompanyRegionalSettings";
@@ -165,8 +166,8 @@ export default function Calendar() {
     setSelectedTechnicianId,
     expandedAllDaySlots,
     setExpandedAllDaySlots,
-    showTasks,
-    toggleShowTasks,
+    dayLayout,
+    toggleDayLayout,
   } = useCalendarState();
 
   // Regional settings (timezone, date/time format, week start) from company settings
@@ -1373,11 +1374,11 @@ export default function Calendar() {
     return { start: monthStart.toISOString(), end: monthEnd.toISOString() };
   }, [view, currentDate, year, month, regional.weekStartsOn]);
 
-  // Phase 8: Fetch scheduled tasks for calendar overlay
+  // Tasks always shown on calendar (Polish Pass 2026-03-04)
   const { data: scheduledTasks = [] } = useCalendarTasks(
     calendarDateRange.start,
     calendarDateRange.end,
-    showTasks
+    true
   );
 
   // Phase 8: Fetch unscheduled tasks for sidebar Tasks tab
@@ -1639,14 +1640,14 @@ export default function Calendar() {
     [events]
   );
 
-  // Phase 8: Merge task-derived CalendarItems when showTasks is enabled
+  // Tasks always merged into calendar events (Polish Pass 2026-03-04)
   const mergedEvents = useMemo(() => {
-    if (!showTasks || scheduledTasks.length === 0) return normalizedEvents;
+    if (scheduledTasks.length === 0) return normalizedEvents;
     const taskItems = scheduledTasks
       .map(taskToCalendarItem)
       .filter((item): item is NonNullable<typeof item> => item !== null) as CalendarEvent[];
     return [...normalizedEvents, ...taskItems];
-  }, [normalizedEvents, scheduledTasks, showTasks]);
+  }, [normalizedEvents, scheduledTasks]);
 
   // Build memoized indexes for efficient lookup (uses merged events when tasks enabled)
   const eventIndexes = useMemo(
@@ -2132,15 +2133,15 @@ export default function Calendar() {
             onPartsClick={handlePartsClick}
             calendarStartHour={companySettings?.calendarStartHour || 8}
             onStartHourChange={handleStartHourChange}
-            showTasks={showTasks}
-            onToggleShowTasks={toggleShowTasks}
+            dayLayout={dayLayout}
+            onToggleDayLayout={toggleDayLayout}
             regional={regional}
           />
 
-          <div className={`flex gap-2 flex-1 min-h-0 overflow-hidden`}>
+          <div className={`flex gap-2 flex-1 min-h-0 overflow-hidden mt-2`}>
             <div className="flex-1 min-w-0 flex flex-col h-full">
-              <Card className="h-full flex flex-col">
-                <CardContent className="flex-1 overflow-auto p-0">
+              <Card className="h-full flex flex-col overflow-hidden">
+                <CardContent className="flex-1 overflow-auto p-0 h-full">
                   {view === "monthly" && (
                     <CalendarGridMonth
                       year={year}
@@ -2178,23 +2179,41 @@ export default function Calendar() {
                   )}
                   {view === "daily" && (
                     <div className="h-full flex flex-col min-h-0 max-h-full">
-                      {/* 2026-01-28: Jobber-style day grid with tech columns + time rows */}
-                      <CalendarGridDayJobber
-                        currentDate={currentDate}
-                        density={density}
-                        companySettings={companySettings}
-                        clients={clients}
-                        technicians={technicians}
-                        eventIndexes={eventIndexes}
-                        hiddenTechnicianIds={hiddenTechnicianIds}
-                        getTechnicianColor={getTechnicianColor}
-                        handleClientClick={handleClientClick}
-                        handleResize={handleResize}
-                        savingJobIds={savingJobIds}
-                        onUnschedule={handleUnschedule}
-                        regional={regional}
-                        businessHours={businessHoursData?.hours}
-                      />
+                      {dayLayout === "columns" ? (
+                        /* Vertical tech columns (default) */
+                        <CalendarGridDayJobber
+                          currentDate={currentDate}
+                          density={density}
+                          companySettings={companySettings}
+                          clients={clients}
+                          technicians={technicians}
+                          eventIndexes={eventIndexes}
+                          hiddenTechnicianIds={hiddenTechnicianIds}
+                          getTechnicianColor={getTechnicianColor}
+                          handleClientClick={handleClientClick}
+                          handleResize={handleResize}
+                          savingJobIds={savingJobIds}
+                          onUnschedule={handleUnschedule}
+                          regional={regional}
+                          businessHours={businessHoursData?.hours}
+                        />
+                      ) : (
+                        /* Horizontal tech rows (Polish Pass 2026-03-04) */
+                        <CalendarGridDayRows
+                          currentDate={currentDate}
+                          density={density}
+                          companySettings={companySettings}
+                          clients={clients}
+                          technicians={technicians}
+                          eventIndexes={eventIndexes}
+                          hiddenTechnicianIds={hiddenTechnicianIds}
+                          getTechnicianColor={getTechnicianColor}
+                          handleClientClick={handleClientClick}
+                          savingJobIds={savingJobIds}
+                          regional={regional}
+                          businessHours={businessHoursData?.hours}
+                        />
+                      )}
                     </div>
                   )}
                 </CardContent>

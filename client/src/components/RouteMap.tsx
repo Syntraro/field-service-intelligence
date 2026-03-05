@@ -1,8 +1,9 @@
 import { useEffect } from "react";
-import { MapContainer, TileLayer, Marker, Polyline, Popup, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Polyline, Popup, Tooltip, CircleMarker, useMap } from "react-leaflet";
 import { LatLngExpression, LatLngBounds } from "leaflet";
 import * as L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import { useLiveTechnicians, type LiveTechnician } from "@/hooks/useLiveTechnicians";
 
 interface Client {
   id: string;
@@ -19,6 +20,8 @@ interface RouteMapProps {
   clients: Client[];
   geocodedClients: GeocodedClient[];
   startingCoordinates?: [number, number]; // [longitude, latitude]
+  /** Show live technician markers (Phase 4B) */
+  showLiveTechnicians?: boolean;
 }
 
 // Component to fit map bounds to all markers
@@ -34,7 +37,9 @@ function FitBounds({ bounds }: { bounds: LatLngBounds }) {
   return null;
 }
 
-export function RouteMap({ clients, geocodedClients, startingCoordinates }: RouteMapProps) {
+export function RouteMap({ clients, geocodedClients, startingCoordinates, showLiveTechnicians = true }: RouteMapProps) {
+  // Phase 4B: Live technician positions (auto-refresh 15s)
+  const { data: liveTechnicians = [] } = useLiveTechnicians(showLiveTechnicians);
   // Convert [lng, lat] to [lat, lng] for Leaflet
   const positions: LatLngExpression[] = geocodedClients.map(gc => [gc.coordinates[1], gc.coordinates[0]]);
   
@@ -105,6 +110,31 @@ export function RouteMap({ clients, geocodedClients, startingCoordinates }: Rout
           );
         })}
 
+        {/* Phase 4B: Live technician markers */}
+        {liveTechnicians.map((tech: LiveTechnician) => {
+          const lat = parseFloat(tech.lat);
+          const lng = parseFloat(tech.lng);
+          if (isNaN(lat) || isNaN(lng)) return null;
+          const ago = tech.lastSeenAt
+            ? formatTimeAgo(new Date(tech.lastSeenAt))
+            : "Unknown";
+          return (
+            <CircleMarker
+              key={tech.technicianId}
+              center={[lat, lng]}
+              radius={8}
+              pathOptions={{ color: '#2563eb', fillColor: '#3b82f6', fillOpacity: 0.9, weight: 2 }}
+            >
+              <Tooltip direction="top" offset={[0, -8]} permanent={false}>
+                <div className="text-xs">
+                  <div className="font-medium">{tech.name}</div>
+                  <div className="text-muted-foreground">{ago}</div>
+                </div>
+              </Tooltip>
+            </CircleMarker>
+          );
+        })}
+
         {/* Route line */}
         {routePoints.length > 1 && (
           <Polyline
@@ -119,6 +149,16 @@ export function RouteMap({ clients, geocodedClients, startingCoordinates }: Rout
       </MapContainer>
     </div>
   );
+}
+
+/** Format a timestamp as relative time (e.g., "2m ago") */
+function formatTimeAgo(date: Date): string {
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ago`;
 }
 
 // Helper function to create numbered marker icon

@@ -2,11 +2,12 @@ import { useState, useMemo, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { format, isValid, parseISO } from "date-fns";
 import { useLocation, useSearch, Link } from "wouter";
-import { Search, Plus, FileText, DollarSign, AlertTriangle, MoreHorizontal, RefreshCw } from "lucide-react";
+import { Plus, FileText, DollarSign, AlertTriangle, MoreHorizontal, RefreshCw } from "lucide-react";
 import { QboSyncBadge, isQboSynced } from "@/components/invoice/QboSyncBanner";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { ListToolbar } from "@/components/layout/ListToolbar";
+import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
 import { Card, CardContent } from "@/components/ui/card";
 import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
 import { TablePageShell } from "@/components/ui/table-page-shell";
@@ -277,80 +278,70 @@ export default function InvoicesListPage() {
           </Card>
       </div>
 
-      <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          {(["all", "draft", "awaiting_payment", "partial_paid", "paid", "overdue", "voided"] as InvoiceStatusFilter[]).map((filter) => (
-            <Button
-              key={filter}
-              variant={activeFilter === filter ? "default" : "ghost"}
-              size="sm"
-              onClick={() => setActiveFilter(filter)}
-              data-testid={`button-filter-${filter}`}
-              className={cn(
-                "rounded-full h-8 px-3 text-xs",
-                activeFilter === filter
-                  ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent"
-                  : "text-muted-foreground"
-              )}
-            >
-              {filter === "all" ? "All" :
-               filter === "awaiting_payment" ? "Unpaid" :
-               filter === "partial_paid" ? "Partial" :
-               filter === "overdue" ? "Overdue" :
-               filter.charAt(0).toUpperCase() + filter.slice(1)}
-              {statusCounts[filter] ? ` (${statusCounts[filter]})` : ""}
-            </Button>
-          ))}
-          {/* Phase 10A: QBO sync filter buttons (only show if there are synced invoices) */}
-          {(statusCounts["qbo_synced"] || statusCounts["qbo_out_of_sync"]) && (
-            <>
-              <span className="text-muted-foreground mx-1">|</span>
-              <Button
-                variant={activeFilter === "qbo_synced" ? "default" : "ghost"}
-                size="sm"
-                onClick={() => setActiveFilter("qbo_synced")}
-                data-testid="button-filter-qbo-synced"
-                className={cn(
-                  "rounded-full h-8 px-3 text-xs gap-1",
-                  activeFilter === "qbo_synced"
-                    ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent"
-                    : "text-muted-foreground"
-                )}
-              >
-                <RefreshCw className="h-3 w-3" />
-                Synced
-                {statusCounts["qbo_synced"] ? ` (${statusCounts["qbo_synced"]})` : ""}
-              </Button>
-              {statusCounts["qbo_out_of_sync"] > 0 && (
+      {/* List Pages Refactor: Consolidated toolbar with search + filters popover */}
+      <ListToolbar
+        searchValue={searchQuery}
+        onSearchChange={setSearchQuery}
+        searchPlaceholder="Search invoices..."
+        searchTestId="input-search-invoices"
+      >
+        <FiltersButton
+          activeCount={activeFilter !== "all" ? 1 : 0}
+          onClear={() => setActiveFilter("all")}
+        >
+          <FilterSection label="Status">
+            <div className="flex flex-wrap gap-1.5">
+              {(["all", "draft", "awaiting_payment", "partial_paid", "paid", "overdue", "voided"] as InvoiceStatusFilter[]).map((filter) => (
                 <Button
-                  variant={activeFilter === "qbo_out_of_sync" ? "destructive" : "ghost"}
+                  key={filter}
+                  variant={activeFilter === filter ? "default" : "outline"}
                   size="sm"
-                  onClick={() => setActiveFilter("qbo_out_of_sync")}
-                  data-testid="button-filter-qbo-out-of-sync"
-                  className={cn(
-                    "rounded-full h-8 px-3 text-xs",
-                    activeFilter !== "qbo_out_of_sync" && "text-destructive"
-                  )}
+                  className="h-7 text-xs rounded-full"
+                  onClick={() => setActiveFilter(filter)}
+                  data-testid={`button-filter-${filter}`}
                 >
-                  <AlertTriangle className="h-3 w-3 mr-1" />
-                  Out of Sync ({statusCounts["qbo_out_of_sync"]})
+                  {filter === "all" ? "All" :
+                   filter === "awaiting_payment" ? "Unpaid" :
+                   filter === "partial_paid" ? "Partial" :
+                   filter === "overdue" ? "Overdue" :
+                   filter.charAt(0).toUpperCase() + filter.slice(1)}
+                  {statusCounts[filter] ? ` (${statusCounts[filter]})` : ""}
                 </Button>
-              )}
-            </>
-          )}
-        </div>
-        
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Search invoices..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-9 w-[250px]"
-            data-testid="input-search-invoices"
-          />
-        </div>
-      </div>
+              ))}
+            </div>
+          </FilterSection>
+
+          {/* QBO sync filters (only shown when synced invoices exist) */}
+          {(statusCounts["qbo_synced"] || statusCounts["qbo_out_of_sync"]) ? (
+            <FilterSection label="QuickBooks Sync">
+              <div className="flex flex-wrap gap-1.5">
+                <Button
+                  variant={activeFilter === "qbo_synced" ? "default" : "outline"}
+                  size="sm"
+                  className="h-7 text-xs rounded-full gap-1"
+                  onClick={() => setActiveFilter("qbo_synced")}
+                  data-testid="button-filter-qbo-synced"
+                >
+                  <RefreshCw className="h-3 w-3" />
+                  Synced {statusCounts["qbo_synced"] ? `(${statusCounts["qbo_synced"]})` : ""}
+                </Button>
+                {statusCounts["qbo_out_of_sync"] > 0 && (
+                  <Button
+                    variant={activeFilter === "qbo_out_of_sync" ? "destructive" : "outline"}
+                    size="sm"
+                    className="h-7 text-xs rounded-full gap-1"
+                    onClick={() => setActiveFilter("qbo_out_of_sync")}
+                    data-testid="button-filter-qbo-out-of-sync"
+                  >
+                    <AlertTriangle className="h-3 w-3" />
+                    Out of Sync ({statusCounts["qbo_out_of_sync"]})
+                  </Button>
+                )}
+              </div>
+            </FilterSection>
+          ) : null}
+        </FiltersButton>
+      </ListToolbar>
 
       <ListSurface>
           {isLoading ? (

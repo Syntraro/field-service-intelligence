@@ -4371,3 +4371,30 @@ export const insertAttentionItemSchema = createInsertSchema(attentionItems).omit
 
 export type InsertAttentionItem = z.infer<typeof insertAttentionItemSchema>;
 export type AttentionItem = typeof attentionItems.$inferSelect;
+
+// =============================================================================
+// TECHNICIAN POSITIONS — Phase 4B: GPS telemetry pings (2026-03-05)
+// =============================================================================
+
+export const technicianPositions = pgTable("technician_positions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  technicianId: varchar("technician_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  lat: numeric("lat").notNull(),
+  lng: numeric("lng").notNull(),
+  accuracy: numeric("accuracy"),
+  speed: numeric("speed"),
+  heading: numeric("heading"),
+  recordedAt: timestamp("recorded_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => ({
+  companyTechIdx: index("tech_positions_company_tech_idx").on(table.companyId, table.technicianId),
+  techRecordedIdx: index("tech_positions_tech_recorded_idx").on(table.technicianId, table.recordedAt),
+}));
+
+export const insertTechnicianPositionSchema = createInsertSchema(technicianPositions).omit({
+  id: true,
+  recordedAt: true,
+});
+
+export type InsertTechnicianPosition = z.infer<typeof insertTechnicianPositionSchema>;
+export type TechnicianPosition = typeof technicianPositions.$inferSelect;

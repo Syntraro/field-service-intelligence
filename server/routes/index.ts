@@ -62,6 +62,10 @@ import visitsRouter from "./visits";
 // Phase 1 Architecture: Event Log + Attention Queue
 import activityRouter from "./activity";
 import attentionRouter from "./attention";
+// Phase 4A: Route optimization (ORS-based)
+import routesRouter from "./routes";
+// Phase 4B: Technician telemetry (GPS pings)
+import telemetryRouter from "./telemetry";
 
 /**
  * Register all API routes in a single place.
@@ -247,6 +251,12 @@ export function registerRoutes(app: Express): Server {
   // Phase 1 Architecture: Event Log + Attention Queue
   app.use("/api/activity", activityRouter);
   app.use("/api/attention", attentionRouter);
+
+  // Phase 4A: Route optimization (ORS-based dispatch routing)
+  app.use("/api/routes", routesRouter);
+
+  // Phase 4B: Technician telemetry (GPS pings)
+  app.use("/api/telemetry", telemetryRouter);
 
   // Admin timesheets: day/week views, edit/delete time entries
   app.use("/api/admin/timesheets", adminTimesheetsRouter);

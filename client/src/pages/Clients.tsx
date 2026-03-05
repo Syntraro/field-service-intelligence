@@ -6,11 +6,11 @@
 import { useState, useMemo, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Search, Plus, X, Tag, MapPin, Users } from "lucide-react";
+import { Plus, X, Tag, MapPin, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ListToolbar } from "@/components/layout/ListToolbar";
+import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
 import { FixedSizeList } from "react-window";
 import { apiRequest } from "@/lib/queryClient";
 import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
@@ -225,166 +225,170 @@ export default function Clients() {
       }
       data-testid="clients-page"
     >
-      <Tabs value={activeTab} onValueChange={(tab) => setActiveTab(tab as "active" | "inactive")}>
-        <div className="flex items-center justify-between gap-4">
-          <TabsList data-testid="tabs-client-status">
-            <TabsTrigger value="active" data-testid="tab-active">
-              Active ({companyGroups.filter((g) => g.hasActiveLocation).length})
-            </TabsTrigger>
-            <TabsTrigger value="inactive" data-testid="tab-inactive">
-              Inactive ({companyGroups.filter((g) => g.allInactive).length})
-            </TabsTrigger>
-          </TabsList>
-
-          <div className="relative flex-1 max-w-sm">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Search clients..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="pl-9"
-              data-testid="input-search-clients"
-            />
-          </div>
-        </div>
-
-        {/* Tag filter chips */}
-        {allTags.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5 mt-3">
-            {allTags.map((tag) => {
-              const active = selectedTagIds.has(tag.id);
-              return (
-                <button
-                  key={tag.id}
-                  type="button"
-                  onClick={() => {
-                    setSelectedTagIds((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(tag.id)) next.delete(tag.id);
-                      else next.add(tag.id);
-                      return next;
-                    });
-                  }}
-                  className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-all ${
-                    active ? "text-white ring-2 ring-[var(--brand)] ring-offset-1" : "opacity-50 hover:opacity-80"
-                  }`}
-                  style={{
-                    backgroundColor: active ? tag.color : `${tag.color}33`,
-                    color: active ? "white" : tag.color,
-                  }}
+      {/* List Pages Refactor: Consolidated toolbar with search + filters popover */}
+      <ListToolbar
+        searchValue={search}
+        onSearchChange={setSearch}
+        searchPlaceholder="Search clients..."
+        searchTestId="input-search-clients"
+      >
+        <FiltersButton
+          activeCount={
+            (activeTab !== "active" ? 1 : 0) +
+            selectedTagIds.size
+          }
+          onClear={() => {
+            setActiveTab("active");
+            setSelectedTagIds(new Set());
+          }}
+        >
+          <FilterSection label="Status">
+            <div className="flex gap-1.5">
+              {(["active", "inactive"] as const).map((tab) => (
+                <Button
+                  key={tab}
+                  variant={activeTab === tab ? "default" : "outline"}
+                  size="sm"
+                  className="h-7 text-xs rounded-full"
+                  onClick={() => setActiveTab(tab)}
+                  data-testid={`tab-${tab}`}
                 >
-                  {tag.name}
-                  {active && <X className="h-3 w-3" />}
-                </button>
-              );
-            })}
-            {selectedTagIds.size > 0 && (
-              <button
-                type="button"
-                onClick={() => setSelectedTagIds(new Set())}
-                className="text-xs text-muted-foreground hover:text-foreground ml-1"
-              >
-                Clear
-              </button>
-            )}
-          </div>
-        )}
+                  {tab === "active"
+                    ? `Active (${companyGroups.filter((g) => g.hasActiveLocation).length})`
+                    : `Inactive (${companyGroups.filter((g) => g.allInactive).length})`}
+                </Button>
+              ))}
+            </div>
+          </FilterSection>
 
-        {/* Phase 2A: Bulk action bar */}
+          {allTags.length > 0 && (
+            <FilterSection label="Tags">
+              <div className="flex flex-wrap gap-1.5">
+                {allTags.map((tag) => {
+                  const active = selectedTagIds.has(tag.id);
+                  return (
+                    <button
+                      key={tag.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedTagIds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(tag.id)) next.delete(tag.id);
+                          else next.add(tag.id);
+                          return next;
+                        });
+                      }}
+                      className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-all ${
+                        active ? "text-white ring-2 ring-offset-1" : "opacity-50 hover:opacity-80"
+                      }`}
+                      style={{
+                        backgroundColor: active ? tag.color : `${tag.color}33`,
+                        color: active ? "white" : tag.color,
+                        ...(active ? { boxShadow: `0 0 0 2px ${tag.color}` } : {}),
+                      }}
+                    >
+                      {tag.name}
+                      {active && <X className="h-3 w-3" />}
+                    </button>
+                  );
+                })}
+              </div>
+            </FilterSection>
+          )}
+        </FiltersButton>
+
+        {/* Bulk actions when rows selected */}
         {someSelected && (
-          <div className="flex items-center gap-3 mt-3 rounded-md border bg-muted/50 px-4 py-2">
-            <span className="text-sm font-medium">{selectedRows.size} selected</span>
-            <Button size="sm" variant="outline" onClick={() => setBulkModalOpen(true)}>
+          <div className="flex items-center gap-2 ml-2 border-l pl-3">
+            <span className="text-xs font-medium text-muted-foreground">{selectedRows.size} selected</span>
+            <Button size="sm" variant="outline" className="h-8" onClick={() => setBulkModalOpen(true)}>
               <Tag className="h-3.5 w-3.5 mr-1.5" />
               Bulk Edit Tags
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => setSelectedRows(new Set())}>
-              Clear selection
+            <Button size="sm" variant="ghost" className="h-8" onClick={() => setSelectedRows(new Set())}>
+              Clear
             </Button>
           </div>
         )}
+      </ListToolbar>
 
-        <TabsContent value={activeTab} className="mt-4">
-          <ListSurface>
-            {/* Virtualized grid header */}
-            {/* Phase: List Screens Cleanup — header matches shared Table component (#FAFAFA bg, semibold #6B7280) */}
-            <div
-              className="grid items-center border-b border-gray-200 dark:border-gray-800 py-3 text-sm font-semibold text-[#6B7280] bg-[#FAFAFA] dark:bg-gray-900/50"
-              style={{ gridTemplateColumns: CLIENTS_GRID_COLS }}
-            >
-              <div className="flex justify-center">
-                <Checkbox
-                  checked={allVisibleSelected}
-                  onCheckedChange={toggleSelectAll}
-                  aria-label="Select all visible rows"
-                />
-              </div>
-              <div className="px-4">Company</div>
-              <div className="px-4">Tags</div>
-              <div className="px-4">Location</div>
-              <div className="px-4">Address</div>
-              <div className="px-4">Maintenance Months</div>
-            </div>
-
-            {filteredGroups.length === 0 ? (
-              <EmptyState
-                icon={Users}
-                message={`No ${activeTab} clients found`}
-                className="py-8"
-              />
-            ) : (
-              <FixedSizeList
-                height={Math.min(filteredGroups.length * ROW_HEIGHT, MAX_LIST_HEIGHT)}
-                itemCount={filteredGroups.length}
-                itemSize={ROW_HEIGHT}
-                width="100%"
-              >
-                {({ index, style }) => {
-                  const group = filteredGroups[index];
-                  return (
-                    <div
-                      style={{ ...style, gridTemplateColumns: CLIENTS_GRID_COLS }}
-                      className={`grid items-center ${tableRowClass}`}
-                      onClick={() => handleRowClick(group.primaryLocationId)}
-                      data-testid={`row-client-${group.companyId}`}
-                      title={group.locationCount > 1 ? `${group.locationCount} locations` : undefined}
-                    >
-                      <div className="flex justify-center" onClick={(e) => e.stopPropagation()}>
-                        <Checkbox
-                          checked={selectedRows.has(group.companyId)}
-                          onCheckedChange={() => toggleRow(group.companyId)}
-                          aria-label={`Select ${group.companyName}`}
-                        />
-                      </div>
-                      <div className="px-4 font-medium truncate">{group.companyName}</div>
-                      <div className="px-4">
-                        <div className="flex flex-wrap gap-1">
-                          {(companyTagsList.get(group.companyId) ?? []).map((t) => (
-                            <span
-                              key={t.tagId}
-                              className="inline-flex rounded-full px-1.5 py-0.5 text-[10px] font-medium text-white"
-                              style={{ backgroundColor: t.tagColor }}
-                            >
-                              {t.tagName}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="px-4 text-muted-foreground truncate">{group.location}</div>
-                      <div className="px-4 text-muted-foreground truncate">{group.address}</div>
-                      <div className="px-4 text-sm truncate">{group.maintenanceMonths}</div>
-                    </div>
-                  );
-                }}
-              </FixedSizeList>
-            )}
-          </ListSurface>
-
-          <div className="text-sm text-muted-foreground mt-4">
-            Showing {filteredGroups.length} companies
+      <ListSurface>
+        {/* Virtualized grid header */}
+        <div
+          className="grid items-center border-b border-gray-200 dark:border-gray-800 py-3 text-sm font-semibold text-[#6B7280] bg-[#FAFAFA] dark:bg-gray-900/50"
+          style={{ gridTemplateColumns: CLIENTS_GRID_COLS }}
+        >
+          <div className="flex justify-center">
+            <Checkbox
+              checked={allVisibleSelected}
+              onCheckedChange={toggleSelectAll}
+              aria-label="Select all visible rows"
+            />
           </div>
-        </TabsContent>
-      </Tabs>
+          <div className="px-4">Company</div>
+          <div className="px-4">Tags</div>
+          <div className="px-4">Location</div>
+          <div className="px-4">Address</div>
+          <div className="px-4">Maintenance Months</div>
+        </div>
+
+        {filteredGroups.length === 0 ? (
+          <EmptyState
+            icon={Users}
+            message={`No ${activeTab} clients found`}
+            className="py-8"
+          />
+        ) : (
+          <FixedSizeList
+            height={Math.min(filteredGroups.length * ROW_HEIGHT, MAX_LIST_HEIGHT)}
+            itemCount={filteredGroups.length}
+            itemSize={ROW_HEIGHT}
+            width="100%"
+          >
+            {({ index, style }) => {
+              const group = filteredGroups[index];
+              return (
+                <div
+                  style={{ ...style, gridTemplateColumns: CLIENTS_GRID_COLS }}
+                  className={`grid items-center ${tableRowClass}`}
+                  onClick={() => handleRowClick(group.primaryLocationId)}
+                  data-testid={`row-client-${group.companyId}`}
+                  title={group.locationCount > 1 ? `${group.locationCount} locations` : undefined}
+                >
+                  <div className="flex justify-center" onClick={(e) => e.stopPropagation()}>
+                    <Checkbox
+                      checked={selectedRows.has(group.companyId)}
+                      onCheckedChange={() => toggleRow(group.companyId)}
+                      aria-label={`Select ${group.companyName}`}
+                    />
+                  </div>
+                  <div className="px-4 font-medium truncate">{group.companyName}</div>
+                  <div className="px-4">
+                    <div className="flex flex-wrap gap-1">
+                      {(companyTagsList.get(group.companyId) ?? []).map((t) => (
+                        <span
+                          key={t.tagId}
+                          className="inline-flex rounded-full px-1.5 py-0.5 text-[10px] font-medium text-white"
+                          style={{ backgroundColor: t.tagColor }}
+                        >
+                          {t.tagName}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="px-4 text-muted-foreground truncate">{group.location}</div>
+                  <div className="px-4 text-muted-foreground truncate">{group.address}</div>
+                  <div className="px-4 text-sm truncate">{group.maintenanceMonths}</div>
+                </div>
+              );
+            }}
+          </FixedSizeList>
+        )}
+      </ListSurface>
+
+      <div className="text-sm text-muted-foreground mt-4">
+        Showing {filteredGroups.length} companies
+      </div>
 
       {/* Phase 2A: Bulk Edit Tags Modal */}
       <BulkEditTagsModal

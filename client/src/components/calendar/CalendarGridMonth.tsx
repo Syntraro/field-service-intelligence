@@ -318,7 +318,7 @@ export function CalendarGridMonth({
           </div>
         ))}
       </div>
-      <div className="grid grid-cols-7 auto-rows-[minmax(52px,max-content)] content-start flex-1">
+      <div className="grid grid-cols-7 flex-1" style={{ gridAutoRows: "1fr" }}>
         {days}
       </div>
     </div>

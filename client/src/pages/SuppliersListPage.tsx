@@ -1,9 +1,9 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Search, Plus, Building2, CheckCircle2, XCircle } from "lucide-react";
-import { Input } from "@/components/ui/input";
+import { Plus, Building2, CheckCircle2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ListToolbar } from "@/components/layout/ListToolbar";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -82,18 +82,12 @@ export default function SuppliersListPage() {
         </Button>
       }
     >
-      {/* Search */}
-      <div className="flex items-center gap-4">
-        <div className="relative flex-1 max-w-md">
-          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Search suppliers..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="pl-9"
-          />
-        </div>
-      </div>
+      {/* List Pages Refactor: Consolidated toolbar with search */}
+      <ListToolbar
+        searchValue={searchQuery}
+        onSearchChange={setSearchQuery}
+        searchPlaceholder="Search suppliers..."
+      />
 
       {/* Table */}
       <ListSurface>

@@ -7,10 +7,11 @@
 import { useState, useMemo, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Search, Tag, ArrowLeft, X } from "lucide-react";
+import { Tag, ArrowLeft, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ListToolbar } from "@/components/layout/ListToolbar";
+import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
 import { FixedSizeList } from "react-window";
 import { apiRequest } from "@/lib/queryClient";
 import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
@@ -166,79 +167,70 @@ export default function Locations() {
       }
       data-testid="locations-page"
     >
-      {/* Search bar */}
-      <div className="flex items-center gap-4">
-        <div className="relative flex-1 max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Search locations..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-9"
-            data-testid="input-search-locations"
-          />
-        </div>
-      </div>
+      {/* List Pages Refactor: Consolidated toolbar with search + filters popover */}
+      <ListToolbar
+        searchValue={search}
+        onSearchChange={setSearch}
+        searchPlaceholder="Search locations..."
+        searchTestId="input-search-locations"
+      >
+        {allTags.length > 0 && (
+          <FiltersButton
+            activeCount={selectedTagIds.size}
+            onClear={() => setSelectedTagIds(new Set())}
+          >
+            <FilterSection label="Tags">
+              <div className="flex flex-wrap gap-1.5">
+                {allTags.map((tag) => {
+                  const active = selectedTagIds.has(tag.id);
+                  return (
+                    <button
+                      key={tag.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedTagIds((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(tag.id)) next.delete(tag.id);
+                          else next.add(tag.id);
+                          return next;
+                        });
+                      }}
+                      className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-all ${
+                        active ? "text-white ring-2 ring-offset-1" : "opacity-50 hover:opacity-80"
+                      }`}
+                      style={{
+                        backgroundColor: active ? tag.color : `${tag.color}33`,
+                        color: active ? "white" : tag.color,
+                        ...(active ? { boxShadow: `0 0 0 2px ${tag.color}` } : {}),
+                      }}
+                    >
+                      {tag.name}
+                      {active && <X className="h-3 w-3" />}
+                    </button>
+                  );
+                })}
+              </div>
+            </FilterSection>
+          </FiltersButton>
+        )}
 
-      {/* Tag filter chips (AND logic, same pattern as Clients) */}
-      {allTags.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5 mt-3">
-          {allTags.map((tag) => {
-            const active = selectedTagIds.has(tag.id);
-            return (
-              <button
-                key={tag.id}
-                type="button"
-                onClick={() => {
-                  setSelectedTagIds((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(tag.id)) next.delete(tag.id);
-                    else next.add(tag.id);
-                    return next;
-                  });
-                }}
-                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium transition-all ${
-                  active ? "text-white ring-2 ring-offset-1" : "opacity-50 hover:opacity-80"
-                }`}
-                style={{
-                  backgroundColor: active ? tag.color : `${tag.color}33`,
-                  color: active ? "white" : tag.color,
-                  ...(active ? { boxShadow: `0 0 0 2px ${tag.color}` } : {}),
-                }}
-              >
-                {tag.name}
-                {active && <X className="h-3 w-3" />}
-              </button>
-            );
-          })}
-          {selectedTagIds.size > 0 && (
-            <button
-              type="button"
-              onClick={() => setSelectedTagIds(new Set())}
-              className="text-xs text-muted-foreground hover:text-foreground ml-1"
-            >
+        {/* Bulk actions when rows selected */}
+        {someSelected && (
+          <div className="flex items-center gap-2 ml-2 border-l pl-3">
+            <span className="text-xs font-medium text-muted-foreground">{selectedRows.size} selected</span>
+            <Button size="sm" variant="outline" className="h-8" onClick={() => setBulkModalOpen(true)}>
+              <Tag className="h-3.5 w-3.5 mr-1.5" />
+              Bulk Edit Tags
+            </Button>
+            <Button size="sm" variant="ghost" className="h-8" onClick={() => setSelectedRows(new Set())}>
               Clear
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Phase 2B: Bulk action bar */}
-      {someSelected && (
-        <div className="flex items-center gap-3 mt-3 rounded-md border bg-muted/50 px-4 py-2">
-          <span className="text-sm font-medium">{selectedRows.size} selected</span>
-          <Button size="sm" variant="outline" onClick={() => setBulkModalOpen(true)}>
-            <Tag className="h-3.5 w-3.5 mr-1.5" />
-            Bulk Edit Tags
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => setSelectedRows(new Set())}>
-            Clear selection
-          </Button>
-        </div>
-      )}
+            </Button>
+          </div>
+        )}
+      </ListToolbar>
 
       {/* Locations table */}
-      <ListSurface className="mt-4">
+      <ListSurface>
         {/* Virtualized grid header */}
         <div
           className="grid items-center border-b border-gray-200 dark:border-gray-800 py-3 text-sm font-medium text-muted-foreground"

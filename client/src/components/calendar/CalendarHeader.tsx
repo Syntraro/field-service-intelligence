@@ -5,14 +5,15 @@
  * Changes from original:
  * - Date title: text-lg font-semibold (was text-2xl font-bold)
  * - Technician chips row removed → TechnicianFilterPopover in controls row
- * - "Show tasks" Switch toggle added
+ * - Tasks always shown (toggle removed in Polish Pass)
+ * - Day layout toggle added (columns/rows) in Polish Pass
  * - Controls consolidated into single flex row
  */
 
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ChevronLeft, ChevronRight, Package } from "lucide-react";
+import { ChevronLeft, ChevronRight, Package, Columns3, Rows3 } from "lucide-react";
+import type { DayLayout } from "@/hooks/useCalendarState";
 import { getWeekStart } from "./calendarUtils";
 import { TechnicianFilterPopover } from "./TechnicianFilterPopover";
 import type { RegionalSettings } from "@/hooks/useCompanyRegionalSettings";
@@ -46,9 +47,9 @@ export interface CalendarHeaderProps {
   calendarStartHour: number;
   onStartHourChange: (hour: number) => void;
 
-  // Tasks toggle
-  showTasks: boolean;
-  onToggleShowTasks: () => void;
+  // Day layout toggle (daily view only)
+  dayLayout: DayLayout;
+  onToggleDayLayout: () => void;
 
   // Regional settings (timezone, time format, week start)
   regional: RegionalSettings;
@@ -70,8 +71,8 @@ export function CalendarHeader({
   onPartsClick,
   calendarStartHour,
   onStartHourChange,
-  showTasks,
-  onToggleShowTasks,
+  dayLayout,
+  onToggleDayLayout,
   regional,
 }: CalendarHeaderProps) {
   return (
@@ -143,19 +144,6 @@ export function CalendarHeader({
           onToggleTechnicianVisibility={onToggleTechnicianVisibility}
         />
 
-        {/* Show tasks toggle */}
-        <div className="flex items-center gap-1.5">
-          <Switch
-            id="show-tasks"
-            checked={showTasks}
-            onCheckedChange={onToggleShowTasks}
-            className="scale-75"
-          />
-          <label htmlFor="show-tasks" className="text-xs text-muted-foreground cursor-pointer select-none">
-            Tasks
-          </label>
-        </div>
-
         {/* Start hour selector (weekly/daily only) */}
         {(view === "weekly" || view === "daily") && (
           <div className="flex items-center gap-1.5">
@@ -176,6 +164,25 @@ export function CalendarHeader({
               </SelectContent>
             </Select>
           </div>
+        )}
+
+        {/* Day layout toggle (daily view only) */}
+        {view === "daily" && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs gap-1.5"
+            onClick={onToggleDayLayout}
+            title={dayLayout === "columns" ? "Switch to horizontal rows" : "Switch to vertical columns"}
+            data-testid="button-day-layout"
+          >
+            {dayLayout === "columns" ? (
+              <Rows3 className="h-3.5 w-3.5" />
+            ) : (
+              <Columns3 className="h-3.5 w-3.5" />
+            )}
+            {dayLayout === "columns" ? "Rows" : "Columns"}
+          </Button>
         )}
 
         {/* Parts button (weekly only) */}

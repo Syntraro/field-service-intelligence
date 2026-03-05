@@ -7,6 +7,7 @@ import { AuthProvider, useAuth } from "@/lib/auth";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import Dashboard from "@/pages/Dashboard";
 import Calendar from "@/pages/Calendar";
+import LiveMapPage from "@/pages/LiveMapPage";
 import Jobs from "@/pages/Jobs";
 import JobDetailPage from "@/pages/JobDetailPage";
 import InvoicesListPage from "@/pages/InvoicesListPage";
@@ -114,6 +115,11 @@ function Router() {
       <Route path="/calendar">
         <ProtectedRoute requireAdmin>
           <Calendar />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/live-map">
+        <ProtectedRoute requireAdmin>
+          <LiveMapPage />
         </ProtectedRoute>
       </Route>
       <Route path="/jobs">
