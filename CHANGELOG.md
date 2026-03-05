@@ -8,6 +8,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Canonical EditVisitModal — Component Unification (2026-03-05)
+- **FIX A — Shared EditVisitModal component:** Extracted visit editing into `client/src/components/visits/EditVisitModal.tsx`. Uses `JobScheduleFields` (same component as Calendar's ScheduleJobModal) for consistent scheduling UI: date picker, time dropdown, duration select, multi-technician chips with display names.
+- **FIX B — Job Detail rewired:** Both active and completed visit clicks now open `EditVisitModal` directly in edit mode. Old `VisitDetailDialog` (inline in `JobDetailPage.tsx`) removed entirely (~460 lines deleted).
+- **FIX C — Completed visit editing:** Completed visits can be rescheduled via the same modal. Complete/Uncomplete actions hidden when job is completed/closed.
+- **FIX D — Technician display names:** `EditVisitModal` uses `JobScheduleFields` which already uses `getMemberDisplayName()` for technician chips.
+- **Files:** `client/src/components/visits/EditVisitModal.tsx` (new), `client/src/pages/JobDetailPage.tsx` (modified — removed VisitDetailDialog, added EditVisitModal import)
+
+### Fixed
+
+#### Day View Layout Fix — RC-1 + RC-2 (2026-03-05)
+- **RC-1:** Added `max-h-full` to Day Columns and Day Rows scroll containers, matching Week view behavior. Fixes height negotiation so Day views fill available viewport height without clipping. (`CalendarGridDayJobber.tsx`, `CalendarGridDayRows.tsx`)
+- **RC-2:** Now-line and auto-scroll in Day Columns use dynamically measured header height via `ResizeObserver` instead of fixed `HEADER_HEIGHT` constant. TimeRail header also syncs to measured height. Fixes visual drift when all-day items make the sticky header taller than 44px. (`CalendarGridDayJobber.tsx`)
+
+#### Unified Visit Click + Edit Modal (2026-03-05)
+- **FIX A — Single modal for all visit clicks:** Active Visit click opens VisitDetailDialog directly in edit mode (`initialEdit` prop). Completed visit click opens same dialog in read-only mode. No more preview/details modal — one modal, one source of truth. (`JobDetailPage.tsx`)
+- **FIX B — Visit history layout:** Collapsed preview shows last 2 completed visits (was 3). "View all completed visits (N)" toggle for expand/collapse. Prevents page push-down. (`JobDetailPage.tsx`)
+- **FIX C — Technician name everywhere:** All inline `firstName && lastName ? name : email` patterns replaced with canonical `getMemberDisplayName()` from `lib/displayName.ts`. Fixes email-as-name bug. (`JobDetailPage.tsx`, `JobVisitsSection.tsx`)
+- **FIX D — Duration display:** Edit mode label changed from "Duration (minutes)" to "Estimated Duration" with live hours/min preview. Read mode shows "1h 30m" instead of "90 min". Step changed to 15-min increments. (`JobDetailPage.tsx`)
+- **FIX E — Prevent uncomplete while job closed:** Complete button hidden when visit is already completed/cancelled OR when job status is completed/closed. No uncomplete affordance added. (`JobDetailPage.tsx`)
+- **Phase 3 — Click loop prevention:** `visitEditMode` + `selectedVisitId` are set atomically in click handler. `didAutoEdit` flag prevents `enterEditMode` from re-triggering on visit data changes. Dialog cleanup resets both states on close.
+
+### Changed
+
 #### Job Visit Lifecycle — Jobber-style Rules (2026-03-05)
 - **Rule B — Visit History shows completed only:** Job Detail "Visits" section now has "Active Visit" card + "Visit History" list (completed visits only, grouped newest-first with completion date/tech)
 - **Rule C — Close Job auto-completes visits:** When job status transitions to "completed" (via dropdown or close-job route), all uncompleted visits are automatically bulk-completed. Confirmation dialog added: "All uncompleted visits will be marked as completed."
@@ -18,6 +41,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Client: `useJobVisits` hook adds `activeVisit` + `completedVisits` derived selectors (`client/src/hooks/useJobVisits.ts`)
 - Client: Job Detail visits section rewritten with Active Visit card + Visit History (completed only) (`client/src/pages/JobDetailPage.tsx`)
 - Client: "Complete Job" confirmation dialog added with warning about auto-completing visits
+
+#### Day View Layout Root-Cause Investigation (2026-03-05)
+- **Diagnostic report:** `docs/DAY_VIEW_LAYOUT_ROOT_CAUSE.md` — 3 confirmed root causes, 3 cleared suspects
+- **RC-1 (Medium):** Day views use `overflow-auto` (bidirectional) vs Week's `overflow-y-auto` + `max-h-full` — may cause height negotiation issues
+- **RC-2 (Low-Medium):** DayJobber sticky header now has dynamic height (all-day strip) but nowLine uses fixed HEADER_HEIGHT constant
+- **RC-3 (Low):** DayRows 2400px fixed-width timeline forces bidirectional scroll (by design for Gantt style)
+- **Cleared:** `min-h-0` chain, `overflow-hidden` ancestors, and scrollTop-based time mapping — all correct
+- **Debug instrumentation added** (gated behind `?debugLayout=1`): useLayoutEffect logs + colored outlines on scroll containers
+- Files: `CalendarGridDayJobber.tsx`, `CalendarGridDayRows.tsx`, `CalendarGridWeek.tsx`
 
 ### Investigation
 

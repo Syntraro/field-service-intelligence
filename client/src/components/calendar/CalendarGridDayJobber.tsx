@@ -15,7 +15,7 @@
  * - All-day droppable IDs use '|' delimiter: allday|{techId}|{YYYY-MM-DD}
  * - Tech columns span full day height for proper absolute positioning
  */
-import { memo, useMemo, useRef, useEffect } from "react";
+import { memo, useMemo, useRef, useEffect, useLayoutEffect, useState, useCallback } from "react";
 import { format } from "date-fns";
 import { useDroppable, useDraggable } from "@dnd-kit/core";
 import { JobCard } from "./JobCard";
@@ -272,6 +272,8 @@ interface TechColumnProps {
   isBusinessOpen: boolean;
   /** Day summary for this technician (Calendar Improvement 2026-03-05) */
   techSummary?: TechDaySummary;
+  /** RC-2: Optional ref callback for measuring sticky header height */
+  stickyHeaderRef?: (node: HTMLDivElement | null) => void;
 }
 
 function TechColumn({
@@ -297,6 +299,7 @@ function TechColumn({
   businessHoursEnd,
   isBusinessOpen,
   techSummary,
+  stickyHeaderRef,
 }: TechColumnProps) {
   const rowHeight = DENSITY_STYLES[density].rowHeight;
 
@@ -306,6 +309,7 @@ function TechColumn({
           Removes the old sticky all-day lane that overlapped timed grid drop zones,
           eliminating the source of timed<->all-day DnD collision ambiguity. */}
       <div
+        ref={stickyHeaderRef}
         className="sticky top-0 z-30 bg-background border-b px-2 py-1.5 flex flex-col items-center"
         style={{ minHeight: HEADER_HEIGHT }}
       >
@@ -443,17 +447,19 @@ interface TimeRailProps {
   density: CalendarDensity;
   timeFormat: "12h" | "24h";
   startHour: number;
+  /** RC-2: Measured header height from tech columns (keeps TimeRail header in sync) */
+  headerHeight?: number;
 }
 
-function TimeRail({ density, timeFormat, startHour }: TimeRailProps) {
+function TimeRail({ density, timeFormat, startHour, headerHeight }: TimeRailProps) {
   const rowHeight = DENSITY_STYLES[density].rowHeight;
 
   return (
     <div className="flex flex-col border-r bg-muted/20" style={{ width: TIME_RAIL_WIDTH }}>
-      {/* Header corner — 2026-03-05: Removed separate Anytime row; all-day strip is now in each column header */}
+      {/* RC-2: Use measured header height so TimeRail aligns with tech column grids */}
       <div
         className="sticky top-0 z-30 bg-background border-b flex items-center justify-center text-xs font-medium text-muted-foreground"
-        style={{ height: HEADER_HEIGHT }}
+        style={{ minHeight: headerHeight ?? HEADER_HEIGHT }}
       >
         Time
       </div>
@@ -499,6 +505,48 @@ export function CalendarGridDayJobber({
 }: CalendarGridDayJobberProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const scrollDoneRef = useRef(false);
+  // RC-2: Measure actual sticky header height dynamically (all-day strip makes it variable)
+  const [headerPx, setHeaderPx] = useState(HEADER_HEIGHT);
+  const headerObserverRef = useRef<ResizeObserver | null>(null);
+  const headerRef = useCallback((node: HTMLDivElement | null) => {
+    if (headerObserverRef.current) {
+      headerObserverRef.current.disconnect();
+      headerObserverRef.current = null;
+    }
+    if (!node) return;
+    const measure = (el: Element) => {
+      const h = Math.round((el as HTMLElement).offsetHeight);
+      if (h > 0) setHeaderPx((prev) => prev === h ? prev : h);
+    };
+    measure(node);
+    headerObserverRef.current = new ResizeObserver((entries) => {
+      for (const entry of entries) measure(entry.target);
+    });
+    headerObserverRef.current.observe(node);
+  }, []);
+  useEffect(() => {
+    return () => { headerObserverRef.current?.disconnect(); };
+  }, []);
+
+  // Phase C: Debug layout instrumentation — gated behind ?debugLayout=1
+  useLayoutEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("debugLayout") !== "1") return;
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    console.log("[debugLayout] DayJobber scroll container:", {
+      rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+      overflow: getComputedStyle(el).overflow,
+      parentRect: el.parentElement?.getBoundingClientRect(),
+    });
+    el.style.outline = "2px solid red";
+    el.style.outlineOffset = "-2px";
+  });
 
   // Visible technicians (filter by visibility, with risk sort + alerts filter — Calendar Improvement 2026-03-05)
   const visibleTechnicians = useMemo(() => {
@@ -558,8 +606,8 @@ export function CalendarGridDayJobber({
         scrollToMinutes = 480; // 8 AM default
       }
 
-      // 2026-03-05: Removed ALLDAY_LANE_HEIGHT — all-day strip is inside header now
-      const scrollPosition = (scrollToMinutes / 60) * rowHeight + HEADER_HEIGHT;
+      // RC-2: Use measured header height (dynamic due to all-day strip) instead of fixed constant
+      const scrollPosition = (scrollToMinutes / 60) * rowHeight + headerPx;
 
       requestAnimationFrame(() => {
         if (scrollContainerRef.current) {
@@ -568,7 +616,7 @@ export function CalendarGridDayJobber({
         }
       });
     }
-  }, [todayBusinessHours, density, dateKey, businessHours]);
+  }, [todayBusinessHours, density, dateKey, businessHours, headerPx]);
 
   // Current time indicator position
   const now = nowInTimezone(regional.timezone);
@@ -576,8 +624,8 @@ export function CalendarGridDayJobber({
   const currentMinutes = now.getHours() * 60 + now.getMinutes();
   const rowHeight = DENSITY_STYLES[density].rowHeight;
   const pxPerMinute = rowHeight / 60;
-  // 2026-03-05: Removed ALLDAY_LANE_HEIGHT offset — all-day strip is now inside the header
-  const nowLineTop = HEADER_HEIGHT + currentMinutes * pxPerMinute;
+  // RC-2: Use measured header height for now-line (dynamic due to all-day strip in header)
+  const nowLineTop = headerPx + currentMinutes * pxPerMinute;
 
   // DEV badge for business hours
   const devBusinessHoursBadge = useMemo(() => {
@@ -640,7 +688,7 @@ export function CalendarGridDayJobber({
       {/* Main grid with horizontal scroll for many techs */}
       <div
         ref={scrollContainerRef}
-        className="flex-1 min-h-0 overflow-auto relative"
+        className="flex-1 min-h-0 max-h-full overflow-auto relative"
       >
         {/* Current time indicator */}
         {isToday && (
@@ -663,6 +711,7 @@ export function CalendarGridDayJobber({
               density={density}
               timeFormat={regional.timeFormat}
               startHour={startHour}
+              headerHeight={headerPx}
             />
           </div>
 
@@ -692,12 +741,13 @@ export function CalendarGridDayJobber({
                 businessHoursStart={todayBusinessHours.startMinutes}
                 businessHoursEnd={todayBusinessHours.endMinutes}
                 isBusinessOpen={todayBusinessHours.isOpen}
+                stickyHeaderRef={headerRef}
               />
             );
           })()}
 
           {/* Technician columns — uses pre-split stable refs (2026-03-05) */}
-          {visibleTechnicians.map((tech: any) => {
+          {visibleTechnicians.map((tech: any, idx: number) => {
             const { all: techEvents, allDay, timed } = getEventsForTech(tech.id);
             const techColor = TECHNICIAN_COLORS[technicians.findIndex((t: any) => t.id === tech.id) % TECHNICIAN_COLORS.length];
             const displayName = `${tech.firstName || ''} ${tech.lastName?.[0] || ''}`.trim() || tech.fullName || tech.displayName || 'Tech';
@@ -727,6 +777,7 @@ export function CalendarGridDayJobber({
                 businessHoursEnd={todayBusinessHours.endMinutes}
                 isBusinessOpen={todayBusinessHours.isOpen}
                 techSummary={techSummaryMap?.get(tech.id)}
+                stickyHeaderRef={!showUnassigned && idx === 0 ? headerRef : undefined}
               />
             );
           })}

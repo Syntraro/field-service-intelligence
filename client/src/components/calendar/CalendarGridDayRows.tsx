@@ -8,7 +8,7 @@
  * Events can be dragged to other time slots and resized by dragging
  * the right edge. Uses the same mutations as Day Columns view.
  */
-import { memo, useMemo, useRef, useEffect, useState, useCallback } from "react";
+import { memo, useMemo, useRef, useEffect, useLayoutEffect, useState, useCallback } from "react";
 import { format } from "date-fns";
 import { useDroppable, useDraggable } from "@dnd-kit/core";
 import {
@@ -493,6 +493,27 @@ export function CalendarGridDayRows({
   alertsOnly,
 }: CalendarGridDayRowsProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Phase C: Debug layout instrumentation — gated behind ?debugLayout=1
+  useLayoutEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("debugLayout") !== "1") return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    console.log("[debugLayout] DayRows scroll container:", {
+      rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+      overflow: getComputedStyle(el).overflow,
+      parentRect: el.parentElement?.getBoundingClientRect(),
+    });
+    el.style.outline = "2px solid blue";
+    el.style.outlineOffset = "-2px";
+  });
+
   const dateKey = format(currentDate, "yyyy-MM-dd");
   const dayEvents = eventIndexes.eventsByDateKey.get(dateKey) || [];
 
@@ -552,7 +573,7 @@ export function CalendarGridDayRows({
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto bg-muted/5">
+      <div ref={scrollRef} className="flex-1 min-h-0 max-h-full overflow-auto bg-muted/5">
         {/* Time header row — sticky top */}
         <div className="sticky top-0 z-30 flex bg-background border-b">
           <div

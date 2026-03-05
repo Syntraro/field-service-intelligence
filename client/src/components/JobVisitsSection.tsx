@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { getMemberDisplayName } from "@/lib/displayName";
 import { useJobVisits, isVisitInactive, isVisitIneligible, getVisitDisplayStatus } from "@/hooks/useJobVisits";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { useUnscheduleJob } from "@/hooks/useCalendarApi";
@@ -198,11 +199,12 @@ export default function JobVisitsSection({ jobId, jobVersion, defaultOpen = fals
   // Then calls syncJobScheduleFromVisits to update jobs table
   const unscheduleMutation = useUnscheduleJob();
 
+  // FIX C: Use canonical getMemberDisplayName instead of inline firstName+lastName fallback
   const getTechnicianName = (techId: string | null) => {
     if (!techId) return "Unassigned";
     const tech = technicians.find((t: any) => t.id === techId);
     if (!tech) return "Unknown";
-    return tech.firstName && tech.lastName ? `${tech.firstName} ${tech.lastName}` : tech.email;
+    return getMemberDisplayName(tech);
   };
 
   const formatVisitDateTime = (visit: JobVisit) => {

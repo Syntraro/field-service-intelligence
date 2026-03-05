@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useMemo, useLayoutEffect } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import { Button } from "@/components/ui/button";
 import { JobCard } from "./JobCard";
@@ -364,6 +364,26 @@ export function CalendarGridWeek({
   onUnschedule,
   regional,
 }: CalendarGridWeekProps) {
+  // Phase C: Debug layout instrumentation — gated behind ?debugLayout=1
+  useLayoutEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("debugLayout") !== "1") return;
+    const el = weeklyScrollContainerRef?.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    console.log("[debugLayout] Week scroll container:", {
+      rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+      overflow: getComputedStyle(el).overflow,
+      parentRect: el.parentElement?.getBoundingClientRect(),
+    });
+    el.style.outline = "2px solid green";
+    el.style.outlineOffset = "-2px";
+  });
+
   // Get week dates based on currentDate, respecting weekStartsOn setting
   const currentWeekStart = getWeekStart(currentDate, regional.weekStartsOn);
 
