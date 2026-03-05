@@ -51,12 +51,6 @@ interface TeamMember {
   role: string;
 }
 
-interface Client {
-  id: string;
-  companyName: string;
-  location?: string;
-}
-
 interface SuppliersResponse {
   items: Supplier[];
   total: number;
@@ -86,7 +80,6 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
   const [startTime, setStartTime] = useState("");
   const [allDay, setAllDay] = useState(false);
   const [jobId, setJobId] = useState<string>("");
-  const [clientId, setClientId] = useState<string>("");
   const [supplierId, setSupplierId] = useState<string | undefined>();
   const [supplierLocationId, setSupplierLocationId] = useState<string | undefined>();
   const [poNumber, setPoNumber] = useState("");
@@ -119,7 +112,6 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
       setType(task.type || "GENERAL");
       setAssignedToUserId(task.assignedToUserId || "");
       setJobId(task.jobId || "");
-      setClientId(task.clientId || "");
       setAllDay(task.allDay || false);
 
       // Parse scheduled times
@@ -160,7 +152,6 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
     setStartTime("");
     setAllDay(false);
     setJobId("");
-    setClientId("");
     setSupplierId(undefined);
     setSupplierLocationId(undefined);
     setPoNumber("");
@@ -179,13 +170,6 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
     staleTime: 2 * 60 * 1000,
   });
   const jobs = jobsData?.data ?? jobsData?.items ?? [];
-
-  // Fetch clients
-  const { data: clientsData } = useQuery<{ items: Client[] }>({
-    queryKey: ["/api/clients"],
-    staleTime: 5 * 60 * 1000,
-  });
-  const clients = clientsData?.items || [];
 
   // Fetch suppliers
   const { data: suppliersData } = useQuery<SuppliersResponse>({
@@ -254,7 +238,6 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
       if (scheduledEndAt) payload.scheduledEndAt = scheduledEndAt;
       if (allDay) payload.allDay = allDay;
       if (jobId) payload.jobId = jobId;
-      if (clientId) payload.clientId = clientId;
 
       if (isEditMode) {
         // Update existing task
@@ -468,64 +451,33 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
                 </div>
               </div>
 
-              {/* Link to Job/Client - Two columns */}
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label className="text-xs">Link to Job (Optional)</Label>
-                  <div className="flex gap-1">
-                    <Select value={jobId || undefined} onValueChange={setJobId}>
-                      <SelectTrigger className="h-8 text-sm flex-1">
-                        <SelectValue placeholder="Select..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {jobs.map((job) => (
-                          <SelectItem key={job.id} value={job.id}>
-                            #{job.jobNumber} - {job.summary}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    {jobId && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setJobId("")}
-                        className="h-8 px-2"
-                      >
-                        ×
-                      </Button>
-                    )}
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <Label className="text-xs">Link to Client (Optional)</Label>
-                  <div className="flex gap-1">
-                    <Select value={clientId || undefined} onValueChange={setClientId}>
-                      <SelectTrigger className="h-8 text-sm flex-1">
-                        <SelectValue placeholder="Select..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {clients.map((client) => (
-                          <SelectItem key={client.id} value={client.id}>
-                            {client.companyName}{client.location ? ` - ${client.location}` : ""}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    {clientId && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setClientId("")}
-                        className="h-8 px-2"
-                      >
-                        ×
-                      </Button>
-                    )}
-                  </div>
+              {/* Link to Job */}
+              <div className="space-y-1">
+                <Label className="text-xs">Link to Job (Optional)</Label>
+                <div className="flex gap-1">
+                  <Select value={jobId || undefined} onValueChange={setJobId}>
+                    <SelectTrigger className="h-8 text-sm flex-1">
+                      <SelectValue placeholder="Select..." />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {jobs.map((job) => (
+                        <SelectItem key={job.id} value={job.id}>
+                          #{job.jobNumber} - {job.summary}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {jobId && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setJobId("")}
+                      className="h-8 px-2"
+                    >
+                      ×
+                    </Button>
+                  )}
                 </div>
               </div>
 

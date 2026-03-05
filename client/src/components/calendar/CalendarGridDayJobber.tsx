@@ -272,8 +272,10 @@ interface TechColumnProps {
   isBusinessOpen: boolean;
   /** Day summary for this technician (Calendar Improvement 2026-03-05) */
   techSummary?: TechDaySummary;
-  /** RC-2: Optional ref callback for measuring sticky header height */
+  /** Fix 1: Ref callback for measuring sticky header height */
   stickyHeaderRef?: (node: HTMLDivElement | null) => void;
+  /** Fix 1: Uniform header height (max across all columns) applied as minHeight */
+  uniformHeaderPx?: number;
 }
 
 function TechColumn({
@@ -300,6 +302,7 @@ function TechColumn({
   isBusinessOpen,
   techSummary,
   stickyHeaderRef,
+  uniformHeaderPx,
 }: TechColumnProps) {
   const rowHeight = DENSITY_STYLES[density].rowHeight;
 
@@ -310,8 +313,8 @@ function TechColumn({
           eliminating the source of timed<->all-day DnD collision ambiguity. */}
       <div
         ref={stickyHeaderRef}
-        className="sticky top-0 z-30 bg-background border-b px-2 py-1.5 flex flex-col items-center"
-        style={{ minHeight: HEADER_HEIGHT }}
+        className="sticky top-0 z-30 bg-background border-b px-2 py-1.5 flex flex-col items-center justify-start"
+        style={{ minHeight: uniformHeaderPx ?? HEADER_HEIGHT }}
       >
         <div className="flex items-center justify-center gap-1.5">
           {technicianColor && (
@@ -505,27 +508,72 @@ export function CalendarGridDayJobber({
 }: CalendarGridDayJobberProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const scrollDoneRef = useRef(false);
-  // RC-2: Measure actual sticky header height dynamically (all-day strip makes it variable)
-  const [headerPx, setHeaderPx] = useState(HEADER_HEIGHT);
-  const headerObserverRef = useRef<ResizeObserver | null>(null);
-  const headerRef = useCallback((node: HTMLDivElement | null) => {
-    if (headerObserverRef.current) {
-      headerObserverRef.current.disconnect();
-      headerObserverRef.current = null;
-    }
-    if (!node) return;
-    const measure = (el: Element) => {
-      const h = Math.round((el as HTMLElement).offsetHeight);
-      if (h > 0) setHeaderPx((prev) => prev === h ? prev : h);
-    };
-    measure(node);
-    headerObserverRef.current = new ResizeObserver((entries) => {
-      for (const entry of entries) measure(entry.target);
+
+  // Fix 1: Uniform header height across ALL tech columns.
+  // Each column's sticky header can vary (all-day events, TechLaneHeader badges).
+  // We measure every column header and enforce the MAX height as minHeight on all,
+  // so the timed grid starts at the same Y offset everywhere — fixing droppable rect misalignment.
+  const [uniformHeaderPx, setUniformHeaderPx] = useState(HEADER_HEIGHT);
+  const headerNodesRef = useRef(new Map<string, HTMLDivElement>());
+  const headerHeightsRef = useRef(new Map<string, number>());
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
+
+  // Single shared ResizeObserver for all column headers
+  if (!resizeObserverRef.current) {
+    resizeObserverRef.current = new ResizeObserver((entries) => {
+      let changed = false;
+      for (const entry of entries) {
+        const el = entry.target as HTMLDivElement;
+        const key = el.dataset.techKey;
+        if (!key) continue;
+        const h = Math.round(el.scrollHeight);
+        if (h > 0 && headerHeightsRef.current.get(key) !== h) {
+          headerHeightsRef.current.set(key, h);
+          changed = true;
+        }
+      }
+      if (changed) {
+        let max = HEADER_HEIGHT;
+        headerHeightsRef.current.forEach((h) => { if (h > max) max = h; });
+        setUniformHeaderPx((prev) => prev === max ? prev : max);
+      }
     });
-    headerObserverRef.current.observe(node);
+  }
+
+  // Callback ref factory: registers each column header for measurement.
+  // Cached per techKey to avoid breaking MemoizedTechColumn memo.
+  const headerRefCacheRef = useRef(new Map<string, (node: HTMLDivElement | null) => void>());
+  const makeHeaderRef = useCallback((techKey: string) => {
+    const cache = headerRefCacheRef.current;
+    if (cache.has(techKey)) return cache.get(techKey)!;
+    const refCallback = (node: HTMLDivElement | null) => {
+      const observer = resizeObserverRef.current;
+      if (!observer) return;
+      const prev = headerNodesRef.current.get(techKey);
+      if (prev && prev !== node) {
+        observer.unobserve(prev);
+        headerNodesRef.current.delete(techKey);
+        headerHeightsRef.current.delete(techKey);
+      }
+      if (node) {
+        node.dataset.techKey = techKey;
+        headerNodesRef.current.set(techKey, node);
+        const h = Math.round(node.scrollHeight);
+        if (h > 0) headerHeightsRef.current.set(techKey, h);
+        observer.observe(node);
+      }
+      // Recompute max
+      let max = HEADER_HEIGHT;
+      headerHeightsRef.current.forEach((h) => { if (h > max) max = h; });
+      setUniformHeaderPx((prev) => prev === max ? prev : max);
+    };
+    cache.set(techKey, refCallback);
+    return refCallback;
   }, []);
+
+  // Cleanup observer on unmount
   useEffect(() => {
-    return () => { headerObserverRef.current?.disconnect(); };
+    return () => { resizeObserverRef.current?.disconnect(); };
   }, []);
 
   // Phase C + Phase 2: Debug layout instrumentation — gated behind ?debugLayout=1
@@ -572,29 +620,35 @@ export function CalendarGridDayJobber({
       headerHeights.push({ idx, offsetHeight: hdr.offsetHeight, top: Math.round(hr.top), bottom: Math.round(hr.bottom) });
     });
 
-    // Droppable rect spot-check (Task E): pick 3 hours for first tech column
-    const droppableCheck: { id: string; top: number; bottom: number; height: number }[] = [];
-    for (const targetHour of [8, 12, 16]) {
-      const firstTechCol = el.querySelector<HTMLElement>('.flex.flex-col.border-r');
-      if (firstTechCol) {
-        const hourSlots = firstTechCol.querySelectorAll<HTMLElement>(':scope > div:last-child > div.relative.border-b');
-        if (hourSlots[targetHour]) {
-          const hr = hourSlots[targetHour].getBoundingClientRect();
-          droppableCheck.push({ id: `hour-${targetHour}`, top: Math.round(hr.top), bottom: Math.round(hr.bottom), height: Math.round(hr.height) });
-        }
+    // Droppable rect spot-check: pick hour 8 across ALL tech columns to prove alignment
+    const techColumns = el.querySelectorAll<HTMLElement>(':scope .flex > .flex.flex-col.border-r');
+    const droppableAlignmentCheck: { colIdx: number; techKey: string; hour8Top: number; hour8Bottom: number }[] = [];
+    techColumns.forEach((col, colIdx) => {
+      const techKey = col.querySelector<HTMLElement>('[data-tech-key]')?.dataset.techKey ?? `col-${colIdx}`;
+      const hourSlots = col.querySelectorAll<HTMLElement>(':scope > div:last-child > div.relative.border-b');
+      if (hourSlots[8]) {
+        const hr = hourSlots[8].getBoundingClientRect();
+        droppableAlignmentCheck.push({ colIdx, techKey, hour8Top: Math.round(hr.top), hour8Bottom: Math.round(hr.bottom) });
       }
-    }
+    });
+
+    // Compute max spread of hour-8 rect.top across columns (should be 0-2px with fix)
+    const hour8Tops = droppableAlignmentCheck.map(d => d.hour8Top);
+    const hour8TopSpread = hour8Tops.length > 1
+      ? Math.max(...hour8Tops) - Math.min(...hour8Tops)
+      : 0;
 
     console.log("[debugLayout] DayJobber FULL CHAIN:", {
       windowInnerHeight: window.innerHeight,
       windowInnerWidth: window.innerWidth,
       chain,
-      headerPxMeasured: headerPx,
+      uniformHeaderPx,
       perColumnHeaders: headerHeights,
       headerHeightVariance: headerHeights.length > 1
         ? Math.max(...headerHeights.map(h => h.offsetHeight)) - Math.min(...headerHeights.map(h => h.offsetHeight))
         : 0,
-      droppableSpotCheck: droppableCheck,
+      droppableAlignmentCheck,
+      hour8TopSpread,
     });
 
     el.style.outline = "2px solid red";
@@ -659,8 +713,8 @@ export function CalendarGridDayJobber({
         scrollToMinutes = 480; // 8 AM default
       }
 
-      // RC-2: Use measured header height (dynamic due to all-day strip) instead of fixed constant
-      const scrollPosition = (scrollToMinutes / 60) * rowHeight + headerPx;
+      // Fix 1: Use uniform header height (max across all columns) for scroll offset
+      const scrollPosition = (scrollToMinutes / 60) * rowHeight + uniformHeaderPx;
 
       requestAnimationFrame(() => {
         if (scrollContainerRef.current) {
@@ -669,7 +723,7 @@ export function CalendarGridDayJobber({
         }
       });
     }
-  }, [todayBusinessHours, density, dateKey, businessHours, headerPx]);
+  }, [todayBusinessHours, density, dateKey, businessHours, uniformHeaderPx]);
 
   // Current time indicator position
   const now = nowInTimezone(regional.timezone);
@@ -677,8 +731,8 @@ export function CalendarGridDayJobber({
   const currentMinutes = now.getHours() * 60 + now.getMinutes();
   const rowHeight = DENSITY_STYLES[density].rowHeight;
   const pxPerMinute = rowHeight / 60;
-  // RC-2: Use measured header height for now-line (dynamic due to all-day strip in header)
-  const nowLineTop = headerPx + currentMinutes * pxPerMinute;
+  // Fix 1: Use uniform header height for now-line positioning
+  const nowLineTop = uniformHeaderPx + currentMinutes * pxPerMinute;
 
   // DEV badge for business hours
   const devBusinessHoursBadge = useMemo(() => {
@@ -764,7 +818,7 @@ export function CalendarGridDayJobber({
               density={density}
               timeFormat={regional.timeFormat}
               startHour={startHour}
-              headerHeight={headerPx}
+              headerHeight={uniformHeaderPx}
             />
           </div>
 
@@ -794,7 +848,8 @@ export function CalendarGridDayJobber({
                 businessHoursStart={todayBusinessHours.startMinutes}
                 businessHoursEnd={todayBusinessHours.endMinutes}
                 isBusinessOpen={todayBusinessHours.isOpen}
-                stickyHeaderRef={headerRef}
+                stickyHeaderRef={makeHeaderRef("unassigned")}
+                uniformHeaderPx={uniformHeaderPx}
               />
             );
           })()}
@@ -830,7 +885,8 @@ export function CalendarGridDayJobber({
                 businessHoursEnd={todayBusinessHours.endMinutes}
                 isBusinessOpen={todayBusinessHours.isOpen}
                 techSummary={techSummaryMap?.get(tech.id)}
-                stickyHeaderRef={!showUnassigned && idx === 0 ? headerRef : undefined}
+                stickyHeaderRef={makeHeaderRef(tech.id)}
+                uniformHeaderPx={uniformHeaderPx}
               />
             );
           })}

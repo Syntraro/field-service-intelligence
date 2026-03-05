@@ -666,6 +666,89 @@ export default function Calendar() {
     const hasExistingAssignment = unscheduledItem?.status === 'existing';
 
     // =========================================================================
+    // TASK DRAG HANDLING — reschedule tasks via PATCH /api/tasks/:id
+    // =========================================================================
+    // Tasks use assignmentId format "task-{uuid}". When dragged to a new slot,
+    // we compute the new scheduledStartAt and optionally assignedToUserId, then
+    // PATCH the task directly (no job assignment versioning needed).
+    // =========================================================================
+    if (typeof activeIdValue === "string" && activeIdValue.startsWith("task-")) {
+      const taskId = activeIdValue.replace("task-", "");
+      const targetType = getTargetType(overId);
+      if (!targetType || targetType === "unscheduled-panel") return;
+
+      let scheduledStartAt: string | undefined;
+      let assignedToUserId: string | null | undefined;
+      let allDay: boolean | undefined;
+
+      const parts = overId.split("|");
+
+      if (targetType === "month-day") {
+        // day-{dayNumber} → all-day on that day of the current month
+        const dayNum = parseInt(overId.replace("day-", ""));
+        scheduledStartAt = new Date(year, month - 1, dayNum).toISOString();
+        allDay = true;
+      } else if (targetType === "week-allday") {
+        // allday|week|YYYY-MM-DD
+        const dateStr = parts[2];
+        scheduledStartAt = new Date(dateStr + "T00:00:00").toISOString();
+        allDay = true;
+      } else if (targetType === "day-allday") {
+        // allday|{techId}|YYYY-MM-DD
+        const techId = parts[1];
+        const dateStr = parts[2];
+        scheduledStartAt = new Date(dateStr + "T00:00:00").toISOString();
+        allDay = true;
+        if (techId && techId !== "unassigned") assignedToUserId = techId;
+      } else if (targetType === "week-timed") {
+        // weekly|YYYY-MM-DD|{hour}|{minute}
+        const dateStr = parts[1];
+        const h = parseInt(parts[2]);
+        const m = parseInt(parts[3]);
+        scheduledStartAt = new Date(dateStr + `T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00`).toISOString();
+        allDay = false;
+      } else if (targetType === "day-timed") {
+        // daily|{techId}|{hour}|{minute}|{day}|{month0}|{year}
+        const techId = parts[1];
+        const h = parseInt(parts[2]);
+        const m = parseInt(parts[3]);
+        const d = parseInt(parts[4]);
+        const mo = parseInt(parts[5]); // 0-based
+        const yr = parseInt(parts[6]);
+        scheduledStartAt = new Date(yr, mo, d, h, m).toISOString();
+        allDay = false;
+        if (techId && techId !== "unassigned") assignedToUserId = techId;
+      } else if (targetType === "techweek") {
+        // techweek|{techId}|{YYYY-MM-DD}
+        const techId = parts[1];
+        const dateStr = parts[2];
+        scheduledStartAt = new Date(dateStr + "T00:00:00").toISOString();
+        allDay = true;
+        if (techId && techId !== "unassigned") assignedToUserId = techId;
+      }
+
+      if (!scheduledStartAt) return;
+
+      // Build PATCH payload
+      const payload: any = { scheduledStartAt, allDay };
+      if (assignedToUserId !== undefined) payload.assignedToUserId = assignedToUserId;
+
+      apiRequest(`/api/tasks/${taskId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }).then(() => {
+        queryClient.invalidateQueries({ predicate: (q) =>
+          typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/tasks")
+        });
+        invalidateCalendarQueries();
+      }).catch((err: any) => {
+        toast({ title: "Failed to reschedule task", description: err?.message, variant: "destructive" });
+      });
+      return;
+    }
+
+    // =========================================================================
     // VERSION GUARDS - Eliminate unsafe ?? 0 fallbacks
     // =========================================================================
     // Using version 0 as a fallback is UNSAFE for optimistic locking. The server
@@ -1599,10 +1682,19 @@ export default function Calendar() {
   // Deps: clients (stable useMemo), state setters (stable per React).
   const handleClientClick = useCallback((client: any, eventOrAssignment: CalendarEvent | any, focusSchedule: boolean = false) => {
     const rawAssignment = eventOrAssignment.raw ?? eventOrAssignment;
+    const assignmentId = rawAssignment.assignmentId ?? rawAssignment.id ?? "";
+
+    // Task 3D: If this is a task (not a job visit), open TaskDialog instead
+    if (typeof assignmentId === "string" && assignmentId.startsWith("task-")) {
+      const taskId = assignmentId.replace("task-", "");
+      setSelectedTaskId(taskId);
+      setTaskDialogOpen(true);
+      return;
+    }
 
     const enrichedAssignment = {
       ...rawAssignment,
-      assignmentId: rawAssignment.assignmentId ?? rawAssignment.id,
+      assignmentId,
       jobId: rawAssignment.jobId ?? rawAssignment.job_id ?? rawAssignment.job?.id ?? rawAssignment.jobIdFromJoin ?? rawAssignment.id,
       locationId: rawAssignment.locationId ?? getLocationId(rawAssignment),
     };
@@ -2412,6 +2504,7 @@ export default function Calendar() {
         open={taskDialogOpen}
         onOpenChange={setTaskDialogOpen}
         taskId={selectedTaskId}
+        onChanged={() => invalidateCalendarQueries()}
       />
 
       {/* Phase 6: Suggest-slot dialog for auto-gap scheduling */}

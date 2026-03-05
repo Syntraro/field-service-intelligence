@@ -16,6 +16,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Debug instrumentation extended:** Full ancestor chain walk, per-column header audit, droppable spot-checks, DnD collision logging — all gated behind `?debugLayout=1`
 - **Files (debug-only changes):** `CalendarGridDayJobber.tsx`, `CalendarGridDayRows.tsx`, `CalendarGridWeek.tsx`, `Calendar.tsx`
 
+### Fixed
+
+#### Day View Fix 1 — Uniform Header Height (2026-03-05)
+- **Root cause:** Each tech column's sticky header had variable height (all-day events, TechLaneHeader badges). The timed grid started at different Y offsets per column, causing droppable rects to misalign. Drops at the same visual row could land in different time slots depending on column.
+- **Fix:** Replaced single-column `headerRef`/`headerPx` measurement with multi-column `uniformHeaderPx` system. A shared `ResizeObserver` measures every column header via `makeHeaderRef(techKey)` callback refs. The MAX height across all columns is applied as `minHeight` to every header, guaranteeing the timed grid starts at the same Y coordinate in all columns.
+- **Also fixed:** Now-line position, auto-scroll offset, and TimeRail header all use `uniformHeaderPx` instead of single-column measurement.
+- **Debug:** `?debugLayout=1` now shows `uniformHeaderPx`, per-column header heights, and `hour8TopSpread` (max spread of hour-8 droppable `rect.top` across columns — should be 0-2px).
+- **File:** `CalendarGridDayJobber.tsx`
+
+#### Tasks Feature End-to-End Fix (2026-03-05)
+- **3A — Remove "Link to Client":** Removed client linking UI from TaskDialog (was deprecated). Removed `clientId` state, client fetch query, and client dropdown. "Link to Job" remains as full-width field. (`TaskDialog.tsx`)
+- **3B — Supplier location dropdown:** Verified working — query key `/api/suppliers/${supplierId}/locations` matches API route, response shape `{ items }` matches client type.
+- **3D — Calendar task click:** `handleClientClick` now detects task items (assignmentId starts with `task-`) and opens TaskDialog instead of job detail dialog. Tasks on calendar no longer show as "Job #Unknown". (`Calendar.tsx`)
+- **3E — Task drag/drop rescheduling:** Added task drag handling in `handleDragEnd`. When a task is dragged to any calendar drop zone (month day, week timed/all-day, day timed/all-day, tech week), it PATCHes `/api/tasks/:id` with updated `scheduledStartAt`, `allDay`, and optionally `assignedToUserId`. (`Calendar.tsx`)
+- **Files:** `client/src/components/TaskDialog.tsx`, `client/src/pages/Calendar.tsx`
+
 ### Changed
 
 #### Canonical EditVisitModal — Component Unification (2026-03-05)
