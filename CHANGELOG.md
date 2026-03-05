@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### Live Map Fix — All Technicians + Reliable Visits + Meta Diagnostics (2026-03-05)
+- **Technicians from users table**: Changed `/api/map/day` technicians query from `technician_live_positions` (only shows techs with GPS pings) to `users` table with `LEFT JOIN technician_live_positions`. Now returns ALL schedulable technicians (`disabled=false`, `is_schedulable=true`, `deleted_at IS NULL`) with `online`/`offline` status and optional lat/lng from live positions. Technician filter popover lists all techs immediately.
+  - Files: `server/routes/map.ts`, `client/src/pages/LiveMapPage.tsx`
+- **Updated MapTechnician type**: `lat`, `lng`, `lastSeenAt` are now `string | null` since techs without live positions have no coordinates. Map markers only render for techs with coords; panel lists all techs.
+  - Files: `client/src/pages/LiveMapPage.tsx`
+- **Enhanced meta diagnostics**: Response `meta` now includes `techniciansTotal`, `techniciansOnline`, `visitsMissingScheduledStart`. Dev-only diagnostic logs total active `job_visits` count when 0 visits found for a date.
+  - Files: `server/routes/map.ts`
+- **Filter button label**: Shows "Technicians (All)" when no filter active, "Technicians (N)" when N selected. Header badge shows total techs count.
+  - Files: `client/src/pages/LiveMapPage.tsx`
+
 #### Calendar Day View: Full-Height, All-Day Lane, Resize Polish, Card Cleanup (2026-03-05)
 - **Day view full-height layout**: Changed CardContent to `flex flex-col`, view wrappers and grid roots to `flex-1 min-h-0` instead of `h-full`. Creates a clean flex chain from route → Card → grid → scroll container so day grids fill available viewport height.
   - Files: `client/src/pages/Calendar.tsx`, `client/src/components/calendar/CalendarGridDayJobber.tsx`, `client/src/components/calendar/CalendarGridDayRows.tsx`

@@ -41,10 +41,10 @@ import {
 interface MapTechnician {
   technicianId: string;
   name: string;
-  lat: string;
-  lng: string;
+  lat: string | null;
+  lng: string | null;
   online: boolean;
-  lastSeenAt: string;
+  lastSeenAt: string | null;
 }
 
 interface MapVisit {
@@ -79,10 +79,13 @@ interface MapDayData {
   technicians: MapTechnician[];
   visits: MapVisit[];
   meta?: {
+    techniciansTotal?: number;
+    techniciansOnline?: number;
     jobFallbackCount?: number;
     visitsTotal?: number;
     visitsWithCoords?: number;
     visitsMissingCoords?: number;
+    visitsMissingScheduledStart?: number;
   };
 }
 
@@ -256,10 +259,7 @@ function TechnicianFilterPopover({
         <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5">
           <Users className="h-3.5 w-3.5" />
           Technicians{" "}
-          {allSelected
-            ? `(${technicians.length})`
-            : `(${activeCount}/${technicians.length})`
-          }
+          {allSelected ? "(All)" : `(${activeCount})`}
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-64 p-2 z-[9999]" align="end">
@@ -630,6 +630,7 @@ export default function LiveMapPage() {
   const fitPoints = useMemo<[number, number][]>(() => {
     const pts: [number, number][] = [];
     for (const t of visibleTechs) {
+      if (!t.lat || !t.lng) continue;
       const lat = parseFloat(t.lat);
       const lng = parseFloat(t.lng);
       if (!isNaN(lat) && !isNaN(lng)) pts.push([lat, lng]);
@@ -646,7 +647,7 @@ export default function LiveMapPage() {
     if (v.lat && v.lng) panToPoint(parseFloat(v.lat), parseFloat(v.lng));
   }, []);
 
-  const onlineCount = technicians.filter((t) => t.online).length;
+  const onlineCount = data?.meta?.techniciansOnline ?? technicians.filter((t) => t.online).length;
 
   return (
     <div className="flex flex-col h-[calc(100vh-64px)]">
@@ -656,7 +657,7 @@ export default function LiveMapPage() {
           <h1 className="text-lg font-semibold">Live Map</h1>
           {isLoading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
           <Badge variant="outline" className="text-xs">
-            {onlineCount} online · {visits.length} visits
+            {technicians.length} techs · {onlineCount} online · {visits.length} visits
           </Badge>
           {focusTechId && (
             <Badge variant="default" className="text-xs cursor-pointer" onClick={() => setFocusTechId(null)}>
@@ -715,6 +716,7 @@ export default function LiveMapPage() {
 
             {/* Technician markers */}
             {visibleTechs.map((tech) => {
+              if (!tech.lat || !tech.lng) return null;
               const lat = parseFloat(tech.lat);
               const lng = parseFloat(tech.lng);
               if (isNaN(lat) || isNaN(lng)) return null;

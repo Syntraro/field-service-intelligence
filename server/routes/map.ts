@@ -71,19 +71,22 @@ router.get(
 
     // Batch-fetch technicians + visits + job fallback + risk in parallel
     const [techRows, visitRows, jobFallbackRows, riskRows] = await Promise.all([
-      // 1) Live technician positions
+      // 1) All schedulable technicians, LEFT JOIN live positions for online status
       db.execute(sql`
         SELECT
-          lp.technician_id AS "technicianId",
+          u.id AS "technicianId",
           COALESCE(NULLIF(TRIM(u.first_name || ' ' || u.last_name), ''), u.full_name, u.email) AS "name",
           lp.lat,
           lp.lng,
-          (lp.last_seen_at >= NOW() - INTERVAL '5 minutes') AS "online",
+          COALESCE(lp.last_seen_at >= NOW() - INTERVAL '5 minutes', false) AS "online",
           lp.last_seen_at AS "lastSeenAt"
-        FROM technician_live_positions lp
-        JOIN users u ON u.id = lp.technician_id
-        WHERE lp.company_id = ${companyId}
-        ORDER BY lp.last_seen_at DESC
+        FROM users u
+        LEFT JOIN technician_live_positions lp ON lp.technician_id = u.id AND lp.company_id = u.company_id
+        WHERE u.company_id = ${companyId}
+          AND u.disabled = false
+          AND u.is_schedulable = true
+          AND u.deleted_at IS NULL
+        ORDER BY u.full_name ASC
       `),
 
       // 2) Active visits for the day (timezone-aware boundaries, includes visits with missing coords)
@@ -187,8 +190,11 @@ router.get(
       };
     });
 
+    const allTechs = techRows.rows as any[];
     const jobFallbackCount = (jobFallbackRows.rows as any[]).length;
     const visitsWithCoords = visits.filter((v) => v.lat && v.lng).length;
+    const visitsMissingScheduledStart = visits.filter((v) => !v.scheduledStart).length;
+    const techniciansOnline = allTechs.filter((t) => t.online).length;
 
     // Dev debug logging
     if (process.env.NODE_ENV !== "production") {
@@ -196,24 +202,41 @@ router.get(
       console.log(
         `[MAP /day] company=${companyId} date=${dateStr} tz=${tz}`,
         `bounds=[${start.toISOString()} .. ${end.toISOString()})`,
-        `techs=${(techRows.rows as any[]).length}`,
+        `techs=${allTechs.length} (online=${techniciansOnline})`,
         `visitsTotal=${visits.length} withCoords=${visitsWithCoords} missingCoords=${visits.length - visitsWithCoords}`,
+        `missingScheduledStart=${visitsMissingScheduledStart}`,
         `jobFallback=${jobFallbackCount}`,
         `unassigned=${visits.filter((v) => !v.technicianId).length}`,
         `sample=`, sample,
       );
+
+      // Diagnostic when 0 visits: count all active job_visits for company
+      if (visits.length === 0) {
+        const diagResult = await db.execute(sql`
+          SELECT COUNT(*)::int AS "total" FROM job_visits WHERE company_id = ${companyId} AND is_active = true
+        `);
+        const totalVisits = (diagResult.rows as any[])[0]?.total || 0;
+        console.warn(
+          `[MAP /day] WARNING: 0 visits for date=${dateStr}.`,
+          `Total active job_visits in company: ${totalVisits}.`,
+          `Check if scheduled_start is being written by the calendar scheduling flow.`,
+        );
+      }
     }
 
     res.json({
       date: dateStr,
       timezone: tz,
-      technicians: techRows.rows,
+      technicians: allTechs,
       visits,
       meta: {
+        techniciansTotal: allTechs.length,
+        techniciansOnline,
         jobFallbackCount,
         visitsTotal: visits.length,
         visitsWithCoords,
         visitsMissingCoords: visits.length - visitsWithCoords,
+        visitsMissingScheduledStart,
       },
     });
   }),
