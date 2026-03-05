@@ -8,6 +8,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### Calendar Day View Fixes: Full-Height Layout, Click-After-Drag, Rows Parity, Smoother Resize (2026-03-05)
+- **Day view fills available space**: Added `min-h-0` to root and scroll containers in both `CalendarGridDayJobber` and `CalendarGridDayRows`. Without `min-h-0`, flex children default to `min-height: auto`, preventing them from shrinking below content size.
+  - Files: `client/src/components/calendar/CalendarGridDayJobber.tsx`, `client/src/components/calendar/CalendarGridDayRows.tsx`
+- **Suppress click-after-drag**: Added `lastDragEndedAtRef` with 250ms suppression window in `DraggableClient` and `DraggableEventBlock`. When drag transitions from active to inactive, `Date.now()` is captured; subsequent click events within 250ms are ignored.
+  - Root cause: `isDragging` flips false on pointer-up, then the click event fires synchronously after — the `isDragging` guard alone is insufficient.
+  - Files: `client/src/components/calendar/DraggableClient.tsx`, `client/src/components/calendar/CalendarGridDayRows.tsx`
+- **Day Rows cards use shared JobCard**: Refactored `DraggableEventBlock` to render `<JobCard>` inside the positioning wrapper instead of custom inline markup. Cards now look identical across Week, Day Columns, and Day Rows views (same hover popover, quick actions, tech color stripe).
+  - Files: `client/src/components/calendar/CalendarGridDayRows.tsx`
+- **Smoother resize in Day Columns**: Added `requestAnimationFrame` throttling to `ResizableJobCard` resize handler — stores latest duration in a ref and flushes to state at most once per frame. Applied `transition-none` to wrapper during resize to eliminate CSS transition lag.
+  - Root cause: `setTempDuration` fired on every pointer-move event (potentially 60+ fps), and CSS transitions added perceived delay to height changes.
+  - Files: `client/src/components/calendar/ResizableJobCard.tsx`
+
+#### Live Map Fix — Technician Filter + No-Visits Bug (2026-03-05)
+- **Technician multi-select filter**: Replaced boolean Techs toggle with a Popover containing search input, checkbox list (name + color dot + online/offline indicator), and quick actions (All / None / Online only / Offline only). Filter applies to both map markers and dispatch panel. Persisted to localStorage.
+  - Files: `client/src/pages/LiveMapPage.tsx`
+- **Fixed /api/map/day "no visits" bug**: Date boundaries now computed in company timezone (America/Toronto default) instead of UTC. Uses `todayInTimezone()` + `dayBoundsInTz()` with `timestamptz` comparison instead of `::date` cast. Status filter changed from exclusion list (`NOT IN cancelled`) to explicit allowlist of active statuses (scheduled, dispatched, en_route, on_site, in_progress, on_hold).
+  - Root cause: `new Date().toISOString().slice(0,10)` returns UTC date — at 8pm EST this is already the next day. The `::date` cast also compared in DB timezone (UTC).
+  - Files: `server/routes/map.ts`
+- **Job fallback for orphan jobs**: When a job is scheduled today but has no corresponding active visit in the time window, it's returned as a "pseudo visit" with `source: "job_fallback"`. Marked with asterisk in panel and tooltip. Server returns `meta.jobFallbackCount` for client hint.
+  - Files: `server/routes/map.ts`, `client/src/pages/LiveMapPage.tsx`
+- **Improved empty state**: When no visits exist but job fallbacks are present, shows amber warning: "N scheduled jobs exist but have no visit records yet."
+  - Files: `client/src/pages/LiveMapPage.tsx`
+- **Preferences persistence**: Map preferences (selected technicians, show visits, show unassigned, panel open/closed) persisted to localStorage across sessions.
+  - Files: `client/src/pages/LiveMapPage.tsx`
+
+#### Live Map Upgrade — Dispatch-Grade Layout (2026-03-05)
+- **Server aggregator endpoint**: `GET /api/map/day?date=YYYY-MM-DD` — batch-fetches technician positions (from `technician_live_positions`), scheduled visits (from `job_visits` + `client_locations`), and open risk flags (from `attention_items`) in parallel. Returns `{ date, technicians, visits }` with per-visit risk flags (late, overdue, runningLong).
+  - Files: `server/routes/map.ts` (NEW), `server/routes/index.ts`
+- **LiveMapPage dispatch layout**: Split layout with Leaflet map (left) and collapsible 320px dispatch panel (right). Header with date display and toggle switches (Show Techs, Show Visits, Show Unassigned). 15-second auto-refresh via `useMapDay()` hook.
+  - Files: `client/src/pages/LiveMapPage.tsx` (REWRITTEN)
+- **Technician markers**: Color-coded `CircleMarker` per technician from `TECH_COLORS` palette, with tooltip showing name + last-seen time. Online/offline distinction via opacity.
+- **Visit markers**: Numbered sequence markers ("1", "2", etc.) colored by assigned technician, red for unassigned. Risk badges (Late/Overdue/Long) shown on panel items.
+- **Dispatch panel**: Visits grouped by technician (online first), with time + location. Unassigned section at bottom. Click any visit/tech to pan map to location.
+- **Focus mode**: Click a technician header to filter map to only that tech's markers. Click again to clear filter.
+
 #### Calendar Day View Fixes — Layout, All-Day, Resize, Drag Parity (2026-03-05)
 - **Day view fills available space**: Changed CardContent from `overflow-auto` to `overflow-hidden` so day grids control their own scrolling. Both Columns and Rows layouts now fill the full content area.
   - Files: `client/src/pages/Calendar.tsx`

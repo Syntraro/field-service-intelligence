@@ -8,7 +8,7 @@
  *
  * Uses JobCard for consistent visual styling and interactions.
  */
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { JobCard } from "./JobCard";
 import { getAssignmentStartMinutes, TechnicianColor } from "./calendarUtils";
 import { useToast } from "@/hooks/use-toast";
@@ -61,6 +61,10 @@ export function ResizableJobCard({
   const [hitMidnightLimit, setHitMidnightLimit] = useState(false);
   const resizeStartRef = useRef<{ y: number; duration: number } | null>(null);
 
+  // rAF throttle: store latest computed duration in ref, flush via rAF
+  const pendingDurationRef = useRef<number | null>(null);
+  const rafIdRef = useRef<number>(0);
+
   const startMinutes = getAssignmentStartMinutes(assignment);
   const startOffsetWithinHour = startMinutes % 60;
   const durationMinutes = tempDuration ?? (assignment.durationMinutes || 60);
@@ -112,14 +116,35 @@ export function ResizableJobCard({
         setHitMidnightLimit(true);
       }
 
-      setTempDuration(newDuration);
+      // rAF throttle: only flush state update once per frame
+      pendingDurationRef.current = newDuration;
+      if (!rafIdRef.current) {
+        rafIdRef.current = requestAnimationFrame(() => {
+          if (pendingDurationRef.current !== null) {
+            setTempDuration(pendingDurationRef.current);
+          }
+          rafIdRef.current = 0;
+        });
+      }
     },
     [isResizing, pixelsPerMinute, maxDurationSameDay, hitMidnightLimit]
   );
 
+  // Cancel any pending rAF on unmount
+  useEffect(() => {
+    return () => { if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current); };
+  }, []);
+
   const handleResizeEnd = useCallback(
     (e: React.PointerEvent) => {
       if (!isResizing) return;
+
+      // Flush any pending rAF
+      if (rafIdRef.current) { cancelAnimationFrame(rafIdRef.current); rafIdRef.current = 0; }
+      if (pendingDurationRef.current !== null) {
+        setTempDuration(pendingDurationRef.current);
+        pendingDurationRef.current = null;
+      }
 
       setIsResizing(false);
       (e.target as HTMLElement).releasePointerCapture(e.pointerId);
@@ -146,7 +171,7 @@ export function ResizableJobCard({
 
   return (
     <div
-      className="absolute z-10"
+      className={`absolute z-10 ${isResizing ? 'transition-none' : ''}`}
       style={{
         top: `${topOffset}px`,
         height: `${cardHeight}px`,

@@ -555,7 +555,7 @@ export function CalendarGridDayJobber({
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full min-h-0">
       {/* DEV-only business hours badge */}
       {process.env.NODE_ENV === 'development' && devBusinessHoursBadge && (
         <div className="bg-yellow-100 border-b border-yellow-300 px-2 py-1 text-xs font-mono text-yellow-800 shrink-0">
@@ -566,7 +566,7 @@ export function CalendarGridDayJobber({
       {/* Main grid with horizontal scroll for many techs */}
       <div
         ref={scrollContainerRef}
-        className="flex-1 overflow-auto relative"
+        className="flex-1 min-h-0 overflow-auto relative"
       >
         {/* Current time indicator */}
         {isToday && (

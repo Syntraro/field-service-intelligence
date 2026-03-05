@@ -1,4 +1,4 @@
-import { memo, useRef } from "react";
+import { memo, useRef, useEffect } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 import { useLocation } from "wouter";
@@ -98,6 +98,18 @@ export const DraggableClient = memo(function DraggableClient({
     },
   });
 
+  // Suppress click after drag release: track when drag ends, ignore clicks within 250ms
+  const lastDragEndedAtRef = useRef<number>(0);
+  const wasDraggingRef = useRef(false);
+  useEffect(() => {
+    if (isDragging) {
+      wasDraggingRef.current = true;
+    } else if (wasDraggingRef.current) {
+      wasDraggingRef.current = false;
+      lastDragEndedAtRef.current = Date.now();
+    }
+  }, [isDragging]);
+
   const style = {
     transform: CSS.Transform.toString(transform),
     opacity: isDragging ? 0.5 : isSaving ? 0.7 : 1,
@@ -181,6 +193,8 @@ export const DraggableClient = memo(function DraggableClient({
       onPointerDownCapture={handlePointerDownCapture}
       onClick={(e) => {
         if (isSaving || isDragging) return;
+        // Suppress click within 250ms after drag ends (pointer-up fires click)
+        if (Date.now() - lastDragEndedAtRef.current < 250) return;
         if (onClick) {
           e.stopPropagation();
           onClick();

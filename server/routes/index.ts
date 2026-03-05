@@ -68,6 +68,8 @@ import routesRouter from "./routes";
 import telemetryRouter from "./telemetry";
 // Phase 5: Visit intelligence signals
 import intelligenceRouter from "./intelligence";
+// Dispatch map aggregator
+import mapRouter from "./map";
 
 /**
  * Register all API routes in a single place.
@@ -262,6 +264,9 @@ export function registerRoutes(app: Express): Server {
 
   // Phase 5: Visit intelligence signals
   app.use("/api/intelligence", intelligenceRouter);
+
+  // Dispatch map aggregator
+  app.use("/api/map", mapRouter);
 
   // Admin timesheets: day/week views, edit/delete time entries
   app.use("/api/admin/timesheets", adminTimesheetsRouter);

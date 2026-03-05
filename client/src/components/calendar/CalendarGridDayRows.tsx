@@ -19,7 +19,9 @@ import {
   getTechnicianColorForAssignment,
   isCalendarEventOverdue,
   isAllDayEvent,
+  TechnicianColor,
 } from "./calendarUtils";
+import { JobCard } from "./JobCard";
 import type { RegionalSettings } from "@/hooks/useCompanyRegionalSettings";
 import { formatHourLabel } from "@/hooks/useCompanyRegionalSettings";
 import { findClientByEvent } from "./calendarClientLookup";
@@ -97,15 +99,16 @@ function RowDropZone({ technicianId, hour, minute, currentDate }: {
 // DraggableEventBlock — horizontal event with drag + resize
 // ============================================================================
 
-function DraggableEventBlock({ event, client, techColor, onClick, isSaving, timeFormat, onResize, onUnschedule }: {
+function DraggableEventBlock({ event, client, techColor, onClick, isSaving, timeFormat, onResize, onUnschedule, technicians }: {
   event: CalendarEvent;
   client: any;
-  techColor: ReturnType<typeof getTechnicianColorForAssignment> | null;
+  techColor: TechnicianColor | null;
   onClick: () => void;
   isSaving: boolean;
   timeFormat: "12h" | "24h";
   onResize?: (assignmentId: string, newDurationMinutes: number, assignment?: any) => void;
   onUnschedule?: (assignmentId: string, version: number) => void;
+  technicians?: any[];
 }) {
   const startMinutes = event.startMinutes ?? 0;
   const originalDuration = event.durationMinutes ?? 60;
@@ -119,6 +122,18 @@ function DraggableEventBlock({ event, client, techColor, onClick, isSaving, time
     disabled: isSaving || isCompleted || isTask,
     data: { type: "assignment", assignmentId: event.assignmentId, client, event: event.raw },
   });
+
+  // Suppress click after drag release (pointer-up fires click synchronously)
+  const lastDragEndedAtRef = useRef<number>(0);
+  const wasDraggingRef = useRef(false);
+  useEffect(() => {
+    if (isDragging) {
+      wasDraggingRef.current = true;
+    } else if (wasDraggingRef.current) {
+      wasDraggingRef.current = false;
+      lastDragEndedAtRef.current = Date.now();
+    }
+  }, [isDragging]);
 
   // Horizontal resize state
   const [isResizing, setIsResizing] = useState(false);
@@ -156,11 +171,7 @@ function DraggableEventBlock({ event, client, techColor, onClick, isSaving, time
   const displayDuration = tempDuration ?? originalDuration;
   const left = (startMinutes / 60) * HOUR_WIDTH;
   const width = Math.max((displayDuration / 60) * HOUR_WIDTH - 2, 30);
-
-  const startHour = Math.floor(startMinutes / 60);
-  const startMin = startMinutes % 60;
-  const timeLabel = formatHourLabel(startHour, timeFormat) +
-    (startMin > 0 ? `:${String(startMin).padStart(2, "0")}` : "");
+  const cardHeight = ROW_HEIGHT - 10;
 
   const dragStyle = transform ? { transform: `translate(${transform.x}px, ${transform.y}px)` } : undefined;
 
@@ -169,25 +180,33 @@ function DraggableEventBlock({ event, client, techColor, onClick, isSaving, time
       ref={setDragRef}
       {...attributes}
       {...(isResizing ? {} : listeners)}
-      className={`absolute top-1 rounded px-1.5 py-0.5 text-[11px] leading-tight cursor-grab truncate border shadow-sm select-none
-        ${isSaving ? 'opacity-50 cursor-wait' : ''}
-        ${isDragging ? 'opacity-70 z-50 shadow-lg' : 'z-30'}
-        ${isCompleted ? 'opacity-60 line-through' : ''}
-        ${isOverdue ? 'border-red-400 bg-red-50 dark:bg-red-950/30' : ''}
-        ${isTask ? 'border-violet-300 bg-violet-50 dark:bg-violet-950/30' : ''}
-        ${!isOverdue && !isTask ? (techColor?.bg || 'bg-blue-50 dark:bg-blue-950/30') + ' border-l-2 ' + (techColor?.border || 'border-blue-400') : ''}
-      `}
-      style={{
-        left,
-        width,
-        height: ROW_HEIGHT - 10,
-        ...dragStyle,
+      className={`absolute top-1 select-none ${isDragging ? 'opacity-70 z-50 shadow-lg' : 'z-30'}`}
+      style={{ left, width, height: cardHeight, ...dragStyle }}
+      onClick={(e) => {
+        if (isDragging || isResizing) return;
+        if (Date.now() - lastDragEndedAtRef.current < 250) return;
+        e.stopPropagation();
+        onClick();
       }}
-      onClick={(e) => { if (!isDragging && !isResizing) { e.stopPropagation(); onClick(); } }}
-      title={`${client?.companyName || 'Unknown'} — ${timeLabel}`}
     >
-      <div className="font-medium truncate">{client?.companyName || (isTask ? event.raw?.title : 'Unknown')}</div>
-      <div className="text-muted-foreground truncate">{timeLabel}</div>
+      {/* Use shared JobCard for consistent visuals across all calendar views */}
+      <JobCard
+        id={event.assignmentId}
+        client={isTask ? { ...client, companyName: event.raw?.title || "Task" } : client}
+        assignment={event.raw}
+        inCalendar
+        onClick={onClick}
+        onUnschedule={isTask ? undefined : onUnschedule}
+        isCompleted={!!isCompleted}
+        isOverdue={isOverdue}
+        isSaving={isSaving}
+        technicianColor={techColor || undefined}
+        cardHeight={cardHeight}
+        technicians={technicians}
+        timeFormat={timeFormat}
+        showQuickActions={!isResizing}
+        itemKind={isTask ? "task" : "visit"}
+      />
 
       {/* Right-edge resize handle */}
       {!isTask && !isCompleted && !isSaving && onResize && (
@@ -330,6 +349,7 @@ const MemoizedTechRow = memo(function TechRow({
               timeFormat={timeFormat}
               onResize={handleResize}
               onUnschedule={onUnschedule}
+              technicians={technicians}
             />
           );
         })}
@@ -405,8 +425,8 @@ export function CalendarGridDayRows({
   }, [dateKey]);
 
   return (
-    <div className="flex flex-col h-full">
-      <div ref={scrollRef} className="flex-1 overflow-auto">
+    <div className="flex flex-col h-full min-h-0">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto">
         {/* Time header row — sticky top */}
         <div className="sticky top-0 z-30 flex bg-background border-b">
           <div
