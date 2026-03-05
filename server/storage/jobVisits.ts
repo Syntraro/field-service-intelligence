@@ -72,6 +72,7 @@ export class JobVisitsRepository extends BaseRepository {
     const where: any[] = [
       eq(jobVisits.companyId, filters.companyId),
       eq(jobVisits.isActive, true), // Soft delete filter
+      isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
     ];
 
     if (filters.jobId) where.push(eq(jobVisits.jobId, filters.jobId));
@@ -115,8 +116,9 @@ export class JobVisitsRepository extends BaseRepository {
       .where(
         and(
           eq(jobVisits.companyId, companyId),
-          eq(jobVisits.jobId, jobId)
+          eq(jobVisits.jobId, jobId),
           // NO isActive filter - include all for history
+          isNull(jobVisits.archivedAt) // Exclude archived visits (2026-03-05)
         )
       )
       .orderBy(
@@ -141,7 +143,8 @@ export class JobVisitsRepository extends BaseRepository {
         and(
           eq(jobVisits.id, visitId),
           eq(jobVisits.companyId, companyId),
-          eq(jobVisits.isActive, true) // Soft delete filter
+          eq(jobVisits.isActive, true), // Soft delete filter
+          isNull(jobVisits.archivedAt) // Exclude archived visits (2026-03-05)
         )
       );
 
@@ -172,6 +175,7 @@ export class JobVisitsRepository extends BaseRepository {
           eq(jobVisits.companyId, companyId),
           eq(jobVisits.jobId, jobId),
           eq(jobVisits.isActive, true),
+          isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
           sql`${jobVisits.scheduledStart} IS NOT NULL`,
           notInArray(jobVisits.status, EXCLUDED)
         )
@@ -234,7 +238,8 @@ export class JobVisitsRepository extends BaseRepository {
         and(
           eq(jobVisits.id, visitId),
           eq(jobVisits.companyId, companyId),
-          eq(jobVisits.isActive, true)
+          eq(jobVisits.isActive, true),
+          isNull(jobVisits.archivedAt) // Exclude archived visits (2026-03-05)
         )
       );
 
@@ -318,7 +323,8 @@ export class JobVisitsRepository extends BaseRepository {
         and(
           eq(jobVisits.id, visitId),
           eq(jobVisits.companyId, companyId),
-          eq(jobVisits.isActive, true)
+          eq(jobVisits.isActive, true),
+          isNull(jobVisits.archivedAt) // Exclude archived visits (2026-03-05)
         )
       );
 
@@ -372,6 +378,7 @@ export class JobVisitsRepository extends BaseRepository {
           eq(jobVisits.companyId, companyId),
           eq(jobVisits.jobId, jobId),
           eq(jobVisits.isActive, true),
+          isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
           // scheduled_start must exist
           sql`${jobVisits.scheduledStart} IS NOT NULL`,
           // exclude terminal visit states
@@ -583,6 +590,9 @@ export class JobVisitsRepository extends BaseRepository {
 
     // 1) scheduledDate provided without scheduledStart → mirror to scheduledStart
     if ("scheduledDate" in input && !("scheduledStart" in input) && input.scheduledDate != null) {
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("[jobVisits] scheduledDate without scheduledStart; normalized", { visitId, jobId: existing.jobId });
+      }
       updates.scheduledStart = input.scheduledDate;
       updates.scheduledDate = input.scheduledDate;
     } else {
@@ -609,6 +619,11 @@ export class JobVisitsRepository extends BaseRepository {
     if ("status" in input) updates.status = input.status;
     if ("visitNotes" in input) updates.visitNotes = input.visitNotes;
     if ("isActive" in input) updates.isActive = input.isActive;
+
+    // Archive fields (2026-03-05)
+    if ("archivedAt" in input) updates.archivedAt = input.archivedAt;
+    if ("archivedByUserId" in input) updates.archivedByUserId = input.archivedByUserId;
+    if ("archivedReason" in input) updates.archivedReason = input.archivedReason;
 
     // Part 2: Additional schedule fields
     if ("scheduledEnd" in input && !("scheduledStart" in input && input.scheduledStart == null)) {
@@ -805,6 +820,7 @@ export class JobVisitsRepository extends BaseRepository {
           eq(jobVisits.companyId, companyId),
           eq(jobVisits.jobId, jobId),
           eq(jobVisits.isActive, true),
+          isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
           notInArray(jobVisits.status, TERMINAL)
         )
       )

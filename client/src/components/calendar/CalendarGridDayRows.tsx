@@ -140,6 +140,18 @@ function DraggableAllDayChip({ event, client, onClick, isSaving, isTask }: {
     data: { type: "assignment", assignmentId: event.assignmentId, client, event: event.raw },
   });
 
+  // Click-after-drag suppression (2026-03-05: fixes modal opening after drag)
+  const lastDragEndedAtRef = useRef<number>(0);
+  const wasDraggingRef = useRef(false);
+  useEffect(() => {
+    if (isDragging) {
+      wasDraggingRef.current = true;
+    } else if (wasDraggingRef.current) {
+      wasDraggingRef.current = false;
+      lastDragEndedAtRef.current = Date.now();
+    }
+  }, [isDragging]);
+
   const dragStyle = transform ? { transform: `translate(${transform.x}px, ${transform.y}px)` } : undefined;
 
   return (
@@ -154,7 +166,12 @@ function DraggableAllDayChip({ event, client, onClick, isSaving, isTask }: {
           : 'bg-primary/10 text-primary'
       }`}
       style={dragStyle}
-      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      onClick={(e) => {
+        e.stopPropagation();
+        // Suppress click that fires immediately after drag end
+        if (isDragging || Date.now() - lastDragEndedAtRef.current < 300) return;
+        onClick();
+      }}
       title={`Anytime: ${client?.companyName || (isTask ? event.raw?.title : 'Unknown')}`}
     >
       {client?.companyName || (isTask ? event.raw?.title : 'Anytime')}
@@ -500,14 +517,28 @@ export function CalendarGridDayRows({
   }, [technicians, hiddenTechnicianIds, techSummaryMap, riskFirstSort, alertsOnly]);
   const showUnassigned = !hiddenTechnicianIds.has("unassigned");
 
-  // Group events by technician
-  const getEventsForTech = (techId: string | null) => {
-    return dayEvents.filter(e => {
+  // 2026-03-05: Pre-compute events-by-tech Map for stable references.
+  // Replaces plain filter function that created new arrays on every render,
+  // defeating MemoizedTechRow memo.
+  const eventsByTech = useMemo(() => {
+    const map = new Map<string, CalendarEvent[]>();
+    map.set("__unassigned__", []);
+    for (const e of dayEvents) {
       const ids: string[] = e.technicianIds || (e.technicianId ? [e.technicianId] : []);
-      if (techId === null) return ids.length === 0;
-      return ids.includes(techId);
-    });
-  };
+      if (ids.length === 0) {
+        map.get("__unassigned__")!.push(e);
+      } else {
+        for (const tid of ids) {
+          if (!map.has(tid)) map.set(tid, []);
+          map.get(tid)!.push(e);
+        }
+      }
+    }
+    return map;
+  }, [dayEvents]);
+
+  const getEventsForTech = (techId: string | null): CalendarEvent[] =>
+    eventsByTech.get(techId ?? "__unassigned__") || [];
 
   // Auto-scroll to business hours start on mount
   useEffect(() => {
@@ -521,7 +552,7 @@ export function CalendarGridDayRows({
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto bg-muted/5">
         {/* Time header row — sticky top */}
         <div className="sticky top-0 z-30 flex bg-background border-b">
           <div

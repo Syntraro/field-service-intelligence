@@ -296,6 +296,7 @@ router.get(
     const conditions = [
       eq(jobVisits.companyId, companyId),
       eq(jobVisits.isActive, true),
+      isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
       gte(jobVisits.scheduledStart, windowStart),
       lt(jobVisits.scheduledStart, windowEnd),
       // Admin can reassign to any visit in tenant within the date window

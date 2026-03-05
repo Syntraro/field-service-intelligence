@@ -130,6 +130,7 @@ export async function getVisitsForUserInRange(
       and(
         eq(jobVisits.companyId, tenantId),
         eq(jobVisits.isActive, true),
+        isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
         // Phase 5.3 G4: exclude visits for soft-deleted/inactive jobs
         activeJobFilter(),
         gte(jobVisits.scheduledStart, start),
@@ -162,6 +163,7 @@ export async function getUnscheduledVisitsForUser(
       and(
         eq(jobVisits.companyId, tenantId),
         eq(jobVisits.isActive, true),
+        isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
         // Phase 5.3 G4: exclude visits for soft-deleted/inactive jobs
         activeJobFilter(),
         isNull(jobVisits.scheduledStart),
@@ -196,6 +198,7 @@ export async function getVisitByIdForUser(
         eq(jobVisits.id, visitId),
         eq(jobVisits.companyId, tenantId),
         eq(jobVisits.isActive, true),
+        isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
         // Phase 5.3 G4: exclude visits for soft-deleted/inactive jobs
         activeJobFilter(),
         assignedToUser(userId)
@@ -233,6 +236,7 @@ export async function getVisitsForTenantInRange(
   const conditions = [
     eq(jobVisits.companyId, tenantId),
     eq(jobVisits.isActive, true),
+    isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
     // Phase 5.3 G4: exclude visits for soft-deleted/inactive jobs
     activeJobFilter(),
     gte(jobVisits.scheduledStart, start),
@@ -367,6 +371,7 @@ export async function getVisitFeed(
   const conditions: SQL[] = [
     eq(jobVisits.companyId, ctx.tenantId),
     eq(jobVisits.isActive, true),
+    isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
     // Phase 5.3 G4: exclude visits for soft-deleted/inactive jobs
     activeJobFilter(),
   ];

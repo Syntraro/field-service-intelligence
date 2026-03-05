@@ -210,6 +210,18 @@ function DraggableAllDayCard({ event, client, isSaving, isTask, children, assign
     data: { type: "assignment", assignmentId, client, event: raw },
   });
 
+  // Click-after-drag suppression (2026-03-05: fixes modal opening after drag)
+  const lastDragEndedAtRef = useRef<number>(0);
+  const wasDraggingRef = useRef(false);
+  useEffect(() => {
+    if (isDragging) {
+      wasDraggingRef.current = true;
+    } else if (wasDraggingRef.current) {
+      wasDraggingRef.current = false;
+      lastDragEndedAtRef.current = Date.now();
+    }
+  }, [isDragging]);
+
   const dragStyle = transform ? { transform: `translate(${transform.x}px, ${transform.y}px)` } : undefined;
 
   return (
@@ -219,6 +231,13 @@ function DraggableAllDayCard({ event, client, isSaving, isTask, children, assign
       {...(isSaving ? {} : listeners)}
       className={`select-none ${isDragging ? 'opacity-50 z-50 shadow-lg' : ''}`}
       style={dragStyle}
+      onClickCapture={(e) => {
+        // Suppress click events that fire immediately after drag end
+        if (isDragging || Date.now() - lastDragEndedAtRef.current < 300) {
+          e.stopPropagation();
+          e.preventDefault();
+        }
+      }}
     >
       {children}
     </div>
@@ -588,15 +607,37 @@ export function CalendarGridDayJobber({
     return `BH: ${formatMinutes(todayBusinessHours.startMinutes)}–${formatMinutes(todayBusinessHours.endMinutes)} (${dayName}) | Date: ${format(currentDate, 'yyyy-MM-dd')} | DOW: ${dayOfWeek}`;
   }, [todayBusinessHours, dayOfWeek, currentDate]);
 
-  // Group events by technician
-  const getEventsForTech = (techId: string | null): CalendarEvent[] => {
-    return dayEvents.filter(e => {
-      if (techId === null) {
-        return e.technicianIds.length === 0;
+  // 2026-03-05: Pre-compute events-by-tech Map with stable allDay/timed splits.
+  // Previous inline .filter() on every render created new array refs, defeating
+  // MemoizedTechColumn memo. Now all arrays are stable between renders.
+  interface TechEventSplit { all: CalendarEvent[]; allDay: CalendarEvent[]; timed: CalendarEvent[] }
+  const eventsByTech = useMemo(() => {
+    const map = new Map<string, TechEventSplit>();
+    const ensure = (key: string) => {
+      if (!map.has(key)) map.set(key, { all: [], allDay: [], timed: [] });
+      return map.get(key)!;
+    };
+    ensure("__unassigned__");
+    for (const e of dayEvents) {
+      const isAD = isAllDayEvent(e);
+      if (e.technicianIds.length === 0) {
+        const bucket = ensure("__unassigned__");
+        bucket.all.push(e);
+        (isAD ? bucket.allDay : bucket.timed).push(e);
+      } else {
+        for (const tid of e.technicianIds) {
+          const bucket = ensure(tid);
+          bucket.all.push(e);
+          (isAD ? bucket.allDay : bucket.timed).push(e);
+        }
       }
-      return e.technicianIds.includes(techId);
-    });
-  };
+    }
+    return map;
+  }, [dayEvents]);
+
+  const EMPTY_SPLIT: TechEventSplit = { all: [], allDay: [], timed: [] };
+  const getEventsForTech = (techId: string | null): TechEventSplit =>
+    eventsByTech.get(techId ?? "__unassigned__") || EMPTY_SPLIT;
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -636,36 +677,39 @@ export function CalendarGridDayJobber({
             />
           </div>
 
-          {/* Unassigned column */}
-          {showUnassigned && (
-            <MemoizedTechColumn
-              technicianId="unassigned"
-              technicianName="Unassigned"
-              technicianColor={null}
-              events={getEventsForTech(null)}
-              allDayEvents={getEventsForTech(null).filter(isAllDayEvent)}
-              timedEvents={getEventsForTech(null).filter(e => !isAllDayEvent(e))}
-              laneMap={calculateLanes(getEventsForTech(null).filter(e => !isAllDayEvent(e)).map(e => e.raw))}
-              currentDate={currentDate}
-              dateKey={dateKey}
-              density={density}
-              clients={clients}
-              technicians={technicians}
-              getTechnicianColor={getTechnicianColor}
-              handleClientClick={handleClientClick}
-              handleResize={handleResize}
-              savingJobIds={savingJobIds}
-              onUnschedule={onUnschedule}
-              timeFormat={regional.timeFormat}
-              businessHoursStart={todayBusinessHours.startMinutes}
-              businessHoursEnd={todayBusinessHours.endMinutes}
-              isBusinessOpen={todayBusinessHours.isOpen}
-            />
-          )}
+          {/* Unassigned column — uses pre-split stable refs (2026-03-05) */}
+          {showUnassigned && (() => {
+            const { all: uEvents, allDay: uAllDay, timed: uTimed } = getEventsForTech(null);
+            return (
+              <MemoizedTechColumn
+                technicianId="unassigned"
+                technicianName="Unassigned"
+                technicianColor={null}
+                events={uEvents}
+                allDayEvents={uAllDay}
+                timedEvents={uTimed}
+                laneMap={calculateLanes(uTimed.map(e => e.raw))}
+                currentDate={currentDate}
+                dateKey={dateKey}
+                density={density}
+                clients={clients}
+                technicians={technicians}
+                getTechnicianColor={getTechnicianColor}
+                handleClientClick={handleClientClick}
+                handleResize={handleResize}
+                savingJobIds={savingJobIds}
+                onUnschedule={onUnschedule}
+                timeFormat={regional.timeFormat}
+                businessHoursStart={todayBusinessHours.startMinutes}
+                businessHoursEnd={todayBusinessHours.endMinutes}
+                isBusinessOpen={todayBusinessHours.isOpen}
+              />
+            );
+          })()}
 
-          {/* Technician columns */}
-          {visibleTechnicians.map((tech: any, index: number) => {
-            const techEvents = getEventsForTech(tech.id);
+          {/* Technician columns — uses pre-split stable refs (2026-03-05) */}
+          {visibleTechnicians.map((tech: any) => {
+            const { all: techEvents, allDay, timed } = getEventsForTech(tech.id);
             const techColor = TECHNICIAN_COLORS[technicians.findIndex((t: any) => t.id === tech.id) % TECHNICIAN_COLORS.length];
             const displayName = `${tech.firstName || ''} ${tech.lastName?.[0] || ''}`.trim() || tech.fullName || tech.displayName || 'Tech';
 
@@ -676,9 +720,9 @@ export function CalendarGridDayJobber({
                 technicianName={displayName}
                 technicianColor={techColor}
                 events={techEvents}
-                allDayEvents={techEvents.filter(isAllDayEvent)}
-                timedEvents={techEvents.filter(e => !isAllDayEvent(e))}
-                laneMap={calculateLanes(techEvents.filter(e => !isAllDayEvent(e)).map(e => e.raw))}
+                allDayEvents={allDay}
+                timedEvents={timed}
+                laneMap={calculateLanes(timed.map(e => e.raw))}
                 currentDate={currentDate}
                 dateKey={dateKey}
                 density={density}

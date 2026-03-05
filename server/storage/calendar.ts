@@ -242,6 +242,7 @@ export class CalendarRepository extends BaseRepository {
         FROM job_visits jv
         WHERE jv.company_id = ${companyId}
           AND jv.is_active = true
+          AND jv.archived_at IS NULL
           AND jv.scheduled_start IS NOT NULL
           AND jv.status NOT IN ('cancelled', 'completed')
       ),
@@ -698,6 +699,7 @@ export class CalendarRepository extends BaseRepository {
           eq(jobVisits.jobId, data.jobId),
           eq(jobVisits.companyId, companyId),
           eq(jobVisits.isActive, true),
+          isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
           notInArray(jobVisits.status, VISIT_TERMINAL_STATUSES),
         )
       )
@@ -717,22 +719,23 @@ export class CalendarRepository extends BaseRepository {
         visitNotes: data.notes,
       });
     } else if (isVisitEmpty(openVisit) || data.conflictMode === 'replace') {
-      // Case 2: Empty visit OR explicit replace → soft-delete old, create new
-      await jobVisitsRepository.updateJobVisit(
+      // Case 2: Empty visit OR explicit replace → UPDATE IN-PLACE (no duplicate rows)
+      // 2026-03-05: Changed from soft-delete+create to in-place update to prevent
+      // the "2 visits" duplication bug on the Job Detail page.
+      visit = await jobVisitsRepository.updateJobVisit(
         companyId,
         openVisit.id,
         openVisit.version,
-        { isActive: false }
+        {
+          scheduledStart,
+          scheduledEnd,
+          isAllDay,
+          assignedTechnicianId: techAssignment.primaryTechnicianId,
+          assignedTechnicianIds: techAssignment.assignedTechnicianIds,
+          status: 'scheduled',
+          visitNotes: data.notes ?? openVisit.visitNotes,
+        }
       );
-      visit = await jobVisitsRepository.createJobVisit(companyId, data.jobId, {
-        scheduledStart,
-        scheduledEnd,
-        isAllDay,
-        assignedTechnicianId: techAssignment.primaryTechnicianId,
-        assignedTechnicianIds: techAssignment.assignedTechnicianIds,
-        status: 'scheduled',
-        visitNotes: data.notes,
-      });
     } else if (data.conflictMode === 'complete_and_new') {
       // Case 3: Actioned visit + explicit complete_and_new → complete old, create new
       const now = new Date();
@@ -923,8 +926,9 @@ export class CalendarRepository extends BaseRepository {
 
     // SPAWN-ON-ACTION: Check if visit has been actioned
     const visitIsActioned = isVisitActioned(currentVisit);
-    // Visit Reschedule Architecture: explicit mode overrides auto-detection
-    const shouldSpawn = data.mode === 'replace' || data.mode === 'complete_and_new' || visitIsActioned;
+    // 2026-03-05: 'replace' mode now does UPDATE-IN-PLACE (no spawn), handled separately below.
+    // Only spawn for 'complete_and_new' or auto-detected actioned visits.
+    const shouldSpawn = data.mode === 'complete_and_new' || (visitIsActioned && data.mode !== 'replace');
 
     // All-day → timed conversion guard: when converting from all-day to a timed
     // event, don't trust the incoming endAt (may carry the all-day span of ~24h).

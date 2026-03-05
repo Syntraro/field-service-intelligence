@@ -2175,6 +2175,11 @@ export const jobVisits = pgTable("job_visits", {
   isActive: boolean("is_active").notNull().default(true),
   version: integer("version").notNull().default(0),
 
+  // Archive (soft-delete with audit trail, 2026-03-05)
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
+  archivedByUserId: varchar("archived_by_user_id"),
+  archivedReason: text("archived_reason"),
+
   // Audit timestamps
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),

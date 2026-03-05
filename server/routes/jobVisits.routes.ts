@@ -326,4 +326,44 @@ router.post(
   })
 );
 
+// ========================================
+// POST /api/jobs/:jobId/visits/:visitId/archive — Soft-delete via archive (2026-03-05)
+// Sets archivedAt, archivedByUserId, archivedReason. Does NOT delete related data.
+// ========================================
+
+const archiveVisitSchema = z.object({
+  reason: z.string().max(500).optional(),
+}).strict();
+
+router.post(
+  "/:jobId/visits/:visitId/archive",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+    const { visitId } = req.params;
+    const { reason } = validateSchema(archiveVisitSchema, req.body || {});
+
+    const visit = await service.getJobVisit(companyId, visitId);
+    if (!visit) throw createError(404, "Visit not found");
+
+    if (visit.archivedAt) {
+      throw createError(409, "Visit is already archived");
+    }
+
+    const updated = await service.updateJobVisit(
+      companyId,
+      visitId,
+      visit.version,
+      {
+        archivedAt: new Date(),
+        archivedByUserId: userId,
+        archivedReason: reason || null,
+      }
+    );
+
+    res.json(updated);
+  })
+);
+
 export default router;

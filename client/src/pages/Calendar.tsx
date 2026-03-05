@@ -1795,6 +1795,26 @@ export default function Calendar() {
     });
 
     if (pointerCollisions.length > 0) {
+      // 2026-03-05: Disambiguate allday| vs daily| when sticky all-day lane overlaps timed grid.
+      // When both zone types are present, use the scroll container's all-day lane boundary
+      // to determine which zone the pointer actually intended.
+      const hasAllDay = pointerCollisions.some(c => (c.id as string).startsWith('allday|'));
+      const hasDaily = pointerCollisions.some(c => (c.id as string).startsWith('daily|'));
+      if (hasAllDay && hasDaily && args.pointerCoordinates) {
+        // Find the all-day droppable's bottom edge as the boundary
+        const allDayCollision = pointerCollisions.find(c => (c.id as string).startsWith('allday|'));
+        const allDayRect = allDayCollision?.data?.droppableContainer?.rect?.current;
+        if (allDayRect) {
+          const boundary = allDayRect.top + allDayRect.height;
+          const pointerY = args.pointerCoordinates.y;
+          // Pointer above boundary = all-day zone; below = timed zone
+          if (pointerY <= boundary) {
+            return pointerCollisions.filter(c => (c.id as string).startsWith('allday|'));
+          } else {
+            return pointerCollisions.filter(c => !(c.id as string).startsWith('allday|'));
+          }
+        }
+      }
       return pointerCollisions;
     }
 

@@ -154,6 +154,7 @@ async function fetchScheduledVisits(tenantId: string): Promise<ScheduledVisitRow
     LEFT JOIN client_locations cl ON cl.id = j.location_id
     WHERE jv.company_id = ${tenantId}
       AND jv.is_active = true
+      AND jv.archived_at IS NULL
       AND jv.scheduled_start IS NOT NULL
       AND jv.scheduled_start >= CURRENT_DATE
       AND jv.scheduled_start < CURRENT_DATE + INTERVAL '1 day'
@@ -534,6 +535,7 @@ export async function fetchRemainderVisits(
     LEFT JOIN client_locations cl ON cl.id = j.location_id
     WHERE jv.company_id = ${tenantId}
       AND jv.is_active = true
+      AND jv.archived_at IS NULL
       AND jv.status NOT IN ('completed', 'cancelled')
       AND jv.scheduled_start IS NOT NULL
       AND jv.scheduled_start > ${new Date(sourceVisit.scheduledStart)}

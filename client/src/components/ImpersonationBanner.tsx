@@ -27,11 +27,15 @@ export function ImpersonationBanner() {
   const { toast } = useToast();
   const [now, setNow] = useState(Date.now());
 
-  // Poll admin impersonation status every 5 seconds
+  // 2026-03-05: Only poll every 5s when impersonation is active.
+  // First fetch still runs (to detect impersonation), but subsequent
+  // polling is gated on isImpersonating so non-impersonating sessions
+  // make exactly one request, not one every 5 seconds.
   const { data: status } = useQuery<ImpersonationStatus>({
     queryKey: ["/api/admin/impersonate/status"],
-    refetchInterval: 5000,
-    staleTime: 0,
+    refetchInterval: (query) =>
+      query.state.data?.isImpersonating ? 5000 : false,
+    staleTime: 30_000,
     retry: false,
   });
 

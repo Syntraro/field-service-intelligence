@@ -107,6 +107,7 @@ router.get(
         LEFT JOIN client_locations cl ON cl.id = j.location_id
         WHERE jv.company_id = ${companyId}
           AND jv.is_active = true
+          AND jv.archived_at IS NULL
           AND jv.scheduled_start >= ${start.toISOString()}::timestamptz
           AND jv.scheduled_start < ${end.toISOString()}::timestamptz
           AND jv.status = ANY(${ACTIVE_VISIT_STATUSES})
@@ -137,6 +138,7 @@ router.get(
             WHERE jv.job_id = j.id
               AND jv.company_id = ${companyId}
               AND jv.is_active = true
+          AND jv.archived_at IS NULL
               AND jv.scheduled_start >= ${start.toISOString()}::timestamptz
               AND jv.scheduled_start < ${end.toISOString()}::timestamptz
           )
@@ -217,7 +219,7 @@ router.get(
       // Diagnostic when 0 visits: count all active job_visits for company
       if (visits.length === 0) {
         const diagResult = await db.execute(sql`
-          SELECT COUNT(*)::int AS "total" FROM job_visits WHERE company_id = ${companyId} AND is_active = true
+          SELECT COUNT(*)::int AS "total" FROM job_visits WHERE company_id = ${companyId} AND is_active = true AND archived_at IS NULL
         `);
         const totalVisits = (diagResult.rows as any[])[0]?.total || 0;
         console.warn(
@@ -225,6 +227,29 @@ router.get(
           `Total active job_visits in company: ${totalVisits}.`,
           `Check if scheduled_start is being written by the calendar scheduling flow.`,
         );
+      }
+    }
+
+    // Build _meta diagnostic hints for empty states (2026-03-05)
+    const _meta: Record<string, any> = {};
+    if (allTechs.length === 0) {
+      _meta.reasonTechsEmpty = "No active users with is_schedulable=true (check users.is_schedulable/disabled/deleted_at).";
+    }
+    if (visits.length === 0) {
+      // Count visits with scheduled_date but no scheduled_start (common backfill gap)
+      const gapResult = await db.execute(sql`
+        SELECT COUNT(*)::int AS "count"
+        FROM job_visits
+        WHERE company_id = ${companyId}
+          AND is_active = true
+          AND archived_at IS NULL
+          AND scheduled_start IS NULL
+          AND scheduled_date IS NOT NULL
+      `);
+      const gapCount = (gapResult.rows as any[])[0]?.count || 0;
+      _meta.visitsWithScheduledDateButNoStart = gapCount;
+      if (gapCount > 0) {
+        _meta.reasonVisitsEmpty = `Found ${gapCount} visit(s) with scheduled_date set but scheduled_start NULL (needs backfill or write-path bug).`;
       }
     }
 
@@ -243,6 +268,7 @@ router.get(
         visitsWithCoords,
         visitsMissingCoords: visits.length - visitsWithCoords,
         visitsMissingScheduledStart,
+        ..._meta,
       },
     });
   }),

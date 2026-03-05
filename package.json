@@ -16,6 +16,7 @@
     "lint:api-parse": "./scripts/check-apiRequest-double-parse.sh",
     "lint:guardrails": "npm run lint:db-imports && npm run lint:api-parse",
     "sanity:scheduling": "tsx server/scripts/schedulingSanityCheck.ts",
+    "db:map-sanity": "tsx server/scripts/mapSanityCheck.ts",
     "backfill:quotes-customer-company": "tsx server/scripts/backfillQuoteCustomerCompanyId.ts",
     "test": "vitest run",
     "test:watch": "vitest"

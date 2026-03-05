@@ -6,7 +6,129 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Investigation
+
+#### Day View Live Diagnostic Report (2026-03-05)
+- `docs/DAY_VIEW_LIVE_DIAGNOSTIC.md` — Full investigation report with 6 ranked root causes
+- RC-1: Sticky rect cache staleness defeats all-day/timed disambiguation when scrolled (Calendar.tsx:1806)
+- RC-2: Row view uses Y-axis disambiguation for horizontal overlap (Calendar.tsx:1810, DayRows.tsx:399)
+- RC-3: `calculateLanes()` defeats MemoizedTechColumn memo via inline `.map()` (DayJobber.tsx:691,725)
+- RC-4: Resize "snap-back" visual lag from clearing tempDuration before API response (ResizableJobCard.tsx:187)
+- RC-5: Click-after-drag useEffect timing gap (DayRows.tsx:213-220)
+- RC-6: Visual sparsity (24h grid with few techs) misinterpreted as layout bug
+- No code changes — investigation only
+
 ### Fixed
+
+#### Day View DnD Bug Fixes (2026-03-05)
+
+**Fix #1 (P0): Modal no longer opens after dragging all-day items**
+- Added click-after-drag suppression (`wasDraggingRef` + `lastDragEndedAtRef` + 300ms guard) to:
+  - `DraggableAllDayCard` in `CalendarGridDayJobber.tsx` (Columns view) — uses `onClickCapture` to intercept child `JobCard` clicks
+  - `DraggableAllDayChip` in `CalendarGridDayRows.tsx` (Rows view) — guards existing `onClick` handler
+- Pattern matches working implementations in `DraggableEventBlock` and `ResizableJobCard`
+
+**Fix #2 (P0/P1): Timed ↔ all-day drops now reliable despite sticky overlap**
+- Modified `customCollisionDetection` in `Calendar.tsx` to disambiguate when `pointerWithin` returns both `allday|` and `daily|` candidates simultaneously
+- Uses the all-day droppable's bounding rect bottom edge as boundary: pointer above = allday zone, below = timed zone
+- No regressions to weekly/monthly DnD (disambiguation only triggers when both zone types present)
+
+**Fix #3 (P1): MemoizedTechColumn memo now effective**
+- `CalendarGridDayJobber.tsx`: Pre-split events into `allDay`/`timed` arrays inside the `eventsByTech` useMemo
+- Previous inline `.filter()` calls created 3 new array refs per tech per render, defeating React.memo
+- Now passes stable pre-computed arrays as props — memo correctly prevents re-renders
+
+**Fix #5 (P2): Rows view no longer looks cut off with few technicians**
+- Added subtle `bg-muted/5` background to scroll container so empty space doesn't look like a broken/missing area
+
+### Added
+
+#### Live Map Backfill Migration + Guardrails (2026-03-05)
+
+**Migration — Backfill Live Map prerequisites**
+- `migrations/2026_03_05_live_map_backfills.sql` — Idempotent SQL migration that:
+  - Sets `users.is_schedulable = TRUE` for active non-disabled users (was false/null)
+  - Copies `job_visits.scheduled_date` → `scheduled_start` where missing
+  - Defaults `estimated_duration_minutes` to 60 where null/0
+  - Computes `scheduled_end` where start exists but end is NULL
+- BEFORE: 8 schedulable techs, 2 visits missing scheduled_start, 1 today visit
+- AFTER: 9 schedulable techs, 0 visits missing scheduled_start, 2 today visits
+
+**Server-side invariant (write-path hardening)**
+- `server/storage/jobVisits.ts` (`updateJobVisit`): DEV-only warning log when scheduledDate is set without scheduledStart (normalization already auto-fixes, log aids debugging)
+
+**Live Map endpoint diagnostics**
+- `server/routes/map.ts` (GET /api/map/day): Added `_meta` diagnostic fields:
+  - `reasonTechsEmpty`: explains when 0 schedulable techs found
+  - `reasonVisitsEmpty` + `visitsWithScheduledDateButNoStart`: explains scheduled_date vs scheduled_start gap
+
+**UI empty-state messaging**
+- `client/src/pages/LiveMapPage.tsx`: DispatchPanel shows actionable messages when server returns diagnostic meta (no schedulable techs, missing scheduled_start, etc.)
+
+**Sanity check script**
+- `server/scripts/mapSanityCheck.ts` — Validates Live Map prerequisites, exits non-zero on failure
+- Package.json: `npm run db:map-sanity`
+- Documented in `docs/MIGRATIONS.md` under "Sanity Checks"
+
+### Investigation
+
+#### Day View DnD/Layout Diagnostic (2026-03-05)
+
+- **Diagnostic report**: `docs/DAY_VIEW_DND_DIAGNOSTIC.md` — structured root-cause analysis of Day view (Rows + Columns) DnD and layout issues
+- **6 issues identified**, prioritized by severity:
+  1. HIGH: Modal opens after dragging all-day items — missing click-after-drag suppression in `DraggableAllDayCard` (Columns) and `DraggableAllDayChip` (Rows)
+  2. HIGH: Timed<->all-day drops unreliable — sticky all-day lane overlaps timed grid bounding rects during scroll
+  3. MEDIUM: `MemoizedTechColumn` memo defeated by inline `.filter()` calls (CalendarGridDayJobber.tsx:696-698)
+  4. LOW: Resize visual snap-back (no optimistic height update)
+  5. LOW: Empty space below rows with few technicians (cosmetic)
+  6. LOW: 92px sticky header stack reduces visible timed area
+- Files analyzed: `Calendar.tsx`, `CalendarGridDayJobber.tsx`, `CalendarGridDayRows.tsx`, `ResizableJobCard.tsx`
+- No code changes made (investigation only)
+
+### Fixed
+
+#### Replace Visit: Update-in-Place + Visit Archive (2026-03-05)
+
+**Bug Fix — "Replace Visit" no longer creates duplicate visits**
+- **Root cause**: `scheduleJob()` and `rescheduleJob()` in `server/storage/calendar.ts` used soft-delete (`isActive=false`) + `createJobVisit()` for the "replace" path, creating a second row. The Job Detail page's `listAllJobVisitsForJob` returns all visits including inactive, so both showed up.
+- **Fix**: Changed Case 2 in `scheduleJob()` (line ~719) and the `replace` mode in `rescheduleJob()` to UPDATE the existing visit row IN-PLACE instead of soft-delete + create. Same visit ID is preserved; no new row created.
+- Files: `server/storage/calendar.ts`
+
+**Feature — Soft-delete archive for job visits (archivedAt)**
+- Added `archived_at`, `archived_by_user_id`, `archived_reason` columns to `job_visits` table.
+- All default visit queries now include `archived_at IS NULL` filter — archived visits excluded from: job detail visits list, calendar views, dispatch/live map, visit feeds, admin timesheets, auto-gap scheduling, visit intelligence.
+- New endpoint: `POST /api/jobs/:jobId/visits/:visitId/archive` — sets archive fields in a transaction, requires manager role.
+- Migration: `migrations/2026_03_05_job_visits_archived_columns.sql`
+- Schema: `shared/schema.ts` — added archivedAt, archivedByUserId, archivedReason to jobVisits table
+- Files changed:
+  - `shared/schema.ts` (schema)
+  - `server/storage/jobVisits.ts` (all queries + updateJobVisit)
+  - `server/storage/visits.ts` (all 5 query functions)
+  - `server/storage/calendar.ts` (scheduleJob, openVisit query, eligible visits CTE)
+  - `server/routes/jobVisits.routes.ts` (archive endpoint)
+  - `server/routes/map.ts` (3 raw SQL queries)
+  - `server/routes/calendar.ts` (day summary raw SQL)
+  - `server/routes/adminTimesheets.ts` (visit search query)
+  - `server/lib/autoGapScheduling.ts` (scheduled visits query)
+  - `server/lib/visitIntelligence.ts` (2 raw SQL queries)
+
+#### Phase C: Pre-deploy P0 Performance + Scale Fixes (2026-03-05)
+
+**Task 1 — DB Index for job_visits schedule queries**
+- Added compound index `idx_job_visits_company_active_start` on `job_visits(company_id, is_active, scheduled_start)`.
+- Covers hot query pattern in `/api/map/day`, calendar range queries, and eligible-visit lookups. Replaces bitmap AND across 3 separate single-column indexes with one range scan.
+- Migration: `migrations/2026_03_05_job_visits_schedule_index.sql`
+
+**Task 2 — ImpersonationBanner polling guard**
+- `refetchInterval` changed from unconditional `5000` to a function: polls only when `isImpersonating === true`. Non-impersonating sessions make exactly one request then stop, eliminating ~12 requests/minute for every logged-in user.
+- `staleTime` increased from `0` to `30_000` to further reduce refetches on component remount.
+- File: `client/src/components/ImpersonationBanner.tsx`
+
+**Task 3 — getEventsForTech memoization (calendar day views)**
+- Replaced plain `getEventsForTech()` function (re-created every render, 4N+ filter passes) with a pre-computed `Map<techId, CalendarEvent[]>` via `useMemo([dayEvents])`.
+- Eliminates redundant filtering: DayJobber previously called `getEventsForTech(null)` 4 times per render for the unassigned column alone.
+- Stable array references now let `MemoizedTechColumn` / `MemoizedTechRow` `React.memo()` wrappers actually skip re-renders during drag/resize.
+- Files: `client/src/components/calendar/CalendarGridDayJobber.tsx`, `client/src/components/calendar/CalendarGridDayRows.tsx`
 
 #### Job Visit Schedule Normalization — scheduledDate→scheduledStart mirroring (2026-03-05)
 - **Root cause**: Some scheduling flows wrote `scheduledDate` but not `scheduledStart` to `job_visits`. All downstream queries (Live Map `/api/map/day`, eligible-visit lookup, list filters) depend on `scheduledStart IS NOT NULL`, causing visits to silently disappear from the map and dispatch views.

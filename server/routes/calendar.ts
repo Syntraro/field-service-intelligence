@@ -850,6 +850,7 @@ router.get(
       LEFT JOIN client_locations cl ON cl.id = j.location_id
       WHERE jv.company_id = ${companyId}
         AND jv.is_active = true
+        AND jv.archived_at IS NULL
         AND jv.scheduled_start IS NOT NULL
         AND jv.scheduled_start >= ${dateStr}::date
         AND jv.scheduled_start < ${dateStr}::date + INTERVAL '1 day'

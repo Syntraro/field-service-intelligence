@@ -88,6 +88,10 @@ interface MapDayData {
     visitsWithCoords?: number;
     visitsMissingCoords?: number;
     visitsMissingScheduledStart?: number;
+    // Diagnostic hints for empty states (2026-03-05)
+    reasonTechsEmpty?: string;
+    reasonVisitsEmpty?: string;
+    visitsWithScheduledDateButNoStart?: number;
   };
 }
 
@@ -329,6 +333,7 @@ function DispatchPanel({
   onClickVisit,
   jobFallbackCount,
   totalVisitCount,
+  meta,
 }: {
   technicians: MapTechnician[];
   visits: MapVisit[];
@@ -339,6 +344,8 @@ function DispatchPanel({
   jobFallbackCount: number;
   /** Total unfiltered visit count — used to distinguish "no visits" from "filtered out" */
   totalVisitCount: number;
+  /** Server diagnostic meta for empty-state messaging (2026-03-05) */
+  meta?: MapDayData["meta"];
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
@@ -507,7 +514,7 @@ function DispatchPanel({
           </div>
         )}
 
-        {/* Empty state — distinguish "no visits" from "hidden by filter" */}
+        {/* Empty state — distinguish "no visits" from "hidden by filter" + diagnostic hints (2026-03-05) */}
         {visits.length === 0 && (
           <div className="text-center text-sm text-muted-foreground py-8 px-4">
             {totalVisitCount > 0 ? (
@@ -518,7 +525,19 @@ function DispatchPanel({
             ) : (
               <div>
                 <div>No visits for today</div>
-                {jobFallbackCount > 0 && (
+                {meta?.reasonTechsEmpty && (
+                  <div className="mt-2 text-xs flex items-center justify-center gap-1 text-amber-600">
+                    <AlertTriangle className="h-3 w-3" />
+                    No schedulable technicians found. Check user settings (is_schedulable).
+                  </div>
+                )}
+                {meta?.reasonVisitsEmpty && (
+                  <div className="mt-2 text-xs flex items-center justify-center gap-1 text-amber-600">
+                    <AlertTriangle className="h-3 w-3" />
+                    {meta.visitsWithScheduledDateButNoStart} visit{(meta.visitsWithScheduledDateButNoStart ?? 0) > 1 ? "s" : ""} have scheduled_date set but scheduled_start is missing. Run backfill migration.
+                  </div>
+                )}
+                {jobFallbackCount > 0 && !meta?.reasonVisitsEmpty && (
                   <div className="mt-2 text-xs flex items-center justify-center gap-1 text-amber-600">
                     <AlertTriangle className="h-3 w-3" />
                     {jobFallbackCount} scheduled job{jobFallbackCount > 1 ? "s" : ""} exist but have no visit records yet.
@@ -834,6 +853,7 @@ export default function LiveMapPage() {
               onClickVisit={handleClickVisit}
               jobFallbackCount={jobFallbackCount}
               totalVisitCount={visits.length}
+              meta={data?.meta}
             />
           </div>
         )}

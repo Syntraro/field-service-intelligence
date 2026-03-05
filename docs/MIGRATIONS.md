@@ -94,6 +94,24 @@ All pre-existing migrations were seeded into this table by
   (introspection) and `npm run db:check` (drift detection).
 - Never add `db:push` or `db:verify` scripts back.
 
+## Backfills
+
+### `2026_03_05_live_map_backfills.sql`
+
+Live Map `/api/map/day` returned 0 techs / 0 visits because:
+1. `users.is_schedulable` was `false`/`NULL` for existing active techs — they were filtered out.
+2. Historical `job_visits` had `scheduled_date` set but `scheduled_start` was `NULL` — the map filters on `scheduled_start`.
+
+This migration backfills `is_schedulable = TRUE` for active non-disabled users, copies
+`scheduled_date` → `scheduled_start` where missing, defaults `estimated_duration_minutes`
+to 60, and computes `scheduled_end` for visits that have a start but no end.
+
+## Sanity Checks
+
+- `npm run db:map-sanity` — Checks Live Map prerequisites: schedulable tech count,
+  visits with `scheduled_date` but no `scheduled_start`, and today's visit count.
+  Exits non-zero if any invariant is violated.
+
 ## CONCURRENTLY Indexes
 
 Migrations containing `CREATE INDEX CONCURRENTLY` are automatically detected by

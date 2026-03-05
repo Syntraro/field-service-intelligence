@@ -4,6 +4,34 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-03-05: Phase C — Pre-deploy P0 Performance + Scale Fixes
+
+### Task 1: DB Index
+| Item | Detail |
+|---|---|
+| Index | `idx_job_visits_company_active_start` on `(company_id, is_active, scheduled_start)` |
+| Migration | `migrations/2026_03_05_job_visits_schedule_index.sql` |
+| Queries covered | `map.ts` (2 queries), `calendar.ts` range query, eligible-visit lookup |
+| Why compound | Existing single-column indexes require bitmap AND; compound index → single range scan |
+
+### Task 2: ImpersonationBanner Polling
+| Item | Detail |
+|---|---|
+| File | `client/src/components/ImpersonationBanner.tsx` |
+| Before | `refetchInterval: 5000` (unconditional), `staleTime: 0` — 12 req/min for ALL users |
+| After | `refetchInterval: (query) => query.state.data?.isImpersonating ? 5000 : false`, `staleTime: 30_000` |
+| Impact | Non-impersonating users: 1 request total instead of 12/min |
+
+### Task 3: getEventsForTech Memoization
+| Item | Detail |
+|---|---|
+| Files | `CalendarGridDayJobber.tsx`, `CalendarGridDayRows.tsx` |
+| Before | Plain function re-created every render; DayJobber called it 4× for null + 1× per tech; new arrays defeated memo |
+| After | `useMemo` builds `Map<techId, CalendarEvent[]>` once per `dayEvents` change; getter returns stable references |
+| Impact | N techs → from 4N+4 filter passes to 1 Map build; `MemoizedTechColumn`/`MemoizedTechRow` memo now effective |
+
+---
+
 ## 2026-03-05: Phase B Dead Code Cleanup
 
 ### Batch 1 — Dead Server Files (305 lines)
