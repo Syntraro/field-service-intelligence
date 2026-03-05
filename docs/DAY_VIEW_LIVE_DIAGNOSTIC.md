@@ -445,3 +445,9 @@ setTempDuration(null);  // <-- Visual snap-back
 | `PX_PER_MINUTE` (Rows) | 1.667 | DayRows.tsx:42 |
 | Sensor activation distance | 3px | Calendar.tsx:1757 |
 | Click suppression window | 250-300ms | Various |
+
+---
+
+## Fix Implemented — RC-1/RC-2 Resolved (2026-03-05)
+
+RC-1 (sticky rect cache staleness) and RC-2 (Y-axis disambiguation for horizontal overlap) are both **resolved by structural change**: the sticky all-day lane in Day Columns view was removed entirely. All-day items now render inside each tech column's header. This eliminates the overlapping droppable rect problem at the source, making disambiguation unnecessary. The `customCollisionDetection` in Calendar.tsx no longer needs special allday/daily overlap handling. See `docs/DAY_VIEW_DND_DIAGNOSTIC.md` section 12 for full details.

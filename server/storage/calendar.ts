@@ -771,6 +771,25 @@ export class CalendarRepository extends BaseRepository {
       throw err;
     }
 
+    // 2026-03-05: Archive leftover placeholder visits (scheduledStart IS NULL)
+    // for this job. When a real visit is scheduled, placeholders from prior
+    // unschedule/reschedule cycles are no longer needed and clutter the
+    // Job Detail visits list with "No date" rows.
+    if (visit) {
+      await db
+        .update(jobVisits)
+        .set({ archivedAt: new Date() })
+        .where(
+          and(
+            eq(jobVisits.jobId, data.jobId),
+            eq(jobVisits.companyId, companyId),
+            isNull(jobVisits.scheduledStart),
+            isNull(jobVisits.archivedAt),
+            sql`${jobVisits.id} != ${visit.id}`
+          )
+        );
+    }
+
     // JOBBER-LIKE BEHAVIOR: Reopen completed jobs when scheduling a follow-up visit.
     // Rationale: A completed job means "the work is done". Scheduling another visit
     // means "more work is needed", so the job should return to 'open' status.

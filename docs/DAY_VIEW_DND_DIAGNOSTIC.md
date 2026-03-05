@@ -331,3 +331,25 @@ All current droppable IDs match these prefixes. No missed zones identified.
 
 - `npx tsc --noEmit`: Only pre-existing adminTimesheets error — no new errors
 - `npx vite build`: Clean build (8.4s)
+
+---
+
+## 12. Structural Fix — All-Day Strip Relocation (2026-03-05)
+
+### Issue #2 — Definitive fix: Removed sticky all-day lane entirely
+
+**What changed:**
+- `CalendarGridDayJobber.tsx`: Merged the all-day items into the technician column header (sticky top-0). The separate sticky all-day lane at `top: HEADER_HEIGHT` is removed entirely.
+- `TimeRail`: Removed the "Anytime" row that accompanied the old all-day lane.
+- `Calendar.tsx`: Removed the sticky overlap collision disambiguation logic in `customCollisionDetection` — with no overlapping zones, pointerWithin is sufficient.
+- Updated `nowLineTop` and auto-scroll calculations to remove the old `ALLDAY_LANE_HEIGHT` offset.
+
+**Why it works:** The root cause of timed<->all-day DnD ambiguity was that the sticky all-day lane's bounding rect overlapped with timed grid slots after scrolling. By relocating all-day items into the header (which doesn't overlap the timed grid), the `allday|` and `daily|` droppable rects never intersect. No disambiguation needed.
+
+**DnD paths preserved:**
+- Timed -> all-day strip (in header): sets `allDay: true`, clears time
+- All-day strip -> timed slot: sets specific time from `daily|` target
+- All-day strip -> different tech strip: reassigns tech, keeps all-day
+- Sidebar -> all-day / timed: unchanged
+
+**Day Rows view:** Unmodified — already uses a side-strip layout beside tech labels, which doesn't overlap the timed timeline.

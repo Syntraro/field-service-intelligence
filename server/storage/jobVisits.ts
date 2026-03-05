@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { and, eq, desc, gte, lte, asc, sql, notInArray, isNull } from "drizzle-orm";
+import { and, eq, desc, gte, lte, asc, sql, notInArray, isNull, isNotNull, or } from "drizzle-orm";
 import { activeJobFilter } from "./jobFilters";
 import { jobVisits, jobs, jobNotes, users, clientLocations } from "@shared/schema";
 import { BaseRepository, clampLimit } from "./base";
@@ -110,6 +110,10 @@ export class JobVisitsRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
+    // 2026-03-05: Exclude placeholder visits (scheduledStart IS NULL and no
+    // activity) from Job Detail. Placeholders are created during unschedule
+    // cycles and show as confusing "No date" rows. Visits that have been
+    // checked-in or completed ARE shown even without scheduledStart.
     const rows = await db
       .select()
       .from(jobVisits)
@@ -118,7 +122,13 @@ export class JobVisitsRepository extends BaseRepository {
           eq(jobVisits.companyId, companyId),
           eq(jobVisits.jobId, jobId),
           // NO isActive filter - include all for history
-          isNull(jobVisits.archivedAt) // Exclude archived visits (2026-03-05)
+          isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
+          // Exclude empty placeholders: must have a scheduled date OR some activity
+          or(
+            isNotNull(jobVisits.scheduledStart),
+            isNotNull(jobVisits.checkedInAt),
+            eq(jobVisits.status, 'completed'),
+          ),
         )
       )
       .orderBy(

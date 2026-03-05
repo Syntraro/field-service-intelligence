@@ -20,6 +20,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### Day View All-Day Strip Relocation + DnD Simplification (2026-03-05)
+- **Problem:** Sticky all-day lane above timed grid caused overlapping droppable rects, making timed<->all-day DnD unreliable (RC-1, RC-2 from diagnostic)
+- **Fix:** Moved all-day items into an assignment strip inside each technician's column header; removed the separate sticky all-day lane entirely
+- Removed sticky overlap collision disambiguation in `Calendar.tsx` (no longer needed — zones don't overlap)
+- Removed TimeRail "Anytime" row (all-day strip is now per-column)
+- Updated nowLineTop and auto-scroll calculations to remove old `ALLDAY_LANE_HEIGHT` offset
+- Day Rows view unchanged (already uses side-strip layout)
+- All DnD paths preserved: timed<->timed, timed<->all-day strip, all-day strip<->different tech, sidebar drops
+- Files changed: `CalendarGridDayJobber.tsx`, `Calendar.tsx`
+
+#### Placeholder Visits Cleanup (2026-03-05)
+- **Problem:** Placeholder visits (scheduledStart NULL) from unschedule/reschedule cycles appeared as "No date" rows on Job Detail page
+- **Fix 1 — Proactive archive:** `server/storage/calendar.ts` `scheduleJob()` now archives all other visits with `scheduledStart IS NULL` for the same job after a real visit is created/updated
+- **Fix 2 — Defensive filter:** `server/storage/jobVisits.ts` `listAllJobVisitsForJob()` excludes empty placeholders — only shows visits with a scheduled date, check-in activity, or completed status
+- **Safety:** Archive-only approach (sets `archivedAt`), no hard deletes
+- Files changed: `server/storage/calendar.ts`, `server/storage/jobVisits.ts`
+
 #### Day View DnD Bug Fixes (2026-03-05)
 
 **Fix #1 (P0): Modal no longer opens after dragging all-day items**

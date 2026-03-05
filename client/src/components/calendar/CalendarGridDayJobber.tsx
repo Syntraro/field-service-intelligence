@@ -302,9 +302,11 @@ function TechColumn({
 
   return (
     <div className="flex flex-col border-r flex-shrink-0" style={{ minWidth: MIN_TECH_COLUMN_WIDTH }}>
-      {/* Header cell - sticky — enhanced with day summary (Calendar Improvement 2026-03-05) */}
+      {/* 2026-03-05: Merged header + all-day strip into a single sticky header.
+          Removes the old sticky all-day lane that overlapped timed grid drop zones,
+          eliminating the source of timed<->all-day DnD collision ambiguity. */}
       <div
-        className="sticky top-0 z-30 bg-background border-b px-2 py-1.5 text-center flex flex-col items-center justify-center"
+        className="sticky top-0 z-30 bg-background border-b px-2 py-1.5 flex flex-col items-center"
         style={{ minHeight: HEADER_HEIGHT }}
       >
         <div className="flex items-center justify-center gap-1.5">
@@ -314,16 +316,9 @@ function TechColumn({
           <span className="text-sm font-medium truncate max-w-[100px]">{technicianName}</span>
         </div>
         <TechLaneHeader summary={techSummary} />
-      </div>
-
-      {/* All-day lane - sticky */}
-      <div
-        className="sticky bg-background z-20 border-b"
-        style={{ top: HEADER_HEIGHT, height: ALLDAY_LANE_HEIGHT }}
-      >
+        {/* All-day assignment strip — inline in header, droppable */}
         <AllDayDropZone technicianId={technicianId} dateKey={dateKey}>
-          <div className="flex flex-wrap gap-1 overflow-hidden h-full">
-            {/* 2026-03-05: Wrapped with DraggableAllDayCard for DnD between lanes */}
+          <div className="flex flex-wrap gap-1 overflow-hidden w-full max-h-[48px]">
             {allDayEvents.slice(0, 3).map((event) => {
               const client = findClientByEvent(clients, event);
               const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
@@ -455,20 +450,12 @@ function TimeRail({ density, timeFormat, startHour }: TimeRailProps) {
 
   return (
     <div className="flex flex-col border-r bg-muted/20" style={{ width: TIME_RAIL_WIDTH }}>
-      {/* Header corner */}
+      {/* Header corner — 2026-03-05: Removed separate Anytime row; all-day strip is now in each column header */}
       <div
         className="sticky top-0 z-30 bg-background border-b flex items-center justify-center text-xs font-medium text-muted-foreground"
         style={{ height: HEADER_HEIGHT }}
       >
         Time
-      </div>
-
-      {/* Anytime label */}
-      <div
-        className="sticky bg-primary/10 z-20 border-b flex items-center justify-center text-[10px] font-semibold"
-        style={{ top: HEADER_HEIGHT, height: ALLDAY_LANE_HEIGHT }}
-      >
-        Anytime
       </div>
 
       {/* Hour labels */}
@@ -571,7 +558,8 @@ export function CalendarGridDayJobber({
         scrollToMinutes = 480; // 8 AM default
       }
 
-      const scrollPosition = (scrollToMinutes / 60) * rowHeight + HEADER_HEIGHT + ALLDAY_LANE_HEIGHT;
+      // 2026-03-05: Removed ALLDAY_LANE_HEIGHT — all-day strip is inside header now
+      const scrollPosition = (scrollToMinutes / 60) * rowHeight + HEADER_HEIGHT;
 
       requestAnimationFrame(() => {
         if (scrollContainerRef.current) {
@@ -588,7 +576,8 @@ export function CalendarGridDayJobber({
   const currentMinutes = now.getHours() * 60 + now.getMinutes();
   const rowHeight = DENSITY_STYLES[density].rowHeight;
   const pxPerMinute = rowHeight / 60;
-  const nowLineTop = HEADER_HEIGHT + ALLDAY_LANE_HEIGHT + currentMinutes * pxPerMinute;
+  // 2026-03-05: Removed ALLDAY_LANE_HEIGHT offset — all-day strip is now inside the header
+  const nowLineTop = HEADER_HEIGHT + currentMinutes * pxPerMinute;
 
   // DEV badge for business hours
   const devBusinessHoursBadge = useMemo(() => {
