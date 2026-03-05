@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Investigation
+
+#### Day View Layout Root-Cause Phase 2 (2026-03-05)
+- **Investigation report:** `docs/DAY_VIEW_LAYOUT_ROOT_CAUSE_2.md` — 4 root causes identified, 6 suspects cleared
+- **RC1 (HIGH):** Per-column header height variance — all-day events + TechLaneHeader make sticky headers different heights per tech column, misaligning droppable rects across columns
+- **RC2 (HIGH):** Only one column's header measured via `headerRef` — now-line and auto-scroll use potentially wrong offset
+- **RC3 (MEDIUM):** `closestCenter` fallback in collision detection picks off-screen droppables when `pointerWithin` misses
+- **Debug instrumentation extended:** Full ancestor chain walk, per-column header audit, droppable spot-checks, DnD collision logging — all gated behind `?debugLayout=1`
+- **Files (debug-only changes):** `CalendarGridDayJobber.tsx`, `CalendarGridDayRows.tsx`, `CalendarGridWeek.tsx`, `Calendar.tsx`
+
 ### Changed
 
 #### Canonical EditVisitModal — Component Unification (2026-03-05)

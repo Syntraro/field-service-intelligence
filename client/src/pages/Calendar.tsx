@@ -1788,6 +1788,9 @@ export default function Calendar() {
       }
     }
 
+    // Task F: debug collision detection — gated behind ?debugLayout=1
+    const debugDnD = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get("debugLayout") === "1";
+
     // Prefer pointerWithin for small (15-min) drop zones
     const pointerCollisions = pointerWithin({
       ...args,
@@ -1798,6 +1801,14 @@ export default function Calendar() {
       // 2026-03-05: Sticky all-day lane overlap disambiguation removed.
       // All-day strip is now inside column headers (Columns view) or a side cell
       // (Rows view), so allday| and daily| droppables no longer overlap.
+      if (debugDnD) {
+        const top5 = pointerCollisions.slice(0, 5).map(c => {
+          const container = dropZoneContainers.find(dc => dc.id === c.id);
+          const rect = container?.rect?.current;
+          return { id: c.id, rect: rect ? { top: Math.round(rect.top), bottom: Math.round(rect.bottom), left: Math.round(rect.left), right: Math.round(rect.right) } : null };
+        });
+        console.log('[debugLayout:DnD] pointerWithin hit:', { activeId: args.active?.id, pointerCoords: args.pointerCoordinates, scrollTop: document.querySelector('.overflow-auto')?.scrollTop, top5 });
+      }
       return pointerCollisions;
     }
 
@@ -1808,14 +1819,26 @@ export default function Calendar() {
     });
 
     if (rectCollisions.length > 0) {
+      if (debugDnD) {
+        console.log('[debugLayout:DnD] rectIntersection fallback:', { count: rectCollisions.length, first: rectCollisions[0]?.id });
+      }
       return rectCollisions;
     }
 
     // Final fallback to closestCenter
-    return closestCenter({
+    const centerCollisions = closestCenter({
       ...args,
       droppableContainers: dropZoneContainers,
     });
+    if (debugDnD && centerCollisions.length > 0) {
+      const top5 = centerCollisions.slice(0, 5).map(c => {
+        const container = dropZoneContainers.find(dc => dc.id === c.id);
+        const rect = container?.rect?.current;
+        return { id: c.id, rect: rect ? { top: Math.round(rect.top), bottom: Math.round(rect.bottom) } : null };
+      });
+      console.log('[debugLayout:DnD] closestCenter FALLBACK:', { activeId: args.active?.id, pointerCoords: args.pointerCoordinates, top5 });
+    }
+    return centerCollisions;
   }, []);
 
   // OPTIMIZED: 2026-01-30 - Memoized renderItem to prevent sidebar rerenders during drag

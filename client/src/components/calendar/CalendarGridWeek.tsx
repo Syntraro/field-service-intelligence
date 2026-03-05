@@ -364,22 +364,48 @@ export function CalendarGridWeek({
   onUnschedule,
   regional,
 }: CalendarGridWeekProps) {
-  // Phase C: Debug layout instrumentation — gated behind ?debugLayout=1
+  // Phase C + Phase 2: Debug layout instrumentation — gated behind ?debugLayout=1
   useLayoutEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("debugLayout") !== "1") return;
     const el = weeklyScrollContainerRef?.current;
     if (!el) return;
-    const rect = el.getBoundingClientRect();
-    console.log("[debugLayout] Week scroll container:", {
-      rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
-      scrollHeight: el.scrollHeight,
-      clientHeight: el.clientHeight,
-      scrollWidth: el.scrollWidth,
-      clientWidth: el.clientWidth,
-      overflow: getComputedStyle(el).overflow,
-      parentRect: el.parentElement?.getBoundingClientRect(),
+
+    // Helper: snapshot a DOM node's layout metrics
+    const snap = (node: HTMLElement, label: string) => {
+      const r = node.getBoundingClientRect();
+      const cs = getComputedStyle(node);
+      return {
+        label,
+        tag: node.tagName,
+        className: node.className?.slice(0, 80),
+        rect: { top: Math.round(r.top), bottom: Math.round(r.bottom), height: Math.round(r.height), width: Math.round(r.width) },
+        overflowX: cs.overflowX,
+        overflowY: cs.overflowY,
+        computedHeight: cs.height,
+        computedMaxHeight: cs.maxHeight,
+        scrollHeight: node.scrollHeight,
+        clientHeight: node.clientHeight,
+      };
+    };
+
+    // Walk ancestor chain up to h-screen root
+    const chain: ReturnType<typeof snap>[] = [];
+    let cursor: HTMLElement | null = el;
+    let depth = 0;
+    while (cursor && depth < 10) {
+      chain.push(snap(cursor, depth === 0 ? "scrollContainer" : `ancestor-${depth}`));
+      if (cursor.classList.contains("h-screen")) break;
+      cursor = cursor.parentElement;
+      depth++;
+    }
+
+    console.log("[debugLayout] Week FULL CHAIN (baseline):", {
+      windowInnerHeight: window.innerHeight,
+      windowInnerWidth: window.innerWidth,
+      chain,
     });
+
     el.style.outline = "2px solid green";
     el.style.outlineOffset = "-2px";
   });

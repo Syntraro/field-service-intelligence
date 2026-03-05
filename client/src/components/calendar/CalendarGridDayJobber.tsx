@@ -528,22 +528,75 @@ export function CalendarGridDayJobber({
     return () => { headerObserverRef.current?.disconnect(); };
   }, []);
 
-  // Phase C: Debug layout instrumentation — gated behind ?debugLayout=1
+  // Phase C + Phase 2: Debug layout instrumentation — gated behind ?debugLayout=1
   useLayoutEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("debugLayout") !== "1") return;
     const el = scrollContainerRef.current;
     if (!el) return;
-    const rect = el.getBoundingClientRect();
-    console.log("[debugLayout] DayJobber scroll container:", {
-      rect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
-      scrollHeight: el.scrollHeight,
-      clientHeight: el.clientHeight,
-      scrollWidth: el.scrollWidth,
-      clientWidth: el.clientWidth,
-      overflow: getComputedStyle(el).overflow,
-      parentRect: el.parentElement?.getBoundingClientRect(),
+
+    // Helper: snapshot a DOM node's layout metrics
+    const snap = (node: HTMLElement, label: string) => {
+      const r = node.getBoundingClientRect();
+      const cs = getComputedStyle(node);
+      return {
+        label,
+        tag: node.tagName,
+        className: node.className?.slice(0, 80),
+        rect: { top: Math.round(r.top), bottom: Math.round(r.bottom), height: Math.round(r.height), width: Math.round(r.width) },
+        overflowX: cs.overflowX,
+        overflowY: cs.overflowY,
+        computedHeight: cs.height,
+        computedMaxHeight: cs.maxHeight,
+        scrollHeight: node.scrollHeight,
+        clientHeight: node.clientHeight,
+      };
+    };
+
+    // Walk ancestor chain up to h-screen root (max 10 levels)
+    const chain: ReturnType<typeof snap>[] = [];
+    let cursor: HTMLElement | null = el;
+    let depth = 0;
+    while (cursor && depth < 10) {
+      chain.push(snap(cursor, depth === 0 ? "scrollContainer" : `ancestor-${depth}`));
+      if (cursor.classList.contains("h-screen")) break;
+      cursor = cursor.parentElement;
+      depth++;
+    }
+
+    // Per-column header height audit (Task D)
+    const columnHeaders = el.querySelectorAll<HTMLElement>('[class*="sticky"][class*="top-0"][class*="z-30"]');
+    const headerHeights: { idx: number; offsetHeight: number; top: number; bottom: number }[] = [];
+    columnHeaders.forEach((hdr, idx) => {
+      const hr = hdr.getBoundingClientRect();
+      headerHeights.push({ idx, offsetHeight: hdr.offsetHeight, top: Math.round(hr.top), bottom: Math.round(hr.bottom) });
     });
+
+    // Droppable rect spot-check (Task E): pick 3 hours for first tech column
+    const droppableCheck: { id: string; top: number; bottom: number; height: number }[] = [];
+    for (const targetHour of [8, 12, 16]) {
+      const firstTechCol = el.querySelector<HTMLElement>('.flex.flex-col.border-r');
+      if (firstTechCol) {
+        const hourSlots = firstTechCol.querySelectorAll<HTMLElement>(':scope > div:last-child > div.relative.border-b');
+        if (hourSlots[targetHour]) {
+          const hr = hourSlots[targetHour].getBoundingClientRect();
+          droppableCheck.push({ id: `hour-${targetHour}`, top: Math.round(hr.top), bottom: Math.round(hr.bottom), height: Math.round(hr.height) });
+        }
+      }
+    }
+
+    console.log("[debugLayout] DayJobber FULL CHAIN:", {
+      windowInnerHeight: window.innerHeight,
+      windowInnerWidth: window.innerWidth,
+      chain,
+      headerPxMeasured: headerPx,
+      perColumnHeaders: headerHeights,
+      headerHeightVariance: headerHeights.length > 1
+        ? Math.max(...headerHeights.map(h => h.offsetHeight)) - Math.min(...headerHeights.map(h => h.offsetHeight))
+        : 0,
+      droppableSpotCheck: droppableCheck,
+    });
+
     el.style.outline = "2px solid red";
     el.style.outlineOffset = "-2px";
   });
