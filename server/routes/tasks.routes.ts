@@ -10,6 +10,7 @@ import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
+import { emitDispatch } from "../lib/dispatchBus";
 import { IS_DEV } from "../utils/devFlags";
 
 const router = Router();
@@ -111,6 +112,7 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
     });
 
     if (IS_DEV) console.log("[TASKS_DIAG] POST /api/tasks created:", { id: task.id, type: task.type });
+    emitDispatch(companyId, { scope: "calendar", entityType: "task", entityId: task.id, ts: new Date().toISOString() });
     res.json(task);
   } catch (error: any) {
     if (error.statusCode || error.status) throw error;
@@ -174,6 +176,8 @@ router.post("/:id/assign", requireRole(MANAGER_ROLES), asyncHandler(async (req: 
 
   const validated = validateSchema(assignTaskSchema, req.body);
   const task = await service.assignTask(companyId, req.params.id, validated.assignedToUserId ?? null);
+  // Hardening: Emit dispatch signal for task assignment change
+  emitDispatch(companyId, { scope: "calendar", entityType: "task", entityId: req.params.id, ts: new Date().toISOString() });
 
   res.json(task);
 }));
@@ -210,6 +214,7 @@ router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
     summary: `Task completed: ${(task as any).title || req.params.id}`,
     meta: { taskId: req.params.id, closedBy: validated.userId },
   });
+  emitDispatch(companyId, { scope: "calendar", entityType: "task", entityId: req.params.id, ts: new Date().toISOString() });
 
   res.json(task);
 }));
@@ -218,6 +223,8 @@ router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
 router.post("/:id/reopen", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
   const task = await service.reopenTask(companyId, req.params.id);
+  // Hardening: Emit dispatch signal for task reopen
+  emitDispatch(companyId, { scope: "calendar", entityType: "task", entityId: req.params.id, ts: new Date().toISOString() });
 
   res.json(task);
 }));
@@ -226,6 +233,7 @@ router.post("/:id/reopen", requireRole(MANAGER_ROLES), asyncHandler(async (req: 
 router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
   const result = await service.deleteTask(companyId, req.params.id);
+  emitDispatch(companyId, { scope: "calendar", entityType: "task", entityId: req.params.id, ts: new Date().toISOString() });
 
   res.json(result);
 }));
@@ -246,6 +254,7 @@ router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authed
 
   const task = await service.updateTask(companyId, req.params.id, updates);
   if (IS_DEV) console.log("[TASKS_DIAG] PATCH /api/tasks/" + req.params.id + " updated:", { id: task.id, scheduledStartAt: task.scheduledStartAt });
+  emitDispatch(companyId, { scope: "calendar", entityType: "task", entityId: req.params.id, ts: new Date().toISOString() });
 
   res.json(task);
 }));

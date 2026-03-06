@@ -4,6 +4,75 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-03-06: Real-Time Dispatch Freshness — Phase 1
+
+### Architecture Decision: SSE Over WebSocket
+SSE chosen because dispatch freshness is unidirectional (server→client). All mutations already go through REST with CSRF protection. SSE uses existing session cookies automatically, auto-reconnects via `EventSource`, and works through all HTTP proxies. WebSocket adds bidirectional overhead for no current benefit.
+
+### Architecture Decision: Emit from Mutations, Not from logEvent()
+Freshness signals are emitted from successful mutation handlers, not from `logEventAsync()`. This ensures:
+- Signals fire only after DB writes succeed (not on failed mutations)
+- No coupling between the event log feature and the real-time feature
+- No risk of signal without data change (logEvent failures are swallowed)
+
+### Event Flow
+```
+Mutation handler (e.g., reschedule visit)
+  ├─► DB write (calendarRepository.rescheduleVisit)
+  ├─► logEventAsync() ──► INSERT into events table (fire-and-forget)
+  ├─► emitDispatch(tenantId, signal) ──► in-process EventEmitter
+  │     └─► All SSE connections for that tenant receive signal
+  │           └─► Client: invalidateForSignal() → TanStack refetches
+  └─► res.json() to calling client
+        └─► Local TanStack invalidation (existing behavior, unchanged)
+```
+
+### Invalidation Mapping
+| SSE Signal | Client Query Keys Invalidated |
+|---|---|
+| Any `scope: "calendar"` | `/api/calendar` (broad), `/api/calendar/unscheduled`, `/api/calendar/needs-follow-up`, `/api/activity/dispatch/*` |
+| `entityType: "task"` | Above + `/api/tasks` |
+
+### Mutation Sites Emitting Signals
+| Route | Handler | Signal |
+|---|---|---|
+| `POST /api/calendar/schedule` | Schedule job | `calendar, job, jobId` |
+| `PATCH /api/calendar/schedule/:jobId` | Reschedule job | `calendar, job, jobId` |
+| `POST /api/calendar/unschedule/:jobId` | Unschedule job | `calendar, job, jobId` |
+| `PATCH /api/calendar/visit/:visitId/reschedule` | Reschedule visit | `calendar, visit, visitId` |
+| `POST /api/calendar/visit/:visitId/unschedule` | Unschedule visit | `calendar, visit, visitId` |
+| `POST /api/calendar/visit/:visitId/resize` | Resize visit | `calendar, visit, visitId` |
+| `POST /api/tasks` | Create task | `calendar, task, taskId` |
+| `PATCH /api/tasks/:id` | Update task | `calendar, task, taskId` |
+| `POST /api/tasks/:id/close` | Close task | `calendar, task, taskId` |
+| `DELETE /api/tasks/:id` | Delete task | `calendar, task, taskId` |
+
+### Three Freshness Tiers
+| Tier | Mechanism | Status |
+|---|---|---|
+| Local (same tab) | TanStack `invalidateQueries` in mutation `onSuccess` | Existing — unchanged |
+| Cross-tab (same user) | `BroadcastChannel("dispatch-freshness")` | New — Phase 1 |
+| Multi-user (different users) | SSE `GET /api/dispatch/stream` | New — Phase 1 |
+
+### Phase 1 Limitations (Intentionally Deferred)
+- **Single-instance only:** In-process EventEmitter does not sync across multiple server instances. Phase 2 replaces with Redis pub/sub.
+- **No GPS streaming:** Technician live positions still use 15s polling. Sharing the SSE connection for GPS is a Phase 3 concern.
+- **No notification push:** `/api/notifications` still poll-based. Can share SSE channel in future.
+- **No presence/cursors:** Would require WebSocket (bidirectional). Phase 4 if needed.
+- **Broad invalidation:** All signals invalidate the same set of calendar query keys. Fine-grained key targeting (e.g., only invalidate the specific date range) deferred.
+- **No jitter on refetch:** Multiple connected clients all refetch simultaneously on signal. TanStack deduplicates in-flight requests per tab, but cross-client thundering herd is unmitigated. Acceptable at current scale (<20 concurrent dispatchers).
+
+### Files
+- `server/lib/dispatchBus.ts` — NEW: In-process pub/sub (EventEmitter, tenant-keyed)
+- `server/routes/dispatch-stream.ts` — NEW: SSE endpoint with heartbeat
+- `client/src/hooks/useDispatchStream.ts` — NEW: SSE + BroadcastChannel hook
+- `server/routes/calendar.ts` — MODIFIED: 6 mutation handlers emit signals
+- `server/routes/tasks.routes.ts` — MODIFIED: 4 mutation handlers emit signals
+- `server/routes/index.ts` — MODIFIED: register dispatch stream route
+- `client/src/pages/Calendar.tsx` — MODIFIED: mount `useDispatchStream()`
+
+---
+
 ## 2026-03-06: Recent Activity Timeline in DispatchDetailPanel (Pass 6)
 
 ### Event Source Chosen

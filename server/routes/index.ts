@@ -66,6 +66,8 @@ import attentionRouter from "./attention";
 import routesRouter from "./routes";
 // Phase 4B: Technician telemetry (GPS pings)
 import telemetryRouter from "./telemetry";
+// Real-time dispatch freshness (SSE stream)
+import dispatchStreamRouter from "./dispatch-stream";
 // Phase 5: Visit intelligence signals
 import intelligenceRouter from "./intelligence";
 // Dispatch map aggregator
@@ -261,6 +263,9 @@ export function registerRoutes(app: Express): Server {
 
   // Phase 4B: Technician telemetry (GPS pings)
   app.use("/api/telemetry", telemetryRouter);
+
+  // Real-time dispatch freshness (SSE stream)
+  app.use("/api/dispatch", dispatchStreamRouter);
 
   // Phase 5: Visit intelligence signals
   app.use("/api/intelligence", intelligenceRouter);

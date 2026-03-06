@@ -225,14 +225,13 @@ export function DispatchDetailPanel({
   }, [techIds, technicians]);
 
   // Recent activity timeline (2026-03-06: Pass 6 — dispatch panel timeline)
+  // Uses default getQueryFn (credentials: 'include') via full-URL queryKey pattern.
+  const activityUrl = open && jobId && visitId
+    ? `/api/activity/dispatch/${jobId}/${visitId}?limit=6`
+    : null;
   const activityQuery = useQuery<{ items: ActivityEvent[] }>({
-    queryKey: ["/api/activity/dispatch", jobId, visitId],
-    queryFn: async () => {
-      const res = await fetch(`/api/activity/dispatch/${jobId}/${visitId}?limit=6`);
-      if (!res.ok) return { items: [] };
-      return res.json();
-    },
-    enabled: open && !!jobId && !!visitId,
+    queryKey: [activityUrl],
+    enabled: !!activityUrl,
     staleTime: 30_000,
   });
 
@@ -278,6 +277,7 @@ export function DispatchDetailPanel({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
+      if (activityUrl) queryClient.invalidateQueries({ queryKey: [activityUrl] });
       toast({ title: "Rescheduled", description: "Visit has been rescheduled." });
       setEditingSchedule(false);
     },
@@ -297,6 +297,7 @@ export function DispatchDetailPanel({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/needs-follow-up"] });
+      if (activityUrl) queryClient.invalidateQueries({ queryKey: [activityUrl] });
       toast({ title: "Unscheduled", description: "Visit removed from calendar." });
       onOpenChange(false);
     },
@@ -315,6 +316,7 @@ export function DispatchDetailPanel({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
+      if (activityUrl) queryClient.invalidateQueries({ queryKey: [activityUrl] });
       toast({ title: "Notes saved" });
       setEditingNotes(false);
     },

@@ -51,6 +51,7 @@ import { useCalendarDaySummary, type TechDaySummary } from "@/hooks/useCalendarD
 import { JobCard } from "@/components/calendar/JobCard";
 import { SuggestSlotDialog } from "@/components/calendar/SuggestSlotDialog";
 import { DispatchDetailPanel, type DispatchPanelData } from "@/components/calendar/DispatchDetailPanel";
+import { useDispatchStream } from "@/hooks/useDispatchStream";
 
 // ============================================================================
 // Safe Array Normalization Utility
@@ -178,6 +179,9 @@ export default function Calendar() {
     alertsOnly,
     toggleAlertsOnly,
   } = useCalendarState();
+
+  // Real-time dispatch freshness via SSE + BroadcastChannel
+  useDispatchStream();
 
   // Regional settings (timezone, date/time format, week start) from company settings
   const regional = useCompanyRegionalSettings();

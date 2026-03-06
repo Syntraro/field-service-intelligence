@@ -41,6 +41,7 @@ import { logEventAsync } from "../lib/events";
 import { recomputeAttentionForEntity } from "../lib/attentionRules";
 // Phase 4 Step A5: Canonical jobs feed module
 import { getQueryCtx } from "../lib/queryCtx";
+import { emitDispatch } from "../lib/dispatchBus";
 import { getJobsFeed, getJobHeader } from "../storage/jobsFeed";
 import type { JobFeedFilters } from "../storage/jobsFeed";
 
@@ -642,6 +643,8 @@ router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
       });
     }
     recomputeAttentionForEntity(companyId, "job", jobId).catch(() => {});
+    // Hardening: Emit dispatch signal for job close/archive
+    emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: jobId, ts: new Date().toISOString() });
 
     res.json({
       job: updatedJob,
@@ -726,6 +729,8 @@ router.post("/:id/reopen", requireRole(MANAGER_ROLES), asyncHandler(async (req: 
       meta: { jobNumber: updatedJob.jobNumber, targetOpenSubStatus },
     });
     recomputeAttentionForEntity(companyId, "job", jobId).catch(() => {});
+    // Hardening: Emit dispatch signal for job reopen
+    emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: jobId, ts: new Date().toISOString() });
 
     res.json({ job: updatedJob });
   } catch (error: any) {

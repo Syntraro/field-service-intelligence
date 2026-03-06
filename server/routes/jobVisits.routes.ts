@@ -12,6 +12,7 @@ import { jobVisitStatusEnum } from "../../shared/schema";
 import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
 import { storage } from "../storage/index";
+import { emitDispatch } from "../lib/dispatchBus";
 
 const router = Router();
 
@@ -97,6 +98,9 @@ router.post(
       validated
     );
 
+    // Technician-originated dispatch signal: new visit may appear on calendar
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visit.id, ts: new Date().toISOString() });
+
     res.status(201).json(visit);
   })
 );
@@ -150,6 +154,9 @@ router.patch(
         throw createError(404, "Visit not found");
       }
 
+      // Technician-originated dispatch signal: visit fields changed
+      emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: req.params.visitId, ts: new Date().toISOString() });
+
       res.json(updated);
     } catch (error: any) {
       if (error.message?.includes("modified by another user")) {
@@ -180,6 +187,10 @@ router.delete(
     }
 
     const result = await service.deleteJobVisit(companyId, req.params.visitId);
+
+    // Technician-originated dispatch signal: visit removed from calendar
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: req.params.visitId, ts: new Date().toISOString() });
+
     res.json(result);
   })
 );
@@ -230,6 +241,9 @@ router.post(
       });
     }
 
+    // Technician-originated dispatch signal: visit status dot/checkmark changes on board
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: req.params.visitId, ts: new Date().toISOString() });
+
     res.json(updated);
   })
 );
@@ -253,6 +267,9 @@ router.post(
       meta: { jobId: req.params.jobId, trigger: "check-in" },
     });
 
+    // Technician-originated dispatch signal: on_site status dot appears on board
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: req.params.visitId, ts: new Date().toISOString() });
+
     res.json(visit);
   })
 );
@@ -275,6 +292,9 @@ router.post(
       summary: `Technician checked out from visit (job ${req.params.jobId})`,
       meta: { jobId: req.params.jobId, trigger: "check-out" },
     });
+
+    // Technician-originated dispatch signal: completed checkmark appears on board
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: req.params.visitId, ts: new Date().toISOString() });
 
     res.json(visit);
   })
@@ -305,6 +325,9 @@ router.post(
       meta: { jobId, visitId },
     });
 
+    // Technician-originated dispatch signal: refreshes activity timeline in open panel
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visitId, ts: new Date().toISOString() });
+
     res.json({ success: true, event: "tech.arrived" });
   })
 );
@@ -333,6 +356,9 @@ router.post(
       summary: `Technician departed from site (job ${jobId})`,
       meta: { jobId, visitId },
     });
+
+    // Technician-originated dispatch signal: refreshes activity timeline in open panel
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visitId, ts: new Date().toISOString() });
 
     res.json({ success: true, event: "tech.departed" });
   })
@@ -373,6 +399,9 @@ router.post(
         archivedReason: reason || null,
       }
     );
+
+    // Technician-originated dispatch signal: archived visit removed from active calendar
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visitId, ts: new Date().toISOString() });
 
     res.json(updated);
   })

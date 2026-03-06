@@ -8,6 +8,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Technician-Originated Live Dispatch Signals (2026-03-06)
+- **Visit mutation freshness:** All 9 write endpoints in `jobVisits.routes.ts` now emit dispatch signals via `emitDispatch()`. When technicians change visit status, check in/out, arrive/depart, or when visits are created/updated/deleted/archived, dispatcher boards refresh in near real time.
+- **Board-visible signals:** Status changes (scheduled → in_progress → on_site → completed) update status dots and checkmarks on calendar cards. Create/delete/archive add or remove cards.
+- **Activity-only signals:** `tech.arrived` and `tech.departed` refresh the dispatch panel's activity timeline without changing calendar card rendering.
+- **No client changes needed:** Existing `invalidateForSignal()` already handles `entityType: "visit"` signals with broad prefix matching on `/api/calendar`, `/api/calendar/unscheduled`, `/api/calendar/needs-follow-up`, `/api/calendar/day-summary`, and `/api/activity/dispatch/*`.
+- **Files modified:** `server/routes/jobVisits.routes.ts`
+
+#### Real-Time Dispatch Freshness — Hardening (2026-03-06)
+- **Expanded mutation coverage:** Added emitDispatch to 5 previously uncovered mutation paths: legacy job resize (`calendar.ts`), job close/archive (`jobs.ts`), job reopen (`jobs.ts`), task assign (`tasks.routes.ts`), task reopen (`tasks.routes.ts`).
+- **Day-summary invalidation:** Added `/api/calendar/day-summary` to client-side `invalidateForSignal()` so day view counts refresh on SSE signals.
+- **Idempotent SSE cleanup:** Added guard to `dispatch-stream.ts` cleanup function to prevent double-cleanup when both `close` and `error` events fire.
+- **Files modified:** `server/routes/calendar.ts`, `server/routes/jobs.ts`, `server/routes/tasks.routes.ts`, `client/src/hooks/useDispatchStream.ts`, `server/routes/dispatch-stream.ts`
+
+#### Real-Time Dispatch Freshness — Phase 1 (2026-03-06)
+- **SSE-based multi-user live updates:** Dispatch board now receives real-time invalidation signals via Server-Sent Events. When any dispatcher reschedules, assigns, unschedules, or completes a visit, all other connected dispatchers see the updated board within ~1 second.
+- **In-process dispatch bus:** New `server/lib/dispatchBus.ts` provides tenant-scoped pub/sub via Node.js EventEmitter. Signals are emitted from successful mutation handlers (not from event logging), ensuring they fire only after DB success.
+- **SSE endpoint:** `GET /api/dispatch/stream` sends `dispatch` events with tiny invalidation payloads (`{scope, entityType, entityId, ts}`). Includes 30s heartbeat to prevent proxy timeouts. Auto-reconnect with exponential backoff on client side.
+- **Cross-tab freshness:** `BroadcastChannel` syncs invalidation across same-user tabs with zero server involvement.
+- **Mutation coverage:** Calendar schedule, reschedule (job + visit), unschedule (job + visit), resize, and task create/update/close/delete all emit dispatch signals.
+- **Signal-only architecture:** SSE carries invalidation hints, not DTOs. Clients refetch via existing REST endpoints, preserving the visit-centric read model.
+- **New files:** `server/lib/dispatchBus.ts`, `server/routes/dispatch-stream.ts`, `client/src/hooks/useDispatchStream.ts`
+- **Modified files:** `server/routes/calendar.ts`, `server/routes/tasks.routes.ts`, `server/routes/index.ts`, `client/src/pages/Calendar.tsx`
+
 #### Dispatch Detail Panel (2026-03-06)
 - **Right-side panel for visit events:** Clicking a calendar visit event now opens a compact right-side Sheet panel instead of the full-screen JobDetailDialog. Panel is non-modal — calendar remains interactive while panel is open.
 - **Panel header:** Shows company name, Job # badge, Visit # badge, summary, and status badges (completed, visit status, outcome with amber styling for needs_parts/needs_followup).
@@ -20,6 +43,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Panel state:** Only one panel open at a time. Clicking different event updates content. Closing clears selection. `modal={false}` prevents overlay from blocking calendar.
 - **New component:** `DispatchDetailPanel.tsx` in `client/src/components/calendar/`
 - **Files modified:** `DispatchDetailPanel.tsx` (new), `Calendar.tsx`
+
+#### Recent Activity Timeline — Auth & Invalidation Fix (2026-03-06)
+- **Fixed auth bug:** Activity query used raw `fetch()` without `credentials: 'include'`, causing silent 401 failures behind session-cookie auth. Replaced with the app's default `getQueryFn` via full-URL `queryKey` pattern.
+- **Added query invalidation:** Reschedule, unschedule, and notes-save mutations now invalidate the dispatch activity query so the timeline refreshes after local changes.
+- **Files modified:** `DispatchDetailPanel.tsx`
 
 #### Recent Activity Timeline in Panel (2026-03-06)
 - **Compact dispatch timeline:** DispatchDetailPanel now shows the 6 most recent activity events for the current job + visit, with relative timestamps and severity-colored dots.

@@ -22,6 +22,7 @@ import type { AuthedRequest } from "../auth/tenantIsolation";
 import type { CalendarJobWithDetails } from "../storage/calendar";
 // Phase 1 Architecture: Event Log + Attention Queue
 import { logEventAsync } from "../lib/events";
+import { emitDispatch } from "../lib/dispatchBus";
 import { recomputeAttentionForEntity } from "../lib/attentionRules";
 import { getQueryCtx } from "../lib/queryCtx";
 import type { CalendarEventDto, CalendarRangeResponseDto } from "@shared/types/calendar";
@@ -480,6 +481,7 @@ router.post(
       meta: { jobNumber: result.jobNumber, technicianUserId: data.technicianUserId },
     });
     recomputeAttentionForEntity(companyId, "job", data.jobId).catch(() => {});
+    emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: data.jobId, ts: new Date().toISOString() });
 
     res.status(201).json({
       id: result.id,
@@ -590,6 +592,7 @@ router.patch(
       meta: { jobNumber: result.jobNumber, technicianUserId: data.technicianUserId },
     });
     recomputeAttentionForEntity(companyId, "job", jobId).catch(() => {});
+    emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: jobId, ts: new Date().toISOString() });
 
     // Version is NOT NULL DEFAULT 1 in DB - never null after write
     res.json({
@@ -647,6 +650,7 @@ router.post(
       meta: { jobNumber: result.jobNumber },
     });
     recomputeAttentionForEntity(companyId, "job", jobId).catch(() => {});
+    emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: jobId, ts: new Date().toISOString() });
 
     // Version is NOT NULL DEFAULT 1 in DB - never null after write
     res.json({
@@ -846,6 +850,9 @@ router.post(
       );
     }
 
+    // Hardening: Emit dispatch signal for legacy resize path
+    emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: job.id, ts: new Date().toISOString() });
+
     // Return response matching existing API contract
     res.json({
       id: updatedJob?.id,
@@ -932,6 +939,7 @@ router.patch(
       meta: { visitId, jobNumber: result.jobNumber, technicianUserId: data.technicianUserId },
     });
     recomputeAttentionForEntity(companyId, "job", result.id!).catch(() => {});
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visitId, ts: new Date().toISOString() });
 
     res.json({
       id: result.id,
@@ -983,6 +991,7 @@ router.post(
       meta: { visitId, jobNumber: result.jobNumber },
     });
     recomputeAttentionForEntity(companyId, "job", result.id!).catch(() => {});
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visitId, ts: new Date().toISOString() });
 
     res.json({
       success: true,
@@ -1025,6 +1034,8 @@ router.post(
     if (!result) {
       throw createError(404, "Visit not found or access denied");
     }
+
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visitId, ts: new Date().toISOString() });
 
     res.json({
       id: result.id,
