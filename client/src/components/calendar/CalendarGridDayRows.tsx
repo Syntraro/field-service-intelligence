@@ -73,6 +73,8 @@ export interface CalendarGridDayRowsProps {
   riskFirstSort?: boolean;
   /** Only show lanes with active alerts */
   alertsOnly?: boolean;
+  /** Empty-slot click handler for quick-create (2026-03-06) */
+  onEmptySlotClick?: (data: { date: Date; hour: number; minute: number; technicianId?: string }) => void;
 }
 
 // ============================================================================
@@ -338,6 +340,7 @@ const MemoizedTechRow = memo(function TechRow({
   onUnschedule,
   timeFormat,
   techSummary,
+  onEmptySlotClick,
 }: {
   technicianId: string;
   technicianName: string;
@@ -354,6 +357,8 @@ const MemoizedTechRow = memo(function TechRow({
   timeFormat: "12h" | "24h";
   /** Day summary for this technician (Calendar Improvement 2026-03-05) */
   techSummary?: TechDaySummary;
+  /** Empty-slot click handler for quick-create (2026-03-06) */
+  onEmptySlotClick?: (data: { date: Date; hour: number; minute: number; technicianId?: string }) => void;
 }) {
   const timedEvents = events.filter(e => !isAllDayEvent(e));
   const allDayEvents = events.filter(isAllDayEvent);
@@ -409,6 +414,15 @@ const MemoizedTechRow = memo(function TechRow({
             key={hour}
             className="absolute top-0 border-r border-dashed border-muted/40"
             style={{ left: hour * HOUR_WIDTH, width: HOUR_WIDTH, height: ROW_HEIGHT }}
+            onClick={(e) => {
+              // Empty-slot click for quick-create (2026-03-06)
+              if (!onEmptySlotClick) return;
+              if ((e.target as HTMLElement).closest('[data-testid^="assigned-client-"]')) return;
+              const rect = e.currentTarget.getBoundingClientRect();
+              const xRatio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+              const minute = Math.floor(xRatio * 4) * 15;
+              onEmptySlotClick({ date: currentDate, hour, minute, technicianId });
+            }}
           >
             {/* Quarter-hour drop zones */}
             {[0, 15, 30, 45].map((minute) => (
@@ -471,6 +485,7 @@ export function CalendarGridDayRows({
   techSummaryMap,
   riskFirstSort,
   alertsOnly,
+  onEmptySlotClick,
 }: CalendarGridDayRowsProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -639,6 +654,7 @@ export function CalendarGridDayRows({
             savingJobIds={savingJobIds}
             onUnschedule={onUnschedule}
             timeFormat={regional.timeFormat}
+            onEmptySlotClick={onEmptySlotClick}
           />
         )}
 
@@ -664,6 +680,7 @@ export function CalendarGridDayRows({
               onUnschedule={onUnschedule}
               timeFormat={regional.timeFormat}
               techSummary={techSummaryMap?.get(tech.id)}
+              onEmptySlotClick={onEmptySlotClick}
             />
           );
         })}

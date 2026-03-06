@@ -9,10 +9,11 @@
  * - Error handling via calendarErrorHandler
  * - RBAC permission gating for scheduling
  *
- * API CONTRACT (MODEL A):
- * - POST /api/calendar/schedule: { jobId, startAt, endAt, allDay?, version }
- * - PATCH /api/calendar/schedule/:id: { startAt?, endAt?, allDay?, version }
- * - POST /api/calendar/unschedule/:id: { version }
+ * API CONTRACT:
+ * Flow A (first-schedule): POST /api/calendar/schedule { jobId, startAt, endAt, allDay?, version }
+ * Flow B (visit reschedule): PATCH /api/calendar/visit/:visitId/reschedule { startAt?, endAt?, allDay?, version, technicianUserId? }
+ * Flow C (visit unschedule): POST /api/calendar/visit/:visitId/unschedule { expectedVersion? }
+ * Flow D (visit resize): POST /api/calendar/visit/:visitId/resize { newEndTime }
  */
 
 import { useCallback, useRef, useState } from "react";
@@ -67,8 +68,10 @@ export interface CreateAssignmentParams {
 }
 
 export interface UpdateAssignmentParams {
-  /** Job ID to update */
+  /** Phase 4: Visit ID for existing visit events, or job ID for first-schedule */
   id: string;
+  /** Phase 4: Explicit job ID (for cache matching and version fetch) */
+  jobId?: string;
   /** Target day (1-31) */
   day: number;
   /** Target hour (0-23) - ignored when allDay=true */
@@ -479,6 +482,8 @@ export function useCalendarDnD(
     // Only invalidate unscheduled if this operation affects it
     if (includeUnscheduled) {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+      // Phase B: Also invalidate follow-up query (scheduling a follow-up removes it from that section)
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar/needs-follow-up"] });
     }
     // DO NOT invalidate /api/clients or all /api/calendar queries
     // The cache merge handles the calendar update directly
@@ -834,7 +839,8 @@ export function useCalendarDnD(
         console.log('[useCalendarDnD] updateAssignment API payload:', payload, 'id:', id);
       }
 
-      const response = await apiRequest(`/api/calendar/schedule/${id}`, {
+      // Phase 4: Use visit-centric endpoint for existing visit events
+      const response = await apiRequest(`/api/calendar/visit/${id}/reschedule`, {
         method: "PATCH",
         body: JSON.stringify(payload),
       });
@@ -849,7 +855,7 @@ export function useCalendarDnD(
     onMutate: async (params) => {
       perfMark('on-mutate-start');
 
-      // Mark job as saving for visual feedback (id is the jobId for updates)
+      // Phase 4: Mark visitId as saving for visual feedback
       markJobSaving(params.id);
 
       // Cancel any outgoing refetches
@@ -873,6 +879,7 @@ export function useCalendarDnD(
       if (prev && typeof prev === 'object' && ('events' in prev || 'assignments' in prev)) {
         const currentEvents = prev.events ?? prev.assignments ?? [];
         const updatedEvents = currentEvents.map((a: any) => {
+          // Phase 4: params.id is visitId — match directly
           if (a.id === params.id) {
             const isAllDay = params.allDay ?? (params.scheduledHour === null || params.scheduledHour === undefined);
             const dateStr = buildISODate(useYear, useMonth, params.day);
@@ -998,28 +1005,11 @@ export function useCalendarDnD(
           params.version,
           error.message || 'Version mismatch',
           'PATCH',
-          `/api/calendar/schedule/${params.id}`
+          `/api/calendar/visit/${params.id}/reschedule`
         );
 
-        // Fetch fresh version and retry once (only if not already a retry)
-        if (!params._isRetry) {
-          if (process.env.NODE_ENV === 'development') {
-            console.log('[useCalendarDnD] 409 detected, fetching fresh version for auto-retry...');
-          }
-
-          const freshVersion = await fetchFreshJobVersion(params.id);
-          if (freshVersion !== undefined && freshVersion !== params.version) {
-            if (process.env.NODE_ENV === 'development') {
-              console.log(`[useCalendarDnD] Auto-retrying with fresh version: ${freshVersion} (was ${params.version})`);
-            }
-            // Retry with fresh version (mark as retry to prevent infinite loop)
-            updateAssignment.mutate({ ...params, version: freshVersion, _isRetry: true } as any);
-            return; // Don't show error toast on first attempt
-          }
-        }
-
         // Refetch calendar to get fresh versions for next attempt
-        // Use invalidateCalendarOnly since reschedule doesn't affect unscheduled list
+        // Phase 4: visit-centric reschedule uses visit.version, auto-retry not yet supported
         await refetchCalendar();
         invalidateCalendarOnly();
 
@@ -1050,29 +1040,18 @@ export function useCalendarDnD(
   // ========================================
   const updateDuration = useMutation({
     mutationFn: async ({ id, durationMinutes, assignment }: { id: string; durationMinutes: number; assignment?: any; version?: number }) => {
-      // Use POST /api/calendar/resize which expects { job: { id, scheduledStart, scheduledEnd }, newEndTime }
+      // Phase 4: Use visit-centric resize endpoint
       const scheduledStart = assignment?.scheduledStart || assignment?.startAt;
-      const scheduledEnd = assignment?.scheduledEnd || assignment?.endAt;
-      const jobId = assignment?.jobId || id;
 
       if (scheduledStart) {
         const newEndTime = new Date(new Date(scheduledStart).getTime() + durationMinutes * 60_000).toISOString();
-        return apiRequest(`/api/calendar/resize`, {
+        return apiRequest(`/api/calendar/visit/${id}/resize`, {
           method: "POST",
-          body: JSON.stringify({
-            job: {
-              id: jobId,
-              scheduledStart: typeof scheduledStart === 'string' ? scheduledStart : new Date(scheduledStart).toISOString(),
-              scheduledEnd: scheduledEnd
-                ? (typeof scheduledEnd === 'string' ? scheduledEnd : new Date(scheduledEnd).toISOString())
-                : new Date(new Date(scheduledStart).getTime() + (assignment?.durationMinutes || 60) * 60_000).toISOString(),
-            },
-            newEndTime,
-          }),
+          body: JSON.stringify({ newEndTime }),
         });
       }
 
-      // Fallback: if no schedule data available, try PATCH with version
+      // Fallback: if no schedule data available, try legacy PATCH with version
       const payload: Record<string, unknown> = { durationMinutes };
       const version = assignment?.version;
       if (version !== undefined) payload.version = version;
@@ -1129,17 +1108,18 @@ export function useCalendarDnD(
   const deleteAssignment = useMutation({
     mutationFn: async ({ id, version, jobId, jobNumber }: { id: string; version: number; jobId?: string; jobNumber?: number }) => {
       // PERF: Start session for unschedule operation
-      startPerfSession('unschedule', jobId || id);
+      // Phase 4: id is visitId for existing visit events
+      startPerfSession('unschedule', id);
       perfMark('mutation-fn-start');
 
       // DEV logging
       if (process.env.NODE_ENV === 'development') {
         console.log('[useCalendarDnD] deleteAssignment (unschedule) starting:', { id, version, jobId, jobNumber });
       }
-      // Use unschedule endpoint with version in body
-      const response = await apiRequest(`/api/calendar/unschedule/${id}`, {
+      // Phase 4: Use visit-centric unschedule endpoint (id = visitId)
+      const response = await apiRequest(`/api/calendar/visit/${id}/unschedule`, {
         method: "POST",
-        body: JSON.stringify({ version }),
+        body: JSON.stringify({ expectedVersion: version }),
       });
       perfMark('server-response-received');
       return response;
@@ -1162,6 +1142,7 @@ export function useCalendarDnD(
       const previousUnscheduledData = queryClient.getQueryData(["/api/calendar/unscheduled"]);
 
       // Find the event being deleted (to use for optimistic unscheduled insert)
+      // Phase 4: id is visitId — match directly
       const prevCal = previousCalendarData as any;
       let deletedEvent: any = null;
       if (prevCal && typeof prevCal === 'object' && ('events' in prevCal || 'assignments' in prevCal)) {
@@ -1173,6 +1154,7 @@ export function useCalendarDnD(
       if (prevCal && typeof prevCal === 'object' && ('events' in prevCal || 'assignments' in prevCal)) {
         const currentEvents = prevCal.events ?? prevCal.assignments ?? [];
         const filteredEvents = currentEvents.filter(
+          // Phase 4: id is visitId — match directly
           (a: any) => a.id !== id
         );
 
@@ -1302,15 +1284,16 @@ export function useCalendarDnD(
           technicianIds,
           primaryTechnicianId,
           version,
-          endpoint: `/api/calendar/schedule/${assignmentId}`,
+          endpoint: `/api/calendar/visit/${assignmentId}/reschedule`,
         });
       }
 
-      return apiRequest(`/api/calendar/schedule/${assignmentId}`, {
+      // Phase 4: Use visit-centric reschedule endpoint (assignmentId = visitId)
+      return apiRequest(`/api/calendar/visit/${assignmentId}/reschedule`, {
         method: "PATCH",
         body: JSON.stringify({
           technicianUserId: primaryTechnicianId,
-          // Include version if provided (for optimistic locking on scheduling changes)
+          // Include version if provided (for optimistic locking)
           ...(version !== undefined && { version }),
         }),
       });
@@ -1341,11 +1324,11 @@ export function useCalendarDnD(
   // ========================================
   const clearSchedule = useMutation({
     mutationFn: async (assignmentsToDelete: any[]) => {
+      // Phase 4: assignment.id = visitId — use visit-centric unschedule
       const unschedulePromises = assignmentsToDelete.map((assignment: any) =>
-        apiRequest(`/api/calendar/unschedule/${assignment.id}`, {
+        apiRequest(`/api/calendar/visit/${assignment.id}/unschedule`, {
           method: "POST",
-          // TASK 1: No ?? 0 fallback - server must reject VERSION_NOT_INITIALIZED
-          body: JSON.stringify({ version: assignment.version }),
+          body: JSON.stringify({ expectedVersion: assignment.version }),
         })
       );
       return Promise.all(unschedulePromises);
@@ -1369,11 +1352,11 @@ export function useCalendarDnD(
 
   const clearDay = useMutation({
     mutationFn: async ({ day, dayAssignments }: { day: number; dayAssignments: any[] }) => {
+      // Phase 4: assignment.id = visitId — use visit-centric unschedule
       const unschedulePromises = dayAssignments.map((assignment: any) =>
-        apiRequest(`/api/calendar/unschedule/${assignment.id}`, {
+        apiRequest(`/api/calendar/visit/${assignment.id}/unschedule`, {
           method: "POST",
-          // TASK 1: No ?? 0 fallback - server must reject VERSION_NOT_INITIALIZED
-          body: JSON.stringify({ version: assignment.version }),
+          body: JSON.stringify({ expectedVersion: assignment.version }),
         })
       );
       return Promise.all(unschedulePromises);
@@ -1400,7 +1383,8 @@ export function useCalendarDnD(
   // ========================================
   const toggleComplete = useMutation({
     mutationFn: async ({ assignmentId, currentCompleted }: { assignmentId: string; currentCompleted: boolean }) => {
-      return apiRequest(`/api/calendar/schedule/${assignmentId}`, {
+      // Phase 4: assignmentId = visitId — use visit-centric reschedule
+      return apiRequest(`/api/calendar/visit/${assignmentId}/reschedule`, {
         method: "PATCH",
         body: JSON.stringify({ completed: !currentCompleted }),
       });

@@ -2,7 +2,7 @@ import { memo, useRef, useEffect } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 import { useLocation } from "wouter";
-import { CheckCircle2, Loader2, AlertTriangle, History } from "lucide-react";
+import { CheckCircle2, Loader2, AlertTriangle, History, Package, RotateCcw } from "lucide-react";
 import { DRAG_ENABLED, getAssignmentStartMinutes, formatTimeFromMinutes, TechnicianColor } from "./calendarUtils";
 import { logClick, isDiagnosticsEnabled } from "@/lib/calendarDiagnostics";
 
@@ -239,16 +239,27 @@ export const DraggableClient = memo(function DraggableClient({
                     assignment?.summary || client.location || ""
                   )}
                 </span>
-                {/* Visit number badge + history icon for deep link to job visits section */}
+                {/* Job # + Visit # badge + history icon for deep link to job visits section */}
+                {assignment?.jobNumber != null && (
+                  <span className="text-[10px] font-medium text-muted-foreground/60 shrink-0">
+                    #{assignment.jobNumber}
+                  </span>
+                )}
                 {assignment?.visitNumber != null && (
                   <>
                     <span className="text-[10px] font-medium text-muted-foreground/80 shrink-0">
-                      Visit #{assignment.visitNumber}
+                      V{assignment.visitNumber}
                     </span>
+                    {/* Outcome indicator for completed visits needing follow-up */}
+                    {assignment?.visitOutcome === "needs_parts" && (
+                      <span title="Needs parts"><Package className="h-3 w-3 text-amber-500 shrink-0" /></span>
+                    )}
+                    {assignment?.visitOutcome === "needs_followup" && (
+                      <span title="Needs follow-up"><RotateCcw className="h-3 w-3 text-amber-500 shrink-0" /></span>
+                    )}
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        // Navigate to job detail with ?section=visits to auto-expand visits section
                         const jobId = assignment?.jobId || id;
                         setLocation(`/jobs/${jobId}?section=visits`);
                       }}
@@ -265,11 +276,17 @@ export const DraggableClient = memo(function DraggableClient({
             )}
           </div>
         ) : (
-          /* Unscheduled drawer: Consistent layout with calendar cards (2026-01-29) */
+          /* Unscheduled dispatch tray: Job # + company + context */
           <div className="flex flex-col min-h-0 overflow-hidden">
             <div className="flex items-center gap-1 min-w-0">
               {isSaving && (
                 <Loader2 className="h-3 w-3 text-primary animate-spin flex-shrink-0" />
+              )}
+              {/* Job number badge for dispatch identification */}
+              {assignment?.jobNumber != null && (
+                <span className="text-[10px] font-semibold text-muted-foreground bg-muted/60 px-1 rounded shrink-0">
+                  #{assignment.jobNumber}
+                </span>
               )}
               <span className="font-medium text-[12px] leading-tight truncate min-w-0 flex-1 text-foreground">
                 {client.companyName}
@@ -298,6 +315,7 @@ export const DraggableClient = memo(function DraggableClient({
     prevProps.client?.companyName === nextProps.client?.companyName &&
     prevProps.summary === nextProps.summary &&
     prevProps.assignment?.version === nextProps.assignment?.version &&
+    prevProps.assignment?.jobNumber === nextProps.assignment?.jobNumber &&
     prevProps.assignment?.visitNumber === nextProps.assignment?.visitNumber &&
     prevProps.technicianColor?.borderLeft === nextProps.technicianColor?.borderLeft &&
     prevProps.draggable === nextProps.draggable

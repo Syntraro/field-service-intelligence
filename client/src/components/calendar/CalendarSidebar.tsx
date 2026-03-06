@@ -27,18 +27,23 @@ import {
   CheckSquare,
   Square,
   Zap,
+  RotateCcw,
+  AlertCircle,
 } from "lucide-react";
 
 export interface CalendarSidebarProps {
   collapsed: boolean;
   onToggleCollapsed: () => void;
-  // Visit items (unscheduled jobs)
+  // Visit items (unscheduled jobs - needs first visit)
   visitItems: any[];
   renderVisitItem: (item: any) => React.ReactNode;
   visitSearchQuery?: string;
   onVisitSearchChange?: (query: string) => void;
   isSavingVisit?: boolean;
   clients?: any[];
+  // Phase B: Follow-up items (needs follow-up visit)
+  followUpItems?: any[];
+  renderFollowUpItem?: (item: any) => React.ReactNode;
   // Task items (unscheduled tasks)
   unscheduledTasks: any[];
   isLoadingTasks?: boolean;
@@ -76,6 +81,8 @@ export function CalendarSidebar({
   renderVisitItem,
   isSavingVisit = false,
   clients = [],
+  followUpItems = [],
+  renderFollowUpItem,
   unscheduledTasks,
   isLoadingTasks = false,
   onTaskClick,
@@ -129,11 +136,11 @@ export function CalendarSidebar({
         </Button>
 
         <div className="flex flex-col items-center gap-3 mt-1">
-          {/* Visit count */}
+          {/* Visit count (first visit + follow-up) */}
           <div className="flex flex-col items-center gap-1">
             <CalendarClock className={`h-4 w-4 ${isOver ? "text-primary" : "opacity-70"}`} />
             <Badge variant={isOver ? "default" : "secondary"} className="text-[10px] px-1.5">
-              {visitItems.length}
+              {visitItems.length + followUpItems.length}
             </Badge>
           </div>
 
@@ -180,7 +187,7 @@ export function CalendarSidebar({
           <CalendarClock className="h-4 w-4 text-muted-foreground" />
           <span className="font-semibold text-sm">Unscheduled</span>
           <Badge variant="secondary" className="text-[10px]">
-            {visitItems.length}
+            {visitItems.length + followUpItems.length}
           </Badge>
           {isSavingVisit && (
             <div className="h-4 w-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
@@ -195,7 +202,7 @@ export function CalendarSidebar({
       <Tabs defaultValue="visits" className="flex-1 flex flex-col min-h-0">
         <TabsList className="mx-2 mt-2 grid grid-cols-2 h-8">
           <TabsTrigger value="visits" className="text-xs h-7">
-            Visits ({visitItems.length})
+            Visits ({visitItems.length + followUpItems.length})
           </TabsTrigger>
           <TabsTrigger value="tasks" className="text-xs h-7">
             Tasks ({unscheduledTasks.length})
@@ -204,37 +211,93 @@ export function CalendarSidebar({
 
         {/* Visits Tab */}
         <TabsContent value="visits" className="flex-1 min-h-0 overflow-auto p-2 mt-0">
-          <SortableContext items={visitItems.map((c: any) => c.id)} strategy={verticalListSortingStrategy}>
-            <div
-              ref={setNodeRef}
-              className="space-y-1.5 h-full overflow-y-auto pr-1"
-              style={{ scrollbarWidth: "thin" }}
-              data-testid="unscheduled-panel"
-            >
-              {/* Ghost placeholder when dragging over */}
-              {isOver && isDragActive && (
-                <div className="bg-primary/10 border-2 border-dashed border-primary rounded-md p-2.5 animate-pulse">
-                  <div className="flex items-center gap-2 text-sm text-primary">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    <span className="font-medium truncate">{draggedItemInfo?.name || "Moving job..."}</span>
-                  </div>
+          <div
+            ref={setNodeRef}
+            className="space-y-1.5 h-full overflow-y-auto pr-1"
+            style={{ scrollbarWidth: "thin" }}
+            data-testid="unscheduled-panel"
+          >
+            {/* Ghost placeholder when dragging over */}
+            {isOver && isDragActive && (
+              <div className="bg-primary/10 border-2 border-dashed border-primary rounded-md p-2.5 animate-pulse">
+                <div className="flex items-center gap-2 text-sm text-primary">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span className="font-medium truncate">{draggedItemInfo?.name || "Moving job..."}</span>
                 </div>
-              )}
+              </div>
+            )}
 
-              {visitItems.length === 0 && !isOver ? (
-                <div className="text-sm text-muted-foreground text-center py-8">All clients scheduled</div>
-              ) : (
-                visitItems.map((item) => (
+            {/* Section 1: Needs First Visit */}
+            {visitItems.length > 0 && (
+              <>
+                <div className="flex items-center gap-1.5 px-1 pt-1 pb-0.5">
+                  <CalendarClock className="h-3 w-3 text-muted-foreground" />
+                  <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wide">
+                    Needs First Visit
+                  </span>
+                  <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 ml-auto">
+                    {visitItems.length}
+                  </Badge>
+                </div>
+                <SortableContext items={visitItems.map((c: any) => c.id)} strategy={verticalListSortingStrategy}>
+                  {visitItems.map((item) => (
+                    <div
+                      key={item.id || item.assignmentId}
+                      className={`transition-all duration-300 ease-out ${
+                        recentlyDropped === item.id || recentlyDropped === item.assignmentId
+                          ? "animate-slideIn ring-2 ring-primary/50"
+                          : ""
+                      }`}
+                    >
+                      {renderVisitItem(item)}
+                      {onSuggestSlot && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onSuggestSlot(item); }}
+                          className="w-full text-left px-2 py-1 text-[11px] text-primary hover:bg-primary/5 flex items-center gap-1 -mt-0.5 rounded-b"
+                          title="Find best available slot"
+                        >
+                          <Zap className="h-3 w-3" />
+                          Suggest slot
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </SortableContext>
+              </>
+            )}
+
+            {/* Section 2: Needs Follow-Up */}
+            {followUpItems.length > 0 && (
+              <>
+                <div className="flex items-center gap-1.5 px-1 pt-3 pb-0.5">
+                  <RotateCcw className="h-3 w-3 text-amber-600" />
+                  <span className="text-[11px] font-semibold text-amber-700 dark:text-amber-400 uppercase tracking-wide">
+                    Needs Follow-Up
+                  </span>
+                  <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 ml-auto border-amber-300 text-amber-700 dark:text-amber-400">
+                    {followUpItems.length}
+                  </Badge>
+                </div>
+                {followUpItems.map((item) => (
                   <div
                     key={item.id || item.assignmentId}
                     className={`transition-all duration-300 ease-out ${
                       recentlyDropped === item.id || recentlyDropped === item.assignmentId
-                        ? "animate-slideIn ring-2 ring-primary/50"
+                        ? "animate-slideIn ring-2 ring-amber-400/50"
                         : ""
                     }`}
                   >
-                    {renderVisitItem(item)}
-                    {/* Phase 6: Suggest slot button per visit */}
+                    {renderFollowUpItem ? renderFollowUpItem(item) : renderVisitItem(item)}
+                    {/* Follow-up context: outcome from prior visit */}
+                    {item.lastOutcome && (
+                      <div className="flex items-center gap-1 px-2 py-0.5 -mt-0.5 rounded-b bg-amber-50 dark:bg-amber-950/30 border border-t-0 border-amber-200 dark:border-amber-800 rounded-t-none">
+                        <AlertCircle className="h-3 w-3 text-amber-500 shrink-0" />
+                        <span className="text-[10px] text-amber-700 dark:text-amber-400 truncate">
+                          Visit #{item.lastVisitNumber}: {item.lastOutcome === "needs_parts" ? "Needs parts" : "Needs follow-up"}
+                          {item.lastOutcomeNote ? ` — ${item.lastOutcomeNote}` : ""}
+                        </span>
+                      </div>
+                    )}
                     {onSuggestSlot && (
                       <button
                         onClick={(e) => { e.stopPropagation(); onSuggestSlot(item); }}
@@ -246,10 +309,15 @@ export function CalendarSidebar({
                       </button>
                     )}
                   </div>
-                ))
-              )}
-            </div>
-          </SortableContext>
+                ))}
+              </>
+            )}
+
+            {/* Empty state */}
+            {visitItems.length === 0 && followUpItems.length === 0 && !isOver && (
+              <div className="text-sm text-muted-foreground text-center py-8">All clients scheduled</div>
+            )}
+          </div>
         </TabsContent>
 
         {/* Tasks Tab */}

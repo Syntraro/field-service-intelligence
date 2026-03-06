@@ -2127,6 +2127,10 @@ export type JobEquipment = typeof jobEquipment.$inferSelect;
 // JOB VISITS - Track individual site visits for jobs
 // ============================================================================
 
+// Visit completion outcome — structured replacement for [OUTCOME:] text tags
+export const visitOutcomeEnum = ["completed", "needs_parts", "needs_followup"] as const;
+export type VisitOutcome = typeof visitOutcomeEnum[number];
+
 export const jobVisitStatusEnum = [
   "scheduled",
   "dispatched",
@@ -2170,6 +2174,14 @@ export const jobVisits = pgTable("job_visits", {
 
   // Notes
   visitNotes: text("visit_notes"),
+
+  // Structured visit outcome (Phase 1 dispatch refactor, 2026-03-06)
+  // Replaces legacy [OUTCOME: ...] text tags in visitNotes as authoritative source
+  outcome: text("outcome"), // "completed" | "needs_parts" | "needs_followup"
+  outcomeNote: text("outcome_note"),
+  completedByUserId: varchar("completed_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  completedAt: timestamp("completed_at"),
+  isFollowUpNeeded: boolean("is_follow_up_needed").notNull().default(false),
 
   // Soft delete + optimistic locking
   isActive: boolean("is_active").notNull().default(true),
@@ -2219,6 +2231,12 @@ export const updateJobVisitSchema = z.object({
   status: z.enum(jobVisitStatusEnum).optional(),
   visitNotes: z.string().nullable().optional(),
   isActive: z.boolean().optional(),
+  // Structured outcome fields (Phase 1 dispatch refactor, 2026-03-06)
+  outcome: z.enum(visitOutcomeEnum).nullable().optional(),
+  outcomeNote: z.string().nullable().optional(),
+  completedByUserId: z.string().uuid().nullable().optional(),
+  completedAt: z.string().datetime().nullable().optional(),
+  isFollowUpNeeded: z.boolean().optional(),
 });
 
 

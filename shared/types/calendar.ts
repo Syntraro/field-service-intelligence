@@ -3,11 +3,11 @@
  *
  * Single source of truth for calendar API contract between server and client.
  *
- * MODEL A: Job-Centric Scheduling
- * - Scheduling is stored directly on jobs table (scheduledStart, scheduledEnd, isAllDay)
- * - A job is scheduled iff scheduledStart IS NOT NULL
- * - All-day events have scheduledStart=midnight, scheduledEnd=23:59:59
- * - Events on the calendar ARE jobs, keyed by jobId only
+ * Phase 2 Dispatch Refactor: Visit-Centric Scheduling
+ * - Calendar events are VISITS (one event per eligible visit)
+ * - id = visitId (primary calendar event identity)
+ * - Multiple visits for the same job appear as separate events
+ * - Job metadata (jobNumber, summary, location) attached to each visit event
  */
 
 // ============================================================================
@@ -26,32 +26,30 @@ export interface CalendarTechnicianDto {
 
 /**
  * Calendar event as returned by the API.
- * This represents a JOB with scheduling information.
- *
- * MODEL A (Timestamp Canonical):
- * - startAt: ISO 8601 datetime string (midnight for all-day, actual time for timed)
- * - endAt: ISO 8601 datetime string (23:59:59 for all-day, actual time for timed)
- * - allDay: boolean indicating if this is an all-day event (display flag only)
- * - date: YYYY-MM-DD string for the event date (always set)
- * - version: optimistic locking version number
+ * Phase 2: Represents a VISIT with parent job metadata.
  *
  * INVARIANTS:
- * - id IS the job ID (events are jobs)
- * - A job is scheduled iff startAt IS NOT NULL
+ * - id = visitId (visit-centric identity)
+ * - jobId = parent job ID (for linking back to job detail)
+ * - Multiple events may share the same jobId (multi-visit jobs)
  * - For timed events: startAt and endAt are set, allDay is false
  * - For all-day events: allDay is true, startAt=midnight, endAt=23:59:59
  */
 export interface CalendarEventDto {
-  /** Job ID (primary identifier) */
+  /** Phase 2: Visit ID (primary calendar event identity) */
   id: string;
-  /** Job ID (explicit alias) */
+  /** Parent job ID */
   jobId: string;
   /** Human-readable job number */
   jobNumber: number;
-  /** Visit ID (the job_visit driving this calendar event) - ADDITIVE field */
+  /** Visit ID (explicit — same as id for scheduled events) */
   visitId?: string;
-  /** Visit number within the job (e.g., 1, 2, 3) - ADDITIVE field */
+  /** Visit number within the job (e.g., 1, 2, 3) */
   visitNumber?: number | null;
+  /** Visit-level status (scheduled, dispatched, en_route, on_site, etc.) */
+  visitStatus?: string;
+  /** Visit outcome (completed, needs_parts, needs_followup) */
+  visitOutcome?: string | null;
   /** Job type (e.g., "PM", "Repair", "Install") */
   jobType: string;
   /** Job summary/description */

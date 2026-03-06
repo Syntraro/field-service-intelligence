@@ -2,7 +2,8 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { useLocation } from "wouter";
 import { format } from "date-fns";
-import { Trash2, Plus, X, AlertTriangle, AlertCircle, Calendar as CalendarIcon, MapPin, Clock, User, Wrench, CheckCircle2, Loader2, ExternalLink } from "lucide-react";
+import { Trash2, Plus, X, AlertTriangle, AlertCircle, Calendar as CalendarIcon, MapPin, Clock, User, Wrench, CheckCircle2, Loader2, ExternalLink, CalendarPlus } from "lucide-react";
+import { AddVisitDialog } from "@/components/AddVisitDialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -242,6 +243,8 @@ export function JobDetailDialog({
   const { toast } = useToast();
   const [, setLocation] = useLocation();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  // Phase A/B: "Add Visit" dialog accessible from calendar detail
+  const [showAddVisitDialog, setShowAddVisitDialog] = useState(false);
   const scheduleSectionRef = useRef<HTMLElement>(null);
 
   // Auto-scroll to schedule section when focusSchedule is true and dialog opens
@@ -426,13 +429,15 @@ export function JobDetailDialog({
       }
 
       try {
-        return await apiRequest(`/api/calendar/schedule/${jobId}`, {
+        // Phase 4: Use visit-centric reschedule endpoint
+        const visitId = (assignment as any).visitId || assignment.id;
+        return await apiRequest(`/api/calendar/visit/${visitId}/reschedule`, {
           method: "PATCH",
           body: JSON.stringify(body),
         });
       } catch (error: any) {
         if (error?.status === 404) {
-          throw new Error("Job not found — it may have been deleted");
+          throw new Error("Visit not found — it may have been deleted");
         }
         throw error;
       }
@@ -445,11 +450,12 @@ export function JobDetailDialog({
   const unscheduleJob = useMutationWithToast({
     mutationFn: async () => {
       if (!assignment) throw new Error("No job to unschedule");
-      const jobId = assignment.jobId || assignment.id;
+      // Phase 4: Use visit-centric unschedule endpoint
+      const visitId = (assignment as any).visitId || assignment.id;
       try {
-        return await apiRequest(`/api/calendar/unschedule/${jobId}`, {
+        return await apiRequest(`/api/calendar/visit/${visitId}/unschedule`, {
           method: "POST",
-          body: JSON.stringify({ version: localVersion }),
+          body: JSON.stringify({ expectedVersion: localVersion }),
         });
       } catch (error: any) {
         if (error?.status === 404) {
@@ -716,7 +722,7 @@ export function JobDetailDialog({
                   </span>
                   <span className="text-muted-foreground font-normal"> – Preventive Maintenance</span>
                 </h2>
-                <p className="text-sm text-muted-foreground mt-0.5">
+                <p className="text-sm text-muted-foreground mt-0.5 flex items-center gap-2">
                   <span
                     className="text-primary hover:underline cursor-pointer inline-flex items-center gap-1"
                     onClick={() => {
@@ -727,6 +733,12 @@ export function JobDetailDialog({
                     Job #{assignment.jobNumber}
                     <ExternalLink className="h-3 w-3" />
                   </span>
+                  {/* Visit context from enriched assignment */}
+                  {(assignment as any).visitNumber != null && (
+                    <span className="text-xs bg-muted px-1.5 py-0.5 rounded font-medium">
+                      Visit #{(assignment as any).visitNumber}
+                    </span>
+                  )}
                 </p>
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
@@ -1046,9 +1058,20 @@ export function JobDetailDialog({
               <Trash2 className="h-4 w-4 mr-1.5" />
               Delete Job
             </Button>
-            <p className="text-xs text-muted-foreground">
-              Created {format(parseLocalDate(assignment.scheduledDate), "MMM d, yyyy")}
-            </p>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowAddVisitDialog(true)}
+                data-testid="button-add-visit"
+              >
+                <CalendarPlus className="h-3.5 w-3.5 mr-1" />
+                Add Visit
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                Created {format(parseLocalDate(assignment.scheduledDate), "MMM d, yyyy")}
+              </p>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
@@ -1076,6 +1099,16 @@ export function JobDetailDialog({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Add Visit dialog — creates a new visit for this job */}
+      <AddVisitDialog
+        jobId={assignment?.jobId || ""}
+        jobVersion={assignment?.version ?? 0}
+        open={showAddVisitDialog}
+        onOpenChange={setShowAddVisitDialog}
+        technicians={technicians}
+        defaultTechnicianId={(assignment as any)?.primaryTechnicianId}
+      />
     </>
   );
 }

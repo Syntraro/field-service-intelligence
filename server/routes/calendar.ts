@@ -27,23 +27,24 @@ import { getQueryCtx } from "../lib/queryCtx";
 import type { CalendarEventDto, CalendarRangeResponseDto } from "@shared/types/calendar";
 
 // ============================================================================
-// MODEL A: Job-Based Calendar Architecture
+// Phase 2 Dispatch Refactor: Visit-Centric Calendar Architecture
 // ============================================================================
 //
 // INVARIANTS:
-// - Calendar shows scheduled JOBS (jobs with scheduledStart IS NOT NULL)
-// - Unscheduled sidebar shows BACKLOG jobs (open jobs with scheduledStart IS NULL)
-// - Events on the calendar ARE jobs, keyed by jobId only
-// - No separate "assignment" entity exists
+// - Calendar shows scheduled VISITS (one event per eligible visit)
+// - id = visitId (primary calendar event identity)
+// - Multiple visits for the same job = multiple calendar events
+// - Unscheduled sidebar still shows BACKLOG jobs (needs first visit)
+// - Write mutations still use jobId (Phase 4 will transition to visitId)
 //
 // ENDPOINTS:
-// - GET  /api/calendar?start=ISO&end=ISO     - Get scheduled jobs in range
-// - POST /api/calendar/schedule              - Schedule a job
+// - GET  /api/calendar?start=ISO&end=ISO     - Get visit events in range
+// - POST /api/calendar/schedule              - Schedule a job (creates visit)
 // - PATCH /api/calendar/schedule/:jobId      - Reschedule a job
 // - POST /api/calendar/unschedule/:jobId     - Unschedule a job
 // - GET  /api/calendar/unscheduled           - Get backlog jobs
 // - GET  /api/calendar/state-snapshot        - Diagnostic counts
-// - POST /api/calendar/resize                - Resize job on calendar
+// - POST /api/calendar/resize                - Resize visit on calendar
 //
 // ============================================================================
 
@@ -105,6 +106,7 @@ function transformToDto(job: CalendarJobWithDetails): CalendarEventDto {
   const endAt = job.scheduledEnd?.toISOString() || null;
 
   return {
+    // Phase 2: id = visitId (visit-centric identity)
     id: job.id,
     jobId: job.jobId,
     jobNumber: job.jobNumber,
@@ -120,14 +122,15 @@ function transformToDto(job: CalendarJobWithDetails): CalendarEventDto {
     allDay: isAllDay,
     date: dateStr,
     durationMinutes,
-    // Version from DB - NOT NULL DEFAULT 1 after migration, no fallback needed
     version: job.version,
     assignedTechnicianIds: job.assignedTechnicianIds,
     primaryTechnicianId: job.primaryTechnicianId,
     technicians: job.technicians,
-    // ADDITIVE: Visit info for calendar cards (deep-link to job visits section)
+    // Phase 2: Visit fields
     visitId: job.visitId,
     visitNumber: job.visitNumber,
+    visitStatus: job.visitStatus,
+    visitOutcome: job.visitOutcome,
   };
 }
 
@@ -690,6 +693,55 @@ router.get(
 );
 
 // ============================================================================
+// GET /api/calendar/needs-follow-up - Jobs needing follow-up visit
+// ============================================================================
+// Phase B: Returns jobs where the most recent visit has is_follow_up_needed=true
+// (outcome was "needs_parts" or "needs_followup") and no pending visit exists.
+// Used by the unscheduled sidebar "Needs Follow-Up" section.
+// ============================================================================
+
+router.get(
+  "/needs-follow-up",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user?.id || "";
+    const userRole = req.user?.role || "technician";
+
+    const allFollowUps = await calendarRepository.getJobsNeedingFollowUp(companyId);
+    // filterJobsByRole expects CalendarJobWithDetails — cast through since follow-up items extend it
+    const followUps = filterJobsByRole(allFollowUps as any[], userRole, userId);
+
+    const transformedJobs = followUps.map((job: any) => ({
+      id: job.id,
+      jobId: job.jobId,
+      jobNumber: job.jobNumber,
+      jobType: job.jobType,
+      summary: job.summary,
+      status: job.status,
+      locationId: job.locationId,
+      locationName: job.locationName,
+      customerCompanyId: job.customerCompanyId,
+      customerCompanyName: job.customerCompanyName,
+      scheduledStart: null,
+      scheduledEnd: null,
+      assignedTechnicianIds: job.assignedTechnicianIds,
+      primaryTechnicianId: job.primaryTechnicianId,
+      technicians: job.technicians,
+      version: job.version,
+      // Follow-up context for UI display
+      lastOutcome: job.lastOutcome,
+      lastOutcomeNote: job.lastOutcomeNote,
+      lastVisitCompletedAt: job.lastVisitCompletedAt,
+      lastVisitNumber: job.lastVisitNumber,
+      // Client flag: this is a follow-up item (not first-visit)
+      _followUp: true,
+    }));
+
+    res.json(transformedJobs);
+  })
+);
+
+// ============================================================================
 // GET /api/calendar/state-snapshot - Diagnostic Endpoint
 // ============================================================================
 
@@ -796,6 +848,186 @@ router.post(
       isAllDay: updatedJob?.isAllDay ?? false,
       version: updatedJob?.version,
       status: updatedJob?.status,
+    });
+  })
+);
+
+// ============================================================================
+// Phase 4: Visit-Centric Write Endpoints
+// ============================================================================
+// These endpoints operate on visitId directly. Used by client for existing
+// scheduled visit mutations. First-schedule flow still uses POST /schedule (jobId).
+// ============================================================================
+
+const visitIdParamSchema = z.object({
+  visitId: z.string().uuid(),
+});
+
+// PATCH /api/calendar/visit/:visitId/reschedule - Reschedule existing visit
+router.patch(
+  "/visit/:visitId/reschedule",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const { visitId } = validateSchema(visitIdParamSchema, req.params);
+    assertCanEditSchedule(req.user);
+
+    const data = validateSchema(rescheduleJobSchema, req.body);
+    const isAllDay = data.allDay === true;
+    let computedStartAt: Date | undefined;
+    let computedEndAt: Date | undefined;
+
+    if (isAllDay) {
+      const normalized = normalizeScheduleTimes({ allDay: true, date: data.date, startAt: data.startAt });
+      computedStartAt = normalized.scheduledStart ?? undefined;
+      computedEndAt = normalized.scheduledEnd ?? undefined;
+    } else if (data.startAt) {
+      computedStartAt = new Date(data.startAt);
+      computedEndAt = data.endAt ? new Date(data.endAt) : undefined;
+    }
+
+    const technicianUserIdForRepo = data.technicianUserId === undefined ? undefined : (data.technicianUserId ?? null);
+
+    let result;
+    try {
+      result = await calendarRepository.rescheduleVisit(companyId, visitId, {
+        technicianUserId: technicianUserIdForRepo,
+        startAt: computedStartAt,
+        endAt: computedEndAt,
+        notes: data.notes ?? undefined,
+        allDay: data.allDay,
+        expectedVersion: data.version,
+        mode: data.mode,
+      });
+    } catch (error: any) {
+      if (error.message?.includes('modified by another user') || error.message?.includes('Expected version')) {
+        return res.status(409).json({ error: error.message, code: 'VERSION_MISMATCH' });
+      }
+      if (error.message?.includes('not found')) {
+        throw createError(404, "Visit not found or access denied");
+      }
+      throw error;
+    }
+
+    if (!result) {
+      throw createError(404, "Visit not found or access denied");
+    }
+
+    // Log event
+    const eventType = data.technicianUserId !== undefined
+      ? (data.technicianUserId ? "job.assigned" : "job.unassigned")
+      : "job.rescheduled";
+    logEventAsync(getQueryCtx(req), {
+      eventType,
+      entityType: "job",
+      entityId: result.id!,
+      summary: `${eventType === "job.assigned" ? "Assigned" : eventType === "job.unassigned" ? "Unassigned" : "Rescheduled"} Job #${result.jobNumber} (visit ${visitId})`,
+      meta: { visitId, jobNumber: result.jobNumber, technicianUserId: data.technicianUserId },
+    });
+    recomputeAttentionForEntity(companyId, "job", result.id!).catch(() => {});
+
+    res.json({
+      id: result.id,
+      jobId: result.id,
+      visitId,
+      scheduledStart: result.scheduledStart?.toISOString() || null,
+      scheduledEnd: result.scheduledEnd?.toISOString() || null,
+      isAllDay: result.isAllDay ?? false,
+      version: result.version,
+      status: result.status,
+      primaryTechnicianId: result.primaryTechnicianId,
+    });
+  })
+);
+
+// POST /api/calendar/visit/:visitId/unschedule - Unschedule existing visit
+router.post(
+  "/visit/:visitId/unschedule",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const { visitId } = validateSchema(visitIdParamSchema, req.params);
+    assertCanEditSchedule(req.user);
+
+    const data = validateSchema(unscheduleJobSchema, req.body);
+
+    let result;
+    try {
+      result = await calendarRepository.unscheduleVisit(companyId, visitId, data.version);
+    } catch (error: any) {
+      if (error.message?.includes('modified by another user') || error.message?.includes('Expected version')) {
+        return res.status(409).json({ error: error.message, code: 'VERSION_MISMATCH' });
+      }
+      if (error.message?.includes('not found')) {
+        throw createError(404, "Visit not found or access denied");
+      }
+      throw error;
+    }
+
+    if (!result) {
+      throw createError(404, "Visit not found or access denied");
+    }
+
+    logEventAsync(getQueryCtx(req), {
+      eventType: "job.unscheduled",
+      entityType: "job",
+      entityId: result.id!,
+      summary: `Unscheduled visit ${visitId} from Job #${result.jobNumber}`,
+      meta: { visitId, jobNumber: result.jobNumber },
+    });
+    recomputeAttentionForEntity(companyId, "job", result.id!).catch(() => {});
+
+    res.json({
+      success: true,
+      id: result.id,
+      jobId: result.id,
+      visitId,
+      scheduledStart: null,
+      scheduledEnd: null,
+      isAllDay: false,
+      version: result.version,
+      status: result.status,
+    });
+  })
+);
+
+// POST /api/calendar/visit/:visitId/resize - Resize existing visit
+router.post(
+  "/visit/:visitId/resize",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const { visitId } = validateSchema(visitIdParamSchema, req.params);
+    assertCanEditSchedule(req.user);
+
+    const newEndTime = req.body?.newEndTime;
+    if (!newEndTime) {
+      throw createError(400, "newEndTime is required");
+    }
+
+    let result;
+    try {
+      result = await calendarRepository.resizeVisit(companyId, visitId, new Date(newEndTime));
+    } catch (error: any) {
+      if (error.message?.includes('not found')) {
+        throw createError(404, "Visit not found or access denied");
+      }
+      throw error;
+    }
+
+    if (!result) {
+      throw createError(404, "Visit not found or access denied");
+    }
+
+    res.json({
+      id: result.id,
+      jobId: result.id,
+      visitId,
+      scheduledStart: result.scheduledStart?.toISOString() || null,
+      scheduledEnd: result.scheduledEnd?.toISOString() || null,
+      isAllDay: result.isAllDay ?? false,
+      version: result.version,
+      status: result.status,
     });
   })
 );

@@ -1,6 +1,6 @@
 // Calendar constants and utility functions
 // Extracted from Calendar.tsx to reduce file size and improve maintainability
-// MODEL A: Calendar events ARE jobs — no separate "assignment" entity
+// Phase 2 Dispatch Refactor: Calendar events are VISITS — one event per visit
 
 import { isJobOverdue } from "@shared/schema";
 
@@ -20,15 +20,18 @@ export const DEFAULT_TIMED_DURATION_MINUTES = 60;
  * Normalized calendar event used by all views (monthly, weekly, daily).
  * Raw API events are transformed into this shape for consistent handling.
  *
- * MODEL A: There is no separate "assignment" entity. Calendar events ARE jobs.
- * The `assignmentId` field is always equal to the job ID.
+ * Phase 2 Dispatch Refactor: Calendar events are VISITS.
+ * - `assignmentId` = visitId for visit events (unique per visit)
+ * - `jobId` = parent job ID (for write mutations and job detail navigation)
+ * - Multiple events can share the same `jobId` (multi-visit jobs)
  */
 export type CalendarEvent = {
   /** Entity type discriminator: "visit" for job visits, "task" for tasks */
   kind: "visit" | "task";
-  /** Job ID used as calendar event key (MODEL A: assignmentId === jobId). Kept as
-   *  `assignmentId` for backward compat with drag/drop, grid keys, and mutations. */
+  /** Phase 2: Visit ID used as calendar event key. For tasks, this is the task event ID. */
   assignmentId: string;
+  /** Parent job ID — used by write mutations (Phase 4 transitional) and navigation */
+  jobId: string;
   /** Resolved location key (prefers locationId, falls back to clientId) */
   locationKey: string;
   /** Primary technician ID (first from assignedTechnicianIds, or legacy assignedTechnicianId) */
@@ -295,8 +298,11 @@ export function normalizeAssignments(rawEvents: any[]): CalendarEvent[] {
       return {
         // Entity type discriminator — visits from normalizeAssignments, tasks from normalizeTask
         kind: "visit" as const,
-        // MODEL A: assignmentId === jobId (no separate assignment entity)
-        assignmentId: a.jobId ?? a.id,
+        // Phase 2: assignmentId = visitId (visit-centric identity)
+        // a.visitId is the explicit visit ID; a.id is visitId from Phase 2 server
+        assignmentId: a.visitId ?? a.id,
+        // Phase 2: jobId preserved for write mutations and navigation
+        jobId: a.jobId ?? a.id,
         locationKey,
         technicianId,
         technicianIds: techIds.length > 0 ? techIds : (legacyTechId ? [legacyTechId] : []),
@@ -310,7 +316,8 @@ export function normalizeAssignments(rawEvents: any[]): CalendarEvent[] {
         startMinutes,
         durationMinutes,
         // Terminal statuses: muted + non-draggable on calendar
-        completed: a.completed || ['completed', 'invoiced', 'archived'].includes(a.status) || false,
+        // Phase 2: Also check visitStatus for visit-level completion
+        completed: a.completed || ['completed', 'invoiced', 'archived'].includes(a.status) || a.visitStatus === 'completed' || false,
         jobNumber: a.jobNumber || null,
         scheduledDate: a.scheduledDate || dateKey,
         raw: patchedRaw,
@@ -914,6 +921,8 @@ export function normalizeTask(task: any): CalendarEvent | null {
   return {
     kind: "task",
     assignmentId: `task-${task.id}`,
+    // Tasks have no parent job — jobId is empty for tasks
+    jobId: "",
     locationKey: task.clientId || task.locationId || "",
     technicianId: techId,
     technicianIds: techId ? [techId] : [],

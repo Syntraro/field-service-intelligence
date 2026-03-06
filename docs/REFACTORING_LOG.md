@@ -4,6 +4,142 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-03-06: Dispatch Board UI Refactor Pass 2 — Dispatch Detail Panel
+
+### Current Board Behavior (Updated)
+
+| Area | Current State |
+|---|---|
+| **Sidebar** | Split into "Needs First Visit" and "Needs Follow-Up" sections. Both draggable. Follow-up shows outcome context badges. |
+| **Calendar grid** | Month / Week / Day views. Cards show company name, time range, job #, visit #, outcome icons. |
+| **Event click** | **Visit events → DispatchDetailPanel** (right-side non-modal sheet). Tasks → TaskDialog. Unscheduled sidebar → JobDetailDialog. |
+| **Dispatch panel** | Compact: header (company, job#, visit#, status badges), schedule section (read/edit), technician (read/edit), outcome note, job context. Footer: Unschedule, Add Visit, Full Details, Visit History. |
+| **Full detail escape** | "Full Details" button in panel → transfers data to JobDetailDialog. "Visit History" → navigates to `/jobs/:id?section=visits`. |
+| **Job detail link** | History icon on calendar card navigates to `/jobs/:id?section=visits` for full visit management. |
+| **Drag scheduling** | First-visit: creates Visit #1 via `POST /api/calendar/schedule`. Follow-up: creates new visit via same endpoint (previous visit stays closed). |
+| **Unschedule** | Visit-centric via `POST /api/calendar/visit/:visitId/unschedule`. Available in both panel and dialog. |
+| **Resize** | Visit-centric via `POST /api/calendar/visit/:visitId/resize`. |
+| **Quick create** | Click empty slot → QuickCreateSlotDialog (Job or Task). Prefills date/time/tech from slot. |
+
+### Click Routing Matrix
+
+| Source | Target Surface | Condition |
+|---|---|---|
+| Calendar event card (visit) | DispatchDetailPanel | Default click, `focusSchedule=false` |
+| Calendar event card (task) | TaskDialog | `isTaskEvent()` check |
+| Context menu "Reschedule" | JobDetailDialog | `focusSchedule=true` |
+| Unscheduled sidebar item | JobDetailDialog | `focusSchedule=true` (scheduling flow) |
+| Panel "Full Details" button | JobDetailDialog | Escape hatch |
+| Panel "Visit History" link | `/jobs/:id?section=visits` | Navigation |
+
+### Gap Analysis: Current vs ServiceTitan-style Dispatch Board
+
+| Feature | ServiceTitan | Current | Priority |
+|---|---|---|---|
+| **Side detail panel** | Right-side flyout showing full visit + job context | **Implemented** — DispatchDetailPanel (non-modal Sheet) with visit + job context, inline reschedule, tech reassign, add visit | Done |
+| **Lane headers (technicians as rows)** | Daily view has tech rows, drag between rows to reassign | Day Jobber view exists but separate from main day view | Low — tech rows already work |
+| **Map overlay / route optimization** | Integrated map with drive time between stops | Route optimization exists on separate page | Low |
+| **Availability / capacity bars** | Tech capacity shown per lane | Not implemented | Medium |
+| **Conflict detection** | Visual overlap warning during drag | Version mismatch handling only | Low |
+| **Real-time updates** | WebSocket push for multi-user dispatch | Polling-based refetch | Medium |
+| **Empty slot quick-create** | Click empty slot → inline create form | **Implemented** — QuickCreateSlotDialog with Job/Task tabs | Done |
+| **Recurring visit auto-generation** | Series visits auto-created from recurrence rules | Recurring jobs exist but visits are manual | Medium |
+| **Visit progress indicators** | Live status (en route, on site, completed) on board | Status stored but not visually differentiated on board | Medium |
+
+### Tech Reassignment Audit (2026-03-06)
+
+Audit confirmed the entire technician reassignment flow from DispatchDetailPanel is **already fully visit-centric**. No code changes needed.
+
+| Step | Component | Endpoint / Method | Visit-Centric? |
+|---|---|---|---|
+| 1 | `DispatchDetailPanel.handleTechSave()` | Calls `onAssignTechnicians(visitId, newTechIds)` | ✅ Uses visitId |
+| 2 | `Calendar.tsx` callback | Calls `assignTechnicians.mutate({ assignmentId: visitId, ... })` | ✅ Passes visitId |
+| 3 | `useCalendarDnD.ts` mutation | `PATCH /api/calendar/visit/${assignmentId}/reschedule` | ✅ Visit endpoint |
+| 4 | `server/routes/calendar.ts:867` | Extracts `visitId` from params → `calendarRepository.rescheduleVisit()` | ✅ |
+| 5 | `server/storage/calendar.ts:1437` | Updates only targeted visit's `assignedTechnicianId` | ✅ Visit-scoped |
+| 6 | `server/storage/jobVisits.ts:672` | `syncJobScheduleFromVisits()` mirrors "next visit" to job | ✅ Mirror only |
+
+**Multi-visit safety:** Changing tech on Visit #2 updates only Visit #2's row. Other visits retain their own `assignedTechnicianId`. The job-level `primaryTechnicianId` mirrors whichever visit is "next upcoming" — it is not a source of truth.
+
+**Legacy endpoint:** `PATCH /api/calendar/schedule/:jobId` still exists on the server but is **not called** by any dispatch panel or calendar DnD path.
+
+### Next UI Phase Would Need
+
+1. ~~**Empty slot quick-create**~~ — **DONE** (2026-03-06): `QuickCreateSlotDialog` with Job/Task tabs. Wired to Week, Day Columns, and Day Rows grids via `onEmptySlotClick`. Uses `createJobWithSchedule()` for jobs, `POST /api/tasks` for tasks.
+
+2. ~~**Side detail panel**~~ — **DONE** (2026-03-06): `DispatchDetailPanel` (non-modal Sheet). Visit events open panel by default. Shows visit schedule, technician, outcome, job context. Actions: inline reschedule, unschedule, add visit, tech reassign. Full dialog as escape hatch.
+
+3. **Visit status indicators on board**: Color-code or badge calendar events by visit status (scheduled=default, en_route=blue, on_site=green, completed=gray, needs_followup=amber).
+
+4. **Drag-to-reassign between technician lanes**: In day view with tech rows, dragging a visit from one tech lane to another should reassign the technician.
+
+5. **Task panel variant**: Tasks still open TaskDialog. A compact task panel could reduce modality further.
+
+6. **Panel notes/comments**: Add inline notes/comment entry to the dispatch panel for quick dispatcher annotations.
+
+7. **Panel parts section**: Show required parts for the visit (currently only in full dialog).
+
+---
+
+## 2026-03-06: Phase A+B — Structured Visit Outcomes + Unscheduled Work Split
+
+### Visit Lifecycle Model
+
+| Visit Status | Visit Outcome | isFollowUpNeeded | Job Reaction | Where Office Sees It |
+|---|---|---|---|---|
+| `scheduled` | null | false | Job mirrored to this visit's schedule | Calendar grid |
+| `in_progress` | null | false | Job mirrored | Calendar grid |
+| `completed` | `completed` | false | syncJobToVisits clears schedule if no pending visits | Completed visits list |
+| `completed` | `needs_parts` | true | syncJobToVisits clears schedule; job stays `open` | **Needs Follow-Up** sidebar section |
+| `completed` | `needs_followup` | true | syncJobToVisits clears schedule; job stays `open` | **Needs Follow-Up** sidebar section |
+| `cancelled` | null | false | syncJobToVisits skips; next eligible visit mirrors | Archive |
+
+### Structured Outcome Fields (job_visits table)
+
+| Column | Type | Written By | Purpose |
+|---|---|---|---|
+| `outcome` | text | Tech completion endpoint, office status update | "completed" / "needs_parts" / "needs_followup" |
+| `outcome_note` | text | Tech completion endpoint | Free-text note explaining outcome |
+| `completed_by_user_id` | varchar FK | Tech completion endpoint | Who completed the visit |
+| `completed_at` | timestamp | Tech completion + office status update | When visit was completed |
+| `is_follow_up_needed` | boolean | Computed from outcome | True for needs_parts, needs_followup |
+
+### Unscheduled Work Split
+
+**Needs First Visit** — computed by `getUnscheduledJobs()`:
+- `jobs.status = 'open'`
+- `jobs.scheduled_start IS NULL`
+- `jobs.is_active = true`, `jobs.deleted_at IS NULL`
+- `NOT EXISTS (completed visit with is_follow_up_needed = true)` — excludes follow-up jobs
+
+**Needs Follow-Up** — computed by `getJobsNeedingFollowUp()`:
+- `jobs.status = 'open'`, active, not deleted
+- `EXISTS (completed visit with is_follow_up_needed = true)`
+- `NOT EXISTS (pending visit — status not in completed/cancelled, with scheduled_start)`
+
+### Follow-Up Scheduling Decision
+
+**Approach chosen:** Follow-up items use the same drag-to-schedule flow as first-visit items.
+- Dragging creates a new visit via `POST /api/calendar/schedule` (jobId-based)
+- Previous completed visit stays permanently closed
+- Once a pending visit exists, item disappears from Needs Follow-Up section
+- Office controls when/if to create the next visit — no auto-creation
+
+**Why this approach:**
+- Zero new client mutation code required
+- Uses existing visit creation infrastructure
+- Previous visit's outcome data preserved indefinitely
+- Matches "office controls dispatch" philosophy
+
+### Attention Items
+
+Follow-up signals are visible via:
+1. **Sidebar "Needs Follow-Up" section** — with outcome context badge
+2. **`GET /api/calendar/needs-follow-up`** — queryable endpoint with outcome metadata
+3. **`isFollowUpNeeded` column** — directly queryable on job_visits table
+
+---
+
 ## 2026-03-05: Phase C — Pre-deploy P0 Performance + Scale Fixes
 
 ### Task 1: DB Index

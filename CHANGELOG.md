@@ -6,6 +6,108 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+#### Dispatch Detail Panel (2026-03-06)
+- **Right-side panel for visit events:** Clicking a calendar visit event now opens a compact right-side Sheet panel instead of the full-screen JobDetailDialog. Panel is non-modal — calendar remains interactive while panel is open.
+- **Panel header:** Shows company name, Job # badge, Visit # badge, summary, and status badges (completed, visit status, outcome with amber styling for needs_parts/needs_followup).
+- **Visit schedule section:** Read-only display of date, time range, duration. Inline "Edit" mode with date picker, time input, and duration dropdown that calls `PATCH /api/calendar/visit/:visitId/reschedule`.
+- **Technician section:** Read-only display with "Change" button. Inline edit mode with technician select dropdown using existing `onAssignTechnicians` callback.
+- **Outcome note display:** Shows structured visit outcome note when present.
+- **Job context section:** Displays job status, type, and priority metadata.
+- **Quick actions in footer:** Unschedule button (visit-centric), Add Visit button (launches existing AddVisitDialog), Full Details escape hatch (transfers to JobDetailDialog), Visit History link (navigates to `/jobs/:id?section=visits`).
+- **Click routing logic:** Visit events → dispatch panel. Task events → TaskDialog (unchanged). Unscheduled sidebar items → JobDetailDialog (unchanged). Reschedule context menu → JobDetailDialog with focusSchedule (unchanged).
+- **Panel state:** Only one panel open at a time. Clicking different event updates content. Closing clears selection. `modal={false}` prevents overlay from blocking calendar.
+- **New component:** `DispatchDetailPanel.tsx` in `client/src/components/calendar/`
+- **Files modified:** `DispatchDetailPanel.tsx` (new), `Calendar.tsx`
+
+#### Tech Reassignment Audit (2026-03-06)
+- **Audit confirmed visit-centric:** Full trace from DispatchDetailPanel → Calendar.tsx → useCalendarDnD.ts → `PATCH /api/calendar/visit/:visitId/reschedule` → `calendarRepository.rescheduleVisit()` → `jobVisitsRepository.updateJobVisit()`. All steps are visit-scoped.
+- **Multi-visit safe:** Tech change on one visit does not affect other visits on the same job. Job-level `primaryTechnicianId` is a mirror of the "next upcoming" visit only.
+- **No code changes needed:** Initial concern that tech reassignment used the legacy job-based endpoint was incorrect — the client-side mutation already calls the visit-centric endpoint.
+- **Documentation updated:** `docs/REFACTORING_LOG.md` — added tech reassignment audit table.
+
+#### Empty-Slot Quick-Create (2026-03-06)
+- **Click empty time slot to create:** Clicking any empty time slot in Week, Day Columns, or Day Rows view opens a compact Quick Create dialog.
+- **Job or Task toggle:** Dialog has Job/Task tabs. Job mode: client search + summary + technician → creates job via `createJobWithSchedule()`. Task mode: title → creates task via `POST /api/tasks` with scheduled start/end.
+- **Prefilled from slot:** Date, time, and technician are prefilled from the clicked slot. Technician comes from the column/row that was clicked (Day view) or defaults to unassigned (Week view).
+- **Duration chips:** Quick-pick 30m/60m/90m/2h duration with 60m default.
+- **RBAC gated:** View-only users see "view only" toast instead of the dialog.
+- **New component:** `QuickCreateSlotDialog.tsx` in `client/src/components/calendar/`
+- **Grid click handlers:** Added `onEmptySlotClick` callback to `CalendarGridWeek`, `CalendarGridDayJobber`, `CalendarGridDayRows`. Click computes 15-minute-snapped time from cursor position.
+- **Files modified:** `QuickCreateSlotDialog.tsx` (new), `CalendarGridWeek.tsx`, `CalendarGridDayJobber.tsx`, `CalendarGridDayRows.tsx`, `Calendar.tsx`, `calendar/index.ts`
+
+#### Dispatch Board UI Refactor Pass 1 (2026-03-06)
+- **Dispatch tray improvements:** Sidebar "Needs First Visit" and "Needs Follow-Up" sections both fully support drag-to-schedule. Follow-up items show amber-styled outcome context badges with outcome note and "Suggest slot" button.
+- **Job number on cards:** Unscheduled tray cards now show `#jobNumber` badge for quick dispatch identification. Calendar event cards show `#jobNumber` alongside `V{visitNumber}`.
+- **Visit outcome indicators on calendar:** Completed visits with `needs_parts` show Package icon; `needs_followup` shows RotateCcw icon in amber on calendar event cards.
+- **"Add Visit" in calendar detail:** `JobDetailDialog` footer now has "Add Visit" button that opens `AddVisitDialog` for creating follow-up visits without navigating away from the calendar.
+- **Visit context in dialog header:** `JobDetailDialog` header now shows "Visit #N" badge alongside "Job #N" link.
+- **Dialog uses visit-centric endpoints:** `JobDetailDialog` schedule/unschedule mutations now use `PATCH /api/calendar/visit/:visitId/reschedule` and `POST /api/calendar/visit/:visitId/unschedule` (was legacy job-based endpoints).
+- **Files modified:** `DraggableClient.tsx`, `CalendarSidebar.tsx`, `JobDetailDialog.tsx`, `Calendar.tsx`
+
+#### Phase A: Structured Visit Outcomes (2026-03-06)
+- **Tech completion writes structured fields:** `POST /api/tech/visits/:visitId/complete` now writes `outcome`, `outcomeNote`, `completedByUserId`, `completedAt`, and `isFollowUpNeeded` as structured columns (was text tags only in `visitNotes`). Legacy text tags preserved for backward compat.
+- **Office completion writes outcome:** `updateJobVisitStatus()` now sets `completedAt` and `outcome = "completed"` when transitioning a visit to "completed" via office flow (if not already set by tech endpoint).
+- **isFollowUpNeeded computed:** Set to `true` when outcome is `needs_parts` or `needs_followup`.
+- **Files modified:** `server/routes/techField.ts`, `server/storage/jobVisits.ts`
+
+#### Phase B: Unscheduled Work Split (2026-03-06)
+- **Needs First Visit vs Needs Follow-Up:** Unscheduled sidebar now shows two sections:
+  1. **Needs First Visit** — open jobs with no visits yet (existing behavior, refined)
+  2. **Needs Follow-Up** — open jobs where the last completed visit has `isFollowUpNeeded=true` and no pending visit exists
+- **New server query:** `getJobsNeedingFollowUp()` in `server/storage/calendar.ts` queries visit outcomes to find follow-up work. Uses `DISTINCT ON` for efficient per-job latest visit.
+- **New API endpoint:** `GET /api/calendar/needs-follow-up` returns follow-up items with context fields (`lastOutcome`, `lastOutcomeNote`, `lastVisitCompletedAt`, `lastVisitNumber`).
+- **Existing unscheduled filtered:** `getUnscheduledJobs()` now excludes jobs that belong in the follow-up section (prevents duplicates).
+- **Follow-up drag behavior:** Dragging a follow-up item to the calendar creates a new visit via the existing first-schedule flow (`POST /api/calendar/schedule`). Previous completed visit stays closed. The item disappears from follow-up once a pending visit exists.
+- **Sidebar UI:** `CalendarSidebar` renders section headers ("Needs First Visit" / "Needs Follow-Up") with counts and follow-up context badges showing visit outcome.
+- **Cache invalidation:** `invalidateNarrow()` now also invalidates `/api/calendar/needs-follow-up` when unscheduled data changes.
+- **Files modified:** `server/storage/calendar.ts`, `server/routes/calendar.ts`, `client/src/components/calendar/CalendarSidebar.tsx`, `client/src/pages/Calendar.tsx`, `client/src/hooks/useCalendarDnD.ts`
+
+#### Dispatch-Calendar Phase 2: Visit-Centric Calendar Read Path (2026-03-06)
+- **Visit-centric events:** Calendar API now returns one event per eligible visit instead of one per job. Multiple visits for the same job appear as separate calendar events.
+- **Removed ROW_NUMBER dedup:** `getScheduledJobsInRange()` no longer uses `ROW_NUMBER() PARTITION BY job_id` to pick a single visit. All non-cancelled visits with `scheduled_start` in range are returned.
+- **Event identity = visitId:** `CalendarJobWithDetails.id` is now `visit_id` (was `job_id`). The DTO `id` field reflects this. `jobId` remains as a separate field for linking to job detail.
+- **Completed visits included:** Previously excluded `completed` visits from calendar. Now shows all non-cancelled scheduled visits so dispatchers can see visit outcomes.
+- **New DTO fields:** Added `visitStatus` (visit-level status) and `visitOutcome` (structured outcome from Phase 1) to `CalendarEventDto` and `CalendarJobWithDetails`.
+- **Files modified:** `server/storage/calendar.ts`, `server/routes/calendar.ts`, `shared/types/calendar.ts`
+- **Breaking:** Client code reading `event.id` as jobId must now use `event.jobId` instead. Phase 3 (client normalization) will handle this.
+
+#### Dispatch-Calendar Phase 3: Client Normalization Pivot (2026-03-06)
+- **Visit-centric assignmentId:** `normalizeAssignments()` now sets `assignmentId = visitId` (was `jobId`). Visit events are identified by visitId throughout the client.
+- **Explicit jobId on CalendarEvent:** Added `jobId: string` field to `CalendarEvent` type. Always populated from `a.jobId` in normalization. Tasks have empty `jobId`.
+- **Transitional write adapters:** All DnD mutations extract `jobId` from the raw event for API calls since server endpoints still use `:jobId` URL params (Phase 4 will fix).
+  - `activeJobId` extracted at top of drag handler for existing calendar events
+  - `handleRemove` extracts `assignment.jobId` for delete mutations
+  - `handleUnschedule` accepts optional `jobId` parameter
+- **Defensive cache matching:** `useCalendarDnD.ts` optimistic update matchers now check `(a.id === params.id || a.jobId === params.id)` for Phase 3 compatibility.
+- **Completed visit detection:** `normalizeAssignments()` now checks `visitStatus === 'completed'` in addition to job-level status for the `completed` flag.
+- **Visit-enriched click handler:** `handleClientClick` now adds `visitId` to the enriched assignment for future Phase 6 use.
+- **Files modified:** `client/src/components/calendar/calendarUtils.ts`, `client/src/pages/Calendar.tsx`, `client/src/hooks/useCalendarDnD.ts`
+- **Known risk:** `savingJobIds` set contains jobId but grid checks `event.assignmentId` (visitId) — saving indicator falls back to `event.raw._saving` flag. **RESOLVED in Phase 4.**
+
+#### Dispatch-Calendar Phase 4: Visit-Centric Write Path (2026-03-06)
+- **Visit-centric server endpoints:** Added three new route handlers in `server/routes/calendar.ts`:
+  - `PATCH /api/calendar/visit/:visitId/reschedule` — reschedule or reassign an existing visit
+  - `POST /api/calendar/visit/:visitId/unschedule` — unschedule a visit (convert to placeholder)
+  - `POST /api/calendar/visit/:visitId/resize` — resize a visit's end time
+- **Visit-centric storage methods:** Added `rescheduleVisit()`, `unscheduleVisit()`, `resizeVisit()` to `server/storage/calendar.ts`. These fetch the visit directly (not via job), use `visit.version` for optimistic locking, and support spawn-on-action mode.
+- **Client mutations updated:** `useCalendarDnD.ts` now calls visit-centric endpoints for all existing-visit mutations:
+  - `updateAssignment` → `PATCH /api/calendar/visit/:visitId/reschedule`
+  - `deleteAssignment` → `POST /api/calendar/visit/:visitId/unschedule`
+  - `updateDuration` → `POST /api/calendar/visit/:visitId/resize`
+  - `assignTechnicians` → `PATCH /api/calendar/visit/:visitId/reschedule`
+  - `clearSchedule` / `clearDay` → `POST /api/calendar/visit/:visitId/unschedule`
+  - `toggleComplete` → `PATCH /api/calendar/visit/:visitId/reschedule`
+- **First-schedule unchanged:** `createAssignment` still uses `POST /api/calendar/schedule` with jobId (Flow A).
+- **Removed Phase 3 transitional adapters:**
+  - Removed `activeJobId` / `activeRawEvent` extraction from Calendar.tsx drag handler — existing events now pass `activeIdValue` (visitId) directly
+  - Removed `jobId || assignmentId` fallback in `handleRemove` — visitId passed directly
+  - Removed `jobId` param from `handleUnschedule` — visitId sufficient
+  - Removed dual-match `(a.id === params.id || a.jobId === params.id)` from `useCalendarDnD.ts` optimistic updates — single `a.id === params.id` match
+- **Saving indicator aligned:** `savingJobIds` now tracks visitId for existing visit events (matches `event.assignmentId` checked by grid components).
+- **Files modified:** `server/storage/calendar.ts`, `server/routes/calendar.ts`, `client/src/hooks/useCalendarDnD.ts`, `client/src/pages/Calendar.tsx`
+
 ### Fixed
 
 #### All-Day to Timed Drop Duration Bug (2026-03-06)

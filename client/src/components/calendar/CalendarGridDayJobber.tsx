@@ -77,6 +77,8 @@ export interface CalendarGridDayJobberProps {
   riskFirstSort?: boolean;
   /** Only show lanes with active alerts */
   alertsOnly?: boolean;
+  /** Empty-slot click handler for quick-create (2026-03-06) */
+  onEmptySlotClick?: (data: { date: Date; hour: number; minute: number; technicianId?: string }) => void;
 }
 
 // ============================================================================
@@ -279,6 +281,8 @@ interface TechColumnProps {
   stickyHeaderRef?: (node: HTMLDivElement | null) => void;
   /** Fix 1: Uniform header height (max across all columns) applied as minHeight */
   uniformHeaderPx?: number;
+  /** Empty-slot click handler for quick-create (2026-03-06) */
+  onEmptySlotClick?: (data: { date: Date; hour: number; minute: number; technicianId?: string }) => void;
 }
 
 function TechColumn({
@@ -306,6 +310,7 @@ function TechColumn({
   techSummary,
   stickyHeaderRef,
   uniformHeaderPx,
+  onEmptySlotClick,
 }: TechColumnProps) {
   const rowHeight = DENSITY_STYLES[density].rowHeight;
 
@@ -390,6 +395,15 @@ function TechColumn({
               key={hour}
               className={`relative border-b ${isOutsideBusinessHours ? 'bg-slate-200/70 dark:bg-slate-800/50' : 'bg-background'}`}
               style={{ minHeight: rowHeight }}
+              onClick={(e) => {
+                // Empty-slot click for quick-create (2026-03-06)
+                if (!onEmptySlotClick) return;
+                if ((e.target as HTMLElement).closest('[data-testid^="assigned-client-"]')) return;
+                const rect = e.currentTarget.getBoundingClientRect();
+                const yRatio = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+                const minute = Math.floor(yRatio * 4) * 15;
+                onEmptySlotClick({ date: currentDate, hour, minute, technicianId });
+              }}
             >
               {/* Quarter-hour drop zones (absolute overlay, 2026-01-29: removed flex to fix bounding rect) */}
               <div className="absolute inset-0 pointer-events-none">
@@ -510,6 +524,7 @@ export function CalendarGridDayJobber({
   techSummaryMap,
   riskFirstSort,
   alertsOnly,
+  onEmptySlotClick,
 }: CalendarGridDayJobberProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const scrollDoneRef = useRef(false);
@@ -855,6 +870,7 @@ export function CalendarGridDayJobber({
                 isBusinessOpen={todayBusinessHours.isOpen}
                 stickyHeaderRef={makeHeaderRef("unassigned")}
                 uniformHeaderPx={uniformHeaderPx}
+                onEmptySlotClick={onEmptySlotClick}
               />
             );
           })()}
@@ -892,6 +908,7 @@ export function CalendarGridDayJobber({
                 techSummary={techSummaryMap?.get(tech.id)}
                 stickyHeaderRef={makeHeaderRef(tech.id)}
                 uniformHeaderPx={uniformHeaderPx}
+                onEmptySlotClick={onEmptySlotClick}
               />
             );
           })}

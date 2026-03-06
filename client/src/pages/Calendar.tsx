@@ -43,11 +43,14 @@ import {
   CalendarGridDayJobber, // Jobber-style day grid (2026-01-28)
   CalendarGridDayRows, // Horizontal rows day layout (Polish Pass 2026-03-04)
   ScheduleJobModal,
+  QuickCreateSlotDialog,
 } from "@/components/calendar";
+import type { SlotClickData } from "@/components/calendar";
 import { useCompanyRegionalSettings } from "@/hooks/useCompanyRegionalSettings";
 import { useCalendarDaySummary, type TechDaySummary } from "@/hooks/useCalendarDaySummary";
 import { JobCard } from "@/components/calendar/JobCard";
 import { SuggestSlotDialog } from "@/components/calendar/SuggestSlotDialog";
+import { DispatchDetailPanel, type DispatchPanelData } from "@/components/calendar/DispatchDetailPanel";
 
 // ============================================================================
 // Safe Array Normalization Utility
@@ -221,6 +224,14 @@ export default function Calendar() {
   // Phase 6: Suggest-slot dialog state
   const [suggestSlotOpen, setSuggestSlotOpen] = useState(false);
   const [suggestSlotItem, setSuggestSlotItem] = useState<any>(null);
+
+  // Empty-slot quick-create dialog state (2026-03-06)
+  const [quickCreateOpen, setQuickCreateOpen] = useState(false);
+  const [quickCreateSlot, setQuickCreateSlot] = useState<SlotClickData | null>(null);
+
+  // Dispatch Detail Panel state (2026-03-06)
+  const [dispatchPanelOpen, setDispatchPanelOpen] = useState(false);
+  const [dispatchPanelData, setDispatchPanelData] = useState<DispatchPanelData | null>(null);
 
   const { toast } = useToast();
   const { user } = useAuth();
@@ -446,17 +457,18 @@ export default function Calendar() {
   });
 
   // Helper for resize handler (uses hook's mutation)
+  // Phase 4: assignmentId = visitId — passed directly to visit-centric resize endpoint
   const handleResize = useCallback((assignmentId: string, newDurationMinutes: number, assignment?: any) => {
     // RBAC: Block resize for view-only users
     if (!canSchedule) {
       showViewOnlyToast();
       return;
     }
-    // Pass raw assignment so mutation can compute newEndTime for POST /api/calendar/resize
     updateDuration.mutate({ id: assignmentId, durationMinutes: newDurationMinutes, assignment });
   }, [updateDuration, canSchedule, showViewOnlyToast]);
 
   // Quick action: unschedule (remove from calendar)
+  // Phase 4: assignmentId = visitId — pass directly to visit-centric endpoint
   const handleUnschedule = useCallback((assignmentId: string, version: number) => {
     if (!canSchedule) {
       showViewOnlyToast();
@@ -664,6 +676,10 @@ export default function Calendar() {
     // Check if this is an unscheduled item from the backlog
     const unscheduledItem = unscheduledClients.find((item: any) => item.id === activeIdValue);
     const hasExistingAssignment = unscheduledItem?.status === 'existing';
+
+    // Phase 4: activeIdValue = visitId for existing visit events.
+    // Visit-centric endpoints use visitId directly. No jobId extraction needed.
+    // For first-schedule (unscheduled tray items), activeIdValue is the jobId.
 
     // =========================================================================
     // TASK DRAG HANDLING — reschedule tasks via PATCH /api/tasks/:id
@@ -1472,6 +1488,20 @@ export default function Calendar() {
     return Array.from(seen.values());
   }, [unscheduledQueryData]);
 
+  // Phase B: Fetch jobs needing follow-up visit (separate sidebar section)
+  const { data: followUpQueryData } = useQuery<any>({
+    queryKey: ["/api/calendar/needs-follow-up"],
+    queryFn: async () => {
+      const res = await fetch(`/api/calendar/needs-follow-up`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch follow-up items");
+      return res.json();
+    },
+    staleTime: 0,
+    refetchOnMount: 'always',
+  });
+
+  const followUpItems = useMemo(() => normalizeArray<any>(followUpQueryData), [followUpQueryData]);
+
   // Phase 8: Compute date range for task calendar fetch
   const calendarDateRange = useMemo(() => {
     if (view === "weekly") {
@@ -1674,6 +1704,7 @@ export default function Calendar() {
       return;
     }
 
+    // Phase 4: assignmentId = visitId — pass directly to visit-centric endpoint
     deleteAssignmentMutation.mutate({
       id: assignmentId,
       version: resolvedVersion,
@@ -1683,6 +1714,16 @@ export default function Calendar() {
   const handleClearDay = useCallback((day: number, dayAssignments: any[]) => {
     clearDay.mutate({ day, dayAssignments });
   }, [clearDay]);
+
+  // Empty-slot click: open quick-create dialog (2026-03-06)
+  const handleEmptySlotClick = useCallback((data: SlotClickData) => {
+    if (!canSchedule) {
+      showViewOnlyToast();
+      return;
+    }
+    setQuickCreateSlot(data);
+    setQuickCreateOpen(true);
+  }, [canSchedule, showViewOnlyToast]);
 
   // Stabilized — passed to every grid component (Month/Week/Day).
   // Deps: clients (stable useMemo), state setters (stable per React).
@@ -1702,7 +1743,9 @@ export default function Calendar() {
     const enrichedAssignment = {
       ...rawAssignment,
       assignmentId,
+      // Phase 3: jobId from explicit field (DTO always has it); visitId = event identity
       jobId: rawAssignment.jobId ?? rawAssignment.job_id ?? rawAssignment.job?.id ?? rawAssignment.jobIdFromJoin ?? rawAssignment.id,
+      visitId: rawAssignment.visitId ?? rawAssignment.id,
       locationId: rawAssignment.locationId ?? getLocationId(rawAssignment),
     };
 
@@ -1712,6 +1755,17 @@ export default function Calendar() {
       if (fallbackClient) {
         selectedClientValue = fallbackClient;
       }
+    }
+
+    // 2026-03-06: Visit events open the Dispatch Detail Panel by default.
+    // Fall through to full JobDetailDialog when:
+    //   - focusSchedule=true (reschedule context menu action)
+    //   - event is from unscheduled sidebar (no visitId / not in calendar)
+    const isCalendarVisit = enrichedAssignment.visitId && !focusSchedule;
+    if (isCalendarVisit) {
+      setDispatchPanelData({ assignment: enrichedAssignment, client: selectedClientValue });
+      setDispatchPanelOpen(true);
+      return;
     }
 
     setSelectedClient(selectedClientValue);
@@ -2280,6 +2334,7 @@ export default function Calendar() {
                         savingJobIds={savingJobIds}
                         onUnschedule={handleUnschedule}
                         regional={regional}
+                        onEmptySlotClick={handleEmptySlotClick}
                       />
                     </div>
                   )}
@@ -2305,6 +2360,7 @@ export default function Calendar() {
                           techSummaryMap={techSummaryMap}
                           riskFirstSort={riskFirstSort}
                           alertsOnly={alertsOnly}
+                          onEmptySlotClick={handleEmptySlotClick}
                         />
                       ) : (
                         /* Horizontal tech rows (Polish Pass 2026-03-04) */
@@ -2326,6 +2382,7 @@ export default function Calendar() {
                           techSummaryMap={techSummaryMap}
                           riskFirstSort={riskFirstSort}
                           alertsOnly={alertsOnly}
+                          onEmptySlotClick={handleEmptySlotClick}
                         />
                       )}
                     </div>
@@ -2341,6 +2398,8 @@ export default function Calendar() {
                 onToggleCollapsed={toggleSidebarCollapsed}
                 visitItems={unscheduledClients}
                 renderVisitItem={renderUnscheduledItem}
+                followUpItems={followUpItems}
+                renderFollowUpItem={renderUnscheduledItem}
                 isSavingVisit={isSavingUnscheduled}
                 clients={clients}
                 unscheduledTasks={unscheduledTasks}
@@ -2464,6 +2523,40 @@ export default function Calendar() {
         open={suggestSlotOpen}
         onOpenChange={setSuggestSlotOpen}
         item={suggestSlotItem}
+      />
+
+      {/* Empty-slot quick-create dialog (2026-03-06) */}
+      <QuickCreateSlotDialog
+        open={quickCreateOpen}
+        onOpenChange={setQuickCreateOpen}
+        slot={quickCreateSlot}
+        technicians={technicians}
+        timeFormat={regional.timeFormat}
+      />
+
+      {/* Dispatch Detail Panel — right-side sheet for visit events (2026-03-06) */}
+      <DispatchDetailPanel
+        open={dispatchPanelOpen}
+        onOpenChange={(open) => {
+          setDispatchPanelOpen(open);
+          if (!open) setDispatchPanelData(null);
+        }}
+        data={dispatchPanelData}
+        technicians={technicians}
+        timeFormat={regional.timeFormat}
+        onAssignTechnicians={(assignmentId: string, technicianIds: string[]) => {
+          const version = dispatchPanelData?.assignment?.version;
+          assignTechnicians.mutate({ assignmentId, technicianIds, version });
+        }}
+        onOpenFullDetail={() => {
+          // Escape hatch: transfer panel data to full JobDetailDialog
+          if (dispatchPanelData) {
+            setSelectedClient(dispatchPanelData.client);
+            setSelectedAssignment(dispatchPanelData.assignment);
+            setFocusScheduleSection(false);
+            setClientDetailOpen(true);
+          }
+        }}
       />
 
       {/* Diagnostics Panel - dev mode or ?diag=1 */}

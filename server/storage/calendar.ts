@@ -28,7 +28,7 @@ import { bulkResolveTechnicians, bulkResolveCustomerCompanies } from "../lib/que
 //   - Query family: ['visits', ...]
 //
 // Calendar (this file):
-//   - CTE-based query with per-job ranking (ROW_NUMBER for current eligible visit)
+//   - Phase 2: Visit-centric query — one event per eligible visit (no ROW_NUMBER dedup)
 //   - Technician profile enrichment (colours, display names)
 //   - All-day event normalization + backlog logic
 //   - Used by: calendar page, dispatch views
@@ -52,7 +52,6 @@ import {
   hasTechnicianAssigned,
   assertSchedulingInvariants,
   assertTerminalImmutable,
-  assertCalendarQueryResults,
   assertBacklogQueryResults,
   assertSchedulingWriteContext,
   assertVersionMatch,
@@ -110,16 +109,19 @@ export interface CalendarRangeResult {
 }
 
 /**
- * Calendar job with joined technician and location info
- * (Renamed from CalendarJobWithDetails — no separate "assignment" entity exists)
+ * Calendar event with joined technician and location info.
+ * Phase 2 Dispatch Refactor: Now visit-centric — one event per eligible visit.
+ * `id` is the visitId (primary calendar event identity).
  */
 export interface CalendarJobWithDetails {
+  /** Phase 2: Event identity = visitId (was jobId in Phase 1) */
   id: string;
   companyId: string;
   jobId: string;
   jobNumber: number;
   jobType: string;
   summary: string;
+  /** Job-level status (open, completed, invoiced, archived) */
   status: string;
   locationId: string;
   locationName: string;
@@ -128,7 +130,7 @@ export interface CalendarJobWithDetails {
   scheduledStart: Date | null;
   scheduledEnd: Date | null;
   isAllDay: boolean;
-  /** Scheduled job duration in minutes (canonical) */
+  /** Scheduled duration in minutes (canonical) */
   durationMinutes: number | null;
   assignedTechnicianIds: string[] | null;
   primaryTechnicianId: string | null;
@@ -139,10 +141,14 @@ export interface CalendarJobWithDetails {
   }>;
   /** Job version for optimistic locking */
   version: number;
-  /** Visit ID (the job_visit driving this calendar event) - ADDITIVE */
+  /** Visit ID — always present for scheduled events, absent for unscheduled backlog */
   visitId?: string;
-  /** Visit number within the job (e.g., 1, 2, 3) - ADDITIVE */
+  /** Visit number within the job (e.g., 1, 2, 3) */
   visitNumber?: number | null;
+  /** Visit-level status (scheduled, dispatched, en_route, on_site, etc.) */
+  visitStatus?: string;
+  /** Visit outcome (completed, needs_parts, needs_followup) — Phase 1 structured column */
+  visitOutcome?: string | null;
 }
 
 /**
@@ -197,78 +203,49 @@ export function countOutsideVisibleHours(
 
 export class CalendarRepository extends BaseRepository {
   /**
-   * PHASE 3: Get scheduled jobs for a date range from job_visits
+   * PHASE 2 DISPATCH REFACTOR: Visit-centric calendar read path
    *
-   * MIGRATION: Now reads from job_visits instead of jobs.scheduledStart
-   * Uses same selection rules as syncJobScheduleFromVisits:
-   * - Eligible visit = is_active=true, scheduled_start NOT NULL, status NOT IN (cancelled, completed)
-   * - Selection = earliest future visit if any, else most recent past
-   * - Only include jobs whose "next visit" falls in [startDate, endDate)
+   * Returns ONE calendar event PER ELIGIBLE VISIT in the date range.
+   * Multiple visits for the same job appear as separate calendar events.
+   *
+   * Eligible visit criteria:
+   * - is_active = true, archived_at IS NULL
+   * - scheduled_start IS NOT NULL
+   * - status NOT IN ('cancelled')
+   * - Parent job: not deleted, is_active, not archived
+   *
+   * NOTE: 'completed' visits are now INCLUDED (they have outcomes to display).
+   * Previously excluded — Phase 2 shows all non-cancelled scheduled visits.
    *
    * INVARIANTS:
-   * - Calendar shows SCHEDULED work only (NOT status-based)
-   * - Schedule data comes from job_visits (transitional until Model B)
-   * - Technician data comes from visit.assigned_technician_ids
-   * - Range is [startDate, endDate) - exclusive end to prevent boundary issues
+   * - Calendar shows SCHEDULED VISITS (not jobs)
+   * - id = visitId (primary calendar event identity)
+   * - Multiple visits per job = multiple calendar events
+   * - Range is [startDate, endDate) — exclusive end
    *
    * @param companyId - Tenant ID
    * @param startDate - Range start (inclusive)
-   * @param endDate - Range end (EXCLUSIVE - use start of next period)
+   * @param endDate - Range end (EXCLUSIVE)
    */
   async getScheduledJobsInRange(
     companyId: string,
     startDate: Date,
     endDate: Date
   ): Promise<CalendarJobWithDetails[]> {
-    // PHASE 3: Excluded visit statuses (same as syncJobScheduleFromVisits)
-    const EXCLUDED_VISIT_STATUSES = ['cancelled', 'completed'];
-    const now = new Date();
-
-    // Step 1: Get all eligible visits for this company, grouped and ranked per job
-    // Using raw SQL for the window function ranking
-    const rankedVisitsQuery = await db.execute(sql`
-      WITH eligible_visits AS (
-        SELECT
-          jv.id as visit_id,
-          jv.job_id,
-          jv.scheduled_start,
-          jv.scheduled_end,
-          jv.is_all_day,
-          jv.assigned_technician_id,
-          jv.assigned_technician_ids,
-          jv.estimated_duration_minutes,
-          jv.status as visit_status,
-          jv.visit_number
-        FROM job_visits jv
-        WHERE jv.company_id = ${companyId}
-          AND jv.is_active = true
-          AND jv.archived_at IS NULL
-          AND jv.scheduled_start IS NOT NULL
-          AND jv.status NOT IN ('cancelled', 'completed')
-      ),
-      ranked_visits AS (
-        SELECT
-          ev.*,
-          ROW_NUMBER() OVER (
-            PARTITION BY ev.job_id
-            ORDER BY
-              CASE WHEN ev.scheduled_start >= ${now} THEN 0 ELSE 1 END,
-              CASE WHEN ev.scheduled_start >= ${now} THEN ev.scheduled_start END ASC NULLS LAST,
-              CASE WHEN ev.scheduled_start < ${now} THEN ev.scheduled_start END DESC NULLS LAST
-          ) as rn
-        FROM eligible_visits ev
-      )
+    // Phase 2: Direct visit query — no ROW_NUMBER, no per-job dedup
+    const visitQuery = await db.execute(sql`
       SELECT
-        rv.visit_id,
-        rv.job_id,
-        rv.scheduled_start,
-        rv.scheduled_end,
-        rv.is_all_day,
-        rv.assigned_technician_id,
-        rv.assigned_technician_ids,
-        rv.estimated_duration_minutes,
-        rv.visit_number,
-        j.id,
+        jv.id as visit_id,
+        jv.job_id,
+        jv.scheduled_start,
+        jv.scheduled_end,
+        jv.is_all_day,
+        jv.assigned_technician_id,
+        jv.assigned_technician_ids,
+        jv.estimated_duration_minutes,
+        jv.status as visit_status,
+        jv.visit_number,
+        jv.outcome as visit_outcome,
         j.company_id,
         j.job_number,
         j.job_type,
@@ -278,19 +255,23 @@ export class CalendarRepository extends BaseRepository {
         j.version,
         cl.company_name as location_name,
         cl.parent_company_id as customer_company_id
-      FROM ranked_visits rv
-      JOIN jobs j ON rv.job_id = j.id
+      FROM job_visits jv
+      JOIN jobs j ON jv.job_id = j.id
       LEFT JOIN client_locations cl ON j.location_id = cl.id
-      WHERE rv.rn = 1
-        AND rv.scheduled_start >= ${startDate}
-        AND rv.scheduled_start < ${endDate}
+      WHERE jv.company_id = ${companyId}
+        AND jv.is_active = true
+        AND jv.archived_at IS NULL
+        AND jv.scheduled_start IS NOT NULL
+        AND jv.status != 'cancelled'
+        AND jv.scheduled_start >= ${startDate}
+        AND jv.scheduled_start < ${endDate}
         AND j.deleted_at IS NULL AND j.is_active = true
         AND j.status != 'archived'
-      ORDER BY rv.scheduled_start
+      ORDER BY jv.scheduled_start
     `);
 
-    // Parse raw results
-    const jobRows = (rankedVisitsQuery.rows || []) as Array<{
+    // Parse raw results — Phase 2: visit_outcome added
+    const jobRows = (visitQuery.rows || []) as Array<{
       visit_id: string;
       job_id: string;
       scheduled_start: Date | string;
@@ -300,7 +281,8 @@ export class CalendarRepository extends BaseRepository {
       assigned_technician_ids: string[] | null;
       estimated_duration_minutes: number | null;
       visit_number: number | null;
-      id: string;
+      visit_status: string;
+      visit_outcome: string | null;
       company_id: string;
       job_number: number;
       job_type: string;
@@ -315,7 +297,7 @@ export class CalendarRepository extends BaseRepository {
     // DEV-only debug log
     if (IS_DEV) {
       console.log(
-        `[Calendar] getScheduledJobsInRange (PHASE 3 - job_visits): company=${companyId} range=[${startDate.toISOString()}, ${endDate.toISOString()}) found=${jobRows.length} scheduled`
+        `[Calendar] getScheduledJobsInRange (PHASE 2 - visit-centric): company=${companyId} range=[${startDate.toISOString()}, ${endDate.toISOString()}) found=${jobRows.length} visit events`
       );
     }
 
@@ -346,9 +328,8 @@ export class CalendarRepository extends BaseRepository {
     const customerCompanyMap = await bulkResolveCustomerCompanies(db, Array.from(customerCompanyIds));
 
     // Build result with technician details
-    // PHASE 3: Use visit data for schedule fields, job data for everything else
+    // Phase 2: id = visitId (visit-centric identity)
     const results = jobRows.map((row) => {
-      // Technician IDs from visit (fallback to single tech if array is null)
       const techIds = row.assigned_technician_ids ||
         (row.assigned_technician_id ? [row.assigned_technician_id] : []);
       const technicians = techIds
@@ -370,7 +351,8 @@ export class CalendarRepository extends BaseRepository {
       }
 
       return {
-        id: row.job_id,
+        // Phase 2: id = visitId (calendar event identity)
+        id: row.visit_id,
         companyId: row.company_id,
         jobId: row.job_id,
         jobNumber: row.job_number,
@@ -383,24 +365,32 @@ export class CalendarRepository extends BaseRepository {
         customerCompanyName: row.customer_company_id
           ? customerCompanyMap.get(row.customer_company_id) || null
           : null,
-        // PHASE 3: Schedule data from visit
         scheduledStart,
         scheduledEnd,
         isAllDay: row.is_all_day ?? false,
         durationMinutes,
-        // PHASE 3: Technician data from visit
         assignedTechnicianIds: techIds.length > 0 ? techIds : null,
         primaryTechnicianId: row.assigned_technician_id,
         technicians,
         version: row.version,
-        // ADDITIVE: Visit info for calendar cards
+        // Phase 2: Visit fields (always present for scheduled events)
         visitId: row.visit_id,
         visitNumber: row.visit_number,
+        visitStatus: row.visit_status,
+        visitOutcome: row.visit_outcome,
       };
     });
 
-    // DEV: Assert calendar results meet Model A invariants
-    assertCalendarQueryResults(results, "storage:getScheduledJobsInRange:PHASE3");
+    // DEV: Assert calendar results — Phase 2 visit-centric (completed visits now included)
+    // Note: assertCalendarQueryResults checks job-level status; with Phase 2, completed
+    // visits may belong to non-open jobs, so we only assert scheduledStart is set.
+    if (IS_DEV) {
+      for (const r of results) {
+        if (!r.scheduledStart) {
+          console.error(`[storage:getScheduledJobsInRange:PHASE2] INVARIANT VIOLATION: visit ${r.visitId} has no scheduledStart`);
+        }
+      }
+    }
 
     return results;
   }
@@ -484,12 +474,20 @@ export class CalendarRepository extends BaseRepository {
           isNull(jobs.deletedAt),
           eq(jobs.isActive, true),
           // CANONICAL BACKLOG: scheduledStart IS NULL means unscheduled
-          // All-day events have scheduledStart set (to midnight), so they won't appear here
           isNull(jobs.scheduledStart),
-          // Only 'open' status jobs can be in backlog (canonical predicate)
-          // Terminal statuses (completed, invoiced, archived) never appear in backlog
-          eq(jobs.status, BACKLOG_STATUS)
-          // NOTE: NO technician filter - backlog includes ALL unscheduled open jobs
+          // Only 'open' status jobs can be in backlog
+          eq(jobs.status, BACKLOG_STATUS),
+          // Phase B: Exclude jobs needing follow-up (they go in the follow-up section)
+          // A job needs follow-up if it has a completed visit with is_follow_up_needed = true
+          // and no pending visit already scheduled
+          sql`NOT EXISTS (
+            SELECT 1 FROM job_visits fv
+            WHERE fv.job_id = ${jobs.id}
+              AND fv.company_id = ${jobs.companyId}
+              AND fv.is_active = true
+              AND fv.status = 'completed'
+              AND fv.is_follow_up_needed = true
+          )`
         )
       )
       .orderBy(jobs.jobNumber);
@@ -563,6 +561,122 @@ export class CalendarRepository extends BaseRepository {
     assertBacklogQueryResults(results, "storage:getUnscheduledJobs");
 
     return results;
+  }
+
+  /**
+   * Phase B: Get jobs that need a follow-up visit.
+   *
+   * ELIGIBILITY RULES:
+   * 1. Job is active, not deleted, status = "open"
+   * 2. Job has at least one completed visit with is_follow_up_needed = true
+   * 3. Job does NOT have a pending (non-completed, non-cancelled) visit already scheduled
+   *
+   * This gives office/admin a list of jobs where the tech said "needs parts"
+   * or "needs follow-up" and no next visit has been created yet.
+   */
+  async getJobsNeedingFollowUp(companyId: string): Promise<(CalendarJobWithDetails & {
+    lastOutcome: string | null;
+    lastOutcomeNote: string | null;
+    lastVisitCompletedAt: Date | null;
+    lastVisitNumber: number | null;
+  })[]> {
+    // Subquery: jobs that have a completed visit needing follow-up
+    // AND do NOT have a pending visit already scheduled
+    const rows = await db.execute(sql`
+      SELECT DISTINCT ON (j.id)
+        j.id,
+        j.company_id,
+        j.job_number,
+        j.job_type,
+        j.summary,
+        j.status,
+        j.location_id,
+        j.version,
+        j.assigned_technician_ids,
+        j.primary_technician_id,
+        cl.company_name AS location_name,
+        cl.parent_company_id AS customer_company_id,
+        -- Last completed visit with follow-up needed
+        fv.outcome AS last_outcome,
+        fv.outcome_note AS last_outcome_note,
+        fv.completed_at AS last_visit_completed_at,
+        fv.visit_number AS last_visit_number
+      FROM jobs j
+      LEFT JOIN client_locations cl ON j.location_id = cl.id
+      -- Join to the most recent completed visit that needs follow-up
+      INNER JOIN job_visits fv ON fv.job_id = j.id
+        AND fv.company_id = j.company_id
+        AND fv.is_active = true
+        AND fv.status = 'completed'
+        AND fv.is_follow_up_needed = true
+      WHERE j.company_id = ${companyId}
+        AND j.deleted_at IS NULL
+        AND j.is_active = true
+        AND j.status = 'open'
+        -- Exclude jobs that already have a pending visit scheduled
+        AND NOT EXISTS (
+          SELECT 1 FROM job_visits pv
+          WHERE pv.job_id = j.id
+            AND pv.company_id = j.company_id
+            AND pv.is_active = true
+            AND pv.status NOT IN ('completed', 'cancelled')
+            AND pv.scheduled_start IS NOT NULL
+        )
+      ORDER BY j.id, fv.completed_at DESC NULLS LAST
+    `);
+
+    if (!rows.rows || rows.rows.length === 0) return [];
+
+    // Bulk resolve technicians and customer companies
+    const technicianIdSet = new Set<string>();
+    const customerCompanyIds = new Set<string>();
+
+    for (const row of rows.rows as any[]) {
+      if (row.primary_technician_id) technicianIdSet.add(row.primary_technician_id);
+      if (row.assigned_technician_ids) {
+        for (const techId of row.assigned_technician_ids) technicianIdSet.add(techId);
+      }
+      if (row.customer_company_id) customerCompanyIds.add(row.customer_company_id);
+    }
+
+    const technicianMap = await bulkResolveTechnicians(db, Array.from(technicianIdSet));
+    const customerCompanyMap = await bulkResolveCustomerCompanies(db, Array.from(customerCompanyIds));
+
+    return (rows.rows as any[]).map((row) => {
+      const techIds = row.assigned_technician_ids || [];
+      const technicians = techIds
+        .map((id: string) => technicianMap.get(id))
+        .filter((t: any): t is { id: string; name: string; color: string | null } => t !== undefined);
+
+      return {
+        id: row.id,
+        companyId: row.company_id,
+        jobId: row.id,
+        jobNumber: row.job_number,
+        jobType: row.job_type,
+        summary: row.summary,
+        status: row.status,
+        locationId: row.location_id,
+        locationName: row.location_name || "Unknown Location",
+        customerCompanyId: row.customer_company_id,
+        customerCompanyName: row.customer_company_id
+          ? customerCompanyMap.get(row.customer_company_id) || null
+          : null,
+        scheduledStart: null,
+        scheduledEnd: null,
+        isAllDay: false,
+        durationMinutes: null,
+        assignedTechnicianIds: row.assigned_technician_ids,
+        primaryTechnicianId: row.primary_technician_id,
+        technicians,
+        version: row.version,
+        // Follow-up specific fields
+        lastOutcome: row.last_outcome,
+        lastOutcomeNote: row.last_outcome_note,
+        lastVisitCompletedAt: row.last_visit_completed_at,
+        lastVisitNumber: row.last_visit_number,
+      };
+    });
   }
 
   /**
@@ -1215,6 +1329,199 @@ export class CalendarRepository extends BaseRepository {
     }
 
     return result;
+  }
+
+  // ============================================================================
+  // PHASE 4 DISPATCH REFACTOR: Visit-Centric Write Methods
+  // ============================================================================
+  // These methods operate directly on a visitId, skipping the "find eligible visit"
+  // lookup. Used by client for existing scheduled visit mutations.
+  // Flow A (first schedule) still uses scheduleJob(jobId).
+  // ============================================================================
+
+  /**
+   * Phase 4: Reschedule an existing visit by visitId.
+   * Directly updates the specified visit — no eligible-visit lookup needed.
+   * Handles spawn-on-action if visit has been actioned.
+   */
+  async rescheduleVisit(
+    companyId: string,
+    visitId: string,
+    data: {
+      technicianUserId?: string | null;
+      startAt?: Date;
+      endAt?: Date;
+      notes?: string;
+      allDay?: boolean;
+      expectedVersion?: number;
+      mode?: 'replace' | 'complete_and_new';
+    }
+  ) {
+    // Fetch the visit directly
+    const visit = await jobVisitsRepository.getJobVisit(companyId, visitId);
+    if (!visit) {
+      throw new Error('Visit not found');
+    }
+
+    // Look up the parent job for terminal-status check and version locking
+    const existingJob = await this.getJobById(companyId, visit.jobId);
+    if (!existingJob) {
+      throw new Error('Parent job not found');
+    }
+
+    if (TERMINAL_STATUSES.includes(existingJob.status as any)) {
+      throw new TerminalJobImmutableError(visit.jobId, existingJob.status);
+    }
+
+    // Version check — use visit version for visit-centric mutations
+    if (data.expectedVersion !== undefined && visit.version !== data.expectedVersion) {
+      throw new VersionMismatchError(data.expectedVersion, visit.version);
+    }
+
+    // All-day → timed conversion guard
+    const wasAllDay = visit.isAllDay === true;
+    const isNowTimed = data.allDay === false && data.startAt != null;
+    if (wasAllDay && isNowTimed) {
+      const duration = (existingJob.durationMinutes && existingJob.durationMinutes > 0 && existingJob.durationMinutes <= 480)
+        ? existingJob.durationMinutes
+        : DEFAULT_VISIT_DURATION_MINUTES;
+      data.endAt = new Date(data.startAt!.getTime() + duration * 60_000);
+    }
+
+    // Spawn-on-action check
+    const visitIsActioned = isVisitActioned(visit);
+    const shouldSpawn = data.mode === 'complete_and_new' || (visitIsActioned && data.mode !== 'replace');
+
+    if (shouldSpawn) {
+      // Handle old visit
+      if (data.mode === 'complete_and_new') {
+        const now = new Date();
+        const actualDuration = visit.checkedInAt
+          ? Math.round((now.getTime() - new Date(visit.checkedInAt).getTime()) / 60000)
+          : null;
+        await jobVisitsRepository.updateJobVisit(companyId, visit.id, visit.version, {
+          status: 'completed',
+          checkedOutAt: now,
+          ...(actualDuration !== null && { actualDurationMinutes: actualDuration }),
+        });
+      } else {
+        await jobVisitsRepository.updateJobVisit(companyId, visit.id, visit.version, {
+          isActive: false,
+        });
+      }
+
+      // Create new visit
+      const normalized = normalizeScheduleTimes({ allDay: data.allDay, startAt: data.startAt, endAt: data.endAt });
+      const techAssignment = data.technicianUserId !== undefined
+        ? normalizeTechnicianAssignment(data.technicianUserId || null)
+        : normalizeTechnicianAssignment(visit.assignedTechnicianId || null);
+
+      await jobVisitsRepository.createJobVisit(companyId, visit.jobId, {
+        scheduledStart: normalized.scheduledStart,
+        scheduledEnd: normalized.scheduledEnd,
+        isAllDay: normalized.isAllDay,
+        assignedTechnicianId: techAssignment.primaryTechnicianId,
+        assignedTechnicianIds: techAssignment.assignedTechnicianIds,
+        status: 'scheduled',
+        visitNotes: data.notes,
+      });
+    } else {
+      // Not actioned: update in place
+      const visitUpdate: any = {};
+      if (data.startAt !== undefined || data.allDay !== undefined) {
+        const normalized = normalizeScheduleTimes({ allDay: data.allDay, startAt: data.startAt, endAt: data.endAt });
+        visitUpdate.scheduledStart = normalized.scheduledStart;
+        visitUpdate.scheduledEnd = normalized.scheduledEnd;
+        visitUpdate.isAllDay = normalized.isAllDay;
+      }
+      if (data.technicianUserId !== undefined) {
+        const techAssignment = normalizeTechnicianAssignment(data.technicianUserId || null);
+        visitUpdate.assignedTechnicianId = techAssignment.primaryTechnicianId;
+        visitUpdate.assignedTechnicianIds = techAssignment.assignedTechnicianIds;
+      }
+      if (data.notes !== undefined) visitUpdate.visitNotes = data.notes;
+      if (Object.keys(visitUpdate).length > 0) {
+        await jobVisitsRepository.updateJobVisit(companyId, visit.id, visit.version, visitUpdate);
+      }
+    }
+
+    // Re-fetch job (synced via updateJobVisit/createJobVisit)
+    const result = await this.getJobById(companyId, visit.jobId);
+
+    if (IS_DEV) {
+      console.log(`[Calendar] rescheduleVisit (PHASE 4): visitId=${visitId} jobId=${visit.jobId} actioned=${visitIsActioned}`);
+    }
+
+    return { ...result, visitId };
+  }
+
+  /**
+   * Phase 4: Unschedule an existing visit by visitId.
+   * Converts the visit to a placeholder (clears scheduledStart/End).
+   */
+  async unscheduleVisit(companyId: string, visitId: string, expectedVersion?: number) {
+    const visit = await jobVisitsRepository.getJobVisit(companyId, visitId);
+    if (!visit) {
+      throw new Error('Visit not found');
+    }
+
+    const existingJob = await this.getJobById(companyId, visit.jobId);
+    if (!existingJob) {
+      throw new Error('Parent job not found');
+    }
+
+    if (TERMINAL_STATUSES.includes(existingJob.status as any)) {
+      throw new TerminalJobImmutableError(visit.jobId, existingJob.status);
+    }
+
+    // Version check using visit version
+    if (expectedVersion !== undefined && visit.version !== expectedVersion) {
+      throw new VersionMismatchError(expectedVersion, visit.version);
+    }
+
+    // Convert to placeholder
+    await jobVisitsRepository.updateJobVisit(companyId, visit.id, visit.version, {
+      scheduledStart: null,
+      scheduledEnd: null,
+      scheduledDate: new Date(),
+      isAllDay: false,
+    });
+
+    if (IS_DEV) {
+      console.log(`[Calendar] unscheduleVisit (PHASE 4): visitId=${visitId} jobId=${visit.jobId}`);
+    }
+
+    // Re-fetch job
+    const result = await this.getJobById(companyId, visit.jobId);
+    return { ...result, visitId };
+  }
+
+  /**
+   * Phase 4: Resize an existing visit by visitId.
+   * Updates only scheduledEnd on the visit.
+   */
+  async resizeVisit(companyId: string, visitId: string, newEndTime: Date) {
+    const visit = await jobVisitsRepository.getJobVisit(companyId, visitId);
+    if (!visit) {
+      throw new Error('Visit not found');
+    }
+
+    let finalEnd = newEndTime;
+    if (visit.isAllDay) {
+      finalEnd = new Date(newEndTime);
+      finalEnd.setHours(23, 59, 59, 0);
+    }
+
+    await jobVisitsRepository.updateJobVisit(companyId, visit.id, visit.version, {
+      scheduledEnd: finalEnd,
+    });
+
+    if (IS_DEV) {
+      console.log(`[Calendar] resizeVisit (PHASE 4): visitId=${visitId} newEnd=${finalEnd.toISOString()}`);
+    }
+
+    const result = await this.getJobById(companyId, visit.jobId);
+    return { ...result, visitId };
   }
 
   /**

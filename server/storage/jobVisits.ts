@@ -725,11 +725,20 @@ export class JobVisitsRepository extends BaseRepository {
       updates.checkedInAt = new Date();
     }
 
-    if (status === "completed" && existing.checkedInAt && !existing.checkedOutAt) {
-      const checkOutTime = new Date();
-      updates.checkedOutAt = checkOutTime;
-      const durationMs = checkOutTime.getTime() - new Date(existing.checkedInAt).getTime();
-      updates.actualDurationMinutes = Math.round(durationMs / 60000);
+    if (status === "completed") {
+      // Auto check-out if checked in but not yet checked out
+      if (existing.checkedInAt && !existing.checkedOutAt) {
+        const checkOutTime = new Date();
+        updates.checkedOutAt = checkOutTime;
+        const durationMs = checkOutTime.getTime() - new Date(existing.checkedInAt).getTime();
+        updates.actualDurationMinutes = Math.round(durationMs / 60000);
+      }
+      // Phase A: Write structured completion fields when completing via office flow
+      // Default outcome to "completed" if not already set by tech endpoint
+      if (!existing.outcome) {
+        updates.completedAt = new Date();
+        updates.outcome = "completed";
+      }
     }
 
     const [updated] = await db

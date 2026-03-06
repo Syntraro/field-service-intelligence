@@ -285,12 +285,22 @@ router.post(
       actualDurationMinutes = Math.round(durationMs / 60000);
     }
 
+    // Phase A: Write structured outcome fields authoritatively
+    const isFollowUpNeeded = outcome === "needs_parts" || outcome === "needs_followup";
+
     const [updated] = await db
       .update(jobVisits)
       .set({
         status: "completed",
         checkedOutAt: now,
         actualDurationMinutes,
+        // Structured outcome fields (Phase A — authoritative source)
+        outcome,
+        outcomeNote: outcomeNote?.trim() || null,
+        completedByUserId: userId,
+        completedAt: now,
+        isFollowUpNeeded: isFollowUpNeeded,
+        // Legacy text tags preserved for backward compat with old UI surfaces
         visitNotes: [
           visit.visitNotes,
           `[OUTCOME: ${outcome}]${outcomeNote ? ` ${outcomeNote}` : ""}`,

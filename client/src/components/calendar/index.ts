@@ -19,3 +19,6 @@ export { TechnicianFilterPopover } from "./TechnicianFilterPopover";
 export { CalendarSidebar } from "./CalendarSidebar";
 // Calendar Improvement (2026-03-05): Technician lane header with capacity/risk/presence
 export { TechLaneHeader } from "./TechLaneHeader";
+// Empty-slot quick-create dialog (2026-03-06)
+export { QuickCreateSlotDialog } from "./QuickCreateSlotDialog";
+export type { SlotClickData } from "./QuickCreateSlotDialog";

@@ -53,6 +53,8 @@ export interface CalendarGridWeekProps {
   onUnschedule?: (assignmentId: string, version: number) => void;
   /** Regional settings (timezone, time format, week start) */
   regional: RegionalSettings;
+  /** Empty-slot click handler for quick-create (2026-03-06) */
+  onEmptySlotClick?: (data: { date: Date; hour: number; minute: number }) => void;
 }
 
 interface WeekDayData {
@@ -124,6 +126,8 @@ function HourlyDropZone({
   savingJobIds,
   onUnschedule,
   timeFormat,
+  onEmptySlotClick,
+  dayDate,
 }: {
   dateKey: string; // 2026-01-30: Use full date key (YYYY-MM-DD) for unambiguous targeting
   hour: number;
@@ -138,6 +142,10 @@ function HourlyDropZone({
   savingJobIds?: Set<string>;
   onUnschedule?: (assignmentId: string, version: number) => void;
   timeFormat?: "12h" | "24h";
+  /** Empty-slot click for quick-create (2026-03-06) */
+  onEmptySlotClick?: (data: { date: Date; hour: number; minute: number }) => void;
+  /** Actual Date object for this day column */
+  dayDate?: Date;
 }) {
   const rowHeight = DENSITY_STYLES[density].rowHeight;
 
@@ -145,7 +153,20 @@ function HourlyDropZone({
   const hourlyEvents = dayEvents.filter((e) => !e.isAllDay && e.scheduledHour === hour);
 
   return (
-    <div className={`border-r ${DENSITY_STYLES[density].row} bg-background relative`} style={{ minHeight: `${rowHeight}px` }}>
+    <div
+      className={`border-r ${DENSITY_STYLES[density].row} bg-background relative`}
+      style={{ minHeight: `${rowHeight}px` }}
+      onClick={(e) => {
+        // Empty-slot click: only fire if clicking background (not an event card)
+        if (!onEmptySlotClick || !dayDate) return;
+        if ((e.target as HTMLElement).closest('[data-testid^="assigned-client-"]')) return;
+        // Calculate minute offset from click position within the cell
+        const rect = e.currentTarget.getBoundingClientRect();
+        const yRatio = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+        const minute = Math.floor(yRatio * 4) * 15; // snap to 15min
+        onEmptySlotClick({ date: dayDate, hour, minute });
+      }}
+    >
       <div className="absolute inset-0 flex flex-col pointer-events-none">
         {[0, 15, 30, 45].map((m) => (
           // 2026-01-30: Format: weekly|{YYYY-MM-DD}|{hour}|{minute}
@@ -370,6 +391,7 @@ export function CalendarGridWeek({
   savingJobIds,
   onUnschedule,
   regional,
+  onEmptySlotClick,
 }: CalendarGridWeekProps) {
   // Phase C + Phase 2: Debug layout instrumentation — gated behind ?debugLayout=1
   useLayoutEffect(() => {
@@ -566,6 +588,8 @@ export function CalendarGridWeek({
                 savingJobIds={savingJobIds}
                 onUnschedule={onUnschedule}
                 timeFormat={regional.timeFormat}
+                onEmptySlotClick={onEmptySlotClick}
+                dayDate={dayData.date}
               />
             ))}
           </div>
