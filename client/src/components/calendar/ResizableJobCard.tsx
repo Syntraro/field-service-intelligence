@@ -38,6 +38,8 @@ interface ResizableJobCardProps {
   timeFormat?: "12h" | "24h";
   /** Item kind for visual distinction: "visit" (default) or "task" */
   itemKind?: "visit" | "task";
+  /** Whether this card is draggable (default: true). Set false for tasks. (2026-03-06) */
+  draggable?: boolean;
 }
 
 export function ResizableJobCard({
@@ -58,6 +60,7 @@ export function ResizableJobCard({
   onReschedule,
   timeFormat = "12h",
   itemKind = "visit",
+  draggable = true,
 }: ResizableJobCardProps) {
   const { toast } = useToast();
 
@@ -65,7 +68,7 @@ export function ResizableJobCard({
   // to other time slots, all-day lanes, or between technician columns.
   const { attributes, listeners, setNodeRef: setDragRef, transform, isDragging } = useDraggable({
     id: assignment.id,
-    disabled: isSaving || isCompleted,
+    disabled: isSaving || isCompleted || !draggable,
     data: { type: "assignment", assignmentId: assignment.id, client, event: assignment },
   });
 

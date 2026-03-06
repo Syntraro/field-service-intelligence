@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### Calendar: Resize Snap-Back Lag Eliminated (2026-03-06)
+- **Root cause:** `updateDuration` mutation had no `onMutate` (no optimistic update) and `onSuccess` called `await refetchCalendar()` — a full server round-trip before UI showed the new duration. Combined with `setTempDuration(null)` in ResizableJobCard clearing the visual height immediately, this caused a visible snap-back: card reverted to old height for 600-1200ms before settling at new height.
+- **Fix:** Added `onMutate` with optimistic cache update (patches `durationMinutes` + `endAt` in query cache before server responds), added `savingJobIds` tracking, added snapshot for rollback on error. Replaced `await refetchCalendar()` in `onSuccess` with `mergeServerResponseIntoCache()` — no full refetch needed.
+- **Files:** `client/src/hooks/useCalendarDnD.ts`
+
+#### Calendar: Task Cards No Longer Appear Draggable (2026-03-06)
+- **Root cause:** `ResizableJobCard` (used for timed events in Week and Day Columns views) did not check `getEventCapabilities().draggable` — it allowed drag for all non-completed, non-saving items regardless of event kind. Tasks rendered via ResizableJobCard appeared draggable (drag cursor, could be picked up) but on drop would fail silently or snap back because the drop handler expects visit IDs, not task IDs.
+- **Fix:** Added `draggable` prop to `ResizableJobCard` (default `true`), wired to `useDraggable({ disabled: ... || !draggable })`. All three grid components that render ResizableJobCard now pass `caps.draggable` (which is `false` for tasks). Also fixed `CalendarGridDayJobber` to gate `onResize` through `caps.resizable` (was unconditionally passing `handleResize` to tasks).
+- **Files:** `client/src/components/calendar/ResizableJobCard.tsx`, `client/src/components/calendar/CalendarGridWeek.tsx`, `client/src/components/calendar/CalendarGridDayJobber.tsx`
+
 ### Changed
 
 #### Calendar: Final Dead Code Cleanup & Schema Rename (2026-03-06)

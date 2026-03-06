@@ -434,7 +434,7 @@ function TechColumn({
                     assignment={event.raw}
                     client={getEventClient(event, client)}
                     rowHeight={rowHeight}
-                    onResize={handleResize}
+                    onResize={caps.resizable ? handleResize : () => {}}
                     getTechnicianColor={getTechnicianColor}
                     densityStyle={DENSITY_STYLES[density].card}
                     onClick={() => handleClientClick(client, event)}
@@ -448,6 +448,7 @@ function TechColumn({
                     onUnschedule={caps.removable ? onUnschedule : undefined}
                     timeFormat={timeFormat}
                     itemKind={event.kind}
+                    draggable={caps.draggable}
                   />
                 );
               })}

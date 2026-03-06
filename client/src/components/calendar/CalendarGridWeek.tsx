@@ -207,6 +207,7 @@ function HourlyDropZone({
             onUnschedule={caps.removable ? onUnschedule : undefined}
             timeFormat={timeFormat}
             itemKind={event.kind}
+            draggable={caps.draggable}
           />
         ) : null;
       })}

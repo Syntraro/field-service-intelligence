@@ -1038,12 +1038,14 @@ export function useCalendarDnD(
   // ========================================
   // Update Duration Mutation
   // ========================================
+  // 2026-03-06: Resize mutation with optimistic update — eliminates snap-back lag.
+  // Previously had no onMutate and awaited refetchCalendar() in onSuccess,
+  // causing visible snap-back (card reverted to old height until full refetch completed).
   const updateDuration = useMutation({
     mutationFn: async ({ id, durationMinutes, assignment }: { id: string; durationMinutes: number; assignment?: any; version?: number }) => {
       // Phase 4: Use visit-centric resize endpoint
       const scheduledStart = assignment?.scheduledStart || assignment?.startAt;
 
-      // Resize requires a start time to compute new end — fail explicitly if missing (2026-03-06)
       if (!scheduledStart) {
         throw new Error("Cannot resize: assignment has no start time");
       }
@@ -1054,19 +1056,58 @@ export function useCalendarDnD(
         body: JSON.stringify({ newEndTime }),
       });
     },
-    onSuccess: async () => {
-      await refetchCalendar();
-      canonicalizeCalendarCache();
-      // Duration change doesn't affect unscheduled list
-      invalidateCalendarOnly();
+    onMutate: async (params) => {
+      markJobSaving(params.id);
+      await queryClient.cancelQueries({ queryKey: getCalendarQueryKey() });
+
+      const queryKey = getCalendarQueryKey();
+      const previousData = queryClient.getQueryData(queryKey);
+      snapshotRef.current = { queryKey, data: previousData };
+
+      // Optimistic update: patch durationMinutes and endAt in cache
+      const prev = previousData as any;
+      if (prev && typeof prev === 'object' && ('events' in prev || 'assignments' in prev)) {
+        const currentEvents = prev.events ?? prev.assignments ?? [];
+        const updatedEvents = currentEvents.map((a: any) => {
+          if (a.id === params.id) {
+            const scheduledStart = a.scheduledStart || a.startAt;
+            const newEndAt = scheduledStart
+              ? new Date(new Date(scheduledStart).getTime() + params.durationMinutes * 60_000).toISOString()
+              : a.endAt ?? a.scheduledEnd;
+            return toCanonicalEvent({
+              ...a,
+              durationMinutes: params.durationMinutes,
+              endAt: newEndAt,
+              scheduledEnd: newEndAt,
+              _optimistic: true,
+              _saving: true,
+            });
+          }
+          return a;
+        });
+        queryClient.setQueryData(queryKey, { ...prev, events: updatedEvents });
+      }
+
+      return { previousData, queryKey };
     },
-    onError: async (error: any, params) => {
-      // DEV logging
+    onSuccess: (result, params) => {
+      clearJobSaving(params.id);
+      snapshotRef.current = null;
+      // Merge server response — no full refetch needed
+      mergeServerResponseIntoCache(result, params.id, 'reschedule');
+    },
+    onError: async (error: any, params, context) => {
+      clearJobSaving(params.id);
+      // Rollback to snapshot
+      if (context?.previousData && context?.queryKey) {
+        queryClient.setQueryData(context.queryKey, context.previousData);
+      }
+      snapshotRef.current = null;
+
       if (process.env.NODE_ENV === 'development') {
         console.error('[useCalendarDnD] updateDuration error:', error, 'params:', params);
       }
 
-      // VERSION_MISMATCH (409): Log to diagnostics and refetch
       if (isVersionMismatchError(error)) {
         logVersionMismatch(
           params.id,
@@ -1075,7 +1116,6 @@ export function useCalendarDnD(
           'POST',
           `/api/calendar/visit/${params.id}/resize`
         );
-        // Refetch calendar to get fresh versions (duration change doesn't affect unscheduled)
         await refetchCalendar();
         invalidateCalendarOnly();
         const handled = await handleCalendarMutationError(error);
