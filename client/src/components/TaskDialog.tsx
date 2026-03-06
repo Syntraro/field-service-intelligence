@@ -13,43 +13,41 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { QuickAddSupplierDialog } from "@/components/suppliers/QuickAddSupplierDialog";
 import type { Supplier, SupplierLocation, Job } from "@shared/schema";
 
-/**
- * Safely convert a Date, string, or nullish value to an ISO string.
- * Returns null if the value cannot be converted.
- */
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
 function safeToISOString(value: Date | string | null | undefined): string | null {
   if (!value) return null;
-  if (typeof value === 'string') {
+  if (typeof value === "string") {
     const parsed = new Date(value);
-    if (!isNaN(parsed.getTime())) {
-      return parsed.toISOString();
-    }
-    return null;
+    return isNaN(parsed.getTime()) ? null : parsed.toISOString();
   }
-  if (value instanceof Date && !isNaN(value.getTime())) {
-    return value.toISOString();
-  }
+  if (value instanceof Date && !isNaN(value.getTime())) return value.toISOString();
   return null;
 }
 
-/**
- * Extract YYYY-MM-DD date string from a Date or ISO string.
- * Returns empty string if invalid.
- */
 function extractDateString(value: Date | string | null | undefined): string {
   const iso = safeToISOString(value);
-  if (!iso) return "";
-  return iso.split("T")[0];
+  return iso ? iso.split("T")[0] : "";
 }
+
+/** Format a supplier location for display: "Name — Address" with fallbacks */
+function formatLocationLabel(loc: SupplierLocation): string {
+  const name = loc.name || "";
+  const addr = (loc as any).address || "";
+  const city = (loc as any).city || "";
+  const province = (loc as any).province || "";
+  const suffix = [city, province].filter(Boolean).join(", ");
+
+  if (name && addr) return `${name} — ${addr}`;
+  if (name && suffix) return `${name} — ${suffix}`;
+  if (name) return name;
+  if (addr) return addr;
+  return suffix || "Unnamed location";
+}
+
+// ─── Types ───────────────────────────────────────────────────────────────────
 
 type TaskType = "GENERAL" | "SUPPLIER_VISIT";
-
-interface TeamMember {
-  id: string;
-  fullName: string;
-  email: string;
-  role: string;
-}
 
 interface SuppliersResponse {
   items: Supplier[];
@@ -59,9 +57,11 @@ interface SuppliersResponse {
 interface TaskDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  taskId?: string; // If provided, we're editing; if not, we're creating
+  taskId?: string;
   onChanged?: () => void;
 }
+
+// ─── Component ───────────────────────────────────────────────────────────────
 
 export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialogProps) {
   const { user } = useAuth();
@@ -71,37 +71,86 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
   const [title, setTitle] = useState("");
   const [notes, setNotes] = useState("");
   const [type, setType] = useState<TaskType>("GENERAL");
-  const [assignedToUserId, setAssignedToUserId] = useState<string>("");
+  const [assignedToUserId, setAssignedToUserId] = useState("");
   const [startDate, setStartDate] = useState("");
   const [startTime, setStartTime] = useState("");
   const [allDay, setAllDay] = useState(false);
-  const [jobId, setJobId] = useState<string>("");
+  const [jobId, setJobId] = useState("");
   const [supplierId, setSupplierId] = useState<string | undefined>();
   const [supplierLocationId, setSupplierLocationId] = useState<string | undefined>();
   const [poNumber, setPoNumber] = useState("");
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  // Fetch task details if editing
-  // Note: queryKey[0] is used as the URL by the default query function,
-  // so we must include the full URL with taskId as the first element
+  // ─── Data Queries ──────────────────────────────────────────────────────────
+
   const { data: taskData, isLoading: isLoadingTask } = useQuery({
     queryKey: taskId ? [`/api/tasks/${taskId}`] : ["task-empty"],
     enabled: isEditMode && open,
     staleTime: 0,
   });
-
   const task = taskData as any;
 
-  // Fetch supplier visit details if editing a supplier visit
-  // Note: queryKey[0] is used as the URL by the default query function
   const { data: supplierVisitData } = useQuery({
     queryKey: taskId ? [`/api/tasks/${taskId}/supplier-visit`] : ["supplier-visit-empty"],
     enabled: isEditMode && open && type === "SUPPLIER_VISIT",
     staleTime: 0,
   });
 
-  // Populate form when task loads
+  const { teamMembers, isLoading: isLoadingTeam } = useTechniciansDirectory();
+
+  const { data: jobsData } = useQuery<{ data?: Job[]; items?: Job[] }>({
+    queryKey: ["jobs"],
+    queryFn: () => apiRequest("/api/jobs"),
+    staleTime: 2 * 60 * 1000,
+  });
+  const jobs = jobsData?.data ?? jobsData?.items ?? [];
+
+  const { data: suppliersData } = useQuery<SuppliersResponse>({
+    queryKey: ["/api/suppliers"],
+    enabled: type === "SUPPLIER_VISIT",
+    staleTime: 5 * 60 * 1000,
+  });
+  const suppliers = suppliersData?.items?.filter((s) => s.isActive) || [];
+
+  // Fetch supplier locations with explicit queryFn.
+  // The default getQueryFn uses queryKey[0] as the URL, but our key is
+  // composite: ["/api/suppliers", supplierId, "locations"]. An explicit
+  // queryFn ensures the correct URL is always called.
+  const { data: locationsRaw, isLoading: isLoadingLocations } = useQuery<SupplierLocation[]>({
+    queryKey: ["supplier-locations", supplierId],
+    queryFn: async () => {
+      if (!supplierId) return [];
+      const res = await fetch(`/api/suppliers/${supplierId}/locations`, {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error(`Failed to fetch locations: ${res.status}`);
+      const json = await res.json();
+      // Server returns { items: SupplierLocation[] }. Normalize defensively.
+      const items: SupplierLocation[] = Array.isArray(json)
+        ? json
+        : json?.items ?? json?.data ?? json?.locations ?? [];
+      if (process.env.NODE_ENV !== "production") {
+        console.log("[TASKS_DIAG] supplier locations fetched", {
+          supplierId,
+          count: items.length,
+          first: items[0] ? { id: items[0].id, name: items[0].name } : null,
+        });
+      }
+      return items;
+    },
+    enabled: Boolean(supplierId) && type === "SUPPLIER_VISIT",
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Active locations only — filtered from the fetched supplier_locations rows
+  const locations = useMemo(
+    () => (locationsRaw || []).filter((l) => l.isActive !== false),
+    [locationsRaw],
+  );
+
+  // ─── Effects ───────────────────────────────────────────────────────────────
+
   useEffect(() => {
     if (task && isEditMode) {
       setTitle(task.title || "");
@@ -110,33 +159,27 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
       setAssignedToUserId(task.assignedToUserId || "");
       setJobId(task.jobId || "");
       setAllDay(task.allDay || false);
-
-      // Parse scheduled times
       if (task.scheduledStartAt) {
         const dateStr = extractDateString(task.scheduledStartAt);
         if (dateStr) {
           setStartDate(dateStr);
           if (!task.allDay) {
-            const date = new Date(task.scheduledStartAt);
-            if (!isNaN(date.getTime())) {
-              setStartTime(date.toTimeString().slice(0, 5));
-            }
+            const d = new Date(task.scheduledStartAt);
+            if (!isNaN(d.getTime())) setStartTime(d.toTimeString().slice(0, 5));
           }
         }
       }
     } else if (!isEditMode) {
-      // Reset form for create mode
       resetForm();
     }
   }, [task, isEditMode, open]);
 
-  // Populate supplier visit fields when data loads
   useEffect(() => {
     if (supplierVisitData && isEditMode && type === "SUPPLIER_VISIT") {
-      const svData = supplierVisitData as any;
-      setSupplierId(svData.supplierId || undefined);
-      setSupplierLocationId(svData.supplierLocationId || undefined);
-      setPoNumber(svData.poNumber || "");
+      const sv = supplierVisitData as any;
+      setSupplierId(sv.supplierId || undefined);
+      setSupplierLocationId(sv.supplierLocationId || undefined);
+      setPoNumber(sv.poNumber || "");
     }
   }, [supplierVisitData, isEditMode, type]);
 
@@ -155,172 +198,118 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
     setSaveError(null);
   };
 
-  // Supplier Visit requires a supplier selection
-  const canSubmit = useMemo(() => {
-    if (!title.trim()) return false;
-    if (type === "SUPPLIER_VISIT" && !supplierId) return false;
-    return true;
-  }, [title, type, supplierId]);
+  // ─── Validation ────────────────────────────────────────────────────────────
 
-  // Fetch team members
-  const { teamMembers, isLoading: isLoadingTeam } = useTechniciansDirectory();
+  // Allow task creation without a supplier — techs may fill it in later.
+  // Title is the only hard requirement.
+  const canSubmit = useMemo(() => title.trim().length > 0, [title]);
 
-  // Fetch jobs
-  const { data: jobsData } = useQuery<{ data?: Job[]; items?: Job[] }>({
-    // Phase 5 E2: canonical family key
-    queryKey: ["jobs"],
-    queryFn: () => apiRequest("/api/jobs"),
-    staleTime: 2 * 60 * 1000,
-  });
-  const jobs = jobsData?.data ?? jobsData?.items ?? [];
+  // ─── Mutations ─────────────────────────────────────────────────────────────
 
-  // Fetch suppliers
-  const { data: suppliersData } = useQuery<SuppliersResponse>({
-    queryKey: ["/api/suppliers"],
-    enabled: type === "SUPPLIER_VISIT",
-    staleTime: 5 * 60 * 1000,
-  });
-  const suppliers = suppliersData?.items?.filter(s => s.isActive) || [];
-
-  // Fetch supplier locations — must use explicit queryFn since queryKey structure
-  // doesn't match URL (default getQueryFn uses queryKey[0] as URL)
-  const { data: locationsData } = useQuery<SupplierLocation[]>({
-    queryKey: ["/api/suppliers", supplierId, "locations"],
-    queryFn: async () => {
-      if (!supplierId) return [];
-      const res = await fetch(`/api/suppliers/${supplierId}/locations`, { credentials: "include" });
-      if (!res.ok) throw new Error(`Failed to fetch locations: ${res.status}`);
-      const data = await res.json();
-      // [TASKS_DIAG] Normalize: API returns { items: Location[] }
-      const items = Array.isArray(data) ? data : data?.items ?? data?.data ?? data?.locations ?? [];
-      if (process.env.NODE_ENV !== "production") {
-        console.log("[TASKS_DIAG] supplier locations fetch", {
-          supplierId,
-          responseShape: Array.isArray(data) ? "Array" : Object.keys(data),
-          normalizedCount: items.length,
-          firstItem: items[0] ? { id: items[0].id, name: items[0].name } : null,
-        });
-      }
-      return items;
-    },
-    enabled: Boolean(supplierId),
-    staleTime: 5 * 60 * 1000,
-  });
-  const locations = (locationsData || []).filter((l: any) => l.isActive !== false);
-
-  // Create or Update mutation
   const saveMutation = useMutation({
     mutationFn: async () => {
       setSaveError(null);
+
+      // Build scheduled dates
       let scheduledStartAt: string | undefined;
       let scheduledEndAt: string | undefined;
 
-      if (startDate && typeof startDate === 'string' && startDate.trim() !== "") {
+      if (startDate && startDate.trim()) {
         if (allDay) {
-          const startIso = safeToISOString(startDate + "T00:00:00");
-          const endIso = safeToISOString(startDate + "T23:59:59");
-          if (startIso && endIso) {
-            scheduledStartAt = startIso;
-            scheduledEndAt = endIso;
-          }
-        } else if (startTime && typeof startTime === 'string' && startTime.trim() !== "") {
-          const iso = safeToISOString(startDate + "T" + startTime);
-          if (iso) scheduledStartAt = iso;
+          scheduledStartAt = safeToISOString(startDate + "T00:00:00") ?? undefined;
+          scheduledEndAt = safeToISOString(startDate + "T23:59:59") ?? undefined;
+        } else if (startTime && startTime.trim()) {
+          scheduledStartAt = safeToISOString(startDate + "T" + startTime) ?? undefined;
         } else {
-          const iso = safeToISOString(startDate + "T00:00:00");
-          if (iso) scheduledStartAt = iso;
+          scheduledStartAt = safeToISOString(startDate + "T00:00:00") ?? undefined;
         }
       }
 
       const payload: any = {
         title: title.trim(),
-        type: type,
+        type,
         status: "pending" as const,
       };
-
-      if (notes && notes.trim()) payload.notes = notes.trim();
+      if (notes.trim()) payload.notes = notes.trim();
       if (assignedToUserId) payload.assignedToUserId = assignedToUserId;
       if (scheduledStartAt) payload.scheduledStartAt = scheduledStartAt;
       if (scheduledEndAt) payload.scheduledEndAt = scheduledEndAt;
       if (allDay) payload.allDay = allDay;
       if (jobId) payload.jobId = jobId;
 
-      const svPayload = type === "SUPPLIER_VISIT" ? {
-        supplierId: supplierId || null,
-        supplierLocationId: supplierLocationId || null,
-        poNumber: poNumber.trim() || null,
-      } : null;
+      // Supplier visit payload: supplierId, supplierLocationId, poNumber
+      const svPayload =
+        type === "SUPPLIER_VISIT"
+          ? {
+              supplierId: supplierId || null,
+              supplierLocationId: supplierLocationId || null,
+              poNumber: poNumber.trim() || null,
+            }
+          : null;
 
       if (isEditMode) {
-        const updatedTask = await apiRequest(`/api/tasks/${taskId}`, {
+        const updated = await apiRequest(`/api/tasks/${taskId}`, {
           method: "PATCH",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-
         if (svPayload) {
           await apiRequest(`/api/tasks/${taskId}/supplier-visit`, {
             method: "PATCH",
-            headers: { "Content-Type": "application/json" },
             body: JSON.stringify(svPayload),
           });
         }
-
-        return updatedTask;
+        return updated;
       } else {
-        const newTask = await apiRequest<any>("/api/tasks", {
+        const created = await apiRequest<any>("/api/tasks", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-
-        if (svPayload && newTask?.id) {
-          await apiRequest(`/api/tasks/${newTask.id}/supplier-visit`, {
+        if (svPayload && created?.id) {
+          await apiRequest(`/api/tasks/${created.id}/supplier-visit`, {
             method: "PATCH",
-            headers: { "Content-Type": "application/json" },
             body: JSON.stringify(svPayload),
           });
         }
-
-        return newTask;
+        return created;
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ predicate: (query) => {
-        const key = query.queryKey[0];
-        return typeof key === 'string' && key.startsWith('/api/tasks');
-      }});
+      queryClient.invalidateQueries({
+        predicate: (q) => {
+          const k = q.queryKey[0];
+          return typeof k === "string" && k.startsWith("/api/tasks");
+        },
+      });
       onOpenChange(false);
       resetForm();
-      setSaveError(null);
       onChanged?.();
     },
     onError: (error: any) => {
-      // Surface the server's error message inline (dialog stays open)
       const msg = error?.message || "Unknown error";
-      setSaveError(`Failed to ${isEditMode ? 'update' : 'create'} task: ${msg}`);
+      setSaveError(`Failed to ${isEditMode ? "update" : "create"} task: ${msg}`);
       if (process.env.NODE_ENV !== "production") {
         console.warn("[TASKS_DIAG] save error:", { status: error?.status, message: msg });
       }
     },
   });
 
-  // Delete mutation
   const deleteMutation = useMutation({
     mutationFn: async () => {
       if (!taskId) throw new Error("No task ID");
       return apiRequest(`/api/tasks/${taskId}`, { method: "DELETE" });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ predicate: (query) => {
-        const key = query.queryKey[0];
-        return typeof key === 'string' && key.startsWith('/api/tasks');
-      }});
+      queryClient.invalidateQueries({
+        predicate: (q) => {
+          const k = q.queryKey[0];
+          return typeof k === "string" && k.startsWith("/api/tasks");
+        },
+      });
       onOpenChange(false);
       onChanged?.();
     },
     onError: (error: any) => {
-      alert(`Failed to delete task: ${error?.message || "Unknown error"}`);
+      setSaveError(`Failed to delete task: ${error?.message || "Unknown error"}`);
     },
   });
 
@@ -330,48 +319,57 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
     }
   };
 
+  // ─── Render ────────────────────────────────────────────────────────────────
+
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto p-3">
-          <DialogHeader className="pb-1">
+        <DialogContent className="sm:max-w-3xl p-5">
+          <DialogHeader className="pb-2">
             <DialogTitle>{isEditMode ? "Edit Task" : "New Task"}</DialogTitle>
           </DialogHeader>
 
           {isLoadingTask && isEditMode ? (
-            <div className="py-8 text-center text-sm text-muted-foreground">Loading task...</div>
+            <div className="py-8 text-center text-sm text-muted-foreground">
+              Loading task...
+            </div>
           ) : (
-            <div className="space-y-2">
-              {/* Title */}
-              <div className="space-y-1">
-                <Label className="text-xs">Title</Label>
-                <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Task title" className="h-8" />
-              </div>
-
-              {/* Type */}
-              <div className="space-y-1">
-                <Label className="text-xs">Type</Label>
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={type === "GENERAL" ? "default" : "outline"}
-                    onClick={() => setType("GENERAL")}
-                  >
-                    General
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant={type === "SUPPLIER_VISIT" ? "default" : "outline"}
-                    onClick={() => setType("SUPPLIER_VISIT")}
-                  >
-                    Supplier Visit
-                  </Button>
+            <div className="space-y-3">
+              {/* Row 1: Title + Type */}
+              <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-3 items-end">
+                <div className="space-y-1">
+                  <Label className="text-xs">Title</Label>
+                  <Input
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    placeholder="Task title"
+                    className="h-9"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Type</Label>
+                  <div className="flex gap-1">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={type === "GENERAL" ? "default" : "outline"}
+                      onClick={() => setType("GENERAL")}
+                    >
+                      General
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={type === "SUPPLIER_VISIT" ? "default" : "outline"}
+                      onClick={() => setType("SUPPLIER_VISIT")}
+                    >
+                      Supplier Visit
+                    </Button>
+                  </div>
                 </div>
               </div>
 
-              {/* Notes */}
+              {/* Row 2: Notes (full width) */}
               <div className="space-y-1">
                 <Label className="text-xs">Notes</Label>
                 <Textarea
@@ -383,20 +381,24 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
                 />
               </div>
 
-              {/* Two-column layout for compact fields */}
-              <div className="grid grid-cols-2 gap-3">
-                {/* Assigned To */}
+              {/* Row 3: Assigned To | Start Date | Start Time | All Day */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="space-y-1">
                   <Label className="text-xs">Assigned To</Label>
                   <div className="flex gap-1">
-                    <Select value={assignedToUserId || undefined} onValueChange={setAssignedToUserId}>
-                      <SelectTrigger className="h-8 text-sm flex-1">
-                        <SelectValue placeholder={isLoadingTeam ? "Loading..." : "Select..."} />
+                    <Select
+                      value={assignedToUserId || undefined}
+                      onValueChange={setAssignedToUserId}
+                    >
+                      <SelectTrigger className="h-9 text-sm flex-1">
+                        <SelectValue
+                          placeholder={isLoadingTeam ? "Loading..." : "Select..."}
+                        />
                       </SelectTrigger>
                       <SelectContent>
-                        {teamMembers.map((member) => (
-                          <SelectItem key={member.id} value={member.id}>
-                            {member.fullName}
+                        {teamMembers.map((m) => (
+                          <SelectItem key={m.id} value={m.id}>
+                            {m.fullName}
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -407,7 +409,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
                         variant="ghost"
                         size="sm"
                         onClick={() => setAssignedToUserId("")}
-                        className="h-8 px-2"
+                        className="h-9 px-2"
                       >
                         ×
                       </Button>
@@ -415,18 +417,16 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
                   </div>
                 </div>
 
-                {/* Start Date */}
                 <div className="space-y-1">
                   <Label className="text-xs">Start Date</Label>
                   <Input
                     type="date"
                     value={startDate}
                     onChange={(e) => setStartDate(e.target.value)}
-                    className="h-8 text-sm"
+                    className="h-9 text-sm"
                   />
                 </div>
 
-                {/* Start Time */}
                 <div className="space-y-1">
                   <Label className="text-xs">Start Time</Label>
                   <Input
@@ -434,19 +434,18 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
                     value={startTime}
                     onChange={(e) => setStartTime(e.target.value)}
                     disabled={allDay || !startDate}
-                    className="h-8 text-sm"
+                    className="h-9 text-sm"
                   />
                 </div>
 
-                {/* All Day Checkbox */}
-                <div className="flex items-end pb-1">
+                <div className="flex items-end pb-2">
                   <div className="flex items-center space-x-2">
                     <Checkbox
                       id="allDay"
                       checked={allDay}
-                      onCheckedChange={(checked) => {
-                        setAllDay(checked as boolean);
-                        if (checked) setStartTime("");
+                      onCheckedChange={(c) => {
+                        setAllDay(c as boolean);
+                        if (c) setStartTime("");
                       }}
                       disabled={!startDate}
                     />
@@ -457,12 +456,12 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
                 </div>
               </div>
 
-              {/* Link to Job */}
+              {/* Row 4: Link to Job (full width) */}
               <div className="space-y-1">
                 <Label className="text-xs">Link to Job (Optional)</Label>
                 <div className="flex gap-1">
                   <Select value={jobId || undefined} onValueChange={setJobId}>
-                    <SelectTrigger className="h-8 text-sm flex-1">
+                    <SelectTrigger className="h-9 text-sm flex-1">
                       <SelectValue placeholder="Select..." />
                     </SelectTrigger>
                     <SelectContent>
@@ -479,7 +478,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
                       variant="ghost"
                       size="sm"
                       onClick={() => setJobId("")}
-                      className="h-8 px-2"
+                      className="h-9 px-2"
                     >
                       ×
                     </Button>
@@ -487,66 +486,91 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
                 </div>
               </div>
 
-              {/* Supplier Visit Details */}
+              {/* Row 5: Supplier Visit Details */}
               {type === "SUPPLIER_VISIT" && (
-                <div className="space-y-2 rounded border p-2 bg-muted/30">
-                  <div className="text-xs font-medium">Supplier Visit Details</div>
-
-                  <div className="space-y-1">
-                    <Label className="text-xs">Supplier</Label>
-                    <div className="flex gap-1">
-                      <Select value={supplierId || undefined} onValueChange={(value) => {
-                        if (value === "add_new") {
-                          setQuickAddOpen(true);
-                        } else {
-                          setSupplierId(value);
-                          setSupplierLocationId(undefined);
-                        }
-                      }}>
-                        <SelectTrigger className="h-8 text-sm flex-1">
-                          <SelectValue placeholder="Select..." />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="add_new" className="text-primary font-medium">
-                            + Add New Supplier
-                          </SelectItem>
-                          {suppliers.map((supplier) => (
-                            <SelectItem key={supplier.id} value={supplier.id}>
-                              {supplier.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      {supplierId && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => {
-                            setSupplierId(undefined);
-                            setSupplierLocationId(undefined);
-                          }}
-                          className="h-8 px-2"
-                        >
-                          ×
-                        </Button>
-                      )}
-                    </div>
+                <div className="space-y-3 rounded-md border p-3 bg-muted/30">
+                  <div className="text-xs font-semibold tracking-wide uppercase text-muted-foreground">
+                    Supplier Visit Details
                   </div>
 
-                  {supplierId && locations.length > 0 && (
+                  {/* Supplier + Location side-by-side */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {/* Supplier */}
+                    <div className="space-y-1">
+                      <Label className="text-xs">Supplier</Label>
+                      <div className="flex gap-1">
+                        <Select
+                          value={supplierId || undefined}
+                          onValueChange={(v) => {
+                            if (v === "add_new") {
+                              setQuickAddOpen(true);
+                            } else {
+                              setSupplierId(v);
+                              setSupplierLocationId(undefined);
+                            }
+                          }}
+                        >
+                          <SelectTrigger className="h-9 text-sm flex-1">
+                            <SelectValue placeholder="Select supplier..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem
+                              value="add_new"
+                              className="text-primary font-medium"
+                            >
+                              + Add New Supplier
+                            </SelectItem>
+                            {suppliers.map((s) => (
+                              <SelectItem key={s.id} value={s.id}>
+                                {s.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        {supplierId && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setSupplierId(undefined);
+                              setSupplierLocationId(undefined);
+                            }}
+                            className="h-9 px-2"
+                          >
+                            ×
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Location — always rendered when supplier selected */}
                     <div className="space-y-1">
                       <Label className="text-xs">Location</Label>
                       <div className="flex gap-1">
-                        <Select value={supplierLocationId || undefined} onValueChange={setSupplierLocationId}>
-                          <SelectTrigger className="h-8 text-sm flex-1">
-                            <SelectValue placeholder="Select..." />
+                        <Select
+                          value={supplierLocationId || undefined}
+                          onValueChange={setSupplierLocationId}
+                          disabled={!supplierId || isLoadingLocations}
+                        >
+                          <SelectTrigger className="h-9 text-sm flex-1">
+                            <SelectValue
+                              placeholder={
+                                !supplierId
+                                  ? "Select supplier first"
+                                  : isLoadingLocations
+                                    ? "Loading..."
+                                    : locations.length === 0
+                                      ? "No locations"
+                                      : "Select location..."
+                              }
+                            />
                           </SelectTrigger>
                           <SelectContent>
-                            {locations.map((location) => (
-                              <SelectItem key={location.id} value={location.id}>
-                                {location.name}
-                                {location.isPrimary && " (Primary)"}
+                            {locations.map((loc) => (
+                              <SelectItem key={loc.id} value={loc.id}>
+                                {formatLocationLabel(loc)}
+                                {loc.isPrimary && " ★"}
                               </SelectItem>
                             ))}
                           </SelectContent>
@@ -557,22 +581,23 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
                             variant="ghost"
                             size="sm"
                             onClick={() => setSupplierLocationId(undefined)}
-                            className="h-8 px-2"
+                            className="h-9 px-2"
                           >
                             ×
                           </Button>
                         )}
                       </div>
                     </div>
-                  )}
+                  </div>
 
+                  {/* PO Number (full width) */}
                   <div className="space-y-1">
                     <Label className="text-xs">PO Number (Optional)</Label>
                     <Input
                       value={poNumber}
                       onChange={(e) => setPoNumber(e.target.value)}
                       placeholder="e.g. PO-12345"
-                      className="h-8 text-sm"
+                      className="h-9 text-sm"
                     />
                   </div>
                 </div>
@@ -582,18 +607,12 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
 
           {/* Inline error banner */}
           {saveError && (
-            <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 mt-2">
               {saveError}
             </div>
           )}
 
-          {/* Supplier required hint */}
-          {type === "SUPPLIER_VISIT" && !supplierId && (
-            <div className="text-xs text-amber-600">Select a supplier to create this task.</div>
-          )}
-
-          <DialogFooter className="pt-2 flex justify-between items-center">
-            {/* Left side - Delete button (only for existing tasks) */}
+          <DialogFooter className="pt-3 flex justify-between items-center">
             {isEditMode ? (
               <Button
                 type="button"
@@ -605,10 +624,8 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
                 Delete
               </Button>
             ) : (
-              <div /> // Spacer for create mode
+              <div />
             )}
-
-            {/* Right side - Cancel and Submit */}
             <div className="flex gap-2">
               <Button variant="outline" onClick={() => onOpenChange(false)} size="sm">
                 Cancel
@@ -618,7 +635,11 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
                 disabled={!canSubmit || saveMutation.isPending}
                 size="sm"
               >
-                {isEditMode ? "Update" : "Create"}
+                {saveMutation.isPending
+                  ? "Saving..."
+                  : isEditMode
+                    ? "Update"
+                    : "Create"}
               </Button>
             </div>
           </DialogFooter>

@@ -1,5 +1,5 @@
 import { db } from "../db";
-import { eq, and, ilike, desc, inArray } from "drizzle-orm";
+import { eq, and, ilike, desc, inArray, isNull } from "drizzle-orm";
 import { suppliers, supplierLocations, type Supplier, type SupplierLocation } from "@shared/schema";
 import { BaseRepository, clampLimit, escapeLike } from "./base";
 
@@ -202,6 +202,7 @@ export class SupplierRepository extends BaseRepository {
 
     if (!options.includeInactive) {
       whereConditions.push(eq(supplierLocations.isActive, true));
+      whereConditions.push(isNull(supplierLocations.deletedAt));
     }
 
     return await db

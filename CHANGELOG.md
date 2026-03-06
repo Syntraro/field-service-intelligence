@@ -39,15 +39,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Diagnostic instrumentation:** `[TASKS_DIAG]` logging gated behind `IS_DEV`/`NODE_ENV !== production` — silent in production. (`tasks.routes.ts`, `TaskDialog.tsx`, `Calendar.tsx`)
 - **Files:** `client/src/components/TaskDialog.tsx`, `client/src/pages/Calendar.tsx`, `server/routes/tasks.routes.ts`
 
-#### Supplier Visit Creation — 500 Error Elimination (2026-03-05)
-- **Root cause:** Unhandled DB constraint violations (FK on `supplier_id`, `supplier_location_id`) bubble up as raw Postgres errors without `statusCode`. Global error handler (`server/index.ts:166`) maps any error without `statusCode` to `500 "Internal server error"` in production, hiding the real cause.
-- **Server fix — Pre-write validation:** Added `validateSupplierRefs()` to `TaskRepository` that checks before any DB write: (1) supplier exists and belongs to company, (2) location exists and belongs to both supplier AND company. Returns 400 with descriptive message on mismatch. (`server/storage/tasks.ts`)
-- **Server fix — Route-level error catch:** `PATCH /api/tasks/:id/supplier-visit` now catches DB errors and converts FK violations (code 23503) to 400, unique violations (23505) to 409. App errors with `statusCode` are re-thrown as-is. Even unknown errors return a clear message instead of generic "Internal server error". (`server/routes/tasks.routes.ts`)
-- **Server fix — Task creation hardened:** `POST /api/tasks` also catches FK violations (bad `jobId`, `assignedToUserId`) with 400 response. (`server/routes/tasks.routes.ts`)
-- **Client fix — Supplier required:** `canSubmit` now requires `supplierId` when type is `SUPPLIER_VISIT`. Inline hint shown when missing. (`TaskDialog.tsx`)
-- **Client fix — Error surfacing:** Save errors display inline in dialog (red banner), dialog stays open so user can fix and retry. No more generic `alert()`. (`TaskDialog.tsx`)
-- **Tested scenarios (all returning 4xx, not 500):** non-existent task (404), non-existent supplier (400), location without supplier (400), location/supplier mismatch (400), cross-tenant supplier (400), FK constraint violation (400), unique constraint violation (409), valid happy path (200 with upserted row)
-- **Files:** `server/storage/tasks.ts`, `server/routes/tasks.routes.ts`, `client/src/components/TaskDialog.tsx`
+#### Supplier Visit Creation — 500 Error Elimination + Location Dropdown Fix (2026-03-06)
+- **Root cause (500):** Unhandled DB constraint violations (FK on `supplier_id`, `supplier_location_id`) bubble up as raw Postgres errors without `statusCode`. Global error handler (`server/index.ts:166`) maps any error without `statusCode` to `500 "Internal server error"` in production, hiding the real cause.
+- **Root cause (location dropdown):** Location dropdown showed only `location.name` (e.g., "Markham") with no address context. QueryKey `["supplier-locations", supplierId]` with explicit `queryFn` now fetches `GET /api/suppliers/:supplierId/locations`. Server returns `{ items: SupplierLocation[] }` filtered by `supplier_id + company_id + is_active + deletedAt IS NULL`. Labels now show `Name — Address` format (e.g., "Markham — 35 Riviera Drive").
+- **Server fix — Pre-write validation:** Added `validateSupplierRefs()` to `TaskRepository`: (1) supplier exists and belongs to company, (2) location belongs to both supplier AND company. Returns 400 with descriptive message. (`server/storage/tasks.ts`)
+- **Server fix — Soft-delete filter:** `listSupplierLocations` now excludes `deletedAt IS NOT NULL` rows in addition to `isActive = false`. (`server/storage/suppliers.ts`)
+- **Server fix — Route-level error catch:** `PATCH /api/tasks/:id/supplier-visit` converts FK violations (23503) → 400, unique violations (23505) → 409. `POST /api/tasks` also catches FK violations. (`server/routes/tasks.routes.ts`)
+- **Client fix — Location dropdown:** Explicit `queryFn` fetches `/api/suppliers/${supplierId}/locations`. Response normalized from `{ items }`. Label: `formatLocationLabel()` → `"Name — Address"`, fallbacks for missing fields. Primary locations marked with ★. Dropdown always visible when supplier selected (shows "No locations" / "Select supplier first" when appropriate). (`TaskDialog.tsx`)
+- **Client fix — Product rule (no supplier required):** `canSubmit` only requires `title`. Techs can create supplier visit tasks without selecting supplier — admin fills details later. But if `supplierLocationId` is present, server validates it belongs to `supplierId`. (`TaskDialog.tsx`)
+- **Client fix — Error surfacing:** All errors (save + delete) display inline in dialog (red banner). No `alert()` calls. Dialog stays open on failure. Saving shows "Saving..." text. (`TaskDialog.tsx`)
+- **Client fix — Dialog sizing:** Width increased from `sm:max-w-[700px]` to `sm:max-w-3xl`. Removed `overflow-y-auto` and `max-h-[90vh]` from content. 4-column responsive grid for date/time fields. Supplier + Location side-by-side on desktop. (`TaskDialog.tsx`)
+- **Tested scenarios:** both null ✓, supplier only ✓, valid match ✓, location without supplier → 400 ✓, mismatch → 400 ✓, cross-tenant → 404 ✓
+- **Files:** `server/storage/tasks.ts`, `server/storage/suppliers.ts`, `server/routes/tasks.routes.ts`, `client/src/components/TaskDialog.tsx`
 
 ### Changed
 
