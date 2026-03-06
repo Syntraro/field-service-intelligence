@@ -175,7 +175,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
       // Then apply scheduling changes if needed
       if (editJob?.id) {
         const scheduleResult = await applyJobSchedule(editJob.id, scheduleValue, {
-          existingAssignmentId: editJob.scheduledStart ? editJob.id : undefined,
+          isUpdate: !!editJob.scheduledStart,
         });
         if (!scheduleResult.success) {
           console.warn("[QuickAddJobDialog] Schedule update warning:", scheduleResult.error);

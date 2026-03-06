@@ -70,6 +70,8 @@ import telemetryRouter from "./telemetry";
 import dispatchStreamRouter from "./dispatch-stream";
 // Phase 5: Visit intelligence signals
 import intelligenceRouter from "./intelligence";
+// Equipment catalog item associations (reference-only)
+import equipmentCatalogItemsRouter from "./equipmentCatalogItems.routes";
 // Dispatch map aggregator
 import mapRouter from "./map";
 
@@ -187,6 +189,7 @@ export function registerRoutes(app: Express): Server {
   console.log("[ROUTES] ✓ Mounted /api/team (canonical team router)");
   app.use("/api/calendar", calendarRouter);
   app.use("/api/clients", clientsRouter);
+  app.use("/api/equipment", equipmentCatalogItemsRouter);
   app.use("/api/technicians", techniciansRouter);
   app.use("/api/job-templates", jobTemplatesRouter);
   app.use("/api/invitations", invitationsRouter);

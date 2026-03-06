@@ -398,7 +398,8 @@ function TechColumn({
               onClick={(e) => {
                 // Empty-slot click for quick-create (2026-03-06)
                 if (!onEmptySlotClick) return;
-                if ((e.target as HTMLElement).closest('[data-testid^="assigned-client-"]')) return;
+                const target = e.target as HTMLElement;
+                if (target.closest('[data-testid^="assigned-client-"]') || target.closest('[data-testid^="resize-handle-"]')) return;
                 const rect = e.currentTarget.getBoundingClientRect();
                 const yRatio = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
                 const minute = Math.floor(yRatio * 4) * 15;

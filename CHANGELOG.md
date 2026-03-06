@@ -8,6 +8,103 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Calendar: Final Dead Code Cleanup & Schema Rename (2026-03-06)
+- **Removed dead `toggleComplete` mutation** from `useCalendarDnD.ts` (~29 lines). Never `.mutate()`'d and had a schema bug (sent `{completed}` without required `version`). Removed destructuring from `Calendar.tsx`.
+- **Removed dead storage methods** from `server/storage/calendar.ts`: `rescheduleJob()` (~245 lines), `unscheduleJob()` (~80 lines), `rescheduleJobBypassWorkingHours()` (~120 lines). All were legacy job-centric methods with no remaining callers after visit-centric migration.
+- **Renamed Zod schemas** in `server/routes/calendar.ts`: `rescheduleJobSchema` → `rescheduleVisitSchema`, `unscheduleJobSchema` → `unscheduleVisitSchema`. Localized rename — these schemas are only used within this file for visit-centric route handlers.
+- **No behavior changes, no endpoint changes, no UI changes.**
+- **Files:** `client/src/hooks/useCalendarDnD.ts`, `client/src/pages/Calendar.tsx`, `server/storage/calendar.ts`, `server/routes/calendar.ts`
+
+#### Calendar: Full Legacy Mutation Retirement — Visit-Centric Model Complete (2026-03-06)
+- **Removed 3 deprecated server routes:** `PATCH /api/calendar/schedule/:jobId`, `POST /api/calendar/unschedule/:jobId`, `POST /api/calendar/resize`. All client callers migrated to visit-centric endpoints. `resizeJobSchema` removed (unique to deprecated resize route). `rescheduleJobSchema` and `unscheduleJobSchema` retained (shared with active visit-centric routes).
+- **Migrated `useCalendarApi.ts`:** Removed dead `rescheduleJob()`, `useRescheduleJob()`, `RescheduleJobPayload`. Replaced `unscheduleJob()` / `useUnscheduleJob()` with `unscheduleVisit()` / `useUnscheduleVisit()` calling `POST /api/calendar/visit/:visitId/unschedule`.
+- **Migrated `jobScheduling.ts`:** `applyJobSchedule()` update path now calls `PATCH /api/calendar/visit/:visitId/reschedule` instead of legacy `PATCH /api/calendar/schedule/:jobId`. `unscheduleJob()` now fetches current visit via `/api/jobs/:jobId/visits` then calls `POST /api/calendar/visit/:visitId/unschedule`. Added `getCurrentVisitForJob()` helper for visit ID derivation.
+- **Migrated `JobVisitsSection.tsx`:** Switched from `useUnscheduleJob` to `useUnscheduleVisit`, passing `{ visitId: currentEligibleVisit.id, version: currentEligibleVisit.version }`.
+- **Migrated `JobDetailPage.tsx`:** Switched from `useUnscheduleJob` to `useUnscheduleVisit`, passing `{ visitId: activeVisit.id, version: activeVisit.version }`.
+- **Migrated `ScheduleJobModal.tsx`:** Changed `existingAssignmentId` to `visitId` parameter for `applyJobSchedule`.
+- **Migrated `QuickAddJobDialog.tsx`:** Changed to `isUpdate` flag (triggers auto-fetch of current visit ID).
+- **Fixed `useCalendarDnD.ts`:** Updated diagnostic log strings to reference actual visit-centric endpoints.
+- **Cleaned `storage/index.ts`:** Removed dead `rescheduleCalendarJob` and `unscheduleCalendarJob` bindings.
+- **Cleaned `server/routes/calendar.ts`:** Removed `jobVisitsRepository` import (only used by deprecated resize route).
+- **Files:** `client/src/hooks/useCalendarApi.ts`, `client/src/lib/jobScheduling.ts`, `client/src/components/JobVisitsSection.tsx`, `client/src/pages/JobDetailPage.tsx`, `client/src/components/calendar/ScheduleJobModal.tsx`, `client/src/components/QuickAddJobDialog.tsx`, `client/src/hooks/useCalendarDnD.ts`, `server/routes/calendar.ts`, `server/storage/index.ts`
+
+### Fixed
+
+#### Calendar: Unschedule Payload Field Name Mismatch — `expectedVersion` vs `version` (2026-03-06)
+- **Root cause:** Five unschedule call sites sent `{ expectedVersion }` but the server schema (`unscheduleJobSchema`) expects `{ version }`. Zod strips unknown keys, so `expectedVersion` was silently dropped and the required `version` field was missing — causing 400 validation errors on DnD unschedule, bulk clear, and dispatch panel unschedule.
+- **Fix:** Changed all 5 call sites from `expectedVersion` to `version`: `useCalendarDnD.ts` (deleteAssignment, clearSchedule, clearDay), `DispatchDetailPanel.tsx` (unscheduleMutation), `JobDetailDialog.tsx` (unscheduleJob).
+- **Files:** `client/src/hooks/useCalendarDnD.ts`, `client/src/components/calendar/DispatchDetailPanel.tsx`, `client/src/components/JobDetailDialog.tsx`
+
+#### Calendar: Missing Version in jobScheduling.ts Reschedule Path (2026-03-06)
+- **Root cause:** `applyJobSchedule()` update path called `PATCH /api/calendar/visit/:visitId/reschedule` without sending `version`, but the server schema requires `version: z.number().int()` — causing 400 validation errors when rescheduling via ScheduleJobModal or QuickAddJobDialog edit flows.
+- **Fix:** Added `visitVersion` option to `applyJobSchedule()`. When provided (ScheduleJobModal), uses it directly. When not available (QuickAddJobDialog `isUpdate` flow), fetches fresh version via `getCurrentVisitForJob()`. Version is now always included in the reschedule payload.
+- **Files:** `client/src/lib/jobScheduling.ts`
+
+#### Calendar: JobDetailDialog Version Mismatch on Technician Assignment (2026-03-06)
+- **Root cause:** `assignTechnicianMutation` called legacy `PATCH /api/calendar/schedule/${jobId}` sending `localVersion` (visit version after the scheduled events query fix) but the server validated against `existingJob.version` (job version). Independent version counters meant false 409 conflicts on technician changes from the dialog.
+- **Fix:** Switched to visit-centric `PATCH /api/calendar/visit/${visitId}/reschedule` endpoint which validates against visit version, matching what `localVersion` now carries.
+- **Files:** `client/src/components/JobDetailDialog.tsx`
+
+#### Calendar: jobScheduling.ts Unschedule Fails with Hard-Coded version: 0 (2026-03-06)
+- **Root cause:** `unscheduleJob()` sent `version: 0` to the legacy unschedule endpoint. Since `0` is defined (not undefined), the server runs the version check: `existingJob.version !== 0`. Any job modified at least once (version > 0) would fail with a false VersionMismatchError.
+- **Fix:** Omit the version field entirely from the unschedule payload so the server skips the optimistic lock check. This is safe for job-management flows that don't need concurrent-edit protection.
+- **Files:** `client/src/lib/jobScheduling.ts`
+
+#### Calendar: False "Scheduling Conflict" on Weekly Drag/Move (2026-03-06)
+- **Root cause:** The scheduled events query (`getScheduledJobsInRange`) selected `j.version` (job version) but the visit-centric reschedule endpoint (`rescheduleVisit`) validates against `jv.version` (visit version). These are independent counters that diverge immediately — job version increments on job-level changes while visit version increments on visit-level changes, causing false conflict detection on every drag after any version drift.
+- **Fix:** Added `jv.version as visit_version` to the scheduled events SQL query. Mapped `visit_version` (not `j.version`) into the `CalendarJobWithDetails.version` field for scheduled events. Client already sends `item.version` in mutation payload — it now carries the correct visit version that matches what `rescheduleVisit` checks. Backlog/unscheduled items still use `j.version` (correct for `scheduleJob`).
+- **Files:** `server/storage/calendar.ts`
+
+#### Calendar: Resize End Triggering Slot Click / Quick-Create (2026-03-06)
+- **Root cause:** The resize handle's `handleResizeEnd` callback lacked `stopPropagation()`/`preventDefault()`, allowing the `pointerup` event to bubble to the parent grid cell's `onClick` handler. The grid's click guard only checked for `data-testid^="assigned-client-"` elements, missing `data-testid^="resize-handle-"` elements entirely. This caused `onEmptySlotClick()` to fire, opening the quick-create dialog after every resize operation.
+- **Fix:** (1) Added `e.stopPropagation()` and `e.preventDefault()` to `handleResizeEnd` in `ResizableJobCard.tsx`. (2) Extended the `closest()` guard in all three grid click handlers to also check for `[data-testid^="resize-handle-"]`.
+- **Files:** `client/src/components/calendar/ResizableJobCard.tsx`, `client/src/components/calendar/CalendarGridWeek.tsx`, `client/src/components/calendar/CalendarGridDayJobber.tsx`, `client/src/components/calendar/CalendarGridDayRows.tsx`
+
+### Added
+
+#### Equipment Service Timeline (2026-03-06)
+- **New feature:** Equipment records now show a chronological service timeline in the detail expansion. Displays visit-level history with date, type (PM/Service/Inspection/Install), summary, technician name, visit status, and outcome badges.
+- **Data source:** Aggregates from existing `job_equipment → jobs → job_visits → users` join path. No new tables or event system — reuses existing relationships.
+- **API:** New `GET /api/equipment/:equipmentId/timeline` endpoint. Returns up to 50 newest-first timeline entries with display-ready shape. Tenant-scoped, auth-required.
+- **UI component:** New `EquipmentServiceTimeline` — reusable, read-only component with loading skeleton, empty state ("No service history"), and vertical timeline with color-coded type icons.
+- **Replaces:** Old basic service history section in equipment detail (which showed job-level rows from a non-existent API endpoint) with the new visit-granularity timeline.
+- **Cleanup:** Removed unused `EquipmentWithHistory` interface, `equipmentDetails` query, `Calendar`/`Settings` icon imports, and `Job` type import from `LocationEquipmentSection`.
+- **New files:** `client/src/components/EquipmentServiceTimeline.tsx`
+- **Modified files:** `server/routes/equipmentCatalogItems.routes.ts`, `client/src/components/LocationEquipmentSection.tsx`
+
+#### Equipment Nameplate Photo Capture with OCR (2026-03-06)
+- **New feature:** Techs and admins can take or upload a nameplate photo when creating/editing equipment. The app attempts OCR extraction (manufacturer, model number, serial number) from the image using Claude Vision API, but always saves the photo regardless of OCR success.
+- **OCR integration:** Isolated `nameplateOcr` service using Anthropic SDK (`claude-haiku-4-5-20251001`). Gracefully handles missing API key, unsupported image types, and extraction failures. Partial results are accepted and surfaced.
+- **Database:** Added `nameplate_photo_id` column (FK to `files`) on `location_equipment` table. ON DELETE SET NULL.
+- **API endpoints:** `POST /api/clients/:locationId/equipment/:equipmentId/nameplate` — upload photo + OCR (TECH_ROLES). `DELETE /api/clients/:locationId/equipment/:equipmentId/nameplate` — remove photo link (TECH_ROLES).
+- **UI:** New `NameplateCaptureSection` component in equipment create/edit dialog with "Take Photo" (camera capture) and "Upload" buttons. Shows image preview, OCR status feedback ("Reading nameplate…", success/partial/failed messages), and remove button. OCR results prefill empty manufacturer/model/serial fields.
+- **Equipment detail:** Expanded equipment rows show "Nameplate Photo" section with clickable image when present.
+- **Deferred upload:** When creating new equipment (no ID yet), the photo is held locally and uploaded after equipment creation succeeds.
+- **Migration:** `migrations/2026_03_06_equipment_nameplate_photo.sql`
+- **New files:** `migrations/2026_03_06_equipment_nameplate_photo.sql`, `server/services/nameplateOcr.ts`, `client/src/components/NameplateCaptureSection.tsx`
+- **Modified files:** `shared/schema.ts`, `server/routes/clients.ts`, `client/src/components/LocationEquipmentSection.tsx`
+- **New dependency:** `@anthropic-ai/sdk`
+
+### Changed
+
+#### Calendar Toolbar: Move Secondary Controls into "More" Menu (2026-03-06)
+- **Added "More" dropdown menu** (three-dot icon) in calendar toolbar for week/day views. Contains secondary controls moved off the main toolbar surface.
+- **Moved "Hide Weekends" toggle** into More menu (week view only). Label still reflects current state ("Hide Weekends" / "Show Weekends"). Behavior unchanged.
+- **Moved "Start Hour" selector** into More menu (week + day views). Select dropdown works interactively inside the menu. Behavior and persistence unchanged.
+- **Removed standalone controls** from main toolbar: the `Start:` label + select and the Hide Weekends button no longer occupy top-level toolbar space.
+- **Cleaned up imports:** Removed unused `CalendarOff` standalone usage; added `MoreHorizontal`, `Clock` icons and `DropdownMenu` primitives.
+- **Files modified:** `client/src/components/calendar/CalendarHeader.tsx`
+
+#### Equipment Catalog Item Associations (2026-03-06)
+- **New feature:** Equipment records can now reference items from the parts/services catalog (QBO synced). These are purely informational — they help technicians and office staff see items commonly used when servicing a unit.
+- **Database:** New `equipment_catalog_items` table with unique constraint on (company_id, equipment_id, catalog_item_id), indexed for fast lookup by equipment and reverse lookup by catalog item.
+- **API routes:** 5 new endpoints under `/api/equipment/:equipmentId/catalog-items` — GET (list), POST (add), PATCH (update qty/notes), DELETE (remove), POST /reorder (bulk sort). MANAGER_ROLES can modify; all authenticated users can read. Tenant isolation enforced on all operations.
+- **Equipment detail UI:** Expanded equipment rows in `LocationEquipmentSection` now show an "Associated Catalog Items" section with add/edit/remove controls for admin/office users.
+- **Job equipment UI (visit/PM context):** `JobEquipmentSection` shows a read-only "Typical Parts / Materials" display below each linked equipment, showing associated catalog items. No editing from job/visit context.
+- **Migration:** `migrations/2026_03_06_equipment_catalog_items.sql`
+- **New files:** `migrations/2026_03_06_equipment_catalog_items.sql`, `server/routes/equipmentCatalogItems.routes.ts`, `client/src/components/EquipmentCatalogItemsSection.tsx`
+- **Modified files:** `shared/schema.ts`, `server/routes/index.ts`, `client/src/components/LocationEquipmentSection.tsx`, `client/src/components/JobEquipmentSection.tsx`
+
 #### Calendar UI: Remove Parts Button + Add Hide Weekends Toggle (2026-03-06)
 - **Removed Parts button** from calendar header toolbar. The parts feature was disabled (no backend endpoint). Removed: button JSX, `onPartsClick` prop, `handlePartsClick` handler, `calculatePartsWithDates` helper, 4 state variables, `PartsDialog` render, `bulkParts`/`isLoadingParts` stubs, and `PartsDialog` import from Calendar.tsx. `Package` icon removed from CalendarHeader imports.
 - **Added "Hide Weekends" toggle** in week view toolbar. When active, Saturday and Sunday columns are excluded from the week grid. Remaining 5 weekday columns expand to fill available width. All-day row, timed grid, day headers, drop zones, business hours shading, and "Now" line stay aligned via dynamic `gridTemplateColumns` inline style.

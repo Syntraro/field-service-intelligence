@@ -104,7 +104,8 @@
       "Bash(npm run db:migrate:one -- migrations/2026_03_05_job_visits_archived_columns.sql 2>&1)",
       "Bash(npm run db:map-sanity 2>&1)",
       "Bash(find /home/runner/workspace/server -name \"*job*\" -type f | grep -E \"\\\\.\\(ts\\)$\")",
-      "Bash(npm run db:migrate:one -- migrations/2026_03_06_visit_outcome_columns.sql 2>&1 | tail -20)"
+      "Bash(npm run db:migrate:one -- migrations/2026_03_06_visit_outcome_columns.sql 2>&1 | tail -20)",
+      "Bash(npm run db:migrate:one -- migrations/2026_03_06_equipment_catalog_items.sql 2>&1)"
     ]
   }
 }

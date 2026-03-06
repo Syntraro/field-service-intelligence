@@ -220,8 +220,6 @@ updateInvitation: (id: string, data: { status: string }) => Promise<any>;
   getCalendarScheduledJobsInDateRange: typeof calendarRepository.getScheduledJobsInRange;
   getCalendarJob: typeof calendarRepository.getJobById;
   scheduleCalendarJob: typeof calendarRepository.scheduleJob;
-  rescheduleCalendarJob: typeof calendarRepository.rescheduleJob;
-  unscheduleCalendarJob: typeof calendarRepository.unscheduleJob;
   validateCalendarTechnician: typeof calendarRepository.validateTechnicianBelongsToTenant;
   validateCalendarJob: typeof calendarRepository.validateJobBelongsToTenant;
 
@@ -458,8 +456,6 @@ export const storage: IStorage = {
   getCalendarScheduledJobsInDateRange: calendarRepository.getScheduledJobsInRange.bind(calendarRepository),
   getCalendarJob: calendarRepository.getJobById.bind(calendarRepository),
   scheduleCalendarJob: calendarRepository.scheduleJob.bind(calendarRepository),
-  rescheduleCalendarJob: calendarRepository.rescheduleJob.bind(calendarRepository),
-  unscheduleCalendarJob: calendarRepository.unscheduleJob.bind(calendarRepository),
   validateCalendarTechnician: calendarRepository.validateTechnicianBelongsToTenant.bind(calendarRepository),
   validateCalendarJob: calendarRepository.validateJobBelongsToTenant.bind(calendarRepository),
 

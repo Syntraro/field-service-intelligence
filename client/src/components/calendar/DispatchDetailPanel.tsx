@@ -291,7 +291,7 @@ export function DispatchDetailPanel({
     mutationFn: async () => {
       return apiRequest(`/api/calendar/visit/${visitId}/unschedule`, {
         method: "POST",
-        body: JSON.stringify({ expectedVersion: version }),
+        body: JSON.stringify({ version }),
       });
     },
     onSuccess: () => {

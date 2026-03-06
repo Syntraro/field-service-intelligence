@@ -455,7 +455,7 @@ export function JobDetailDialog({
       try {
         return await apiRequest(`/api/calendar/visit/${visitId}/unschedule`, {
           method: "POST",
-          body: JSON.stringify({ expectedVersion: localVersion }),
+          body: JSON.stringify({ version: localVersion }),
         });
       } catch (error: any) {
         if (error?.status === 404) {
@@ -497,13 +497,13 @@ export function JobDetailDialog({
     onSuccess: () => onOpenChange(false),
   });
 
-  // Direct technician assignment mutation — uses localVersion to avoid stale locks
+  // Direct technician assignment mutation — visit-centric endpoint with visit version (2026-03-06)
   const assignTechnicianMutation = useMutationWithToast({
     mutationFn: async ({ technicianId, remove }: { technicianId: string; remove?: boolean }) => {
       if (!assignment) throw new Error("No job to update");
-      const jobId = assignment.jobId || assignment.id;
+      const visitId = (assignment as any).visitId || assignment.id;
       try {
-        return await apiRequest(`/api/calendar/schedule/${jobId}`, {
+        return await apiRequest(`/api/calendar/visit/${visitId}/reschedule`, {
           method: "PATCH",
           body: JSON.stringify({
             technicianUserId: remove ? null : technicianId,
@@ -512,7 +512,7 @@ export function JobDetailDialog({
         });
       } catch (error: any) {
         if (error?.status === 404) {
-          throw new Error("Job not found — it may have been deleted");
+          throw new Error("Visit not found — it may have been deleted");
         }
         // Surface version conflict clearly
         if (error?.status === 409) {

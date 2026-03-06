@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { useJobVisits } from "@/hooks/useJobVisits";
-import { useUnscheduleJob } from "@/hooks/useCalendarApi";
+import { useUnscheduleVisit } from "@/hooks/useCalendarApi";
 import { useRoute, useLocation, Link, useSearch } from "wouter";
 import { format } from "date-fns";
 import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
@@ -1037,10 +1037,8 @@ export default function JobDetailPage() {
     },
   });
 
-  // Unschedule mutation - uses canonical calendar hook from useCalendarApi
-  // The hook handles all standard invalidations: /api/calendar, /api/calendar/range,
-  // /api/calendar/unscheduled, and /api/jobs (prefix matches job-specific queries)
-  const unscheduleMutation = useUnscheduleJob();
+  // Unschedule mutation — visit-centric (2026-03-06)
+  const unscheduleMutation = useUnscheduleVisit();
 
   const deleteJobMutation = useMutation({
     mutationFn: async () => {
@@ -1196,10 +1194,10 @@ export default function JobDetailPage() {
         onCreateInvoice={() => setShowCreateInvoiceDialog(true)}
         onClearHold={() => clearHoldMutation.mutate(job.version)}
         onUnschedule={() => {
-          // Use canonical hook with custom toast callbacks
-          // Hook handles standard invalidations: /api/calendar/*, /api/jobs
+          // Visit-centric unschedule (2026-03-06)
+          if (!activeVisit) return;
           unscheduleMutation.mutate(
-            { jobId: job.id, version: job.version },
+            { visitId: activeVisit.id, version: activeVisit.version, jobId: job.id },
             {
               onSuccess: () => {
                 toast({

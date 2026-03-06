@@ -430,7 +430,8 @@ const MemoizedTechRow = memo(function TechRow({
             onClick={(e) => {
               // Empty-slot click for quick-create (2026-03-06)
               if (!onEmptySlotClick) return;
-              if ((e.target as HTMLElement).closest('[data-testid^="assigned-client-"]')) return;
+              const target = e.target as HTMLElement;
+              if (target.closest('[data-testid^="assigned-client-"]') || target.closest('[data-testid^="resize-handle-"]')) return;
               const rect = e.currentTarget.getBoundingClientRect();
               const xRatio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
               const minute = Math.floor(xRatio * 4) * 15;

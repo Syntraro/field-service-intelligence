@@ -2,9 +2,9 @@
  * Unified Job Scheduling API
  *
  * Single entry point for all job scheduling operations:
- * - Schedule a job (timed or all-day)
- * - Unschedule a job (return to backlog)
- * - Update an existing schedule
+ * - Schedule a job (timed or all-day) — POST /api/calendar/schedule (first-schedule)
+ * - Reschedule existing visit — PATCH /api/calendar/visit/:visitId/reschedule
+ * - Unschedule existing visit — POST /api/calendar/visit/:visitId/unschedule
  *
  * Used by:
  * - QuickAddJobDialog (new job creation with scheduling)
@@ -86,18 +86,40 @@ export function scheduleValueToPayload(
 // ============================================================================
 
 /**
+ * Fetch the current eligible visit ID for a job.
+ * Returns null if job has no active, non-terminal visit.
+ */
+async function getCurrentVisitForJob(jobId: string): Promise<{ id: string; version: number } | null> {
+  try {
+    const visits: any[] = await apiRequest(`/api/jobs/${jobId}/visits`);
+    const eligible = visits.find((v: any) =>
+      v.isActive && !['completed', 'cancelled'].includes(v.status)
+    );
+    return eligible ? { id: eligible.id, version: eligible.version } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Apply scheduling to a job (create or update assignment)
  *
  * @param jobId - The job to schedule
  * @param value - The schedule value from JobScheduleFields
- * @param options - Additional options (notes, existingAssignmentId for updates)
+ * @param options - Additional options (notes, visitId for updates)
  */
 export async function applyJobSchedule(
   jobId: string,
   value: JobScheduleValue,
   options?: {
     notes?: string;
-    existingAssignmentId?: string;
+    /** Visit ID for updating existing schedule. */
+    visitId?: string;
+    /** Visit version for optimistic locking on updates. */
+    visitVersion?: number;
+    /** Set true when editing an existing scheduled job without a known visitId.
+     *  Triggers auto-fetch of the current eligible visit and version. */
+    isUpdate?: boolean;
   }
 ): Promise<ScheduleJobResult> {
   try {
@@ -111,11 +133,25 @@ export async function applyJobSchedule(
       return { success: false, error: "Invalid schedule value" };
     }
 
-    // Create or update schedule (Model A: job-centric)
-    if (options?.existingAssignmentId) {
-      // Update existing job schedule
+    // Determine if this is an update (has visitId) or first-schedule.
+    // If no visitId but isUpdate is true, fetch the current visit automatically (2026-03-06).
+    let visitId = options?.visitId;
+    let visitVersion = options?.visitVersion;
+    if (!visitId && options?.isUpdate) {
+      const currentVisit = await getCurrentVisitForJob(jobId);
+      visitId = currentVisit?.id;
+      visitVersion = currentVisit?.version;
+    }
+
+    if (visitId) {
+      // Update existing visit via visit-centric reschedule (2026-03-06)
+      // Fetch version if not provided — server requires version for optimistic locking
+      if (visitVersion === undefined) {
+        const fresh = await getCurrentVisitForJob(jobId);
+        visitVersion = fresh?.version;
+      }
       const result = await apiRequest(
-        `/api/calendar/schedule/${options.existingAssignmentId}`,
+        `/api/calendar/visit/${visitId}/reschedule`,
         {
           method: "PATCH",
           body: JSON.stringify({
@@ -125,13 +161,14 @@ export async function applyJobSchedule(
             endAt: payload.endAt,
             technicianUserId: payload.technicianUserId || null,
             notes: payload.notes,
+            version: visitVersion,
           }),
         }
       );
       invalidateScheduleQueries(jobId);
       return { success: true, job: result };
     } else {
-      // Schedule job (POST /api/calendar/schedule)
+      // First-schedule: POST /api/calendar/schedule (creates visit)
       const result = await apiRequest("/api/calendar/schedule", {
         method: "POST",
         body: JSON.stringify(payload),
@@ -150,16 +187,20 @@ export async function applyJobSchedule(
 
 /**
  * Unschedule a job (return to backlog)
- * Model A: Uses POST /api/calendar/unschedule/:jobId
+ * Visit-centric: fetches current visit, then unschedules via visit endpoint (2026-03-06)
  */
 export async function unscheduleJob(
   jobId: string
 ): Promise<ScheduleJobResult> {
   try {
-    // Model A: POST to unschedule endpoint with version in body
-    await apiRequest(`/api/calendar/unschedule/${jobId}`, {
+    const visit = await getCurrentVisitForJob(jobId);
+    if (!visit) {
+      return { success: false, error: "No active visit to unschedule" };
+    }
+
+    await apiRequest(`/api/calendar/visit/${visit.id}/unschedule`, {
       method: "POST",
-      body: JSON.stringify({ version: 0 }), // Server will fetch current version if 0
+      body: JSON.stringify({ version: visit.version }),
     });
 
     invalidateScheduleQueries(jobId);

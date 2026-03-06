@@ -165,6 +165,10 @@ export function ResizableJobCard({
     (e: React.PointerEvent) => {
       if (!isResizing) return;
 
+      // Prevent resize-end from bubbling to grid slot click handlers (2026-03-06)
+      e.stopPropagation();
+      e.preventDefault();
+
       // Flush any pending rAF
       if (rafIdRef.current) { cancelAnimationFrame(rafIdRef.current); rafIdRef.current = 0; }
       if (pendingDurationRef.current !== null) {

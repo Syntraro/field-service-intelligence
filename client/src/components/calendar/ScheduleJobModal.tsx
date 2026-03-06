@@ -181,7 +181,7 @@ export function ScheduleJobModal({
 
       const result = await applyJobSchedule(targetJobId, scheduleValue, {
         notes,
-        existingAssignmentId: isEditMode ? editAssignment!.id : undefined,
+        visitId: isEditMode ? editAssignment!.id : undefined,
       });
 
       if (!result.success) {

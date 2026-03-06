@@ -2,7 +2,6 @@ import express, { Response } from "express";
 import { z } from "zod";
 import { sql } from "drizzle-orm";
 import { requireRole } from "../auth/requireRole";
-import { jobVisitsRepository } from "../storage/jobVisits";
 import { db } from "../db";
 import { requireFeature } from "../auth/requireFeature";
 import { MANAGER_ROLES } from "../auth/roles";
@@ -36,16 +35,15 @@ import type { CalendarEventDto, CalendarRangeResponseDto } from "@shared/types/c
 // - id = visitId (primary calendar event identity)
 // - Multiple visits for the same job = multiple calendar events
 // - Unscheduled sidebar still shows BACKLOG jobs (needs first visit)
-// - Write mutations still use jobId (Phase 4 will transition to visitId)
 //
 // ENDPOINTS:
-// - GET  /api/calendar?start=ISO&end=ISO     - Get visit events in range
-// - POST /api/calendar/schedule              - Schedule a job (creates visit)
-// - PATCH /api/calendar/schedule/:jobId      - Reschedule a job
-// - POST /api/calendar/unschedule/:jobId     - Unschedule a job
-// - GET  /api/calendar/unscheduled           - Get backlog jobs
-// - GET  /api/calendar/state-snapshot        - Diagnostic counts
-// - POST /api/calendar/resize                - Resize visit on calendar
+// - GET  /api/calendar?start=ISO&end=ISO              - Get visit events in range
+// - POST /api/calendar/schedule                       - Schedule a job (creates first visit)
+// - GET  /api/calendar/unscheduled                    - Get backlog jobs
+// - GET  /api/calendar/state-snapshot                 - Diagnostic counts
+// - PATCH /api/calendar/visit/:visitId/reschedule     - Reschedule existing visit
+// - POST  /api/calendar/visit/:visitId/unschedule     - Unschedule existing visit
+// - POST  /api/calendar/visit/:visitId/resize         - Resize existing visit
 //
 // ============================================================================
 
@@ -223,7 +221,7 @@ const scheduleJobSchema = z.object({
   path: ["startAt"],
 });
 
-const rescheduleJobSchema = z.object({
+const rescheduleVisitSchema = z.object({
   // 2026-01-29: Use .nullable().optional() order for correct Zod type narrowing
   technicianUserId: z.string().uuid().nullable().optional(),
   startAt: z.string().datetime().optional(),
@@ -245,7 +243,7 @@ const rescheduleJobSchema = z.object({
   path: ["startAt"],
 });
 
-const unscheduleJobSchema = z.object({
+const unscheduleVisitSchema = z.object({
   version: z.number().int(),
 });
 
@@ -273,29 +271,20 @@ if (IS_DEV) {
     console.log('[SCHEMA-CHECK] scheduleJobSchema accepts null technicianUserId ✓');
   }
 
-  const rescheduleResult = rescheduleJobSchema.safeParse({
+  const rescheduleResult = rescheduleVisitSchema.safeParse({
     technicianUserId: null,
     date: '2026-01-30',
     allDay: true,
     version: 1,
   });
   if (!rescheduleResult.success) {
-    console.error('[CRITICAL] rescheduleJobSchema does NOT accept null technicianUserId!', {
+    console.error('[CRITICAL] rescheduleVisitSchema does NOT accept null technicianUserId!', {
       issues: rescheduleResult.error.issues,
     });
   } else {
-    console.log('[SCHEMA-CHECK] rescheduleJobSchema accepts null technicianUserId ✓');
+    console.log('[SCHEMA-CHECK] rescheduleVisitSchema accepts null technicianUserId ✓');
   }
 }
-
-const resizeJobSchema = z.object({
-  job: z.object({
-    id: z.string().uuid(),
-    scheduledStart: z.string().datetime(),
-    scheduledEnd: z.string().datetime(),
-  }).strict(),
-  newEndTime: z.string().datetime(),
-});
 
 const legacyQuerySchema = z.object({
   year: z.coerce.number().int().optional(),
@@ -505,166 +494,14 @@ router.post(
 );
 
 // ============================================================================
-// PATCH /api/calendar/schedule/:jobId - Reschedule a Job
+// REMOVED (2026-03-06): PATCH /api/calendar/schedule/:jobId
+// All callers migrated to PATCH /api/calendar/visit/:visitId/reschedule
 // ============================================================================
 
-router.patch(
-  "/schedule/:jobId",
-  requireRole(MANAGER_ROLES),
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const companyId = req.companyId!;
-    const jobId = req.params.jobId;
-    assertCanEditSchedule(req.user);
-
-    const data = validateSchema(rescheduleJobSchema, req.body);
-
-    // 2026-01-30: OPTIMIZED - Removed getJobById() call
-    // Job ownership is now checked in rescheduleJob's WHERE clause
-    // If job doesn't exist or doesn't belong to tenant, UPDATE returns 0 rows
-
-    // Determine if all-day based on request (can't use existing job since we removed the fetch)
-    const isAllDay = data.allDay === true;
-    let computedStartAt: Date | undefined;
-    let computedEndAt: Date | undefined;
-
-    if (isAllDay) {
-      // Normalize all-day times through canonical helper (enforces DB invariants)
-      const normalized = normalizeScheduleTimes({
-        allDay: true,
-        date: data.date,
-        startAt: data.startAt,
-      });
-      computedStartAt = normalized.scheduledStart ?? undefined;
-      computedEndAt = normalized.scheduledEnd ?? undefined;
-    } else if (data.startAt) {
-      computedStartAt = new Date(data.startAt);
-      computedEndAt = data.endAt ? new Date(data.endAt) : undefined;
-    }
-
-    // 2026-01-30: DEV logging for technician unassign debugging
-    if (IS_DEV) {
-      console.log('[ROUTE-DEBUG] PATCH /api/calendar/schedule/:jobId received:', {
-        jobId,
-        technicianUserId: data.technicianUserId,
-        allDay: data.allDay,
-        startAt: data.startAt,
-      });
-    }
-
-    // 2026-01-30: FIX - Preserve null for explicit unassignment
-    // - undefined = technicianUserId not in request (don't change)
-    // - null = explicit unassign request (clear technician)
-    // - string = assign to technician
-    const technicianUserIdForRepo = data.technicianUserId === undefined ? undefined : (data.technicianUserId ?? null);
-
-    let result;
-    try {
-      result = await calendarRepository.rescheduleJob(companyId, jobId, {
-        technicianUserId: technicianUserIdForRepo,
-        startAt: computedStartAt,
-        endAt: computedEndAt,
-        notes: data.notes ?? undefined,
-        allDay: data.allDay,
-        expectedVersion: data.version,
-        mode: data.mode,
-      });
-    } catch (error: any) {
-      if (error.message?.includes('modified by another user')) {
-        return res.status(409).json({ error: error.message, code: 'VERSION_MISMATCH' });
-      }
-      throw error;
-    }
-
-    // 2026-01-30: Handle null result (job not found or tenant mismatch)
-    if (!result) {
-      throw createError(404, "Job not found or access denied");
-    }
-
-    // Phase 1: Log reschedule/assign event
-    const eventType = data.technicianUserId !== undefined
-      ? (data.technicianUserId ? "job.assigned" : "job.unassigned")
-      : "job.rescheduled";
-    logEventAsync(getQueryCtx(req), {
-      eventType,
-      entityType: "job",
-      entityId: jobId,
-      summary: `${eventType === "job.assigned" ? "Assigned" : eventType === "job.unassigned" ? "Unassigned" : "Rescheduled"} Job #${result.jobNumber}`,
-      meta: { jobNumber: result.jobNumber, technicianUserId: data.technicianUserId },
-    });
-    recomputeAttentionForEntity(companyId, "job", jobId).catch(() => {});
-    emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: jobId, ts: new Date().toISOString() });
-
-    // Version is NOT NULL DEFAULT 1 in DB - never null after write
-    res.json({
-      id: result.id,
-      jobId: result.id,
-      scheduledStart: result.scheduledStart?.toISOString() || null,
-      scheduledEnd: result.scheduledEnd?.toISOString() || null,
-      isAllDay: result.isAllDay ?? false,
-      version: result.version,
-      status: result.status,
-      primaryTechnicianId: result.primaryTechnicianId,
-    });
-  })
-);
-
 // ============================================================================
-// POST /api/calendar/unschedule/:jobId - Unschedule a Job
+// REMOVED (2026-03-06): POST /api/calendar/unschedule/:jobId
+// All callers migrated to POST /api/calendar/visit/:visitId/unschedule
 // ============================================================================
-
-router.post(
-  "/unschedule/:jobId",
-  requireRole(MANAGER_ROLES),
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const companyId = req.companyId!;
-    const jobId = req.params.jobId;
-    assertCanEditSchedule(req.user);
-
-    const data = validateSchema(unscheduleJobSchema, req.body);
-
-    // 2026-01-30: OPTIMIZED - Removed getJobById() call
-    // Job ownership is now checked in unscheduleJob's WHERE clause
-    // If job doesn't exist or doesn't belong to tenant, UPDATE returns 0 rows
-
-    let result;
-    try {
-      result = await calendarRepository.unscheduleJob(companyId, jobId, data.version);
-    } catch (error: any) {
-      if (error.message?.includes('modified by another user')) {
-        return res.status(409).json({ error: error.message, code: 'VERSION_MISMATCH' });
-      }
-      throw error;
-    }
-
-    // 2026-01-30: Handle null result (job not found or tenant mismatch)
-    if (!result) {
-      throw createError(404, "Job not found or access denied");
-    }
-
-    // Phase 1: Log event + recompute attention
-    logEventAsync(getQueryCtx(req), {
-      eventType: "job.unscheduled",
-      entityType: "job",
-      entityId: jobId,
-      summary: `Unscheduled Job #${result.jobNumber}`,
-      meta: { jobNumber: result.jobNumber },
-    });
-    recomputeAttentionForEntity(companyId, "job", jobId).catch(() => {});
-    emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: jobId, ts: new Date().toISOString() });
-
-    // Version is NOT NULL DEFAULT 1 in DB - never null after write
-    res.json({
-      success: true,
-      id: result.id,
-      jobId: result.id,
-      scheduledStart: null,
-      scheduledEnd: null,
-      isAllDay: false,
-      version: result.version,
-      status: result.status,
-    });
-  })
-);
 
 // ============================================================================
 // GET /api/calendar/unscheduled - Backlog Jobs
@@ -790,81 +627,9 @@ router.get(
 );
 
 // ============================================================================
-// POST /api/calendar/resize - Resize Job on Calendar
+// REMOVED (2026-03-06): POST /api/calendar/resize
+// All callers migrated to POST /api/calendar/visit/:visitId/resize
 // ============================================================================
-// PHASE 4: Now writes to job_visits instead of jobs directly.
-// Updates the current eligible visit's scheduled_end.
-// ============================================================================
-
-router.post(
-  "/resize",
-  requireRole(MANAGER_ROLES),
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    const companyId = req.companyId!;
-    assertCanEditSchedule(req.user);
-
-    const validation = resizeJobSchema.safeParse(req.body);
-    if (!validation.success) {
-      throw createError(400, "Validation failed");
-    }
-
-    const { job, newEndTime } = validation.data;
-    const newEnd = new Date(newEndTime);
-
-    if (IS_DEV) {
-      console.log('[RESIZE-DEBUG] resize (PHASE 4 - job_visits) called:', {
-        jobId: job.id,
-        currentEnd: job.scheduledEnd,
-        newEnd: newEndTime,
-      });
-    }
-
-    // Find current eligible visit for this job
-    const currentVisit = await jobVisitsRepository.getCurrentEligibleVisit(companyId, job.id);
-    if (!currentVisit) {
-      throw createError(404, "No eligible visit found for this job");
-    }
-
-    // For all-day events, preserve the end-of-day time
-    let finalEnd = newEnd;
-    if (currentVisit.isAllDay) {
-      // Keep all-day events at 23:59:59
-      finalEnd = new Date(newEnd);
-      finalEnd.setHours(23, 59, 59, 0);
-    }
-
-    // Update only scheduled_end on the visit
-    await jobVisitsRepository.updateJobVisit(
-      companyId,
-      currentVisit.id,
-      currentVisit.version,
-      { scheduledEnd: finalEnd }
-    );
-
-    // Re-fetch job to return updated data
-    const updatedJob = await calendarRepository.getJobById(companyId, job.id);
-
-    if (IS_DEV) {
-      console.log(
-        `[Calendar] resize (PHASE 4): job=${job.id} visitId=${currentVisit.id} newEnd=${finalEnd.toISOString()}`
-      );
-    }
-
-    // Hardening: Emit dispatch signal for legacy resize path
-    emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: job.id, ts: new Date().toISOString() });
-
-    // Return response matching existing API contract
-    res.json({
-      id: updatedJob?.id,
-      jobId: updatedJob?.id,
-      scheduledStart: updatedJob?.scheduledStart?.toISOString() || null,
-      scheduledEnd: updatedJob?.scheduledEnd?.toISOString() || null,
-      isAllDay: updatedJob?.isAllDay ?? false,
-      version: updatedJob?.version,
-      status: updatedJob?.status,
-    });
-  })
-);
 
 // ============================================================================
 // Phase 4: Visit-Centric Write Endpoints
@@ -886,7 +651,7 @@ router.patch(
     const { visitId } = validateSchema(visitIdParamSchema, req.params);
     assertCanEditSchedule(req.user);
 
-    const data = validateSchema(rescheduleJobSchema, req.body);
+    const data = validateSchema(rescheduleVisitSchema, req.body);
     const isAllDay = data.allDay === true;
     let computedStartAt: Date | undefined;
     let computedEndAt: Date | undefined;
@@ -964,7 +729,7 @@ router.post(
     const { visitId } = validateSchema(visitIdParamSchema, req.params);
     assertCanEditSchedule(req.user);
 
-    const data = validateSchema(unscheduleJobSchema, req.body);
+    const data = validateSchema(unscheduleVisitSchema, req.body);
 
     let result;
     try {

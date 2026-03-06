@@ -10,11 +10,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogClose, DialogDescription } from "@/components/ui/dialog";
-import { Plus, Pencil, Trash2, Loader2, Wrench, ChevronDown, ChevronUp, History, Calendar, Settings } from "lucide-react";
+import { Plus, Pencil, Trash2, Loader2, Wrench, ChevronDown, ChevronUp, History, ImageIcon } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import type { LocationEquipment, Job } from "@shared/schema";
+import type { LocationEquipment } from "@shared/schema";
 import { format } from "date-fns";
+import EquipmentCatalogItemsSection from "./EquipmentCatalogItemsSection";
+import NameplateCaptureSection from "./NameplateCaptureSection";
+import EquipmentServiceTimeline from "./EquipmentServiceTimeline";
 
 interface LocationEquipmentSectionProps {
   locationId: string;
@@ -39,10 +42,6 @@ const EQUIPMENT_TYPES = [
   { value: "other", label: "Other" },
 ];
 
-interface EquipmentWithHistory extends LocationEquipment {
-  serviceHistory?: Job[];
-}
-
 const emptyEquipment = {
   name: "",
   equipmentType: "",
@@ -61,24 +60,40 @@ export default function LocationEquipmentSection({ locationId }: LocationEquipme
   const [editingEquipment, setEditingEquipment] = useState<LocationEquipment | null>(null);
   const [expandedEquipmentId, setExpandedEquipmentId] = useState<string | null>(null);
   const [formData, setFormData] = useState(emptyEquipment);
+  // Nameplate photo state for deferred upload during equipment creation (2026-03-06)
+  const [pendingNameplateFile, setPendingNameplateFile] = useState<File | null>(null);
+  const [pendingNameplatePreview, setPendingNameplatePreview] = useState<string | null>(null);
 
   const { data: equipment = [], isLoading } = useQuery<LocationEquipment[]>({
     queryKey: ["/api/clients", locationId, "equipment"],
   });
 
-  const { data: equipmentDetails } = useQuery<{ equipment: LocationEquipment; serviceHistory: Job[] }>({
-    queryKey: ["/api/clients", locationId, "equipment", expandedEquipmentId],
-    enabled: !!expandedEquipmentId,
-  });
-
   const createMutation = useMutation({
     mutationFn: async (data: typeof formData) => {
-      return await apiRequest(`/api/clients/${locationId}/equipment`, { method: "POST", body: JSON.stringify(data) });
+      const result = await apiRequest(`/api/clients/${locationId}/equipment`, { method: "POST", body: JSON.stringify(data) });
+      return result as LocationEquipment;
     },
-    onSuccess: () => {
+    onSuccess: async (created) => {
+      // Deferred nameplate upload — upload photo now that we have an equipmentId (2026-03-06)
+      if (pendingNameplateFile && created?.id) {
+        try {
+          const formData = new FormData();
+          formData.append("photo", pendingNameplateFile);
+          await fetch(`/api/clients/${locationId}/equipment/${created.id}/nameplate`, {
+            method: "POST",
+            body: formData,
+            credentials: "include",
+          });
+        } catch {
+          // Non-blocking — photo upload failure shouldn't prevent equipment creation
+          toast({ title: "Note", description: "Equipment created, but nameplate photo upload failed. You can add it later." });
+        }
+      }
       queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "equipment"] });
       setIsAddDialogOpen(false);
       setFormData(emptyEquipment);
+      setPendingNameplateFile(null);
+      setPendingNameplatePreview(null);
       toast({
         title: "Equipment Added",
         description: "The equipment has been added to this location.",
@@ -163,6 +178,8 @@ export default function LocationEquipmentSection({ locationId }: LocationEquipme
     setIsAddDialogOpen(false);
     setEditingEquipment(null);
     setFormData(emptyEquipment);
+    setPendingNameplateFile(null);
+    setPendingNameplatePreview(null);
   };
 
   const getEquipmentTypeLabel = (type: string | null) => {
@@ -326,6 +343,36 @@ export default function LocationEquipmentSection({ locationId }: LocationEquipme
                     data-testid="input-equipment-notes"
                   />
                 </div>
+                {/* Nameplate photo capture + OCR (2026-03-06) */}
+                <NameplateCaptureSection
+                  locationId={locationId}
+                  equipmentId={editingEquipment?.id || null}
+                  existingPhotoUrl={
+                    editingEquipment?.nameplatePhotoId
+                      ? `/api/files/${editingEquipment.nameplatePhotoId}`
+                      : pendingNameplatePreview
+                  }
+                  onOcrResult={(ocr) => {
+                    // Prefill form fields from OCR — only overwrite empty fields
+                    setFormData(prev => ({
+                      ...prev,
+                      manufacturer: prev.manufacturer || ocr.manufacturer || "",
+                      modelNumber: prev.modelNumber || ocr.modelNumber || "",
+                      serialNumber: prev.serialNumber || ocr.serialNumber || "",
+                    }));
+                  }}
+                  onPhotoUploaded={() => {
+                    queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "equipment"] });
+                  }}
+                  onPhotoRemoved={() => {
+                    setPendingNameplateFile(null);
+                    setPendingNameplatePreview(null);
+                  }}
+                  onPendingFile={(file) => {
+                    setPendingNameplateFile(file);
+                    setPendingNameplatePreview(file ? URL.createObjectURL(file) : null);
+                  }}
+                />
               </div>
               <DialogFooter>
                 <DialogClose asChild>
@@ -457,27 +504,33 @@ export default function LocationEquipmentSection({ locationId }: LocationEquipme
                               </div>
                             )}
                           </div>
+                          {/* Nameplate photo display (2026-03-06) */}
+                          {eq.nameplatePhotoId && (
+                            <div className="border-t pt-4">
+                              <h4 className="font-medium flex items-center gap-2 mb-2">
+                                <ImageIcon className="h-4 w-4" />
+                                Nameplate Photo
+                              </h4>
+                              <a href={`/api/files/${eq.nameplatePhotoId}`} target="_blank" rel="noopener noreferrer">
+                                <img
+                                  src={`/api/files/${eq.nameplatePhotoId}`}
+                                  alt="Equipment nameplate"
+                                  className="h-40 w-auto rounded border object-contain cursor-pointer hover:opacity-80 transition-opacity"
+                                />
+                              </a>
+                            </div>
+                          )}
+                          {/* Service Timeline (2026-03-06) — replaces basic job list */}
                           <div className="border-t pt-4">
-                            <h4 className="font-medium flex items-center gap-2 mb-2">
+                            <h4 className="font-medium flex items-center gap-2 mb-3">
                               <History className="h-4 w-4" />
-                              Service History
+                              Service Timeline
                             </h4>
-                            {equipmentDetails?.serviceHistory && equipmentDetails.serviceHistory.length > 0 ? (
-                              <div className="space-y-2">
-                                {equipmentDetails.serviceHistory.map(job => (
-                                  <div key={job.id} className="flex items-center justify-between text-sm bg-background rounded p-2">
-                                    <div className="flex items-center gap-2">
-                                      <Calendar className="h-4 w-4 text-muted-foreground" />
-                                      {job.scheduledStart ? format(new Date(job.scheduledStart), "MM/dd/yyyy") : "No date"}
-                                      <Badge variant="outline" className="text-xs">{job.status}</Badge>
-                                    </div>
-                                    <span className="text-muted-foreground truncate max-w-xs">{job.summary}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <p className="text-sm text-muted-foreground">No service history for this equipment.</p>
-                            )}
+                            <EquipmentServiceTimeline equipmentId={eq.id} />
+                          </div>
+                          {/* Associated catalog items (2026-03-06) */}
+                          <div className="border-t pt-4">
+                            <EquipmentCatalogItemsSection equipmentId={eq.id} />
                           </div>
                         </div>
                       </TableCell>

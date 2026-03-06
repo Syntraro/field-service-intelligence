@@ -1,16 +1,16 @@
 /**
  * Calendar API Hooks
  *
- * MODEL A: Job-Centric Scheduling
- * - Jobs ARE calendar events (no separate "assignment" entity)
- * - A job is scheduled iff scheduledStart IS NOT NULL
- * - Events are keyed by jobId only
+ * Visit-centric scheduling model (2026-03-06):
+ * - First-schedule: POST /api/calendar/schedule (job-based, creates visit)
+ * - Reschedule existing: PATCH /api/calendar/visit/:visitId/reschedule
+ * - Unschedule existing: POST /api/calendar/visit/:visitId/unschedule
+ * - Resize existing: POST /api/calendar/visit/:visitId/resize
  *
  * API Functions:
  * - fetchCalendarRange(start, end) - Get scheduled jobs in range
- * - scheduleJob(payload) - Schedule a job (sets scheduledStart/End)
- * - rescheduleJob(jobId, payload) - Update job schedule
- * - unscheduleJob(jobId, version) - Clear job schedule
+ * - scheduleJob(payload) - First-schedule a job (creates visit)
+ * - unscheduleVisit(visitId, version) - Unschedule a visit
  */
 
 import { useQuery, useMutation, useQueryClient, QueryClient } from "@tanstack/react-query";
@@ -201,19 +201,6 @@ export interface ScheduleJobPayload {
 }
 
 /**
- * Payload for rescheduling a job (PATCH /api/calendar/schedule/:jobId)
- */
-export interface RescheduleJobPayload {
-  startAt?: string;
-  endAt?: string;
-  date?: string;
-  allDay?: boolean;
-  durationMinutes?: number;
-  technicianUserId?: string | null;
-  version: number;       // REQUIRED for optimistic locking
-}
-
-/**
  * Response from schedule/reschedule/unschedule endpoints
  */
 export interface ScheduleJobResponse {
@@ -272,26 +259,13 @@ export async function scheduleJob(
 }
 
 /**
- * Reschedule a job (updates scheduledStart/scheduledEnd/isAllDay)
+ * Unschedule a visit (2026-03-06: visit-centric endpoint)
  */
-export async function rescheduleJob(
-  jobId: string,
-  payload: RescheduleJobPayload
-): Promise<ScheduleJobResponse> {
-  return apiRequest(`/api/calendar/schedule/${jobId}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-  });
-}
-
-/**
- * Unschedule a job (clears scheduledStart/scheduledEnd/isAllDay)
- */
-export async function unscheduleJob(
-  jobId: string,
+export async function unscheduleVisit(
+  visitId: string,
   version: number
 ): Promise<ScheduleJobResponse> {
-  return apiRequest(`/api/calendar/unschedule/${jobId}`, {
+  return apiRequest(`/api/calendar/visit/${visitId}/unschedule`, {
     method: "POST",
     body: JSON.stringify({ version }),
   });
@@ -365,43 +339,23 @@ export function useScheduleJob() {
 }
 
 /**
- * Hook to reschedule a job
- *
- * INVALIDATION: calendar + unscheduled + jobs
- * Reason: Reschedule may affect backlog sidebar (e.g. moving to a date
- * that changes which jobs appear in the unscheduled list)
- */
-export function useRescheduleJob() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: ({ jobId, payload }: { jobId: string; payload: RescheduleJobPayload }) =>
-      rescheduleJob(jobId, payload),
-    onSuccess: (_, variables) => {
-      invalidateCalendarAndUnscheduledQueries(queryClient, "reschedule", variables.jobId);
-      invalidateJobQueries(queryClient, "reschedule", variables.jobId);
-    },
-  });
-}
-
-/**
- * Hook to unschedule a job
+ * Hook to unschedule a visit (2026-03-06: visit-centric)
  *
  * INVALIDATION: calendar + unscheduled + jobs + visits
  * Reason: Job moves FROM calendar TO backlog, visit becomes inactive
  */
-export function useUnscheduleJob() {
+export function useUnscheduleVisit() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ jobId, version }: { jobId: string; version: number }) =>
-      unscheduleJob(jobId, version),
+    mutationFn: ({ visitId, version, jobId }: { visitId: string; version: number; jobId?: string }) =>
+      unscheduleVisit(visitId, version),
     onSuccess: (_, variables) => {
       // Job moves from calendar to backlog - invalidate both
       invalidateCalendarAndUnscheduledQueries(queryClient, "unschedule", variables.jobId);
       invalidateJobQueries(queryClient, "unschedule", variables.jobId);
       // Also invalidate visits since unschedule marks visit as inactive
-      invalidateVisitQueries(queryClient, "unschedule", variables.jobId);
+      invalidateVisitQueries(queryClient, "unschedule", variables.jobId || variables.visitId);
     },
   });
 }

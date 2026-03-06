@@ -8,11 +8,20 @@
  * - Tasks always shown (toggle removed in Polish Pass)
  * - Day layout toggle added (columns/rows) in Polish Pass
  * - Controls consolidated into single flex row
+ * - Hide Weekends + Start Hour moved into "More" dropdown (2026-03-06)
  */
 
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ChevronLeft, ChevronRight, Columns3, Rows3, ArrowUpDown, AlertTriangle, CalendarOff } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { ChevronLeft, ChevronRight, Columns3, Rows3, ArrowUpDown, AlertTriangle, MoreHorizontal, CalendarOff, Clock } from "lucide-react";
 import type { DayLayout } from "@/hooks/useCalendarState";
 import { getWeekStart } from "./calendarUtils";
 import { TechnicianFilterPopover } from "./TechnicianFilterPopover";
@@ -87,6 +96,8 @@ export function CalendarHeader({
   alertsOnly,
   onToggleAlertsOnly,
 }: CalendarHeaderProps) {
+  const isTimedView = view === "weekly" || view === "daily";
+
   return (
     <div className="flex items-center justify-between">
       {/* Left: navigation + date title */}
@@ -150,7 +161,7 @@ export function CalendarHeader({
       {/* Right: controls row */}
       <div className="flex items-center gap-2">
         {/* Risk-first sort toggle (Calendar Improvement 2026-03-05) */}
-        {(view === "weekly" || view === "daily") && onToggleRiskFirstSort && (
+        {isTimedView && onToggleRiskFirstSort && (
           <Button
             variant={riskFirstSort ? "default" : "outline"}
             size="sm"
@@ -164,7 +175,7 @@ export function CalendarHeader({
         )}
 
         {/* Alerts-only filter toggle (Calendar Improvement 2026-03-05) */}
-        {(view === "weekly" || view === "daily") && onToggleAlertsOnly && (
+        {isTimedView && onToggleAlertsOnly && (
           <Button
             variant={alertsOnly ? "default" : "outline"}
             size="sm"
@@ -183,28 +194,6 @@ export function CalendarHeader({
           hiddenTechnicianIds={hiddenTechnicianIds}
           onToggleTechnicianVisibility={onToggleTechnicianVisibility}
         />
-
-        {/* Start hour selector (weekly/daily only) */}
-        {(view === "weekly" || view === "daily") && (
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs text-muted-foreground">Start:</span>
-            <Select
-              value={String(calendarStartHour)}
-              onValueChange={(value) => onStartHourChange(parseInt(value, 10))}
-            >
-              <SelectTrigger className="w-20 text-xs h-8" data-testid="select-start-hour">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {Array.from({ length: 24 }, (_, i) => i).map((hour) => (
-                  <SelectItem key={hour} value={String(hour)}>
-                    {formatHourLabel(hour, regional.timeFormat)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        )}
 
         {/* Day layout toggle (daily view only) */}
         {view === "daily" && (
@@ -225,19 +214,61 @@ export function CalendarHeader({
           </Button>
         )}
 
-        {/* Hide weekends toggle (weekly view only, 2026-03-06) */}
-        {view === "weekly" && onToggleHideWeekends && (
-          <Button
-            variant={hideWeekends ? "default" : "outline"}
-            size="sm"
-            className="h-8 text-xs gap-1"
-            onClick={onToggleHideWeekends}
-            title={hideWeekends ? "Show weekend columns" : "Hide weekend columns"}
-            data-testid="button-hide-weekends"
-          >
-            <CalendarOff className="h-3 w-3" />
-            {hideWeekends ? "Show Weekends" : "Hide Weekends"}
-          </Button>
+        {/* More menu — secondary controls (2026-03-06) */}
+        {isTimedView && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 w-8 p-0"
+                data-testid="button-more-menu"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuLabel className="text-xs text-muted-foreground font-normal">
+                View Settings
+              </DropdownMenuLabel>
+
+              {/* Hide/Show Weekends (week view only) */}
+              {view === "weekly" && onToggleHideWeekends && (
+                <DropdownMenuItem
+                  onClick={onToggleHideWeekends}
+                  data-testid="button-hide-weekends"
+                >
+                  <CalendarOff className="h-4 w-4 mr-2" />
+                  {hideWeekends ? "Show Weekends" : "Hide Weekends"}
+                </DropdownMenuItem>
+              )}
+
+              <DropdownMenuSeparator />
+
+              {/* Calendar start time */}
+              <DropdownMenuLabel className="text-xs text-muted-foreground font-normal">
+                Start Hour
+              </DropdownMenuLabel>
+              <div className="px-2 pb-2" onClick={(e) => e.stopPropagation()}>
+                <Select
+                  value={String(calendarStartHour)}
+                  onValueChange={(value) => onStartHourChange(parseInt(value, 10))}
+                >
+                  <SelectTrigger className="w-full text-xs h-8" data-testid="select-start-hour">
+                    <Clock className="h-3 w-3 mr-1.5 text-muted-foreground" />
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {Array.from({ length: 24 }, (_, i) => i).map((hour) => (
+                      <SelectItem key={hour} value={String(hour)}>
+                        {formatHourLabel(hour, regional.timeFormat)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
         )}
 
         {/* View switch pills */}

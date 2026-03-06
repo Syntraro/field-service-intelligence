@@ -388,7 +388,6 @@ export default function Calendar() {
     assignTechnicians,
     clearSchedule,
     clearDay,
-    toggleComplete,
     isSavingDrag,
     isSavingUnscheduled, // 2026-01-30: Only for schedule/unschedule ops (sidebar loading)
     savingJobIds,

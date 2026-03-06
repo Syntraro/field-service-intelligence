@@ -5,7 +5,7 @@ import { insertClientSchema, insertLocationEquipmentSchema, updateLocationEquipm
 import { z } from "zod";
 import type { Client } from "@shared/schema";
 import { requireRole } from "../auth/requireRole";
-import { MANAGER_ROLES } from "../auth/roles";
+import { MANAGER_ROLES, TECH_ROLES } from "../auth/roles";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
@@ -13,6 +13,12 @@ import { AuthedRequest } from "../auth/tenantIsolation";
 import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
 import { normalizePostalCode } from "../lib/addressNormalize";
+import multer from "multer";
+import path from "path";
+import fs from "fs";
+import { randomUUID } from "crypto";
+import { filesRepository } from "../storage/files";
+import { extractNameplateFields } from "../services/nameplateOcr";
 
 const router = Router();
 
@@ -1116,5 +1122,131 @@ router.delete("/:locationId/equipment/:equipmentId", requireRole(MANAGER_ROLES),
   await storage.deleteLocationEquipment(companyId, equipmentId);
   res.json({ success: true });
 }));
+
+// =========================================================================
+// Equipment Nameplate Photo + OCR (2026-03-06)
+// Upload a nameplate image, persist it to files table, attempt OCR extraction.
+// Photo is always saved; OCR is best-effort convenience.
+// =========================================================================
+
+const UPLOADS_ROOT = path.resolve(process.cwd(), "uploads");
+
+const nameplateStorage = multer.diskStorage({
+  destination(req, _file, cb) {
+    const companyId = (req as AuthedRequest).companyId;
+    const dir = path.join(UPLOADS_ROOT, companyId);
+    fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename(_req, file, cb) {
+    const fileId = randomUUID();
+    const ext = path.extname(file.originalname);
+    (file as any)._fileId = fileId;
+    cb(null, `${fileId}${ext}`);
+  },
+});
+
+const nameplateUpload = multer({
+  storage: nameplateStorage,
+  limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+  fileFilter(_req, file, cb) {
+    if (file.mimetype.startsWith("image/")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only image files are accepted"));
+    }
+  },
+});
+
+/**
+ * POST /api/clients/:locationId/equipment/:equipmentId/nameplate
+ * Upload a nameplate photo, save to files table + link to equipment,
+ * then attempt OCR extraction. Returns file info + OCR results.
+ */
+router.post(
+  "/:locationId/equipment/:equipmentId/nameplate",
+  requireRole(TECH_ROLES), // Techs can capture nameplates in the field
+  nameplateUpload.single("photo"),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const { locationId, equipmentId } = req.params;
+    const file = req.file as Express.Multer.File | undefined;
+
+    if (!file) {
+      throw createError(400, "No photo uploaded");
+    }
+
+    // Validate ownership
+    const location = await storage.getClient(companyId, locationId);
+    if (!location) throw createError(404, "Location not found");
+
+    const equipment = await storage.getLocationEquipmentById(companyId, equipmentId);
+    if (!equipment || equipment.locationId !== locationId) {
+      throw createError(404, "Equipment not found");
+    }
+
+    // Persist file record
+    const fileId = (file as any)._fileId as string;
+    const storageKey = path.relative(process.cwd(), file.path);
+    const fileRow = await filesRepository.createFile(companyId, req.user!.id, {
+      storageKey,
+      originalName: file.originalname,
+      mimeType: file.mimetype,
+      size: file.size,
+    });
+
+    // Link photo to equipment
+    await storage.updateLocationEquipment(companyId, equipmentId, {
+      nameplatePhotoId: fileRow.id,
+    });
+
+    // Attempt OCR (fire-and-await, but never blocks on failure)
+    let ocr = { success: false } as Awaited<ReturnType<typeof extractNameplateFields>>;
+    try {
+      ocr = await extractNameplateFields(storageKey, file.mimetype);
+    } catch {
+      // OCR failure is non-blocking
+    }
+
+    res.status(201).json({
+      file: {
+        fileId: fileRow.id,
+        originalName: fileRow.originalName,
+        mimeType: fileRow.mimeType,
+        size: fileRow.size,
+        downloadUrl: `/api/files/${fileRow.id}`,
+      },
+      ocr,
+    });
+  })
+);
+
+/**
+ * DELETE /api/clients/:locationId/equipment/:equipmentId/nameplate
+ * Remove nameplate photo link from equipment (photo file remains in storage).
+ */
+router.delete(
+  "/:locationId/equipment/:equipmentId/nameplate",
+  requireRole(TECH_ROLES), // Techs can manage nameplate photos
+
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const { locationId, equipmentId } = req.params;
+
+    const location = await storage.getClient(companyId, locationId);
+    if (!location) throw createError(404, "Location not found");
+
+    const equipment = await storage.getLocationEquipmentById(companyId, equipmentId);
+    if (!equipment || equipment.locationId !== locationId) {
+      throw createError(404, "Equipment not found");
+    }
+
+    await storage.updateLocationEquipment(companyId, equipmentId, {
+      nameplatePhotoId: null,
+    });
+
+    res.json({ success: true });
+  })
+);
 
 export default router;

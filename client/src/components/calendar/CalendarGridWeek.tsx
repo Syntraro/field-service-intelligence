@@ -164,9 +164,10 @@ function HourlyDropZone({
       className={`border-r ${DENSITY_STYLES[density].row} relative ${isOffHours ? 'bg-slate-200/70 dark:bg-slate-800/50' : 'bg-background'}`}
       style={{ minHeight: `${rowHeight}px` }}
       onClick={(e) => {
-        // Empty-slot click: only fire if clicking background (not an event card)
+        // Empty-slot click: only fire if clicking background (not an event card or resize handle)
         if (!onEmptySlotClick || !dayDate) return;
-        if ((e.target as HTMLElement).closest('[data-testid^="assigned-client-"]')) return;
+        const target = e.target as HTMLElement;
+        if (target.closest('[data-testid^="assigned-client-"]') || target.closest('[data-testid^="resize-handle-"]')) return;
         // Calculate minute offset from click position within the cell
         const rect = e.currentTarget.getBoundingClientRect();
         const yRatio = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));

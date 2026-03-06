@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { LocationEquipment, JobEquipment } from "@shared/schema";
 import { format } from "date-fns";
+import EquipmentCatalogItemsSection from "./EquipmentCatalogItemsSection";
 
 interface JobEquipmentWithDetails extends JobEquipment {
   equipment: LocationEquipment;
@@ -207,46 +208,54 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
                   </TableHeader>
                   <TableBody>
                     {jobEquipment.map(je => (
-                      <TableRow key={je.id} data-testid={`row-job-equipment-${je.id}`}>
-                        <TableCell className="font-medium">{je.equipment.name}</TableCell>
-                        <TableCell>
-                          <Badge variant="secondary">
-                            {getEquipmentTypeLabel(je.equipment.equipmentType)}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          {je.equipment.manufacturer || je.equipment.modelNumber ? (
-                            <span className="text-sm">
-                              {je.equipment.manufacturer}
-                              {je.equipment.manufacturer && je.equipment.modelNumber ? " - " : ""}
-                              {je.equipment.modelNumber}
-                            </span>
-                          ) : (
-                            <span className="text-muted-foreground">-</span>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {je.equipment.serialNumber || <span className="text-muted-foreground">-</span>}
-                        </TableCell>
-                        <TableCell>
-                          {je.notes ? (
-                            <span className="text-sm">{je.notes}</span>
-                          ) : (
-                            <span className="text-muted-foreground">-</span>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => removeMutation.mutate(je.id)}
-                            disabled={removeMutation.isPending}
-                            data-testid={`button-remove-job-equipment-${je.id}`}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </TableCell>
-                      </TableRow>
+                      <React.Fragment key={je.id}>
+                        <TableRow data-testid={`row-job-equipment-${je.id}`}>
+                          <TableCell className="font-medium">{je.equipment.name}</TableCell>
+                          <TableCell>
+                            <Badge variant="secondary">
+                              {getEquipmentTypeLabel(je.equipment.equipmentType)}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            {je.equipment.manufacturer || je.equipment.modelNumber ? (
+                              <span className="text-sm">
+                                {je.equipment.manufacturer}
+                                {je.equipment.manufacturer && je.equipment.modelNumber ? " - " : ""}
+                                {je.equipment.modelNumber}
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground">-</span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {je.equipment.serialNumber || <span className="text-muted-foreground">-</span>}
+                          </TableCell>
+                          <TableCell>
+                            {je.notes ? (
+                              <span className="text-sm">{je.notes}</span>
+                            ) : (
+                              <span className="text-muted-foreground">-</span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => removeMutation.mutate(je.id)}
+                              disabled={removeMutation.isPending}
+                              data-testid={`button-remove-job-equipment-${je.id}`}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                        {/* Typical Parts / Materials — read-only catalog items per equipment (2026-03-06) */}
+                        <TableRow>
+                          <TableCell colSpan={6} className="pt-0 pb-2 px-4">
+                            <EquipmentCatalogItemsSection equipmentId={je.equipmentId} readOnly />
+                          </TableCell>
+                        </TableRow>
+                      </React.Fragment>
                     ))}
                   </TableBody>
                 </Table>

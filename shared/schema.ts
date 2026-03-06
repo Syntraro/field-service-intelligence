@@ -1967,6 +1967,7 @@ export const locationEquipment = pgTable("location_equipment", {
   installDate: date("install_date"),
   warrantyExpiry: date("warranty_expiry"),
   notes: text("notes"),
+  nameplatePhotoId: varchar("nameplate_photo_id").references(() => files.id, { onDelete: "set null" }), // Nameplate photo for OCR + reference (2026-03-06)
   isActive: boolean("is_active").notNull().default(true), // Legacy (use deletedAt)
   // Soft delete (canonical)
   deletedAt: timestamp("deleted_at"), // NULL = active, NOT NULL = soft-deleted
@@ -1990,12 +1991,49 @@ export const updateLocationEquipmentSchema = z.object({
   installDate: z.string().nullable().optional(),
   warrantyExpiry: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
+  nameplatePhotoId: z.string().nullable().optional(), // FK to files table (2026-03-06)
   isActive: z.boolean().optional(),
 });
 
 export type InsertLocationEquipment = z.infer<typeof insertLocationEquipmentSchema>;
 export type UpdateLocationEquipment = z.infer<typeof updateLocationEquipmentSchema>;
 export type LocationEquipment = typeof locationEquipment.$inferSelect;
+
+// ============================================================================
+// EQUIPMENT CATALOG ITEMS — Reference associations to catalog items (2026-03-06)
+// ============================================================================
+// Purely informational: shows which catalog items (parts/services) are commonly
+// used when servicing a piece of equipment. NOT inventory, NOT auto-billing.
+export const equipmentCatalogItems = pgTable("equipment_catalog_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  equipmentId: varchar("equipment_id").notNull().references(() => locationEquipment.id, { onDelete: "cascade" }),
+  catalogItemId: varchar("catalog_item_id").notNull().references(() => items.id, { onDelete: "cascade" }),
+  quantity: integer("quantity").notNull().default(1),
+  notes: text("notes"),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+}, (table) => ({
+  equipUnique: unique("equipment_catalog_items_unique").on(table.companyId, table.equipmentId, table.catalogItemId),
+  equipIdx: index("equipment_catalog_items_equip_idx").on(table.companyId, table.equipmentId, table.sortOrder),
+  itemIdx: index("equipment_catalog_items_item_idx").on(table.companyId, table.catalogItemId),
+}));
+
+export const insertEquipmentCatalogItemSchema = createInsertSchema(equipmentCatalogItems).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updateEquipmentCatalogItemSchema = z.object({
+  quantity: z.number().int().positive().optional(),
+  notes: z.string().nullable().optional(),
+  sortOrder: z.number().int().nonnegative().optional(),
+});
+
+export type EquipmentCatalogItem = typeof equipmentCatalogItems.$inferSelect;
+export type InsertEquipmentCatalogItem = z.infer<typeof insertEquipmentCatalogItemSchema>;
 
 // ============================================================================
 // LOCATION PM PART TEMPLATE - Parts/filters/belts used at each PM visit

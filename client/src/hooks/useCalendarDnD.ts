@@ -1043,21 +1043,15 @@ export function useCalendarDnD(
       // Phase 4: Use visit-centric resize endpoint
       const scheduledStart = assignment?.scheduledStart || assignment?.startAt;
 
-      if (scheduledStart) {
-        const newEndTime = new Date(new Date(scheduledStart).getTime() + durationMinutes * 60_000).toISOString();
-        return apiRequest(`/api/calendar/visit/${id}/resize`, {
-          method: "POST",
-          body: JSON.stringify({ newEndTime }),
-        });
+      // Resize requires a start time to compute new end — fail explicitly if missing (2026-03-06)
+      if (!scheduledStart) {
+        throw new Error("Cannot resize: assignment has no start time");
       }
 
-      // Fallback: if no schedule data available, try legacy PATCH with version
-      const payload: Record<string, unknown> = { durationMinutes };
-      const version = assignment?.version;
-      if (version !== undefined) payload.version = version;
-      return apiRequest(`/api/calendar/schedule/${id}`, {
-        method: "PATCH",
-        body: JSON.stringify(payload),
+      const newEndTime = new Date(new Date(scheduledStart).getTime() + durationMinutes * 60_000).toISOString();
+      return apiRequest(`/api/calendar/visit/${id}/resize`, {
+        method: "POST",
+        body: JSON.stringify({ newEndTime }),
       });
     },
     onSuccess: async () => {
@@ -1079,7 +1073,7 @@ export function useCalendarDnD(
           params.assignment?.version,
           error.message || 'Version mismatch',
           'POST',
-          `/api/calendar/resize`
+          `/api/calendar/visit/${params.id}/resize`
         );
         // Refetch calendar to get fresh versions (duration change doesn't affect unscheduled)
         await refetchCalendar();
@@ -1119,7 +1113,7 @@ export function useCalendarDnD(
       // Phase 4: Use visit-centric unschedule endpoint (id = visitId)
       const response = await apiRequest(`/api/calendar/visit/${id}/unschedule`, {
         method: "POST",
-        body: JSON.stringify({ expectedVersion: version }),
+        body: JSON.stringify({ version }),
       });
       perfMark('server-response-received');
       return response;
@@ -1243,7 +1237,7 @@ export function useCalendarDnD(
           params.version,
           error.message || 'Version mismatch',
           'DELETE',
-          `/api/calendar/schedule/${params.id}`
+          `/api/calendar/visit/${params.id}/unschedule`
         );
         // Refetch calendar and unscheduled to get fresh versions
         await refetchCalendar();
@@ -1328,7 +1322,7 @@ export function useCalendarDnD(
       const unschedulePromises = assignmentsToDelete.map((assignment: any) =>
         apiRequest(`/api/calendar/visit/${assignment.id}/unschedule`, {
           method: "POST",
-          body: JSON.stringify({ expectedVersion: assignment.version }),
+          body: JSON.stringify({ version: assignment.version }),
         })
       );
       return Promise.all(unschedulePromises);
@@ -1356,7 +1350,7 @@ export function useCalendarDnD(
       const unschedulePromises = dayAssignments.map((assignment: any) =>
         apiRequest(`/api/calendar/visit/${assignment.id}/unschedule`, {
           method: "POST",
-          body: JSON.stringify({ expectedVersion: assignment.version }),
+          body: JSON.stringify({ version: assignment.version }),
         })
       );
       return Promise.all(unschedulePromises);
@@ -1378,36 +1372,6 @@ export function useCalendarDnD(
     },
   });
 
-  // ========================================
-  // Toggle Complete Mutation
-  // ========================================
-  const toggleComplete = useMutation({
-    mutationFn: async ({ assignmentId, currentCompleted }: { assignmentId: string; currentCompleted: boolean }) => {
-      // Phase 4: assignmentId = visitId — use visit-centric reschedule
-      return apiRequest(`/api/calendar/visit/${assignmentId}/reschedule`, {
-        method: "PATCH",
-        body: JSON.stringify({ completed: !currentCompleted }),
-      });
-    },
-    onSuccess: (_, { currentCompleted }) => {
-      // Completion status change doesn't affect unscheduled list
-      invalidateCalendarOnly();
-      queryClient.invalidateQueries({ queryKey: ["/api/maintenance/recently-completed"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/maintenance/statuses"] });
-      toast({
-        title: "Updated",
-        description: currentCompleted ? "Marked as incomplete" : "Marked as complete",
-      });
-    },
-    onError: (error: any) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to update completion status",
-        variant: "destructive",
-      });
-    },
-  });
-
   // Computed saving states - 2026-01-30: Split for granular loading indicators
   // Shows loading for operations that affect unscheduled panel (schedule from/unschedule to)
   const isSavingUnscheduled = createAssignment.isPending || deleteAssignment.isPending;
@@ -1423,7 +1387,6 @@ export function useCalendarDnD(
     assignTechnicians,
     clearSchedule,
     clearDay,
-    toggleComplete,
 
     // State - 2026-01-30: Split saving states for granular loading indicators
     isSavingDrag: isSavingAnyDrag,  // Any drag operation (calendar feedback)

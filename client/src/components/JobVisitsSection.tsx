@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { getMemberDisplayName } from "@/lib/displayName";
 import { useJobVisits, isVisitInactive, isVisitIneligible, getVisitDisplayStatus } from "@/hooks/useJobVisits";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
-import { useUnscheduleJob } from "@/hooks/useCalendarApi";
+import { useUnscheduleVisit } from "@/hooks/useCalendarApi";
 import { format } from "date-fns";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -193,11 +193,9 @@ export default function JobVisitsSection({ jobId, jobVersion, defaultOpen = fals
 
   const { teamMembers: technicians } = useTechniciansDirectory();
 
-  // Unschedule mutation - uses centralized hook from useCalendarApi
+  // Unschedule mutation — visit-centric (2026-03-06)
   // The hook handles all standard invalidations: calendar, unscheduled, jobs, visits
-  // Server selects current eligible visit and sets is_active=false
-  // Then calls syncJobScheduleFromVisits to update jobs table
-  const unscheduleMutation = useUnscheduleJob();
+  const unscheduleMutation = useUnscheduleVisit();
 
   // FIX C: Use canonical getMemberDisplayName instead of inline firstName+lastName fallback
   const getTechnicianName = (techId: string | null) => {
@@ -556,12 +554,9 @@ export default function JobVisitsSection({ jobId, jobVersion, defaultOpen = fals
             <AlertDialogCancel data-testid="button-cancel-unschedule">Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                // Uses canonical endpoint: POST /api/calendar/unschedule/:jobId
-                // Server selects current eligible visit, sets is_active=false
-                // Then calls syncJobScheduleFromVisits to update jobs table
-                // Centralized hook handles all invalidations: calendar, unscheduled, jobs, visits
+                // Visit-centric unschedule (2026-03-06): pass visitId + visit version
                 unscheduleMutation.mutate(
-                  { jobId, version: jobVersion },
+                  { visitId: currentEligibleVisit!.id, version: currentEligibleVisit!.version, jobId },
                   {
                     onSuccess: () => {
                       toast({ title: "Visit Unscheduled", description: "The visit has been removed from the calendar." });
