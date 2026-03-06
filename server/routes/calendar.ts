@@ -134,6 +134,10 @@ function transformToDto(job: CalendarJobWithDetails): CalendarEventDto {
     visitNotes: job.visitNotes ?? null,
     outcomeNote: job.outcomeNote ?? null,
     description: job.description ?? null,
+    accessInstructions: job.accessInstructions ?? null,
+    contactName: job.contactName ?? null,
+    contactPhone: job.contactPhone ?? null,
+    locationNotes: job.locationNotes ?? null,
   };
 }
 

@@ -155,6 +155,14 @@ export interface CalendarJobWithDetails {
   outcomeNote?: string | null;
   /** Job description — read-only context from parent job */
   description?: string | null;
+  /** Job-level access instructions (e.g., gate code, roof access) */
+  accessInstructions?: string | null;
+  /** Location contact name */
+  contactName?: string | null;
+  /** Location contact phone */
+  contactPhone?: string | null;
+  /** Location notes (site-specific context) */
+  locationNotes?: string | null;
 }
 
 /**
@@ -255,6 +263,7 @@ export class CalendarRepository extends BaseRepository {
         jv.visit_notes,
         jv.outcome_note,
         j.description,
+        j.access_instructions,
         j.company_id,
         j.job_number,
         j.job_type,
@@ -263,7 +272,10 @@ export class CalendarRepository extends BaseRepository {
         j.location_id,
         j.version,
         cl.company_name as location_name,
-        cl.parent_company_id as customer_company_id
+        cl.parent_company_id as customer_company_id,
+        cl.contact_name,
+        cl.phone as contact_phone,
+        cl.notes as location_notes
       FROM job_visits jv
       JOIN jobs j ON jv.job_id = j.id
       LEFT JOIN client_locations cl ON j.location_id = cl.id
@@ -295,6 +307,7 @@ export class CalendarRepository extends BaseRepository {
       visit_notes: string | null;
       outcome_note: string | null;
       description: string | null;
+      access_instructions: string | null;
       company_id: string;
       job_number: number;
       job_type: string;
@@ -304,6 +317,9 @@ export class CalendarRepository extends BaseRepository {
       version: number;
       location_name: string | null;
       customer_company_id: string | null;
+      contact_name: string | null;
+      contact_phone: string | null;
+      location_notes: string | null;
     }>;
 
     // DEV-only debug log
@@ -393,6 +409,10 @@ export class CalendarRepository extends BaseRepository {
         visitNotes: row.visit_notes,
         outcomeNote: row.outcome_note,
         description: row.description,
+        accessInstructions: row.access_instructions,
+        contactName: row.contact_name,
+        contactPhone: row.contact_phone,
+        locationNotes: row.location_notes,
       };
     });
 

@@ -53,6 +53,8 @@ import {
   History,
   Pencil,
   StickyNote,
+  KeyRound,
+  Phone,
 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -166,6 +168,10 @@ export function DispatchDetailPanel({
   const outcomeNote = assignment?.outcomeNote || "";
   const visitNotes = assignment?.visitNotes || "";
   const jobDescription = assignment?.description || "";
+  const accessInstructions = assignment?.accessInstructions || "";
+  const contactName = assignment?.contactName || "";
+  const contactPhone = assignment?.contactPhone || "";
+  const locationNotes = assignment?.locationNotes || "";
 
   // Technicians
   const techIds: string[] = assignment?.assignedTechnicianIds || (assignment?.primaryTechnicianId ? [assignment.primaryTechnicianId] : []);
@@ -578,6 +584,43 @@ export function DispatchDetailPanel({
                 </p>
               )}
             </section>
+
+            {/* ACCESS / SITE INSTRUCTIONS — read-only from job + location (2026-03-06: Pass 5) */}
+            {(accessInstructions || locationNotes) && (
+              <>
+                <Separator />
+                <section className="space-y-1.5">
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1">
+                    <KeyRound className="h-3 w-3" /> Access / Site
+                  </h4>
+                  {accessInstructions && (
+                    <p className="text-xs leading-relaxed">{accessInstructions}</p>
+                  )}
+                  {locationNotes && (
+                    <p className="text-xs text-muted-foreground leading-relaxed">{locationNotes}</p>
+                  )}
+                </section>
+              </>
+            )}
+
+            {/* CONTACT INFO — location contact for dispatch (2026-03-06: Pass 5) */}
+            {(contactName || contactPhone) && (
+              <>
+                <Separator />
+                <section className="space-y-1">
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Contact</h4>
+                  <div className="flex items-center gap-2 text-xs">
+                    {contactName && <span>{contactName}</span>}
+                    {contactName && contactPhone && <span className="text-muted-foreground">·</span>}
+                    {contactPhone && (
+                      <a href={`tel:${contactPhone}`} className="text-primary hover:underline flex items-center gap-0.5">
+                        <Phone className="h-3 w-3" /> {contactPhone}
+                      </a>
+                    )}
+                  </div>
+                </section>
+              </>
+            )}
 
             {/* JOB DESCRIPTION — read-only context from parent job */}
             {jobDescription && (

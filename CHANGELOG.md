@@ -21,6 +21,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **New component:** `DispatchDetailPanel.tsx` in `client/src/components/calendar/`
 - **Files modified:** `DispatchDetailPanel.tsx` (new), `Calendar.tsx`
 
+#### Access / Site Context in Panel (2026-03-06)
+- **Access instructions surfaced:** Job-level `accessInstructions` (gate codes, roof access, key info) now displayed in the DispatchDetailPanel under a dedicated "Access / Site" section with key icon.
+- **Location notes surfaced:** Site-specific `notes` from `client_locations` shown alongside access instructions for arrival context.
+- **Contact info section:** Location `contactName` and `phone` shown in a compact "Contact" section with clickable `tel:` link for quick dialing.
+- **Panel section order:** Outcome Note → Visit Notes → Access / Site → Contact → Job Description → Job Context. Most actionable dispatch info appears first.
+- **Calendar DTO expanded:** API now returns `accessInstructions`, `contactName`, `contactPhone`, `locationNotes` on each calendar event.
+- **Files modified:** `DispatchDetailPanel.tsx`, `server/storage/calendar.ts`, `server/routes/calendar.ts`, `shared/types/calendar.ts`
+
 #### Panel Dispatch Notes (2026-03-06)
 - **Visit notes in panel:** DispatchDetailPanel now shows `visitNotes` with inline editing. Dispatchers can add/edit operational notes directly in the panel without navigating to the full job detail.
 - **Outcome note preserved:** Technician-authored `outcomeNote` remains read-only and visually distinct from editable visit notes.

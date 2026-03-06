@@ -56,6 +56,14 @@ export interface CalendarEventDto {
   outcomeNote?: string | null;
   /** Job description — read-only context from parent job */
   description?: string | null;
+  /** Job-level access instructions (gate code, roof access, etc.) */
+  accessInstructions?: string | null;
+  /** Location contact name */
+  contactName?: string | null;
+  /** Location contact phone */
+  contactPhone?: string | null;
+  /** Location notes (site-specific context) */
+  locationNotes?: string | null;
   /** Job type (e.g., "PM", "Repair", "Install") */
   jobType: string;
   /** Job summary/description */

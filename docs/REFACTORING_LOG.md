@@ -4,6 +4,38 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-03-06: Access / Site Context in DispatchDetailPanel (Pass 5)
+
+### Fields Added to Calendar DTO
+
+| Field | Source Table | Column | Purpose |
+|---|---|---|---|
+| `accessInstructions` | `jobs` | `access_instructions` | Gate codes, roof access, key info |
+| `contactName` | `client_locations` | `contact_name` | Site contact for dispatcher/tech |
+| `contactPhone` | `client_locations` | `phone` | Clickable tel: link in panel |
+| `locationNotes` | `client_locations` | `notes` | Site-specific arrival context |
+
+### Panel Section Order (Final)
+1. **Header** — Company, Job #, Visit #, summary, status badges
+2. **Location** — Address line
+3. **Schedule** — Date, time range, duration (editable)
+4. **Technician** — Assigned tech (editable)
+5. **Outcome Note** — Read-only, if present
+6. **Visit Notes** — Editable dispatch notes
+7. **Access / Site** — Access instructions + location notes (read-only)
+8. **Contact** — Name + clickable phone (read-only)
+9. **Job Description** — Read-only, 3-line clamp
+10. **Job Context** — Status, type, priority metadata
+11. **Footer** — Unschedule, Add Visit, Full Details, Visit History
+
+### Files Modified
+- `server/storage/calendar.ts` — SQL query adds `j.access_instructions`, `cl.contact_name`, `cl.phone`, `cl.notes`; row type + result mapping updated
+- `server/routes/calendar.ts` — `transformToDto()` maps new fields
+- `shared/types/calendar.ts` — `CalendarEventDto` gains 4 new optional fields
+- `client/src/components/calendar/DispatchDetailPanel.tsx` — Two new read-only sections: Access/Site (KeyRound icon) and Contact (Phone icon with tel: link)
+
+---
+
 ## 2026-03-06: Panel Dispatch Notes — Inline Visit Notes Editing
 
 ### Note Fields Audit
@@ -16,7 +48,7 @@ This document tracks significant refactoring decisions, architectural changes, a
 | `summary` | `jobs` | Job title | Already shown in header |
 | `job_notes` | `job_notes` (separate table) | Timestamped threaded notes | Not shown (deferred — full note thread is a future feature) |
 | `billingNotes` | `jobs` | Billing context | Not shown (billing scope) |
-| `accessInstructions` | `jobs` | Site access | Not shown (deferred) |
+| `accessInstructions` | `jobs` | Site access | **Read-only** in Access/Site section (Pass 5) |
 | `holdNotes` | `jobs` | On-hold context | Not shown (on-hold scope) |
 
 ### Panel Notes Section Layout
