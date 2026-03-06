@@ -21,6 +21,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **New component:** `DispatchDetailPanel.tsx` in `client/src/components/calendar/`
 - **Files modified:** `DispatchDetailPanel.tsx` (new), `Calendar.tsx`
 
+#### Recent Activity Timeline in Panel (2026-03-06)
+- **Compact dispatch timeline:** DispatchDetailPanel now shows the 6 most recent activity events for the current job + visit, with relative timestamps and severity-colored dots.
+- **Combined job + visit events:** New `GET /api/activity/dispatch/:jobId/:visitId` endpoint fetches events from both `entityType=job` and `entityType=visit` in a single query, covering scheduling, assignment, and visit lifecycle actions.
+- **Event type labels:** Dispatch-relevant labels map raw event types to compact human text (e.g., `job.rescheduled` → "Rescheduled", `tech.arrived` → "Tech arrived").
+- **Severity indicators:** Red dot for important, amber for warning, muted for info events.
+- **Read-only, no pagination:** Intentionally minimal — shows last 6 items with no filters, editing, or infinite scroll. Dispatchers needing full history use the "Full Details" escape hatch.
+- **Files modified:** `DispatchDetailPanel.tsx`, `server/routes/activity.ts`, `server/storage/events.ts`
+
 #### Access / Site Context in Panel (2026-03-06)
 - **Access instructions surfaced:** Job-level `accessInstructions` (gate codes, roof access, key info) now displayed in the DispatchDetailPanel under a dedicated "Access / Site" section with key icon.
 - **Location notes surfaced:** Site-specific `notes` from `client_locations` shown alongside access instructions for arrival context.

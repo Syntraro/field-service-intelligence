@@ -11,7 +11,7 @@ import { Router } from "express";
 import type { Response } from "express";
 import { asyncHandler } from "../middleware/errorHandler";
 import type { AuthedRequest } from "../auth/tenantIsolation";
-import { getActivityFeed, getEntityTimeline } from "../storage/events";
+import { getActivityFeed, getEntityTimeline, getDispatchTimeline } from "../storage/events";
 
 const router = Router();
 
@@ -26,6 +26,20 @@ router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const cursor = req.query.cursor ? String(req.query.cursor) : undefined;
 
   const result = await getActivityFeed({ tenantId, limit, cursor });
+  res.json(result);
+}));
+
+/**
+ * GET /api/activity/dispatch/:jobId/:visitId
+ * Combined timeline for dispatch panel — events for the job + visit pair.
+ * Query params: limit (default 6, max 20)
+ */
+router.get("/dispatch/:jobId/:visitId", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const tenantId = req.companyId;
+  const { jobId, visitId } = req.params;
+  const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 6;
+
+  const result = await getDispatchTimeline({ tenantId, jobId, visitId, limit });
   res.json(result);
 }));
 

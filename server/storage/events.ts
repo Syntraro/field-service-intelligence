@@ -7,7 +7,7 @@
 
 import { db } from "../db";
 import { events } from "@shared/schema";
-import { eq, and, desc, lt } from "drizzle-orm";
+import { eq, and, or, desc, lt } from "drizzle-orm";
 import { clampLimit } from "./base";
 
 export interface EventFeedOptions {
@@ -48,6 +48,39 @@ export async function getActivityFeed(opts: EventFeedOptions) {
   const nextCursor = items.length > 0 ? items[items.length - 1].createdAt?.toISOString() : null;
 
   return { items, hasMore, nextCursor };
+}
+
+export interface DispatchTimelineOptions {
+  tenantId: string;
+  jobId: string;
+  visitId: string;
+  limit?: number;
+}
+
+/**
+ * Get combined timeline for a job + visit pair (dispatch panel).
+ * Fetches events where (entityType=job AND entityId=jobId)
+ * OR (entityType=visit AND entityId=visitId), ordered by most recent.
+ */
+export async function getDispatchTimeline(opts: DispatchTimelineOptions) {
+  const limit = clampLimit(opts.limit || 6, 20);
+
+  const rows = await db
+    .select()
+    .from(events)
+    .where(
+      and(
+        eq(events.tenantId, opts.tenantId),
+        or(
+          and(eq(events.entityType, "job"), eq(events.entityId, opts.jobId)),
+          and(eq(events.entityType, "visit"), eq(events.entityId, opts.visitId)),
+        ),
+      ),
+    )
+    .orderBy(desc(events.createdAt))
+    .limit(limit);
+
+  return { items: rows };
 }
 
 /**

@@ -4,6 +4,69 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-03-06: Recent Activity Timeline in DispatchDetailPanel (Pass 6)
+
+### Event Source Chosen
+The canonical `events` table (append-only, tenant-scoped) was selected as the primary source. It already contains human-readable `summary` fields and covers all dispatch-relevant actions.
+
+### Why `events` Over Other Sources
+| Source | Verdict | Reason |
+|---|---|---|
+| `events` table | **Selected** | Already has API, human summaries, covers job + visit lifecycle |
+| `job_schedule_audit` | Deferred | Raw JSONB diffs, no API, requires parsing to humanize |
+| `technician_job_status_events` | Deferred | No API endpoint, overlaps with `visit.started`/`tech.arrived` events |
+| `attention_items` | Deferred | Mutable alert queue, not point-in-time events |
+| `company_audit_logs` | Excluded | Administrative, not dispatch-relevant |
+
+### Event Types Shown in Panel
+| eventType | Label | Source Entity |
+|---|---|---|
+| `job.created` | Job created | job |
+| `job.scheduled` | Scheduled | job |
+| `job.rescheduled` | Rescheduled | job |
+| `job.assigned` | Tech assigned | job |
+| `job.unassigned` | Tech unassigned | job |
+| `job.unscheduled` | Unscheduled | job |
+| `job.completed` | Job completed | job |
+| `job.reopened` | Job reopened | job |
+| `job.status_changed` | Status changed | job |
+| `visit.started` | Visit started | visit |
+| `visit.completed` | Visit completed | visit |
+| `tech.arrived` | Tech arrived | visit |
+| `tech.departed` | Tech departed | visit |
+
+### New Endpoint
+`GET /api/activity/dispatch/:jobId/:visitId?limit=6` — Combined timeline query using OR condition on `(entityType=job, entityId=jobId) OR (entityType=visit, entityId=visitId)`. Indexed via `events_tenant_entity_idx`. Max limit: 20.
+
+### Panel Section Order (Final — Pass 6)
+1. Header (company, job #, visit #, summary, status badges)
+2. Location (address)
+3. Schedule (editable)
+4. Technician (editable)
+5. Outcome Note (read-only, if present)
+6. Visit Notes (editable)
+7. **Recent Activity** (read-only, last 6 events)
+8. Access / Site (read-only, if present)
+9. Contact (read-only, if present)
+10. Job Description (read-only, if present)
+11. Job Context (status, type, priority)
+12. Footer (actions)
+
+### Intentionally Excluded
+- Full event explorer / filters / search
+- Pagination (load more / infinite scroll)
+- WebSocket real-time push
+- Actor display (who performed the action) — deferred, would add a user lookup
+- Event summary display (the `summary` field exists but was omitted for compactness; labels are used instead)
+- Inline links / deep links to related entities
+
+### Files Modified
+- `server/storage/events.ts` — `getDispatchTimeline()` combined query function
+- `server/routes/activity.ts` — `GET /api/activity/dispatch/:jobId/:visitId` endpoint
+- `client/src/components/calendar/DispatchDetailPanel.tsx` — Activity query, `ActivityEvent` type, `EVENT_TYPE_LABELS`, `relativeTime()`, timeline section with severity dots
+
+---
+
 ## 2026-03-06: Access / Site Context in DispatchDetailPanel (Pass 5)
 
 ### Fields Added to Calendar DTO

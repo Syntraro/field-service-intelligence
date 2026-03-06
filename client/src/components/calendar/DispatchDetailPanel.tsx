@@ -12,8 +12,8 @@
  *   - Technician display + reassignment
  */
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { useMutation } from "@tanstack/react-query";
-import { format } from "date-fns";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { format, formatDistanceToNow } from "date-fns";
 import { useLocation } from "wouter";
 import {
   Sheet,
@@ -55,6 +55,7 @@ import {
   StickyNote,
   KeyRound,
   Phone,
+  Activity,
 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -103,6 +104,44 @@ function getVisitStatusLabel(status?: string): string {
 /** Resolve outcome label from shared config */
 function getOutcomeLabel(outcome?: string): string {
   return VISIT_OUTCOME_STYLES[outcome || ""]?.label || "";
+}
+
+// ============================================================================
+// Activity Timeline Types & Helpers (2026-03-06: Pass 6)
+// ============================================================================
+
+interface ActivityEvent {
+  id: string;
+  eventType: string;
+  summary: string;
+  createdAt: string;
+  severity: string;
+}
+
+/** Dispatch-relevant event type labels (compact) */
+const EVENT_TYPE_LABELS: Record<string, string> = {
+  "job.scheduled": "Scheduled",
+  "job.rescheduled": "Rescheduled",
+  "job.assigned": "Tech assigned",
+  "job.unassigned": "Tech unassigned",
+  "job.unscheduled": "Unscheduled",
+  "job.completed": "Job completed",
+  "job.created": "Job created",
+  "job.reopened": "Job reopened",
+  "job.status_changed": "Status changed",
+  "visit.started": "Visit started",
+  "visit.completed": "Visit completed",
+  "tech.arrived": "Tech arrived",
+  "tech.departed": "Tech departed",
+};
+
+/** Format relative time compactly (e.g., "2h ago", "3d ago") */
+function relativeTime(iso: string): string {
+  try {
+    return formatDistanceToNow(new Date(iso), { addSuffix: true });
+  } catch {
+    return "";
+  }
 }
 
 // ============================================================================
@@ -184,6 +223,18 @@ export function DispatchDetailPanel({
       })
       .filter(Boolean);
   }, [techIds, technicians]);
+
+  // Recent activity timeline (2026-03-06: Pass 6 — dispatch panel timeline)
+  const activityQuery = useQuery<{ items: ActivityEvent[] }>({
+    queryKey: ["/api/activity/dispatch", jobId, visitId],
+    queryFn: async () => {
+      const res = await fetch(`/api/activity/dispatch/${jobId}/${visitId}?limit=6`);
+      if (!res.ok) return { items: [] };
+      return res.json();
+    },
+    enabled: open && !!jobId && !!visitId,
+    staleTime: 30_000,
+  });
 
   // Reset edit states when data changes
   useEffect(() => {
@@ -582,6 +633,36 @@ export function DispatchDetailPanel({
                 <p className={`text-xs leading-relaxed ${visitNotes ? "text-foreground" : "text-muted-foreground italic"}`}>
                   {visitNotes || "No notes"}
                 </p>
+              )}
+            </section>
+
+            {/* RECENT ACTIVITY — compact dispatch timeline (2026-03-06: Pass 6) */}
+            <Separator />
+            <section className="space-y-1.5">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1">
+                <Activity className="h-3 w-3" /> Recent Activity
+              </h4>
+              {activityQuery.isLoading ? (
+                <p className="text-[11px] text-muted-foreground italic">Loading...</p>
+              ) : activityQuery.data?.items && activityQuery.data.items.length > 0 ? (
+                <ul className="space-y-1">
+                  {activityQuery.data.items.map((evt) => (
+                    <li key={evt.id} className="flex items-start gap-1.5 text-[11px]">
+                      <span className={`mt-0.5 h-1.5 w-1.5 rounded-full shrink-0 ${
+                        evt.severity === "important" ? "bg-red-500"
+                        : evt.severity === "warning" ? "bg-amber-500"
+                        : "bg-muted-foreground/40"
+                      }`} />
+                      <span className="flex-1 leading-tight">
+                        <span className="font-medium">{EVENT_TYPE_LABELS[evt.eventType] || evt.eventType}</span>
+                        {" "}
+                        <span className="text-muted-foreground">{relativeTime(evt.createdAt)}</span>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-[11px] text-muted-foreground italic">No recent activity</p>
               )}
             </section>
 
