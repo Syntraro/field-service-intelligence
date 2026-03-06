@@ -11,7 +11,7 @@
  */
 
 import React, { useState } from "react";
-import { useDroppable, useDndMonitor, DragStartEvent, DragEndEvent } from "@dnd-kit/core";
+import { useDroppable, useDraggable, useDndMonitor, DragStartEvent, DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -72,6 +72,74 @@ function getInitials(name?: string): string {
   const parts = name.trim().split(/\s+/);
   if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   return name.slice(0, 2).toUpperCase();
+}
+
+/**
+ * DraggableTaskItem — wraps an unscheduled task in useDraggable so it can be
+ * dropped onto calendar slots. Uses assignmentId format "task-{uuid}" to match
+ * the task routing in Calendar.tsx handleDragEnd.
+ */
+function DraggableTaskItem({ task, onTaskClick, onTaskToggle }: {
+  task: any;
+  onTaskClick: (taskId: string) => void;
+  onTaskToggle: (taskId: string, completed: boolean) => void;
+}) {
+  const isCompleted = task.status === "completed";
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: `task-${task.id}`,
+    disabled: isCompleted,
+    data: { type: "unscheduled-task", taskId: task.id, task },
+  });
+
+  const style: React.CSSProperties = {
+    ...(transform ? { transform: `translate(${transform.x}px, ${transform.y}px)` } : {}),
+    opacity: isDragging ? 0.5 : 1,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      className="flex items-start gap-2 px-3 py-2.5 hover:bg-[#F3F4F6] dark:hover:bg-gray-800/50 border-b border-gray-200 dark:border-gray-800 cursor-grab active:cursor-grabbing"
+      onClick={() => onTaskClick(task.id)}
+    >
+      <button
+        className="mt-0.5 flex-shrink-0"
+        onClick={(e) => {
+          e.stopPropagation();
+          onTaskToggle(task.id, task.status !== "completed");
+        }}
+      >
+        {isCompleted ? (
+          <CheckSquare className="h-4 w-4 text-green-600" />
+        ) : (
+          <Square className="h-4 w-4 text-muted-foreground hover:text-foreground" />
+        )}
+      </button>
+      <div className="flex-1 min-w-0">
+        <div className="text-xs font-medium truncate">{task.title}</div>
+        <div className="flex items-center gap-1.5 mt-0.5">
+          {task.scheduledStartAt && (
+            <span className="text-[10px] text-muted-foreground">
+              {formatTaskDate(task.scheduledStartAt)}
+            </span>
+          )}
+          {task.type === "SUPPLIER_VISIT" && (
+            <span className="text-[10px] text-violet-600 dark:text-violet-400">Supplier</span>
+          )}
+        </div>
+      </div>
+      {task.assignedToUserId && (
+        <div className="flex-shrink-0 w-5 h-5 rounded-full bg-muted flex items-center justify-center">
+          <span className="text-[8px] font-medium text-muted-foreground">
+            {getInitials(task.assignedUser?.fullName || task.assignedUser?.firstName)}
+          </span>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function CalendarSidebar({
@@ -339,52 +407,7 @@ export function CalendarSidebar({
               <div className="text-center py-8 text-sm text-muted-foreground">No unscheduled tasks</div>
             ) : (
               unscheduledTasks.map((task: any) => (
-                <div
-                  key={task.id}
-                  className="flex items-start gap-2 px-3 py-2.5 hover:bg-[#F3F4F6] dark:hover:bg-gray-800/50 border-b border-gray-200 dark:border-gray-800 cursor-pointer"
-                  onClick={() => onTaskClick(task.id)}
-                >
-                  {/* Toggle checkbox */}
-                  <button
-                    className="mt-0.5 flex-shrink-0"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onTaskToggle(task.id, task.status !== "completed");
-                    }}
-                  >
-                    {task.status === "completed" ? (
-                      <CheckSquare className="h-4 w-4 text-green-600" />
-                    ) : (
-                      <Square className="h-4 w-4 text-muted-foreground hover:text-foreground" />
-                    )}
-                  </button>
-
-                  {/* Content */}
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs font-medium truncate">{task.title}</div>
-                    <div className="flex items-center gap-1.5 mt-0.5">
-                      {task.scheduledStartAt && (
-                        <span className="text-[10px] text-muted-foreground">
-                          {formatTaskDate(task.scheduledStartAt)}
-                        </span>
-                      )}
-                      {task.type === "SUPPLIER_VISIT" && (
-                        <span className="text-[10px] text-violet-600 dark:text-violet-400">Supplier</span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Assignee avatar */}
-                  {task.assignedToUserId && (
-                    <div className="flex-shrink-0 w-5 h-5 rounded-full bg-muted flex items-center justify-center">
-                      <span className="text-[8px] font-medium text-muted-foreground">
-                        {getInitials(
-                          task.assignedUser?.fullName || task.assignedUser?.firstName
-                        )}
-                      </span>
-                    </div>
-                  )}
-                </div>
+                <DraggableTaskItem key={task.id} task={task} onTaskClick={onTaskClick} onTaskToggle={onTaskToggle} />
               ))
             )}
           </div>

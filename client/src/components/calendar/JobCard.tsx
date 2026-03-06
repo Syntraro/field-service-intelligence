@@ -124,7 +124,7 @@ export function JobCard({
         isPastMonth={isPastMonth}
         rawItem={rawItem}
         timeFormat={timeFormat}
-        draggable={!isTask}
+        draggable
       />
     </div>
   );

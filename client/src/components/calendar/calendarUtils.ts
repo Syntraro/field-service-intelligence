@@ -862,12 +862,13 @@ export function getEventCapabilities(event: CalendarEvent): {
   removable: boolean;
   reschedulable: boolean;
 } {
-  const isTask = event.kind === "task";
+  // 2026-03-06: Tasks now support the same DnD interactions as visits.
+  // Tasks route through task API (PATCH /api/tasks/:id), visits through visit API.
   return {
-    draggable: !isTask && !event.completed,
-    resizable: !isTask && !event.completed,
-    removable: !isTask,
-    reschedulable: !isTask,
+    draggable: !event.completed,
+    resizable: !event.completed,
+    removable: !event.completed,
+    reschedulable: !event.completed,
   };
 }
 

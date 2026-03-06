@@ -14,6 +14,8 @@
  * Flow B (visit reschedule): PATCH /api/calendar/visit/:visitId/reschedule { startAt?, endAt?, allDay?, version, technicianUserId? }
  * Flow C (visit unschedule): POST /api/calendar/visit/:visitId/unschedule { expectedVersion? }
  * Flow D (visit resize): POST /api/calendar/visit/:visitId/resize { newEndTime }
+ * Flow E (task reschedule): PATCH /api/tasks/:taskId { scheduledStartAt, scheduledEndAt, allDay?, assignedToUserId? }
+ * Flow F (task resize): PATCH /api/tasks/:taskId { scheduledEndAt, estimatedDurationMinutes }
  */
 
 import { useCallback, useRef, useState } from "react";
@@ -1384,6 +1386,169 @@ export function useCalendarDnD(
     },
   });
 
+  // ========================================
+  // Update Task Mutation (Reschedule task via PATCH /api/tasks/:id)
+  // ========================================
+  // Phase 2 of Task Scheduling Pass: Tasks route to task endpoints, not visit endpoints.
+  // Optimistic cache update mirrors updateAssignment pattern for instant visual feedback.
+  const updateTask = useMutation({
+    mutationFn: async ({ taskId, scheduledStartAt, scheduledEndAt, allDay, assignedToUserId }: {
+      taskId: string;
+      scheduledStartAt: string;
+      scheduledEndAt?: string;
+      allDay?: boolean;
+      assignedToUserId?: string | null;
+    }) => {
+      const payload: any = { scheduledStartAt, allDay };
+      if (scheduledEndAt) payload.scheduledEndAt = scheduledEndAt;
+      if (assignedToUserId !== undefined) payload.assignedToUserId = assignedToUserId;
+      return apiRequest(`/api/tasks/${taskId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    },
+    onMutate: async (params) => {
+      const assignmentId = `task-${params.taskId}`;
+      markJobSaving(assignmentId);
+      await queryClient.cancelQueries({ queryKey: getCalendarQueryKey() });
+
+      const queryKey = getCalendarQueryKey();
+      const previousData = queryClient.getQueryData(queryKey);
+      snapshotRef.current = { queryKey, data: previousData };
+
+      // Optimistic update: patch the task event in calendar cache
+      const prev = previousData as any;
+      if (prev && typeof prev === 'object' && ('events' in prev || 'assignments' in prev)) {
+        const currentEvents = prev.events ?? prev.assignments ?? [];
+        const updatedEvents = currentEvents.map((a: any) => {
+          if (a.assignmentId === assignmentId || a.id === assignmentId) {
+            const newStart = params.scheduledStartAt;
+            const isAllDay = params.allDay ?? a.isAllDay;
+            const dur = a.durationMinutes ?? DEFAULT_DURATION_MINUTES;
+            const newEnd = params.scheduledEndAt || (
+              !isAllDay ? new Date(new Date(newStart).getTime() + dur * 60_000).toISOString() : a.endAt
+            );
+            return toCanonicalEvent({
+              ...a,
+              startAt: newStart,
+              scheduledStart: newStart,
+              endAt: newEnd,
+              scheduledEnd: newEnd,
+              allDay: isAllDay,
+              isAllDay,
+              ...(params.assignedToUserId !== undefined ? {
+                assignedTechnicianId: params.assignedToUserId,
+                assignedTechnicianIds: params.assignedToUserId ? [params.assignedToUserId] : [],
+                assignedToUserId: params.assignedToUserId,
+              } : {}),
+              _optimistic: true,
+              _saving: true,
+            });
+          }
+          return a;
+        });
+        queryClient.setQueryData(queryKey, { ...prev, events: updatedEvents });
+      }
+
+      return { previousData, queryKey };
+    },
+    onSuccess: (_result, params) => {
+      const assignmentId = `task-${params.taskId}`;
+      clearJobSaving(assignmentId);
+      snapshotRef.current = null;
+      // Invalidate task queries to get fresh server data
+      queryClient.invalidateQueries({ predicate: (q) =>
+        typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/tasks")
+      });
+      invalidateCalendarOnly();
+    },
+    onError: (error: any, params, context) => {
+      const assignmentId = `task-${params.taskId}`;
+      clearJobSaving(assignmentId);
+      if (context?.previousData && context?.queryKey) {
+        queryClient.setQueryData(context.queryKey, context.previousData);
+      }
+      snapshotRef.current = null;
+      toast({
+        title: "Failed to reschedule task",
+        description: error.message || "Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // ========================================
+  // Resize Task Mutation (PATCH /api/tasks/:id with new end time)
+  // ========================================
+  // Phase 2 of Task Scheduling Pass: Task resize routes to task endpoint.
+  const resizeTask = useMutation({
+    mutationFn: async ({ taskId, scheduledEndAt, estimatedDurationMinutes }: {
+      taskId: string;
+      scheduledEndAt: string;
+      estimatedDurationMinutes: number;
+    }) => {
+      return apiRequest(`/api/tasks/${taskId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scheduledEndAt, estimatedDurationMinutes }),
+      });
+    },
+    onMutate: async (params) => {
+      const assignmentId = `task-${params.taskId}`;
+      markJobSaving(assignmentId);
+      await queryClient.cancelQueries({ queryKey: getCalendarQueryKey() });
+
+      const queryKey = getCalendarQueryKey();
+      const previousData = queryClient.getQueryData(queryKey);
+      snapshotRef.current = { queryKey, data: previousData };
+
+      // Optimistic update: patch durationMinutes and endAt
+      const prev = previousData as any;
+      if (prev && typeof prev === 'object' && ('events' in prev || 'assignments' in prev)) {
+        const currentEvents = prev.events ?? prev.assignments ?? [];
+        const updatedEvents = currentEvents.map((a: any) => {
+          if (a.assignmentId === assignmentId || a.id === assignmentId) {
+            return toCanonicalEvent({
+              ...a,
+              durationMinutes: params.estimatedDurationMinutes,
+              endAt: params.scheduledEndAt,
+              scheduledEnd: params.scheduledEndAt,
+              _optimistic: true,
+              _saving: true,
+            });
+          }
+          return a;
+        });
+        queryClient.setQueryData(queryKey, { ...prev, events: updatedEvents });
+      }
+
+      return { previousData, queryKey };
+    },
+    onSuccess: (_result, params) => {
+      const assignmentId = `task-${params.taskId}`;
+      clearJobSaving(assignmentId);
+      snapshotRef.current = null;
+      queryClient.invalidateQueries({ predicate: (q) =>
+        typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/tasks")
+      });
+      invalidateCalendarOnly();
+    },
+    onError: (error: any, params, context) => {
+      const assignmentId = `task-${params.taskId}`;
+      clearJobSaving(assignmentId);
+      if (context?.previousData && context?.queryKey) {
+        queryClient.setQueryData(context.queryKey, context.previousData);
+      }
+      snapshotRef.current = null;
+      toast({
+        title: "Error",
+        description: error.message || "Failed to resize task",
+        variant: "destructive",
+      });
+    },
+  });
+
   const clearDay = useMutation({
     mutationFn: async ({ day, dayAssignments }: { day: number; dayAssignments: any[] }) => {
       // Phase 4: assignment.id = visitId — use visit-centric unschedule
@@ -1427,6 +1592,8 @@ export function useCalendarDnD(
     assignTechnicians,
     clearSchedule,
     clearDay,
+    updateTask,
+    resizeTask,
 
     // State - 2026-01-30: Split saving states for granular loading indicators
     isSavingDrag: isSavingAnyDrag,  // Any drag operation (calendar feedback)

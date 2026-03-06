@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### Calendar: Task Drag/Drop Scheduling with Optimistic Updates (2026-03-06)
+- **Tasks are now fully interactive calendar items** — drag to reschedule, drag between technicians, resize duration, drag from sidebar to schedule. Previously tasks were read-only on the calendar.
+- **Mutations:** Added `updateTask` and `resizeTask` mutations to `useCalendarDnD.ts` with full optimistic cache updates, savingJobIds tracking, and snapshot rollback on error. Tasks route to `PATCH /api/tasks/:id` (not visit endpoints).
+- **Drag routing:** Calendar.tsx `handleDragEnd` now uses `updateTaskMutation.mutate()` instead of inline `apiRequest()` — gains optimistic UI, saving indicators, and rollback.
+- **Resize routing:** Calendar.tsx `handleResize` detects task IDs (`task-` prefix) and routes to `resizeTaskMutation` instead of visit resize endpoint.
+- **Sidebar drag:** Unscheduled tasks in `CalendarSidebar.tsx` are now wrapped in `useDraggable` via `DraggableTaskItem` component — can be dragged onto any calendar slot to schedule them.
+- **Capability gates removed:** `getEventCapabilities()` now returns `draggable/resizable: true` for non-completed tasks (was previously `false` for all tasks). `JobCard` `draggable` prop no longer hardcoded to `!isTask`. `DraggableAllDayCard` no longer disables drag for tasks.
+- **Files:** `client/src/hooks/useCalendarDnD.ts`, `client/src/pages/Calendar.tsx`, `client/src/components/calendar/CalendarSidebar.tsx`, `client/src/components/calendar/calendarUtils.ts`, `client/src/components/calendar/JobCard.tsx`, `client/src/components/calendar/CalendarGridDayJobber.tsx`
+
 ### Fixed
 
 #### Calendar: Resize Snap-Back Lag Eliminated (2026-03-06)

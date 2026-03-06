@@ -388,6 +388,8 @@ export default function Calendar() {
     assignTechnicians,
     clearSchedule,
     clearDay,
+    updateTask: updateTaskMutation,
+    resizeTask: resizeTaskMutation,
     isSavingDrag,
     isSavingUnscheduled, // 2026-01-30: Only for schedule/unschedule ops (sidebar loading)
     savingJobIds,
@@ -424,8 +426,17 @@ export default function Calendar() {
       showViewOnlyToast();
       return;
     }
+    // Phase 2 Task Scheduling: Route task resizes to task endpoint
+    if (typeof assignmentId === "string" && assignmentId.startsWith("task-")) {
+      const taskId = assignmentId.replace("task-", "");
+      const startAt = assignment?.scheduledStart || assignment?.startAt;
+      if (!startAt) return;
+      const scheduledEndAt = new Date(new Date(startAt).getTime() + newDurationMinutes * 60_000).toISOString();
+      resizeTaskMutation.mutate({ taskId, scheduledEndAt, estimatedDurationMinutes: newDurationMinutes });
+      return;
+    }
     updateDuration.mutate({ id: assignmentId, durationMinutes: newDurationMinutes, assignment });
-  }, [updateDuration, canSchedule, showViewOnlyToast]);
+  }, [updateDuration, resizeTaskMutation, canSchedule, showViewOnlyToast]);
 
   // Quick action: unschedule (remove from calendar)
   // Phase 4: assignmentId = visitId — pass directly to visit-centric endpoint
@@ -715,17 +726,13 @@ export default function Calendar() {
       }
       if (assignedToUserId !== undefined) payload.assignedToUserId = assignedToUserId;
 
-      apiRequest(`/api/tasks/${taskId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      }).then(() => {
-        queryClient.invalidateQueries({ predicate: (q) =>
-          typeof q.queryKey[0] === "string" && (q.queryKey[0] as string).startsWith("/api/tasks")
-        });
-        invalidateCalendarQueries();
-      }).catch((err: any) => {
-        toast({ title: "Failed to reschedule task", description: err?.message, variant: "destructive" });
+      // Phase 2 Task Scheduling: Route to task mutation with optimistic updates
+      updateTaskMutation.mutate({
+        taskId,
+        scheduledStartAt: payload.scheduledStartAt,
+        scheduledEndAt: payload.scheduledEndAt,
+        allDay: payload.allDay,
+        assignedToUserId: payload.assignedToUserId,
       });
       return;
     }

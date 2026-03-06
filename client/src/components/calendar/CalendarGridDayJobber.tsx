@@ -200,18 +200,18 @@ function QuarterDropZone({
 // 2026-03-05: Enables dragging all-day items to timed slots or other columns
 // ============================================================================
 
-function DraggableAllDayCard({ event, client, isSaving, isTask, children, assignmentId, raw }: {
+function DraggableAllDayCard({ event, client, isSaving, children, assignmentId, raw }: {
   event: CalendarEvent;
   client: any;
   isSaving: boolean;
-  isTask: boolean;
   children: React.ReactNode;
   assignmentId: string;
   raw: any;
 }) {
+  // 2026-03-06: Tasks now draggable like visits — entity routing handled in handleDragEnd
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: assignmentId,
-    disabled: isSaving || !!event.completed || isTask,
+    disabled: isSaving || !!event.completed,
     data: { type: "assignment", assignmentId, client, event: raw },
   });
 
@@ -344,7 +344,6 @@ function TechColumn({
                   event={event}
                   client={client}
                   isSaving={!!isSaving}
-                  isTask={event.kind === "task"}
                   assignmentId={event.assignmentId}
                   raw={event.raw}
                 >
