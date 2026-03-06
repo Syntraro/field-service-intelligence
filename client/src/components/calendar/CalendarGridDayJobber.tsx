@@ -471,9 +471,13 @@ interface TimeRailProps {
   startHour: number;
   /** RC-2: Measured header height from tech columns (keeps TimeRail header in sync) */
   headerHeight?: number;
+  /** Business hours bounds for off-hours shading (2026-03-06) */
+  businessOpen?: boolean;
+  businessStartMinutes?: number | null;
+  businessEndMinutes?: number | null;
 }
 
-function TimeRail({ density, timeFormat, startHour, headerHeight }: TimeRailProps) {
+function TimeRail({ density, timeFormat, startHour, headerHeight, businessOpen = true, businessStartMinutes, businessEndMinutes }: TimeRailProps) {
   const rowHeight = DENSITY_STYLES[density].rowHeight;
 
   return (
@@ -486,18 +490,27 @@ function TimeRail({ density, timeFormat, startHour, headerHeight }: TimeRailProp
         Time
       </div>
 
-      {/* Hour labels */}
-      {Array.from({ length: HOURS_IN_DAY }, (_, hour) => (
+      {/* Hour labels — off-hours shading matches tech columns (2026-03-06) */}
+      {Array.from({ length: HOURS_IN_DAY }, (_, hour) => {
+        const hourStart = hour * 60;
+        const hourEnd = (hour + 1) * 60;
+        const isOffHours = !businessOpen ||
+          (businessStartMinutes != null && businessEndMinutes != null &&
+            (hourEnd <= businessStartMinutes || hourStart >= businessEndMinutes));
+        return (
         <div
           key={hour}
           className={`border-b flex items-center justify-center text-[10px] font-medium ${
-            hour === startHour ? 'bg-primary/30 font-bold' : 'bg-muted/20'
+            hour === startHour ? 'bg-primary/30 font-bold'
+            : isOffHours ? 'bg-slate-200/50 dark:bg-slate-800/40 text-muted-foreground/60'
+            : 'bg-muted/20'
           }`}
           style={{ height: rowHeight }}
         >
           {formatHourLabel(hour, timeFormat)}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -839,6 +852,9 @@ export function CalendarGridDayJobber({
               timeFormat={regional.timeFormat}
               startHour={startHour}
               headerHeight={uniformHeaderPx}
+              businessOpen={todayBusinessHours.isOpen}
+              businessStartMinutes={todayBusinessHours.startMinutes}
+              businessEndMinutes={todayBusinessHours.endMinutes}
             />
           </div>
 

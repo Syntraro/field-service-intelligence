@@ -21,6 +21,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **New component:** `DispatchDetailPanel.tsx` in `client/src/components/calendar/`
 - **Files modified:** `DispatchDetailPanel.tsx` (new), `Calendar.tsx`
 
+#### Panel Dispatch Notes (2026-03-06)
+- **Visit notes in panel:** DispatchDetailPanel now shows `visitNotes` with inline editing. Dispatchers can add/edit operational notes directly in the panel without navigating to the full job detail.
+- **Outcome note preserved:** Technician-authored `outcomeNote` remains read-only and visually distinct from editable visit notes.
+- **Job description context:** If the parent job has a `description`, it's shown as read-only context in the panel.
+- **Visit-centric save:** Notes save via `PATCH /api/calendar/visit/:visitId/reschedule` with `{ notes, version }`, updating only the specific visit's `visitNotes`.
+- **Calendar DTO expanded:** Calendar API now returns `visitNotes`, `outcomeNote`, and `description` fields on each event.
+- **Files modified:** `DispatchDetailPanel.tsx`, `server/storage/calendar.ts`, `server/routes/calendar.ts`, `shared/types/calendar.ts`
+
+#### Off-Hours Availability Overlays (2026-03-06)
+- **Off-hours shading on all timed views:** Calendar day columns, day rows, and week views now show subtle gray background tint (`bg-slate-200/70`) for hours outside configured business hours. Helps dispatchers quickly identify schedulable vs non-working time.
+- **Per-day-of-week shading in week view:** Each day column in the weekly grid independently checks business hours for its day of week. Saturday/Sunday columns shade fully if business is closed those days.
+- **Time rail/header shading:** Hour labels in the time rail (day columns) and time header (day rows) are dimmed for off-hours, providing consistent visual cues across the full grid.
+- **No drag/drop interference:** All shading is applied via background CSS classes. Drop zones and pointer events are unaffected.
+- **Data source:** Company-wide business hours from `company_business_hours` table. Falls back to 6AM-5PM Mon-Fri when not configured. Per-technician schedules not yet available (deferred).
+- **Files modified:** `CalendarGridDayJobber.tsx`, `CalendarGridDayRows.tsx`, `CalendarGridWeek.tsx`, `Calendar.tsx`
+
+#### Visit Status Visual System (2026-03-06)
+- **Status dots on calendar cards:** Visit lifecycle status (dispatched, en_route, on_site, in_progress, on_hold) now shows as a small colored dot before the company name on calendar visit cards. Scheduled (default) shows no dot to reduce noise. Completed retains existing checkmark + muted styling.
+- **Shared status config:** New `VISIT_STATUS_STYLES` and `VISIT_OUTCOME_STYLES` in `calendarUtils.ts` provide canonical color mappings shared between board cards and DispatchDetailPanel.
+- **Panel badge alignment:** DispatchDetailPanel status badges now use the shared config with colored dots and consistent badge styling, replacing inline hardcoded styles.
+- **Tasks preserved:** Task cards are unaffected — no visitStatus field exists on task events. Violet border and ClipboardList icon badge unchanged.
+- **Memo comparison updated:** DraggableClient memo now includes `visitStatus` and `visitOutcome` for proper rerender on status changes.
+- **Files modified:** `calendarUtils.ts`, `DraggableClient.tsx`, `DispatchDetailPanel.tsx`
+
 #### Tech Reassignment Audit (2026-03-06)
 - **Audit confirmed visit-centric:** Full trace from DispatchDetailPanel → Calendar.tsx → useCalendarDnD.ts → `PATCH /api/calendar/visit/:visitId/reschedule` → `calendarRepository.rescheduleVisit()` → `jobVisitsRepository.updateJobVisit()`. All steps are visit-scoped.
 - **Multi-visit safe:** Tech change on one visit does not affect other visits on the same job. Job-level `primaryTechnicianId` is a mirror of the "next upcoming" visit only.

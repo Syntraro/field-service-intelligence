@@ -149,6 +149,12 @@ export interface CalendarJobWithDetails {
   visitStatus?: string;
   /** Visit outcome (completed, needs_parts, needs_followup) — Phase 1 structured column */
   visitOutcome?: string | null;
+  /** Visit notes — editable dispatch/office notes on the visit */
+  visitNotes?: string | null;
+  /** Outcome note — technician-authored note from visit completion */
+  outcomeNote?: string | null;
+  /** Job description — read-only context from parent job */
+  description?: string | null;
 }
 
 /**
@@ -246,6 +252,9 @@ export class CalendarRepository extends BaseRepository {
         jv.status as visit_status,
         jv.visit_number,
         jv.outcome as visit_outcome,
+        jv.visit_notes,
+        jv.outcome_note,
+        j.description,
         j.company_id,
         j.job_number,
         j.job_type,
@@ -283,6 +292,9 @@ export class CalendarRepository extends BaseRepository {
       visit_number: number | null;
       visit_status: string;
       visit_outcome: string | null;
+      visit_notes: string | null;
+      outcome_note: string | null;
+      description: string | null;
       company_id: string;
       job_number: number;
       job_type: string;
@@ -378,6 +390,9 @@ export class CalendarRepository extends BaseRepository {
         visitNumber: row.visit_number,
         visitStatus: row.visit_status,
         visitOutcome: row.visit_outcome,
+        visitNotes: row.visit_notes,
+        outcomeNote: row.outcome_note,
+        description: row.description,
       };
     });
 

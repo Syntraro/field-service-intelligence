@@ -888,6 +888,66 @@ export function getEventClient(
 }
 
 // ============================================================================
+// Visit Status Visual Config — shared by board cards and DispatchDetailPanel
+// ============================================================================
+
+/** Visit lifecycle status → visual mapping for calendar board */
+export interface VisitStatusStyle {
+  label: string;
+  /** Small dot color class for card indicator */
+  dot: string;
+  /** Badge classes for panel/detail views */
+  badge: string;
+}
+
+/**
+ * Canonical visit status visual config.
+ * Used by DraggableClient (card dot) and DispatchDetailPanel (badge).
+ *
+ * Design rationale:
+ * - scheduled: blue (default/neutral scheduled state)
+ * - dispatched: purple (assigned and dispatched)
+ * - en_route: indigo (in transit)
+ * - on_site / in_progress: green (active work)
+ * - on_hold: orange (paused)
+ * - completed: emerald (done — cards also get opacity treatment)
+ * - cancelled: gray (inactive)
+ */
+export const VISIT_STATUS_STYLES: Record<string, VisitStatusStyle> = {
+  scheduled:   { label: "Scheduled",   dot: "bg-blue-400",    badge: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300" },
+  dispatched:  { label: "Dispatched",  dot: "bg-purple-400",  badge: "bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-300" },
+  en_route:    { label: "En Route",    dot: "bg-indigo-400",  badge: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300" },
+  on_site:     { label: "On Site",     dot: "bg-green-500",   badge: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300" },
+  in_progress: { label: "In Progress", dot: "bg-green-500",   badge: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300" },
+  on_hold:     { label: "On Hold",     dot: "bg-orange-400",  badge: "bg-orange-100 text-orange-800 dark:bg-orange-900/40 dark:text-orange-300" },
+  completed:   { label: "Completed",   dot: "bg-emerald-400", badge: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300" },
+  cancelled:   { label: "Cancelled",   dot: "bg-gray-400",    badge: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400" },
+};
+
+/** Outcome visual config — amber family, secondary to lifecycle status */
+export const VISIT_OUTCOME_STYLES: Record<string, { label: string; badge: string }> = {
+  needs_parts:    { label: "Needs Parts",     badge: "border-amber-300 text-amber-700 dark:text-amber-400" },
+  needs_followup: { label: "Needs Follow-Up", badge: "border-amber-300 text-amber-700 dark:text-amber-400" },
+};
+
+/**
+ * Get the visit status from a CalendarEvent's raw data.
+ * Prefers visitStatus, falls back to job status for legacy data.
+ */
+export function getVisitStatus(event: CalendarEvent): string {
+  if (event.kind === "task") return "";
+  return event.raw?.visitStatus || event.raw?.status || "";
+}
+
+/**
+ * Get the visit outcome from a CalendarEvent's raw data.
+ */
+export function getVisitOutcome(event: CalendarEvent): string {
+  if (event.kind === "task") return "";
+  return event.raw?.visitOutcome || event.raw?.outcome || "";
+}
+
+// ============================================================================
 // Task Normalization (canonical — tasks normalize to CalendarEvent like visits)
 // ============================================================================
 

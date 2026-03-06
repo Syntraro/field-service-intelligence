@@ -3,7 +3,7 @@ import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 import { useLocation } from "wouter";
 import { CheckCircle2, Loader2, AlertTriangle, History, Package, RotateCcw } from "lucide-react";
-import { DRAG_ENABLED, getAssignmentStartMinutes, formatTimeFromMinutes, TechnicianColor } from "./calendarUtils";
+import { DRAG_ENABLED, getAssignmentStartMinutes, formatTimeFromMinutes, TechnicianColor, VISIT_STATUS_STYLES } from "./calendarUtils";
 import { logClick, isDiagnosticsEnabled } from "@/lib/calendarDiagnostics";
 
 interface DraggableClientProps {
@@ -205,6 +205,21 @@ export const DraggableClient = memo(function DraggableClient({
               {!isSaving && isCompleted && (
                 <CheckCircle2 className="h-3 w-3 text-green-600 flex-shrink-0" />
               )}
+              {/* Visit lifecycle status dot — shows for active (non-scheduled, non-completed) statuses */}
+              {!isSaving && !isCompleted && (() => {
+                const vs = assignment?.visitStatus || assignment?.status || "";
+                const style = VISIT_STATUS_STYLES[vs];
+                // Only show dot for non-default statuses (scheduled is implied, no dot needed)
+                if (style && vs !== "scheduled") {
+                  return (
+                    <span
+                      title={style.label}
+                      className={`h-2 w-2 rounded-full flex-shrink-0 ${style.dot}`}
+                    />
+                  );
+                }
+                return null;
+              })()}
               {!isSaving && assignment?.hasHiddenTechnician && (
                 <span
                   title="Assigned to hidden/non-schedulable technician"
@@ -317,6 +332,8 @@ export const DraggableClient = memo(function DraggableClient({
     prevProps.assignment?.version === nextProps.assignment?.version &&
     prevProps.assignment?.jobNumber === nextProps.assignment?.jobNumber &&
     prevProps.assignment?.visitNumber === nextProps.assignment?.visitNumber &&
+    prevProps.assignment?.visitStatus === nextProps.assignment?.visitStatus &&
+    prevProps.assignment?.visitOutcome === nextProps.assignment?.visitOutcome &&
     prevProps.technicianColor?.borderLeft === nextProps.technicianColor?.borderLeft &&
     prevProps.draggable === nextProps.draggable
   );

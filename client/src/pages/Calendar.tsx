@@ -2335,6 +2335,7 @@ export default function Calendar() {
                         onUnschedule={handleUnschedule}
                         regional={regional}
                         onEmptySlotClick={handleEmptySlotClick}
+                        businessHours={businessHoursData?.hours}
                       />
                     </div>
                   )}

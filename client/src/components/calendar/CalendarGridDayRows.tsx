@@ -341,6 +341,9 @@ const MemoizedTechRow = memo(function TechRow({
   timeFormat,
   techSummary,
   onEmptySlotClick,
+  businessOpen = true,
+  businessStartMinutes,
+  businessEndMinutes,
 }: {
   technicianId: string;
   technicianName: string;
@@ -359,6 +362,10 @@ const MemoizedTechRow = memo(function TechRow({
   techSummary?: TechDaySummary;
   /** Empty-slot click handler for quick-create (2026-03-06) */
   onEmptySlotClick?: (data: { date: Date; hour: number; minute: number; technicianId?: string }) => void;
+  /** Business hours bounds for off-hours shading (2026-03-06) */
+  businessOpen?: boolean;
+  businessStartMinutes?: number | null;
+  businessEndMinutes?: number | null;
 }) {
   const timedEvents = events.filter(e => !isAllDayEvent(e));
   const allDayEvents = events.filter(isAllDayEvent);
@@ -408,11 +415,17 @@ const MemoizedTechRow = memo(function TechRow({
 
       {/* Timeline area — explicit height ensures absolute children have non-zero bounds for dnd-kit (2026-03-05) */}
       <div className="relative flex-1" style={{ minWidth: HOURS_IN_DAY * HOUR_WIDTH, height: ROW_HEIGHT }}>
-        {/* Hour grid lines */}
-        {Array.from({ length: HOURS_IN_DAY }, (_, hour) => (
+        {/* Hour grid lines — off-hours shading for dispatch readability (2026-03-06) */}
+        {Array.from({ length: HOURS_IN_DAY }, (_, hour) => {
+          const hourStart = hour * 60;
+          const hourEnd = (hour + 1) * 60;
+          const isOffHours = !businessOpen ||
+            (businessStartMinutes != null && businessEndMinutes != null &&
+              (hourEnd <= businessStartMinutes || hourStart >= businessEndMinutes));
+          return (
           <div
             key={hour}
-            className="absolute top-0 border-r border-dashed border-muted/40"
+            className={`absolute top-0 border-r border-dashed border-muted/40 ${isOffHours ? 'bg-slate-200/70 dark:bg-slate-800/50' : ''}`}
             style={{ left: hour * HOUR_WIDTH, width: HOUR_WIDTH, height: ROW_HEIGHT }}
             onClick={(e) => {
               // Empty-slot click for quick-create (2026-03-06)
@@ -435,7 +448,8 @@ const MemoizedTechRow = memo(function TechRow({
               />
             ))}
           </div>
-        ))}
+          );
+        })}
 
         {/* Events — now draggable + resizable */}
         {timedEvents.map((event) => {
@@ -599,6 +613,16 @@ export function CalendarGridDayRows({
   const getEventsForTech = (techId: string | null): CalendarEvent[] =>
     eventsByTech.get(techId ?? "__unassigned__") || [];
 
+  // Compute business hours bounds for current day (used for off-hours shading)
+  const dayOfWeek = currentDate.getDay();
+  const todayBusinessHours = useMemo(() => {
+    if (!businessHours || businessHours.length === 0) {
+      return { isOpen: true, startMinutes: 360, endMinutes: 1020 }; // Default: 6AM-5PM
+    }
+    const dayHours = businessHours.find(d => d.dayOfWeek === dayOfWeek);
+    return dayHours || { isOpen: true, startMinutes: 360, endMinutes: 1020 };
+  }, [businessHours, dayOfWeek]);
+
   // Auto-scroll to business hours start on mount
   useEffect(() => {
     if (scrollRef.current) {
@@ -626,15 +650,24 @@ export function CalendarGridDayRows({
             All Day
           </div>
           <div className="flex" style={{ minWidth: HOURS_IN_DAY * HOUR_WIDTH }}>
-            {Array.from({ length: HOURS_IN_DAY }, (_, hour) => (
-              <div
-                key={hour}
-                className="text-[10px] text-muted-foreground text-center border-r border-dashed border-muted/40 flex items-end justify-center pb-1"
-                style={{ width: HOUR_WIDTH, height: HEADER_HEIGHT }}
-              >
-                {formatHourLabel(hour, regional.timeFormat)}
-              </div>
-            ))}
+            {Array.from({ length: HOURS_IN_DAY }, (_, hour) => {
+              const hourStart = hour * 60;
+              const hourEnd = (hour + 1) * 60;
+              const isOffHours = !todayBusinessHours.isOpen ||
+                (todayBusinessHours.startMinutes !== null && todayBusinessHours.endMinutes !== null &&
+                  (hourEnd <= todayBusinessHours.startMinutes || hourStart >= todayBusinessHours.endMinutes));
+              return (
+                <div
+                  key={hour}
+                  className={`text-[10px] text-muted-foreground text-center border-r border-dashed border-muted/40 flex items-end justify-center pb-1 ${
+                    isOffHours ? 'bg-slate-200/50 dark:bg-slate-800/40' : ''
+                  }`}
+                  style={{ width: HOUR_WIDTH, height: HEADER_HEIGHT }}
+                >
+                  {formatHourLabel(hour, regional.timeFormat)}
+                </div>
+              );
+            })}
           </div>
         </div>
 
@@ -655,6 +688,9 @@ export function CalendarGridDayRows({
             onUnschedule={onUnschedule}
             timeFormat={regional.timeFormat}
             onEmptySlotClick={onEmptySlotClick}
+            businessOpen={todayBusinessHours.isOpen}
+            businessStartMinutes={todayBusinessHours.startMinutes}
+            businessEndMinutes={todayBusinessHours.endMinutes}
           />
         )}
 
@@ -681,6 +717,9 @@ export function CalendarGridDayRows({
               timeFormat={regional.timeFormat}
               techSummary={techSummaryMap?.get(tech.id)}
               onEmptySlotClick={onEmptySlotClick}
+              businessOpen={todayBusinessHours.isOpen}
+              businessStartMinutes={todayBusinessHours.startMinutes}
+              businessEndMinutes={todayBusinessHours.endMinutes}
             />
           );
         })}

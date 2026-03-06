@@ -4,6 +4,144 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-03-06: Panel Dispatch Notes — Inline Visit Notes Editing
+
+### Note Fields Audit
+
+| Field | Table | Authoritative For | Panel Behavior |
+|---|---|---|---|
+| `visitNotes` | `job_visits` | Dispatcher/office operational notes | **Editable** inline in panel |
+| `outcomeNote` | `job_visits` | Technician completion context | **Read-only** (set by technician on visit completion) |
+| `description` | `jobs` | Job-level description | **Read-only** context (if present) |
+| `summary` | `jobs` | Job title | Already shown in header |
+| `job_notes` | `job_notes` (separate table) | Timestamped threaded notes | Not shown (deferred — full note thread is a future feature) |
+| `billingNotes` | `jobs` | Billing context | Not shown (billing scope) |
+| `accessInstructions` | `jobs` | Site access | Not shown (deferred) |
+| `holdNotes` | `jobs` | On-hold context | Not shown (on-hold scope) |
+
+### Panel Notes Section Layout
+1. **Outcome Note** (read-only) — if present, shown first with "OUTCOME NOTE" label
+2. **Visit Notes** (editable) — "VISIT NOTES" section with:
+   - Read mode: displays note text or "No notes" placeholder
+   - Edit button → inline Textarea with Save/Cancel
+   - Save uses `PATCH /api/calendar/visit/:visitId/reschedule` with `{ notes, version }`
+3. **Job Description** (read-only) — if present, shown with 3-line clamp
+
+### Save Path
+- Endpoint: `PATCH /api/calendar/visit/:visitId/reschedule`
+- Body: `{ notes: string | null, version: number }`
+- Storage: `calendarRepository.rescheduleVisit()` → `jobVisitsRepository.updateJobVisit()` with `visitNotes` field
+- Scope: Visit-centric — only updates the specific visit's `visitNotes`, not the parent job
+
+### Server Changes
+- `server/storage/calendar.ts` — Added `visit_notes`, `outcome_note`, `description` to calendar range query and `CalendarJobWithDetails` interface
+- `server/routes/calendar.ts` — Added `visitNotes`, `outcomeNote`, `description` to calendar event DTO
+- `shared/types/calendar.ts` — Added fields to `CalendarEventDto` interface
+
+### Deferred
+- **Threaded notes** (`job_notes` table): Full note thread with timestamps and user attribution — future feature
+- **Access instructions**: Could show in panel for dispatch context — minor future addition
+- **Mini timeline**: Activity history snippet — requires audit log query, deferred
+- **Note on calendar cards**: Visit notes are only visible in panel, not on board cards (too compact)
+
+### Files Changed
+- `client/src/components/calendar/DispatchDetailPanel.tsx` — Added Visit Notes section with inline edit, Job Description section
+- `server/storage/calendar.ts` — Added `visitNotes`, `outcomeNote`, `description` to query + interface
+- `server/routes/calendar.ts` — Added fields to DTO transformation
+- `shared/types/calendar.ts` — Added fields to `CalendarEventDto`
+
+---
+
+## 2026-03-06: Off-Hours Availability Overlays — Dispatch Board Readability
+
+### Availability Source
+- **Primary:** `company_business_hours` table — per day-of-week open/close with `startMinutes`/`endMinutes` (minutes from midnight)
+- **Fallback:** 6:00 AM – 5:00 PM Mon-Fri (360–1020 minutes) when no business hours configured
+- **Per-technician:** Not available. `users.useCustomSchedule` field exists but is unused. All technicians use company-wide business hours.
+
+### Views with Off-Hours Overlays
+
+| View | Shading Applied | Mechanism |
+|---|---|---|
+| **Day Columns** (CalendarGridDayJobber) | Hour slots + time rail | `isOutsideBusinessHours` check per hour cell. Time rail labels now also shaded. |
+| **Day Rows** (CalendarGridDayRows) | Hour grid cells + time header | `businessOpen`/`businessStartMinutes`/`businessEndMinutes` passed to TechRow. Time header row also shaded. |
+| **Week** (CalendarGridWeek) | Per-cell shading + hour labels | `businessHoursMap` lookup per day-of-week. Each cell independently checked — Saturday/Sunday columns shade differently than weekdays. Hour label shades when ALL 7 days are off-hours. |
+| **Month** | Not applicable | Month view has no hourly time axis. |
+
+### Visual Treatment
+- **Off-hours background:** `bg-slate-200/70 dark:bg-slate-800/50` — subtle gray tint, matches existing DayJobber pattern
+- **Off-hours time labels:** `bg-slate-200/50 dark:bg-slate-800/40 text-muted-foreground/60` — dimmed text
+- **Business hours / on-hours:** `bg-background` (default, no tint)
+- **Start hour emphasis:** `bg-primary/30 font-bold` (existing behavior, unchanged)
+- All overlays use `pointer-events-none` or apply to background classes only — no drag/drop interference
+
+### What the User Should Infer
+- **White/clear background** = working hours, schedulable time
+- **Gray tint** = off-hours, non-working time (scheduling still allowed, but visually discouraged)
+- **Saturdays/Sundays** will show full gray tint if business is closed those days
+- **Partial days** (e.g., 6AM-5PM) will shade early morning and evening hours
+
+### Lane Header Capacity Summary
+Already implemented in prior pass: `TechLaneHeader` component shows scheduled minutes, visit count, risk badges, and online presence per technician. No additional changes needed.
+
+### Files Changed
+- `client/src/components/calendar/CalendarGridDayJobber.tsx` — Added off-hours shading to TimeRail
+- `client/src/components/calendar/CalendarGridDayRows.tsx` — Added off-hours shading to timeline grid + time header, computed business hours bounds
+- `client/src/components/calendar/CalendarGridWeek.tsx` — Added `businessHours` prop, per-cell off-hours shading, hour label dimming
+- `client/src/pages/Calendar.tsx` — Pass `businessHoursData?.hours` to CalendarGridWeek
+
+### Future: Per-Technician Shift Modeling
+Currently deferred. Would require:
+1. A `technician_schedules` or `user_business_hours` table with per-user day-of-week hours
+2. API endpoint to fetch per-tech availability
+3. Client-side per-lane shading based on individual schedules rather than company-wide hours
+4. The `users.useCustomSchedule` boolean already exists as a gate
+
+---
+
+## 2026-03-06: Visit Status Visual System — Board Card Readability Pass
+
+### Status Visual Mapping
+
+Shared config: `calendarUtils.ts` → `VISIT_STATUS_STYLES` / `VISIT_OUTCOME_STYLES`
+
+| Visit Status | Card Signal | Panel Badge | Color Family |
+|---|---|---|---|
+| scheduled | No dot (default/implied) | Blue badge with dot | Blue |
+| dispatched | Purple dot | Purple badge with dot | Purple |
+| en_route | Indigo dot | Indigo badge with dot | Indigo |
+| on_site | Green dot | Green badge with dot | Green |
+| in_progress | Green dot | Green badge with dot | Green |
+| on_hold | Orange dot | Orange badge with dot | Orange |
+| completed | CheckCircle2 icon + opacity 60% + strikethrough | Emerald badge | Emerald |
+| cancelled | Gray dot (if rendered) | Gray badge | Gray |
+
+| Outcome | Card Signal | Panel Badge |
+|---|---|---|
+| needs_parts | Amber Package icon | Amber outline badge |
+| needs_followup | Amber RotateCcw icon | Amber outline badge |
+
+### Design Decisions
+- **Left border = technician color** (unchanged). Primary visual lane identification.
+- **Status dot = lifecycle status**. Small colored dot (2x2) before company name. Only shows for non-scheduled, non-completed statuses to avoid noise.
+- **Completed = muted** (existing). Opacity 60% + strikethrough + CheckCircle2 icon.
+- **Outcomes = amber icons** (existing). Package/RotateCcw icons on card, amber outline badges on panel.
+- **Tasks untouched**. Violet border, ClipboardList icon badge. No visitStatus field exists on tasks.
+- **Month view chips unchanged**. CalendarEventChip is too compact for status dots. Month is not a dispatch surface.
+- **Panel badges now use shared config**. `DispatchDetailPanel` status badges reference `VISIT_STATUS_STYLES` for consistent colors/labels.
+
+### Files Changed
+- `client/src/components/calendar/calendarUtils.ts` — Added `VISIT_STATUS_STYLES`, `VISIT_OUTCOME_STYLES`, `getVisitStatus()`, `getVisitOutcome()`
+- `client/src/components/calendar/DraggableClient.tsx` — Added status dot rendering, added `visitStatus`/`visitOutcome` to memo comparison
+- `client/src/components/calendar/DispatchDetailPanel.tsx` — Replaced inline status labels/colors with shared config imports
+
+### Intentionally Deferred
+- Month view chips: No status dot (too compact)
+- Day-rows all-day chips: No status dot (same CalendarEventChip)
+- Card background tinting by status: Avoided to prevent color overload with technician colors
+
+---
+
 ## 2026-03-06: Dispatch Board UI Refactor Pass 2 — Dispatch Detail Panel
 
 ### Current Board Behavior (Updated)

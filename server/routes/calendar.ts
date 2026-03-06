@@ -131,6 +131,9 @@ function transformToDto(job: CalendarJobWithDetails): CalendarEventDto {
     visitNumber: job.visitNumber,
     visitStatus: job.visitStatus,
     visitOutcome: job.visitOutcome,
+    visitNotes: job.visitNotes ?? null,
+    outcomeNote: job.outcomeNote ?? null,
+    description: job.description ?? null,
   };
 }
 

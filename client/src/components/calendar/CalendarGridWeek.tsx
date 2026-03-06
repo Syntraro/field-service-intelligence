@@ -55,6 +55,8 @@ export interface CalendarGridWeekProps {
   regional: RegionalSettings;
   /** Empty-slot click handler for quick-create (2026-03-06) */
   onEmptySlotClick?: (data: { date: Date; hour: number; minute: number }) => void;
+  /** Business hours per day of week for off-hours shading (2026-03-06) */
+  businessHours?: Array<{ dayOfWeek: number; isOpen: boolean; startMinutes: number | null; endMinutes: number | null }>;
 }
 
 interface WeekDayData {
@@ -128,6 +130,7 @@ function HourlyDropZone({
   timeFormat,
   onEmptySlotClick,
   dayDate,
+  isOffHours,
 }: {
   dateKey: string; // 2026-01-30: Use full date key (YYYY-MM-DD) for unambiguous targeting
   hour: number;
@@ -146,6 +149,8 @@ function HourlyDropZone({
   onEmptySlotClick?: (data: { date: Date; hour: number; minute: number }) => void;
   /** Actual Date object for this day column */
   dayDate?: Date;
+  /** Whether this hour cell is outside business hours (2026-03-06) */
+  isOffHours?: boolean;
 }) {
   const rowHeight = DENSITY_STYLES[density].rowHeight;
 
@@ -154,7 +159,7 @@ function HourlyDropZone({
 
   return (
     <div
-      className={`border-r ${DENSITY_STYLES[density].row} bg-background relative`}
+      className={`border-r ${DENSITY_STYLES[density].row} relative ${isOffHours ? 'bg-slate-200/70 dark:bg-slate-800/50' : 'bg-background'}`}
       style={{ minHeight: `${rowHeight}px` }}
       onClick={(e) => {
         // Empty-slot click: only fire if clicking background (not an event card)
@@ -392,6 +397,7 @@ export function CalendarGridWeek({
   onUnschedule,
   regional,
   onEmptySlotClick,
+  businessHours,
 }: CalendarGridWeekProps) {
   // Phase C + Phase 2: Debug layout instrumentation — gated behind ?debugLayout=1
   useLayoutEffect(() => {
@@ -489,6 +495,17 @@ export function CalendarGridWeek({
     return { hour: h, display: formatHourLabel(h, regional.timeFormat) };
   });
 
+  // Build per-day-of-week business hours lookup for off-hours shading (2026-03-06)
+  const businessHoursMap = useMemo(() => {
+    const map = new Map<number, { isOpen: boolean; startMinutes: number | null; endMinutes: number | null }>();
+    if (businessHours) {
+      for (const bh of businessHours) {
+        map.set(bh.dayOfWeek, bh);
+      }
+    }
+    return map;
+  }, [businessHours]);
+
   const gridCols = "grid-cols-[3.5rem_repeat(7,minmax(0,1fr))]";
 
   // Calculate current time position for "Now" line (uses company timezone)
@@ -567,12 +584,40 @@ export function CalendarGridWeek({
             </div>
           </div>
         )}
-        {hours.map((h) => (
+        {hours.map((h) => {
+          // Check if ANY day in the week has this hour as off-hours (for hour label shading)
+          const anyDayOffHours = weekDaysData.some(d => {
+            const bh = businessHoursMap.get(d.date.getDay());
+            if (!bh) return false;
+            const hourStart = h.hour * 60;
+            const hourEnd = (h.hour + 1) * 60;
+            return !bh.isOpen || (bh.startMinutes != null && bh.endMinutes != null && (hourEnd <= bh.startMinutes || hourStart >= bh.endMinutes));
+          });
+          const allDaysOffHours = businessHoursMap.size > 0 && weekDaysData.every(d => {
+            const bh = businessHoursMap.get(d.date.getDay());
+            if (!bh) return false;
+            const hourStart = h.hour * 60;
+            const hourEnd = (h.hour + 1) * 60;
+            return !bh.isOpen || (bh.startMinutes != null && bh.endMinutes != null && (hourEnd <= bh.startMinutes || hourStart >= bh.endMinutes));
+          });
+
+          return (
           <div key={h.hour} className={`grid ${gridCols} border-b`}>
-            <div className={`px-1.5 py-1 text-[10px] font-medium border-r flex items-center justify-center ${h.hour === startHour ? 'bg-primary/30 font-bold' : 'bg-muted/20'}`}>
+            <div className={`px-1.5 py-1 text-[10px] font-medium border-r flex items-center justify-center ${
+              h.hour === startHour ? 'bg-primary/30 font-bold'
+              : allDaysOffHours ? 'bg-slate-200/50 dark:bg-slate-800/40 text-muted-foreground/60'
+              : 'bg-muted/20'
+            }`}>
               {h.display}
             </div>
-            {weekDaysData.map((dayData) => (
+            {weekDaysData.map((dayData) => {
+              // Per-cell off-hours check (2026-03-06)
+              const bh = businessHoursMap.get(dayData.date.getDay());
+              const hourStart = h.hour * 60;
+              const hourEnd = (h.hour + 1) * 60;
+              const cellOffHours = bh ? (!bh.isOpen || (bh.startMinutes != null && bh.endMinutes != null && (hourEnd <= bh.startMinutes || hourStart >= bh.endMinutes))) : false;
+
+              return (
               <MemoizedHourlyDropZone
                 key={`${dayData.dayName}-${h.hour}`}
                 dateKey={dayData.dateKey}
@@ -590,10 +635,13 @@ export function CalendarGridWeek({
                 timeFormat={regional.timeFormat}
                 onEmptySlotClick={onEmptySlotClick}
                 dayDate={dayData.date}
+                isOffHours={cellOffHours}
               />
-            ))}
+              );
+            })}
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

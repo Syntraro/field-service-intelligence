@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import {
   Select,
@@ -50,12 +51,14 @@ import {
   Loader2,
   Save,
   History,
+  Pencil,
+  StickyNote,
 } from "lucide-react";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { getMemberDisplayName } from "@/lib/displayName";
 import { AddVisitDialog } from "@/components/AddVisitDialog";
-import { formatTimeFromMinutes } from "./calendarUtils";
+import { formatTimeFromMinutes, VISIT_STATUS_STYLES, VISIT_OUTCOME_STYLES } from "./calendarUtils";
 
 // ============================================================================
 // Types
@@ -90,27 +93,14 @@ function parseLocalDate(dateStr: string): Date {
   return new Date(year, month - 1, day);
 }
 
+/** Resolve visit status label from shared config */
 function getVisitStatusLabel(status?: string): string {
-  const labels: Record<string, string> = {
-    scheduled: "Scheduled",
-    dispatched: "Dispatched",
-    en_route: "En Route",
-    on_site: "On Site",
-    in_progress: "In Progress",
-    on_hold: "On Hold",
-    completed: "Completed",
-    cancelled: "Cancelled",
-  };
-  return labels[status || ""] || status || "—";
+  return VISIT_STATUS_STYLES[status || ""]?.label || status || "—";
 }
 
+/** Resolve outcome label from shared config */
 function getOutcomeLabel(outcome?: string): string {
-  const labels: Record<string, string> = {
-    completed: "Completed",
-    needs_parts: "Needs Parts",
-    needs_followup: "Needs Follow-Up",
-  };
-  return labels[outcome || ""] || "";
+  return VISIT_OUTCOME_STYLES[outcome || ""]?.label || "";
 }
 
 // ============================================================================
@@ -143,6 +133,10 @@ export function DispatchDetailPanel({
   const [editingTech, setEditingTech] = useState(false);
   const [selectedTechId, setSelectedTechId] = useState<string>("__none__");
 
+  // Visit notes edit state (2026-03-06: dispatch notes in panel)
+  const [editingNotes, setEditingNotes] = useState(false);
+  const [editNotesText, setEditNotesText] = useState("");
+
   // Extract useful data
   const assignment = data?.assignment;
   const client = data?.client;
@@ -170,6 +164,8 @@ export function DispatchDetailPanel({
   const visitStatus = assignment?.visitStatus || assignment?.status || "";
   const visitOutcome = assignment?.visitOutcome || assignment?.outcome || "";
   const outcomeNote = assignment?.outcomeNote || "";
+  const visitNotes = assignment?.visitNotes || "";
+  const jobDescription = assignment?.description || "";
 
   // Technicians
   const techIds: string[] = assignment?.assignedTechnicianIds || (assignment?.primaryTechnicianId ? [assignment.primaryTechnicianId] : []);
@@ -188,6 +184,7 @@ export function DispatchDetailPanel({
     if (open && assignment) {
       setEditingSchedule(false);
       setEditingTech(false);
+      setEditingNotes(false);
       setShowAddVisit(false);
       // Pre-populate edit fields
       setEditDate(scheduledDate ? parseLocalDate(scheduledDate) : new Date());
@@ -251,6 +248,24 @@ export function DispatchDetailPanel({
     },
   });
 
+  // Save visit notes (2026-03-06: dispatch notes in panel)
+  const notesMutation = useMutation({
+    mutationFn: async () => {
+      return apiRequest(`/api/calendar/visit/${visitId}/reschedule`, {
+        method: "PATCH",
+        body: JSON.stringify({ notes: editNotesText.trim() || null, version }),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
+      toast({ title: "Notes saved" });
+      setEditingNotes(false);
+    },
+    onError: (e: Error) => {
+      toast({ title: "Error", description: e.message, variant: "destructive" });
+    },
+  });
+
   // Technician reassignment
   const handleTechSave = useCallback(() => {
     if (!onAssignTechnicians || !visitId) return;
@@ -259,7 +274,7 @@ export function DispatchDetailPanel({
     setEditingTech(false);
   }, [onAssignTechnicians, visitId, selectedTechId]);
 
-  const isMutating = rescheduleMutation.isPending || unscheduleMutation.isPending;
+  const isMutating = rescheduleMutation.isPending || unscheduleMutation.isPending || notesMutation.isPending;
 
   if (!data) return null;
 
@@ -292,20 +307,21 @@ export function DispatchDetailPanel({
               </SheetDescription>
             </SheetHeader>
 
-            {/* Status badges row */}
+            {/* Status badges row — uses shared VISIT_STATUS_STYLES config */}
             <div className="flex items-center gap-1.5 flex-wrap">
               {isCompleted && (
-                <Badge variant="secondary" className="text-[10px] gap-1 bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400">
+                <Badge variant="secondary" className={`text-[10px] gap-1 ${VISIT_STATUS_STYLES.completed.badge}`}>
                   <CheckCircle2 className="h-3 w-3" /> Completed
                 </Badge>
               )}
               {visitStatus && !isCompleted && (
-                <Badge variant="outline" className="text-[10px]">
+                <Badge variant="secondary" className={`text-[10px] gap-1 ${VISIT_STATUS_STYLES[visitStatus]?.badge || ""}`}>
+                  <span className={`h-1.5 w-1.5 rounded-full ${VISIT_STATUS_STYLES[visitStatus]?.dot || "bg-gray-400"}`} />
                   {getVisitStatusLabel(visitStatus)}
                 </Badge>
               )}
               {visitOutcome && visitOutcome !== "completed" && (
-                <Badge variant="outline" className="text-[10px] gap-1 border-amber-300 text-amber-700 dark:text-amber-400">
+                <Badge variant="outline" className={`text-[10px] gap-1 ${VISIT_OUTCOME_STYLES[visitOutcome]?.badge || ""}`}>
                   {visitOutcome === "needs_parts" ? <Package className="h-3 w-3" /> : <RotateCcw className="h-3 w-3" />}
                   {getOutcomeLabel(visitOutcome)}
                 </Badge>
@@ -509,6 +525,67 @@ export function DispatchDetailPanel({
                 <section className="space-y-1">
                   <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Outcome Note</h4>
                   <p className="text-xs text-muted-foreground leading-relaxed">{outcomeNote}</p>
+                </section>
+              </>
+            )}
+
+            {/* VISIT NOTES — editable dispatch/office notes (2026-03-06) */}
+            <Separator />
+            <section className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center gap-1">
+                  <StickyNote className="h-3 w-3" /> Visit Notes
+                </h4>
+                {!editingNotes && !isCompleted && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-1.5 text-[10px]"
+                    onClick={() => { setEditNotesText(visitNotes); setEditingNotes(true); }}
+                  >
+                    <Pencil className="h-3 w-3 mr-0.5" /> {visitNotes ? "Edit" : "Add"}
+                  </Button>
+                )}
+              </div>
+              {editingNotes ? (
+                <div className="space-y-1.5">
+                  <Textarea
+                    value={editNotesText}
+                    onChange={(e) => setEditNotesText(e.target.value)}
+                    placeholder="Dispatch notes, access codes, special instructions..."
+                    className="text-xs min-h-[60px] max-h-[120px] resize-y"
+                    maxLength={2000}
+                    autoFocus
+                  />
+                  <div className="flex gap-1.5">
+                    <Button
+                      size="sm"
+                      className="h-7 text-xs flex-1"
+                      onClick={() => notesMutation.mutate()}
+                      disabled={notesMutation.isPending}
+                    >
+                      {notesMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Save className="h-3 w-3 mr-1" />}
+                      Save
+                    </Button>
+                    <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setEditingNotes(false)}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <p className={`text-xs leading-relaxed ${visitNotes ? "text-foreground" : "text-muted-foreground italic"}`}>
+                  {visitNotes || "No notes"}
+                </p>
+              )}
+            </section>
+
+            {/* JOB DESCRIPTION — read-only context from parent job */}
+            {jobDescription && (
+              <>
+                <Separator />
+                <section className="space-y-1">
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Job Description</h4>
+                  <p className="text-xs text-muted-foreground leading-relaxed line-clamp-3">{jobDescription}</p>
                 </section>
               </>
             )}

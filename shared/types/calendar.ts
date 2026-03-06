@@ -50,6 +50,12 @@ export interface CalendarEventDto {
   visitStatus?: string;
   /** Visit outcome (completed, needs_parts, needs_followup) */
   visitOutcome?: string | null;
+  /** Visit notes — editable dispatch/office notes on the visit */
+  visitNotes?: string | null;
+  /** Outcome note — technician-authored note from visit completion */
+  outcomeNote?: string | null;
+  /** Job description — read-only context from parent job */
+  description?: string | null;
   /** Job type (e.g., "PM", "Repair", "Install") */
   jobType: string;
   /** Job summary/description */
