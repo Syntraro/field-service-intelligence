@@ -11,7 +11,10 @@ import {
   getTechnicianColorForAssignment,
   calculateLanes,
   getWeekStart,
-  isCalendarEventOverdue,
+  getEventOverdue,
+  getEventColor,
+  getEventClient,
+  getEventCapabilities,
 } from "./calendarUtils";
 import type { RegionalSettings } from "@/hooks/useCompanyRegionalSettings";
 import { formatHourLabel, nowInTimezone } from "@/hooks/useCompanyRegionalSettings";
@@ -154,27 +157,27 @@ function HourlyDropZone({
         const client = findClientByEvent(clients, event);
         const lane = laneMap?.get(event.assignmentId) || { laneIndex: 0, totalLanes: 1 };
         const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
-        const isTask = event.kind === "task";
+        const caps = getEventCapabilities(event);
         return client ? (
           <ResizableJobCard
             key={event.assignmentId}
             assignment={event.raw}
-            client={client}
+            client={getEventClient(event, client)}
             rowHeight={rowHeight}
-            onResize={handleResize}
-            getTechnicianColor={getTechnicianColor}
+            onResize={caps.resizable ? handleResize : () => {}}
+            getTechnicianColor={(raw: any) => getEventColor(event, getTechnicianColor)}
             densityStyle={DENSITY_STYLES[density].card}
             onClick={() => handleClientClick(client, event)}
-            onReschedule={() => handleClientClick(client, event, true)}
+            onReschedule={caps.reschedulable ? () => handleClientClick(client, event, true) : undefined}
             isCompleted={event.completed}
-            isOverdue={isTask ? false : isCalendarEventOverdue(event)}
+            isOverdue={getEventOverdue(event)}
             laneIndex={lane.laneIndex}
             totalLanes={lane.totalLanes}
             isSaving={isSaving}
             technicians={technicians}
-            onUnschedule={onUnschedule}
+            onUnschedule={caps.removable ? onUnschedule : undefined}
             timeFormat={timeFormat}
-            itemKind={isTask ? "task" : "visit"}
+            itemKind={event.kind}
           />
         ) : null;
       })}
@@ -283,26 +286,25 @@ function AllDayRow({
               {visibleEvents.map((event) => {
                 const client = findClientByEvent(clients, event);
                 const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
-                const isTask = event.kind === "task";
-                const isOverdue = isTask ? false : isCalendarEventOverdue(event);
+                const caps = getEventCapabilities(event);
                 return client ? (
                   <JobCard
                     key={event.assignmentId}
                     id={event.assignmentId}
-                    client={client}
+                    client={getEventClient(event, client)}
                     assignment={event.raw}
                     inCalendar
                     onClick={() => handleClientClick(client, event)}
-                    onReschedule={() => handleClientClick(client, event, true)}
-                    onUnschedule={onUnschedule}
+                    onReschedule={caps.reschedulable ? () => handleClientClick(client, event, true) : undefined}
+                    onUnschedule={caps.removable ? onUnschedule : undefined}
                     isCompleted={event.completed}
-                    isOverdue={isOverdue}
+                    isOverdue={getEventOverdue(event)}
                     isSaving={isSaving}
-                    technicianColor={getTechnicianColor(event.raw)}
+                    technicianColor={getEventColor(event, getTechnicianColor)}
                     densityStyle={DENSITY_STYLES[density].card}
                     technicians={technicians}
                     timeFormat={timeFormat}
-                    itemKind={isTask ? "task" : "visit"}
+                    itemKind={event.kind}
                   />
                 ) : null;
               })}

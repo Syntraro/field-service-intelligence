@@ -16,7 +16,7 @@
 
 import { ClipboardList } from "lucide-react";
 import { DraggableClient } from "./DraggableClient";
-import { TechnicianColor } from "./calendarUtils";
+import { TechnicianColor, TASK_COLOR } from "./calendarUtils";
 
 export interface JobCardProps {
   /** Unique ID for the job/assignment (used for drag) */
@@ -94,16 +94,9 @@ export function JobCard({
   rawItem,
   itemKind = "visit",
 }: JobCardProps) {
-  // Phase 9: Task items get distinct styling
+  // Canonical: Task items use shared TASK_COLOR from calendarUtils
   const isTask = itemKind === "task";
-  const taskOverrideColor = isTask ? {
-    bg: 'bg-violet-50 dark:bg-violet-950/20',
-    border: 'border-violet-400',
-    borderLeft: 'border-l-violet-400',
-    dot: 'bg-violet-400',
-    text: 'text-violet-700 dark:text-violet-300',
-    label: 'Task',
-  } as const : undefined;
+  const taskOverrideColor = isTask ? TASK_COLOR : undefined;
 
   return (
     <div className="relative group">

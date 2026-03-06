@@ -780,3 +780,91 @@ export function getTaskIdFromEvent(event: CalendarEvent): string {
   }
   return event.assignmentId.replace("task-", "");
 }
+
+// ============================================================================
+// Canonical Display Helpers — single source of truth for all calendar views
+// ============================================================================
+
+/** Canonical task color used everywhere tasks are rendered on the calendar. */
+export const TASK_COLOR: TechnicianColor = {
+  bg: 'bg-violet-50 dark:bg-violet-950/20',
+  border: 'border-violet-400',
+  borderLeft: 'border-l-violet-400',
+  dot: 'bg-violet-400',
+  text: 'text-violet-700 dark:text-violet-300',
+  label: 'Task',
+};
+
+/**
+ * Canonical title for a calendar event.
+ * Tasks use their own title; visits use client company name with fallbacks.
+ *
+ * @param event - Canonical CalendarEvent
+ * @param client - Resolved client (from findClientByEvent), may be null
+ * @param options.compact - If true, prefix tasks with 📋 (for month chips)
+ */
+export function getEventTitle(
+  event: CalendarEvent,
+  client?: { companyName?: string } | null,
+  options?: { compact?: boolean },
+): string {
+  if (event.kind === "task") {
+    const base = event.raw?.title || "Task";
+    return options?.compact ? `📋 ${base}` : base;
+  }
+  return client?.companyName || event.raw?.summary || "Untitled";
+}
+
+/**
+ * Canonical overdue check. Tasks are never overdue.
+ */
+export function getEventOverdue(event: CalendarEvent, now?: Date): boolean {
+  if (event.kind === "task") return false;
+  return isCalendarEventOverdue(event, now);
+}
+
+/**
+ * Canonical color for a calendar event.
+ * Tasks always get TASK_COLOR; visits use technician color.
+ */
+export function getEventColor(
+  event: CalendarEvent,
+  getTechnicianColor?: (raw: any) => TechnicianColor,
+): TechnicianColor {
+  if (event.kind === "task") return TASK_COLOR;
+  return getTechnicianColor?.(event.raw) || TECHNICIAN_COLORS[0];
+}
+
+/**
+ * Canonical capabilities for a calendar event by view context.
+ * Controls drag, resize, remove, and reschedule permissions.
+ */
+export function getEventCapabilities(event: CalendarEvent): {
+  draggable: boolean;
+  resizable: boolean;
+  removable: boolean;
+  reschedulable: boolean;
+} {
+  const isTask = event.kind === "task";
+  return {
+    draggable: !isTask && !event.completed,
+    resizable: !isTask && !event.completed,
+    removable: !isTask,
+    reschedulable: !isTask,
+  };
+}
+
+/**
+ * Build the client display object for a task event.
+ * Tasks don't have a real client — uses the task title as companyName
+ * so downstream components (JobCard/DraggableClient) render the task title.
+ */
+export function getEventClient(
+  event: CalendarEvent,
+  client: { companyName?: string; location?: string; id?: string } | null | undefined,
+): { companyName: string; location?: string; id?: string } {
+  if (event.kind === "task") {
+    return { ...client, companyName: event.raw?.title || "Task" };
+  }
+  return { companyName: "Unknown", ...client };
+}

@@ -29,8 +29,11 @@ import {
   CalendarEvent,
   getTechnicianColorForAssignment,
   calculateLanes,
-  isCalendarEventOverdue,
   isAllDayEvent,
+  getEventOverdue,
+  getEventColor,
+  getEventClient,
+  getEventCapabilities,
 } from "./calendarUtils";
 import type { RegionalSettings } from "@/hooks/useCompanyRegionalSettings";
 import { formatHourLabel, nowInTimezone } from "@/hooks/useCompanyRegionalSettings";
@@ -329,33 +332,33 @@ function TechColumn({
             {allDayEvents.slice(0, 3).map((event) => {
               const client = findClientByEvent(clients, event);
               const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
-              const isTask = event.kind === "task";
+              const caps = getEventCapabilities(event);
               return client ? (
                 <DraggableAllDayCard
                   key={event.assignmentId}
                   event={event}
                   client={client}
                   isSaving={!!isSaving}
-                  isTask={isTask}
+                  isTask={event.kind === "task"}
                   assignmentId={event.assignmentId}
                   raw={event.raw}
                 >
                   <JobCard
                     id={event.assignmentId}
-                    client={isTask ? { ...client, companyName: event.raw?.title || "Task" } : client}
+                    client={getEventClient(event, client)}
                     assignment={event.raw}
                     inCalendar
                     onClick={() => handleClientClick(client, event)}
-                    onReschedule={isTask ? undefined : () => handleClientClick(client, event, true)}
-                    onUnschedule={isTask ? undefined : onUnschedule}
+                    onReschedule={caps.reschedulable ? () => handleClientClick(client, event, true) : undefined}
+                    onUnschedule={caps.removable ? onUnschedule : undefined}
                     isCompleted={event.completed}
-                    isOverdue={isTask ? false : isCalendarEventOverdue(event)}
+                    isOverdue={getEventOverdue(event)}
                     isSaving={isSaving}
-                    technicianColor={getTechnicianColor(event.raw)}
+                    technicianColor={getEventColor(event, getTechnicianColor)}
                     densityStyle={DENSITY_STYLES[density].card}
                     technicians={technicians}
                     timeFormat={timeFormat}
-                    itemKind={isTask ? "task" : "visit"}
+                    itemKind={event.kind}
                   />
                 </DraggableAllDayCard>
               ) : null;
@@ -408,26 +411,28 @@ function TechColumn({
 
                 const lane = laneMap.get(event.assignmentId) || { laneIndex: 0, totalLanes: 1 };
                 const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
+                const caps = getEventCapabilities(event);
 
                 return (
                   <ResizableJobCard
                     key={event.assignmentId}
                     assignment={event.raw}
-                    client={client}
+                    client={getEventClient(event, client)}
                     rowHeight={rowHeight}
                     onResize={handleResize}
                     getTechnicianColor={getTechnicianColor}
                     densityStyle={DENSITY_STYLES[density].card}
                     onClick={() => handleClientClick(client, event)}
-                    onReschedule={() => handleClientClick(client, event, true)}
+                    onReschedule={caps.reschedulable ? () => handleClientClick(client, event, true) : undefined}
                     isCompleted={event.completed}
-                    isOverdue={isCalendarEventOverdue(event)}
+                    isOverdue={getEventOverdue(event)}
                     laneIndex={lane.laneIndex}
                     totalLanes={lane.totalLanes}
                     isSaving={isSaving}
                     technicians={technicians}
-                    onUnschedule={onUnschedule}
+                    onUnschedule={caps.removable ? onUnschedule : undefined}
                     timeFormat={timeFormat}
+                    itemKind={event.kind}
                   />
                 );
               })}

@@ -17,9 +17,11 @@ import {
   CalendarDensity,
   CalendarEvent,
   getTechnicianColorForAssignment,
-  isCalendarEventOverdue,
   isAllDayEvent,
   TechnicianColor,
+  getEventOverdue,
+  getEventClient,
+  getEventCapabilities,
 } from "./calendarUtils";
 import { JobCard } from "./JobCard";
 import type { RegionalSettings } from "@/hooks/useCompanyRegionalSettings";
@@ -127,16 +129,17 @@ function RowAllDayDropZone({ technicianId, dateKey, children }: {
 // 2026-03-05: Enables drag from all-day lane to timed slots and vice versa
 // ============================================================================
 
-function DraggableAllDayChip({ event, client, onClick, isSaving, isTask }: {
+function DraggableAllDayChip({ event, client, onClick, isSaving }: {
   event: CalendarEvent;
   client: any;
   onClick: () => void;
   isSaving: boolean;
-  isTask: boolean;
 }) {
+  const caps = getEventCapabilities(event);
+  const isTask = event.kind === "task";
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: event.assignmentId,
-    disabled: isSaving || !!event.completed || isTask,
+    disabled: isSaving || !!event.completed || !caps.draggable,
     data: { type: "assignment", assignmentId: event.assignmentId, client, event: event.raw },
   });
 
@@ -196,14 +199,14 @@ function DraggableEventBlock({ event, client, techColor, onClick, isSaving, time
 }) {
   const startMinutes = event.startMinutes ?? 0;
   const originalDuration = event.durationMinutes ?? 60;
-  const isTask = event.kind === "task";
-  const isOverdue = isTask ? false : isCalendarEventOverdue(event);
+  const caps = getEventCapabilities(event);
+  const isOverdue = getEventOverdue(event);
   const isCompleted = event.completed;
 
   // Drag support
   const { attributes, listeners, setNodeRef: setDragRef, transform, isDragging } = useDraggable({
     id: event.assignmentId,
-    disabled: isSaving || isCompleted || isTask,
+    disabled: isSaving || !!isCompleted || !caps.draggable,
     data: { type: "assignment", assignmentId: event.assignmentId, client, event: event.raw },
   });
 
@@ -302,11 +305,11 @@ function DraggableEventBlock({ event, client, techColor, onClick, isSaving, time
       {/* Use shared JobCard for consistent visuals across all calendar views */}
       <JobCard
         id={event.assignmentId}
-        client={isTask ? { ...client, companyName: event.raw?.title || "Task" } : client}
+        client={getEventClient(event, client)}
         assignment={event.raw}
         inCalendar
         onClick={onClick}
-        onUnschedule={isTask ? undefined : onUnschedule}
+        onUnschedule={caps.removable ? onUnschedule : undefined}
         isCompleted={!!isCompleted}
         isOverdue={isOverdue}
         isSaving={isSaving}
@@ -314,11 +317,11 @@ function DraggableEventBlock({ event, client, techColor, onClick, isSaving, time
         cardHeight={cardHeight}
         technicians={technicians}
         timeFormat={timeFormat}
-        itemKind={isTask ? "task" : "visit"}
+        itemKind={event.kind}
       />
 
       {/* Right-edge resize handle */}
-      {!isTask && !isCompleted && !isSaving && onResize && (
+      {caps.resizable && !isCompleted && !isSaving && onResize && (
         <div
           className={`absolute top-0 right-0 w-2 h-full cursor-col-resize hover:bg-primary/20 ${isResizing ? 'bg-primary/30' : ''}`}
           onPointerDown={handleResizeStart}
@@ -402,7 +405,6 @@ const MemoizedTechRow = memo(function TechRow({
           {/* 2026-03-05: All-day items now use DraggableAllDayChip for DnD between lanes */}
           {allDayEvents.slice(0, 2).map(event => {
             const client = findClientByEvent(clients, event);
-            const isTask = event.kind === "task";
             const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
             return (
               <DraggableAllDayChip
@@ -411,7 +413,6 @@ const MemoizedTechRow = memo(function TechRow({
                 client={client}
                 onClick={() => handleClientClick(client, event)}
                 isSaving={!!isSaving}
-                isTask={isTask}
               />
             );
           })}

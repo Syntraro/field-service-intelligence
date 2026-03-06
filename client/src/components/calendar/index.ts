@@ -8,8 +8,6 @@ export { ResizableJobCard } from "./ResizableJobCard";
 export { CalendarHeader } from "./CalendarHeader";
 export { CalendarGridMonth } from "./CalendarGridMonth";
 export { CalendarGridWeek } from "./CalendarGridWeek";
-export { CalendarGridWeekTechnicians } from "./CalendarGridWeekTechnicians";
-export { CalendarGridDay } from "./CalendarGridDay";
 // Jobber-style day grid (2026-01-28): replaces CalendarGridDay with proper grid layout
 export { CalendarGridDayJobber } from "./CalendarGridDayJobber";
 // Horizontal rows day layout (Polish Pass 2026-03-04)

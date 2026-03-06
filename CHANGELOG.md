@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Canonical Calendar Architecture — Shared Event Helpers (2026-03-06)
+- **Shared canonical helpers in `calendarUtils.ts`:** Created `getEventTitle()`, `getEventOverdue()`, `getEventColor()`, `getEventCapabilities()`, `getEventClient()`, and `TASK_COLOR` constant. All views now use these shared helpers instead of inline task-specific logic, eliminating 8+ duplicated patterns across 6+ files.
+- **Updated all views to use canonical helpers:** `CalendarGridMonth.tsx` (visible + overflow popover), `CalendarGridWeek.tsx` (AllDayRow + HourlyDropZone), `CalendarGridDayJobber.tsx` (all-day strip + timed grid), `CalendarGridDayRows.tsx` (DraggableAllDayChip + DraggableEventBlock + MemoizedTechRow). `JobCard.tsx` now imports `TASK_COLOR` instead of defining inline duplicate.
+- **Deleted dead code:** Removed `CalendarGridWeekTechnicians.tsx` (no longer wired after weekly view swap), `EventPreviewPopover.tsx` (zero imports after hover removal), and `CalendarGridDay.tsx` export from barrel. Removed dead `CalendarGridDay` import from `Calendar.tsx`.
+- **Barrel exports updated:** `index.ts` no longer exports deleted `CalendarGridWeekTechnicians` or unused `CalendarGridDay`.
+- **Files modified:** `calendarUtils.ts`, `JobCard.tsx`, `CalendarGridMonth.tsx`, `CalendarGridWeek.tsx`, `CalendarGridDayJobber.tsx`, `CalendarGridDayRows.tsx`, `Calendar.tsx`, `index.ts`
+- **Files deleted:** `CalendarGridWeekTechnicians.tsx`, `EventPreviewPopover.tsx`
+
 #### Weekly View — Time-Based Schedule Grid (2026-03-06)
 - **Replaced technician-row matrix with time-based week schedule.** Weekly view now shows day columns × hour rows with an all-day lane at top, matching the mental model of a scheduling board. Technicians are controlled via the existing visibility filter (hide/show techs), not as the layout axis. The old tech-row weekly view (`CalendarGridWeekTechnicians`) is no longer rendered.
 - **Reused existing `CalendarGridWeek` component** that was already in the codebase but unused (replaced in Phase 8a). Adapted its filtering from `selectedTechnicianId` to `hiddenTechnicianIds` to match the current filter system. Added `itemKind` passthrough for task visual distinction.

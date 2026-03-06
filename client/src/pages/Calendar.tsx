@@ -39,7 +39,6 @@ import {
   CalendarHeader,
   CalendarGridMonth,
   CalendarGridWeek,
-  CalendarGridDay,
   CalendarGridDayJobber, // Jobber-style day grid (2026-01-28)
   CalendarGridDayRows, // Horizontal rows day layout (Polish Pass 2026-03-04)
   ScheduleJobModal,
