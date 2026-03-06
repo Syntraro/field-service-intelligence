@@ -6,6 +6,12 @@ import { isJobOverdue } from "@shared/schema";
 
 export const MONTH_ABBREV = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
+/**
+ * Default duration (minutes) when an all-day item is dropped into a timed slot.
+ * Centralized here for future per-company settings integration.
+ */
+export const DEFAULT_TIMED_DURATION_MINUTES = 60;
+
 // ============================================================================
 // CalendarEvent: Normalized shape for all calendar views
 // ============================================================================
@@ -278,8 +284,12 @@ export function normalizeAssignments(rawEvents: any[]): CalendarEvent[] {
       // Ensure raw always carries canonical startAt/endAt so downstream code
       // (e.g. new Date(event.raw.startAt)) never hits "Invalid time value".
       // Mutation responses use scheduledStart/scheduledEnd; patch them here.
-      const patchedRaw = (a.startAt === undefined && startIso) || (a.endAt === undefined && endIso)
-        ? { ...a, startAt: a.startAt ?? startIso ?? null, endAt: a.endAt ?? endIso ?? null }
+      // FIX (2026-03-06): Also patch raw.durationMinutes so components reading
+      // from raw (e.g. ResizableJobCard) don't use stale 1440 after all-day→timed drop.
+      const needsStartEndPatch = (a.startAt === undefined && startIso) || (a.endAt === undefined && endIso);
+      const needsDurationPatch = a.durationMinutes !== durationMinutes;
+      const patchedRaw = (needsStartEndPatch || needsDurationPatch)
+        ? { ...a, startAt: a.startAt ?? startIso ?? null, endAt: a.endAt ?? endIso ?? null, durationMinutes }
         : a;
 
       return {

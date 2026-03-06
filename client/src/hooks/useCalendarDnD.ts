@@ -22,6 +22,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
 import { canEditSchedule } from "@/lib/schedulingPermissions";
 import { handleCalendarMutationError, isVersionMismatchError } from "@/components/calendar/calendarErrorHandler";
+import { DEFAULT_TIMED_DURATION_MINUTES } from "@/components/calendar/calendarUtils";
 import { logVersionMismatch } from "@/lib/calendarDiagnostics";
 import {
   startPerfSession,
@@ -119,7 +120,8 @@ interface OptimisticSnapshot {
 // ============================================================================
 
 const MIN_DURATION_MINUTES = 15;
-const DEFAULT_DURATION_MINUTES = 60;
+// Use centralized default from calendarUtils for consistency
+const DEFAULT_DURATION_MINUTES = DEFAULT_TIMED_DURATION_MINUTES;
 const MAX_DURATION_MINUTES = 1440; // 24 hours
 
 /**
@@ -876,16 +878,17 @@ export function useCalendarDnD(
             const dateStr = buildISODate(useYear, useMonth, params.day);
             let startAt: string | null = null;
             let endAt: string | null = null;
+            let effectiveDur = a.durationMinutes ?? DEFAULT_DURATION_MINUTES;
             if (!isAllDay) {
               const hour = params.scheduledHour ?? a.scheduledHour ?? 9;
               const mins = params.scheduledStartMinutes ?? a.scheduledStartMinutes ?? 0;
               const rawDur = params.durationMinutes ?? a.durationMinutes ?? DEFAULT_DURATION_MINUTES;
               // 2026-01-30: When converting from all-day to timed, force default duration
               const isConvertingFromAllDay = a.isAllDay && !isAllDay;
-              const dur = (isConvertingFromAllDay || rawDur === 1440 || rawDur > 480)
+              effectiveDur = (isConvertingFromAllDay || rawDur === 1440 || rawDur > 480)
                 ? DEFAULT_DURATION_MINUTES
                 : rawDur;
-              const range = computeTimedEventRange(useYear, useMonth, params.day, hour, mins, dur);
+              const range = computeTimedEventRange(useYear, useMonth, params.day, hour, mins, effectiveDur);
               if (range) { startAt = range.startAt; endAt = range.endAt; }
             }
 
@@ -916,6 +919,9 @@ export function useCalendarDnD(
               startAt,
               endAt,
               allDay: isAllDay,
+              // FIX (2026-03-06): Patch durationMinutes on raw event so ResizableJobCard
+              // reads the correct value during optimistic render (not stale 1440 from all-day)
+              durationMinutes: isAllDay ? (a.durationMinutes ?? 1440) : effectiveDur,
               scheduledHour: params.scheduledHour ?? a.scheduledHour,
               scheduledStartMinutes: params.scheduledStartMinutes ?? a.scheduledStartMinutes,
               isAllDay,

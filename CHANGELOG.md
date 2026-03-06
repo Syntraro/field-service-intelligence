@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### All-Day to Timed Drop Duration Bug (2026-03-06)
+- **Root cause:** When an all-day event (durationMinutes=1440) was dragged to a timed slot, `ResizableJobCard` read `event.raw.durationMinutes` (1440) directly instead of the normalized `CalendarEvent.durationMinutes` (60). This made the event visually span "rest of day" from the drop time.
+- **Fix 1 — Patch raw.durationMinutes in normalizeAssignments:** `patchedRaw` now also writes the computed `durationMinutes` so `ResizableJobCard` and other components reading from `event.raw` get the correct value.
+- **Fix 2 — Optimistic update patches durationMinutes:** The `updateAssignment` optimistic update in `useCalendarDnD.ts` now writes the effective (clamped) `durationMinutes` on the raw event, preventing the stale 1440 from showing during optimistic render.
+- **Fix 3 — Task timed drops send scheduledEndAt:** The task drag path in `Calendar.tsx` now computes `scheduledEndAt = scheduledStartAt + DEFAULT_TIMED_DURATION_MINUTES` for timed drops, ensuring the server stores a proper end time.
+- **Fix 4 — Centralized default duration:** Added `DEFAULT_TIMED_DURATION_MINUTES = 60` constant in `calendarUtils.ts`, imported by `useCalendarDnD.ts` and `Calendar.tsx`. Single source of truth for future per-company settings integration.
+- **Files modified:** `calendarUtils.ts`, `useCalendarDnD.ts`, `Calendar.tsx`
+
 ### Changed
 
 #### Canonical Calendar Architecture — Unified Normalization, Titles, and All-Day Rendering (2026-03-06)

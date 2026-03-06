@@ -34,6 +34,7 @@ import {
   buildEventIndexes,
   getLocationKey,
   DRAG_ENABLED,
+  DEFAULT_TIMED_DURATION_MINUTES,
   isTaskEvent,
   getTaskIdFromEvent,
   CalendarHeader,
@@ -729,7 +730,13 @@ export default function Calendar() {
       if (!scheduledStartAt) return;
 
       // Build PATCH payload
+      // FIX (2026-03-06): For timed task drops, compute scheduledEndAt using default duration.
+      // Without this, the task has no end time and may render incorrectly.
       const payload: any = { scheduledStartAt, allDay };
+      if (allDay === false) {
+        const endDate = new Date(new Date(scheduledStartAt).getTime() + DEFAULT_TIMED_DURATION_MINUTES * 60_000);
+        payload.scheduledEndAt = endDate.toISOString();
+      }
       if (assignedToUserId !== undefined) payload.assignedToUserId = assignedToUserId;
 
       apiRequest(`/api/tasks/${taskId}`, {
