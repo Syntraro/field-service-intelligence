@@ -4,7 +4,6 @@ import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { DndContext, DragOverlay, closestCenter, DragEndEvent, DragStartEvent, pointerWithin, CollisionDetection, PointerSensor, useSensor, useSensors, rectIntersection } from "@dnd-kit/core";
 import NewAddClientDialog from "@/components/NewAddClientDialog";
 import { JobDetailDialog } from "@/components/JobDetailDialog";
-import { PartsDialog } from "@/components/PartsDialog";
 import { DiagnosticsPanel } from "@/components/calendar/DiagnosticsPanel";
 import { logDrag, isDiagnosticsEnabled } from "@/lib/calendarDiagnostics";
 import { IS_DEV } from "@/lib/devFlags";
@@ -178,6 +177,8 @@ export default function Calendar() {
     toggleRiskFirstSort,
     alertsOnly,
     toggleAlertsOnly,
+    hideWeekends,
+    toggleHideWeekends,
   } = useCalendarState();
 
   // Real-time dispatch freshness via SSE + BroadcastChannel
@@ -211,10 +212,6 @@ export default function Calendar() {
   const [reportDialogClientId, setReportDialogClientId] = useState<string | null>(null);
   const [clientDetailOpen, setClientDetailOpen] = useState(false);
   const [focusScheduleSection, setFocusScheduleSection] = useState(false);
-  const [partsDialogOpen, setPartsDialogOpen] = useState(false);
-  const [partsDialogTitle, setPartsDialogTitle] = useState("");
-  const [partsDialogParts, setPartsDialogParts] = useState<Array<{ description: string; quantity: number; date?: string }>>([]);
-  const [partsDialogWeekDays, setPartsDialogWeekDays] = useState<Array<{ dayName: string; dateLabel: string; date: Date }>>([]);
   // Schedule Job Modal state (Slice 3)
   const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
   const [scheduleModalDate, setScheduleModalDate] = useState<Date | undefined>();
@@ -301,12 +298,6 @@ export default function Calendar() {
     }
   });
 
-  // Note: No GET endpoint exists for /api/client-parts/bulk - parts feature disabled
-  // The bulkParts lookup is used for the parts dialog which shows parts needed per assignment
-  // For now, we return an empty object. To enable, a GET endpoint would need to be created.
-  const bulkParts: Record<string, any[]> = {};
-  const isLoadingParts = false;
-
   // Prefetch next/prev week data for smoother navigation
   useEffect(() => {
     if (view === "weekly") {
@@ -343,40 +334,6 @@ export default function Calendar() {
       });
     }
   }, [view, currentDate]);
-
-  // Helper to calculate parts from assignments with optional date tagging
-  // Uses canonical scheduledDate field (YYYY-MM-DD string)
-  const calculatePartsWithDates = (assignments: any[]) => {
-    const partsList: Array<{ description: string; quantity: number; date?: string }> = [];
-
-    assignments.forEach((assignment: any) => {
-      const clientPartsList = bulkParts[getLocationId(assignment)] || [];
-      // Use scheduledDate directly (canonical field), or parse from startAt/date
-      const dateKey = assignment.scheduledDate || assignment.date ||
-        (assignment.startAt ? assignment.startAt.split('T')[0] : null);
-
-      clientPartsList.forEach((cp: any) => {
-        const part = cp.part;
-        let partLabel = '';
-
-        if (part?.type === 'filter') {
-          partLabel = `${part.filterType || 'Filter'} ${part.size || ''}`.trim();
-        } else if (part?.type === 'belt') {
-          partLabel = `Belt ${part.beltType || ''} ${part.size || ''}`.trim();
-        } else {
-          partLabel = part?.name || 'Other Part';
-        }
-
-        partsList.push({
-          description: partLabel,
-          quantity: cp.quantity || 1,
-          date: dateKey
-        });
-      });
-    });
-
-    return partsList;
-  };
 
   // Use shared technicians hook
   const { teamMembers: techniciansQueryData, isError: techniciansError } = useTechniciansDirectory();
@@ -2078,53 +2035,6 @@ export default function Calendar() {
     (unscheduledClients.find((c: any) => c.id === activeId) ||
      events.find((a: any) => a.id === activeId)) : null;
 
-  // Handler for parts button click
-  const handlePartsClick = () => {
-    if (isLoadingParts) {
-      toast({
-        title: "Loading parts data",
-        description: "Please wait while parts are being loaded",
-      });
-      return;
-    }
-    // Calculate parts for entire visible week with dates
-    const weekStart = getWeekStart(currentDate, regional.weekStartsOn);
-    const dayNames = regional.weekStartsOn === "sunday"
-      ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-      : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    const weekDays: Array<{ dayName: string; dateLabel: string; date: Date }> = [];
-
-    for (let i = 0; i < 7; i++) {
-      const date = new Date(weekStart);
-      date.setDate(weekStart.getDate() + i);
-      weekDays.push({
-        dayName: dayNames[i],
-        dateLabel: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        date: new Date(date)
-      });
-    }
-
-    const allWeekEvents = events.filter((a: any) => {
-      // Use canonical date field (scheduledDate/date/startAt)
-      const dateStr = a.scheduledDate || a.date || (a.startAt ? a.startAt.split('T')[0] : null);
-      if (!dateStr) return false;
-      for (let i = 0; i < 7; i++) {
-        const dayKey = weekDays[i].date.toISOString().split('T')[0];
-        if (dateStr === dayKey) {
-          return true;
-        }
-      }
-      return false;
-    });
-
-    const parts = calculatePartsWithDates(allWeekEvents);
-    const weekEnd = weekDays[6].date;
-    setPartsDialogTitle(`Parts for ${weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`);
-    setPartsDialogParts(parts);
-    setPartsDialogWeekDays(weekDays);
-    setPartsDialogOpen(true);
-  };
-
   // Handler for start hour change
   const handleStartHourChange = (newStartHour: number) => {
     updateCompanySettings.mutate({ calendarStartHour: newStartHour });
@@ -2280,7 +2190,8 @@ export default function Calendar() {
             technicians={technicians}
             hiddenTechnicianIds={hiddenTechnicianIds}
             onToggleTechnicianVisibility={toggleTechnicianVisibility}
-            onPartsClick={handlePartsClick}
+            hideWeekends={hideWeekends}
+            onToggleHideWeekends={toggleHideWeekends}
             calendarStartHour={companySettings?.calendarStartHour || 8}
             onStartHourChange={handleStartHourChange}
             dayLayout={dayLayout}
@@ -2340,6 +2251,7 @@ export default function Calendar() {
                         regional={regional}
                         onEmptySlotClick={handleEmptySlotClick}
                         businessHours={businessHoursData?.hours}
+                        hideWeekends={hideWeekends}
                       />
                     </div>
                   )}
@@ -2476,7 +2388,6 @@ export default function Calendar() {
             }
             assignTechnicians.mutate({ assignmentId, technicianIds, version });
           }}
-          bulkParts={bulkParts}
           focusSchedule={focusScheduleSection}
         />
       </div>
@@ -2492,14 +2403,6 @@ export default function Calendar() {
       />
 
 
-
-      <PartsDialog
-        open={partsDialogOpen}
-        onOpenChange={setPartsDialogOpen}
-        title={partsDialogTitle}
-        parts={partsDialogParts}
-        weekDays={partsDialogWeekDays}
-      />
 
       {/* Schedule Job Modal (Slice 3) */}
       <ScheduleJobModal

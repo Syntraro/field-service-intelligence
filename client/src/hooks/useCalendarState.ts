@@ -39,6 +39,8 @@ export interface CalendarPreferences {
   riskFirstSort?: boolean;
   /** Only show lanes with active alerts (Calendar Improvement 2026-03-05) */
   alertsOnly?: boolean;
+  /** Hide weekend columns in week view (2026-03-06) */
+  hideWeekends?: boolean;
 }
 
 const STORAGE_KEY = "calendar-preferences";
@@ -53,6 +55,7 @@ const DEFAULT_PREFERENCES: CalendarPreferences = {
   showTasks: true, // Tasks always shown (Polish Pass 2026-03-04)
   riskFirstSort: false, // Calendar Improvement 2026-03-05
   alertsOnly: false, // Calendar Improvement 2026-03-05
+  hideWeekends: false, // 2026-03-06
 };
 
 // Business hours defaults
@@ -129,6 +132,7 @@ function loadPreferences(): CalendarPreferences {
       showTasks: true, // Tasks always shown — ignore persisted value
       riskFirstSort: typeof parsed.riskFirstSort === 'boolean' ? parsed.riskFirstSort : false,
       alertsOnly: typeof parsed.alertsOnly === 'boolean' ? parsed.alertsOnly : false,
+      hideWeekends: typeof parsed.hideWeekends === 'boolean' ? parsed.hideWeekends : false,
     };
   } catch (error) {
     // Any other error - return defaults
@@ -217,6 +221,11 @@ export function useCalendarState() {
     setPreferences(prev => ({ ...prev, alertsOnly: !prev.alertsOnly }));
   }, []);
 
+  // Hide weekends in week view (2026-03-06)
+  const toggleHideWeekends = useCallback(() => {
+    setPreferences(prev => ({ ...prev, hideWeekends: !prev.hideWeekends }));
+  }, []);
+
   // Technician visibility
   const hiddenTechnicianIds = useMemo(
     () => new Set(preferences.hiddenTechnicianIds),
@@ -283,6 +292,10 @@ export function useCalendarState() {
     toggleRiskFirstSort,
     alertsOnly: preferences.alertsOnly ?? false,
     toggleAlertsOnly,
+
+    // Hide weekends (week view)
+    hideWeekends: preferences.hideWeekends ?? false,
+    toggleHideWeekends,
 
     // Technician visibility
     hiddenTechnicianIds,

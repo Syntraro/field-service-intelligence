@@ -12,7 +12,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ChevronLeft, ChevronRight, Package, Columns3, Rows3, ArrowUpDown, AlertTriangle } from "lucide-react";
+import { ChevronLeft, ChevronRight, Columns3, Rows3, ArrowUpDown, AlertTriangle, CalendarOff } from "lucide-react";
 import type { DayLayout } from "@/hooks/useCalendarState";
 import { getWeekStart } from "./calendarUtils";
 import { TechnicianFilterPopover } from "./TechnicianFilterPopover";
@@ -40,8 +40,9 @@ export interface CalendarHeaderProps {
   hiddenTechnicianIds: Set<string>;
   onToggleTechnicianVisibility: (techId: string) => void;
 
-  // Parts button (weekly view)
-  onPartsClick: () => void;
+  // Hide weekends toggle (weekly view, 2026-03-06)
+  hideWeekends?: boolean;
+  onToggleHideWeekends?: () => void;
 
   // Start hour (weekly/daily view)
   calendarStartHour: number;
@@ -74,7 +75,8 @@ export function CalendarHeader({
   technicians,
   hiddenTechnicianIds,
   onToggleTechnicianVisibility,
-  onPartsClick,
+  hideWeekends,
+  onToggleHideWeekends,
   calendarStartHour,
   onStartHourChange,
   dayLayout,
@@ -223,16 +225,18 @@ export function CalendarHeader({
           </Button>
         )}
 
-        {/* Parts button (weekly only) */}
-        {view === "weekly" && (
+        {/* Hide weekends toggle (weekly view only, 2026-03-06) */}
+        {view === "weekly" && onToggleHideWeekends && (
           <Button
-            variant="outline"
+            variant={hideWeekends ? "default" : "outline"}
             size="sm"
-            onClick={onPartsClick}
-            data-testid="button-parts"
+            className="h-8 text-xs gap-1"
+            onClick={onToggleHideWeekends}
+            title={hideWeekends ? "Show weekend columns" : "Hide weekend columns"}
+            data-testid="button-hide-weekends"
           >
-            <Package className="h-3.5 w-3.5 mr-1.5" />
-            Parts
+            <CalendarOff className="h-3 w-3" />
+            {hideWeekends ? "Show Weekends" : "Hide Weekends"}
           </Button>
         )}
 

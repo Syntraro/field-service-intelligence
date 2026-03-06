@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Calendar UI: Remove Parts Button + Add Hide Weekends Toggle (2026-03-06)
+- **Removed Parts button** from calendar header toolbar. The parts feature was disabled (no backend endpoint). Removed: button JSX, `onPartsClick` prop, `handlePartsClick` handler, `calculatePartsWithDates` helper, 4 state variables, `PartsDialog` render, `bulkParts`/`isLoadingParts` stubs, and `PartsDialog` import from Calendar.tsx. `Package` icon removed from CalendarHeader imports.
+- **Added "Hide Weekends" toggle** in week view toolbar. When active, Saturday and Sunday columns are excluded from the week grid. Remaining 5 weekday columns expand to fill available width. All-day row, timed grid, day headers, drop zones, business hours shading, and "Now" line stay aligned via dynamic `gridTemplateColumns` inline style.
+- **Persisted via localStorage** using existing `useCalendarState` preference system (same pattern as `showFullDay`, `dayLayout`, `riskFirstSort`).
+- **Files modified:** `client/src/pages/Calendar.tsx`, `client/src/components/calendar/CalendarHeader.tsx`, `client/src/components/calendar/CalendarGridWeek.tsx`, `client/src/hooks/useCalendarState.ts`
+
 #### Technician-Originated Live Dispatch Signals (2026-03-06)
 - **Visit mutation freshness:** All 9 write endpoints in `jobVisits.routes.ts` now emit dispatch signals via `emitDispatch()`. When technicians change visit status, check in/out, arrive/depart, or when visits are created/updated/deleted/archived, dispatcher boards refresh in near real time.
 - **Board-visible signals:** Status changes (scheduled → in_progress → on_site → completed) update status dots and checkmarks on calendar cards. Create/delete/archive add or remove cards.

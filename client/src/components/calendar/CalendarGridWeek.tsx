@@ -57,6 +57,8 @@ export interface CalendarGridWeekProps {
   onEmptySlotClick?: (data: { date: Date; hour: number; minute: number }) => void;
   /** Business hours per day of week for off-hours shading (2026-03-06) */
   businessHours?: Array<{ dayOfWeek: number; isOpen: boolean; startMinutes: number | null; endMinutes: number | null }>;
+  /** Hide weekend (Sat/Sun) columns (2026-03-06) */
+  hideWeekends?: boolean;
 }
 
 interface WeekDayData {
@@ -232,7 +234,7 @@ const ALLDAY_MAX_VISIBLE = 3;
 const ALLDAY_MAX_HEIGHT = 200;
 
 interface AllDayRowProps {
-  gridCols: string;
+  gridStyle: React.CSSProperties;
   density: CalendarDensity;
   weekDaysData: WeekDayData[];
   expandedAllDaySlots: Set<string>;
@@ -247,7 +249,7 @@ interface AllDayRowProps {
 }
 
 function AllDayRow({
-  gridCols,
+  gridStyle,
   density,
   weekDaysData,
   expandedAllDaySlots,
@@ -293,8 +295,8 @@ function AllDayRow({
 
   return (
     <div
-      className={`grid ${gridCols} sticky top-[41px] bg-background z-20 border-b transition-all duration-200`}
-      style={{ minHeight: calculatedHeight }}
+      className="grid sticky top-[41px] bg-background z-20 border-b transition-all duration-200"
+      style={{ ...gridStyle, minHeight: calculatedHeight }}
     >
       <div className="px-1.5 py-1 text-[10px] font-semibold border-r bg-primary/10 flex items-start">
         All Day
@@ -398,6 +400,7 @@ export function CalendarGridWeek({
   regional,
   onEmptySlotClick,
   businessHours,
+  hideWeekends,
 }: CalendarGridWeekProps) {
   // Phase C + Phase 2: Debug layout instrumentation — gated behind ?debugLayout=1
   useLayoutEffect(() => {
@@ -489,6 +492,11 @@ export function CalendarGridWeek({
     });
   }
 
+  // Filter out weekend columns when hideWeekends is active (2026-03-06)
+  const visibleDays = hideWeekends
+    ? weekDaysData.filter(d => d.date.getDay() !== 0 && d.date.getDay() !== 6)
+    : weekDaysData;
+
   // Use visibleHours prop if provided, otherwise default to all 24 hours
   const hoursToRender = visibleHours ?? Array.from({ length: 24 }, (_, i) => i);
   const hours = hoursToRender.map((h) => {
@@ -506,11 +514,13 @@ export function CalendarGridWeek({
     return map;
   }, [businessHours]);
 
-  const gridCols = "grid-cols-[3.5rem_repeat(7,minmax(0,1fr))]";
+  const dayCount = visibleDays.length;
+  // Use inline style for dynamic column count — Tailwind JIT can't scan template literals
+  const gridStyle = { gridTemplateColumns: `3.5rem repeat(${dayCount}, minmax(0, 1fr))` };
 
   // Calculate current time position for "Now" line (uses company timezone)
   const now = nowInTimezone(regional.timezone);
-  const todayIndex = weekDaysData.findIndex(d => d.date.toDateString() === now.toDateString());
+  const todayIndex = visibleDays.findIndex(d => d.date.toDateString() === now.toDateString());
   const currentHour = now.getHours();
   const currentMinute = now.getMinutes();
   const rowHeight = DENSITY_STYLES[density].rowHeight;
@@ -524,7 +534,7 @@ export function CalendarGridWeek({
   return (
     <div ref={weeklyScrollContainerRef} className="overflow-y-auto flex-1 min-h-0 max-h-full">
       {/* Header Row - Sticky at top */}
-      <div className={`grid ${gridCols} sticky top-0 bg-background z-30 border-b`}>
+      <div className="grid sticky top-0 bg-background z-30 border-b" style={gridStyle}>
         <div className="px-1.5 py-2 border-r flex items-center justify-center">
           {onToggleFullDay && (
             <Button
@@ -538,7 +548,7 @@ export function CalendarGridWeek({
             </Button>
           )}
         </div>
-        {weekDaysData.map((d) => {
+        {visibleDays.map((d) => {
           const isToday = d.date.toDateString() === now.toDateString();
           return (
             <div key={d.dayName} className="px-1 py-2 text-center border-r">
@@ -552,9 +562,9 @@ export function CalendarGridWeek({
 
       {/* All Day Slot - Sticky below header, height grows with content to prevent overlap */}
       <AllDayRow
-        gridCols={gridCols}
+        gridStyle={gridStyle}
         density={density}
-        weekDaysData={weekDaysData}
+        weekDaysData={visibleDays}
         expandedAllDaySlots={expandedAllDaySlots}
         setExpandedAllDaySlots={setExpandedAllDaySlots}
         clients={clients}
@@ -574,8 +584,8 @@ export function CalendarGridWeek({
             className="absolute z-40 pointer-events-none"
             style={{
               top: `${currentTimePosition}px`,
-              left: `calc(3.5rem + ${(todayIndex / 7) * 100}% * (1 - 3.5rem / 100%))`,
-              width: `calc((100% - 3.5rem) / 7)`,
+              left: `calc(3.5rem + ${(todayIndex / dayCount) * 100}% * (1 - 3.5rem / 100%))`,
+              width: `calc((100% - 3.5rem) / ${dayCount})`,
             }}
           >
             <div className="flex items-center">
@@ -586,14 +596,14 @@ export function CalendarGridWeek({
         )}
         {hours.map((h) => {
           // Check if ANY day in the week has this hour as off-hours (for hour label shading)
-          const anyDayOffHours = weekDaysData.some(d => {
+          const anyDayOffHours = visibleDays.some(d => {
             const bh = businessHoursMap.get(d.date.getDay());
             if (!bh) return false;
             const hourStart = h.hour * 60;
             const hourEnd = (h.hour + 1) * 60;
             return !bh.isOpen || (bh.startMinutes != null && bh.endMinutes != null && (hourEnd <= bh.startMinutes || hourStart >= bh.endMinutes));
           });
-          const allDaysOffHours = businessHoursMap.size > 0 && weekDaysData.every(d => {
+          const allDaysOffHours = businessHoursMap.size > 0 && visibleDays.every(d => {
             const bh = businessHoursMap.get(d.date.getDay());
             if (!bh) return false;
             const hourStart = h.hour * 60;
@@ -602,7 +612,7 @@ export function CalendarGridWeek({
           });
 
           return (
-          <div key={h.hour} className={`grid ${gridCols} border-b`}>
+          <div key={h.hour} className="grid border-b" style={gridStyle}>
             <div className={`px-1.5 py-1 text-[10px] font-medium border-r flex items-center justify-center ${
               h.hour === startHour ? 'bg-primary/30 font-bold'
               : allDaysOffHours ? 'bg-slate-200/50 dark:bg-slate-800/40 text-muted-foreground/60'
@@ -610,7 +620,7 @@ export function CalendarGridWeek({
             }`}>
               {h.display}
             </div>
-            {weekDaysData.map((dayData) => {
+            {visibleDays.map((dayData) => {
               // Per-cell off-hours check (2026-03-06)
               const bh = businessHoursMap.get(dayData.date.getDay());
               const hourStart = h.hour * 60;
