@@ -329,7 +329,7 @@ function TechColumn({
             {allDayEvents.slice(0, 3).map((event) => {
               const client = findClientByEvent(clients, event);
               const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
-              const isTask = (event as any).kind === "task";
+              const isTask = event.kind === "task";
               return client ? (
                 <DraggableAllDayCard
                   key={event.assignmentId}

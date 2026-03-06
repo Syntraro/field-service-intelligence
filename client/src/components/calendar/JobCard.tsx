@@ -7,7 +7,7 @@
  * - Unscheduled jobs in the sidebar
  *
  * Features:
- * - Hover preview popover (EventPreviewPopover)
+ * - Click to open detail modal (visit/job or task)
  * - Quick action buttons (reschedule, unschedule) - configurable
  * - Consistent visual styling via DraggableClient
  *
@@ -16,7 +16,6 @@
 
 import { ClipboardList } from "lucide-react";
 import { DraggableClient } from "./DraggableClient";
-import { EventPreviewPopover } from "./EventPreviewPopover";
 import { TechnicianColor } from "./calendarUtils";
 
 export interface JobCardProps {
@@ -70,7 +69,7 @@ export interface JobCardProps {
 
 /**
  * Unified job card component used across all calendar contexts.
- * Wraps DraggableClient with EventPreviewPopover and optional quick actions.
+ * Wraps DraggableClient with optional quick actions. Click opens detail modal.
  */
 export function JobCard({
   id,
@@ -95,12 +94,6 @@ export function JobCard({
   rawItem,
   itemKind = "visit",
 }: JobCardProps) {
-  // Build event data for preview popover
-  const eventData = assignment || rawItem || {
-    summary,
-    jobNumber: assignment?.jobNumber,
-  };
-
   // Phase 9: Task items get distinct styling
   const isTask = itemKind === "task";
   const taskOverrideColor = isTask ? {
@@ -113,42 +106,33 @@ export function JobCard({
   } as const : undefined;
 
   return (
-    <EventPreviewPopover
-      event={eventData}
-      client={client}
-      technicians={technicians}
-      isSaving={isSaving}
-      isOverdue={isOverdue}
-      timeFormat={timeFormat}
-    >
-      <div className="relative group">
-        {/* Phase 9: Task icon badge */}
-        {isTask && inCalendar && (
-          <div className="absolute top-0.5 left-0.5 z-10">
-            <ClipboardList className="h-3 w-3 text-violet-500" />
-          </div>
-        )}
-        <DraggableClient
-          id={id}
-          client={client}
-          inCalendar={inCalendar}
-          onClick={onClick}
-          isCompleted={isCompleted}
-          isOverdue={isOverdue}
-          assignment={assignment}
-          technicianColor={taskOverrideColor || technicianColor}
-          densityStyle={densityStyle}
-          cardHeight={cardHeight}
-          isSaving={isSaving}
-          summary={summary}
-          monthLabel={monthLabel}
-          isOffMonth={isOffMonth}
-          isPastMonth={isPastMonth}
-          rawItem={rawItem}
-          timeFormat={timeFormat}
-          draggable={!isTask}
-        />
-      </div>
-    </EventPreviewPopover>
+    <div className="relative group">
+      {/* Phase 9: Task icon badge */}
+      {isTask && inCalendar && (
+        <div className="absolute top-0.5 left-0.5 z-10">
+          <ClipboardList className="h-3 w-3 text-violet-500" />
+        </div>
+      )}
+      <DraggableClient
+        id={id}
+        client={client}
+        inCalendar={inCalendar}
+        onClick={onClick}
+        isCompleted={isCompleted}
+        isOverdue={isOverdue}
+        assignment={assignment}
+        technicianColor={taskOverrideColor || technicianColor}
+        densityStyle={densityStyle}
+        cardHeight={cardHeight}
+        isSaving={isSaving}
+        summary={summary}
+        monthLabel={monthLabel}
+        isOffMonth={isOffMonth}
+        isPastMonth={isPastMonth}
+        rawItem={rawItem}
+        timeFormat={timeFormat}
+        draggable={!isTask}
+      />
+    </div>
   );
 }

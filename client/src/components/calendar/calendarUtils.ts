@@ -18,6 +18,8 @@ export const MONTH_ABBREV = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'A
  * The `assignmentId` field is always equal to the job ID.
  */
 export type CalendarEvent = {
+  /** Entity type discriminator: "visit" for job visits, "task" for tasks */
+  kind: "visit" | "task";
   /** Job ID used as calendar event key (MODEL A: assignmentId === jobId). Kept as
    *  `assignmentId` for backward compat with drag/drop, grid keys, and mutations. */
   assignmentId: string;
@@ -281,6 +283,8 @@ export function normalizeAssignments(rawEvents: any[]): CalendarEvent[] {
         : a;
 
       return {
+        // Entity type discriminator — visits from normalizeAssignments, tasks from taskToCalendarItem
+        kind: "visit" as const,
         // MODEL A: assignmentId === jobId (no separate assignment entity)
         assignmentId: a.jobId ?? a.id,
         locationKey,
@@ -752,4 +756,27 @@ export function getTechnicianColorForAssignment(
     text: 'text-muted-foreground',
     label: 'Unassigned'
   };
+}
+
+// ============================================================================
+// Shared Click Router — single decision point for calendar entity clicks
+// ============================================================================
+
+/**
+ * Determines whether a calendar event is a task based on the `kind` discriminator.
+ * Falls back to checking assignmentId prefix for backwards compatibility.
+ */
+export function isTaskEvent(event: CalendarEvent): boolean {
+  return event.kind === "task" ||
+    (typeof event.assignmentId === "string" && event.assignmentId.startsWith("task-"));
+}
+
+/**
+ * Extracts the task ID from a task calendar event.
+ */
+export function getTaskIdFromEvent(event: CalendarEvent): string {
+  if (event.kind === "task") {
+    return event.raw?.id ?? event.assignmentId.replace("task-", "");
+  }
+  return event.assignmentId.replace("task-", "");
 }

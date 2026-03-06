@@ -4,7 +4,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { useLocation } from "wouter";
 import { CheckCircle2, Loader2, AlertTriangle, History } from "lucide-react";
 import { DRAG_ENABLED, getAssignmentStartMinutes, formatTimeFromMinutes, TechnicianColor } from "./calendarUtils";
-import { logClick, logHover, isDiagnosticsEnabled } from "@/lib/calendarDiagnostics";
+import { logClick, isDiagnosticsEnabled } from "@/lib/calendarDiagnostics";
 
 interface DraggableClientProps {
   id: string;
@@ -145,29 +145,6 @@ export const DraggableClient = memo(function DraggableClient({
     return "cursor-default";
   };
 
-  // Hover logging handlers
-  const handleMouseEnter = () => {
-    if (isDiagnosticsEnabled()) {
-      logHover('enter', {
-        jobId: assignment?.jobId || id,
-        assignmentId: id,
-        context: inCalendar ? 'week-timed' : 'unscheduled',
-        clientName: client?.companyName,
-      });
-    }
-  };
-
-  const handleMouseLeave = () => {
-    if (isDiagnosticsEnabled()) {
-      logHover('leave', {
-        jobId: assignment?.jobId || id,
-        assignmentId: id,
-        context: inCalendar ? 'week-timed' : 'unscheduled',
-        clientName: client?.companyName,
-      });
-    }
-  };
-
   // DEV-only: log pointerdown on unscheduled cards to confirm event reaches root
   const handlePointerDownCapture = !inCalendar && process.env.NODE_ENV === 'development'
     ? (e: React.PointerEvent) => {
@@ -216,8 +193,6 @@ export const DraggableClient = memo(function DraggableClient({
         cardHeight ? "overflow-hidden" : ""
       } ${densityStyle || (inCalendar ? "py-0.5 px-1.5" : "py-1.5 px-2.5")} ${getCardStyle()} ${getCursorStyle()}`}
       data-testid={inCalendar ? `assigned-client-${id}` : `unscheduled-client-${id}`}
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
     >
       <div>
         {/* In Calendar: Jobber-style readable layout for week/day view */}

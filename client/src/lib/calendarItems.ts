@@ -14,8 +14,6 @@ import type { CalendarEvent } from "@/components/calendar/calendarUtils";
 // ============================================================================
 
 export interface CalendarItem extends CalendarEvent {
-  /** Discriminator: "visit" for job visits, "task" for tasks */
-  kind: "visit" | "task";
   /** Display title */
   title: string;
   /** Display subtitle (location, summary, etc.) */

@@ -4,21 +4,18 @@
  * Jobber-style single-line chips with:
  * - 24px height for readability
  * - Left color stripe (technician color)
- * - Job # + truncated title
- * - Ellipsis overflow
+ * - Truncated title
  * - Saving state indicator (reduced opacity + pulse)
- *
- * Uses forwardRef to support HoverCardTrigger wrapping for hover previews.
+ * - Click to open detail modal (no hover preview)
  */
 
 import * as React from "react";
-import { forwardRef, useCallback } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 import { CheckCircle2, Loader2 } from "lucide-react";
 import { DRAG_ENABLED, TechnicianColor } from "./calendarUtils";
 
-interface CalendarEventChipProps extends React.HTMLAttributes<HTMLDivElement> {
+interface CalendarEventChipProps {
   id: string;
   jobNumber?: string | number | null;
   title: string;
@@ -30,51 +27,28 @@ interface CalendarEventChipProps extends React.HTMLAttributes<HTMLDivElement> {
   isSaving?: boolean;
 }
 
-export const CalendarEventChip = forwardRef<HTMLDivElement, CalendarEventChipProps>(
-  function CalendarEventChip(
-    {
-      id,
-      jobNumber,
-      title,
-      onClick,
-      isCompleted,
-      isOverdue,
-      technicianColor,
-      isSaving,
-      className: externalClassName,
-      style: externalStyle,
-      ...restProps // Capture HoverCardTrigger props (onMouseEnter, onMouseLeave, etc.)
-    },
-    forwardedRef
-  ) {
-  // Disable dragging while saving to prevent double-mutations
+export function CalendarEventChip({
+  id,
+  jobNumber,
+  title,
+  onClick,
+  isCompleted,
+  isOverdue,
+  technicianColor,
+  isSaving,
+}: CalendarEventChipProps) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id,
     disabled: !DRAG_ENABLED || isSaving || isCompleted,
     data: { type: "assignment", assignmentId: id },
   });
 
-  // Merge forwarded ref with draggable ref
-  const mergedRef = useCallback(
-    (node: HTMLDivElement | null) => {
-      setNodeRef(node);
-      if (typeof forwardedRef === "function") {
-        forwardedRef(node);
-      } else if (forwardedRef) {
-        forwardedRef.current = node;
-      }
-    },
-    [setNodeRef, forwardedRef]
-  );
-
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
     opacity: isDragging ? 0.5 : isSaving ? 0.7 : 1,
-    touchAction: "none", // Prevent browser gestures from stealing drag
-    ...externalStyle, // Merge any external styles
+    touchAction: "none",
   };
 
-  // Left border color from technician or neutral
   const leftBorder = technicianColor?.borderLeft || "border-l-muted-foreground/40";
 
   const baseClassName = `
@@ -92,16 +66,14 @@ export const CalendarEventChip = forwardRef<HTMLDivElement, CalendarEventChipPro
     transition-colors
     overflow-hidden
     ${DRAG_ENABLED && !isSaving ? "cursor-grab active:cursor-grabbing" : ""}
-    ${externalClassName || ""}
   `.trim();
 
   return (
     <div
-      ref={mergedRef}
+      ref={setNodeRef}
       style={style}
-      {...restProps} // Spread HoverCardTrigger props (onMouseEnter, onMouseLeave, onFocus, onBlur, etc.)
       {...attributes}
-      {...(isSaving ? {} : listeners)} // Disable drag listeners while saving
+      {...(isSaving ? {} : listeners)}
       onClick={(e) => {
         e.stopPropagation();
         if (!isSaving) onClick?.();
@@ -109,20 +81,17 @@ export const CalendarEventChip = forwardRef<HTMLDivElement, CalendarEventChipPro
       className={baseClassName}
       data-testid={`event-chip-${id}`}
     >
-      {/* Saving spinner indicator */}
       {isSaving && (
         <Loader2 className="h-3 w-3 text-primary animate-spin flex-shrink-0 mr-1" />
       )}
 
-      {/* Completed icon (hide when saving) */}
       {isCompleted && !isSaving && (
         <CheckCircle2 className="h-3 w-3 text-green-600 flex-shrink-0 mr-1" />
       )}
 
-      {/* Title - truncated (job # removed per UX feedback - shown in popover/dialog instead) */}
       <span className="truncate flex-1 min-w-0">
         {title}
       </span>
     </div>
   );
-});
+}

@@ -3,7 +3,6 @@ import { useDroppable } from "@dnd-kit/core";
 import { X, ClipboardList } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { CalendarEventChip } from "./CalendarEventChip";
-import { EventPreviewPopover } from "./EventPreviewPopover";
 import {
   CalendarEvent,
   getTechnicianColorForAssignment,
@@ -108,7 +107,7 @@ function DroppableDay({
         {visibleEvents.map((event) => {
           const client = findClientByEvent(clients, event);
           // Phase 9: Detect task items for distinct visual
-          const isTask = (event as any).kind === "task";
+          const isTask = event.kind === "task";
           const title = isTask
             ? (event.raw?.title || "Task")
             : (client?.companyName || event.raw?.summary || "Untitled");
@@ -124,25 +123,16 @@ function DroppableDay({
           } as const : undefined;
           return (
             <div key={event.assignmentId} className="relative group">
-              <EventPreviewPopover
-                event={event.raw || event}
-                client={client}
-                technicians={technicians}
-                isSaving={isSaving}
+              <CalendarEventChip
+                id={event.assignmentId}
+                jobNumber={isTask ? null : event.jobNumber}
+                title={isTask ? `📋 ${title}` : title}
+                onClick={() => onClientClick(client, event)}
+                isCompleted={event.completed}
                 isOverdue={isTask ? false : isCalendarEventOverdue(event)}
-                timeFormat={timeFormat}
-              >
-                <CalendarEventChip
-                  id={event.assignmentId}
-                  jobNumber={isTask ? null : event.jobNumber}
-                  title={isTask ? `📋 ${title}` : title}
-                  onClick={() => onClientClick(client, event)}
-                  isCompleted={event.completed}
-                  isOverdue={isTask ? false : isCalendarEventOverdue(event)}
-                  technicianColor={taskColor || getTechnicianColor?.(event.raw)}
-                  isSaving={isSaving}
-                />
-              </EventPreviewPopover>
+                technicianColor={taskColor || getTechnicianColor?.(event.raw)}
+                isSaving={isSaving}
+              />
               {/* Remove button on hover — not shown for tasks */}
               {!isTask && (
                 <button
@@ -189,7 +179,7 @@ function DroppableDay({
                 <div className="max-h-[200px] overflow-y-auto space-y-1">
                   {hiddenEvents.map((event) => {
                     const client = findClientByEvent(clients, event);
-                    const isTask = (event as any).kind === "task";
+                    const isTask = event.kind === "task";
                     const title = isTask
                       ? (event.raw?.title || "Task")
                       : (client?.companyName || event.raw?.summary || "Untitled");
@@ -201,28 +191,19 @@ function DroppableDay({
                     } as const : undefined;
                     return (
                       <div key={event.assignmentId} className="relative group">
-                        <EventPreviewPopover
-                          event={event.raw || event}
-                          client={client}
-                          technicians={technicians}
-                          isSaving={isSaving}
+                        <CalendarEventChip
+                          id={event.assignmentId}
+                          jobNumber={isTask ? null : event.jobNumber}
+                          title={isTask ? `📋 ${title}` : title}
+                          onClick={() => {
+                            setPopoverOpen(false);
+                            onClientClick(client, event);
+                          }}
+                          isCompleted={event.completed}
                           isOverdue={isTask ? false : isCalendarEventOverdue(event)}
-                          timeFormat={timeFormat}
-                        >
-                          <CalendarEventChip
-                            id={event.assignmentId}
-                            jobNumber={isTask ? null : event.jobNumber}
-                            title={isTask ? `📋 ${title}` : title}
-                            onClick={() => {
-                              setPopoverOpen(false);
-                              onClientClick(client, event);
-                            }}
-                            isCompleted={event.completed}
-                            isOverdue={isTask ? false : isCalendarEventOverdue(event)}
-                            technicianColor={taskColor || getTechnicianColor?.(event.raw)}
-                            isSaving={isSaving}
-                          />
-                        </EventPreviewPopover>
+                          technicianColor={taskColor || getTechnicianColor?.(event.raw)}
+                          isSaving={isSaving}
+                        />
                         {/* Remove button on hover — not shown for tasks */}
                         {!isTask && (
                           <button
@@ -307,8 +288,8 @@ export function CalendarGridMonth({
   }
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="grid grid-cols-7">
+    <div className="h-full flex flex-col min-h-0">
+      <div className="grid grid-cols-7 shrink-0">
         {(regional.weekStartsOn === "sunday"
           ? ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
           : ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -318,7 +299,8 @@ export function CalendarGridMonth({
           </div>
         ))}
       </div>
-      <div className="grid grid-cols-7 flex-1" style={{ gridAutoRows: "1fr" }}>
+      {/* Days grid scrolls internally when content exceeds available height */}
+      <div className="grid grid-cols-7 flex-1 min-h-0 overflow-y-auto" style={{ gridAutoRows: "1fr" }}>
         {days}
       </div>
     </div>

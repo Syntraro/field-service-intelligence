@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+#### Calendar Entity Typing + Click Routing + Hover Removal (2026-03-06)
+- **Explicit `kind` discriminator on `CalendarEvent`:** Added `kind: "visit" | "task"` to the `CalendarEvent` type in `calendarUtils.ts`. `normalizeAssignments()` sets `kind: "visit"` on all job events. `taskToCalendarItem()` already set `kind: "task"`. All view components now use `event.kind` directly instead of `(event as any).kind` casts.
+- **Shared click routing helpers:** Added `isTaskEvent()` and `getTaskIdFromEvent()` in `calendarUtils.ts`. Both `handleClientClick` and `handleTechWeekJobClick` in `Calendar.tsx` now use these shared helpers for task detection — previously `handleTechWeekJobClick` had NO task check and always opened the job modal for task clicks.
+- **Removed hover preview (EventPreviewPopover):** Removed `EventPreviewPopover` wrapper from `CalendarGridMonth.tsx` (2 usages) and `JobCard.tsx` (1 usage, affects all week/day views). Removed hover logging (`logHover`) from `DraggableClient.tsx`. Simplified `CalendarEventChip` by removing `forwardRef` (was only needed for `HoverCardTrigger`). `EventPreviewPopover.tsx` is now dead code with zero imports.
+- **Files:** `calendarUtils.ts`, `Calendar.tsx`, `CalendarGridMonth.tsx`, `JobCard.tsx`, `CalendarEventChip.tsx`, `DraggableClient.tsx`, `CalendarGridDayJobber.tsx`, `CalendarGridDayRows.tsx`, `CalendarGridWeekTechnicians.tsx`, `calendarItems.ts`
+
+### Fixed
+
+#### Monthly Calendar — Tasks Not Appearing + Wrong Modal on Click (2026-03-06)
+- **Bug 1 — Tasks missing from month view:** `eventsByDayNumber` memo (used exclusively by month grid) iterated over `normalizedEvents` (jobs only) instead of `mergedEvents` (jobs + tasks). Tasks were correctly fetched, normalized via `taskToCalendarItem`, and merged into `mergedEvents` — but the month-specific index skipped them. Week and day views used `mergedEvents` via `eventIndexes`, which is why tasks appeared there.
+- **Bug 2 — Task click opens "Job #Unknown" modal:** This was a consequence of Bug 1. Since tasks never appeared in month view, the click path was untested. However, the existing `handleClientClick` already checks `kind === "task"` and routes to the TaskDialog. With Bug 1 fixed, task clicks in month view now correctly open the Edit Task modal.
+- **Fix:** Changed `eventsByDayNumber` to iterate `mergedEvents` instead of `normalizedEvents`. One-line data source change; no click handler changes needed.
+- **File:** `client/src/pages/Calendar.tsx`
+
+### Changed
+
+#### Monthly Calendar — Fixed-Height Dashboard Layout (2026-03-06)
+- **Root cause:** `Calendar.tsx` used `h-screen` (100vh) on its outermost wrapper, but it renders inside the app shell's `<main className="flex-1 overflow-auto">` which is already bounded by the shell's own `h-screen`. This made the calendar taller than its parent, forcing the browser/main to scroll the entire page instead of the calendar scrolling internally.
+- **Fix:** Changed all 3 occurrences of `h-screen` to `h-full` in `Calendar.tsx` (error state, loading state, main content). Added `overflow-hidden` to the main content wrapper so it stays within its bounded flex parent. In `CalendarGridMonth.tsx`, added `min-h-0` to the root, `shrink-0` to the day-name headers, and `min-h-0 overflow-y-auto` to the days grid so the month grid scrolls internally when content exceeds available height.
+- **Files:** `client/src/pages/Calendar.tsx`, `client/src/components/calendar/CalendarGridMonth.tsx`
+
 ### Investigation
 
 #### Day View Layout Root-Cause Phase 2 (2026-03-05)

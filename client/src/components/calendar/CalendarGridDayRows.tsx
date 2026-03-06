@@ -196,7 +196,7 @@ function DraggableEventBlock({ event, client, techColor, onClick, isSaving, time
 }) {
   const startMinutes = event.startMinutes ?? 0;
   const originalDuration = event.durationMinutes ?? 60;
-  const isTask = (event as any).kind === "task";
+  const isTask = event.kind === "task";
   const isOverdue = isTask ? false : isCalendarEventOverdue(event);
   const isCompleted = event.completed;
 
@@ -402,7 +402,7 @@ const MemoizedTechRow = memo(function TechRow({
           {/* 2026-03-05: All-day items now use DraggableAllDayChip for DnD between lanes */}
           {allDayEvents.slice(0, 2).map(event => {
             const client = findClientByEvent(clients, event);
-            const isTask = (event as any).kind === "task";
+            const isTask = event.kind === "task";
             const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
             return (
               <DraggableAllDayChip

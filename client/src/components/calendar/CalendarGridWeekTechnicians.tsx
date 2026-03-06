@@ -90,7 +90,7 @@ function TechJobCard({
 }: TechJobCardProps) {
   // Build client object from event data
   // Phase 9: Tasks use title field instead of companyName
-  const isTask = (event as any).kind === "task";
+  const isTask = event.kind === "task";
   const client = {
     companyName: isTask
       ? (event.raw?.title || "Task")

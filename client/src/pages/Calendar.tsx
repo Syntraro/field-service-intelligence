@@ -34,6 +34,8 @@ import {
   buildEventIndexes,
   getLocationKey,
   DRAG_ENABLED,
+  isTaskEvent,
+  getTaskIdFromEvent,
   CalendarHeader,
   CalendarGridMonth,
   CalendarGridWeek,
@@ -1681,25 +1683,17 @@ export default function Calendar() {
   // Stabilized — passed to every grid component (Month/Week/Day).
   // Deps: clients (stable useMemo), state setters (stable per React).
   const handleClientClick = useCallback((client: any, eventOrAssignment: CalendarEvent | any, focusSchedule: boolean = false) => {
-    // Check for kind discriminator first (CalendarItem), then fall back to assignmentId prefix
-    const kind = (eventOrAssignment as any).kind;
-    // assignmentId lives on the CalendarEvent/CalendarItem, NOT on .raw (which is the API object)
-    const assignmentId = eventOrAssignment.assignmentId ?? eventOrAssignment.raw?.assignmentId ?? eventOrAssignment.raw?.id ?? "";
-
-    // Task click: open TaskDialog, not job modal
-    if (kind === "task" || (typeof assignmentId === "string" && assignmentId.startsWith("task-"))) {
-      const taskId = kind === "task"
-        ? (eventOrAssignment.raw?.id ?? assignmentId.replace("task-", ""))
-        : assignmentId.replace("task-", "");
-      if (process.env.NODE_ENV !== "production") {
-        console.log("[TASKS_DIAG] calendar click kind=task opens=TaskDialog id=" + taskId);
-      }
+    // Shared task routing: kind discriminator or assignmentId prefix
+    if (isTaskEvent(eventOrAssignment)) {
+      const taskId = getTaskIdFromEvent(eventOrAssignment);
+      if (IS_DEV) console.log("[TASKS_DIAG] calendar click kind=task opens=TaskDialog id=" + taskId);
       setSelectedTaskId(taskId);
       setTaskDialogOpen(true);
       return;
     }
 
     const rawAssignment = eventOrAssignment.raw ?? eventOrAssignment;
+    const assignmentId = eventOrAssignment.assignmentId ?? rawAssignment.assignmentId ?? rawAssignment.id ?? "";
 
     const enrichedAssignment = {
       ...rawAssignment,
@@ -1785,19 +1779,19 @@ export default function Calendar() {
     [mergedEvents]
   );
 
-  // Map of events by day number (for monthly view) - uses normalized events
+  // Map of events by day number (for monthly view) - uses mergedEvents (jobs + tasks)
   // Must be called unconditionally (before early returns) to satisfy React hooks rules
   const eventsByDayNumber = useMemo(() => {
     if (view !== "monthly") return {};
     const map: Record<number, CalendarEvent[]> = {};
-    for (const event of normalizedEvents) {
+    for (const event of mergedEvents) {
       if (event.year === year && event.month === month) {
         if (!map[event.day]) map[event.day] = [];
         map[event.day].push(event);
       }
     }
     return map;
-  }, [normalizedEvents, year, month, view]);
+  }, [mergedEvents, year, month, view]);
 
   // ========================================
   // State Snapshot Diagnostics (dev or ?diag=1)
@@ -1988,7 +1982,7 @@ export default function Calendar() {
   // Show error state if any critical query fails
   if (calendarError || techniciansError) {
     return (
-      <div className="h-screen bg-background flex flex-col">
+      <div className="h-full bg-background flex flex-col">
         <main className="flex-1 flex items-center justify-center">
           <div className="text-center py-8 space-y-4">
             <AlertTriangle className="h-12 w-12 text-destructive mx-auto" />
@@ -2009,7 +2003,7 @@ export default function Calendar() {
 
   if (isLoadingCalendar || isLoadingClients || isLoadingUnscheduled) {
     return (
-      <div className="h-screen bg-background flex flex-col">
+      <div className="h-full bg-background flex flex-col">
         <main className="flex-1 flex items-center justify-center">
           <div className="text-center py-8">Loading calendar...</div>
         </main>
@@ -2085,10 +2079,18 @@ export default function Calendar() {
 
   // Handler for technician week view job click
   const handleTechWeekJobClick = (event: CalendarEvent, technician: any) => {
+    // Shared task routing — same logic as handleClientClick
+    if (isTaskEvent(event)) {
+      const taskId = getTaskIdFromEvent(event);
+      if (IS_DEV) console.log("[TASKS_DIAG] techWeek click kind=task opens=TaskDialog id=" + taskId);
+      setSelectedTaskId(taskId);
+      setTaskDialogOpen(true);
+      return;
+    }
+
     try {
       const rawAssignment = event.raw ?? event;
 
-      // Build enriched assignment with correct IDs
       const enrichedAssignment = {
         ...rawAssignment,
         assignmentId: rawAssignment.assignmentId ?? event.assignmentId ?? rawAssignment.id,
@@ -2096,11 +2098,9 @@ export default function Calendar() {
         locationId: rawAssignment.locationId ?? getLocationId(rawAssignment),
       };
 
-      // SAFE client lookup using shared helper - never blocks primary action
       const clientsArray = toClientsArray(clients);
       let client = resolveClientForCalendarEvent(clientsArray, event);
 
-      // Use fallback if client is falsy or looks like placeholder
       if (!client || client.companyName === "Unknown Client" || !client.companyName) {
         const fallbackClient = findClientByLocationId(clients, enrichedAssignment.locationId);
         if (fallbackClient) {
@@ -2108,13 +2108,11 @@ export default function Calendar() {
         }
       }
 
-      // PRIMARY ACTION: Always open the job dialog with assignment data
       setSelectedClient(client);
       setSelectedAssignment(enrichedAssignment);
       setClientDetailOpen(true);
     } catch (err) {
       console.error("handleTechWeekJobClick failed", err);
-      // Fallback: still try to open dialog with assignment
       const rawAssignment = event.raw ?? event;
       setSelectedAssignment({
         ...rawAssignment,
@@ -2170,7 +2168,7 @@ export default function Calendar() {
       }}
       autoScroll={false}
     >
-      <div className="h-screen bg-background flex flex-col">
+      <div className="h-full bg-background flex flex-col overflow-hidden">
         {/* Alert banner for old unscheduled items */}
         {oldUnscheduledItems.length > 0 && (
           <div className="bg-amber-100 dark:bg-amber-900/30 border-b border-amber-200 dark:border-amber-800 px-4 py-2 flex items-center justify-center gap-3">
