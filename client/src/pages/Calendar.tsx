@@ -20,7 +20,6 @@ import { useAuth } from "@/lib/auth";
 import { useCalendarState } from "@/hooks/useCalendarState";
 import { useCalendarDnD } from "@/hooks/useCalendarDnD";
 import { useCalendarTasks, useUnscheduledTasks } from "@/hooks/useCalendarTasks";
-import { taskToCalendarItem } from "@/lib/calendarItems";
 import { CalendarSidebar } from "@/components/calendar/CalendarSidebar";
 import { TaskDialog } from "@/components/TaskDialog";
 import {
@@ -31,6 +30,7 @@ import {
   createTechnicianColorMap,
   getTechnicianColorForAssignment,
   normalizeAssignments,
+  normalizeTask,
   buildEventIndexes,
   getLocationKey,
   DRAG_ENABLED,
@@ -1765,8 +1765,8 @@ export default function Calendar() {
   const mergedEvents = useMemo(() => {
     if (scheduledTasks.length === 0) return normalizedEvents;
     const taskItems = scheduledTasks
-      .map(taskToCalendarItem)
-      .filter((item): item is NonNullable<typeof item> => item !== null) as CalendarEvent[];
+      .map(normalizeTask)
+      .filter((item): item is CalendarEvent => item !== null);
     return [...normalizedEvents, ...taskItems];
   }, [normalizedEvents, scheduledTasks]);
 

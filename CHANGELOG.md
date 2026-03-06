@@ -8,13 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
-#### Canonical Calendar Architecture — Shared Event Helpers (2026-03-06)
-- **Shared canonical helpers in `calendarUtils.ts`:** Created `getEventTitle()`, `getEventOverdue()`, `getEventColor()`, `getEventCapabilities()`, `getEventClient()`, and `TASK_COLOR` constant. All views now use these shared helpers instead of inline task-specific logic, eliminating 8+ duplicated patterns across 6+ files.
-- **Updated all views to use canonical helpers:** `CalendarGridMonth.tsx` (visible + overflow popover), `CalendarGridWeek.tsx` (AllDayRow + HourlyDropZone), `CalendarGridDayJobber.tsx` (all-day strip + timed grid), `CalendarGridDayRows.tsx` (DraggableAllDayChip + DraggableEventBlock + MemoizedTechRow). `JobCard.tsx` now imports `TASK_COLOR` instead of defining inline duplicate.
-- **Deleted dead code:** Removed `CalendarGridWeekTechnicians.tsx` (no longer wired after weekly view swap), `EventPreviewPopover.tsx` (zero imports after hover removal), and `CalendarGridDay.tsx` export from barrel. Removed dead `CalendarGridDay` import from `Calendar.tsx`.
-- **Barrel exports updated:** `index.ts` no longer exports deleted `CalendarGridWeekTechnicians` or unused `CalendarGridDay`.
-- **Files modified:** `calendarUtils.ts`, `JobCard.tsx`, `CalendarGridMonth.tsx`, `CalendarGridWeek.tsx`, `CalendarGridDayJobber.tsx`, `CalendarGridDayRows.tsx`, `Calendar.tsx`, `index.ts`
-- **Files deleted:** `CalendarGridWeekTechnicians.tsx`, `EventPreviewPopover.tsx`
+#### Canonical Calendar Architecture — Unified Normalization, Titles, and All-Day Rendering (2026-03-06)
+- **Unified normalization pipeline:** Moved task normalization from `calendarItems.ts` into `calendarUtils.ts` as `normalizeTask()`, returning `CalendarEvent` (same type as visits). Deleted vestigial `CalendarItem` type (dead `title`/`subtitle` fields unused by any view) and `visitToCalendarItem()` (never imported). Deleted `calendarItems.ts` entirely. `Calendar.tsx` now imports `normalizeTask` from `calendarUtils` instead of `taskToCalendarItem` from `calendarItems`.
+- **Unified title resolution:** `getEventTitle()` is now the single canonical title resolver. `getEventClient()` delegates to `getEventTitle()` for the `companyName` field, so Week/Day views (which render via `client.companyName`) resolve titles through the same path as Month view. Removed all inline title logic from `DraggableAllDayChip` in Day Rows.
+- **Unified all-day rendering:** Day Rows `DraggableAllDayChip` replaced with `CalendarEventChip` — the same compact chip used by Month view. All-day items across Month, Week, Day Columns, and Day Rows now use the same shared helpers: `getEventTitle()`, `getEventColor()`, `getEventOverdue()`, `getEventCapabilities()`. No remaining inline violet/primary hardcoded classes.
+- **CalendarEventChip gains `draggable` prop:** Tasks are non-draggable via `getEventCapabilities().draggable`, now passed through to `CalendarEventChip` in Month visible/overflow and Day Rows all-day.
+- **Shared canonical helpers in `calendarUtils.ts`:** `getEventTitle()`, `getEventOverdue()`, `getEventColor()`, `getEventCapabilities()`, `getEventClient()`, `TASK_COLOR` constant, and `normalizeTask()`.
+- **Files modified:** `calendarUtils.ts`, `CalendarEventChip.tsx`, `CalendarGridMonth.tsx`, `CalendarGridWeek.tsx`, `CalendarGridDayJobber.tsx`, `CalendarGridDayRows.tsx`, `Calendar.tsx`, `JobCard.tsx`, `index.ts`
+- **Files deleted:** `calendarItems.ts`, `CalendarGridWeekTechnicians.tsx`, `EventPreviewPopover.tsx`
 
 #### Weekly View — Time-Based Schedule Grid (2026-03-06)
 - **Replaced technician-row matrix with time-based week schedule.** Weekly view now shows day columns × hour rows with an all-day lane at top, matching the mental model of a scheduling board. Technicians are controlled via the existing visibility filter (hide/show techs), not as the layout axis. The old tech-row weekly view (`CalendarGridWeekTechnicians`) is no longer rendered.

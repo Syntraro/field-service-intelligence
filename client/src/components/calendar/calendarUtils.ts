@@ -283,7 +283,7 @@ export function normalizeAssignments(rawEvents: any[]): CalendarEvent[] {
         : a;
 
       return {
-        // Entity type discriminator — visits from normalizeAssignments, tasks from taskToCalendarItem
+        // Entity type discriminator — visits from normalizeAssignments, tasks from normalizeTask
         kind: "visit" as const,
         // MODEL A: assignmentId === jobId (no separate assignment entity)
         assignmentId: a.jobId ?? a.id,
@@ -855,16 +855,70 @@ export function getEventCapabilities(event: CalendarEvent): {
 }
 
 /**
- * Build the client display object for a task event.
- * Tasks don't have a real client — uses the task title as companyName
- * so downstream components (JobCard/DraggableClient) render the task title.
+ * Build the client display object for rendering.
+ * Delegates to getEventTitle() for the companyName field so all views
+ * resolve titles through the same canonical path.
  */
 export function getEventClient(
   event: CalendarEvent,
   client: { companyName?: string; location?: string; id?: string } | null | undefined,
 ): { companyName: string; location?: string; id?: string } {
-  if (event.kind === "task") {
-    return { ...client, companyName: event.raw?.title || "Task" };
-  }
-  return { companyName: "Unknown", ...client };
+  return {
+    companyName: getEventTitle(event, client),
+    location: client?.location,
+    id: client?.id,
+  };
+}
+
+// ============================================================================
+// Task Normalization (canonical — tasks normalize to CalendarEvent like visits)
+// ============================================================================
+
+/**
+ * Normalize a raw task (from /api/tasks) into a CalendarEvent.
+ * Returns null if the task has no scheduled date.
+ *
+ * This is the canonical task normalizer — all calendar views consume
+ * CalendarEvent[], produced by normalizeAssignments() for visits and
+ * normalizeTask() for tasks.
+ */
+export function normalizeTask(task: any): CalendarEvent | null {
+  if (!task?.scheduledStartAt) return null;
+
+  const start = new Date(task.scheduledStartAt);
+  if (isNaN(start.getTime())) return null;
+
+  const year = start.getFullYear();
+  const month = start.getMonth() + 1;
+  const day = start.getDate();
+  const hour = start.getHours();
+  const minutes = start.getMinutes();
+  const dateKey = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+
+  const isAllDay = task.allDay === true;
+  const durationMinutes = task.estimatedDurationMinutes || 60;
+  const startMinutes = isAllDay ? null : hour * 60 + minutes;
+
+  const techId = task.assignedToUserId || null;
+
+  return {
+    kind: "task",
+    assignmentId: `task-${task.id}`,
+    locationKey: task.clientId || task.locationId || "",
+    technicianId: techId,
+    technicianIds: techId ? [techId] : [],
+    year,
+    month,
+    day,
+    dateKey,
+    scheduledHour: isAllDay ? null : hour,
+    scheduledStartMinutes: isAllDay ? null : minutes,
+    isAllDay,
+    startMinutes,
+    durationMinutes,
+    completed: task.status === "completed" || task.status === "cancelled",
+    jobNumber: null,
+    scheduledDate: dateKey,
+    raw: task,
+  };
 }

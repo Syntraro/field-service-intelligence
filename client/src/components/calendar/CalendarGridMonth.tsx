@@ -122,6 +122,7 @@ function DroppableDay({
                 isOverdue={getEventOverdue(event)}
                 technicianColor={getEventColor(event, getTechnicianColor)}
                 isSaving={isSaving}
+                draggable={caps.draggable}
               />
               {caps.removable && (
                 <button
@@ -184,6 +185,7 @@ function DroppableDay({
                           isOverdue={getEventOverdue(event)}
                           technicianColor={getEventColor(event, getTechnicianColor)}
                           isSaving={isSaving}
+                          draggable={caps.draggable}
                         />
                         {caps.removable && (
                           <button

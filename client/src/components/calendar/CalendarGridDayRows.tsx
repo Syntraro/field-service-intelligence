@@ -20,10 +20,13 @@ import {
   isAllDayEvent,
   TechnicianColor,
   getEventOverdue,
+  getEventColor,
+  getEventTitle,
   getEventClient,
   getEventCapabilities,
 } from "./calendarUtils";
 import { JobCard } from "./JobCard";
+import { CalendarEventChip } from "./CalendarEventChip";
 import type { RegionalSettings } from "@/hooks/useCompanyRegionalSettings";
 import { formatHourLabel } from "@/hooks/useCompanyRegionalSettings";
 import { findClientByEvent } from "./calendarClientLookup";
@@ -129,56 +132,31 @@ function RowAllDayDropZone({ technicianId, dateKey, children }: {
 // 2026-03-05: Enables drag from all-day lane to timed slots and vice versa
 // ============================================================================
 
-function DraggableAllDayChip({ event, client, onClick, isSaving }: {
+/**
+ * DraggableAllDayChip — compact all-day chip using shared CalendarEventChip.
+ * Uses canonical getEventTitle/getEventColor/getEventCapabilities so
+ * all-day items in Day Rows render with the same rules as Month/Week/Day.
+ */
+function DraggableAllDayChip({ event, client, onClick, isSaving, getTechnicianColor }: {
   event: CalendarEvent;
   client: any;
   onClick: () => void;
   isSaving: boolean;
+  getTechnicianColor: (assignment: any) => TechnicianColor;
 }) {
   const caps = getEventCapabilities(event);
-  const isTask = event.kind === "task";
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
-    id: event.assignmentId,
-    disabled: isSaving || !!event.completed || !caps.draggable,
-    data: { type: "assignment", assignmentId: event.assignmentId, client, event: event.raw },
-  });
-
-  // Click-after-drag suppression (2026-03-05: fixes modal opening after drag)
-  const lastDragEndedAtRef = useRef<number>(0);
-  const wasDraggingRef = useRef(false);
-  useEffect(() => {
-    if (isDragging) {
-      wasDraggingRef.current = true;
-    } else if (wasDraggingRef.current) {
-      wasDraggingRef.current = false;
-      lastDragEndedAtRef.current = Date.now();
-    }
-  }, [isDragging]);
-
-  const dragStyle = transform ? { transform: `translate(${transform.x}px, ${transform.y}px)` } : undefined;
-
   return (
-    <div
-      ref={setNodeRef}
-      {...attributes}
-      {...(isSaving ? {} : listeners)}
-      className={`text-[9px] px-1 rounded truncate cursor-grab active:cursor-grabbing select-none ${
-        isDragging ? 'opacity-50 z-50 shadow-lg' : ''
-      } ${
-        isTask ? 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300'
-          : 'bg-primary/10 text-primary'
-      }`}
-      style={dragStyle}
-      onClick={(e) => {
-        e.stopPropagation();
-        // Suppress click that fires immediately after drag end
-        if (isDragging || Date.now() - lastDragEndedAtRef.current < 300) return;
-        onClick();
-      }}
-      title={`Anytime: ${client?.companyName || (isTask ? event.raw?.title : 'Unknown')}`}
-    >
-      {client?.companyName || (isTask ? event.raw?.title : 'Anytime')}
-    </div>
+    <CalendarEventChip
+      id={event.assignmentId}
+      jobNumber={event.kind === "task" ? null : event.jobNumber}
+      title={getEventTitle(event, client, { compact: true })}
+      onClick={onClick}
+      isCompleted={event.completed}
+      isOverdue={getEventOverdue(event)}
+      technicianColor={getEventColor(event, getTechnicianColor)}
+      isSaving={isSaving}
+      draggable={caps.draggable}
+    />
   );
 }
 
@@ -413,6 +391,7 @@ const MemoizedTechRow = memo(function TechRow({
                 client={client}
                 onClick={() => handleClientClick(client, event)}
                 isSaving={!!isSaving}
+                getTechnicianColor={getTechnicianColor}
               />
             );
           })}

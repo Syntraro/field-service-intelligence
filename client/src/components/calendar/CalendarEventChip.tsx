@@ -25,6 +25,8 @@ interface CalendarEventChipProps {
   technicianColor?: TechnicianColor;
   /** Whether this event is currently being saved (disable drag, show indicator) */
   isSaving?: boolean;
+  /** Whether this chip is draggable (default: true). Set false for tasks. */
+  draggable?: boolean;
 }
 
 export function CalendarEventChip({
@@ -36,10 +38,11 @@ export function CalendarEventChip({
   isOverdue,
   technicianColor,
   isSaving,
+  draggable = true,
 }: CalendarEventChipProps) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id,
-    disabled: !DRAG_ENABLED || isSaving || isCompleted,
+    disabled: !DRAG_ENABLED || isSaving || isCompleted || !draggable,
     data: { type: "assignment", assignmentId: id },
   });
 
