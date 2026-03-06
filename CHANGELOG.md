@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+#### Weekly View — Time-Based Schedule Grid (2026-03-06)
+- **Replaced technician-row matrix with time-based week schedule.** Weekly view now shows day columns × hour rows with an all-day lane at top, matching the mental model of a scheduling board. Technicians are controlled via the existing visibility filter (hide/show techs), not as the layout axis. The old tech-row weekly view (`CalendarGridWeekTechnicians`) is no longer rendered.
+- **Reused existing `CalendarGridWeek` component** that was already in the codebase but unused (replaced in Phase 8a). Adapted its filtering from `selectedTechnicianId` to `hiddenTechnicianIds` to match the current filter system. Added `itemKind` passthrough for task visual distinction.
+- **Features preserved:** all-day lane with expand/collapse, 15-minute drop zones for drag scheduling, current time "Now" line, business hours toggle (6-20h / 24h), technician color coding, lane-based overlap layout for concurrent events.
+- **Click routing preserved:** `handleClientClick` (with shared `isTaskEvent()` routing) is used for all click paths — tasks open Edit Task modal, visits open visit/job modal.
+- **Removed dead code:** `handleTechWeekJobClick`, `handleTechWeekSlotClick`, `handleScheduleNew` handlers and `CalendarGridWeekTechnicians` import removed from Calendar.tsx. `toClientsArray`/`resolveClientForCalendarEvent` imports removed (no longer needed).
+- **`ResizableJobCard` updated:** Added `itemKind` prop passthrough to `JobCard` for task styling in timed weekly slots.
+- **Files:** `Calendar.tsx`, `CalendarGridWeek.tsx`, `ResizableJobCard.tsx`
+
 #### Calendar Entity Typing + Click Routing + Hover Removal (2026-03-06)
 - **Explicit `kind` discriminator on `CalendarEvent`:** Added `kind: "visit" | "task"` to the `CalendarEvent` type in `calendarUtils.ts`. `normalizeAssignments()` sets `kind: "visit"` on all job events. `taskToCalendarItem()` already set `kind: "task"`. All view components now use `event.kind` directly instead of `(event as any).kind` casts.
 - **Shared click routing helpers:** Added `isTaskEvent()` and `getTaskIdFromEvent()` in `calendarUtils.ts`. Both `handleClientClick` and `handleTechWeekJobClick` in `Calendar.tsx` now use these shared helpers for task detection — previously `handleTechWeekJobClick` had NO task check and always opened the job modal for task clicks.

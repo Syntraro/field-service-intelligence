@@ -30,7 +30,8 @@ export interface CalendarGridWeekProps {
   eventIndexes: {
     eventsByDateKey: Map<string, CalendarEvent[]>;
   };
-  selectedTechnicianId: string | null;
+  /** Technician IDs to hide — events for hidden techs are filtered out */
+  hiddenTechnicianIds: Set<string>;
   expandedAllDaySlots: Set<string>;
   setExpandedAllDaySlots: React.Dispatch<React.SetStateAction<Set<string>>>;
   getTechnicianColor: (assignment: any) => ReturnType<typeof getTechnicianColorForAssignment>;
@@ -153,6 +154,7 @@ function HourlyDropZone({
         const client = findClientByEvent(clients, event);
         const lane = laneMap?.get(event.assignmentId) || { laneIndex: 0, totalLanes: 1 };
         const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
+        const isTask = event.kind === "task";
         return client ? (
           <ResizableJobCard
             key={event.assignmentId}
@@ -165,13 +167,14 @@ function HourlyDropZone({
             onClick={() => handleClientClick(client, event)}
             onReschedule={() => handleClientClick(client, event, true)}
             isCompleted={event.completed}
-            isOverdue={isCalendarEventOverdue(event)}
+            isOverdue={isTask ? false : isCalendarEventOverdue(event)}
             laneIndex={lane.laneIndex}
             totalLanes={lane.totalLanes}
             isSaving={isSaving}
             technicians={technicians}
             onUnschedule={onUnschedule}
             timeFormat={timeFormat}
+            itemKind={isTask ? "task" : "visit"}
           />
         ) : null;
       })}
@@ -280,7 +283,8 @@ function AllDayRow({
               {visibleEvents.map((event) => {
                 const client = findClientByEvent(clients, event);
                 const isSaving = savingJobIds?.has(event.assignmentId) || event.raw?._saving;
-                const isOverdue = isCalendarEventOverdue(event);
+                const isTask = event.kind === "task";
+                const isOverdue = isTask ? false : isCalendarEventOverdue(event);
                 return client ? (
                   <JobCard
                     key={event.assignmentId}
@@ -298,6 +302,7 @@ function AllDayRow({
                     densityStyle={DENSITY_STYLES[density].card}
                     technicians={technicians}
                     timeFormat={timeFormat}
+                    itemKind={isTask ? "task" : "visit"}
                   />
                 ) : null;
               })}
@@ -350,7 +355,7 @@ export function CalendarGridWeek({
   clients,
   technicians = [],
   eventIndexes,
-  selectedTechnicianId,
+  hiddenTechnicianIds,
   expandedAllDaySlots,
   setExpandedAllDaySlots,
   getTechnicianColor,
@@ -426,11 +431,14 @@ export function CalendarGridWeek({
     // Get events for this specific day from normalized events
     let dayEvents = eventIndexes.eventsByDateKey.get(dateKey) || [];
 
-    // Filter by selected technician
-    if (selectedTechnicianId === "unassigned") {
-      dayEvents = dayEvents.filter((e) => e.technicianIds.length === 0);
-    } else if (selectedTechnicianId && selectedTechnicianId !== "all") {
-      dayEvents = dayEvents.filter((e) => e.technicianIds.includes(selectedTechnicianId));
+    // Filter out events assigned to hidden technicians
+    if (hiddenTechnicianIds.size > 0) {
+      dayEvents = dayEvents.filter((e) => {
+        // Keep unassigned events (no technician)
+        if (e.technicianIds.length === 0) return true;
+        // Keep if at least one assigned tech is visible
+        return e.technicianIds.some(id => !hiddenTechnicianIds.has(id));
+      });
     }
 
     // Calculate lanes for timed events (not all-day) - pass raw for calculateLanes compatibility

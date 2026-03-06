@@ -36,6 +36,8 @@ interface ResizableJobCardProps {
   onReschedule?: () => void;
   /** Time format from regional settings (12h/24h) */
   timeFormat?: "12h" | "24h";
+  /** Item kind for visual distinction: "visit" (default) or "task" */
+  itemKind?: "visit" | "task";
 }
 
 export function ResizableJobCard({
@@ -55,6 +57,7 @@ export function ResizableJobCard({
   technicians = [],
   onReschedule,
   timeFormat = "12h",
+  itemKind = "visit",
 }: ResizableJobCardProps) {
   const { toast } = useToast();
 
@@ -233,6 +236,7 @@ export function ResizableJobCard({
         cardHeight={cardHeight}
         technicians={technicians}
         timeFormat={timeFormat}
+        itemKind={itemKind}
       />
 
       {/* Resize handle at bottom - disabled while saving */}

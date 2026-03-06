@@ -39,7 +39,6 @@ import {
   CalendarHeader,
   CalendarGridMonth,
   CalendarGridWeek,
-  CalendarGridWeekTechnicians,
   CalendarGridDay,
   CalendarGridDayJobber, // Jobber-style day grid (2026-01-28)
   CalendarGridDayRows, // Horizontal rows day layout (Polish Pass 2026-03-04)
@@ -49,7 +48,6 @@ import { useCompanyRegionalSettings } from "@/hooks/useCompanyRegionalSettings";
 import { useCalendarDaySummary, type TechDaySummary } from "@/hooks/useCalendarDaySummary";
 import { JobCard } from "@/components/calendar/JobCard";
 import { SuggestSlotDialog } from "@/components/calendar/SuggestSlotDialog";
-import { toClientsArray, resolveClientForCalendarEvent } from "@/components/calendar/calendarClientLookup";
 
 // ============================================================================
 // Safe Array Normalization Utility
@@ -2077,72 +2075,6 @@ export default function Calendar() {
     setScheduleModalOpen(true);
   };
 
-  // Handler for technician week view job click
-  const handleTechWeekJobClick = (event: CalendarEvent, technician: any) => {
-    // Shared task routing — same logic as handleClientClick
-    if (isTaskEvent(event)) {
-      const taskId = getTaskIdFromEvent(event);
-      if (IS_DEV) console.log("[TASKS_DIAG] techWeek click kind=task opens=TaskDialog id=" + taskId);
-      setSelectedTaskId(taskId);
-      setTaskDialogOpen(true);
-      return;
-    }
-
-    try {
-      const rawAssignment = event.raw ?? event;
-
-      const enrichedAssignment = {
-        ...rawAssignment,
-        assignmentId: rawAssignment.assignmentId ?? event.assignmentId ?? rawAssignment.id,
-        jobId: rawAssignment.jobId ?? rawAssignment.job_id ?? rawAssignment.job?.id ?? rawAssignment.id,
-        locationId: rawAssignment.locationId ?? getLocationId(rawAssignment),
-      };
-
-      const clientsArray = toClientsArray(clients);
-      let client = resolveClientForCalendarEvent(clientsArray, event);
-
-      if (!client || client.companyName === "Unknown Client" || !client.companyName) {
-        const fallbackClient = findClientByLocationId(clients, enrichedAssignment.locationId);
-        if (fallbackClient) {
-          client = fallbackClient;
-        }
-      }
-
-      setSelectedClient(client);
-      setSelectedAssignment(enrichedAssignment);
-      setClientDetailOpen(true);
-    } catch (err) {
-      console.error("handleTechWeekJobClick failed", err);
-      const rawAssignment = event.raw ?? event;
-      setSelectedAssignment({
-        ...rawAssignment,
-        assignmentId: rawAssignment.assignmentId ?? rawAssignment.id,
-        jobId: rawAssignment.jobId ?? rawAssignment.id,
-      });
-      setClientDetailOpen(true);
-    }
-  };
-
-  // Handler for technician week view slot click
-  const handleTechWeekSlotClick = (date: Date, technician: any) => {
-    // RBAC: Block scheduling for view-only users
-    if (!canSchedule) {
-      showViewOnlyToast();
-      return;
-    }
-    handleOpenScheduleModal(date, technician?.id);
-  };
-
-  // Handler for "Schedule New" button
-  const handleScheduleNew = (date: Date, technicianId?: string) => {
-    // RBAC: Block scheduling for view-only users
-    if (!canSchedule) {
-      showViewOnlyToast();
-      return;
-    }
-    handleOpenScheduleModal(date, technicianId);
-  };
-
   return (
     <DndContext
       sensors={sensors}
@@ -2319,22 +2251,29 @@ export default function Calendar() {
                       regional={regional}
                     />
                   )}
-                  {/* Phase 8a: Weekly view always shows tech-first layout (toggle removed) */}
+                  {/* Weekly: time-based schedule grid (day columns × hour rows) */}
                   {view === "weekly" && (
                     <div className="flex-1 flex flex-col min-h-0">
-                      <CalendarGridWeekTechnicians
+                      <CalendarGridWeek
                         currentDate={currentDate}
                         density={density}
+                        companySettings={companySettings}
+                        clients={clients}
                         technicians={technicians}
                         eventIndexes={eventIndexes}
                         hiddenTechnicianIds={hiddenTechnicianIds}
-                        onJobClick={handleTechWeekJobClick}
-                        onSlotClick={handleTechWeekSlotClick}
-                        onScheduleNew={handleScheduleNew}
+                        expandedAllDaySlots={expandedAllDaySlots}
+                        setExpandedAllDaySlots={setExpandedAllDaySlots}
+                        getTechnicianColor={getTechnicianColor}
+                        handleClientClick={handleClientClick}
+                        handleResize={handleResize}
+                        weeklyScrollContainerRef={weeklyScrollContainerRef}
+                        visibleHours={visibleHours}
+                        showFullDay={showFullDay}
+                        onToggleFullDay={toggleShowFullDay}
+                        savingJobIds={savingJobIds}
+                        onUnschedule={handleUnschedule}
                         regional={regional}
-                        techSummaryMap={techSummaryMap}
-                        riskFirstSort={riskFirstSort}
-                        alertsOnly={alertsOnly}
                       />
                     </div>
                   )}
