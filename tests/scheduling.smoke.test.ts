@@ -14,7 +14,7 @@ import { db } from "../server/db";
 import { jobs, jobScheduleAudit, companies, users, clientLocations, customerCompanies } from "@shared/schema";
 import { eq, and, desc } from "drizzle-orm";
 import { jobRepository } from "../server/storage/jobs";
-import { calendarRepository } from "../server/storage/calendar";
+import { schedulingRepository } from "../server/storage/scheduling";
 import { VersionMismatchError } from "../server/domain/scheduling";
 import {
   canEditSchedule,
@@ -127,7 +127,7 @@ describe("Scheduling Smoke Tests", () => {
     expect(job.status).toBe("open");
 
     // Query backlog - should include the job (has technician, no schedule, open status)
-    const backlog = await calendarRepository.getUnscheduledJobs(testCompanyId);
+    const backlog = await schedulingRepository.getUnscheduledJobs(testCompanyId);
     const backlogJob = backlog.find((j) => j.id === job.id);
     expect(backlogJob).toBeDefined();
     expect(backlogJob!.status).toBe("open");
@@ -137,7 +137,7 @@ describe("Scheduling Smoke Tests", () => {
     const startDate = new Date(now.getFullYear(), now.getMonth(), 1);
     const endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
 
-    const { jobs: assignments } = await calendarRepository.getScheduledJobsInRangeWithMetadata(
+    const { jobs: assignments } = await schedulingRepository.getScheduledJobsInRangeWithMetadata(
       testCompanyId,
       startDate,
       endDate,
@@ -186,7 +186,7 @@ describe("Scheduling Smoke Tests", () => {
     const endDate = new Date(scheduledStart);
     endDate.setHours(23, 59, 59, 999);
 
-    const { jobs: assignments } = await calendarRepository.getScheduledJobsInRangeWithMetadata(
+    const { jobs: assignments } = await schedulingRepository.getScheduledJobsInRangeWithMetadata(
       testCompanyId,
       startDate,
       endDate,
@@ -199,7 +199,7 @@ describe("Scheduling Smoke Tests", () => {
     expect(calendarJob!.status).toBe("open"); // Lifecycle status is "open"
 
     // Verify backlog no longer includes the job (has scheduledStart now)
-    const backlog = await calendarRepository.getUnscheduledJobs(testCompanyId);
+    const backlog = await schedulingRepository.getUnscheduledJobs(testCompanyId);
     const backlogJob = backlog.find((j) => j.id === testJobId);
     expect(backlogJob).toBeUndefined();
   });

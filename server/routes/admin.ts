@@ -20,6 +20,7 @@ import { userRepository } from "../storage/users";
 import { auditService } from "../auditService";
 import { updateTenantFeaturesSchema } from "@shared/schema";
 import type { AuthedRequest } from "../auth/tenantIsolation";
+import { invalidateCompanyCache } from "../services/cache";
 import { runTimeAlertsForCompany, runTimeAlertsWorker, getAlertThresholds, runWeeklyDigestWorker } from "../services/timeAlertsWorker";
 
 // ============================================================================
@@ -68,12 +69,11 @@ router.use(requireRole(OWNER_ONLY));
  * GET /api/admin/tenants
  * List all tenants with health metrics summary
  *
- * Returns aggregated metrics per tenant:
- * - Company info (name, status, created)
- * - User counts (total, active technicians, last login)
- * - Job counts (open, action_required, overdue)
- * - Calendar (scheduled this week)
- * - QBO (connected, last sync, failed count, queue size)
+ * Returns account-level metrics per tenant (no operational data):
+ * - Company info (name, subscription status, created)
+ * - Owner contact (email, name)
+ * - User counts (total, last login)
+ * - QBO integration status (connected, last sync, failed count, queue size)
  */
 router.get(
   "/tenants",
@@ -85,12 +85,12 @@ router.get(
 
 /**
  * GET /api/admin/tenants/:companyId
- * Get detailed health metrics for a specific tenant
+ * Get detailed account metrics for a specific tenant
  *
  * Returns:
- * - All summary metrics
+ * - All account summary metrics
  * - Recent sync errors (last 10)
- * - Recent users (last 10 active)
+ * - Recent users (last 10 by activity)
  */
 router.get(
   "/tenants/:companyId",
@@ -593,6 +593,9 @@ router.patch(
 
     // Update billing
     const updated = await tenantFeaturesRepository.updateBilling(companyId, updates);
+
+    // Invalidate subscription cache so limit checks use fresh plan data immediately
+    invalidateCompanyCache(companyId);
 
     // Audit log the change (special handling for trial adjustments)
     if (data.trialEndsAt !== undefined || data.subscriptionStatus === "trial") {

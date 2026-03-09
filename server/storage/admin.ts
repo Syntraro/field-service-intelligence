@@ -1,25 +1,35 @@
 /**
- * Admin Storage - Tenant Health Metrics
+ * Admin Storage — Tenant Account & Admin Metrics
  *
- * Read-only repository for the Admin Control Panel.
- * Provides aggregated health metrics across all tenants.
+ * Read-only repository for the Platform Admin Control Panel.
+ * Provides account/admin metrics for tenant management.
+ *
+ * ARCHITECTURE RULE (2026-03-08): This module must NOT depend on operational
+ * tables (jobs, job_visits, visit_technicians, tasks, calendar_assignments,
+ * or any scheduling/dispatch concept). Operational metrics belong in separate
+ * reporting/analytics surfaces, not in tenant admin.
+ *
+ * Allowed table dependencies:
+ *   - companies (tenant identity, subscription)
+ *   - users (account/team management)
+ *   - qbo_sync_events, qbo_sync_queue (integration health — admin/support concern)
+ *   - tenant_features, subscription_plans (account configuration)
  */
 
 import { db } from "../db";
-import { sql, eq, and, gte, lte, isNull, count, max, desc } from "drizzle-orm";
+import { sql, eq, and, isNull, count, max, desc } from "drizzle-orm";
 import {
   companies,
   users,
-  jobs,
   qboSyncQueue,
   qboSyncEvents,
 } from "@shared/schema";
 
 // ============================================================================
-// Types
+// Types — Account/admin only. No operational metrics.
 // ============================================================================
 
-export interface TenantHealthSummary {
+export interface TenantAccountSummary {
   company: {
     id: string;
     name: string;
@@ -35,16 +45,7 @@ export interface TenantHealthSummary {
   } | null;
   users: {
     total: number;
-    activeTechnicians: number;
     lastLoginAt: Date | null;
-  };
-  jobs: {
-    openCount: number;
-    onHoldCount: number;  // Jobs with openSubStatus = 'on_hold' or 'needs_review'
-    overdueCount: number;
-  };
-  calendar: {
-    scheduledThisWeek: number;
   };
   qbo: {
     connected: boolean;
@@ -54,7 +55,7 @@ export interface TenantHealthSummary {
   };
 }
 
-export interface TenantDetail extends TenantHealthSummary {
+export interface TenantAccountDetail extends TenantAccountSummary {
   recentSyncErrors: Array<{
     id: string;
     eventType: string;
@@ -72,40 +73,18 @@ export interface TenantDetail extends TenantHealthSummary {
 }
 
 // ============================================================================
-// Helper Functions
-// ============================================================================
-
-function getWeekRange(): { start: Date; end: Date } {
-  const now = new Date();
-  const dayOfWeek = now.getDay();
-  const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-
-  const start = new Date(now);
-  start.setDate(now.getDate() - daysToMonday);
-  start.setHours(0, 0, 0, 0);
-
-  const end = new Date(start);
-  end.setDate(start.getDate() + 6);
-  end.setHours(23, 59, 59, 999);
-
-  return { start, end };
-}
-
-// ============================================================================
 // Repository Functions
 // ============================================================================
 
 /**
- * Get all tenants with health summary metrics
+ * Get all tenants with account-level summary metrics.
  *
- * PHASE A PERFORMANCE FIX: Uses batch aggregation queries instead of N+1 pattern
- * Previously: 10 queries per company = 500+ queries for 50 tenants
- * Now: 8 batch queries total regardless of tenant count
+ * Uses batch aggregation queries (5 total) regardless of tenant count.
+ * Queries ONLY account/admin tables: companies, users, qbo_sync_events, qbo_sync_queue.
+ * NO dependency on jobs, visits, tasks, or any scheduling tables.
  */
-export async function getTenantHealthList(): Promise<TenantHealthSummary[]> {
-  const weekRange = getWeekRange();
-
-  // BATCH QUERY 1: Get all companies in one query
+export async function getTenantHealthList(): Promise<TenantAccountSummary[]> {
+  // BATCH QUERY 1: All companies
   const allCompanies = await db
     .select({
       id: companies.id,
@@ -123,8 +102,7 @@ export async function getTenantHealthList(): Promise<TenantHealthSummary[]> {
     return [];
   }
 
-  // BATCH QUERY 2: Get all owners (one per company, most recent login)
-  // Uses DISTINCT ON to get one owner per company
+  // BATCH QUERY 2: Owners (one per company, most recently active)
   const ownerRows = await db.execute<{
     company_id: string;
     id: string;
@@ -143,69 +121,23 @@ export async function getTenantHealthList(): Promise<TenantHealthSummary[]> {
   `);
   const ownerMap = new Map(ownerRows.rows.map(r => [r.company_id, r]));
 
-  // BATCH QUERY 3: Get all user metrics aggregated by company
+  // BATCH QUERY 3: User count + last login per company
   const userMetricsRows = await db.execute<{
     company_id: string;
     total: string;
     last_login_at: Date | null;
-    active_technicians: string;
   }>(sql`
     SELECT
       company_id,
       COUNT(*) as total,
-      MAX(last_login_at) as last_login_at,
-      COUNT(*) FILTER (WHERE role = 'technician' AND status = 'active') as active_technicians
+      MAX(last_login_at) as last_login_at
     FROM users
     WHERE deleted_at IS NULL
     GROUP BY company_id
   `);
   const userMetricsMap = new Map(userMetricsRows.rows.map(r => [r.company_id, r]));
 
-  // BATCH QUERY 4: Get all job metrics aggregated by company
-  // Using normalized 4-status model: open, completed, invoiced, archived
-  const jobMetricsRows = await db.execute<{
-    company_id: string;
-    open_count: string;
-    on_hold_count: string;
-    overdue_count: string;
-  }>(sql`
-    SELECT
-      company_id,
-      COUNT(*) FILTER (WHERE status = 'open') as open_count,
-      COUNT(*) FILTER (WHERE status = 'open' AND open_sub_status = 'on_hold') as on_hold_count,
-      -- Phase 2 Step 5: Overdue = effectiveEnd < NOW
-      -- effectiveEnd priority: scheduled_end > scheduled_start + duration_minutes > scheduled_start
-      COUNT(*) FILTER (
-        WHERE scheduled_start IS NOT NULL
-        AND status = 'open'
-        AND CASE
-          WHEN scheduled_end IS NOT NULL THEN scheduled_end
-          WHEN duration_minutes IS NOT NULL THEN scheduled_start + (duration_minutes || ' minutes')::interval
-          ELSE scheduled_start
-        END < NOW()
-      ) as overdue_count
-    FROM jobs
-    WHERE deleted_at IS NULL AND is_active = true
-    GROUP BY company_id
-  `);
-  const jobMetricsMap = new Map(jobMetricsRows.rows.map(r => [r.company_id, r]));
-
-  // BATCH QUERY 5: Get calendar assignments for current week by company
-  const calendarRows = await db.execute<{
-    company_id: string;
-    scheduled_count: string;
-  }>(sql`
-    SELECT
-      company_id,
-      COUNT(*) as scheduled_count
-    FROM calendar_assignments
-    WHERE scheduled_date >= ${weekRange.start.toISOString().split('T')[0]}
-      AND scheduled_date <= ${weekRange.end.toISOString().split('T')[0]}
-    GROUP BY company_id
-  `);
-  const calendarMap = new Map(calendarRows.rows.map(r => [r.company_id, r]));
-
-  // BATCH QUERY 6: Get last sync timestamp per company
+  // BATCH QUERY 4: Last QBO sync timestamp per company
   const lastSyncRows = await db.execute<{
     company_id: string;
     last_sync_at: Date;
@@ -218,40 +150,38 @@ export async function getTenantHealthList(): Promise<TenantHealthSummary[]> {
   `);
   const lastSyncMap = new Map(lastSyncRows.rows.map(r => [r.company_id, r]));
 
-  // BATCH QUERY 7: Get failed sync counts per company
-  const failedSyncRows = await db.execute<{
-    company_id: string;
-    failed_count: string;
-  }>(sql`
-    SELECT
-      company_id,
-      COUNT(*) as failed_count
-    FROM qbo_sync_events
-    WHERE result = 'FAILURE'
-    GROUP BY company_id
-  `);
+  // BATCH QUERY 5: QBO failed sync counts + queue sizes per company (combined)
+  const [failedSyncRows, queueRows] = await Promise.all([
+    db.execute<{
+      company_id: string;
+      failed_count: string;
+    }>(sql`
+      SELECT
+        company_id,
+        COUNT(*) as failed_count
+      FROM qbo_sync_events
+      WHERE result = 'FAILURE'
+      GROUP BY company_id
+    `),
+    db.execute<{
+      company_id: string;
+      queue_size: string;
+    }>(sql`
+      SELECT
+        company_id,
+        COUNT(*) as queue_size
+      FROM qbo_sync_queue
+      WHERE status IN ('QUEUED', 'RUNNING')
+      GROUP BY company_id
+    `),
+  ]);
   const failedSyncMap = new Map(failedSyncRows.rows.map(r => [r.company_id, r]));
-
-  // BATCH QUERY 8: Get queue sizes per company
-  const queueRows = await db.execute<{
-    company_id: string;
-    queue_size: string;
-  }>(sql`
-    SELECT
-      company_id,
-      COUNT(*) as queue_size
-    FROM qbo_sync_queue
-    WHERE status IN ('QUEUED', 'RUNNING')
-    GROUP BY company_id
-  `);
   const queueMap = new Map(queueRows.rows.map(r => [r.company_id, r]));
 
-  // Combine all metrics in memory (O(n) with constant-time Map lookups)
+  // Combine in memory (O(n) with constant-time Map lookups)
   return allCompanies.map(company => {
     const owner = ownerMap.get(company.id);
     const userMetrics = userMetricsMap.get(company.id);
-    const jobMetrics = jobMetricsMap.get(company.id);
-    const calendar = calendarMap.get(company.id);
     const lastSync = lastSyncMap.get(company.id);
     const failedSync = failedSyncMap.get(company.id);
     const queue = queueMap.get(company.id);
@@ -274,16 +204,7 @@ export async function getTenantHealthList(): Promise<TenantHealthSummary[]> {
         : null,
       users: {
         total: parseInt(userMetrics?.total || "0", 10),
-        activeTechnicians: parseInt(userMetrics?.active_technicians || "0", 10),
         lastLoginAt: userMetrics?.last_login_at || null,
-      },
-      jobs: {
-        openCount: parseInt(jobMetrics?.open_count || "0", 10),
-        onHoldCount: parseInt(jobMetrics?.on_hold_count || "0", 10),
-        overdueCount: parseInt(jobMetrics?.overdue_count || "0", 10),
-      },
-      calendar: {
-        scheduledThisWeek: parseInt(calendar?.scheduled_count || "0", 10),
       },
       qbo: {
         connected: company.qboEnabled && !!company.qboRealmId,
@@ -296,10 +217,12 @@ export async function getTenantHealthList(): Promise<TenantHealthSummary[]> {
 }
 
 /**
- * Get detailed tenant metrics for a specific company
+ * Get detailed account metrics for a specific tenant.
+ * Extends TenantAccountSummary with recent users and sync errors.
+ *
+ * NO dependency on jobs, visits, tasks, or any scheduling tables.
  */
-export async function getTenantDetail(companyId: string): Promise<TenantDetail | null> {
-  // Get base company info
+export async function getTenantDetail(companyId: string): Promise<TenantAccountDetail | null> {
   const companyResult = await db
     .select({
       id: companies.id,
@@ -319,9 +242,8 @@ export async function getTenantDetail(companyId: string): Promise<TenantDetail |
   }
 
   const company = companyResult[0];
-  const weekRange = getWeekRange();
 
-  // Get owner user (most recently active owner, or first owner if none active)
+  // Owner (most recently active)
   const ownerUser = await db
     .select({
       id: users.id,
@@ -337,7 +259,7 @@ export async function getTenantDetail(companyId: string): Promise<TenantDetail |
     .orderBy(desc(users.lastLoginAt))
     .limit(1);
 
-  // Get all the same metrics as the list
+  // User metrics (count + last login)
   const userMetrics = await db
     .select({
       total: count(),
@@ -349,70 +271,7 @@ export async function getTenantDetail(companyId: string): Promise<TenantDetail |
       isNull(users.deletedAt)
     ));
 
-  const technicianCount = await db
-    .select({ count: count() })
-    .from(users)
-    .where(and(
-      eq(users.companyId, companyId),
-      eq(users.role, "technician"),
-      eq(users.status, "active"),
-      isNull(users.deletedAt)
-    ));
-
-  // Using normalized 4-status model: open, completed, invoiced, archived
-  const openJobs = await db
-    .select({ count: count() })
-    .from(jobs)
-    .where(and(
-      eq(jobs.companyId, companyId),
-      isNull(jobs.deletedAt),
-      eq(jobs.isActive, true),
-      eq(jobs.status, "open")
-    ));
-
-  // Jobs needing attention: on_hold sub-status
-  const onHoldJobs = await db
-    .select({ count: count() })
-    .from(jobs)
-    .where(and(
-      eq(jobs.companyId, companyId),
-      isNull(jobs.deletedAt),
-      eq(jobs.isActive, true),
-      eq(jobs.status, "open"),
-      eq(jobs.openSubStatus, "on_hold")
-    ));
-
-  // Phase 2 Step 5: Overdue = effectiveEnd < NOW
-  // effectiveEnd priority: scheduled_end > scheduled_start + duration_minutes > scheduled_start
-  const overdueJobs = await db
-    .select({ count: count() })
-    .from(jobs)
-    .where(and(
-      eq(jobs.companyId, companyId),
-      isNull(jobs.deletedAt),
-      eq(jobs.isActive, true),
-      sql`${jobs.scheduledStart} IS NOT NULL`,
-      sql`CASE
-        WHEN ${jobs.scheduledEnd} IS NOT NULL THEN ${jobs.scheduledEnd}
-        WHEN ${jobs.durationMinutes} IS NOT NULL THEN ${jobs.scheduledStart} + (${jobs.durationMinutes} || ' minutes')::interval
-        ELSE ${jobs.scheduledStart}
-      END < NOW()`,
-      eq(jobs.status, "open")
-    ));
-
-  // MODEL A: Query scheduled jobs from jobs table (not calendar_assignments)
-  const scheduledThisWeek = await db
-    .select({ count: count() })
-    .from(jobs)
-    .where(and(
-      eq(jobs.companyId, companyId),
-      isNull(jobs.deletedAt),
-      eq(jobs.isActive, true),
-      sql`${jobs.scheduledStart} IS NOT NULL`,
-      gte(jobs.scheduledStart, weekRange.start),
-      lte(jobs.scheduledStart, weekRange.end)
-    ));
-
+  // QBO integration status
   const lastSync = await db
     .select({ createdAt: qboSyncEvents.createdAt })
     .from(qboSyncEvents)
@@ -436,7 +295,7 @@ export async function getTenantDetail(companyId: string): Promise<TenantDetail |
       sql`${qboSyncQueue.status} IN ('QUEUED', 'RUNNING')`
     ));
 
-  // Get recent sync errors (last 10)
+  // Recent sync errors (last 10)
   const recentSyncErrors = await db
     .select({
       id: qboSyncEvents.id,
@@ -452,7 +311,7 @@ export async function getTenantDetail(companyId: string): Promise<TenantDetail |
     .orderBy(desc(qboSyncEvents.createdAt))
     .limit(10);
 
-  // Get recent users (last 10 active)
+  // Recent users (last 10 by activity)
   const recentUsers = await db
     .select({
       id: users.id,
@@ -488,16 +347,7 @@ export async function getTenantDetail(companyId: string): Promise<TenantDetail |
       : null,
     users: {
       total: userMetrics[0]?.total || 0,
-      activeTechnicians: technicianCount[0]?.count || 0,
       lastLoginAt: userMetrics[0]?.lastLoginAt || null,
-    },
-    jobs: {
-      openCount: openJobs[0]?.count || 0,
-      onHoldCount: onHoldJobs[0]?.count || 0,
-      overdueCount: overdueJobs[0]?.count || 0,
-    },
-    calendar: {
-      scheduledThisWeek: scheduledThisWeek[0]?.count || 0,
     },
     qbo: {
       connected: company.qboEnabled && !!company.qboRealmId,

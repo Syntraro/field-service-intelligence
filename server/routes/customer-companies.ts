@@ -1,5 +1,6 @@
 import { Router, Response, NextFunction } from "express";
 import { z } from "zod";
+import { eq, and, inArray } from "drizzle-orm";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
 import { parsePaginationLenient } from "../utils/pagination";
@@ -9,6 +10,34 @@ import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { customerCompanyRepository } from "../storage/customerCompanies";
 import { clientContactRepository } from "../storage/clientContacts";
+import { db } from "../db";
+import { clientLocations } from "@shared/schema";
+
+/**
+ * Phase 3: Validate that all locationIds belong to the given customerCompany.
+ * Prevents cross-company contact association via crafted requests.
+ */
+async function validateLocationOwnership(
+  tenantCompanyId: string,
+  customerCompanyId: string,
+  locationIds: string[],
+): Promise<void> {
+  if (locationIds.length === 0) return;
+  const uniqueIds = Array.from(new Set(locationIds));
+  const rows = await db
+    .select({ id: clientLocations.id })
+    .from(clientLocations)
+    .where(
+      and(
+        eq(clientLocations.companyId, tenantCompanyId),
+        eq(clientLocations.parentCompanyId, customerCompanyId),
+        inArray(clientLocations.id, uniqueIds),
+      )
+    );
+  if (rows.length !== uniqueIds.length) {
+    throw createError(400, "One or more locationIds do not belong to this customer company");
+  }
+}
 
 function requireCompanyContext(req: any, res: Response, next: NextFunction) {
   if (!req.user) return res.status(401).json({ error: "Unauthorized" });
@@ -67,26 +96,81 @@ router.post("/:companyId/locations", requireRole(MANAGER_ROLES), asyncHandler(as
   const { companyId } = req.params;
 
   // Repository handles company existence check
-  const newLocation = await customerCompanyRepository.createLocationUnderCustomerCompany(
-    tenantCompanyId,
-    user.id,
-    companyId,
-    {
-      location: req.body.location || "",
-      address: req.body.address || null,
-      city: req.body.city || null,
-      province: req.body.province || null,
-      postalCode: req.body.postalCode || null,
-      contactName: req.body.contactName || null,
-      email: req.body.email || null,
-      phone: req.body.phone || null,
-      roofLadderCode: req.body.roofLadderCode || null,
-      billWithParent: req.body.billWithParent ?? true,
-      inactive: req.body.inactive ?? false,
-    }
-  );
+  const contactName = req.body.contactName || null;
+  const contactEmail = req.body.email || null;
+  const contactPhone = req.body.phone || null;
 
-  res.status(201).json(newLocation);
+  const hasInlineContact = !!(contactName || contactEmail || contactPhone);
+
+  // Part A: If inline contact fields are present, create location + contact atomically
+  // in a single DB transaction. No partial-save state possible — if contact creation
+  // fails, the location creation is rolled back and a proper error response is returned.
+  if (hasInlineContact) {
+    const nameParts = (contactName || "").trim().split(/\s+/);
+    const firstName = nameParts[0] || "";
+    const lastName = nameParts.slice(1).join(" ") || "";
+
+    const newLocation = await db.transaction(async (tx) => {
+      // Step 1: Create location within transaction
+      const location = await customerCompanyRepository.createLocationUnderCustomerCompanyTx(
+        tx,
+        tenantCompanyId,
+        user.id,
+        companyId,
+        {
+          location: req.body.location || "",
+          address: req.body.address || null,
+          city: req.body.city || null,
+          province: req.body.province || null,
+          postalCode: req.body.postalCode || null,
+          contactName,
+          email: contactEmail,
+          phone: contactPhone,
+          roofLadderCode: req.body.roofLadderCode || null,
+          billWithParent: req.body.billWithParent ?? true,
+          inactive: req.body.inactive ?? false,
+        }
+      );
+
+      // Step 2: Create client_contacts record within same transaction
+      await clientContactRepository.createContactTx(tx, tenantCompanyId!, {
+        customerCompanyId: companyId,
+        locationId: location.id,
+        firstName,
+        lastName,
+        email: contactEmail,
+        phone: contactPhone,
+        roles: [],
+        isPrimary: true,
+      });
+
+      return location;
+    });
+
+    res.status(201).json(newLocation);
+  } else {
+    // No inline contact — create location normally (no transaction needed)
+    const newLocation = await customerCompanyRepository.createLocationUnderCustomerCompany(
+      tenantCompanyId,
+      user.id,
+      companyId,
+      {
+        location: req.body.location || "",
+        address: req.body.address || null,
+        city: req.body.city || null,
+        province: req.body.province || null,
+        postalCode: req.body.postalCode || null,
+        contactName: null,
+        email: null,
+        phone: null,
+        roofLadderCode: req.body.roofLadderCode || null,
+        billWithParent: req.body.billWithParent ?? true,
+        inactive: req.body.inactive ?? false,
+      }
+    );
+
+    res.status(201).json(newLocation);
+  }
 }));
 /**
  * GET /api/customer-companies/:companyId/overview
@@ -105,6 +189,43 @@ router.get("/:companyId/overview", asyncHandler(async (req: AuthedRequest, res: 
   if (!overview) throw createError(404, "Customer company not found");
 
   res.json(overview);
+}));
+
+/**
+ * PATCH /api/customer-companies/:companyId
+ * Update customer company properties (name, phone, email, billing address, active status).
+ */
+const updateCustomerCompanySchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  phone: z.string().max(50).nullable().optional(),
+  email: z.string().max(200).nullable().optional(),
+  billingStreet: z.string().max(200).nullable().optional(),
+  billingCity: z.string().max(100).nullable().optional(),
+  billingProvince: z.string().max(100).nullable().optional(),
+  billingPostalCode: z.string().max(20).nullable().optional(),
+  billingCountry: z.string().max(100).nullable().optional(),
+  isActive: z.boolean().optional(),
+}).strict();
+
+router.patch("/:companyId", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId: tenantCompanyId } = req;
+  const { companyId: customerCompanyId } = req.params;
+
+  const validated = validateSchema(updateCustomerCompanySchema, req.body);
+  const updated = await customerCompanyRepository.updateCustomerCompany(
+    tenantCompanyId!,
+    customerCompanyId,
+    validated,
+  );
+
+  if (!updated) throw createError(404, "Customer company not found");
+
+  // TODO(QBO-SYNC): After successful company update, invoke non-blocking QBO customer sync here.
+  // Pattern: check if company has qboCustomerId, then call qboSyncService.syncCustomer(updated)
+  // in a fire-and-forget fashion (no await, catch errors to avoid failing the main response).
+  // See server/qbo/syncService.ts for the established sync pattern.
+
+  res.json(updated);
 }));
 
 /**
@@ -181,6 +302,8 @@ router.post("/:companyId/contacts", requireRole(MANAGER_ROLES), asyncHandler(asy
   };
 
   if (association.type === "locations" && locationsWithRoles.length > 0) {
+    // Phase 3: Validate locationIds belong to this customer company
+    await validateLocationOwnership(tenantCompanyId!, customerCompanyId, locationsWithRoles.map(l => l.locationId));
     // Phase 5: per-location roles — each location carries its own roles array
     const rows = await clientContactRepository.createContacts(
       tenantCompanyId!,
@@ -188,6 +311,8 @@ router.post("/:companyId/contacts", requireRole(MANAGER_ROLES), asyncHandler(asy
     );
     res.status(201).json({ contacts: rows });
   } else if (association.type === "locations" && locationIds.length > 0) {
+    // Phase 3: Validate locationIds belong to this customer company
+    await validateLocationOwnership(tenantCompanyId!, customerCompanyId, locationIds);
     // Legacy: same roles for all locations (backward compat)
     const rows = await clientContactRepository.createContacts(
       tenantCompanyId!,
@@ -261,8 +386,17 @@ router.patch("/:companyId/contacts/:contactId", requireRole(MANAGER_ROLES), asyn
     throw createError(400, "Phone or email is required");
   }
 
+  // Phase 3: Derive existing scope from DB record (not from client payload)
+  const existingScope: "company" | "location" = existing.locationId ? "location" : "company";
+
   // Full association replace mode: delete old rows, insert new ones in a transaction
   if (data.association && data.existingContactIds) {
+    // Phase 3: Enforce scope immutability — company contacts stay company, location contacts stay location
+    const requestedScope = data.association.type === "company" ? "company" : "location";
+    if (existingScope !== requestedScope) {
+      throw createError(400, `Cannot change contact scope from "${existingScope}" to "${requestedScope}". Delete and recreate instead.`);
+    }
+
     const baseData = {
       customerCompanyId: existing.customerCompanyId,
       firstName: merged.firstName,
@@ -282,6 +416,8 @@ router.patch("/:companyId/contacts/:contactId", requireRole(MANAGER_ROLES), asyn
       if (locations.length === 0) {
         throw createError(400, "At least one location is required for location-specific contacts");
       }
+      // Phase 3: Validate locationIds belong to this customer company
+      await validateLocationOwnership(tenantCompanyId!, existing.customerCompanyId, locations.map(l => l.locationId));
       newRows = locations.map((loc) => ({
         ...baseData,
         locationId: loc.locationId,
@@ -303,7 +439,9 @@ router.patch("/:companyId/contacts/:contactId", requireRole(MANAGER_ROLES), asyn
   }
 
   // Fallback: simple single-row update (backward compat)
-  const updated = await clientContactRepository.updateContact(tenantCompanyId!, contactId, data);
+  // Phase 3: Strip locationId from simple updates — scope cannot be mutated via this path
+  const { locationId: _stripLocationId, association: _stripAssoc, existingContactIds: _stripIds, ...safeUpdateData } = data;
+  const updated = await clientContactRepository.updateContact(tenantCompanyId!, contactId, safeUpdateData);
   if (!updated) throw createError(404, "Contact not found");
 
   res.json(updated);

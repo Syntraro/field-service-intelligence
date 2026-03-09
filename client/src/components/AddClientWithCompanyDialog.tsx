@@ -546,8 +546,11 @@ export default function AddClientWithCompanyDialog({
             
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-3">
-                <Label className="text-sm font-semibold">Contact Details</Label>
-                
+                {/* Legacy single-contact fields — kept for bootstrap/backward compat.
+                    Canonical contact management is via the Contacts tab after creation. */}
+                <Label className="text-sm font-semibold">Primary Site Contact</Label>
+                <p className="text-[11px] text-muted-foreground -mt-2">Manage full contacts from the Contacts tab after creating.</p>
+
                 <div className="space-y-1.5">
                   <Label htmlFor="contactName" className="text-xs">Contact Name</Label>
                   <Input

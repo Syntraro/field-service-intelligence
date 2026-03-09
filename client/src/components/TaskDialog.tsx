@@ -54,16 +54,27 @@ interface SuppliersResponse {
   total: number;
 }
 
+/** Optional prefill data for creating a task from dispatch quick-create */
+interface TaskPrefill {
+  assignedToUserId?: string;
+  startDate?: string;   // YYYY-MM-DD
+  startTime?: string;   // HH:mm
+  /** Pre-select task type from dispatch quick-create menu */
+  taskType?: TaskType;
+}
+
 interface TaskDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   taskId?: string;
   onChanged?: () => void;
+  /** Prefill fields when creating from dispatch board quick-create */
+  initialData?: TaskPrefill;
 }
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
-export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialogProps) {
+export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData }: TaskDialogProps) {
   const { user } = useAuth();
   const isEditMode = !!taskId;
 
@@ -171,6 +182,13 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged }: TaskDialog
       }
     } else if (!isEditMode) {
       resetForm();
+      // Apply prefill from dispatch quick-create
+      if (initialData) {
+        if (initialData.assignedToUserId) setAssignedToUserId(initialData.assignedToUserId);
+        if (initialData.startDate) setStartDate(initialData.startDate);
+        if (initialData.startTime) setStartTime(initialData.startTime);
+        if (initialData.taskType) setType(initialData.taskType);
+      }
     }
   }, [task, isEditMode, open]);
 

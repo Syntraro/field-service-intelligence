@@ -4,6 +4,7 @@ import { clients, clientParts, jobs, locationEquipment } from "@shared/schema";
 import type { InsertClient, Client, InsertLocationEquipment, UpdateLocationEquipment } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset, escapeLike } from "./base";
 import { activeJobFilter } from "./jobFilters";
+import { maybeGeocode } from "../utils/geocode";
 
 export interface PaginationOptions {
   limit?: number;
@@ -194,9 +195,11 @@ export class ClientRepository extends BaseRepository {
     userId: string,
     clientData: InsertClient
   ): Promise<Client> {
+    // Auto-geocode if address present but no lat/lng
+    const geocoded = await maybeGeocode(clientData);
     const rows = await db
       .insert(clients)
-      .values({ ...clientData, companyId, userId })
+      .values({ ...geocoded, companyId, userId })
       .returning();
 
     return rows[0];
@@ -244,6 +247,8 @@ export class ClientRepository extends BaseRepository {
         isPrimary: data.isPrimary ?? false,
         needsDetails: data.needsDetails ?? false,
         billWithParent: data.billWithParent ?? true,
+        lat: data.lat ?? null,
+        lng: data.lng ?? null,
         // QBO fields intentionally NOT copied from input - must be set via QBO sync
         // version, deletedAt, createdAt, updatedAt handled by DB defaults
       })))
@@ -299,14 +304,19 @@ export class ClientRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(clientId, "clientId");
 
+    // Auto-geocode when address changes and no explicit lat/lng provided
+    const addressChanged = patch.address !== undefined || patch.city !== undefined
+      || patch.province !== undefined || patch.postalCode !== undefined;
+    const geocodedPatch = addressChanged ? await maybeGeocode(patch as any) : patch;
+
     // If no version provided, skip version check (backward compatibility)
     if (currentVersion === undefined) {
       const rows = await db
         .update(clients)
-        .set({ 
-          ...patch, 
+        .set({
+          ...geocodedPatch,
           version: sql`${clients.version} + 1`,
-          updatedAt: new Date() 
+          updatedAt: new Date()
         })
         .where(and(eq(clients.id, clientId), eq(clients.companyId, companyId)))
         .returning();
@@ -318,7 +328,7 @@ export class ClientRepository extends BaseRepository {
     const rows = await db
       .update(clients)
       .set({
-        ...patch,
+        ...geocodedPatch,
         version: sql`${clients.version} + 1`, // Increment version
         updatedAt: new Date(),
       })

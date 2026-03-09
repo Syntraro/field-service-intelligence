@@ -4,7 +4,7 @@ import { createServer, type Server } from "http";
 import jobsRouter from "./jobs";
 import invoicesRouter from "./invoices";
 import teamRouter from "./team";
-import calendarRouter from "./calendar";
+import calendarRouter from "./scheduling";
 import clientsRouter from "./clients";
 import techniciansRouter from "./technicians";
 import jobTemplatesRouter from "./jobTemplates";

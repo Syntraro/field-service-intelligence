@@ -8,6 +8,7 @@ import { paginated } from "../utils/paginatedResponse";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
+import { requireFeature } from "../auth/requireFeature";
 import { assertInvoiceStatusTransition } from "../statusRules";
 import type { InvoiceStatus } from "@shared/schema";
 import { taxRepository } from "../storage/tax";
@@ -32,6 +33,9 @@ import { getQueryCtx } from "../lib/queryCtx";
 import { getInvoicesFeed, getInvoiceStats as getCanonicalInvoiceStats } from "../storage/invoicesFeed";
 
 const router = Router();
+
+// Gate all invoice endpoints behind feature flag
+router.use(requireFeature("invoicesEnabled"));
 
 // ========================================
 // VALIDATION SCHEMAS

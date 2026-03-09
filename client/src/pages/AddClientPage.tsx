@@ -56,11 +56,9 @@ export default function AddClientPage() {
       return await apiRequest("/api/clients/with-company", { method: "POST", body: JSON.stringify(data) });
     },
     onSuccess: () => {
+      // Domain boundary: client CRUD only invalidates client-domain caches
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
       queryClient.invalidateQueries({ queryKey: ["/api/customer-companies"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/reports/parts"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/reports/schedule"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
 
       toast({
         title: "Client added",
@@ -104,10 +102,8 @@ export default function AddClientPage() {
       return newClient;
     },
     onSuccess: () => {
+      // Domain boundary: client CRUD only invalidates client-domain caches
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/reports/parts"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/reports/schedule"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
 
       toast({
         title: "Client added",
@@ -148,13 +144,8 @@ export default function AddClientPage() {
       return updatedClient;
     },
     onSuccess: () => {
+      // Domain boundary: client CRUD only invalidates client-domain caches
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/reports/parts"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/reports/schedule"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
-
-      queryClient.invalidateQueries({ queryKey: ["/api/maintenance/recently-completed"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/maintenance/statuses"] });
       toast({
         title: "Client updated",
         description: "The client has been updated successfully.",

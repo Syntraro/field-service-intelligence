@@ -136,7 +136,6 @@ export const jobCreateSchema = z.object({
   scheduledStart: z.string().datetime().optional().nullable(),
   scheduledEnd: z.string().datetime().optional().nullable(),
   assignedTechnicianId: z.string().uuid().optional().nullable(),
-  calendarAssignmentId: z.string().uuid().optional().nullable(),
 });
 
 export type JobCreateInput = z.infer<typeof jobCreateSchema>;

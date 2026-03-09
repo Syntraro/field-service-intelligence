@@ -60,6 +60,7 @@ function featureKeyToName(key: FeatureKey): string {
     qboEnabled: "QuickBooks Integration",
     routeOptimizationEnabled: "Route Optimization",
     multiTechEnabled: "Multi-Technician Scheduling",
+    liveMapEnabled: "Live Map",
     customerPortalEnabled: "Customer Portal",
     customerPortalPaymentsEnabled: "Customer Portal Payments",
   };

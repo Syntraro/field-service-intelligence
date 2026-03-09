@@ -14,6 +14,7 @@ import passport from "passport";
 import "./auth";  // Register passport strategies
 import { enforceSchemaOrExit } from "./utils/schemaGuard";
 import { validateEmailConfig } from "./resendClient";
+import { startPmAutoGeneration } from "./services/pmAutoGeneration";
 
 /**
  * Production security defaults.
@@ -189,6 +190,8 @@ const port = Number(process.env.PORT ?? 5000);
       log(`serving on port ${port}`);
       // Temporary diagnostic — remove after confirming QBO write access
       console.log(`[QBO] READ_ONLY_MODE = ${JSON.stringify(process.env.QBO_READ_ONLY_MODE)} (writes ${process.env.QBO_READ_ONLY_MODE === "false" ? "ALLOWED" : "BLOCKED"})`);
+      // PM Phase 2: Start automatic PM job generation (30s delay + 6h interval)
+      startPmAutoGeneration();
     });
   } catch (error) {
     console.error("Failed to start server:", error);

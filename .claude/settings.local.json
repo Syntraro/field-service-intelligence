@@ -105,7 +105,20 @@
       "Bash(npm run db:map-sanity 2>&1)",
       "Bash(find /home/runner/workspace/server -name \"*job*\" -type f | grep -E \"\\\\.\\(ts\\)$\")",
       "Bash(npm run db:migrate:one -- migrations/2026_03_06_visit_outcome_columns.sql 2>&1 | tail -20)",
-      "Bash(npm run db:migrate:one -- migrations/2026_03_06_equipment_catalog_items.sql 2>&1)"
+      "Bash(npm run db:migrate:one -- migrations/2026_03_06_equipment_catalog_items.sql 2>&1)",
+      "Bash(env | grep -i \"test\\\\|demo\\\\|admin\\\\|email\\\\|user\" 2>/dev/null | head -5)",
+      "Bash(env | grep DATABASE | head -1 | sed 's/\\\\\\(.*@\\\\\\).*/\\\\1***/' 2>/dev/null)",
+      "Bash(for file in /home/runner/workspace/client/src/components/calendar/*.tsx /home/runner/workspace/client/src/components/calendar/*.ts; do\n  basename \"$file\"\ndone | sort)",
+      "Bash(git log --oneline --all --grep=\"calendar\" -i | head -20)",
+      "Bash(COOKIE=\"sid=s%3Ars8lFrZZkRLnN6Tw_ldhGtVjU0dqrkhv.VLppnhiyVLl8oega%2FxVL9U2X6ouSeskzRylhzRihSIo\"\ncurl -s -b \"$COOKIE\" http://localhost:5000/api/auth/me 2>&1)",
+      "Bash(COOKIE=\"sid=s%3Ars8lFrZZkRLnN6Tw_ldhGtVjU0dqrkhv.VLppnhiyVLl8oega%2FxVL9U2X6ouSeskzRylhzRihSIo\"\ncurl -s -b \"$COOKIE\" http://localhost:5000/api/map/day 2>&1 | node -e \"let d='';process.stdin.on\\('data',c=>d+=c\\);process.stdin.on\\('end',\\(\\)=>{const j=JSON.parse\\(d\\);console.log\\('techs:', j.technicians?.length\\);console.log\\('visits:', j.visits?.length\\);console.log\\('meta:', JSON.stringify\\(j.meta, null, 2\\)\\);if\\(j.error\\) console.log\\('ERROR:', j.error\\);}\\)\")",
+      "Bash(COOKIE='sid=s%3Ars8lFrZZkRLnN6Tw_ldhGtVjU0dqrkhv.VLppnhiyVLl8oega%2FxVL9U2X6ouSeskzRylhzRihSIo'\ncurl -s -b \"$COOKIE\" 'http://localhost:5000/api/map/day' 2>&1 | head -c 300)",
+      "Bash(/tmp/write_paths_summary.txt:*)",
+      "Read(//tmp/**)",
+      "Bash(npm run db:migrate:one -- migrations/2026_03_08_seed_subscription_plans.sql 2>&1)",
+      "Bash(npm run db:migrate:one -- migrations/2026_03_08_add_live_map_feature_flag.sql 2>&1)",
+      "Bash(cat > /dev/null << 'EOF'\n# Comprehensive list of all QBO, OAuth, and environment configuration files\nEOF\necho \"Files found successfully\")",
+      "Bash(npm run db:migrate:one -- migrations/2026_03_09_pm_service_windows.sql 2>&1)"
     ]
   }
 }

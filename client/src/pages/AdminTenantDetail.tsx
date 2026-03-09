@@ -1,8 +1,11 @@
 /**
- * Admin Tenant Detail - Individual Tenant Health View
+ * Admin Tenant Detail — Individual Tenant Account View
  *
- * Owner-only page displaying detailed health metrics for a specific tenant.
- * Includes Support Mode impersonation capability.
+ * Owner-only page displaying tenant account/admin details.
+ * Includes Support Mode impersonation, billing/features management.
+ *
+ * Architecture rule (2026-03-08): NO operational metrics (jobs, scheduling,
+ * visits, tasks). Only account/admin data: identity, subscription, users, QBO.
  */
 
 import { useState } from "react";
@@ -37,8 +40,6 @@ import { Separator } from "@/components/ui/separator";
 import {
   Building2,
   Users,
-  Briefcase,
-  Calendar,
   Cloud,
   CloudOff,
   AlertTriangle,
@@ -139,16 +140,7 @@ interface TenantDetail {
   } | null;
   users: {
     total: number;
-    activeTechnicians: number;
     lastLoginAt: string | null;
-  };
-  jobs: {
-    openCount: number;
-    actionRequiredCount: number;
-    overdueCount: number;
-  };
-  calendar: {
-    scheduledThisWeek: number;
   };
   qbo: {
     connected: boolean;
@@ -559,10 +551,7 @@ export default function AdminTenantDetail() {
     );
   }
 
-  const hasIssues =
-    data.jobs.actionRequiredCount > 0 ||
-    data.jobs.overdueCount > 0 ||
-    data.qbo.failedSyncCount > 0;
+  const hasIssues = data.qbo.failedSyncCount > 0;
 
   return (
     <div className="p-6 space-y-6">
@@ -603,29 +592,22 @@ export default function AdminTenantDetail() {
         </div>
       </div>
 
-      {/* Metrics Grid */}
+      {/* Metrics Grid — account/admin only */}
       <div className="grid gap-4 md:grid-cols-4">
         <MetricCard
           title="Total Users"
           value={data.users.total}
-          subtitle={`${data.users.activeTechnicians} active technicians`}
+          subtitle={data.users.lastLoginAt
+            ? `Last active ${new Date(data.users.lastLoginAt).toLocaleDateString()}`
+            : "No logins yet"}
           icon={Users}
         />
         <MetricCard
-          title="Open Jobs"
-          value={data.jobs.openCount}
-          subtitle={
-            data.jobs.actionRequiredCount > 0 || data.jobs.overdueCount > 0
-              ? `${data.jobs.actionRequiredCount} action required, ${data.jobs.overdueCount} overdue`
-              : "All healthy"
-          }
-          icon={Briefcase}
-          warning={data.jobs.actionRequiredCount > 0 || data.jobs.overdueCount > 0}
-        />
-        <MetricCard
-          title="Scheduled This Week"
-          value={data.calendar.scheduledThisWeek}
-          icon={Calendar}
+          title="Subscription"
+          value={data.company.subscriptionStatus}
+          subtitle={`Since ${new Date(data.company.createdAt).toLocaleDateString()}`}
+          icon={CreditCard}
+          warning={data.company.subscriptionStatus === "cancelled" || data.company.subscriptionStatus === "past_due"}
         />
         <MetricCard
           title="QBO Status"
@@ -639,6 +621,11 @@ export default function AdminTenantDetail() {
           }
           icon={data.qbo.connected ? Cloud : CloudOff}
           warning={data.qbo.failedSyncCount > 0 || data.qbo.queueSize > 5}
+        />
+        <MetricCard
+          title="QBO Environment"
+          value={data.company.qboEnvironment || "N/A"}
+          icon={Building2}
         />
       </div>
 

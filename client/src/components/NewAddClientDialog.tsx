@@ -321,7 +321,7 @@ export default function NewAddClientDialog({ open, onOpenChange, onSaved }: NewA
               {canAddLocation.reason}
               {canAddLocation.current !== undefined && canAddLocation.limit !== undefined && (
                 <span className="block mt-1">
-                  You're using {canAddLocation.current} of {canAddLocation.limit} locations.
+                  You're using {canAddLocation.current} of {(canAddLocation as any).unlimited ? "Unlimited" : canAddLocation.limit} locations.
                 </span>
               )}
             </AlertDescription>
@@ -362,8 +362,10 @@ export default function NewAddClientDialog({ open, onOpenChange, onSaved }: NewA
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-3">
-                  <Label className="text-sm font-medium">Contact Information</Label>
-                  
+                  {/* Phase 3: Legacy contact summary — canonical management via Contacts tab */}
+                  <Label className="text-sm font-medium">Primary Site Contact (Summary)</Label>
+                  <p className="text-[10px] text-muted-foreground -mt-1">Manage full contacts from the Contacts tab after creation.</p>
+
                   <div className="space-y-1.5">
                     <Label htmlFor="contactName" className="text-xs">Contact Name</Label>
                     <Input
@@ -400,13 +402,13 @@ export default function NewAddClientDialog({ open, onOpenChange, onSaved }: NewA
                   </div>
 
                   <div className="space-y-1.5">
-                    <Label htmlFor="roofLadderCode" className="text-xs">Roof/Ladder Code</Label>
+                    <Label htmlFor="roofLadderCode" className="text-xs">Site Code</Label>
                     <Input
                       id="roofLadderCode"
                       data-testid="input-roof-ladder-code"
                       value={formData.roofLadderCode}
                       onChange={(e) => setFormData({ ...formData, roofLadderCode: e.target.value })}
-                      placeholder="Roof/Ladder Code"
+                      placeholder="Site Code"
                     />
                   </div>
                 </div>

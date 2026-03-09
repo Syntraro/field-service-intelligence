@@ -1,27 +1,54 @@
 /**
- * Map Routes — Aggregated dispatch map data.
+ * Map Routes — Route-visualization surface for scheduled visits + GPS overlay.
  *
- * GET /api/map/day?date=YYYY-MM-DD — Technicians + visits + risk for a day.
- * Date boundaries computed in company timezone (America/Toronto default).
+ * GET /api/map/day?date=YYYY-MM-DD — Visits + technician display roster + risk for a day.
+ *
+ * Phase 2 Map Convergence (2026-03-08):
+ * The map is a VISUALIZATION surface, not a scheduling engine.
+ *
+ * Responsibilities RETAINED:
+ *   - Scheduled visits for the selected day (route context)
+ *   - Job fallback for data-integrity coverage (jobs without visit records)
+ *   - Technician display roster for grouping/color/name context
+ *   - Live GPS overlay (optional, degrades gracefully)
+ *   - Risk flags from attention_items (visualization)
+ *   - Tenant/company scoping (security)
+ *   - Timezone-aware date boundary computation
+ *
+ * Responsibilities REMOVED (belong to dispatch):
+ *   - Schedulable/eligibility filtering (was: is_schedulable = true AND disabled = false)
+ *   - The map now shows a display roster: all active, non-deleted company users who
+ *     are either schedulable OR have visits/GPS for the day. This prevents the map
+ *     from hiding routes for technicians who were temporarily marked unschedulable
+ *     but still have assigned work.
+ *
+ * How the technician roster differs from dispatch:
+ *   - Dispatch uses GET /api/team/technicians (schedulable filter) for ASSIGNMENT authority
+ *   - Map uses a display roster: active non-deleted users for grouping/naming/color
+ *   - Map does NOT decide who is eligible for new assignments
  */
 
 import { Router } from "express";
 import type { Response } from "express";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import type { AuthedRequest } from "../auth/tenantIsolation";
+import { requireFeature } from "../auth/requireFeature";
 import { db } from "../db";
 import { sql } from "drizzle-orm";
-import { companySettings } from "@shared/schema";
+import { companyRepository } from "../storage/company";
+import { geocodeToLatLng } from "../utils/geocode";
 
 const router = Router();
+
+// Gate all map endpoints behind liveMapEnabled feature flag
+router.use(requireFeature("liveMapEnabled"));
 
 const dayQuerySchema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
 });
 
-// Active visit statuses shown on the map
+// Active visit statuses shown on the map (route-relevant statuses only)
 const ACTIVE_VISIT_STATUSES = [
   "scheduled", "dispatched", "en_route", "on_site", "in_progress", "on_hold",
 ];
@@ -42,20 +69,15 @@ function dayBoundsInTz(dateStr: string, tz: string) {
   return { start, end };
 }
 
-/** Fetch the tenant timezone from company_settings, defaulting to America/Toronto. */
-async function getTenantTimezone(companyId: string): Promise<string> {
-  const [row] = await db
-    .select({ timezone: companySettings.timezone })
-    .from(companySettings)
-    .where(eq(companySettings.companyId, companyId))
-    .limit(1);
-  return row?.timezone || "America/Toronto";
-}
-
 /**
  * GET /api/map/day?date=YYYY-MM-DD
- * Returns technician positions + scheduled visits + risk flags for a single day.
- * Falls back to jobs table for scheduled jobs without a corresponding visit.
+ *
+ * Returns technician display roster + scheduled visits + risk flags for a single day.
+ * Falls back to jobs table for scheduled jobs without a corresponding visit record.
+ *
+ * The technician roster is a DISPLAY model — it includes all active, non-deleted
+ * company users for grouping/color/labeling purposes. It does NOT filter by
+ * is_schedulable because the map visualizes assigned routes, not assignment authority.
  */
 router.get(
   "/day",
@@ -64,14 +86,18 @@ router.get(
     const parsed = dayQuerySchema.safeParse(req.query);
     if (!parsed.success) throw createError(400, "Invalid query params");
 
-    // Compute date in company timezone
-    const tz = await getTenantTimezone(companyId);
+    const tz = await companyRepository.getCompanyTimezone(companyId);
     const dateStr = parsed.data.date || todayInTimezone(tz);
     const { start, end } = dayBoundsInTz(dateStr, tz);
 
-    // Batch-fetch technicians + visits + job fallback + risk in parallel
+    // Batch-fetch display roster + visits + job fallback + risk in parallel
     const [techRows, visitRows, jobFallbackRows, riskRows] = await Promise.all([
-      // 1) All schedulable technicians, LEFT JOIN live positions for online status
+      // 1) Technician display roster — active, non-deleted company users
+      //    LEFT JOIN live positions for optional GPS overlay.
+      //    Phase 2: Removed is_schedulable filter. The map shows routes for anyone
+      //    who has assigned work, not just dispatch-eligible technicians.
+      //    disabled=false and deleted_at IS NULL are kept as basic data-integrity
+      //    guards (disabled/deleted users should not appear in any UI).
       db.execute(sql`
         SELECT
           u.id AS "technicianId",
@@ -79,17 +105,17 @@ router.get(
           lp.lat,
           lp.lng,
           COALESCE(lp.last_seen_at >= NOW() - INTERVAL '5 minutes', false) AS "online",
-          lp.last_seen_at AS "lastSeenAt"
+          lp.last_seen_at AS "lastSeenAt",
+          u.is_schedulable AS "isSchedulable"
         FROM users u
         LEFT JOIN technician_live_positions lp ON lp.technician_id = u.id AND lp.company_id = u.company_id
         WHERE u.company_id = ${companyId}
           AND u.disabled = false
-          AND u.is_schedulable = true
           AND u.deleted_at IS NULL
         ORDER BY u.full_name ASC
       `),
 
-      // 2) Active visits for the day (timezone-aware boundaries, includes visits with missing coords)
+      // 2) Active visits for the day (timezone-aware boundaries)
       db.execute(sql`
         SELECT
           jv.id AS "visitId",
@@ -110,7 +136,7 @@ router.get(
           AND jv.archived_at IS NULL
           AND jv.scheduled_start >= ${start.toISOString()}::timestamptz
           AND jv.scheduled_start < ${end.toISOString()}::timestamptz
-          AND jv.status = ANY(${ACTIVE_VISIT_STATUSES})
+          AND jv.status IN (${sql.join(ACTIVE_VISIT_STATUSES.map(s => sql`${s}`), sql`, `)})
         ORDER BY jv.scheduled_start ASC
       `),
 
@@ -118,7 +144,7 @@ router.get(
       db.execute(sql`
         SELECT
           j.id AS "visitId",
-          j.assigned_technician_user_id AS "technicianId",
+          COALESCE(j.primary_technician_id, j.assigned_technician_ids[1]) AS "technicianId",
           cl.company_name AS "locationName",
           j.scheduled_start AS "scheduledStart",
           j.scheduled_end AS "scheduledEnd",
@@ -138,14 +164,14 @@ router.get(
             WHERE jv.job_id = j.id
               AND jv.company_id = ${companyId}
               AND jv.is_active = true
-          AND jv.archived_at IS NULL
+              AND jv.archived_at IS NULL
               AND jv.scheduled_start >= ${start.toISOString()}::timestamptz
               AND jv.scheduled_start < ${end.toISOString()}::timestamptz
           )
         ORDER BY j.scheduled_start ASC
       `),
 
-      // 4) Open risk attention items for visits today
+      // 4) Open risk attention items for visits today (visualization only)
       db.execute(sql`
         SELECT
           ai.entity_id AS "entityId",
@@ -172,7 +198,6 @@ router.get(
     const allRows = [...(visitRows.rows as any[]), ...(jobFallbackRows.rows as any[])];
     const visits = allRows.map((v) => {
       const durationMinutes = Number(v.durationMinutes) || 60;
-      // Compute scheduledEnd if missing: scheduledStart + durationMinutes
       let scheduledEnd = v.scheduledEnd;
       if (!scheduledEnd && v.scheduledStart) {
         scheduledEnd = new Date(new Date(v.scheduledStart).getTime() + durationMinutes * 60_000).toISOString();
@@ -192,7 +217,18 @@ router.get(
       };
     });
 
-    const allTechs = techRows.rows as any[];
+    // Phase 2: Build display roster from all active users.
+    // Strip isSchedulable before sending — it's internal context, not map display data.
+    const allTechsRaw = techRows.rows as any[];
+    const allTechs = allTechsRaw.map((t) => ({
+      technicianId: t.technicianId,
+      name: t.name,
+      lat: t.lat ?? null,
+      lng: t.lng ?? null,
+      online: t.online,
+      lastSeenAt: t.lastSeenAt,
+    }));
+
     const jobFallbackCount = (jobFallbackRows.rows as any[]).length;
     const visitsWithCoords = visits.filter((v) => v.lat && v.lng).length;
     const visitsMissingScheduledStart = visits.filter((v) => !v.scheduledStart).length;
@@ -200,7 +236,7 @@ router.get(
     const visitsUnassigned = visits.filter((v) => !v.technicianId).length;
     const techniciansOnline = allTechs.filter((t) => t.online).length;
 
-    // Dev debug logging — visits are independent of tech online status
+    // Dev debug logging
     if (process.env.NODE_ENV !== "production") {
       const sample = visits.slice(0, 5).map((v) => ({
         id: v.visitId, start: v.scheduledStart, technicianId: v.technicianId, status: v.status, src: v.source,
@@ -216,7 +252,6 @@ router.get(
         `sample=`, sample,
       );
 
-      // Diagnostic when 0 visits: count all active job_visits for company
       if (visits.length === 0) {
         const diagResult = await db.execute(sql`
           SELECT COUNT(*)::int AS "total" FROM job_visits WHERE company_id = ${companyId} AND is_active = true AND archived_at IS NULL
@@ -230,13 +265,12 @@ router.get(
       }
     }
 
-    // Build _meta diagnostic hints for empty states (2026-03-05)
+    // Build _meta diagnostic hints for empty states
     const _meta: Record<string, any> = {};
     if (allTechs.length === 0) {
-      _meta.reasonTechsEmpty = "No active users with is_schedulable=true (check users.is_schedulable/disabled/deleted_at).";
+      _meta.reasonTechsEmpty = "No active, non-deleted users found for this company.";
     }
     if (visits.length === 0) {
-      // Count visits with scheduled_date but no scheduled_start (common backfill gap)
       const gapResult = await db.execute(sql`
         SELECT COUNT(*)::int AS "count"
         FROM job_visits
@@ -270,6 +304,65 @@ router.get(
         visitsMissingScheduledStart,
         ..._meta,
       },
+    });
+  }),
+);
+
+/**
+ * POST /api/map/geocode-backfill
+ *
+ * One-time backfill: geocodes all client_locations that have an address but
+ * no stored lat/lng. Runs sequentially with a small delay to respect ORS
+ * rate limits (~40 req/min on free tier).
+ */
+router.post(
+  "/geocode-backfill",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+
+    // Find locations with address but no coordinates
+    const missing = await db.execute(sql`
+      SELECT id, address, city, province, postal_code AS "postalCode"
+      FROM client_locations
+      WHERE company_id = ${companyId}
+        AND (lat IS NULL OR lng IS NULL)
+        AND (address IS NOT NULL AND address != '')
+    `);
+
+    const rows = missing.rows as { id: string; address: string; city: string | null; postalCode: string | null; province: string | null }[];
+    let updated = 0;
+    let failed = 0;
+    const results: { id: string; address: string; lat: string | null; lng: string | null; error?: string }[] = [];
+
+    for (const row of rows) {
+      try {
+        const coords = await geocodeToLatLng(row.address, row.city, row.province, row.postalCode);
+        if (coords) {
+          await db.execute(sql`
+            UPDATE client_locations SET lat = ${coords.lat}, lng = ${coords.lng}
+            WHERE id = ${row.id} AND company_id = ${companyId}
+          `);
+          updated++;
+          results.push({ id: row.id, address: row.address, lat: coords.lat, lng: coords.lng });
+        } else {
+          failed++;
+          results.push({ id: row.id, address: row.address, lat: null, lng: null, error: "geocode returned null" });
+        }
+      } catch (err: any) {
+        failed++;
+        results.push({ id: row.id, address: row.address, lat: null, lng: null, error: err.message });
+      }
+      // Rate-limit pause: ~1.5s between calls (ORS free tier: 40 req/min)
+      if (rows.indexOf(row) < rows.length - 1) {
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+    }
+
+    res.json({
+      total: rows.length,
+      updated,
+      failed,
+      results,
     });
   }),
 );

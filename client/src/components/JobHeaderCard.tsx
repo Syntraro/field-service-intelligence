@@ -20,7 +20,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+// Card/CardContent removed — parent provides wrapping card
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -56,6 +56,8 @@ interface JobHeaderCardProps {
   jobInvoice: Invoice | null;
   onEdit: () => void;
   onDelete: () => void;
+  /** When false, hides Edit/More Actions buttons but keeps all dialog/mutation logic active */
+  showActions?: boolean;
 }
 
 // Office roles that can perform billing/admin actions
@@ -65,7 +67,8 @@ export function JobHeaderCard({
   job,
   jobInvoice,
   onEdit,
-  onDelete
+  onDelete,
+  showActions = true,
 }: JobHeaderCardProps) {
   const [, setLocation] = useLocation();
   const { user } = useAuth();
@@ -324,8 +327,7 @@ export function JobHeaderCard({
 
   return (
     <>
-      <Card data-testid="card-job-header">
-        <CardContent className="p-4">
+      <div data-testid="card-job-header">
           <div className="flex flex-wrap items-start justify-between gap-4">
             {/* LEFT: Client info, job summary, address */}
             <div className="flex-1 min-w-[280px]">
@@ -335,30 +337,30 @@ export function JobHeaderCard({
                 className="text-left"
                 data-testid="link-client-title"
               >
-                <h1 className="text-2xl font-semibold hover:text-primary transition-colors" data-testid="text-client-title">
+                <h1 className="text-2xl font-bold tracking-tight text-foreground hover:text-primary transition-colors" data-testid="text-client-title">
                   {clientName}
                 </h1>
               </button>
 
               {job.summary && (
-                <p className="mt-0.5 text-base text-muted-foreground" data-testid="text-job-summary">
+                <p className="mt-0.5 text-sm text-muted-foreground/90" data-testid="text-job-summary">
                   {job.summary}
                 </p>
               )}
 
-              <div className="mt-2 flex items-center gap-1.5 text-sm" data-testid="text-location-info">
-                <MapPin className="h-4 w-4 text-muted-foreground flex-shrink-0" />
-                <span className="font-medium">{locationName}</span>
+              <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground/70" data-testid="text-location-info">
+                <MapPin className="h-3.5 w-3.5 flex-shrink-0" />
+                <span className="font-medium text-muted-foreground/80">{locationName}</span>
                 {fullAddress && (
                   <>
-                    <span className="text-muted-foreground">-</span>
-                    <span className="text-muted-foreground">{fullAddress}</span>
+                    <span>·</span>
+                    <span>{fullAddress}</span>
                   </>
                 )}
               </div>
 
-              {/* Action buttons */}
-              <div className="mt-4 flex flex-wrap items-center gap-2">
+              {/* Action buttons — hidden when showActions is false (parent renders its own action bar) */}
+              {showActions && <div className="mt-4 flex flex-wrap items-center gap-2">
                 <Button
                   variant="outline"
                   size="sm"
@@ -451,11 +453,10 @@ export function JobHeaderCard({
                     )}
                   </DropdownMenuContent>
                 </DropdownMenu>
-              </div>
+              </div>}
             </div>
           </div>
-        </CardContent>
-      </Card>
+      </div>
 
       {/* Close Job Dialog */}
       <Dialog open={showCloseJobDialog} onOpenChange={setShowCloseJobDialog}>

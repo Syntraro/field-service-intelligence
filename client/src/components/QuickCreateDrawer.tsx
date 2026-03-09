@@ -46,6 +46,7 @@ interface CanAddLocationResult {
   reason?: string;
   current?: number;
   limit?: number;
+  unlimited?: boolean;
 }
 
 export function QuickCreateDrawer({ open, onOpenChange, onNewJob }: QuickCreateDrawerProps) {
@@ -270,7 +271,7 @@ export function QuickCreateDrawer({ open, onOpenChange, onNewJob }: QuickCreateD
                   <div className="text-sm">
                     <p className="font-medium text-amber-800 dark:text-amber-300">Location limit reached</p>
                     <p className="text-amber-700 dark:text-amber-400 text-xs mt-0.5">
-                      You've reached your plan limit of {canAddLocation?.limit ?? "—"} locations
+                      You've reached your plan limit of {canAddLocation?.unlimited ? "Unlimited" : (canAddLocation?.limit ?? "—")} locations
                       {canAddLocation?.current != null && ` (${canAddLocation.current} used)`}.
                       Delete a location or upgrade your plan to add more.
                     </p>
@@ -356,9 +357,9 @@ export function QuickCreateDrawer({ open, onOpenChange, onNewJob }: QuickCreateD
                 />
               </div>
 
-              {/* Contact (optional) */}
+              {/* Phase 3: Legacy contact summary — canonical management via Contacts tab */}
               <div>
-                <Label htmlFor="qc-contact">Primary Contact <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                <Label htmlFor="qc-contact">Primary Site Contact <span className="text-muted-foreground font-normal">(summary)</span></Label>
                 <Input
                   id="qc-contact"
                   value={clientContact}
@@ -432,10 +433,15 @@ export function QuickCreateDrawer({ open, onOpenChange, onNewJob }: QuickCreateD
                             >
                               <Check className={cn("mr-2 h-4 w-4", selectedLocationId === c.id ? "opacity-100" : "opacity-0")} />
                               <div className="flex flex-col min-w-0">
-                                <span className="truncate">{c.companyName}</span>
-                                {(c.location || c.city) && (
+                                <span className="truncate">
+                                  {c.companyName}
+                                  {c.location && c.location !== c.companyName && (
+                                    <span className="text-muted-foreground font-normal"> — {c.location}</span>
+                                  )}
+                                </span>
+                                {c.address && (
                                   <span className="text-xs text-muted-foreground truncate">
-                                    {[c.location, c.city].filter(Boolean).join(" · ")}
+                                    {[c.address, c.city].filter(Boolean).join(", ")}
                                   </span>
                                 )}
                               </div>

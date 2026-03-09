@@ -4,7 +4,7 @@ import {
   logMutationResponse,
   logMutationError,
   isDiagnosticsEnabled,
-} from "./calendarDiagnostics";
+} from "./schedulingDiagnostics";
 
 // ========================================
 // API ERROR CLASS

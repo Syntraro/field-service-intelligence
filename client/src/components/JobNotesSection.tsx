@@ -4,7 +4,7 @@ import { format } from "date-fns";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { MessageSquare, ChevronDown, ChevronRight, Trash2, User } from "lucide-react";
+import { MessageSquare, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { AddJobNoteDialog } from "./AddJobNoteDialog";
@@ -29,9 +29,11 @@ interface JobNote {
 interface JobNotesSectionProps {
   jobId: string;
   defaultOpen?: boolean;
+  /** When true, renders without Card wrapper for integration into a unified surface */
+  embedded?: boolean;
 }
 
-export default function JobNotesSection({ jobId, defaultOpen = true }: JobNotesSectionProps) {
+export default function JobNotesSection({ jobId, defaultOpen = true, embedded = false }: JobNotesSectionProps) {
   const { toast } = useToast();
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
@@ -70,90 +72,101 @@ export default function JobNotesSection({ jobId, defaultOpen = true }: JobNotesS
   // Phase 4 Step B4: use pre-resolved userName from server
   const getUserName = (note: JobNote) => note.userName;
 
+  // Shared trigger + content (used in both embedded and card modes)
+  const trigger = (
+    <CollapsibleTrigger asChild>
+      <button
+        className="w-full flex items-center justify-between px-4 py-3 hover-elevate"
+        data-testid="trigger-notes"
+      >
+        <span className="text-sm font-semibold flex items-center gap-2">
+          <MessageSquare className="h-4 w-4 text-muted-foreground" />
+          Notes {notes.length > 0 && `(${notes.length})`}
+        </span>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-xs h-auto p-0 text-primary"
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsAddDialogOpen(true);
+            }}
+            data-testid="button-add-note"
+          >
+            + Add Note
+          </Button>
+          {isOpen ? (
+            <ChevronDown className="h-4 w-4 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="h-4 w-4 text-muted-foreground" />
+          )}
+        </div>
+      </button>
+    </CollapsibleTrigger>
+  );
+
+  const content = (
+    <CollapsibleContent>
+      <div className={embedded ? "px-4 pb-4 pt-1" : "border-t px-4 pb-4 pt-3"}>
+        {isLoading ? (
+          <p className="text-xs text-muted-foreground">Loading notes...</p>
+        ) : notes.length === 0 ? (
+          <div className="text-center py-4 text-muted-foreground">
+            <MessageSquare className="h-6 w-6 mx-auto mb-1 opacity-50" />
+            <p className="text-xs">No notes yet</p>
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            {notes.map((note) => (
+              <div
+                key={note.id}
+                className="group py-1.5 px-1"
+                data-testid={`note-${note.id}`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] text-muted-foreground">
+                    <span className="font-medium text-foreground/80">{getUserName(note)}</span>
+                    {" · "}
+                    {format(new Date(note.createdAt), "MMM d, h:mm a")}
+                    {note.updatedAt && " · edited"}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-5 w-5 opacity-0 group-hover:opacity-100 transition-opacity"
+                    onClick={() => deleteMutation.mutate(note.id)}
+                    disabled={deleteMutation.isPending}
+                    data-testid={`button-delete-note-${note.id}`}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </div>
+                <p className="text-sm whitespace-pre-wrap mt-0.5">{note.noteText}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </CollapsibleContent>
+  );
+
   return (
     <>
       <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-        <Card data-testid="card-job-notes">
-          <CollapsibleTrigger asChild>
-            <button
-              className="w-full flex items-center justify-between px-4 py-3 hover-elevate"
-              data-testid="trigger-notes"
-            >
-              <span className="text-sm font-semibold flex items-center gap-2">
-                <MessageSquare className="h-4 w-4 text-muted-foreground" />
-                Notes {notes.length > 0 && `(${notes.length})`}
-              </span>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-xs h-auto p-0 text-primary"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setIsAddDialogOpen(true);
-                  }}
-                  data-testid="button-add-note"
-                >
-                  + Add Note
-                </Button>
-                {isOpen ? (
-                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                ) : (
-                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                )}
-              </div>
-            </button>
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <div className="border-t px-4 pb-4 pt-3">
-              {isLoading ? (
-                <p className="text-xs text-muted-foreground">Loading notes...</p>
-              ) : notes.length === 0 ? (
-                <div className="text-center py-6 text-muted-foreground">
-                  <MessageSquare className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                  <p className="text-sm">No notes yet</p>
-                  <p className="text-xs mt-1">Add notes to track job details and communication.</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {notes.map((note) => (
-                    <div
-                      key={note.id}
-                      className="border rounded-lg p-3 space-y-2 bg-muted/30"
-                      data-testid={`note-${note.id}`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <User className="h-3 w-3" />
-                          <span className="font-medium">{getUserName(note)}</span>
-                          <span>•</span>
-                          <span>{format(new Date(note.createdAt), "MMM dd, yyyy 'at' h:mm a")}</span>
-                          {note.updatedAt && (
-                            <>
-                              <span>•</span>
-                              <span className="italic">edited</span>
-                            </>
-                          )}
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-6 w-6"
-                          onClick={() => deleteMutation.mutate(note.id)}
-                          disabled={deleteMutation.isPending}
-                          data-testid={`button-delete-note-${note.id}`}
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
-                      </div>
-                      <p className="text-sm whitespace-pre-wrap">{note.noteText}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </CollapsibleContent>
-        </Card>
+        {embedded ? (
+          // Embedded mode: no Card wrapper, integrates into parent unified surface
+          <div data-testid="card-job-notes">
+            {trigger}
+            {content}
+          </div>
+        ) : (
+          // Standalone mode: wrapped in Card
+          <Card data-testid="card-job-notes">
+            {trigger}
+            {content}
+          </Card>
+        )}
       </Collapsible>
 
       <AddJobNoteDialog

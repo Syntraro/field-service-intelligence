@@ -8,6 +8,1578 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### PM Phase 4B — Queue Grouping Views: Location, Client, Proximity (2026-03-09)
+
+- **Grouping mode selector**: Segmented control (None / Location / Client / Proximity) at top of Upcoming tab lets dispatchers switch queue views instantly.
+- **Group by Location**: Groups PMs by `locationId`, showing location name as group header with customer name as sublabel.
+- **Group by Client**: Groups PMs by `clientId` (customer company), showing customer name with location count sublabel.
+- **Group by Proximity**: Uses Haversine formula + single-linkage clustering (5 km threshold) to cluster PMs at nearby locations. Labels derived from city names. Locations without coordinates placed in "No coordinates" bucket.
+- **Group-level summary badges**: Each collapsible group header shows overdue/due-soon/needs-action counts as colored badges.
+- **Group sorting**: Groups sorted by urgency — overdue first, then due soon, then needs action, then alphabetical.
+- **Item sorting within groups**: Items sorted by compliance urgency (overdue → due_soon → in_window → upcoming → completed → rest).
+- **Filter + grouping interaction**: Filters apply BEFORE grouping, so grouped views respect the active filter.
+- **Collapsible groups**: Each group section is collapsible via shadcn Collapsible component; all expanded by default.
+- **Row-level actionability preserved**: Each PM row within a group remains individually clickable, linking to PM detail page.
+- Files changed:
+  - `server/storage/recurringJobs.ts` — Added `locationLat`, `locationLng`, `locationAddress`, `locationCity` to `UpcomingQueueItem` interface and SELECT query
+  - `client/src/pages/PMWorkspacePage.tsx` — Full rewrite with grouping modes, proximity clustering, collapsible group sections, group-level badges
+
+#### PM Phase 4A — Scheduling Visibility + Actionable Planning Queue (2026-03-09)
+
+- **Dual-state planning queue**: Each row in the Upcoming tab now shows both compliance state (overdue/due_soon/in_window/upcoming/completed_on_time/completed_late/skipped/canceled) and scheduling state (not_generated/generated_unscheduled/scheduled/completed/canceled/skipped) as separate badge columns.
+- **Visit scheduling info**: Backend now batch-fetches earliest `job_visit` per generated job. Upcoming queue displays visit scheduled date/time when available.
+- **Completed on-time vs late**: Compliance status now distinguishes `completed_on_time` from `completed_late` by comparing visit/job completion timestamp against service window end date.
+- **"Needs Action" filter**: Default filter shows PMs that are in-window/due-soon/overdue AND not yet scheduled. Also available: overdue, due soon, generated-but-unscheduled, scheduled, upcoming, completed, and all.
+- **Summary badges**: Clickable count badges at top of queue: "X need action", "X overdue", "X due soon", "X unscheduled".
+- **Location grouping hint**: When multiple PMs are due at the same location, a small badge shows "X PMs due at this site" with tooltip.
+- **PMDetailPage operational summary**: New summary block at top of detail page showing: Status, Next due, In service window, Needs scheduling, Last completed (with late indicator).
+- **PMDetailPage scheduling column**: Instance history table now includes a "Scheduling" column showing derived state (No Job / Job Open / Done / Skipped / Canceled).
+- **Queue columns**: PM Setup, Customer/Location, Target Date, Service Window, Visit Date, Technician, Job — all visible in the upgraded table.
+- Files changed:
+  - `server/storage/recurringJobs.ts` — Two-pass query (instances+jobs, then batch visits), dual state computation, `UpcomingQueueItem` interface expanded with `schedulingState`, `visit`, `completed_on_time`/`completed_late`
+  - `client/src/pages/PMWorkspacePage.tsx` — Full rewrite of UpcomingTab with dual badges, rich filters, location grouping hints, TooltipProvider
+  - `client/src/pages/PMDetailPage.tsx` — OperationalSummary block, enhanced instance table with scheduling column, upcoming queue integration
+
+### Fixed
+
+#### PMWizardPage clientId mapping fix (2026-03-09)
+
+- Fixed `clientId` in PM wizard payload — was incorrectly set to `locationId` instead of `customerCompanyId`. The `clientId` FK on `recurring_job_templates` references `customer_companies`, not `client_locations`.
+- File: `client/src/pages/PMWizardPage.tsx`
+
+#### QBO Integration — Switch from Sandbox to Production (2026-03-09)
+
+- **Root cause:** Three layers were all pointing to sandbox: `QBO_ENVIRONMENT` env var, `companies.qbo_environment` DB column, and `isImportAllowedInEnvironment()` hard-blocking production imports.
+- **`server/services/qbo/QboClient.ts`**: Updated `isImportAllowedInEnvironment()` to always return `true`. Import operations are read-only (QBO → App, enforced by `isImportReadOnlyEnforced()`) and safe in production.
+- **DB**: Set `companies.qbo_environment` to `"production"` for the active tenant.
+- **Secrets required**: `QBO_ENVIRONMENT` must be changed from `"sandbox"` to `"production"` in Replit Secrets. Production `QBO_CLIENT_ID` and `QBO_CLIENT_SECRET` from Intuit developer portal must replace sandbox credentials.
+- Import logic, data mapping, sync orchestration, and webhook handling remain unchanged.
+
+### Added
+
+#### PM Phase 3 — Planning Queue + Service Windows + Compliance Status (2026-03-09)
+
+- **Service window fields**: Added `service_window_days_before` (default 7) and `service_window_days_after` (default 14) to `recurring_job_templates` table.
+  - Migration: `migrations/2026_03_09_pm_service_windows.sql`
+  - Schema: `shared/schema.ts` (insert + update Zod schemas updated)
+  - Storage: `server/storage/recurringJobs.ts` (createTemplate supports new fields)
+- **Upcoming planning queue API**: `GET /api/recurring-templates/upcoming` returns instances across all templates with computed compliance status (`upcoming`, `in_window`, `due_soon`, `overdue`, `completed`, `skipped`, `canceled`), service window dates, customer/location names, and technician names. Supports date range, status, and pagination filters.
+  - Route registered before `/:id` to prevent Express param matching conflict.
+  - Files: `server/routes/recurringJobs.ts`, `server/storage/recurringJobs.ts`
+- **Real Upcoming tab**: Replaced placeholder in PMWorkspacePage with a live planning queue showing compliance badges, customer/location, ideal dates, service windows, technician assignments, and linked jobs. Includes clickable summary badges (overdue/due soon/in window counts) and dropdown filter (Actionable/All/Overdue/Due Soon/In Window/Upcoming/Completed).
+  - File: `client/src/pages/PMWorkspacePage.tsx`
+- **PMDetailPage service window display**: Schedule card now shows "Service window: Xd before — Yd after". Technician name now resolved via `useTechniciansDirectory` instead of showing raw UUID.
+  - File: `client/src/pages/PMDetailPage.tsx`
+- **PMWizardPage service window fields**: Step 3 (PM Details) now includes "Days before" and "Days after" inputs for service window configuration. Values appear in Review step and are sent in create payload.
+  - File: `client/src/pages/PMWizardPage.tsx`
+- **PMEditPage service window fields**: Schedule card now includes service window inputs. Values saved in PATCH payload.
+  - File: `client/src/pages/PMEditPage.tsx`
+
+### Removed
+
+#### PMSetupModal deletion (2026-03-09)
+
+- **Deleted** `client/src/components/PMSetupModal.tsx` — fully retired dead code, no imports anywhere in the codebase since Phase 2C.
+
+#### PM Phase 2C — PM Detail/Edit Experience + PMScheduleCard Modal Retirement (2026-03-09)
+
+- **PM detail page** (`client/src/pages/PMDetailPage.tsx`): New `/pm/:id` route showing full PM setup with overview, schedule, parts, actions (edit/pause/generate/duplicate/open location/customer), and instance history table with job links and status badges.
+- **PM edit page** (`client/src/pages/PMEditPage.tsx`): New `/pm/:id/edit` route with same field layout as the wizard. Loads existing template, allows full PM settings update via PATCH, returns to detail page on save.
+- **App routing**: Added `/pm/:id/edit` and `/pm/:id` routes in `App.tsx`.
+- **PM workspace clickable rows**: Table rows in PM workspace now navigate to `/pm/:id` on click. Action buttons use `stopPropagation` to prevent double navigation.
+- **PMScheduleCard modal retirement**: Removed `PMSetupModal` import and rendering from `PMScheduleCard`. Edit button now navigates to `/pm/:id/edit`. "View PM details" link navigates to `/pm/:id`. Creation button already routes to `/pm/new?locationId=`.
+- **PMSetupModal status**: No longer imported or rendered anywhere in the active product flow. File exists but is fully retired from navigation. All PM create/edit paths now use dedicated PM workspace routes.
+- **No backend changes**: All pages use existing recurring template APIs.
+- Files: `client/src/pages/PMDetailPage.tsx` (new), `client/src/pages/PMEditPage.tsx` (new), `client/src/App.tsx`, `client/src/pages/PMWorkspacePage.tsx`, `client/src/components/PMScheduleCard.tsx`
+
+#### PM Phase 2B — Guided PM Creation Wizard + Legacy Flow Redirect (2026-03-09)
+
+- **PM creation wizard** (`client/src/pages/PMWizardPage.tsx`): New 5-step guided wizard at `/pm/new` for creating PM setups via the modern recurring template system.
+  - Step 1: Target selection (customer company + location, searchable combobox pickers)
+  - Step 2: Setup type (from scratch or copy settings from existing PM template)
+  - Step 3: PM details (name, months, generation mode, auto-schedule, start/end date, preferred technician)
+  - Step 4: Parts options (include location PM parts toggle with part count preview)
+  - Step 5: Review summary and create
+- **Query-param prefill**: Supports `?locationId=`, `?fromTemplateId=`, `?duplicate=` for contextual launches.
+- **App routing**: Registered `/pm/new` route in `App.tsx` (before `/pm` for correct matching).
+- **PMScheduleCard creation redirect**: "Create PM Schedule" button on location pages now navigates to `/pm/new?locationId=` instead of opening the embedded modal. PMSetupModal is retained only for **editing** existing PM schedules.
+- **Primary creation path**: All PM creation entry points (`/pm` workspace "New PM Setup" button, PMScheduleCard "Create" button, duplicate action) now route through the wizard.
+- **No backend changes**: Wizard reuses existing `POST /api/recurring-templates` and `POST /api/recurring-templates/:id/generate` endpoints.
+- Files: `client/src/pages/PMWizardPage.tsx` (new), `client/src/App.tsx`, `client/src/components/PMScheduleCard.tsx`
+
+#### PM Phase 2 — Dedicated PM Workspace, Navigation, Auto-Generation, Duplicate Flow (2026-03-09)
+
+- **PM Workspace page** (`client/src/pages/PMWorkspacePage.tsx`): New `/pm` route with two tabs — "PM Setups" (template list with status, recurrence, months, actions) and "Upcoming" (placeholder for generated job instances). Supports pause/resume, edit, duplicate, and "Generate Now" actions.
+- **Sidebar navigation**: Added "PM" entry (Wrench icon) in the operations section of `AppSidebar.tsx`, between Jobs and Invoices.
+- **App routing**: Registered `/pm` route in `App.tsx` with `ProtectedRoute requireAdmin` guard.
+- **Duplicate/copy API**: `POST /api/recurring-templates/:id/duplicate` creates a paused copy of a template with " (Copy)" title suffix. Storage method in `recurringJobsRepository.duplicateTemplate()`.
+- **Auto-generation wired to server startup**: `startPmAutoGeneration()` called in `server/index.ts` after server starts listening. Runs 30s after boot, then every 6h.
+- **PMScheduleCard link-in**: Added "View all PM setups →" link to PM workspace from the location-level PM card.
+- Files: `client/src/pages/PMWorkspacePage.tsx`, `client/src/App.tsx`, `client/src/components/AppSidebar.tsx`, `server/index.ts`, `server/services/pmAutoGeneration.ts`, `server/routes/recurringJobs.ts`, `server/storage/recurringJobs.ts`, `client/src/components/PMScheduleCard.tsx`
+
+#### PM Auto-Generation Service (2026-03-09)
+
+- Created `server/services/pmAutoGeneration.ts` — background scheduler that automatically generates recurring PM job instances for all tenants.
+- Runs 30 seconds after server startup (catch-up), then every 6 hours.
+- Queries all companies with active `recurring_job_templates`, calls `generateInstances()` per tenant with a 45-day lookahead window.
+- Idempotent: the existing generation engine handles dedup via unique constraints.
+- Fault-tolerant: each company is processed independently so one failure doesn't block others.
+- Files: `server/services/pmAutoGeneration.ts`
+
+#### Tenant Data Reset Script (2026-03-09)
+
+- Created `scripts/resetTenantData.ts` — safely wipes all sandbox operational data for a tenant while preserving account, users, schema, feature flags, and settings.
+- Deletes from 50+ operational tables in correct FK order inside a single transaction with automatic rollback on failure.
+- Handles missing tables/columns gracefully via SAVEPOINTs (for schemas that haven't been fully migrated).
+- Supports tables with `company_id`, `tenant_id`, or no tenant column (subquery-based deletion via parent FK).
+- Outputs pre-reset counts, per-table deletion log, post-reset verification, and preserved-table checks.
+- Usage: `npx tsx scripts/resetTenantData.ts [companyId]`
+- Files: `scripts/resetTenantData.ts`
+
+### Changed
+
+#### Dispatch Board — Visual Color Mapping for Jobs / Tasks / Supplier Visits (2026-03-09)
+
+Updated the dispatch board color system to match the intended semantic meaning:
+
+- **Jobs render GREEN**: `visitStatusColor()` and `visitStatusDot()` updated — scheduled uses emerald, dispatched uses green, in_progress uses lime. Selection rings, resize handles, team badges, occupancy rails, drag previews, unscheduled cards, and detail panel all updated from blue/slate to emerald/green.
+- **Tasks render BLUE**: All task blocks changed from violet/purple to blue color family — card background, borders, selection rings, resize handles, status badges, week view items, detail panel header/footer/badges.
+- **Supplier visits distinguished by ICON**: `Truck` icon used for `SUPPLIER_VISIT` and `supplier_run` task types (replacing generic `ClipboardList`). Applied in `DispatchTaskBlock`, `WeekDispatchCell`, and `DispatchDetailPanel`. Added `SUPPLIER_VISIT` to type label maps.
+- **Any Time chips unchanged**: Yellow/amber chips remain as-is.
+- **Three-color system enforced**: Green = jobs, Blue = tasks (including supplier visits), Yellow = Any Time state.
+- Files: `dispatchPreviewUtils.ts`, `DispatchVisitBlock.tsx`, `DispatchTaskBlock.tsx`, `DispatchDetailPanel.tsx`, `DispatchUnscheduledCard.tsx`, `DispatchDragPreview.tsx`, `DispatchLaneRow.tsx`, `WeekDispatchCell.tsx`
+
+#### Job Detail Page — Visual Surface & Section Rhythm Pass (2026-03-09)
+
+Visual-only refinements to improve section grouping, hierarchy, and readability. No layout or logic changes.
+
+- **Billing surface zone**: Parts & Billing + Expenses + Recurring wrapped in unified `bg-muted/15` container with lighter internal dividers (`border-border/40`) for cohesion.
+- **Stronger section boundaries**: Notes and Visits sections use `border-t-2 border-border/50` for clear visual separation from billing zone. Activity uses lighter `border-t border-border/30`.
+- **Section heading consistency**: All section headings standardized to `text-[13px] font-semibold`, icons to `text-muted-foreground/70`, chevrons to `text-muted-foreground/50`.
+- **Sidebar as utility rail**: Removed `bg-muted/10` background tint, replaced full-width `border-b` dividers with inset `mx-5 border-t border-border/40` dividers, added `[&>*]:bg-transparent` to strip child card backgrounds.
+- **Collapse trigger polish**: Parts & Billing trigger conditionally shows `border-b border-border/40` only when expanded.
+- **Header card typography**: Title `text-2xl font-bold tracking-tight`, summary `text-muted-foreground/90`, address `text-muted-foreground/70` with dot separator.
+- Files: `client/src/pages/JobDetailPage.tsx`, `client/src/components/JobHeaderCard.tsx`
+
+#### Dispatch Board — Improved Quick Create Menu (2026-03-09)
+
+- **Replaced generic "New Task" with explicit task types**: Quick Create menu now shows three options: New Job Visit (CalendarPlus icon), General Task (ClipboardList icon), Supplier Visit (Truck icon).
+- **Task type prefill**: `TaskPrefill` interface extended with `taskType` field. Quick-create passes `"GENERAL"` or `"SUPPLIER_VISIT"` so `TaskDialog` opens with the correct type pre-selected.
+- **Left-aligned button content**: Menu buttons use `justify-start gap-2` for icon + label alignment.
+- Files: `client/src/pages/DispatchPreview.tsx`, `client/src/components/TaskDialog.tsx`
+
+#### Job Detail Page — Final Layout Refinement (2026-03-09)
+
+Content redistribution for better page balance and readability.
+
+- **Notes moved to main column**: Moved from right sidebar to main column below Parts & Billing / Expenses. Notes now have full horizontal width for easier scanning.
+- **Visits moved to main column**: Moved below Notes in main column. Compact visit list with slightly larger touch targets (`px-3 py-2`, `text-xs`).
+- **Parts & Billing collapsible**: Added `Collapsible` wrapper with a section header trigger (`DollarSign` icon + "Parts & Billing" + chevron). Users can collapse to reduce scrolling. Expanded by default.
+- **Activity section moved to main column**: Activity timeline now lives at the bottom of the main column (below Visits), removed `Card` wrapper, uses `hover:bg-muted/30` for subtle interaction feedback.
+- **Sidebar refined**: Now contains only Labour, Equipment, Status Timeline, Scheduling History. Added `bg-muted/10` background tint to visually distinguish from main column. Narrowed from `340px` to `300px`.
+- **Removed unused `Card` import**: No longer needed after Activity section cleanup.
+- Files: `client/src/pages/JobDetailPage.tsx`
+
+### Added
+
+#### Dispatch Board — Any Time Capacity Warning + Default Schedule Prefill (2026-03-09)
+
+Three dispatch UX improvements:
+
+- **Unscheduled schedule prefill**: When scheduling an unscheduled visit from the dispatch detail panel, the date field now prefills with the board's currently selected date (not today unless the board is on today). Time defaults to 09:00, duration to 1 hour (existing defaults preserved).
+- **Any Time capacity warning (soft limit)**: When converting a timed visit to Any Time, if the technician already has 3+ Any Time visits on that day, a warning toast is shown: "This technician already has N Any Time visits today. Consider scheduling a specific time." Warning only — does not block the save.
+- **Any Time overflow popover**: The Any Time column already showed max 3 chips with `+N` overflow indicator. The `+N` is now clickable, opening a popover that lists all overflow visits with the same chip styling. Clicking an overflow chip selects the visit in the detail panel.
+- **Stable chip sort**: Any Time chips are sorted by visit ID (creation order) to prevent unpredictable reordering.
+- Files: `client/src/pages/DispatchPreview.tsx`, `client/src/components/dispatch/DispatchDetailPanel.tsx`, `client/src/components/dispatch/DispatchTimeline.tsx`
+
+### Fixed
+
+#### Dispatch Board — Visit disappears after converting to Any Time (2026-03-09)
+
+- **Root cause**: The API query range used `startOfDay(selectedDate)` which is local-timezone midnight. In timezones behind UTC (e.g., EST where local midnight = 5am UTC), an allDay visit stored at UTC midnight (`2026-03-09T00:00:00Z`) falls BEFORE the query range start (`2026-03-09T05:00:00Z`). The optimistic cache showed the visit correctly, but the background refetch excluded it from the server response, causing it to vanish.
+- **Fix**: Widened the API query start to `min(localMidnight, utcMidnight)` so allDay visits at UTC midnight are always captured. Applied a unified post-filter using `getDispatchDayKey()` on ALL visits (not just allDay) to remove any wrong-day timed visits from the wider range. Same fix applied to week view.
+- Files: `client/src/components/dispatch/useDispatchPreviewData.ts`, `client/src/components/dispatch/useDispatchWeekData.ts`
+
+#### Job Detail Page — Visual Polish Pass (2026-03-09)
+
+Visual-only refinements to the unified surface — no layout changes.
+
+- **Inline attention indicator**: Replaced full-width OfficeActionsStrip banner with a compact inline status pill on the left side of the action row (e.g., "⚠ Overdue — since Mar 8"). Uses `getAttentionReason()` and `ATTENTION_CONFIG` for consistency.
+- **Strengthened typography hierarchy**: Title is `font-bold tracking-tight`, summary is `text-sm text-muted-foreground/90`, address is `text-xs text-muted-foreground/70` with dot separator.
+- **Sidebar metadata grid alignment**: Replaced `flex justify-between` rows with a `grid grid-cols-[auto_1fr]` layout for perfectly aligned label/value columns.
+- **Parts & Billing emphasis**: Added `bg-muted/30` background tint and transparent child backgrounds to visually distinguish the primary working area.
+- **Unified surface shadow**: Added `shadow-sm border-border/80` for a more premium card feel.
+- **Sidebar section header contrast**: Section titles use explicit `text-foreground` for stronger visual weight against muted backgrounds.
+- Files: `client/src/pages/JobDetailPage.tsx`, `client/src/components/JobHeaderCard.tsx`
+
+### Changed
+
+#### Job Detail Page — Unified Surface Redesign (2026-03-09)
+
+Second-pass layout restructure to create one cohesive workspace instead of fragmented cards.
+
+- **Removed Back button**: Eliminated from action bar entirely; users navigate via main app nav.
+- **Removed context-actions bar**: Eliminated the duplicate state-based CTA bar (Schedule Visit, Assign Technician, View Invoice) that competed with the main action row.
+- **Rationalized OfficeActionsStrip**: Banner no longer duplicates scheduling actions from the action bar. On Hold shows "Resume" only; Overdue shows "Unschedule" only; Requires Invoicing shows "Create Invoice" only.
+- **Single canonical action row**: Right-aligned only — Schedule Visit + Edit Job + More Actions. No Back button, no left-aligned buttons, no second action row.
+- **Unified bordered surface**: Header + body wrapped in one `rounded-lg border bg-card` container with internal dividers instead of separate Card components.
+- **Header integrated**: Identity (left) and metadata (right) are sections within the unified surface, separated by a vertical divider. No separate Card wrapper.
+- **Body 2-column layout**: Left column (billing/expenses/recurring) and right column (labour/notes/visits/equipment/timeline/history/activity) are within the same surface, separated by a vertical border.
+- **PartsBillingCard flush integration**: Card border stripped via CSS selector `[&>*]:border-0` so it renders flush inside the unified surface as the main working area.
+- **Sidebar sections use internal dividers**: Labour, Notes, Visits rendered with `border-b` dividers instead of separate Card wrappers. Equipment, Timeline, History, Activity cards have borders stripped to integrate.
+- **JobNotesSection embedded mode**: Added `embedded?: boolean` prop to render without Card wrapper when integrated into a parent surface.
+- **Removed duplicate Schedule Visit from visits section header**: Only the top action bar has the Schedule Visit button.
+- **Cleaned up unused imports**: Removed icons no longer used after layout simplification.
+- Files: `client/src/pages/JobDetailPage.tsx`, `client/src/components/JobNotesSection.tsx`
+
+#### Dispatch Board — Fix Any Time Day Bucketing + Unify Row Alignment (2026-03-09)
+
+Two structural fixes to the dispatch board:
+
+- **Fixed wrong-day Any Time bucketing (root cause: local-timezone date range query)**:
+  The API query used `startOfDay()`/`endOfDay()` from date-fns, which operates in browser-local timezone. For timezones behind UTC (e.g., EST), the local-midnight-to-midnight range in UTC includes midnight of the next UTC day — causing allDay visits stored at `2026-03-08T00:00:00.000Z` to appear on the Mar 7 board. Fix: post-filter allDay visits using canonical UTC day-key comparison against the selected date.
+- **Added `getDispatchDayKey()` canonical helper**: Single source of truth for dispatch day bucketing — uses UTC date extraction for allDay visits, local timezone for timed visits. Used in both Day view (post-filter) and Week view (grouping).
+- **Unified row alignment across all board columns**: Extracted `DIVIDER_HEIGHT_PX` to shared `dispatchPreviewUtils.ts` constant. All three board columns (technician sidebar, Any Time column, timeline grid) now use the same explicit height for the off-shift divider and consistent `border-slate-200/80` borders on tech rows. Removed padding-based implicit sizing.
+- Files: `client/src/components/dispatch/dispatchPreviewUtils.ts`, `client/src/components/dispatch/useDispatchPreviewData.ts`, `client/src/components/dispatch/useDispatchWeekData.ts`, `client/src/components/dispatch/DispatchTechnicianSidebar.tsx`, `client/src/components/dispatch/DispatchTimeline.tsx`
+
+#### Job Detail Page — UI/UX Layout Restructure (2026-03-09)
+
+Surgical restructure of the Job Detail page layout for improved information hierarchy and action discoverability.
+
+- **Top action bar**: Added a dedicated action bar above the header card with Back, Schedule Visit, Edit Job, and More Actions dropdown. Actions are now immediately accessible without scrolling into the header card.
+- **2-column header card**: Replaced the old 3-column meta card (identity / visits / status) with a cleaner 2-column layout: identity info (left) and metadata sidebar (right). Description renders inline below the identity block.
+- **Visits moved to sidebar**: Visits section relocated from the middle column of the header to the right sidebar as a flat sorted list. Shows all visits (active + completed) with status badges for non-scheduled statuses. Defaults to 5 visible with "Show all" toggle.
+- **More Actions in action bar**: The More Actions dropdown (Create Similar, Create/View Invoice, Signature, PDF, Print, Delete) is now in the top action bar instead of nested inside JobHeaderCard.
+- **JobHeaderCard simplified**: Removed Card wrapper; accepts `showActions` prop to hide internal action buttons when parent provides its own action bar. All dialog/mutation logic preserved internally.
+- **JobNotesSection compact layout**: Notes now render without individual card borders; author and date on a single inline line (`Author · Date`); delete button only shows on hover. Reduced vertical spacing.
+- **Wider right sidebar**: Right sidebar column widened from `1fr` to `340px` for better readability of sidebar cards.
+- Files: `client/src/components/JobHeaderCard.tsx`, `client/src/pages/JobDetailPage.tsx`, `client/src/components/JobNotesSection.tsx`
+
+#### Dispatch Board — Any Time Editing Stabilization Pass (2026-03-09)
+
+Coherent stabilization pass for Any Time scheduling in dispatch.
+
+- **Fixed Any Time date display bug (root cause: UTC/local timezone mismatch)**: Date display for all-day visits now extracts UTC date parts directly (`getUTCFullYear/Month/Date`) instead of using `new Date(isoString)` which shifts midnight UTC to the previous day in negative-offset timezones (e.g., EST). This fixes the snap-back / off-by-one where clicking March 9 appeared as March 8.
+- **Any Time column alignment**: Off-shift divider in the Any Time column now uses explicit `DIVIDER_HEIGHT_PX` (26px) to match the sidebar and timeline dividers exactly. Extracted `DIVIDER_HEIGHT_PX` to module-level constant.
+- **Any Time checkbox replaces mode badge**: Replaced the read-only "Timed"/"Any Time" badge with an interactive "Any Time" checkbox. No "Timed" label shown anywhere. Checking the box saves immediately with canonical UTC boundaries. Unchecking reveals time/duration controls with visible defaults — user must press "Schedule at HH:MM" to confirm. No silent save on uncheck.
+- **Optimistic cache now patches `allDay` flag**: `optimisticReschedule()` in `useDispatchPreviewMutations.ts` now patches the `allDay` field in the TanStack Query cache, so visits immediately render in the correct surface (any-time column vs timeline grid) without waiting for server response.
+- **Conversion flow (Any Time → timed)**: When unchecking "Any Time", a conversion form appears showing the current date, a time picker (default 09:00), and a duration selector. The user must explicitly click "Schedule" to commit. No hidden fallback values. Preserves the visit's current date.
+- Files: `client/src/components/dispatch/DispatchDetailPanel.tsx`, `client/src/components/dispatch/DispatchTimeline.tsx`, `client/src/components/dispatch/useDispatchPreviewMutations.ts`
+
+#### Dispatch Board — Fixed Any-Time Column + Disable Broken Toggle (2026-03-09)
+
+Replaced the confusing per-lane any-time chip rail with a dedicated fixed column in the dispatch timeline layout.
+
+- **Fixed Any Time column**: Added an 80px-wide sticky-left column in `DispatchTimeline` between the tech sidebar and the scrollable hour grid. Each tech lane gets a cell showing up to 3 any-time visit chips (with overflow "+N" indicator). The column header reads "ANY TIME" in amber. The column scrolls vertically with lanes but stays pinned horizontally when scrolling the timeline.
+- **Removed chip rail from lanes**: Deleted the `anyTimeVisits` chip rail overlay from `DispatchLaneRow` (was pinned to lane top, caused visual clutter and confusion). Lane rows now only render timed visits and tasks.
+- **Disabled Timed/Any Time toggle**: Replaced the interactive toggle buttons in `DispatchDetailPanel` with a read-only scheduling mode badge. The toggle caused day teleportation (9 AM UTC hardcoded, wrong for non-UTC users). Users should use the full visit editor (`EditVisitModal`) to change scheduling mode.
+- **Any-time date editing preserved**: The date picker for any-time visits in the detail panel still works correctly (UTC midnight boundaries).
+- Files: `client/src/components/dispatch/DispatchTimeline.tsx`, `client/src/components/dispatch/DispatchLaneRow.tsx`, `client/src/components/dispatch/DispatchDetailPanel.tsx`
+
+#### Dispatch Board — Any-Time UI + Detail Panel Editing + Multi-Tech Drag Fix (2026-03-08)
+
+Three follow-up fixes for all-day/any-time scheduling UX:
+
+- **Any-time lane UI refined**: Replaced full-width yellow banner strip (`absolute top-0 left-0 right-0 bg-amber-50/90 border-b`) with compact inline chip rail. Chips are now `rounded-full` pills with `CalendarDays` icon, pinned to lane top-left with no full-width background. Hidden scrollbar for overflow (`scrollbarWidth: "none"`). Added `data-dispatch-block="anytime"` to prevent quick-create on chip clicks.
+- **Visit detail panel Any Time editing**: Added `Timed / Any Time` toggle in the Schedule section. Toggling to Any Time calls `onReschedule` with UTC midnight/23:59:59 boundaries (canonical path). Toggling to Timed defaults to 9–10 AM. Any-time mode shows date picker only (no time/duration controls). Date change in any-time mode preserves `allDay: true` flag.
+- **Multi-tech drag: time move allowed, crew reassignment blocked**: Previous guard blocked ALL cross-lane drags for multi-tech visits. Now looks up the visit's full `technicianIds` list and checks whether the target lane tech is already assigned. If yes → time reschedule (all mirrors move). If no → blocked with toast feedback. Applied consistently to both day and week view handlers.
+- **`RescheduleParams` extended**: Added optional `allDay` field. `rescheduleVisit` mutation now passes `allDay` through to the API instead of hardcoding `false`. Detail panel's `onReschedule` prop signature extended with optional `allDay` parameter.
+- Files: `client/src/components/dispatch/DispatchLaneRow.tsx`, `client/src/components/dispatch/DispatchDetailPanel.tsx`, `client/src/components/dispatch/useDispatchPreviewMutations.ts`, `client/src/pages/DispatchPreview.tsx`
+
+#### All-Day Scheduling — UTC Timestamp Fix & Normalization Consolidation (2026-03-08)
+
+Root-cause fix for `jobs_all_day_end_2359_check` constraint violation when changing all-day visit dates from the job detail page.
+
+**Phase 1 — Fix constraint violations:**
+- **`EditVisitModal.tsx`**: All-day payload was constructing `new Date("YYYY-MM-DDT00:00:00")` without `Z` suffix, causing browser-local timezone interpretation. `toISOString()` then shifted the hour into UTC (e.g., midnight EST → 05:00:00 UTC), violating the midnight/23:59:59 constraints. Fixed to send pre-formed UTC ISO strings: `"YYYY-MM-DDT00:00:00.000Z"` / `"YYYY-MM-DDT23:59:59.000Z"`.
+- **`jobVisits.ts` `createJobVisit()`**: Fallback end-of-day computation used `setHours(23,59,59,0)` (local time). Changed to `setUTCHours(23,59,59,0)`.
+- **`jobVisits.ts` `syncJobScheduleFromVisits()`**: Mirror write to `jobs` table passed raw Date objects without sanitization. Added `sanitizeAllDayTimestamps()` call before DB write to replace Date objects with UTC-safe SQL expressions (`::timestamp` cast), preventing node-pg timezone serialization from breaking the constraint.
+
+**Phase 2 — Consolidate normalization:**
+- **`jobVisits.routes.ts` PATCH handler**: When `isAllDay=true`, the route now passes the payload through `normalizeScheduleTimes()` (canonical function in `server/domain/scheduling.ts`) instead of raw `new Date()` conversion. This ensures the server produces correct UTC boundaries regardless of what the client sends. Timed/unscheduled payloads still use direct Date conversion (no change).
+
+**Cosmetic:**
+- **`DispatchLaneRow.tsx`**: Suppressed "24h" duration display on any-time visit chips (meaningless for all-day visits).
+
+- Files: `client/src/components/visits/EditVisitModal.tsx`, `server/storage/jobVisits.ts`, `server/routes/jobVisits.routes.ts`, `client/src/components/dispatch/DispatchLaneRow.tsx`
+
+#### Dispatch Board — Resize/Quick-Create Guardrails, Multi-Tech Drag, Task Modal (2026-03-08)
+
+Four interaction fixes for dispatch board UX:
+
+- **Resize → quick-create suppression**: Added `lastBlockInteractionRef` timestamp guard in `DispatchLaneRow`. `onPointerUp` on the lane tracks interactions with `[data-dispatch-block]` elements; `handleLaneClick` suppresses clicks within 300ms of a block interaction. Prevents resize release from triggering quick-create modal.
+- **Multi-tech cross-lane drag feedback**: Multi-tech visits dragged to a different lane now show a toast ("Change crew assignments from the visit detail panel") and return early instead of silently executing the mutation with unchanged tech assignment.
+- **Cursor change**: Replaced `cursor-crosshair` with `cursor-pointer` on empty lane slots for appropriate affordance.
+- **Task quick-create modal**: Replaced inline `apiRequest` task creation with `TaskDialog` modal. Added `initialData` prop to `TaskDialog` for prefilling `assignedToUserId`, `startDate`, `startTime` from dispatch context. Removed `isCreatingTask` state and `apiRequest` import (no longer needed). Users now get the full task form (title, notes, type, supplier visit details) instead of a generic "New Task" auto-creation.
+- Files: `client/src/pages/DispatchPreview.tsx`, `client/src/components/dispatch/DispatchLaneRow.tsx`, `client/src/components/TaskDialog.tsx`
+
+#### Dispatch Board — Quick Create Bug Fix + Regression Pass (2026-03-08)
+
+Fixed two broken quick-create actions, restyled modal, fixed regression, and added unassigned lane guardrail.
+
+- **New Task fix**: Radix `AlertDialogAction` auto-closes the dialog on click via internal context — `e.preventDefault()` does not prevent this. Switched entire quick-create modal from `AlertDialog` to `Dialog` with plain `Button` components. Buttons now have `disabled={isCreatingTask}` for proper double-click protection. Dialog prevents close during task creation via `onOpenChange` guard. Toast on success and destructive toast on failure.
+- **New Job Visit fix**: Was navigating to `/jobs/new` which matched `/jobs/:id` route, treating `"new"` as a job ID → "Job not found". Fixed by opening `QuickAddJobDialog` modal instead (the app's canonical job creation flow). Added `initialSchedule` prop to `QuickAddJobDialog` to accept prefilled date/time/tech from dispatch board, wired through to `createDefaultScheduleValue()`.
+- **Modal styling**: Replaced `AlertDialog` + generic `bg-blue-600`/`bg-violet-600` colors with `Dialog` + app theme `Button` variants (default for primary, `outline` for secondary, `ghost` for cancel). Tightened spacing (`max-w-[280px] p-5`), improved typography hierarchy (tech name + time as `text-sm font-medium`, date as `text-xs text-muted-foreground`).
+- **Stale state prevention**: `QuickAddJobDialog` resets `scheduleValue` to `unscheduled: true` when `open` becomes false (existing cleanup effect). `quickCreateJobSchedule` is cleared to `undefined` when dialog closes. No leak across opens.
+- **Unassigned lane guardrail**: `handleEmptySlotClick` rejects clicks with `techId === UNASSIGNED_TECH_ID` — shows toast "Choose a technician lane" instead of opening quick-create. Prevents `__unassigned__` from reaching `POST /api/tasks` or `QuickAddJobDialog.initialSchedule.primaryTechnicianId`.
+- Files: `client/src/pages/DispatchPreview.tsx`, `client/src/components/QuickAddJobDialog.tsx`
+
+#### Client Detail — Duplication Removal & Density Polish (2026-03-08)
+
+- **Part A: Single Active jobs list in Company Overview** — Removed separate Overdue/Active/Recent sections. Replaced with one list sorted by `getJobStatusDisplay().priority` (overdue 0 → in-progress 1 → scheduled 2 → open 3 → completed 4 → invoiced 5 → archived 6), secondary sort by updatedAt desc. No duplicate job rows.
+- **Part B: Compact note metadata** — Changed note footer from `"Added by {name} · {date} at {time}"` with `border-t mt-2 pt-2` to `"{name} · {date}, {time}"` with `mt-1.5`, no border separator. Edit/delete buttons shrunk from `h-6 w-6` to `h-5 w-5`, icons from `h-3.5` to `h-3`.
+- Files: `client/src/pages/ClientDetailPage.tsx`, `client/src/components/NotesPanel.tsx`
+
+#### Dispatch Board — Final Stabilization & UX Completion Pass (2026-03-08)
+
+Seven-item stabilization pass for dispatch board UX polish and missing features.
+
+- **Item 1: Drag preview alignment** — Verified all 4 coordinate paths (preview, drop, overlap, drag ghost) use consistent `dragGrabBlockXRef` offset subtraction
+- **Item 2: Multi-tech unscheduled** — `UnscheduledScheduleForm` now uses searchable multi-select crew picker instead of single-select dropdown. Schedules with primary tech, then updates crew roster for additional technicians
+- **Item 3: Task date editing** — Task detail panel now has Calendar popover for date editing (mirrors visit date editing pattern). Previously date was read-only text
+- **Item 4: 24h toggle functional** — `show24Hour` state now fully wired through timeline pipeline: `getTimelineConfig()` → `DispatchTimeline` → `DispatchLaneRow` → `DispatchVisitBlock` / `DispatchTaskBlock` / `DispatchDragPreview`. All position calculations, resize clamping, drop snapping, and overlap detection use dynamic `startHour`/`endHour` instead of hardcoded constants. Active button styling changed from `bg-slate-800` to `bg-primary` (green)
+- **Item 5: Sidebar tooltips** — Added `tooltip` prop to all `SidebarMenuButton` items in `AppSidebar.tsx` (leverages shadcn's built-in tooltip support for collapsed icon-only state)
+- **Item 6: Click-empty-slot quick create** — Clicking empty lane area computes snapped time + tech, opens quick-create dialog with two actions: **New Job Visit** (navigates to `/jobs/new` with prefilled tech/time) and **New Task** (creates 1-hour task via `POST /api/tasks` with prefilled tech/time, violet styling). Lane cursor changes to crosshair when handler is active
+- **Item 7: Any Time visibility** — Already has prominent amber banner strip across lane top with CalendarDays icon, label, and clickable visit chips. No further changes needed
+- Files: `client/src/pages/DispatchPreview.tsx`, `client/src/components/dispatch/DispatchTimeline.tsx`, `client/src/components/dispatch/DispatchLaneRow.tsx`, `client/src/components/dispatch/DispatchDragPreview.tsx`, `client/src/components/dispatch/DispatchTaskBlock.tsx`, `client/src/components/dispatch/DispatchVisitBlock.tsx`, `client/src/components/dispatch/DispatchDetailPanel.tsx`, `client/src/components/dispatch/DispatchBoardHeader.tsx`, `client/src/components/dispatch/dispatchPreviewUtils.ts`, `client/src/components/AppSidebar.tsx`
+
+#### Client Detail / Location — Consistency & Surface Cleanup Pass (2026-03-08)
+
+Six-part cleanup pass for consistency, terminology, and dead UI removal.
+
+- **Part A: Contact fields removed from Edit Location modal** — Removed `contactPhone`/`contactEmail` state, prefill logic, payload fields, and UI inputs from `LocationFormModal`. Contacts managed only in dedicated Contacts surface
+- **Part B: Scroll trap removed from Edit Location modal** — Removed `max-h-[85vh] overflow-y-auto` from DialogContent, tightened spacing (`space-y-3 py-2`, `p-3` toggles). Modal fits without inner scrollbar
+- **Part C: Unified job rows** — Created shared `JobRow` component. Used consistently in `CompanyOverviewTab`, `LocOverviewTab`, `LocJobsTab`, `ClientAllJobsTab`. Eliminates 4 inline job-rendering patterns
+- **Part D: Removed low-value sections from Location Overview** — Removed PM empty-state block ("No PM contract") and Access block below Active Work
+- **Part E: Standardized terminology to "Site Code"** — Single canonical label replaces "Roof/Ladder Code", "Roof Ladder Code", "Site Code / Store Number", "Access" across all surfaces
+- **Part F: Site Code in location header** — Site code now displays inline next to address in location header as small metadata
+- Files: `client/src/pages/ClientDetailPage.tsx`, `client/src/components/LocationFormModal.tsx`, `client/src/components/NewAddClientDialog.tsx`, `client/src/components/EditClientDialog.tsx`, `client/src/components/QuickAddClientModal.tsx`
+
+#### Client Detail Page — Scope Cleanup & Compaction (2026-03-08)
+
+Focused the client detail page for dispatchers: removed noise, tightened layout, corrected scope.
+
+- **Removed** Equipment, PM, Parts tabs from company scope (site-level assets, not company-level)
+- **Company tabs** now: Overview, Jobs, Invoices, Quotes. Location adds Equipment, PM, Parts.
+- **Removed** summary cards (Locations/Active/Total/Quotes) from company overview — already in header
+- **Company overview** now shows Overdue → Active → Recent jobs directly (operationally useful)
+- **Removed** billing section from right metadata panel (belongs in Invoices tab)
+- **Right panel** compacted: `p-4 space-y-5` → `p-3 space-y-3`, tighter section headers
+- **Location scope** no longer shows company-wide contacts — location contacts only
+- **Contact card** layout improved: Name + Primary badge → Phone/Email inline → Role badges
+- **Scope hint** label added to workspace header ("Company" or "Location")
+- **Job list** location label made visually lighter (`text-[10px] text-muted-foreground/70`)
+- **Removed** dead code: `BillingSummaryCompact`, `CompanyEquipmentTab`, `CompanyPMTab`,
+  `CompanyPartsTab`, `LocationEquipmentSection`, `LocationPartsSection`
+- Files: `client/src/pages/ClientDetailPage.tsx`
+
+#### Client Detail Page — Three-Panel Scope Selector Architecture (2026-03-08)
+
+Replaced the nested page-within-page layout (top client-level tab bar + left location rail + inner location tabs)
+with a clean scope selector + workspace + metadata panel architecture:
+
+- **Removed** the top client-level tab bar (Locations/Jobs/Invoices/Quotes/Billing/Contacts/Activity)
+- **Left rail** is now a narrow (w-56) scope selector with Company Overview row + Locations section
+- **Center workspace** shows unified tabs (Overview/Jobs/Invoices/Quotes/Equipment/PM/Parts) scoped
+  to either the company or selected location
+- **Right metadata panel** (w-72) shows contextual cards: Contacts, Notes, Billing/Activity (company)
+  or Contacts, Notes, Access/Site Info (location)
+- **Tags** render inline near entity name in workspace header instead of a separate tab
+- **State model** uses `scopeType: "company" | "location"` for clean scope switching
+- **Company Overview** is the default scope, showing aggregated data across all locations
+- **Create Job** respects scope — preselects location when in location scope
+- Eliminated `LocationDetailPane` component; queries lifted to parent for shared access
+- Removed `LocTagsTab`, `CLIENT_TABS`, `LOC_TABS`, `ClientBillingTab` (replaced by compact variants)
+- New components: `CompanyOverviewTab`, `CompanyEquipmentTab`, `CompanyPMTab`, `CompanyPartsTab`,
+  `BillingSummaryCompact`, `CompanyContactsCompact`, `LocContactsCompact`, `ClientActivityCompact`
+- Files: `client/src/pages/ClientDetailPage.tsx`
+
+### Added
+
+#### Dispatch Board Stabilization + Feature Completion Pass (2026-03-08)
+
+**Item 1: Fix Drag Preview / Time-Slot Alignment**
+- Unified coordinate calculations between drag overlay ghost, snap preview indicator, overlap
+  detection, and final drop placement. The grab X offset within the block is now subtracted
+  so preview/drop align to the block's left edge, not the cursor position.
+- Files: `client/src/pages/DispatchPreview.tsx`
+
+**Item 2: "Any Time" Visit State**
+- All-day (any-time) visits are now separated from timed visits in lane rendering. They appear
+  as compact amber pill chips at the top-right of each technician lane rather than stretching
+  across the entire timeline. Clicking opens the detail panel.
+- Files: `client/src/components/dispatch/DispatchLaneRow.tsx`
+
+**Item 3: Extended Timeline Range (5 AM – 10 PM)**
+- Timeline window extended from 6AM–8PM to 5AM–10PM (17 hours) for early/late scheduling.
+- Auto-scroll on mount now targets whichever is earlier: 1 hour before current time, or
+  business hours start (7 AM). Business hours constants exported for reuse.
+- `getVisitPosition()` now clamps visits starting before the timeline to left=0 instead of
+  hiding them entirely.
+- Files: `client/src/components/dispatch/dispatchPreviewUtils.ts`,
+  `client/src/components/dispatch/DispatchTimeline.tsx`
+
+**Item 4: Date Editing for Unscheduled Visits**
+- Unscheduled visits in the detail panel now show an inline scheduling form with date picker,
+  time input, duration selector, and technician assignment. Clicking "Schedule Visit" fires
+  the `scheduleVisit` mutation (same path as drag-and-drop scheduling).
+- Files: `client/src/components/dispatch/DispatchDetailPanel.tsx`,
+  `client/src/pages/DispatchPreview.tsx`
+
+**Item 5: Technician Availability Sync**
+- Background invalidation now also invalidates `/api/team/technicians/working-hours` so
+  on-shift/off-shift grouping refreshes after schedule mutations.
+- Reduced working hours stale time from 5 minutes to 2 minutes for faster sync.
+- Files: `client/src/components/dispatch/useDispatchPreviewMutations.ts`,
+  `client/src/hooks/useTechnicianWorkingHours.ts`
+
+**Item 6: Collapsible Unscheduled Panel**
+- The unscheduled panel can now be collapsed to a slim 36px vertical tab with a count badge
+  and vertical "Unscheduled" label. The timeline expands to fill the freed horizontal space.
+  Search and scroll state are preserved across collapse/expand cycles.
+- Files: `client/src/components/dispatch/DispatchUnscheduledPanel.tsx`
+
+#### Dispatch Board Stabilization Pass — Duration, All-Day, Task Panel, Visual Cleanup (2026-03-08)
+
+**Item 1: Fix Multi-Tech Visit 24h Duration Regression**
+- Reschedule mutations now explicitly send `allDay: false` to prevent the server from
+  interpreting cross-day moves as all-day events (which produced 24-hour durations).
+- Files: `client/src/components/dispatch/useDispatchPreviewMutations.ts`
+
+**Item 2: Fix Technician Off-Shift Mismatch**
+- Added `refetchOnWindowFocus: "always"` to the working hours query so edits from
+  the settings page are immediately reflected when switching back to dispatch.
+- Files: `client/src/hooks/useTechnicianWorkingHours.ts`
+
+**Item 3: Company Name Clickable in Detail Panel**
+- The customer name in the visit detail panel is now a link to `/clients/:customerCompanyId`.
+- Files: `client/src/components/dispatch/DispatchDetailPanel.tsx`
+
+**Item 5: Reduce Visual Noise — Occupancy Rail**
+- Occupancy rail reduced from 3px to 1px and only visible on lane hover to eliminate
+  the appearance of extra borders/shadows under visit cards.
+- Files: `client/src/components/dispatch/DispatchLaneRow.tsx`
+
+**Item 6: Prominent Any-Time Visit Display**
+- Any-time (all-day) visits now render as a full-width amber banner strip at the top
+  of each lane instead of tiny pills at the top-right corner.
+- Files: `client/src/components/dispatch/DispatchLaneRow.tsx`
+
+**Item 7: 24-Hour Timeline Toggle**
+- Added a "24h" toggle button in the dispatch board header (day view only).
+- New `getTimelineConfig()` utility for dynamic timeline start/end/hours.
+- Files: `client/src/components/dispatch/DispatchBoardHeader.tsx`,
+  `client/src/components/dispatch/dispatchPreviewUtils.ts`,
+  `client/src/pages/DispatchPreview.tsx`
+
+**Item 8: Task Sidebar Actions**
+- Task detail panel now includes Complete/Reopen and Delete actions matching the visit panel.
+- Added `completeTask` (POST /close), `reopenTask` (POST /reopen), and `deleteTask` (DELETE)
+  mutations to the dispatch mutation hook.
+- Task title shows strikethrough and checkmark when completed/closed.
+- Files: `client/src/components/dispatch/DispatchDetailPanel.tsx`,
+  `client/src/components/dispatch/useDispatchPreviewMutations.ts`,
+  `client/src/pages/DispatchPreview.tsx`
+
+### Fixed
+
+#### Fix A: Jobs Not Appearing on Client/Location Detail Pages After Creation (2026-03-08)
+- **Root cause**: `invalidateScheduleQueries()` in `jobScheduling.ts` invalidated `["jobs"]`
+  but NOT the client/company overview query keys (`["/api/clients", *, "overview"]` and
+  `["/api/customer-companies", *, "overview"]`). The ClientDetailPage reads jobs via these
+  overview endpoints, so newly created jobs didn't appear until manual refresh.
+- **Fix**: Added `["/api/clients"]` and `["/api/customer-companies"]` family-wide invalidation
+  to both `invalidateScheduleQueries()` and `QuickAddJobDialog.onSuccess`.
+- Files: `client/src/lib/jobScheduling.ts`, `client/src/components/QuickAddJobDialog.tsx`
+
+#### Fix B: Contact Entered During Add Location Not Saved (2026-03-08)
+- **Root cause**: `createLocationUnderCustomerCompany` stored contact info as legacy fields
+  on the location record (`contactName`/`email`/`phone` columns on `client_locations`), but
+  never created a proper `client_contacts` row. The Contacts tab reads from `client_contacts`,
+  so the contact appeared to be silently dropped.
+- **Fix (v2 — atomic)**: Location + contact creation now wrapped in `db.transaction()` so
+  both succeed or both roll back. Added `createLocationUnderCustomerCompanyTx()` and
+  `createContactTx()` transaction-aware methods to their respective repositories. If no
+  inline contact fields are present, location is created without a transaction (no overhead).
+- Files: `server/routes/customer-companies.ts`, `server/storage/customerCompanies.ts`,
+  `server/storage/clientContacts.ts`
+
+#### Fix D: Job Cache Invalidation Gap on Update Path (2026-03-08)
+- **Root cause**: `QuickAddJobDialog`'s update mutation `onSuccess` invalidated `["jobs"]`
+  but not `["/api/clients"]` or `["/api/customer-companies"]` family queries. The create
+  path had full coverage, but edits didn't refresh the client detail overview.
+- **Fix**: Added `["/api/clients"]` and `["/api/customer-companies"]` family-wide
+  invalidation to the update mutation's `onSuccess` handler.
+- File: `client/src/components/QuickAddJobDialog.tsx`
+
+#### Fix E: Redundant "Create Job" Button in Location Detail Panel (2026-03-08)
+- **Root cause**: Two "Create Job" buttons existed on ClientDetailPage — one in the main
+  header action bar (correct) and one inside the LocationDetailPane header (redundant).
+- **Fix**: Removed the duplicate button, its `jobDialogOpen` state, and the second
+  `<QuickAddJobDialog>` instance from LocationDetailPane. The top-level dialog remains
+  and uses `selectedLocationId` for preselection.
+- File: `client/src/pages/ClientDetailPage.tsx`
+
+#### Fix C: Job Autocomplete Shows Duplicate Company Names for Multi-Location Customers (2026-03-08)
+- **Root cause**: The autocomplete CommandItem primary label rendered only `location.companyName`.
+  For customers with multiple locations, all results showed the same company name with location
+  name hidden in a secondary line, making them visually indistinguishable.
+- **Fix**: Primary label now shows `Company Name — Location Name` when location name exists
+  and differs from company name. Secondary line shows address and city. Applied symmetrically
+  to both QuickAddJobDialog and QuickCreateDrawer autocompletes.
+- Files: `client/src/components/QuickAddJobDialog.tsx`, `client/src/components/QuickCreateDrawer.tsx`
+
+#### BUG 1: Version Conflict During Rapid Chained Moves (2026-03-08)
+- **Root cause**: When the same visit was moved rapidly between technicians, multiple
+  mutations fired concurrently. Each called `freshVersion()` before the prior mutation's
+  API response had updated the cache via `patchCachedVersion()`. Both mutations sent the
+  same version N, but the server incremented to N+1 on the first, rejecting the second.
+- **Fix**: Added per-visit mutation serialization (`chainForVisit`) — when multiple
+  mutations target the same visitId, each waits for the prior to complete before resolving
+  the version. Optimistic cache patching still runs immediately (outside the chain) for
+  instant visual feedback. Only the API call + version resolution is serialized.
+- **Also fixed**: Background invalidation starvation — added 5-second max delay to ensure
+  cache reconciliation cannot be starved indefinitely during rapid chained moves.
+- File: `client/src/components/dispatch/useDispatchPreviewMutations.ts`
+
+#### BUG 2: Unscheduled Panel Drag Preview/Ghost Misalignment (2026-03-08)
+- **Root cause**: dnd-kit positions the DragOverlay ghost at `elementOriginalPosition + delta`,
+  preserving the grab-point-to-element-corner offset. For unscheduled cards (wide, in a sidebar
+  far from the timeline), the offset between cursor and ghost was large, causing visible
+  misalignment with the snap preview indicator in the lane.
+- **Fix**: Capture the pointer-to-element-corner offset during `handleDragStart` and apply
+  a compensating transform to the DragOverlay content. The ghost's top-left is now always at
+  `(cursor - 10px, cursor - 10px)` regardless of where the card was grabbed.
+- Files: `client/src/pages/DispatchPreview.tsx`
+
+#### Dispatch Board Performance — Optimistic UX for Drag/Drop/Resize/Unschedule (2026-03-08)
+- **Root cause**: All mutations awaited `invalidateDispatch()` (3 parallel refetches)
+  before releasing the UI. This blocked the interaction for ~2.8–3.0s while refetches
+  completed, causing the board to feel sluggish after the stale-version fix.
+- **Fix**: Replaced blocking invalidation with optimistic cache patching:
+  - On interaction commit, immediately patch the canonical visit in TanStack Query cache
+    so the UI snaps to the new position/duration/lane without waiting for refetch
+  - Snapshot dispatch cache before mutation for rollback on error
+  - On API success: patch server-returned version into cache, fire background invalidation
+    (non-blocking, debounced 150ms to batch rapid mutations)
+  - On API error: restore cache snapshot, show error toast
+- **Optimistic operations**: reschedule (position + lane), schedule (unscheduled → scheduled),
+  unschedule (scheduled → backlog), resize (endAt + duration), task reschedule, delete
+- **Preserved invariants**: fresh version resolution from cache, server-returned version
+  patching, multi-tech mirrored rendering, overlap enforcement, off-shift confirmation
+- File: `client/src/components/dispatch/useDispatchPreviewMutations.ts`
+
+#### Subscription Entitlement Bug — Enterprise Plan Capped at 10 Locations (2026-03-08)
+- **Root cause**: `subscription_plans` table was created but never seeded with plan data.
+  When admin set `subscriptionPlan = "enterprise"`, no matching row was found, causing
+  fallback to "trial" plan (limit=10). Enterprise tenants were incorrectly blocked.
+- **Fix 1**: Added seed migration (`2026_03_08_seed_subscription_plans.sql`) with trial (10),
+  starter (25), pro (100), enterprise (unlimited/999999) plan definitions using upsert.
+- **Fix 2**: Added "unlimited" plan handling in `canAddLocation()` — plans with
+  `locationLimit >= 999999` bypass the limit check entirely.
+- **Fix 3**: Added cache invalidation in admin billing update route (`server/routes/admin.ts`).
+  Previously, changing subscriptionPlan/status in admin did NOT invalidate the subscription
+  cache (60s TTL), so stale plan data persisted after admin changes.
+- Files: `server/storage/subscriptions.ts`, `server/routes/admin.ts`,
+  `migrations/2026_03_08_seed_subscription_plans.sql`
+
+#### Subscription Package Enforcement Audit — Feature Gates & UI Fix (2026-03-08)
+- **Issue**: Premium features (invoices, route optimization, multi-tech, customer portal)
+  had feature flags defined in schema but no middleware enforcement on API routes.
+  Enterprise plan showed "999999" instead of "Unlimited" in UI limit displays.
+- **Fix 1 — Invoices gate**: Added `requireFeature("invoicesEnabled")` to `server/routes/invoices.ts`
+  (17 endpoints now gated)
+- **Fix 2 — Route Optimization gate**: Added `requireFeature("routeOptimizationEnabled")` to
+  `server/routes/routes.ts`
+- **Fix 3 — Multi-tech gate**: Added `requireFeature("multiTechEnabled")` to the
+  `/visit/:visitId/assign-crew` endpoint in `server/routes/scheduling.ts`
+- **Fix 4 — Customer Portal gate**: Added `customerPortalEnabled` feature check in
+  magic link request handler (`server/routes/portal.ts`)
+- **Fix 5 — Unlimited display**: Fixed UI to show "Unlimited" instead of raw sentinel value
+  (999999) in QuickCreateDrawer, NewAddClientDialog, and UserSubscriptionDialog
+- Files: `server/routes/invoices.ts`, `server/routes/routes.ts`, `server/routes/scheduling.ts`,
+  `server/routes/portal.ts`, `client/src/components/QuickCreateDrawer.tsx`,
+  `client/src/components/NewAddClientDialog.tsx`, `client/src/components/UserSubscriptionDialog.tsx`
+
+### Added
+
+#### Live Map Feature Flag (2026-03-08)
+- Added `liveMapEnabled` boolean to `tenant_features` table (default: true)
+- Added `requireFeature("liveMapEnabled")` middleware to map router (`server/routes/map.ts`)
+- Live Map can now be independently disabled per tenant to control map tile / GPS costs
+- Route Optimization and Live Map are independent flags — can be toggled separately
+- Migration: `migrations/2026_03_08_add_live_map_feature_flag.sql`
+- Files: `shared/schema.ts`, `server/storage/tenantFeatures.ts`,
+  `server/auth/requireFeature.ts`, `server/routes/map.ts`
+
+
+
+#### Frontend Architectural Dependency Audit (2026-03-08)
+- Full dependency audit of all frontend pages, components, hooks, and providers
+- Report written to `AUDIT_DEPENDENCY_REPORT.md` covering 60+ files across 8 app sections
+- Identified 4 critical cross-section dependencies, 3 warnings, 6 clean sections
+- Key findings: global `/api/calendar/unscheduled` query on every page, cross-section
+  invalidations in AddClientPage.tsx, triple-fetched company settings, uncontrolled polling
+- Includes dependency matrix, recommended removals, and architecture principles
+
+#### Backend Tenant Admin Dependency Audit (2026-03-08)
+- Full backend audit of tenant admin, settings, and client-limit enforcement paths
+- Report written to `AUDIT_BACKEND_TENANT_ADMIN.md`
+- Traced complete request chains from route to SQL for all admin endpoints
+- Confirmed client-limit enforcement is cleanly isolated (zero scheduling deps)
+- Identified and catalogued all legacy `calendar_assignments` references
+
+#### Frontend Architectural Cleanup — Cross-Domain Decoupling (2026-03-08)
+- Removed global `/api/calendar/unscheduled` query from app shell (`App.tsx`) — was fetching
+  dispatch data on every page load including settings, admin, and client pages
+- Removed overdue alert UI block from app header (referenced removed calendar query)
+- Removed cross-domain cache invalidations from `AddClientPage.tsx` — client CRUD no longer
+  invalidates `/api/calendar`, `/api/reports/parts`, `/api/reports/schedule`,
+  `/api/maintenance/recently-completed`, `/api/maintenance/statuses`
+- Removed `/api/calendar` invalidation from `TimezoneSetupDialog.tsx` — timezone save
+  only invalidates company-settings domain now
+- Removed dead `/api/clients` query from `CompanySettingsPage.tsx` (fetched but never used)
+- Added `staleTime: 30min` to `SubscriptionBanner.tsx` subscription usage query
+- Added architecture boundary comments to high-risk files
+- **Files:** `client/src/App.tsx`, `client/src/pages/AddClientPage.tsx`,
+  `client/src/components/TimezoneSetupDialog.tsx`, `client/src/pages/CompanySettingsPage.tsx`,
+  `client/src/components/SubscriptionBanner.tsx`
+
+### Refactored
+
+#### Tenant Admin decoupled from operational schema (2026-03-08)
+- **Architecture change:** Tenant admin (`GET /api/admin/tenants`, `GET /api/admin/tenants/:id`)
+  no longer depends on any operational tables (jobs, job_visits, tasks, calendar_assignments).
+  This prevents operational schema refactors from breaking tenant administration.
+- **Removed from tenant admin response:**
+  - `jobs.openCount`, `jobs.onHoldCount`, `jobs.overdueCount` (operational)
+  - `calendar.scheduledThisWeek` (operational — was the source of the `calendar_assignments` crash)
+  - `users.activeTechnicians` (operational detail, not needed for account admin)
+- **Kept in tenant admin response:**
+  - `company` identity + subscription status (account)
+  - `owner` contact info (support)
+  - `users.total` + `users.lastLoginAt` (account management)
+  - `qbo` integration health (admin/support concern)
+- **Backend:** Rewrote `server/storage/admin.ts` — removed `jobs` import, removed all
+  job/calendar queries from both `getTenantHealthList()` and `getTenantDetail()`.
+  New types: `TenantAccountSummary`, `TenantAccountDetail` (replacing `TenantHealthSummary`).
+  Batch query count reduced from 8 to 5.
+- **Frontend:** Updated `AdminTenants.tsx` — removed Jobs column, "This Week" column,
+  "Open Jobs" summary card. Replaced "With Issues" card with "QBO Issues" (account-scoped).
+  Updated `AdminTenantDetail.tsx` — removed "Open Jobs" and "Scheduled This Week" metric
+  cards. Replaced with "Subscription" status and "QBO Environment" cards.
+- **Dead code cleanup:** Removed `calendarAssignmentId` from unused `jobCreateSchema`
+  (`server/schemas.ts`), removed stale test assertions (`tests/job-lifecycle.test.ts`),
+  deleted orphaned `server/storage/clients.ts.backup`.
+- **Files:** `server/storage/admin.ts`, `server/routes/admin.ts`, `server/schemas.ts`,
+  `client/src/pages/AdminTenants.tsx`, `client/src/pages/AdminTenantDetail.tsx`,
+  `tests/job-lifecycle.test.ts`
+
+### Fixed
+
+
+#### Dispatch Board — Stale version / identity causing reschedule and crew update failures (2026-03-08)
+- **Bug 1:** Repeated reschedule fails with "Scheduling was modified by another user.
+  Expected version X, Actual version Y" — optimistic concurrency version mismatch.
+- **Bug 2:** Create visit → assign multi techs → unschedule → reschedule → edit crew
+  fails with "Not found" — stale visitId/version after refetch gap.
+- **Root cause:** All mutation call sites passed `version` from component state/props
+  (e.g., `visit.version`, `dragData.version`). After a successful mutation,
+  `invalidateDispatch()` was fire-and-forget (not awaited), so the query cache refetch
+  hadn't completed by the time the user initiated the next action. The version from
+  the previous render was stale by +1 (or more).
+- **Fix (3 parts):**
+  1. **Version resolved from cache** (`resolveVisitFromCache`): Before every
+     version-sensitive API call, the mutation reads the freshest version from the
+     TanStack Query cache (checking both scheduled and unscheduled data).
+  2. **Cache patched from response** (`patchCachedVersion`): After a successful
+     mutation, the server-returned version is immediately written into the cached
+     event/job objects — so subsequent mutations (before refetch completes) use the
+     correct version.
+  3. **Invalidation awaited**: `invalidateDispatch()` now `await`s all three
+     invalidation promises so the cache is fully refreshed before the mutation returns.
+- **Caller changes:** Removed `version` from all mutation param interfaces.
+  `DispatchPreview.tsx` no longer passes `visit.version` or `dragData.version` to
+  any mutation. The scheduling model, multi-tech mirroring, off-shift confirmation,
+  and overlap enforcement are all unchanged.
+- **Debug logging:** Added `[DISPATCH]` console logs for version resolution
+  (cached vs caller vs resolved) on reschedule and crew update attempts.
+- **Files:**
+  - `client/src/components/dispatch/useDispatchPreviewMutations.ts` — core fix
+  - `client/src/pages/DispatchPreview.tsx` — removed stale version passing
+
+#### Technician Routes — Map markers missing due to ungeooded client locations (2026-03-08)
+- **Bug:** Visit markers and route lines not rendering on the Technician Routes map.
+  Panel rows showed "No coords" badges for all visits, even those with street addresses.
+- **Root cause:** All 36 `client_locations` records had `lat=NULL, lng=NULL`. The
+  address fields (street, city, province) were populated, but geocoding was never
+  called on the create/update write paths. The SQL joins and frontend parsing were
+  correct — the coordinates were genuinely absent in the database.
+- **Fix (3 parts):**
+  1. **Geocoding utility** (`server/utils/geocode.ts`): New `geocodeToLatLng()` and
+     `maybeGeocode()` helpers using OpenRouteService forward geocoding.
+  2. **Auto-geocode on save**: Wired into `clientRepository.createClient()`,
+     `clientRepository.updateClient()`, `customerCompanyRepository.createLocationUnderCustomerCompany()`,
+     and `bulkCreateClients()` allowlist (was missing `lat`/`lng`).
+  3. **Backfill**: Geocoded all 34 existing locations with addresses. All resolved
+     successfully. 2 locations with no address remain without coords (expected).
+  4. **Backfill endpoint** (`POST /api/map/geocode-backfill`): Admin-triggered endpoint
+     for future use if new locations are imported without coords.
+- **Files:**
+  - `server/utils/geocode.ts` (new)
+  - `server/storage/clients.ts` — added `maybeGeocode` to create/update paths, `lat`/`lng` to bulk allowlist
+  - `server/storage/customerCompanies.ts` — added geocoding to `createLocationUnderCustomerCompany()`
+  - `server/routes/map.ts` — added `POST /geocode-backfill` endpoint
+- **Data:** 34/36 locations now have coordinates. 10/10 active visits have map-renderable coords.
+
+#### Technician Routes — Map data wiring regression (500 error from /api/map/day) (2026-03-08)
+- **Bug:** Technician Routes screen showed "0 techs · 0 online · 0 visits" with no
+  markers or panel data. The header, filter dropdown, and panel were all empty.
+- **Root cause:** Two SQL bugs in `server/routes/map.ts`:
+  1. **`ANY()` array parameter:** `jv.status = ANY(${ACTIVE_VISIT_STATUSES})` — Drizzle's
+     `sql` template tag passes JavaScript arrays as scalar parameters, not PostgreSQL arrays.
+     PostgreSQL rejects this with "op ANY/ALL (array) requires array on right side".
+  2. **Non-existent column:** `j.assigned_technician_user_id` doesn't exist in the `jobs`
+     table. The actual columns are `primary_technician_id` and `assigned_technician_ids`.
+- **Fix:**
+  1. Replaced `ANY(${array})` with `IN (${sql.join(...)})` using Drizzle's `sql.join` helper.
+  2. Changed `j.assigned_technician_user_id` to `COALESCE(j.primary_technician_id, j.assigned_technician_ids[1])`.
+- **Impact:** The endpoint returned 500, which TanStack Query caught silently (data stayed
+  undefined). Added error badge and console logging to `LiveMapPage.tsx` for future visibility.
+- **Files:** `server/routes/map.ts`, `client/src/pages/LiveMapPage.tsx`
+
+#### Create Job Modal — Broken time dropdown replaced with native time input (2026-03-08)
+- **Bug:** Time dropdown in QuickAddJobDialog showed duplicate/misordered entries.
+  On DST transition days (e.g., spring-forward March 8), `setHours(new Date(), 2)`
+  produces 3:00 AM because 2:00 AM doesn't exist in the client's local timezone.
+  Radix Select also has rendering quirks with 96-item lists (scroll jumps, focus issues).
+- **Root cause:** `generateTimeOptions()` used `date-fns` `setHours`/`setMinutes` on
+  `new Date()` to format labels. This is timezone-sensitive — on DST days, certain
+  hours map to the same wall-clock time, producing duplicate display labels.
+  Additionally, Radix Select struggles with 96+ items.
+- **Fix:** Replaced the 96-item Select dropdown with a native `<input type="time">`
+  (step=900 for 15-min increments). Added a separate "All day" Checkbox inline.
+  Removed `generateTimeOptions()` and `TIME_OPTIONS` from QuickAddJobDialog entirely.
+- **Duration:** Kept as a Select dropdown (only 9 items, no rendering issues).
+- **Known:** `JobScheduleFields.tsx` (shared component used by ScheduleJobModal)
+  still has the same `generateTimeOptions()` — noted for future fix but out of scope.
+- **File:** `QuickAddJobDialog.tsx`
+
+#### Dispatch Panel — Crew picker / date picker clicks closing the visit panel (2026-03-08)
+- **Bug:** Clicking inside the crew picker popover (search input, technician rows,
+  checkboxes) or any Radix portal (date picker, duration select, time select)
+  closed the entire visit detail panel immediately.
+- **Root cause:** The outside-click handler (`handleOutsideClick` in DispatchPreview.tsx)
+  checked `panelRef.current.contains(target)`, but Radix popovers and selects render
+  in portals outside the panel DOM tree, so clicks inside them appeared "outside."
+- **Fix:** Added three portal-aware guards to the outside-click handler:
+  - `[data-radix-popper-content-wrapper]` — covers Popover, Calendar, and other
+    popper-based portals
+  - `[data-radix-select-viewport]` — covers Select dropdown portals
+  - `[role='listbox']` — fallback for any listbox-style dropdown
+- **File:** `DispatchPreview.tsx` (3 lines added to `handleOutsideClick`)
+
+### Improved
+
+#### Dispatch Detail Panel — Hierarchy Restructure & Functional Editing (2026-03-08)
+Rebuilt the visit detail panel for cleaner hierarchy, compact layout, and
+functional inline editing of crew, date, time, and duration.
+
+**Goal 1 — Client-first header hierarchy:**
+- Primary title is now the customer/site name (was "Visit #N")
+- Visit summary/description appears directly below the title
+- Job number shown as a clickable blue link near the header (navigates to job)
+- Visit number shown as small metadata beside job link
+- Team badge (multi-tech indicator) inline with job/visit metadata
+- Removed bottom "Open Job" button (replaced by header job link)
+  - File: `DispatchDetailPanel.tsx`
+
+**Goal 2 — Compact status section:**
+- Status badge row is now a simple flex row with bottom border (no Section wrapper)
+- Job type shown inline as small muted text beside status badge
+- Priority badge still shown when non-normal
+- Completed styling preserved (CheckCircle2 icon in badge)
+  - File: `DispatchDetailPanel.tsx`
+
+**Goal 3 — Searchable multi-select crew picker:**
+- Added search input at top of crew popover
+- Changed to checkbox-based multi-select (Checkbox component for visual clarity)
+- Popover stays open during multi-select (no auto-close on selection)
+- Closes only on outside click (standard Popover behavior)
+- Min-1-tech rule still enforced (last tech disabled + cursor-not-allowed)
+- Off-shift styling preserved (muted text, "off" label)
+- Assigned techs highlighted with blue background + checked checkbox
+- Scales to large rosters via search filtering + 240px max scroll
+- Collapsed state still shows "Name, Name" or "Name +N" summary
+  - File: `DispatchDetailPanel.tsx`
+
+**Goal 4 — Inline date editing:**
+- Date is now a clickable text that opens a Calendar popover
+- Date change calls the same `onReschedule` mutation path as time/tech changes
+- Preserves original time-of-day, duration, and technician assignment
+- Multi-tech visits still behave as one shared visit (no separate mutation)
+  - File: `DispatchDetailPanel.tsx`
+
+**Goal 5 — Panel section order:**
+1. Client name (title) → 2. Summary → 3. Job link + visit # + team badge
+4. Status + priority + job type (compact row)
+5. Crew (searchable picker) → 6. Schedule (date, time, duration)
+7. Location → 8. Contact → 9. Notes → 10. Actions (footer)
+
+**Goal 6 — Compactness:**
+- Reduced Section padding (pb-2.5 → pb-2, mb-2.5 → mb-2)
+- Reduced InfoRow vertical padding (py-1 → py-0.5)
+- Reduced content area padding (py-3 → py-2)
+- Duration row uses invisible icon spacer for alignment (no duplicate Clock icon)
+- Removed jobType from Location section (moved to status row)
+- Unused imports cleaned up (User, Briefcase, Button, Check, UserCheck, parseISO)
+
+**Preserved:**
+- All visit-level actions (complete/reopen, delete with confirmation, unschedule)
+- Completed visit header styling (line-through, CheckCircle2, muted bg)
+- Off-shift confirmation flow (handled by parent DispatchPreview.tsx — unchanged)
+- TaskDetail component (unchanged structure, matching compactness tweaks)
+- All existing props interface (no breaking changes to parent consumers)
+
+**Files changed:** `DispatchDetailPanel.tsx`
+
+#### Create New Job Modal — Compact Redesign (2026-03-08)
+Rebuilt the quick-create job modal for speed, compactness, and scale.
+Modal no longer requires body scrollbar on standard desktop viewports.
+
+**Layout flattened:**
+- Removed bordered "Scheduling" panel container (`border rounded-lg p-4 bg-muted/20`)
+- Reduced modal width from `max-w-2xl` to `max-w-xl`
+- Removed `max-h-[90vh] overflow-y-auto` from modal body (no longer needed)
+- Reduced vertical spacing from `space-y-4` to `space-y-3`
+- All labels use `text-xs font-medium` for density
+- Description textarea reduced from 3 rows to 2, with `resize-none`
+- Footer buttons use `size="sm"` for compactness
+
+**Scheduling controls inlined:**
+- Replaced stacked `JobScheduleFields` component with compact inline row
+- Date, Time, Duration, and Technicians all in one flex-wrap row
+- "Unscheduled (backlog)" checkbox inline with "Schedule" label
+- When unscheduled is checked, scheduling row grays out with `pointer-events-none`
+- Duration select hidden for all-day events (saves space)
+- Duration labels shortened ("1 hour" → "1h", "30 min" → "30m")
+
+**Technician picker — searchable multi-select popover:**
+- Replaced inline chips + "Add" button with a single popover trigger
+- Closed state: compact button showing "Unassigned" / "Name" / "Name +N"
+- Open state: search input at top + scrollable checkbox list (max 240px)
+- Checkbox-based multi-select (toggle on/off, no add/remove buttons)
+- "Clear all" footer when selections exist
+- Scales cleanly to 200+ technicians via search + scroll
+- Never expands modal height regardless of team size
+  - File: `QuickAddJobDialog.tsx` (new `TechnicianMultiSelect` component)
+
+**Location dropdown improved:**
+- Popover width matches trigger width (`w-[--radix-popover-trigger-width]`)
+- Location items show secondary context (address/location subtext)
+- Search value includes address for better filtering
+- Trigger height reduced to `h-9`
+
+**Preserved:**
+- All validation logic (location required, summary required, date required when scheduled)
+- Create vs Edit mode behavior
+- Quick-create client flow within location popover
+- `createJobWithSchedule` / `applyJobSchedule` integration
+- Activity logging and query invalidation
+- All `data-testid` attributes for testing
+
+**Files changed:** `QuickAddJobDialog.tsx`
+**No changes to:** `JobScheduleFields.tsx` (still used by other consumers)
+
+#### Technician Routes Screen (2026-03-08)
+Transformed the Live Map into a Technician Routes visualization surface with
+route lines, numbered markers, and structured panel layout.
+
+**Right panel restructured — "Technician Routes":**
+- Panel title changed from "Dispatch" to "Technician Routes"
+- Unscheduled Visits section at top (amber styling, collapsible, max 200px scroll)
+- Scheduled Routes by technician below, sorted by schedule time
+- Focused technician sorts to top of tech list
+- Completed visits shown with muted styling + "Done" badge + line-through
+- Duration display added to visit stop rows
+  - Files: `LiveMapPage.tsx`
+
+**Route line rendering (focused technician):**
+- Dashed Polyline connects focused tech's visit stops in schedule order
+- Route starts from tech's live GPS position when available
+- Uses tech's assigned color with 60% opacity
+- Only rendered when a technician is focused (click tech header or map marker)
+  - Files: `LiveMapPage.tsx`
+
+**Enhanced map markers for focused technician:**
+- Focused tech's marker enlarged (radius 12 vs 10, weight 3 vs 2)
+- Focused tech's visit markers enlarged (radius 10 vs 7, thicker stroke)
+- Permanent tooltips shown for focused tech's visits (numbered stop labels always visible)
+- Completed visit markers shown with gray fill + reduced opacity
+- Click tech marker on map to focus/unfocus (same as panel header click)
+- Click visit marker to fly-to at zoom 17
+  - Files: `LiveMapPage.tsx`
+
+**Unscheduled visits data:**
+- Separate fetch from `/api/calendar/unscheduled` (not mixed into map endpoint)
+- Mapped to lightweight `MapUnscheduledJob` type for map context
+- Shows job number, type, location, customer company name
+- 60s stale time (less frequent than scheduled data)
+  - Files: `LiveMapPage.tsx`, `shared/types/map.ts`
+
+**Shared types:**
+- Added `MapUnscheduledJob` interface to `shared/types/map.ts`
+
+### Improved
+
+#### Dispatch Board — Visit Status Clarity & Visit-Centric Panel (2026-03-08)
+Completed visits now look completed, crew picker is compact, and the detail panel
+is visit-centric with visit-level actions.
+
+**Goal 1 — Completed visit visual treatment:**
+- Day view: completed blocks get reduced opacity (55%), line-through on customer name, CheckCircle2 icon, muted status colors
+- Week view: completed items get reduced opacity (55%), line-through text, check icon replaces status dot
+- Both narrow and wide day-view block variants show completed treatment
+- Multi-tech completed visits retain completed styling on all mirrored copies
+  - Files: `DispatchVisitBlock.tsx`, `WeekDispatchCell.tsx`, `dispatchPreviewUtils.ts`
+
+**Goal 2 — Compact crew picker:**
+- Replaced always-expanded technician list with popover-based multi-select (CrewPicker component)
+- Collapsed state: compact button showing assigned tech names/count + chevron
+- Open state: scrollable checklist in popover with off-shift styling, min-1-tech rule
+- Panel height no longer explodes with many technicians
+  - File: `DispatchDetailPanel.tsx`
+
+**Goal 3 — Visit-centric detail panel:**
+- Panel header changed from "#{jobNumber}" to "Visit #{visitNumber} — Job #{jobNumber}"
+- Completed visits show CheckCircle2 + line-through in header
+- Visit-level actions added to footer:
+  - "Complete Visit" button (transitions active → completed)
+  - "Reopen Visit" button (transitions completed → scheduled, guarded by backend)
+  - "Delete Visit" button with confirmation (soft-delete, hidden for visit #1)
+  - "Unschedule Visit" renamed from "Unschedule" (hidden when completed)
+- "Open Job" demoted to secondary navigation (muted styling, bottom of footer)
+  - Files: `DispatchDetailPanel.tsx`, `DispatchPreview.tsx`
+
+**Goal 4 — Honest status actions:**
+- Complete: calls `POST /api/jobs/:jobId/visits/:visitId/status` with `status: "completed"`
+- Reopen: calls same endpoint with `status: "scheduled"` — backend rejects if parent job is in terminal status (409)
+- Delete: calls `DELETE /api/jobs/:jobId/visits/:visitId` — backend guards against deleting placeholder visit #1
+- All mutations use existing `apiRequest` + refetch-on-success pattern (no optimistic updates)
+  - File: `useDispatchPreviewMutations.ts`
+
+**Goal 5 — Consistency verification:**
+- Completed styling consistent across day view, week view, and detail panel
+- Available actions change appropriately: complete shown when active, reopen when completed
+- Delete hidden for visit #1 (placeholder), unschedule hidden when completed
+- Multi-tech team badge + selection logic unaffected
+
+**Files changed:**
+- `client/src/components/dispatch/dispatchPreviewUtils.ts` — added `isCompletedStatus()` helper
+- `client/src/components/dispatch/DispatchVisitBlock.tsx` — completed visit visual treatment in day view
+- `client/src/components/dispatch/WeekDispatchCell.tsx` — completed visit visual treatment in week view
+- `client/src/components/dispatch/DispatchDetailPanel.tsx` — compact crew picker, visit-centric actions, completed header styling
+- `client/src/components/dispatch/useDispatchPreviewMutations.ts` — added `updateVisitStatus()` and `deleteVisit()` mutations
+- `client/src/pages/DispatchPreview.tsx` — wired new handlers to panel props
+
+#### Phase 2 Map Convergence — Narrow Map to Visualization Surface (2026-03-08)
+Refactored the Live Map endpoint so it no longer acts as a parallel scheduling/eligibility engine.
+The map is now purely a route-visualization surface; dispatch remains the assignment authority.
+
+**Technician eligibility filter removed from map (Part 3):**
+- Removed `is_schedulable = true` filter from map technician query
+- Map now returns all active, non-deleted company users as a display roster
+- Technicians with assigned visits are always visible on the map regardless of schedulability flag
+- `disabled = false` and `deleted_at IS NULL` kept as basic data-integrity guards
+- Dispatch board retains `filterSchedulableTechnicians()` as the assignment authority
+  - File: `server/routes/map.ts`
+
+**Shared map types updated (Part 5):**
+- `MapTechnician` documented as a DISPLAY roster model, not a scheduling-authority model
+- `isSchedulable` field intentionally excluded from MapTechnician type
+  - File: `shared/types/map.ts`
+
+**Diagnostic messaging updated:**
+- Map empty-state message changed from "No schedulable technicians" to "No active technicians"
+  - File: `client/src/pages/LiveMapPage.tsx`
+
+**Responsibilities narrowed:**
+- Map endpoint response: explicit `technicianId/name/lat/lng/online/lastSeenAt` shape (stripped internal fields)
+- Map endpoint doc comment clarifies: "display model, not scheduling authority"
+- No changes to visit query, job fallback, risk flags, or GPS overlay logic
+
+**Files changed:**
+- `server/routes/map.ts` — removed is_schedulable filter, added display roster documentation
+- `shared/types/map.ts` — documented MapTechnician as display roster model
+- `client/src/pages/LiveMapPage.tsx` — updated empty-state diagnostic text
+
+#### Phase 1 Live Map / Dispatch Convergence Refactor (2026-03-08)
+Refactored the Live Map foundation to share canonical scheduling logic with the dispatch board,
+eliminating parallel business logic for colors, timezone, and types.
+
+**Shared color palette (Part 4):**
+- Created `shared/colors.ts` with unified `TECHNICIAN_COLORS` (10 colors) and `getTechnicianColor()` helper
+- Dispatch mappers (`dispatchPreviewMappers.ts`) now import from shared palette instead of local `DEFAULT_COLORS` (was 8 colors)
+- LiveMapPage now imports from shared palette instead of local `TECH_COLORS` (was 10 different colors)
+- Both views now render identical colors for the same technician roster index
+
+**Shared map types (Part 3):**
+- Extracted `MapTechnician`, `MapVisit`, `MapDayMeta`, `MapDayData` to `shared/types/map.ts`
+- LiveMapPage imports from shared types (removed ~30 lines of inline type definitions)
+
+**Map endpoint convergence (Part 2):**
+- `server/routes/map.ts` now uses `companyRepository.getCompanyTimezone()` (shared with scheduling routes)
+- Removed parallel `getTenantTimezone()` function and `companySettings` import
+- Removed unused `eq` import from drizzle-orm
+
+**Real-time symmetry (Part 6):**
+- `useDispatchStream.ts` now invalidates `/api/map/day` queries on dispatch signals
+- Live map receives real-time schedule updates via the same SSE stream as the dispatch board
+- Map no longer relies solely on 15-second polling for schedule freshness
+
+**Files changed:**
+- `shared/colors.ts` (new) — unified technician color palette
+- `shared/types/map.ts` (new) — shared map API types
+- `server/routes/map.ts` — timezone convergence, removed parallel logic
+- `client/src/pages/LiveMapPage.tsx` — shared types + colors, removed inline definitions
+- `client/src/components/dispatch/dispatchPreviewMappers.ts` — shared color palette
+- `client/src/hooks/useDispatchStream.ts` — map query invalidation on SSE signals
+
+#### Dispatch Board — Final Week/Crew UX Polish (2026-03-08)
+Targeted polish pass for week-view drag/drop, off-shift confirmation, crew editing, and layout consistency.
+
+**Week view DnD polish:**
+- Added `data-dispatch-block` attribute to week visit/task items — fixes outside-click handler race condition where mousedown would close panel before click could select item
+- Increased empty cell drop target height (`min-h-[24px]` → `min-h-[36px]`) for easier drop targeting
+- Added `transition-colors` to cell hover state for smoother drop feedback
+- Normalized team badge sizing to match day view (`px-0.5` → `px-1 py-px gap-0.5`)
+  - File: `WeekDispatchCell.tsx`
+
+**Off-shift confirmation wording:**
+- Pluralized title/description when multiple off-shift techs are involved ("technicians" / "are")
+- Changed "assign this visit" → "proceed" to correctly cover both visits and tasks
+- Added bold styling to technician names for readability
+- Passed `count` in confirmation state for plural grammar
+  - File: `DispatchPreview.tsx`
+
+**Crew editing ergonomics:**
+- Off-shift technicians now visually distinguished in crew picker: grayed text, faded avatar, "OFF" label
+- Increased row padding (`py-1` → `py-1.5`) for better touch targets
+- Increased scroll area height (`max-h-40` → `max-h-44`) for longer tech lists
+  - File: `DispatchDetailPanel.tsx`
+
+### Improved
+
+#### Dispatch Board — Multi-Tech Visit UX Integrity & Shared-Visit Clarity (2026-03-08)
+Surgical pass on mirrored selection state, team-visit clarity, and selection persistence for multi-tech visits.
+
+**Mirrored selection state (Goal 1):**
+- Verified: clicking any mirrored copy of a multi-tech visit highlights ALL copies in day and week views
+- Selection uses canonical `visit.id`, not per-lane composite DnD IDs — already correct across all components
+- Detail panel opens once for the shared visit regardless of which copy is clicked
+  - Verified in: `DispatchLaneRow.tsx`, `WeekDispatchCell.tsx`, `DispatchUnscheduledPanel.tsx`
+
+**Team-visit move/resize clarity (Goal 2):**
+- Added Users icon + count badge to detail panel header for multi-tech visits
+- Added helper text below crew list: "Schedule changes apply to all N assigned technicians."
+- Added Users icon to Crew section title for visual consistency
+  - File: `DispatchDetailPanel.tsx`
+
+**Selection persistence after mutation (Goal 3):**
+- Debounced selection-clear effect (1.5s grace period) to survive transient refetch gaps
+- Prevents premature panel dismissal during crew change / reschedule mutations
+- Selection re-resolves automatically when fresh data arrives within the grace window
+  - File: `DispatchPreview.tsx`
+
+**Mirrored copy behavior audit (Goal 4):**
+- Verified: drag/resize/unschedule any copy affects shared visit (all copies update on refetch)
+- Verified: crew removal removes mirrored rendering from that tech's lane only
+- Verified: crew addition adds mirrored rendering in the new tech's lane/cell
+- Verified: composite DnD IDs prevent collisions, canonical visit.id drives mutations
+
+**Week/day parity (Goal 5):**
+- Same team badge (Users icon + count) in both views
+- Same selection logic (visit.id match) in both views
+- Same detail panel behavior regardless of entry view
+- Same off-shift handling in both views
+
+### Added
+
+#### Dispatch Board — Multi-Tech Visits, Week View DnD, Crew Assignment (2026-03-08)
+Six-goal dispatch board enhancement: multi-tech visit rendering, crew assignment UI, week view drag/drop, off-shift confirmation everywhere, team badges, and data integrity.
+
+**GOAL 1 — Multi-tech visit model (mirrored lane rendering):**
+- Visits with multiple assigned technicians now render as mirrored copies in each tech's lane (day and week views)
+- One canonical visit, multiple render placements — no duplicate records
+- Dragging/resizing/unscheduling any copy edits the shared visit
+- Dragging a multi-tech visit does NOT change the tech roster (moves schedule only)
+- Composite DnD IDs (`scheduled-${visitId}--${laneTechId}`) prevent dnd-kit collisions
+  - Files: `DispatchVisitBlock.tsx`, `DispatchLaneRow.tsx`, `useDispatchWeekData.ts`, `DispatchPreview.tsx`
+
+**GOAL 2 — Detail panel multi-tech crew assignment:**
+- Replaced single-tech dropdown with multi-select crew assignment UI
+- Shows all schedulable technicians with checkboxes, avatars, and check marks
+- Add/remove techs from crew with real-time `PATCH /api/calendar/visit/:visitId/assign-crew`
+- Tasks remain single-tech assignment
+  - Files: `DispatchDetailPanel.tsx`, `useDispatchPreviewMutations.ts`
+
+**GOAL 3 — Week view drag and drop:**
+- Full drag/drop support in week view: visits and tasks between days, between techs, to unscheduled
+- Cell-based drop targets with `dayKey` (yyyy-MM-dd) in drop data
+- Preserves original time-of-day when moving between days (`originalStart` in drag data)
+- Multi-tech visit drag moves all mirrored copies together
+  - Files: `WeekDispatchCell.tsx`, `WeekDispatchGrid.tsx`, `dispatchDndTypes.ts`, `DispatchPreview.tsx`
+
+**GOAL 4 — Off-shift confirmation across all entry points:**
+- Off-shift confirmation now applies to: day-view DnD, week-view DnD, unscheduled→lane, unscheduled→week cell, detail panel crew changes, multi-tech crew additions
+- Uses `isTechWorkingOnDate()` for week view (per-day check) and `isTechWorkingInRange()` for day view
+  - File: `DispatchPreview.tsx`
+
+**GOAL 5 — Visual team badge:**
+- Multi-tech visits show subtle team badge (Users icon + count) in both day and week views
+- Blue pill badge: `bg-blue-100 text-blue-700`
+  - Files: `DispatchVisitBlock.tsx`, `WeekDispatchCell.tsx`
+
+**GOAL 6 — Data integrity:**
+- `technicianIds: string[]` added to `DispatchVisit` type for canonical multi-tech tracking
+- Mappers populate from `assignedTechnicianIds` API field with single-tech fallback
+- Selection follows shared visit ID across all mirrored copies
+  - Files: `dispatchPreviewTypes.ts`, `dispatchPreviewMappers.ts`, `dispatchPreviewMockData.ts`
+
+**New backend endpoint:**
+- `PATCH /api/calendar/visit/:visitId/assign-crew` — Updates visit crew roster with full `technicianUserIds[]` array. Version-checked, logged, SSE-emitted.
+  - Files: `server/routes/scheduling.ts`, `server/storage/scheduling.ts`
+
+### Removed
+
+#### Preview Client Workspace Cleanup (2026-03-08)
+Removed preview/prototype client workspace now that real Client Workspace is live at `/clients/:clientId`.
+
+**Deleted files:**
+- `client/src/pages/PreviewClientWorkspaceSplit.tsx` — Preview split-view client workspace page
+- `client/src/pages/PreviewClientWorkspace.tsx` — Earlier preview client workspace (already dead code, no route)
+- `client/src/components/CommandPalette.tsx` — Preview-only command palette (all routes pointed to deleted preview page)
+
+**Cleaned up:**
+- Removed `/preview/client-workspace-split` route from `client/src/App.tsx`
+- Removed CommandPalette state, Ctrl+K keyboard handler, and rendering from `client/src/App.tsx`
+- Removed CommandPalette search trigger button (preview-route conditional) from header
+- Removed "Client Workspace (Split)" sidebar nav item from `client/src/components/AppSidebar.tsx`
+- Removed unused imports: `PreviewClientWorkspaceSplit`, `CommandPalette`, `useEffect`, `Search` icon, `Columns` icon
+
+**Kept:** `client/src/pages/previewClientWorkspaceMockData.ts` — still used by `PreviewOperationsQueue` and its mock data.
+
+### Added
+
+#### Dispatch Board — Technician Working-Hours Grouping & Week View Cleanup (2026-03-08)
+Surgical dispatch board refinement: on-shift/off-shift technician grouping with confirmation prompt, and week-view clutter removal.
+
+**New API endpoint:**
+- `GET /api/team/technicians/working-hours` — Bulk working hours for all schedulable technicians. Returns per-technician schedule (custom or company-default fallback). Used by dispatch board for on-shift/off-shift grouping.
+  - File: `server/routes/team.ts`
+
+**New hook:**
+- `useTechnicianWorkingHours()` — Fetches bulk working hours, returns `TechScheduleMap` lookup. Includes helpers `isTechWorkingOnDate()` and `isTechWorkingInRange()`.
+  - File: `client/src/hooks/useTechnicianWorkingHours.ts`
+
+**Technician presentation cleanup (Day + Week views):**
+- Removed green "Available" status text under technician names in both day and week views
+- Removed per-lane operational summary (hours, visit/task counts) from day view sidebar
+- Technician names now centered cleanly in row/header area
+- Technicians split into Working (on-shift) and Off-shift groups with subtle divider
+- Off-shift technicians appear below divider with grayed-out name styling and faded avatars
+- Off-shift technicians remain visible and droppable
+  - Files: `client/src/components/dispatch/DispatchTechnicianSidebar.tsx`, `client/src/components/dispatch/WeekDispatchGrid.tsx`, `client/src/components/dispatch/DispatchTimeline.tsx`
+
+**Off-shift assignment confirmation:**
+- Dragging or reassigning a visit/task to an off-shift technician shows confirmation dialog before committing mutation
+- Applies to: drag-drop scheduling, drag-drop rescheduling, detail panel technician reassignment
+- Cancel aborts mutation; confirm proceeds with normal mutation path
+  - File: `client/src/pages/DispatchPreview.tsx`
+
+**Week view cleanup:**
+- Removed daily summary cue bar ("2h 2v" style labels) from week cells
+- Kept actual scheduled items visible for density/readability
+  - File: `client/src/components/dispatch/WeekDispatchCell.tsx`
+
+**Type change:**
+- Added `isWorking?: boolean` to `Technician` type for on-shift/off-shift determination
+  - File: `client/src/components/dispatch/dispatchPreviewTypes.ts`
+
+### Changed
+
+#### Calendar-Named Infrastructure Renamed to Scheduling (2026-03-07)
+Second-pass ownership cleanup: all preserved calendar-named modules renamed to reflect their actual role as canonical scheduling infrastructure. No behavior changes — pure rename pass.
+
+**Frontend renames:**
+- `useCalendarApi.ts` → `useSchedulingApi.ts` — canonical scheduling API hooks (4 consumer imports updated)
+- `calendarDiagnostics.ts` → `schedulingDiagnostics.ts` — mutation diagnostics store (queryClient.ts import updated)
+- `shared/types/calendar.ts` → `shared/types/scheduling.ts` — canonical scheduling DTOs (3 dispatch imports + 1 server import updated)
+
+**Backend renames (file only — `/api/calendar` URL intentionally kept stable):**
+- `server/routes/calendar.ts` → `server/routes/scheduling.ts` (routes/index.ts import updated)
+- `server/storage/calendar.ts` → `server/storage/scheduling.ts` (storage/index.ts import updated)
+- `CalendarRepository` class → `SchedulingRepository`
+- `calendarRepository` export → `schedulingRepository` (all route + test consumers updated)
+- `CalendarJobWithDetails` type → `ScheduledJobWithDetails`
+
+**Intentionally kept:**
+- `/api/calendar` URL — ~50+ client-side references; URL is the scheduling API contract, not legacy UI
+- `DEFAULT_CALENDAR_START_HOUR` / `DEFAULT_CALENDAR_END_HOUR` — match `calendarStartHour` schema column
+- `CalendarEventDto`, `CalendarRangeResponseDto`, `UnscheduledJobDto` type names — canonical DTO contracts used across full stack
+
+### Removed
+
+#### Legacy Calendar UI Decommissioned (2026-03-07)
+- **Deleted legacy calendar page**: `client/src/pages/Calendar.tsx` — the old scheduling surface is fully removed.
+- **Deleted all legacy calendar components** (22 files): `client/src/components/calendar/` directory removed entirely. Includes CalendarGridDay, CalendarGridWeek, CalendarGridMonth, CalendarSidebar, CalendarHeader, CalendarEventChip, JobCard, ResizableJobCard, DraggableClient, ScheduleJobModal, QuickCreateSlotDialog, SuggestSlotDialog, DiagnosticsPanel, DispatchDetailPanel, TechLaneHeader, TechnicianFilterPopover, calendarUtils, calendarErrorHandler, calendarClientLookup, CalendarGridDayRows, CalendarGridDayJobber, index.
+- **Deleted legacy calendar hooks** (4 files): `useCalendarState.ts`, `useCalendarDnD.ts`, `useCalendarTasks.ts`, `useCalendarDaySummary.ts`.
+- **Removed `/calendar-legacy` route** from `App.tsx` and Calendar import.
+- **Removed "Calendar (Legacy)" nav entry** from `AppSidebar.tsx`. Renamed sidebar section from "Preview / Legacy" to "Preview".
+- **Preserved**: `useCalendarApi.ts` (used by dispatch board), `calendarDiagnostics.ts` (used by `queryClient.ts` mutation logging), `shared/types/calendar.ts` (canonical DTOs), `server/routes/calendar.ts`, `server/storage/calendar.ts` — all still in active use.
+- **Canonical scheduling UI**: `/dispatch` (DispatchPreview) is now the only scheduling surface. `/calendar` continues to alias to `/dispatch`.
+
+### Added
+
+#### Dispatch Board — Readability, Lane Awareness & Scan Speed (2026-03-07)
+
+**Goal 1 — Lane Header Operational Summary**
+- Technician sidebar now shows per-lane stats: total scheduled hours, visit count, task count, and outside-window indicator count. Reuses existing `countItemsBefore`/`countItemsAfter` helpers — no duplicate computation. (`DispatchTechnicianSidebar.tsx`, `DispatchPreview.tsx`)
+
+**Goal 2 — Stronger Selected / Active / Current-Time Readability**
+- Selected visit blocks: upgraded from `ring-2 z-10` to `ring-2 ring-offset-1 shadow-md z-20` for immediate visibility on busy boards. (`DispatchVisitBlock.tsx`)
+- Selected task blocks: same ring-offset + shadow treatment with violet theme. (`DispatchTaskBlock.tsx`)
+- NowLine (current-time indicator): widened from 1px to 2px stroke, enlarged dot with shadow, added subtle red glow band for scanability. (`DispatchTimeline.tsx`)
+- Lane boundaries: border upgraded from `border-slate-100` dashed to `border-slate-200/80` solid for cleaner separation. Alternating hour columns get subtle `bg-slate-50/40` fill for half-day rhythm. (`DispatchLaneRow.tsx`)
+
+**Goal 3 — Free-Gap / Occupancy Clarity**
+- Added 3px occupancy rail at the bottom of each lane row showing occupied (blue for visits, violet for tasks) vs free periods. Computed via lightweight `useMemo` over existing position helpers — no new data fetching. (`DispatchLaneRow.tsx`)
+
+**Goal 4 — Week View Operational Scan**
+- Each week cell now shows a compact daily summary cue: total hours + visit/task counts. Color-coded by density: green (light < 4h), amber (moderate 4-7h), red (heavy 7h+). Memoized per-cell. (`WeekDispatchCell.tsx`)
+
+**Goal 5 — Performance**
+- All new computations use targeted `useMemo` with minimal dependency arrays. Occupancy rail reuses existing `getVisitPosition`/`getTaskPosition` — no new iteration. Lane summary reuses `countItemsBefore`/`countItemsAfter`. No impact on drag/resize path.
+
+#### Phase 3 — Legacy Contact Surface Cleanup + Server Guardrails + Workspace Audit (2026-03-07)
+
+**Part A — Legacy Contact Surface Cleanup**
+- **AddClientDialog** — "Contact Details" relabeled to "Primary Site Contact (Summary)" with helper text directing to Contacts tab. (`AddClientDialog.tsx`)
+- **EditClientDialog** — Contact fields now prefixed with summary disclaimer and helper text. (`EditClientDialog.tsx`)
+- **NewAddClientDialog** — "Contact Information" relabeled to "Primary Site Contact (Summary)" with helper text. (`NewAddClientDialog.tsx`)
+- **QuickAddClientModal** — Contact phone/email labels changed to "Site Contact Phone/Email" with summary disclaimer. (`QuickAddClientModal.tsx`)
+- **QuickCreateDrawer** — "Primary Contact (optional)" relabeled to "Primary Site Contact (summary)". (`QuickCreateDrawer.tsx`)
+
+**Part B — Server-Side Contact Scope Guardrails**
+- **Scope immutability enforcement** — PATCH contact update now rejects scope changes (company→location or location→company) with 400 error. Scope derived from existing DB record, not trusted from client payload. (`server/routes/customer-companies.ts`)
+- **LocationId stripped from simple updates** — The fallback single-row update path now strips `locationId`, `association`, and `existingContactIds` from the update payload, preventing crafted requests from silently re-scoping contacts. (`server/routes/customer-companies.ts`)
+- **Location ownership validation** — POST and PATCH contact routes now validate that all submitted locationIds actually belong to the target customerCompany. Prevents cross-company contact association via crafted requests. Uses `validateLocationOwnership()` helper. (`server/routes/customer-companies.ts`)
+
+**Part C — Client Workspace Data Integrity Audit**
+- **Audit completed** — Systematic audit of header metrics, location signals, tab ownership, query keys, selected location transitions, and normalization boundaries. No issues found: all query keys are correctly scoped (clientId for client-level, locationId for location-level, companyId for company-level). `LocationDetailPane` uses `key={selectedLoc.id}` for clean re-mount on location switch. All location list signals derive from per-location maps (`jobsByLocation`, `invoicesByLocation`, `quotesByLocation`).
+
+#### Panel Overlap Enforcement + Task Schedule Editing (2026-03-07)
+- **Panel edits enforce overlap rules** — Duration changes via detail panel now route through `clampResizeEnd()` (same as resize drag). Start time changes route through `findNearestValidSlot()` (same as drag-drop). Panel edits produce identical outcomes to direct manipulation. (`DispatchDetailPanel.tsx`)
+- **Task schedule editing in detail panel** — Task detail panel now shows inline technician selector, start time input, and duration selector (same controls as visit panel). Wired to existing `rescheduleTask` mutation via new `onRescheduleTask` callback. (`DispatchDetailPanel.tsx`, `DispatchPreview.tsx`)
+- **Lane data passed to detail panel** — `DispatchPreview` computes `selectedLaneData` (visits + tasks for the selected item's technician lane) and passes to panel for overlap validation. (`DispatchPreview.tsx`)
+
+#### Dispatcher Usability Improvements (2026-03-07)
+- **Inline technician reassignment** — Detail panel shows a technician dropdown when a scheduled visit is selected. Selecting a new tech calls the existing reschedule mutation, moves the block to the new lane. Reuses same endpoint as drag. (`DispatchDetailPanel.tsx`, `DispatchPreview.tsx`)
+- **Inline duration editing** — Detail panel shows a duration dropdown (15m–8h) for scheduled visits. Changing duration calls the existing resize mutation. Overlap clamping from the resize pass applies. (`DispatchDetailPanel.tsx`, `DispatchPreview.tsx`)
+- **Inline start time editing** — Detail panel shows a time input for the visit start. Editing recalculates end from current duration. Uses existing reschedule mutation. (`DispatchDetailPanel.tsx`)
+- **Auto-scroll during drag** — Timeline scroll container auto-scrolls when the pointer approaches any edge during drag (60px threshold, gradual speed). Horizontal and vertical. No interference with existing drag math. (`DispatchPreview.tsx`)
+- **Unscheduled card info hierarchy** — Cards now show client name (bold, line 1), summary (line 2), location/duration/#job (line 3). Summary gets its own line. Duration slightly more prominent. Job number further de-emphasized (9px, slate-400). (`DispatchUnscheduledCard.tsx`)
+
+### Fixed
+
+#### Resize Overlap Enforcement (2026-03-07)
+- **Resize now obeys same overlap rules as drag** — Visit and task resize is clamped in real time against all other blocks in the same lane (visit-visit, visit-task, task-task). Uses shared `clampResizeEnd()` from `dispatchOverlapUtils.ts`. Edge-touching allowed (consistent with drag). (`DispatchVisitBlock.tsx`, `DispatchTaskBlock.tsx`, `DispatchLaneRow.tsx`, `dispatchOverlapUtils.ts`)
+- **Cross-midnight defensive guard** — `blockToTimeRange()` now clamps end time to 24:00 if it wraps past midnight, preventing negative-width ranges that would break overlap math. The board only supports same-day scheduling. (`dispatchOverlapUtils.ts`)
+
+### Changed
+
+#### Contact Architecture Hardening — Phase 2 (2026-03-07)
+- **Company contacts locked to client-level editing** — Company-wide contacts are read-only in the location Contacts tab with clear labeling ("Read-only — manage from the client-level Contacts tab"). Edit/delete affordances only appear for location-scoped contacts in location tab. (`ClientDetailPage.tsx`)
+- **Scope-safe contact edit flows** — `ContactFormDialog` now derives effective scope from the contact's actual association (via `locationId`) during edit, not from the active tab context. Scope is immutable during edit unless a dedicated "move contact" flow is added. (`ClientDetailPage.tsx`)
+- **Structured contact role selection** — Replaced free-text comma-separated role input with a clickable tag-style multi-select for 9 standard roles (billing, scheduling, operations, site, manager, owner, primary, after-hours, maintenance). Legacy/unknown roles preserved via "Other roles" text field. Primary contact flag exposed as a checkbox. (`ClientDetailPage.tsx`)
+- **Contact data normalization** — Added `normalizeContact()` helper that produces a consistent `{id, displayName, email, phone, roles, scope, locationId, isPrimary}` shape. `ContactCard` now consumes normalized data, reducing branching and making scope rules explicit. (`ClientDetailPage.tsx`)
+- **ContactScope type** — Added `ContactScope = "company" | "location"` type alias used by `ContactFormDialog` and `normalizeContact`, preventing ambiguous string comparisons. (`ClientDetailPage.tsx`)
+- **Legacy single-contact fields demoted** — `contactName`/`contactPhone`/`contactEmail` fields in location creation forms now labeled as "Primary site contact summary" with helper text pointing to the Contacts tab for full management. Fields are preserved for backward compatibility/bootstrap. (`ClientDetailPage.tsx`, `LocationFormModal.tsx`, `AddClientWithCompanyDialog.tsx`)
+- **QBO sync extension seam** — Added TODO comment in `PATCH /api/customer-companies/:companyId` marking where non-blocking QBO customer sync should be invoked after successful updates. No sync behavior activated. (`server/routes/customer-companies.ts`)
+
+### Fixed
+
+#### Dispatcher-Polish and Live-Verification Pass (2026-03-07)
+- **Task durationMinutes dragData fallback** — `DispatchTaskBlock` dragData now uses `durationMinutes || 60` matching the render fallback, preventing 0-duration tasks from breaking overlap detection and snap placement. (`DispatchTaskBlock.tsx`)
+- **Panel outside-click resilience** — Replaced fragile `.group\/visit` / `.group\/task` CSS class selectors with `data-dispatch-block` attribute on all block types (visit, task, unscheduled card). Outside-click handler now uses `[data-dispatch-block]` selector which is immune to Tailwind class renaming. (`DispatchPreview.tsx`, `DispatchVisitBlock.tsx`, `DispatchTaskBlock.tsx`, `DispatchUnscheduledCard.tsx`)
+- **Outside-window indicator viewport clipping** — Replaced hard-coded `800px` viewport limit with dynamic `containerHeight` tracked from scroll container's `clientHeight`. Indicators now correctly clip on any screen size. (`DispatchTimeline.tsx`)
+- **Detail panel flex layout** — Added `h-full` to panel ref wrapper `<div>` so the detail panel fills the parent flex container correctly instead of potentially collapsing. (`DispatchPreview.tsx`)
+
+#### Client Workspace Live-Data Bug Batch (2026-03-07)
+- **Fix 1: Activity tab crash** — `activity.map is not a function` error fixed. The `/api/activity/:entityType/:entityId` endpoint returns `{ items: [], hasMore, nextCursor }` (paginated object), not a raw array. Added `normalizeActivityPayload()` that safely handles array, paginated object, null, and undefined payloads. (`ClientDetailPage.tsx`)
+- **Fix 2: Edit Client action** — "Edit Client" dropdown item now opens a working edit dialog instead of navigating to self. New `PATCH /api/customer-companies/:companyId` endpoint added for updating company name, phone, email, billing address. (`ClientDetailPage.tsx`, `customer-companies.ts`, `customerCompanies.ts`)
+- **Fix 3: 0-locations client** — Investigated: this is a legitimate data state where a customer company exists but has no linked locations. The overview endpoint correctly queries `client_locations WHERE parentCompanyId = :id`. Enhanced empty state to show "Add First Location" button instead of just text. (`ClientDetailPage.tsx`)
+- **Fix 4: Remove "Open Full Page"** — Removed visible "Open full page" menu item from location detail dropdown. Old location routes preserved for backward compatibility but no longer surfaced in the new workspace UI. (`ClientDetailPage.tsx`)
+- **Fix 5: Multi-contact support** — Full CRUD restored for both client-level and location-level contacts:
+  - Client-level "Contacts" tab added to client-wide tabs with add/edit/delete for company contacts (Accounts Payable, Operations Manager, etc.)
+  - Location-level Contacts tab upgraded from view-only to full CRUD with add/edit/delete
+  - Reusable `ContactCard` and `ContactFormDialog` components created
+  - Uses existing `POST/PATCH/DELETE /api/customer-companies/:companyId/contacts` endpoints
+  - (`ClientDetailPage.tsx`)
+
+### Changed
+
+#### Client Detail Page → Split-Pane Client Workspace (2026-03-07)
+- **Split-pane layout replaces two-column grid** — Client detail page (`/clients/:clientId`) now uses the enterprise master/detail pattern: left pane = location list, right pane = selected location detail with tabs. Replaces the old monolithic ClientDetailPage (1609 lines → ~750 lines, modular).
+- **Client header** — compact header showing company name, status badge, and 4 key metrics: location count, active jobs, overdue invoices, pending quotes. Company tags shown subtly below. Primary actions: Create Job, Add Location, More (...).
+- **Client-wide tabs** — Locations | Jobs | Invoices | Quotes | Billing | Activity. Non-Locations tabs show client-wide aggregated data across all locations.
+- **Left pane (locations list)** — searchable location list with compact rows showing name, address, primary star, and right-aligned status indicators (active jobs, overdue invoices, pending quotes, PM indicator). Selected row highlighted with blue left border.
+- **Right pane (location detail)** — 10 location tabs: Overview, Jobs, Invoices, Quotes, Equipment, PM, Parts, Notes, Contacts, Tags. All wired to real live data via existing API endpoints.
+- **URL state for deep-linking** — `?location=<id>&tab=<tabName>` params preserved in URL for stable location selection, page refresh, and future deep-linking.
+- **Billing tab (client-level)** — shows outstanding balance, overdue balance, open invoice count, pending quote count, computed from real invoice/quote data. Lists unpaid invoices.
+- **Activity tab (client-level)** — wired to `/api/activity/customer_company/:id` endpoint. Shows real events with timestamps. Clean empty state if no data.
+- **Location tab content** — Overview shows active work, PM status, access info, equipment summary. Jobs/Invoices/Quotes use real data from overview endpoint. Equipment supports add/delete. PM uses PMScheduleCard. Parts uses PartsSelectorModal. Notes uses NotesPanel. Contacts shows both location-specific and company-wide. Tags uses EditTagsModal.
+- **Old LocationDetailPage preserved** — routes `/clients/:id/locations/:locationId` and `/locations/:locationId` still work for backwards compatibility and deep links.
+- **Files modified:** `ClientDetailPage.tsx` (complete rewrite)
+
+### Fixed
+
+#### Dispatch Drag Corrections + Task Rules (2026-03-07)
+- **Fix 1: Lane jumping** — visits no longer jump to the technician row above on drag start. Origin lane is captured at drag start via `originLaneRef` and used as fallback until the pointer crosses into another lane. (`DispatchPreview.tsx`)
+- **Fix 2: Task/visit overlap enforcement** — tasks can no longer overlap visits and vice versa. `checkOverlap()`, `findNearestValidSlot()`, and `getOverlappingVisitIds()` now accept both visits and tasks, combining them into a single block list for overlap detection. (`dispatchOverlapUtils.ts`, `DispatchPreview.tsx`)
+- **Fix 3: Ghost drag offset** — DragOverlay ghost card now uses `translate(-10px, -10px)` positioning to stay near the cursor instead of jumping above it. Drop position calculated from pointer coordinates relative to timeline container. (`DispatchPreview.tsx`)
+- **Fix 4: Default task duration = 60 minutes** — tasks without a duration now default to 60 minutes on the backend (`tasks.routes.ts`) and frontend (`DispatchTaskBlock.tsx`), ensuring visibility on the timeline.
+- **Fix 5: Close panel on outside click** — clicking empty grid area closes the detail panel. Clicking another visit/task switches the panel. Dragging and resizing do not trigger panel close. (`DispatchPreview.tsx`)
+
+#### Dispatch UX Correction Pass (2026-03-07)
+- **Drag ghost offset** — DragOverlay ghost card now renders above the cursor (`-translate-y-full`) with reduced opacity (70%), so the target slot time label stays readable during drag.
+- **Drag preview readability** — time chip repositioned ABOVE the preview block (not centered inside it). White-on-blue or white-on-red pill is always visible even when the ghost card is nearby.
+- **Overlap warning prominence** — overlap state shows a large centered red "OVERLAP" banner with bold white text; preview block border changes to solid red-500. Unmissable.
+- **Nearest-valid-slot snapping** — when a drop would overlap, the system searches outward (before/after in 15-min increments) for the nearest non-overlapping slot. Only snaps back if no valid slot exists in the timeline window. Replaces hard block-on-overlap. New `findNearestValidSlot()` in `dispatchOverlapUtils.ts`.
+- **Task resize** — tasks now have right-edge resize handles (same UX as visit blocks). Uses PATCH `/api/tasks/:id` with updated `scheduledEndAt`. Violet color scheme matches task styling.
+- **Quick reschedule layout** — date and time inputs now stack vertically with labels, larger touch targets (h-8), proper padding (p-3), and outline-variant Cancel button.
+- **Right panel visual separation** — detail panel border changed from `border-l` to `border-l-2 border-l-slate-300` (visit) / `border-l-violet-300` (task) with `shadow-lg`. Header bg darkened to `bg-slate-100` / `bg-violet-50`. Task panel now has "Open Related Job" footer action.
+- **Outside-window indicators** — moved from lane-row absolute positioning (broken: `right-0` was at end of 1680px lane, off-screen) to a non-scrolling overlay in DispatchTimeline. Indicators now stick to viewport edges regardless of horizontal scroll position.
+- **Files modified:** `dispatchOverlapUtils.ts`, `DispatchDragPreview.tsx`, `DispatchPreview.tsx`, `DispatchOutsideWindowIndicators.tsx`, `DispatchLaneRow.tsx`, `DispatchTimeline.tsx`, `DispatchTaskBlock.tsx`, `DispatchDetailPanel.tsx`
+
+### Changed
+
+#### Preview Cleanup + Command Palette Routing Fix (2026-03-07)
+- **Removed old preview client workspace** — `/preview/client-workspace` route removed from `App.tsx`, nav entry removed from `AppSidebar.tsx`, import of `PreviewClientWorkspace` removed. The split-pane version (`/preview/client-workspace-split`) is the only client workspace preview now.
+- **Deterministic command palette navigation** — every `CommandPalette` search result now carries an explicit `client` slug param (e.g., `?client=northstar-foods&location=3&tab=jobs`). No fuzzy routing, no default-client fallback. Client slugs: `freeman-service-group`, `northstar-foods`, `apex-property-management`, `city-of-toronto`.
+- **Client-scoped split-pane** — `PreviewClientWorkspaceSplit` now reads `?client=` param, shows the correct client name in the header, and filters locations to only those belonging to that client. Selecting NorthStar Foods shows only Hillcrest Mall and Lakeside Heights.
+- **URL params re-read on navigation** — split-pane workspace now re-applies `client`, `location`, and `tab` params on every URL change (not just mount). Navigating between CommandPalette results without remounting the page correctly updates the view.
+- **Preview identity registry** — `previewClientWorkspaceMockData.ts` now exports `PREVIEW_CLIENTS` array with stable slugs and location ID mappings, plus lookup helpers `findPreviewClient()`, `findClientForLocation()`, `getDefaultLocationForClient()`.
+- **Files modified:** `CommandPalette.tsx` (client slug in all routes), `PreviewClientWorkspaceSplit.tsx` (client param, re-read on nav, client-scoped locations), `previewClientWorkspaceMockData.ts` (preview identity registry), `App.tsx` (removed old route + import), `AppSidebar.tsx` (removed old nav entry + dead import)
+
+### Added
+
+#### Dispatch Board: Next-Phase Architecture Pass (2026-03-07)
+- **Week View** — real Week view on the NEW dispatch architecture. Technician rows x day columns grid with compact visit/task cells. Supports click-to-select for detail panel, today highlighting, weekend shading. Files: `WeekDispatchGrid.tsx`, `WeekDispatchCell.tsx`, `useDispatchWeekData.ts`.
+- **Day/Week View Switching** — `DispatchBoardHeader` now supports Day and Week toggles. Navigation arrows advance by day or week depending on active view. Date label shows week range in Week view.
+- **Drag Preview with Target Time** — `DispatchDragPreview` renders a snap-aligned ghost block in the active drop lane showing exact proposed start/end times. Turns red with "Overlap!" warning on conflict.
+- **Overlap Prevention** — `dispatchOverlapUtils` detects overlapping visits for same technician. Drops are blocked when overlap detected; lane highlights red; drag preview shows warning.
+- **Compact Unscheduled Cards** — redesigned to 2-line layout for dense backlog display. Line 1: customer name + summary. Line 2: location, duration, job number. Supports 20+ items without excessive scrolling.
+- **Task Parity** — tasks are now clickable (opens detail panel) and draggable (PATCH /api/tasks/:id with scheduledStartAt/EndAt). Task drag overlay shows violet styling. Resize not yet supported (documented). Task detail panel shows type, status, schedule, notes.
+- **Outside-Window Indicators** — amber chevron buttons appear in lane rows when technician has items before 6 AM or after 8 PM. Shows item count per direction.
+- **Hide Weekends Toggle** — Week view filter bar includes "Hide Weekends" checkbox that removes Sat/Sun columns.
+- **Shared Filter Model** — technician multi-select and visit status filter work identically in Day and Week views. No separate filter systems.
+- **Detail Panel Improvements** — stronger visual separation with grouped sections (Status, Schedule, Location, People, Notes). Quick Reschedule inline form for date/time changes. Supports both visit and task detail via entityType discriminator. Visit and task headers have distinct styling.
+- **Task Reschedule Mutation** — `useDispatchPreviewMutations` now includes `rescheduleTask()` via PATCH /api/tasks/:id. Also invalidates /api/tasks queries on all mutations.
+- **Files created:** `WeekDispatchGrid.tsx`, `WeekDispatchCell.tsx`, `useDispatchWeekData.ts`, `DispatchDragPreview.tsx`, `dispatchOverlapUtils.ts`, `DispatchOutsideWindowIndicators.tsx`
+- **Files modified:** `DispatchPreview.tsx` (Day/Week orchestration, drag preview, overlap, task selection), `DispatchBoardHeader.tsx` (view toggle, week date label), `DispatchFiltersBar.tsx` (hide weekends toggle), `DispatchTimeline.tsx` (drag preview + task selection passthrough), `DispatchLaneRow.tsx` (drag preview, overlap, task selection, outside-window indicators), `DispatchTaskBlock.tsx` (clickable + draggable), `DispatchUnscheduledCard.tsx` (compact 2-line layout), `DispatchDetailPanel.tsx` (sections, quick reschedule, task support), `useDispatchPreviewMutations.ts` (rescheduleTask, task invalidation), `dispatchDndTypes.ts` (scheduled-task drag type)
+
+#### Dispatch Board: Day View Improvement Components (2026-03-07)
+- **DispatchDragPreview** — visual drag preview indicator that renders inside each lane row during drag operations. Shows a semi-transparent block at the snap-aligned position with proposed start/end times. Turns red with "Overlap!" warning when the drop would conflict with an existing visit.
+- **dispatchOverlapUtils** — pure utility functions for overlap detection. `checkOverlap()` returns boolean for conflict detection; `getOverlappingVisitIds()` returns conflicting visit IDs for highlighting. Both exclude the dragged visit and handle missing schedule data gracefully.
+- **DispatchOutsideWindowIndicators** — edge indicators rendered in each lane row when a technician has visits/tasks before 6 AM or after 8 PM (outside the visible 6 AM–8 PM timeline window). Shows amber chevron buttons with item count; supports optional scroll-to callbacks.
+- **Files created:** `client/src/components/dispatch/DispatchDragPreview.tsx`, `client/src/components/dispatch/dispatchOverlapUtils.ts`, `client/src/components/dispatch/DispatchOutsideWindowIndicators.tsx`
+
+### Fixed
+
+#### Dispatch Board: Mutation + Task + UX Fix Pass (2026-03-07)
+- **ROOT CAUSE: Visit ID mismatch** — `mapEventToDispatchVisit()` used `event.id` for the visit's `id` field, but the API returns `event.id === jobId`. All visit-level mutations (`reschedule`, `unschedule`, `resize`) sent the job UUID to `/visit/:visitId/...` routes, causing 404 "Not found" errors.
+- **FIX: Use visitId for mutations** — mapper now uses `event.visitId ?? event.id`, ensuring visit-level routes receive the correct visit UUID.
+- **FIX: Mutation fallback strategy** — `useDispatchPreviewMutations.ts` rewritten with try-new-route → catch-404 → fallback-to-old-route pattern. Supports both old job-level routes (stale server) and new visit-level routes (restarted server).
+- **FIX: Resize sends visitId** — resize handler passes `visit.id` (now correct visitId), `visit.scheduledStart`, and `visit.scheduledEnd` to the resize mutation.
+- **FIX: Version field consistency** — after server restart, API returns `visit_version` (from `jv.version`) and new routes check `visit.version`. Old routes removed from code; version fields are now consistent end-to-end.
+- **FIX: Mutation response version desync** — `rescheduleVisit`, `unscheduleVisit`, `resizeVisit` storage methods returned job version in response (from `getJobById`), but calendar query returned visit version. This caused consecutive mutations to fail with VERSION_MISMATCH. Fixed by re-fetching visit after mutation and returning `visitVersion` in storage responses. Routes now return `result.visitVersion ?? result.version`.
+- **FIX: Task date filter** — task query used `scheduledToDate=YYYY-MM-DD` which parsed as midnight, excluding same-day tasks. Changed to use full ISO range (`dayStart`/`dayEnd`) matching the calendar event query pattern.
+- **ADDED: Task rendering on timeline** — new `DispatchTaskBlock.tsx` renders tasks on technician lanes with violet/dashed styling. Tasks fetched from `GET /api/tasks?scheduledFromDate=&scheduledToDate=&limit=200`. Read-only (no drag/resize) pending backend task mutation contract.
+- **ADDED: Task data pipeline** — `useDispatchPreviewData.ts` fetches tasks for selected day, `mapRawTask()` normalizes API response, `tasksByTech` useMemo groups tasks by `assignedToUserId`.
+- **UX: Card information hierarchy** — scheduled visit blocks now show customerName as primary (bold), summary as secondary. Unscheduled cards made more compact (reduced padding), customerName primary, job number moved to metadata line.
+- **Files modified:** `dispatchPreviewMappers.ts` (visitId fix, mapRawTask), `dispatchPreviewTypes.ts` (DispatchTask type), `useDispatchPreviewMutations.ts` (rewritten with fallback), `useDispatchPreviewData.ts` (task fetching, ISO date range), `DispatchPreview.tsx` (tasksByTech wiring, mutation params), `DispatchVisitBlock.tsx` (card hierarchy), `DispatchUnscheduledCard.tsx` (compact cards), `DispatchTimeline.tsx` (tasksByTech prop), `DispatchLaneRow.tsx` (task rendering), `server/storage/calendar.ts` (visitVersion in mutation responses), `server/routes/calendar.ts` (return visitVersion in route responses)
+- **Files created:** `DispatchTaskBlock.tsx`
+
+#### Dispatch Board: Empty Board Bug Fix (2026-03-07)
+- **ROOT CAUSE: Technician roster derived only from visit payload** — `extractAllTechnicians()` built the tech list solely from `event.technicians` arrays in scheduled events and unscheduled jobs. On empty days (or days with unassigned visits), the tech list was empty, causing empty sidebar, empty filter dropdown, empty timeline, and no visit lanes.
+- **FIX: Independent technician roster fetch** — dispatch board now uses `useTechniciansDirectory()` (existing hook for `GET /api/team/technicians`) to fetch all schedulable technicians independently. `buildTechnicianRoster()` maps team members to display format, enriched with colors from event payload when available. Empty days now show all technician lanes.
+- **FIX: View toggle honesty** — Day/Week/Month toggle buttons replaced with Day (always active) + Week/Month (disabled with "coming soon" tooltip). Previously all three appeared clickable, with Month visually selectable despite no implementation.
+- **FIX: Empty day state** — timeline now shows a clear "No schedulable technicians found" message when the roster is genuinely empty, distinguishing it from a data pipeline failure.
+- **FIX: Unassigned visits invisible** — scheduled visits with no `technicianId` (2 of 3 on the verified test day) were silently dropped by `visitsByTech`. Added an "Unassigned" virtual lane row (slate-colored, `??` avatar) that collects these visits. The unassigned lane is not a drop target — you cannot drag visits onto it, only off of it.
+- **Removed dead state** — `activeView`/`onViewChange` state removed from `DispatchPreview.tsx` since only Day view is implemented.
+- **Files modified:** `useDispatchPreviewData.ts` (technician roster from team API), `dispatchPreviewMappers.ts` (replaced `extractAllTechnicians` with `buildTechnicianRoster`), `DispatchBoardHeader.tsx` (disabled Week/Month toggles), `DispatchTimeline.tsx` (empty tech state), `DispatchPreview.tsx` (removed view toggle state, added unassigned lane logic), `DispatchLaneRow.tsx` (disable droppable for unassigned lane), `dispatchPreviewTypes.ts` (UNASSIGNED_TECH_ID sentinel)
+
+### Changed
+
+#### Preview: Client Workspace & Search Refinement (2026-03-07)
+- **1A/1B: Compact location indicators** — replaced text-heavy status pills in left pane with icon+count indicators (wrench for active jobs, receipt for overdue invoices, file for pending quotes, calendar for PM). Saves ~40% vertical space per row.
+- **1C: Tags moved to subtle line** — location tags (HVAC, Refrigeration, etc.) moved below address as muted 10px text instead of colored badges.
+- **1D: New client-level tab set** — replaced `activeWork/jobs/invoices/quotes/history` tabs with `Locations/Jobs/Invoices/Quotes/Billing/Activity`. Added `ClientBillingContent` (account summary, payment methods, billing contact). Renamed `ClientHistoryContent` → `ClientActivityContent`.
+- **Part 2: Command palette deterministic routing** — `CommandPalette.tsx` now uses `csRoute()` helper with exact mock location IDs (e.g., `?location=20&tab=jobs`). All ~50 mock results updated with correct numeric IDs matching `previewClientWorkspaceMockData.ts`.
+- **Part 3: Unified search UX** — on preview routes, the top nav search bar is now a styled trigger that opens the CommandPalette modal (same as Cmd+K). Production routes retain the full `UniversalSearch` component with real API. One search system per context, not two competing inputs.
+- **Part 3: Deep-link support** — `PreviewClientWorkspaceSplit.tsx` reads `?location=` and `?tab=` URL query params on mount, preselecting the correct location and detail tab when navigated from the command palette.
+- **Files modified:** `App.tsx` (preview-aware search bar trigger), `CommandPalette.tsx` (deterministic routing), `PreviewClientWorkspaceSplit.tsx` (compact indicators, new tabs, billing content, URL param reading)
+
+### Added
+
+#### Preview: Operations Queue (2026-03-07)
+- **New preview page** at `/preview/operations-queue` — split-pane triage queue for actionable items across all client locations.
+- **Left pane:** filterable queue list (All, Invoices, Jobs, Quotes, PM tabs), search bar, urgency-sorted items with colored left borders (red=overdue invoices, blue=active jobs, amber=pending quotes, green=PM due).
+- **Right pane:** location detail with 10 tabs (Overview, Jobs, Invoices, Quotes, Equipment, PM, Parts, Notes, Contacts, Tags) populated from existing mock data.
+- **Mock data derivation:** queue items generated from `previewClientWorkspaceMockData.ts` locations — overdue invoices (urgency 1), active jobs (2), pending quotes (3), PM due (4). Multiple client names for variety.
+- **Sidebar entry** added under "Preview / Legacy" section with `ListChecks` icon.
+- **Files created:** `PreviewOperationsQueue.tsx`, `previewOperationsQueueMockData.ts`
+- **Files modified:** `App.tsx` (route), `AppSidebar.tsx` (nav entry)
+
+#### Preview: Universal Command Search (Cmd+K) (2026-03-07)
+- **Command palette** triggered by `Cmd+K` / `Ctrl+K` — modal overlay with search input, grouped results, keyboard navigation.
+- **7 entity groups:** Clients, Locations, Jobs, Invoices, Quotes, Equipment, Contacts — ~60 mock search results.
+- **Keyboard navigation:** ArrowUp/Down to move, Enter to select, Esc to close. Active item highlighted with "Enter" hint badge.
+- **Navigation:** selecting a result navigates to the corresponding preview route via wouter.
+- **Trigger button** added next to existing search bar in the app header (magnifying glass icon with "Cmd+K" badge).
+- **Preview-only:** all routes point to `/preview/` paths. No backend calls. No production route changes.
+- **Files created:** `CommandPalette.tsx`
+- **Files modified:** `App.tsx` (Cmd+K handler, trigger button, CommandPalette render)
+
+### Fixed
+
+#### Dispatch Board: Post-Cutover Validation Fixes (2026-03-07)
+- **BLOCKER: Layout overflow** — dispatch board used `h-screen` (100vh) but is rendered inside the app shell which already has a 56px header. Board extended beyond viewport, requiring scroll. Fixed to `h-full` so it fills the remaining space correctly. Also fixed error state container.
+- **HIGH: "Open Job" full page reload** — detail panel used `<a href>` for the job link, causing full page reload. Replaced with wouter `<Link>` for SPA navigation. Removed unused `Hash` import.
+- **MEDIUM: Click after drag** — clicking a visit block could fire `onSelect` after a drag-and-drop completed, opening the detail panel unintentionally. Added `wasDraggingRef` guard to suppress click immediately after drag.
+- **Files modified:** `DispatchPreview.tsx`, `DispatchDetailPanel.tsx`, `DispatchVisitBlock.tsx`
+
+### Changed
+
+#### Route Cutover: Dispatch Board Promoted to Primary Scheduling Surface (2026-03-07)
+- **`/dispatch`** is now the primary scheduling route, serving the new dispatch board.
+- **`/calendar`** now renders the new dispatch board (same as `/dispatch`), preserving existing bookmarks/links.
+- **`/calendar-legacy`** serves the old `Calendar.tsx` as a temporary fallback.
+- **`/dispatch-preview`** kept as alias (renders the same dispatch board).
+- **Sidebar nav:** "Calendar" renamed to "Dispatch" with `LayoutGrid` icon, pointing to `/dispatch`.
+- **Preview UI section** renamed to "Preview / Legacy". "Dispatch Board" entry removed (now primary). "Calendar (Legacy)" entry added.
+- **Preview banner removed** from dispatch board page — no longer labeled as preview.
+- **No backend changes.** No legacy calendar files deleted.
+- **Files modified:** `App.tsx` (routes), `AppSidebar.tsx` (nav), `DispatchPreview.tsx` (banner removed, doc comment updated)
+
+### Added
+
+#### Dispatch Board: Read-Only Visit Detail Panel (2026-03-07)
+- **Click-to-select** — click any scheduled visit block or unscheduled card to open a read-only detail slide-over panel on the right, replacing the unscheduled panel while active.
+- **Detail fields shown:** job number, visit number, summary, status badge, priority, job type, customer name, location name, scheduled date/time, duration, technician name(s), site contact name/phone, access instructions, job description, visit notes, location notes.
+- **Quick actions:** "Open Job" link navigates to `/jobs/:jobId`, "Unschedule" button for scheduled visits, "Close" button.
+- **Selection ring** — selected visit block or card shows a blue ring highlight.
+- **Auto-clear** — selection clears when the selected visit disappears due to date/filter changes.
+- **Toggle behavior** — clicking the same visit again deselects it, returning to the unscheduled panel.
+- **Extended DispatchVisit type** — added optional fields (`jobType`, `locationId`, `customerCompanyId`, `description`, `accessInstructions`, `contactName`, `contactPhone`, `locationNotes`, `visitNotes`, `technicianNames`) mapped from existing `CalendarEventDto` and `UnscheduledJobDto` payloads. No new backend calls.
+- **Files created:** `DispatchDetailPanel.tsx`
+- **Files modified:** `dispatchPreviewTypes.ts`, `dispatchPreviewMappers.ts`, `DispatchVisitBlock.tsx`, `DispatchUnscheduledCard.tsx`, `DispatchUnscheduledPanel.tsx`, `DispatchLaneRow.tsx`, `DispatchTimeline.tsx`, `DispatchPreview.tsx`
+
+#### Dispatch Board: Visit Block Resize (2026-03-07)
+- **Right-edge resize handle** on scheduled visit blocks in `/dispatch-preview`. Drag to change duration with 15-minute snap increments, minimum 15 minutes.
+- **Live preview** — block width and duration label update in real-time during resize drag.
+- **Persist via backend** — calls `POST /api/calendar/visit/:visitId/resize` with `{ newEndTime }` on pointer release. Refetch-on-success strategy.
+- **Clamped to timeline** — resize cannot extend past `TIMELINE_END_HOUR` (8 PM).
+- **Fixed unschedule hover bug** — X button now only appears when hovering the specific visit block (Tailwind named group `group/visit`), not the entire lane row.
+- **New constants** in `dispatchPreviewUtils.ts`: `SNAP_MINUTES`, `MIN_DURATION_MINUTES`, `PX_PER_MINUTE`.
+- **New mutation** `resizeVisit` in `useDispatchPreviewMutations.ts`.
+- **Files:** `DispatchVisitBlock.tsx` (resize handle + hover fix), `DispatchLaneRow.tsx` (onResize prop), `DispatchTimeline.tsx` (onResize prop), `DispatchPreview.tsx` (handleResize wiring), `useDispatchPreviewMutations.ts` (resizeVisit), `dispatchPreviewUtils.ts` (constants)
+
+### Changed
+
+#### Preview: Client Workspace V3 Refinement (2026-03-07)
+- **Calmer, flatter list-based layout** — removed row background tinting for urgency (badges only), removed card-within-card nesting, flatter rows with border separators instead of chunky cards.
+- **Simplified header** — de-emphasized equipment count, prioritized Active Jobs / Overdue Invoices / Quotes Pending as inline metrics. Client tags moved to subtle grey chips below metrics.
+- **Client-wide tabs with mock content** — Active Work, Jobs, Invoices, Quotes, History tabs now render real mock data across all locations (not decorative).
+- **Full location tab set** — added Invoices and Quotes tabs. Full set: Overview, Jobs, Invoices, Quotes, Equipment, PM, Parts, Notes, Contacts, Tags.
+- **Collapsible right rail** — sidebar sections use accordion pattern. Client Contacts and Billing Snapshot open by default; Client Notes, Payment Methods, Recent Activity collapsed by default.
+- **Shared mock data** — extracted mock data to `previewClientWorkspaceMockData.ts` with new `MockInvoice` and `MockQuote` types per location.
+- **Files:** `PreviewClientWorkspace.tsx` (rewritten), `previewClientWorkspaceMockData.ts` (new)
+
+### Added
+
+#### Preview: Client Workspace Split-Pane (2026-03-07)
+- **New split-pane preview** at `/preview/client-workspace-split` — enterprise master/detail pattern for comparison.
+- **Left pane:** stable location list with Locations/Needs Attention toggle, search, filter, sort. Selected row highlighted. No inline expansion.
+- **Right pane:** selected location detail with full tab set (Overview, Jobs, Invoices, Quotes, Equipment, PM, Parts, Notes, Contacts, Tags).
+- **Client-wide tabs** — Active Work shows split-pane, Jobs/Invoices/Quotes/History show client-wide aggregated content.
+- **Needs Attention mode** — filters to actionable locations sorted by urgency, shows reason summary.
+- **No right sidebar** — omitted to let the split-pane breathe.
+- **Files:** `PreviewClientWorkspaceSplit.tsx` (new), `App.tsx` (route), `AppSidebar.tsx` (nav entry with Columns icon)
+
+#### Calendar: Symmetric DnD Identity Normalization (2026-03-07)
+- **Removed asymmetric drag ID model.** Previously visits used bare UUIDs and tasks used `"task-{uuid}"` prefixed IDs. Now both use typed drag IDs: `"visit-{uuid}"` and `"task-{uuid}"`. This eliminates fragile string-prefix routing and makes the system extensible to future entity types.
+- **New centralized helpers:** `buildCalendarDragId(entityType, entityId)` and `parseCalendarDragId(dragId)` in `calendarUtils.ts`. All drag ID construction and parsing now goes through these — no more ad-hoc `startsWith("task-")` or `.replace("task-", "")` scattered across components.
+- **CalendarEvent type extended:** Added optional `entityId` (raw UUID for API calls) and `entityType` fields. `assignmentId` is now always a typed drag ID.
+- **Routing by parsed entity type:** `handleDragEnd` and `handleResize` in Calendar.tsx use `parseCalendarDragId()` to determine entity type and extract raw IDs, instead of string prefix checks.
+- **savingJobIds updated:** Visit mutations now use `buildCalendarDragId("visit", visitId)` for saving state, matching the typed `event.assignmentId` that grid components check.
+- **No behavior changes.** All drag/drop, resize, optimistic update, and rollback flows work identically.
+- **Files:** `calendarUtils.ts`, `useCalendarDnD.ts`, `Calendar.tsx`, `ResizableJobCard.tsx`, `CalendarGridWeek.tsx`, `CalendarGridDayJobber.tsx`, `CalendarGridDay.tsx`, `CalendarSidebar.tsx`
+
+### Added
+
+#### Preview: Dispatch Board (2026-03-07)
+- **New isolated Dispatch Board preview** at `/dispatch-preview` — visual prototype for the calendar replacement architecture.
+- **3-column layout:** technician sidebar (left), scrollable day timeline with hour grid + visit blocks (center), unscheduled visits panel with search (right).
+- **Header:** "Dispatch Board" title, Today/prev/next day navigation, Day/Week/Month view toggle (Day active, others placeholder).
+- **Filters:** Multi-select technician dropdown with checkboxes (Select All / Clear All), multi-select visit status dropdown (Open, Scheduled, Dispatched, En Route, On Site, In Progress, Completed). No departments filter.
+- **Visit blocks:** Color-coded by visit status, priority border accent (urgent=red, high=amber), job number + summary + location + duration. Positioned on timeline by scheduledStart/duration.
+- **Technician lanes:** Avatar with initials + color, name, status dot (available/on_job/off). Rows align with timeline lanes.
+- **Unscheduled panel:** Search bar, visit cards with grip handle (future drag source), priority badges, location + duration metadata.
+- **Now line:** Red vertical indicator at current time, auto-scrolls timeline to current hour on mount.
+- **Component structure:** 8 new files in `client/src/components/dispatch/` — fully isolated from calendar codebase.
+- **No backend changes.** No calendar modifications. No drag/drop mutations wired.
+- **Files:** `DispatchPreview.tsx` (page), `DispatchBoardHeader.tsx`, `DispatchFiltersBar.tsx`, `DispatchTechnicianSidebar.tsx`, `DispatchTimeline.tsx`, `DispatchLaneRow.tsx`, `DispatchVisitBlock.tsx`, `DispatchUnscheduledPanel.tsx`, `DispatchUnscheduledCard.tsx`, `dispatchPreviewTypes.ts`, `dispatchPreviewUtils.ts`, `dispatchPreviewMockData.ts`, `App.tsx` (route), `AppSidebar.tsx` (nav entry)
+
+#### Preview: Dispatch Board — DnD Scheduling Interactions (2026-03-07)
+- **Drag/drop scheduling** added to `/dispatch-preview` — unscheduled visits can be dragged onto technician lanes to schedule them, scheduled visits can be moved to different times/technicians.
+- **Unschedule action** — hover X button on scheduled visit blocks returns them to the unscheduled backlog.
+- **Mutation hook:** `useDispatchPreviewMutations.ts` — handles `scheduleVisit` (POST `/api/calendar/schedule`), `rescheduleVisit` (PATCH `/api/calendar/visit/:visitId/reschedule`), and `unscheduleVisit` (POST `/api/calendar/visit/:visitId/unschedule`) with CSRF, saving state tracking, error toasts, and query invalidation.
+- **DnD types:** `dispatchDndTypes.ts` — structured `DispatchDragData` and `DispatchDropData` interfaces (no brittle string parsing).
+- **dnd-kit integration:** `DndContext` wraps the dispatch board, `useDraggable` on visit blocks and unscheduled cards, `useDroppable` on lane rows with visual drop target highlighting.
+- **Drop position computation:** 15-minute snap grid, clamped to timeline bounds (6 AM–8 PM), computed from pointer position relative to scrollable timeline.
+- **Drag overlay:** lightweight ghost preview follows cursor during drag.
+- **Saving state feedback:** spinner on cards/blocks during mutations, disabled dragging while saving.
+- **Refetch-on-success strategy** — no optimistic updates; mutations invalidate queries and refetch for correctness.
+- **Version field** added to `DispatchVisit` type for optimistic locking.
+- **Files created:** `dispatchDndTypes.ts`, `useDispatchPreviewMutations.ts`
+- **Files modified:** `DispatchPreview.tsx`, `DispatchTimeline.tsx`, `DispatchLaneRow.tsx`, `DispatchVisitBlock.tsx`, `DispatchUnscheduledCard.tsx`, `DispatchUnscheduledPanel.tsx`, `dispatchPreviewTypes.ts`, `dispatchPreviewMappers.ts`, `dispatchPreviewMockData.ts`
+
+#### Preview: Dispatch Board — Real Data Wiring (2026-03-07)
+- **Replaced mock data with live backend data** in `/dispatch-preview`. Now fetches from `GET /api/calendar?start=&end=` (scheduled visits) and `GET /api/calendar/unscheduled` (backlog).
+- **Mapper layer:** `dispatchPreviewMappers.ts` — maps `CalendarEventDto` → `DispatchVisit`, `UnscheduledJobDto` → `DispatchVisit`, extracts unique `Technician` objects from visit payloads with color fallbacks.
+- **Data hook:** `useDispatchPreviewData.ts` — `useDispatchPreviewData(selectedDate)` computes day start/end boundaries, fetches both endpoints via TanStack Query, returns `{ scheduledVisits, unscheduledVisits, technicians, isLoading, error }`.
+- **Date navigation functional:** changing date refetches scheduled visits for the new day range.
+- **Loading/error states:** spinner overlay during fetch, centered error message on failure.
+- **Tech filter auto-init:** auto-selects all technicians on first data load, preserves manual selections on subsequent fetches.
+- **Read-only:** no mutations, no DnD, no scheduling writes.
+- **Files:** `dispatchPreviewMappers.ts` (new), `useDispatchPreviewData.ts` (new), `DispatchPreview.tsx` (rewritten)
+
+#### Preview: Client Command Center V2 (2026-03-07)
+- **V2 UX refinement** of the Client Workspace preview at `/preview/client-workspace`.
+- **Compact expanded panels** — Overview tab now uses dense summary strips (Active Work, PM, Access, Last Service) instead of a 3-column slab. All tab content tightened with smaller padding and text.
+- **De-emphasized Create Job** — removed per-row "Create Job" button; replaced with a subtle icon-only action visible on hover. Primary Create Job action moved inside the expanded panel actions row.
+- **Account Intelligence Rail** — right sidebar upgraded from simple contacts/notes to a full account rail: Client Contacts, Client Notes, Billing Snapshot (outstanding/overdue/open invoices/unapproved quotes with quick actions), Payment Methods (Visa/ACH mock), and Recent Activity feed (10 mixed activity items with timestamps).
+- **Dual-view toggle** — segmented "Locations / Needs Attention" toggle above the locations workspace. Needs Attention view shows only locations with actionable signals, sorted by urgency (overdue > active jobs > quotes > PM).
+- **Urgency emphasis** — rows with overdue invoices get a subtle red border tint. Needs Attention items share the same visual treatment.
+- **Sort options expanded** — Active Work, Name A-Z, Overdue Balance, PM Status.
+- **Optional secondary line** — collapsed rows show Next PM or Last Service date as a subtle subtitle when available.
+- **Richer mock data** — equipment types, PM cadence, location-level emails, "Needs Review" job status, 3 client contacts, 10 activity feed items.
+- **Sidebar "Preview UI" section** in `AppSidebar.tsx` — temporary navigation with flask icon for easy access.
+- **No backend changes.** Mock data only. Does not modify existing client pages.
+- **Files:** `PreviewClientWorkspace.tsx` (rewritten), `App.tsx` (route unchanged), `AppSidebar.tsx` (unchanged)
+
 #### Calendar: Task Drag/Drop Scheduling with Optimistic Updates (2026-03-06)
 - **Tasks are now fully interactive calendar items** — drag to reschedule, drag between technicians, resize duration, drag from sidebar to schedule. Previously tasks were read-only on the calendar.
 - **Mutations:** Added `updateTask` and `resizeTask` mutations to `useCalendarDnD.ts` with full optimistic cache updates, savingJobIds tracking, and snapshot rollback on error. Tasks route to `PATCH /api/tasks/:id` (not visit endpoints).
@@ -15,9 +1587,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Resize routing:** Calendar.tsx `handleResize` detects task IDs (`task-` prefix) and routes to `resizeTaskMutation` instead of visit resize endpoint.
 - **Sidebar drag:** Unscheduled tasks in `CalendarSidebar.tsx` are now wrapped in `useDraggable` via `DraggableTaskItem` component — can be dragged onto any calendar slot to schedule them.
 - **Capability gates removed:** `getEventCapabilities()` now returns `draggable/resizable: true` for non-completed tasks (was previously `false` for all tasks). `JobCard` `draggable` prop no longer hardcoded to `!isTask`. `DraggableAllDayCard` no longer disables drag for tasks.
+- **Click-vs-drag guard:** `DraggableTaskItem` uses `isDragging` + 250ms `lastDragEndedAtRef` cooldown to prevent `onClick` from firing after a drag (same pattern as `DraggableClient`). Completed tasks show `cursor-default` + reduced opacity.
+- **Optimistic insert for first-schedule:** When an unscheduled task is dragged from the sidebar onto the calendar, `updateTask.onMutate` detects the task isn't in the calendar cache (no `.map()` match), builds a synthetic `CalendarEvent`, and appends it. Also optimistically removes the task from the unscheduled sidebar cache. Both caches roll back on error.
 - **Files:** `client/src/hooks/useCalendarDnD.ts`, `client/src/pages/Calendar.tsx`, `client/src/components/calendar/CalendarSidebar.tsx`, `client/src/components/calendar/calendarUtils.ts`, `client/src/components/calendar/JobCard.tsx`, `client/src/components/calendar/CalendarGridDayJobber.tsx`
 
 ### Fixed
+
+#### Calendar: DnD Identity/Routing Regression Fix (2026-03-07)
+- **Root cause (task drag snap-back):** `ResizableJobCard` used `assignment.id` (raw entity UUID) as the drag ID. For tasks, `event.raw.id` is the bare task UUID (e.g., `"abc-123"`), but `handleDragEnd` routes via `activeIdValue.startsWith("task-")` — which requires the prefixed format `"task-abc-123"`. Without the prefix, task drags fell through to the visit branch, sending the task UUID to `PATCH /api/calendar/visit/{taskUUID}/reschedule` → 404 "Not found" + rollback.
+- **Root cause (task resize "no start time"):** Same identity mismatch caused task resizes to skip the task branch in `handleResize` and fall through to `updateDuration`, which reads `assignment.scheduledStart || assignment.startAt` — but task objects use `scheduledStartAt`. Field not found → threw "Cannot resize: assignment has no start time".
+- **Root cause (visit 404):** Visits were not directly broken — the "Not found" errors users saw were from task drags misrouted to visit endpoints. Visit-only drag/resize was unaffected.
+- **Fix:** Added `assignmentId` prop to `ResizableJobCard` carrying the canonical CalendarEvent identity (`event.assignmentId`, which is `"task-{uuid}"` for tasks, visitId for visits). All 3 callers now pass it. `ResizableJobCard` uses `canonicalId` (prop ?? `assignment.id`) for drag ID and resize callback. Also added `scheduledStartAt` to the `handleResize` start-time fallback chain, and patched `normalizeTask()` to include `startAt`/`endAt` in `raw` for field name consistency.
+- **Files:** `ResizableJobCard.tsx`, `CalendarGridWeek.tsx`, `CalendarGridDayJobber.tsx`, `CalendarGridDay.tsx`, `Calendar.tsx`, `calendarUtils.ts`, `useCalendarDnD.ts`
 
 #### Calendar: Resize Snap-Back Lag Eliminated (2026-03-06)
 - **Root cause:** `updateDuration` mutation had no `onMutate` (no optimistic update) and `onSuccess` called `await refetchCalendar()` — a full server round-trip before UI showed the new duration. Combined with `setTempDuration(null)` in ResizableJobCard clearing the visual height immediately, this caused a visible snap-back: card reverted to old height for 600-1200ms before settling at new height.

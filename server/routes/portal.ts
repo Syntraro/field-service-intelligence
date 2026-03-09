@@ -144,6 +144,16 @@ router.post(
       return res.json({ message: safeMessage, sent: true });
     }
 
+    // Check customerPortalEnabled feature flag for the tenant
+    const [portalFeature] = await db
+      .select({ enabled: tenantFeatures.customerPortalEnabled })
+      .from(tenantFeatures)
+      .where(eq(tenantFeatures.companyId, contact.companyId))
+      .limit(1);
+    if (portalFeature && !portalFeature.enabled) {
+      throw createError(403, "Customer portal is not enabled for this account.");
+    }
+
     // Generate token + hash
     const rawToken = generateToken();
     const tokenHash = hashToken(rawToken);

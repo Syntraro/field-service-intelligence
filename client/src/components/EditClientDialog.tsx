@@ -301,6 +301,8 @@ export default function EditClientDialog({ client, open, onOpenChange, onSaved }
                 </div>
               </div>
 
+              {/* Phase 3: Legacy contact summary — canonical management via Contacts tab */}
+              <p className="text-xs text-muted-foreground mt-2">Primary site contact summary. Manage full contacts from the Contacts tab.</p>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="contactName">Contact Name</Label>
@@ -337,7 +339,7 @@ export default function EditClientDialog({ client, open, onOpenChange, onSaved }
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="roofLadderCode">Roof Ladder Code</Label>
+                  <Label htmlFor="roofLadderCode">Site Code</Label>
                   <Input
                     id="roofLadderCode"
                     value={formData.roofLadderCode}

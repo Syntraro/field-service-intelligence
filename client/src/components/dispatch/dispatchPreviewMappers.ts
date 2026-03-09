@@ -1,0 +1,145 @@
+/**
+ * Dispatch Board Mappers
+ * Maps CalendarEventDto / UnscheduledJobDto → DispatchVisit / Technician
+ * Read-only mapper layer — no mutations.
+ *
+ * buildTechnicianRoster() creates the authoritative tech roster from
+ * GET /api/team/technicians, enriched with colors from event payload.
+ */
+import type { CalendarEventDto, UnscheduledJobDto, CalendarTechnicianDto } from "@shared/types/scheduling";
+import type { TeamMember } from "@/hooks/useTechnicians";
+import type { DispatchVisit, DispatchTask, Technician, VisitStatus } from "./dispatchPreviewTypes";
+// Phase 1 Map Convergence: shared color palette
+import { TECHNICIAN_COLORS } from "@shared/colors";
+
+const VALID_VISIT_STATUSES = new Set<VisitStatus>([
+  "open", "scheduled", "dispatched", "en_route", "on_site", "in_progress", "completed",
+]);
+
+function toVisitStatus(raw: string | undefined): VisitStatus {
+  if (raw && VALID_VISIT_STATUSES.has(raw as VisitStatus)) return raw as VisitStatus;
+  return "scheduled";
+}
+
+function getInitials(name: string): string {
+  return name
+    .split(/\s+/)
+    .slice(0, 2)
+    .map(w => w[0]?.toUpperCase() ?? "")
+    .join("");
+}
+
+// Phase 1 Map Convergence: Use shared palette (was local DEFAULT_COLORS with 8 entries)
+const DEFAULT_COLORS = TECHNICIAN_COLORS;
+
+/** Map CalendarEventDto → DispatchVisit */
+export function mapEventToDispatchVisit(event: CalendarEventDto): DispatchVisit {
+  return {
+    // Use visitId for visit-level mutations; event.id may equal jobId in current API
+    id: event.visitId ?? event.id,
+    visitNumber: event.visitNumber ?? 1,
+    jobNumber: event.jobNumber,
+    jobId: event.jobId,
+    summary: event.summary,
+    status: toVisitStatus(event.visitStatus),
+    locationName: event.locationName,
+    customerName: event.customerCompanyName ?? event.locationName,
+    technicianId: event.primaryTechnicianId ?? event.assignedTechnicianIds?.[0] ?? null,
+    technicianIds: event.assignedTechnicianIds ?? (event.primaryTechnicianId ? [event.primaryTechnicianId] : []),
+    scheduledStart: event.startAt,
+    scheduledEnd: event.endAt,
+    durationMinutes: event.durationMinutes,
+    isAllDay: event.allDay,
+    priority: "normal",
+    version: event.version,
+    jobType: event.jobType,
+    locationId: event.locationId,
+    customerCompanyId: event.customerCompanyId,
+    description: event.description,
+    accessInstructions: event.accessInstructions,
+    contactName: event.contactName,
+    contactPhone: event.contactPhone,
+    locationNotes: event.locationNotes,
+    visitNotes: event.visitNotes,
+    technicianNames: event.technicians.map(t => t.name),
+  };
+}
+
+/** Map UnscheduledJobDto → DispatchVisit (null scheduling fields) */
+export function mapUnscheduledToDispatchVisit(job: UnscheduledJobDto): DispatchVisit {
+  return {
+    id: job.id,
+    visitNumber: 0,
+    jobNumber: job.jobNumber,
+    jobId: job.jobId,
+    summary: job.summary,
+    status: "open",
+    locationName: job.locationName,
+    customerName: job.customerCompanyName ?? job.locationName,
+    technicianId: job.primaryTechnicianId ?? job.assignedTechnicianIds?.[0] ?? null,
+    technicianIds: job.assignedTechnicianIds ?? (job.primaryTechnicianId ? [job.primaryTechnicianId] : []),
+    scheduledStart: null,
+    scheduledEnd: null,
+    durationMinutes: 60,
+    isAllDay: false,
+    priority: "normal",
+    version: job.version,
+    jobType: job.jobType,
+    locationId: job.locationId,
+    customerCompanyId: job.customerCompanyId,
+    technicianNames: job.technicians.map(t => t.name),
+  };
+}
+
+/** Map raw task API response to DispatchTask */
+export function mapRawTask(task: any): DispatchTask {
+  const start = task.scheduledStartAt ? new Date(task.scheduledStartAt) : null;
+  const end = task.scheduledEndAt ? new Date(task.scheduledEndAt) : null;
+  let durationMinutes = task.estimatedDurationMinutes ?? 60;
+  if (start && end) {
+    durationMinutes = Math.max(15, Math.round((end.getTime() - start.getTime()) / 60000));
+  }
+  return {
+    id: task.id,
+    title: task.title,
+    type: task.type ?? "GENERAL",
+    status: task.status ?? "pending",
+    assignedToUserId: task.assignedToUserId ?? null,
+    scheduledStart: task.scheduledStartAt ?? null,
+    scheduledEnd: task.scheduledEndAt ?? null,
+    durationMinutes,
+    isAllDay: task.allDay ?? false,
+    notes: task.notes ?? null,
+    jobId: task.jobId ?? null,
+    locationId: task.locationId ?? null,
+  };
+}
+
+/**
+ * Build the authoritative technician roster from the team directory,
+ * enriched with colors from calendar events when available.
+ * This ensures the board always shows all schedulable technicians
+ * even on days with zero scheduled visits.
+ */
+export function buildTechnicianRoster(
+  teamMembers: TeamMember[],
+  events: CalendarEventDto[],
+): Technician[] {
+  // Build a color lookup from event technician data
+  const colorMap = new Map<string, string>();
+  for (const event of events) {
+    for (const tech of event.technicians) {
+      if (tech.color && !colorMap.has(tech.id)) {
+        colorMap.set(tech.id, tech.color);
+      }
+    }
+  }
+
+  return teamMembers.map((m, i) => ({
+    id: m.id,
+    name: m.fullName,
+    initials: getInitials(m.fullName),
+    color: colorMap.get(m.id) ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length],
+    status: "available" as const,
+  }));
+}

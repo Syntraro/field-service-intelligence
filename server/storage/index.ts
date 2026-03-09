@@ -34,7 +34,7 @@ import { filesRepository } from "./files";
 import { noteAttachmentRepository } from "./noteAttachments";
 import { quoteRepository } from "./quotes";
 import { quoteTemplateRepository } from "./quoteTemplates";
-import { calendarRepository } from "./calendar";
+import { schedulingRepository } from "./scheduling";
 import { taxRepository } from "./tax";
 import { businessHoursRepository } from "./businessHours";
 import { pmPartRepository } from "./pmParts";
@@ -217,11 +217,11 @@ updateInvitation: (id: string, data: { status: string }) => Promise<any>;
   deleteQuoteLine: typeof quoteRepository.deleteQuoteLine;
 
   // Calendar operations
-  getCalendarScheduledJobsInDateRange: typeof calendarRepository.getScheduledJobsInRange;
-  getCalendarJob: typeof calendarRepository.getJobById;
-  scheduleCalendarJob: typeof calendarRepository.scheduleJob;
-  validateCalendarTechnician: typeof calendarRepository.validateTechnicianBelongsToTenant;
-  validateCalendarJob: typeof calendarRepository.validateJobBelongsToTenant;
+  getCalendarScheduledJobsInDateRange: typeof schedulingRepository.getScheduledJobsInRange;
+  getCalendarJob: typeof schedulingRepository.getJobById;
+  scheduleCalendarJob: typeof schedulingRepository.scheduleJob;
+  validateCalendarTechnician: typeof schedulingRepository.validateTechnicianBelongsToTenant;
+  validateCalendarJob: typeof schedulingRepository.validateJobBelongsToTenant;
 
   // Tax operations (v1 multi-tax system)
   getTaxRates: typeof taxRepository.getTaxRates;
@@ -453,11 +453,11 @@ export const storage: IStorage = {
   deleteQuoteLine: quoteRepository.deleteQuoteLine.bind(quoteRepository),
 
   // Calendar operations
-  getCalendarScheduledJobsInDateRange: calendarRepository.getScheduledJobsInRange.bind(calendarRepository),
-  getCalendarJob: calendarRepository.getJobById.bind(calendarRepository),
-  scheduleCalendarJob: calendarRepository.scheduleJob.bind(calendarRepository),
-  validateCalendarTechnician: calendarRepository.validateTechnicianBelongsToTenant.bind(calendarRepository),
-  validateCalendarJob: calendarRepository.validateJobBelongsToTenant.bind(calendarRepository),
+  getCalendarScheduledJobsInDateRange: schedulingRepository.getScheduledJobsInRange.bind(schedulingRepository),
+  getCalendarJob: schedulingRepository.getJobById.bind(schedulingRepository),
+  scheduleCalendarJob: schedulingRepository.scheduleJob.bind(schedulingRepository),
+  validateCalendarTechnician: schedulingRepository.validateTechnicianBelongsToTenant.bind(schedulingRepository),
+  validateCalendarJob: schedulingRepository.validateJobBelongsToTenant.bind(schedulingRepository),
 
   // Tax operations (v1 multi-tax system)
   getTaxRates: taxRepository.getTaxRates.bind(taxRepository),
@@ -497,7 +497,7 @@ export {
   noteAttachmentRepository,
   quoteRepository,
   quoteTemplateRepository,
-  calendarRepository,
+  schedulingRepository,
   taxRepository,
   pmPartRepository,
   clientTagRepository,

@@ -91,7 +91,7 @@ export function TimezoneSetupDialog() {
       }));
       setJustConfirmed(true);
       queryClient.invalidateQueries({ queryKey: ["/api/company-settings"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      // Domain boundary: timezone change does not invalidate calendar/scheduling caches
       toast({ title: "Timezone confirmed" });
     },
     onError: () => {

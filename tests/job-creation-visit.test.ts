@@ -24,7 +24,7 @@ import {
 import { eq, and, inArray } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import { storage } from "../server/storage/index";
-import { calendarRepository } from "../server/storage/calendar";
+import { schedulingRepository } from "../server/storage/scheduling";
 
 const TEST_PREFIX = "visit_inv_test_";
 let companyId: string;
@@ -228,7 +228,7 @@ describe("Job Creation → Initial Visit Invariant", () => {
     const scheduledStart = new Date("2026-04-10T14:00:00Z");
     const scheduledEnd = new Date("2026-04-10T15:00:00Z");
 
-    await calendarRepository.scheduleJob(companyId, {
+    await schedulingRepository.scheduleJob(companyId, {
       jobId: job.id,
       startAt: scheduledStart,
       endAt: scheduledEnd,
@@ -287,7 +287,7 @@ describe("Job Creation → Initial Visit Invariant", () => {
     // 2. Schedule the job
     const start1 = new Date("2026-05-01T10:00:00Z");
     const end1 = new Date("2026-05-01T11:00:00Z");
-    await calendarRepository.scheduleJob(companyId, {
+    await schedulingRepository.scheduleJob(companyId, {
       jobId: job.id,
       startAt: start1,
       endAt: end1,
@@ -301,7 +301,7 @@ describe("Job Creation → Initial Visit Invariant", () => {
       .where(eq(jobs.id, job.id));
     const versionAfterSchedule = afterSchedule[0].version;
 
-    await calendarRepository.unscheduleJob(companyId, job.id, versionAfterSchedule!);
+    await schedulingRepository.unscheduleJob(companyId, job.id, versionAfterSchedule!);
 
     // Verify visit is now a placeholder (isActive=true, scheduledStart=null)
     const afterUnschedule = await db
@@ -331,7 +331,7 @@ describe("Job Creation → Initial Visit Invariant", () => {
 
     const start2 = new Date("2026-05-02T14:00:00Z");
     const end2 = new Date("2026-05-02T15:00:00Z");
-    await calendarRepository.scheduleJob(companyId, {
+    await schedulingRepository.scheduleJob(companyId, {
       jobId: job.id,
       startAt: start2,
       endAt: end2,

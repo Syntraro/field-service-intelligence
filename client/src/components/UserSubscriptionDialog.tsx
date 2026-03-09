@@ -115,7 +115,7 @@ export function UserSubscriptionDialog({ userId, userEmail }: UserSubscriptionDi
                     data-testid={`option-plan-${plan.name}`}
                   >
                     {plan.displayName} - 
-                    {plan.locationLimit === 9999999 ? " Unlimited" : ` ${plan.locationLimit} locations`}
+                    {plan.locationLimit >= 999999 ? " Unlimited" : ` ${plan.locationLimit} locations`}
                     {plan.price > 0 && ` ($${plan.price}/month)`}
                   </SelectItem>
                 ))}
@@ -130,7 +130,7 @@ export function UserSubscriptionDialog({ userId, userEmail }: UserSubscriptionDi
                 <div className="space-y-1 text-muted-foreground">
                   <p>Plan: {plans.find(p => p.name === selectedPlan)!.displayName}</p>
                   <p>
-                    Locations: {plans.find(p => p.name === selectedPlan)!.locationLimit === 9999999 
+                    Locations: {plans.find(p => p.name === selectedPlan)!.locationLimit >= 999999 
                       ? "Unlimited" 
                       : plans.find(p => p.name === selectedPlan)!.locationLimit}
                   </p>

@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { useJobVisits } from "@/hooks/useJobVisits";
-import { useUnscheduleVisit } from "@/hooks/useCalendarApi";
+import { useUnscheduleVisit } from "@/hooks/useSchedulingApi";
 import { useRoute, useLocation, Link, useSearch } from "wouter";
 import { format } from "date-fns";
 import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
@@ -14,36 +14,29 @@ import {
   Pencil,
   Trash2,
   Loader2,
-  MapPin,
-  User,
   Calendar,
   Clock,
   AlertTriangle,
   AlertCircle,
-  Building2,
-  Phone,
-  Mail,
   DollarSign,
   Repeat,
   ChevronRight,
   ChevronDown,
-  Package,
-  History,
-  Wrench,
-  Send,
-  Check,
   Plus,
   Lock,
   CalendarPlus,
   CalendarMinus,
-  XCircle,
   FileText,
   PauseCircle,
   Play,
   Briefcase,
   Receipt,
   Pause,
-  MoreVertical,
+  Copy,
+  PenTool,
+  Download,
+  Printer,
+  MoreHorizontal,
 } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import JobEquipmentSection from "@/components/JobEquipmentSection";
@@ -60,7 +53,6 @@ import { StatusProgressBar, getJobStatusDisplay, getPriorityDisplay, SchedulingH
 import { AddTimeEntryModal, EditTimeEntryModal, type TimeEntryForEdit } from "@/components/time";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import {
   AlertDialog,
@@ -91,12 +83,12 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { isVisitActioned, isVisitEmpty } from "@/lib/visitUtils";
 import { useAuth } from "@/lib/auth";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Job, Client, CustomerCompany, User as UserType, RecurringJobSeries, Invoice, JobTimeSummary, TimeEntryType } from "@shared/schema";
 import { useJobHeader } from "@/hooks/useJobsFeed";
 import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
@@ -107,11 +99,6 @@ import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
 // Manager roles can perform all office actions
 // Technicians have limited permissions (view only for most office actions)
 const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"] as const;
-
-function canPerformOfficeActions(userRole: string | undefined): boolean {
-  if (!userRole) return false;
-  return (MANAGER_ROLES as readonly string[]).includes(userRole);
-}
 
 // ============================================================================
 // OFFICE ACTIONS STRIP - Jobber-style attention banner
@@ -215,350 +202,31 @@ const ATTENTION_CONFIG: Record<Exclude<AttentionReason, null>, {
     secondaryIcon: Receipt,
     requiresConfirm: false,
   },
+  // Rationalized: unique action only — Schedule Visit is always in the action bar
   on_hold: {
     label: 'On Hold',
     badgeClass: 'bg-[rgba(245,158,11,0.14)] text-[#92400E] border border-[rgba(245,158,11,0.28)] dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800',
     icon: PauseCircle,
-    primaryAction: 'Schedule another visit',
-    primaryIcon: CalendarPlus,
-    secondaryAction: 'Resume',
+    primaryAction: 'Resume',
+    primaryIcon: Play,
+    secondaryAction: '',
     secondaryIcon: Play,
     requiresConfirm: false,
   },
+  // Rationalized: unique action only — Schedule Visit is always in the action bar
   overdue: {
     label: 'Overdue',
     badgeClass: 'bg-[rgba(220,38,38,0.12)] text-[#B91C1C] border border-[rgba(220,38,38,0.25)] dark:bg-red-950/40 dark:text-red-400 dark:border-red-800',
     icon: AlertCircle,
-    primaryAction: 'Reschedule',
-    primaryIcon: Calendar,
-    secondaryAction: 'Unschedule',
+    primaryAction: 'Unschedule',
+    primaryIcon: CalendarMinus,
+    secondaryAction: '',
     secondaryIcon: CalendarMinus,
     requiresConfirm: false,
   },
 };
 
-interface OfficeActionsStripProps {
-  job: {
-    id: string;
-    jobNumber?: number | null;
-    status: string;
-    openSubStatus?: string | null;
-    holdReason?: string | null;
-    nextActionDate?: string | null;  // For on_hold: follow-up date
-    closedAt?: Date | string | null; // For requires_invoicing: when job was completed
-    scheduledStart?: Date | string | null;
-    scheduledEnd?: Date | string | null;
-    durationMinutes?: number | null;
-    version: number;
-  };
-  userRole?: string;
-  onScheduleVisit: () => void;
-  onClearHold: () => void;
-  onUnschedule: () => void;
-  onMarkInvoiced: () => void;
-  onCreateInvoice: () => void;
-  isUnscheduling?: boolean;
-  isMarkingInvoiced?: boolean;
-  isClearingHold?: boolean;
-}
-
-// ============================================================================
-// OFFICE ACTIONS STRIP - Jobber-grade attention banner
-// ============================================================================
-// Polished rules:
-// - Button labels match reason exactly
-// - Disabled buttons show tooltip explaining why
-// - Invalid actions are hidden (not just disabled)
-// - Destructive/lifecycle actions require confirmation
-// ============================================================================
-function OfficeActionsStrip({
-  job,
-  userRole,
-  onScheduleVisit,
-  onClearHold,
-  onUnschedule,
-  onMarkInvoiced,
-  onCreateInvoice,
-  isUnscheduling,
-  isMarkingInvoiced,
-  isClearingHold,
-}: OfficeActionsStripProps) {
-  // Confirmation dialog state for lifecycle-changing actions
-  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
-
-  const reason = getAttentionReason(job);
-
-  if (!reason) {
-    return null;
-  }
-
-  const config = ATTENTION_CONFIG[reason];
-  const IconComponent = config.icon;
-  const PrimaryIconComponent = config.primaryIcon;
-  const SecondaryIconComponent = config.secondaryIcon;
-
-  // Permission checks
-  const hasOfficePermission = canPerformOfficeActions(userRole);
-  const permissionTooltip = "You don't have permission to perform this action";
-
-  // Action validity checks based on current state
-  // For overdue: can only unschedule if job is actually scheduled
-  const isJobScheduled = job.scheduledStart != null;
-  const canUnschedule = reason === 'overdue' && isJobScheduled;
-
-  // Determine if secondary action should be shown
-  // Phase: requires_invoicing only has "Create Invoice" — no secondary
-  // Hide "Unschedule" for overdue jobs that aren't scheduled (edge case)
-  const showSecondaryAction = reason !== 'requires_invoicing' && (reason !== 'overdue' || canUnschedule);
-
-  // Compute detail text based on reason (stable computation, no layout shift)
-  const getDetailText = (): string | null => {
-    switch (reason) {
-      case 'on_hold': {
-        // Show holdReason + nextActionDate if present
-        const parts: string[] = [];
-        if (job.holdReason) {
-          // Capitalize first letter of hold reason
-          const formatted = job.holdReason.replace(/_/g, ' ');
-          parts.push(formatted.charAt(0).toUpperCase() + formatted.slice(1));
-        }
-        if (job.nextActionDate) {
-          try {
-            const date = new Date(job.nextActionDate + 'T00:00:00'); // Parse date-only string
-            parts.push(`Follow-up: ${format(date, 'MMM d')}`);
-          } catch {
-            // Ignore invalid date
-          }
-        }
-        return parts.length > 0 ? parts.join(' · ') : null;
-      }
-      case 'overdue': {
-        // Show "Overdue since <date>" based on effectiveEnd
-        // Matches server/storage/dashboard.ts logic exactly
-        if (!job.scheduledStart) return null;
-        const scheduledStart = new Date(job.scheduledStart);
-        let effectiveEnd: Date;
-        if (job.scheduledEnd != null) {
-          effectiveEnd = new Date(job.scheduledEnd);
-        } else if (job.durationMinutes != null) {
-          effectiveEnd = new Date(scheduledStart.getTime() + job.durationMinutes * 60 * 1000);
-        } else {
-          effectiveEnd = scheduledStart;
-        }
-        return `Overdue since ${format(effectiveEnd, 'MMM d')}`;
-      }
-      case 'requires_invoicing': {
-        // Show completion date using closedAt if available
-        if (job.closedAt) {
-          try {
-            const date = new Date(job.closedAt);
-            return `Completed ${format(date, 'MMM d')}`;
-          } catch {
-            return null;
-          }
-        }
-        return null;
-      }
-      default:
-        return null;
-    }
-  };
-
-  const detailText = getDetailText();
-
-  // Handle secondary action - show confirm dialog if needed, else execute directly
-  const handleSecondaryClick = () => {
-    if (!hasOfficePermission) return; // Extra safety check
-    if (config.requiresConfirm) {
-      setShowConfirmDialog(true);
-    } else {
-      executeSecondaryAction();
-    }
-  };
-
-  // Execute the actual secondary action
-  const executeSecondaryAction = () => {
-    setShowConfirmDialog(false);
-    switch (reason) {
-      case 'requires_invoicing':
-        // Lifecycle change: completed -> invoiced
-        onMarkInvoiced();
-        break;
-      case 'on_hold':
-        // Clear hold: sets openSubStatus to null (no lifecycle change)
-        onClearHold();
-        break;
-      case 'overdue':
-        // Unschedule: removes from calendar (no lifecycle change)
-        onUnschedule();
-        break;
-    }
-  };
-
-  // Get confirmation dialog content based on reason
-  const getConfirmDialogContent = () => {
-    switch (reason) {
-      case 'requires_invoicing':
-        return {
-          title: 'Mark Job as Invoiced',
-          description: `This will change Job #${job.jobNumber || job.id} status from "Completed" to "Invoiced". The job will be locked for billing purposes.`,
-          confirmText: 'Mark Invoiced',
-        };
-      default:
-        return {
-          title: 'Confirm Action',
-          description: 'Are you sure you want to proceed?',
-          confirmText: 'Confirm',
-        };
-    }
-  };
-
-  const confirmContent = getConfirmDialogContent();
-
-  // Determine if secondary action is in progress
-  const isSecondaryPending =
-    (reason === 'requires_invoicing' && isMarkingInvoiced) ||
-    (reason === 'on_hold' && isClearingHold) ||
-    (reason === 'overdue' && isUnscheduling);
-
-  // Determine if secondary button should be disabled
-  const isSecondaryDisabled = !hasOfficePermission || isSecondaryPending;
-
-  // Get tooltip for secondary button when disabled
-  const getSecondaryTooltip = (): string | null => {
-    if (!hasOfficePermission) return permissionTooltip;
-    if (isSecondaryPending) return "Action in progress...";
-    return null;
-  };
-
-  const secondaryTooltip = getSecondaryTooltip();
-
-  // Render button with optional tooltip wrapper
-  const renderSecondaryButton = () => {
-    const button = (
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={handleSecondaryClick}
-        disabled={isSecondaryDisabled}
-        data-testid={`button-secondary-${reason}`}
-        className={!hasOfficePermission ? "cursor-not-allowed" : undefined}
-      >
-        {isSecondaryPending && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
-        {!isSecondaryPending && <SecondaryIconComponent className="h-4 w-4 mr-1" />}
-        {config.secondaryAction}
-      </Button>
-    );
-
-    // Wrap with tooltip if disabled and has tooltip text
-    if (secondaryTooltip) {
-      return (
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span tabIndex={0}>{button}</span>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>{secondaryTooltip}</p>
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      );
-    }
-
-    return button;
-  };
-
-  // Primary button: "Create Invoice" for requires_invoicing, "Schedule another visit" / "Reschedule" otherwise
-  const renderPrimaryButton = () => {
-    const primaryOnClick = reason === 'requires_invoicing' ? onCreateInvoice : onScheduleVisit;
-    const button = (
-      <Button
-        variant="default"
-        size="sm"
-        onClick={hasOfficePermission ? primaryOnClick : undefined}
-        disabled={!hasOfficePermission}
-        data-testid="button-primary-action"
-        className={!hasOfficePermission ? "cursor-not-allowed" : undefined}
-      >
-        <PrimaryIconComponent className="h-4 w-4 mr-1" />
-        {config.primaryAction}
-      </Button>
-    );
-
-    if (!hasOfficePermission) {
-      return (
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span tabIndex={0}>{button}</span>
-            </TooltipTrigger>
-            <TooltipContent>
-              <p>{permissionTooltip}</p>
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      );
-    }
-
-    return button;
-  };
-
-  return (
-    <>
-      <div
-        className="mb-4 rounded-md border border-amber-200 bg-amber-50/80 dark:border-amber-800 dark:bg-amber-950/20 px-4 py-3"
-        data-testid="office-actions-strip"
-      >
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          {/* Left side: Label + Badge + Details */}
-          <div className="flex items-center gap-3">
-            <AlertCircle className="h-5 w-5 text-amber-600 dark:text-amber-400 flex-shrink-0" />
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-semibold text-amber-900 dark:text-amber-100">
-                Office Action Required
-              </span>
-              <span className={cn("inline-flex items-center rounded-full px-2.5 h-6 text-xs font-medium gap-1", config.badgeClass)}>
-                <IconComponent className="h-3 w-3" />
-                {config.label}
-              </span>
-              {/* Compact detail text - reason-specific context */}
-              {detailText && (
-                <span className="text-sm text-muted-foreground">
-                  — {detailText}
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Right side: Action buttons */}
-          <div className="flex items-center gap-2">
-            {renderPrimaryButton()}
-            {showSecondaryAction && renderSecondaryButton()}
-          </div>
-        </div>
-      </div>
-
-      {/* Confirmation Dialog for lifecycle-changing actions */}
-      <AlertDialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
-        <AlertDialogContent data-testid="dialog-confirm-secondary-action">
-          <AlertDialogHeader>
-            <AlertDialogTitle>{confirmContent.title}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {confirmContent.description}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={executeSecondaryAction}>
-              {confirmContent.confirmText}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </>
-  );
-}
+// OfficeActionsStrip removed — replaced by inline attention indicator in action row
 
 // Phase 4 Step A7: Use canonical JobHeaderDetail type for main job data.
 // The canonical getJobHeader now correctly joins customerCompanies,
@@ -865,6 +533,8 @@ export default function JobDetailPage() {
   // Visit detail dialog — FIX A: single modal state, initialEdit for active visits
   const [selectedVisitId, setSelectedVisitId] = useState<string | null>(null);
   // visitEditMode removed — EditVisitModal always opens in edit mode
+  // Parts & Billing collapse/expand — expanded by default
+  const [billingExpanded, setBillingExpanded] = useState(true);
   // Visits collapse: show first 2 by default, toggle to show all
   const [showAllVisits, setShowAllVisits] = useState(false);
   // Visit Reschedule Architecture: conflict resolution state
@@ -1184,327 +854,222 @@ export default function JobDetailPage() {
     );
   }
 
-  return (
-    <div className="p-4" data-testid="job-detail-page">
-      {/* OFFICE ACTIONS STRIP — attention-based (requires_invoicing / on_hold / overdue) */}
-      <OfficeActionsStrip
-        job={job}
-        userRole={user?.role}
-        onScheduleVisit={() => handleScheduleVisit()}
-        onCreateInvoice={() => setShowCreateInvoiceDialog(true)}
-        onClearHold={() => clearHoldMutation.mutate(job.version)}
-        onUnschedule={() => {
-          // Visit-centric unschedule (2026-03-06)
-          if (!activeVisit) return;
-          unscheduleMutation.mutate(
-            { visitId: activeVisit.id, version: activeVisit.version, jobId: job.id },
-            {
-              onSuccess: () => {
-                toast({
-                  title: "Job Unscheduled",
-                  description: "Job has been returned to the backlog.",
-                });
-              },
-              onError: (error: Error) => {
-                toast({
-                  title: "Error",
-                  description: error.message || "Failed to unschedule job",
-                  variant: "destructive",
-                });
-              },
-            }
-          );
-        }}
-        onMarkInvoiced={() => updateStatusMutation.mutate({ status: 'invoiced', version: job.version })}
-        isUnscheduling={unscheduleMutation.isPending}
-        isMarkingInvoiced={updateStatusMutation.isPending}
-        isClearingHold={clearHoldMutation.isPending}
-      />
+  // Permission helpers for action bar — reuse MANAGER_ROLES from module scope
+  const isOfficeUser = user?.role && (MANAGER_ROLES as readonly string[]).includes(user.role);
+  const canReopen = ["completed", "archived"].includes(job.status);
+  const isJobInvoiced = job.status === "invoiced";
+  const isTerminal = ["completed", "archived", "invoiced"].includes(job.status);
 
-      {/* CONTEXT ACTIONS — state-based CTAs when OfficeActionsStrip doesn't apply */}
-      {(() => {
-        const attentionReason = getAttentionReason(job);
-        // Only show context actions when the attention strip is NOT visible
-        if (attentionReason) return null;
-        const isOpen = job.status === "open";
-        const isInvoiced = job.status === "invoiced";
-        const isUnscheduled = isOpen && !job.scheduledStart;
-        const isUnassigned = isOpen && (!job.assignedTechnicianIds || job.assignedTechnicianIds.length === 0);
-        const hasContextAction = isUnscheduled || (isOpen && isUnassigned) || isInvoiced;
-        if (!hasContextAction) return null;
-        return (
-          <div className="mb-4 flex items-center gap-2" data-testid="context-actions-bar">
-            {isUnscheduled && (
-              <Button size="sm" onClick={() => handleScheduleVisit()} data-testid="context-schedule-visit">
-                <CalendarPlus className="h-4 w-4 mr-1.5" />
-                Schedule Visit
+  return (
+    <div className="p-4 max-w-7xl mx-auto" data-testid="job-detail-page">
+      {/* ================================================================
+          ACTION ROW — inline status indicator (left) + actions (right)
+          ================================================================ */}
+      <div className="flex items-center justify-between mb-3">
+        {/* Left: inline attention indicator (replaces full-width OfficeActionsStrip banner) */}
+        <div className="flex items-center gap-2">
+          {(() => {
+            const reason = getAttentionReason(job);
+            if (!reason) return null;
+            const config = ATTENTION_CONFIG[reason];
+            const Icon = config.icon;
+            // Compute detail text inline
+            let detail: string | null = null;
+            if (reason === 'overdue' && job.scheduledStart) {
+              const s = new Date(job.scheduledStart);
+              let eff = job.scheduledEnd ? new Date(job.scheduledEnd)
+                : job.durationMinutes != null ? new Date(s.getTime() + job.durationMinutes * 60_000) : s;
+              detail = `since ${format(eff, 'MMM d')}`;
+            } else if (reason === 'on_hold' && job.holdReason) {
+              const r = job.holdReason.replace(/_/g, ' ');
+              detail = r.charAt(0).toUpperCase() + r.slice(1);
+            } else if (reason === 'requires_invoicing' && job.closedAt) {
+              try { detail = `completed ${format(new Date(job.closedAt), 'MMM d')}`; } catch {}
+            }
+            return (
+              <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium", config.badgeClass)} data-testid="inline-attention-indicator">
+                <Icon className="h-3.5 w-3.5" />
+                {config.label}
+                {detail && <span className="text-[11px] font-normal opacity-80">— {detail}</span>}
+              </span>
+            );
+          })()}
+        </div>
+
+        {/* Right: action buttons */}
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={() => handleScheduleVisit()} data-testid="button-schedule-visit-action">
+            <CalendarPlus className="h-4 w-4 mr-1" />
+            Schedule Visit
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setShowEditDialog(true)} data-testid="button-edit">
+            <Pencil className="h-4 w-4 mr-1" />
+            Edit Job
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" data-testid="button-more-actions">
+                <MoreHorizontal className="h-4 w-4 mr-1" />
+                More Actions
               </Button>
-            )}
-            {isOpen && !isUnscheduled && isUnassigned && (
-              <Button size="sm" onClick={() => handleScheduleVisit()} data-testid="context-assign-tech">
-                <CalendarPlus className="h-4 w-4 mr-1.5" />
-                Assign Technician
-              </Button>
-            )}
-            {isInvoiced && job.invoiceId && (
-              <Button size="sm" variant="outline" onClick={() => setLocation(`/invoices/${job.invoiceId}`)} data-testid="context-view-invoice">
-                <Receipt className="h-4 w-4 mr-1.5" />
-                View Invoice
-              </Button>
-            )}
-          </div>
-        );
-      })()}
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {/* Create Similar */}
+              <DropdownMenuItem
+                onClick={() => setLocation(`/jobs/new?cloneFrom=${job.id}`)}
+                data-testid="menu-create-similar"
+              >
+                <Copy className="h-4 w-4 mr-2" />
+                Create Similar Job
+              </DropdownMenuItem>
+              {/* Create/View Invoice */}
+              {isOfficeUser && (
+                <DropdownMenuItem
+                  onClick={() => {
+                    if (jobInvoice) {
+                      setLocation(`/invoices/${jobInvoice.id}`);
+                    } else {
+                      setShowCreateInvoiceDialog(true);
+                    }
+                  }}
+                  data-testid="menu-create-invoice"
+                >
+                  <Receipt className="h-4 w-4 mr-2" />
+                  {jobInvoice ? "View Invoice" : "Create Invoice"}
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => toast({ title: "Coming Soon", description: "Signature collection will be available soon." })}
+                data-testid="menu-collect-signature"
+              >
+                <PenTool className="h-4 w-4 mr-2" />
+                Collect Signature
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => toast({ title: "Coming Soon", description: "PDF download will be available soon." })}
+                data-testid="menu-download-pdf"
+              >
+                <Download className="h-4 w-4 mr-2" />
+                Download PDF
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => window.print()} data-testid="menu-print">
+                <Printer className="h-4 w-4 mr-2" />
+                Print
+              </DropdownMenuItem>
+              {/* Delete Job */}
+              {isOfficeUser && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onClick={() => setShowDeleteConfirm(true)}
+                    className="text-destructive"
+                    data-testid="menu-delete-job"
+                  >
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Delete Job
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
 
       {/* ================================================================
-          TOP SECTION — Unified Meta Card (3-column grid)
-          Left: Job Identity | Middle: Visits | Right: Status Stack
+          UNIFIED SURFACE — one bordered workspace: header + body
           ================================================================ */}
-      <div className="rounded-md border bg-card shadow-[0_1px_2px_rgba(0,0,0,0.05)] overflow-hidden mb-4" data-testid="card-top-meta">
-        <div className="grid grid-cols-1 lg:grid-cols-[2fr_1.5fr_1fr]">
-          {/* LEFT COLUMN — Job Identity */}
-          <div className="[&_.shadcn-card]:border-0 [&_.shadcn-card]:shadow-none [&_.shadcn-card]:rounded-none">
+      <div className="rounded-lg border border-border/80 bg-card shadow-sm overflow-hidden" data-testid="unified-surface">
+
+        {/* ── HEADER SECTION: Identity (left) + Metadata (right) ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto] divide-y lg:divide-y-0 lg:divide-x">
+          {/* LEFT: Identity — JobHeaderCard renders without Card wrapper */}
+          <div className="p-5">
             <JobHeaderCard
               job={job}
               jobInvoice={jobInvoice ?? null}
               onEdit={() => setShowEditDialog(true)}
               onDelete={() => deleteJobMutation.mutate()}
+              showActions={false}
             />
-            {/* Description inline (standalone card removed) */}
+            {/* Description inline below identity */}
             {job.description && job.description.trim() !== "" && (
-              <div className="px-4 pb-4 -mt-2">
-                <p className="text-sm text-muted-foreground whitespace-pre-wrap" data-testid="text-job-description">
-                  {job.description}
-                </p>
-              </div>
+              <p className="mt-2 text-sm text-muted-foreground/80 whitespace-pre-wrap" data-testid="text-job-description">
+                {job.description}
+              </p>
             )}
           </div>
 
-          {/* MIDDLE COLUMN — Active Visit + Visit History (Jobber-style, 2026-03-05 Rule B) */}
-          <div id="visits-section" className="lg:border-l flex flex-col" style={{ maxHeight: 'calc(100vh - 16rem)' }}>
-            {/* Header */}
-            <div className="flex items-center justify-between px-4 py-3 border-b shrink-0">
-              <span className="text-sm font-semibold">Visits</span>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-xs h-auto py-1 px-2 text-primary"
-                onClick={() => handleScheduleVisit()}
-                data-testid="button-schedule-followup"
-              >
-                <CalendarPlus className="h-3 w-3 mr-1" />
-                Schedule Visit
-              </Button>
-            </div>
-
-            <div className="px-2 py-1 overflow-y-auto flex-1">
-              {visitsLoading ? (
-                <div className="flex items-center justify-center py-4">
-                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                </div>
-              ) : (
-                <>
-                  {/* Active Visit card — hidden when job is completed/closed (Fix B) */}
-                  {job.status !== "completed" && job.status !== "archived" && job.status !== "invoiced" ? (
-                    <div className="mb-2">
-                      <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide px-2">
-                        Active Visit
-                      </span>
-                      {activeVisit ? (
-                        <button
-                          onClick={() => setSelectedVisitId(activeVisit.id)}
-                          className="w-full text-left px-2 py-2 rounded hover:bg-accent/50 transition-colors border border-border mt-1"
-                          data-testid="active-visit-card"
-                        >
-                          <div className="flex items-center gap-2">
-                            <span className="text-[11px] font-medium truncate flex-1">
-                              {formatVisitDate(activeVisit)}
-                            </span>
-                            <span className="text-[11px] text-muted-foreground truncate max-w-[80px] shrink-0">
-                              {getVisitTechName(activeVisit.assignedTechnicianId)}
-                            </span>
-                            <Badge className={cn("text-[9px] px-1.5 py-0 shrink-0 leading-tight", VISIT_STATUS_COLORS[activeVisit.status] || "")}>
-                              {VISIT_STATUS_LABELS[activeVisit.status] || activeVisit.status}
-                            </Badge>
-                          </div>
-                        </button>
-                      ) : (
-                        <div className="text-center py-3 text-muted-foreground mt-1">
-                          <Calendar className="h-4 w-4 mx-auto mb-1 opacity-50" />
-                          <p className="text-[11px]">No active visit</p>
-                        </div>
-                      )}
-                    </div>
-                  ) : completedVisits.length > 0 ? (
-                    /* Last completed visit preview for completed/closed jobs (Fix B) */
-                    <div className="mb-2">
-                      <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide px-2">
-                        Last Completed Visit
-                      </span>
-                      <button
-                        onClick={() => setSelectedVisitId(completedVisits[0].id)}
-                        className="w-full text-left px-2 py-2 rounded hover:bg-accent/50 transition-colors border border-border mt-1"
-                        data-testid="last-completed-visit-card"
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className="text-[11px] font-medium truncate flex-1">
-                            {completedVisits[0].checkedOutAt
-                              ? format(new Date(completedVisits[0].checkedOutAt), "MMM d, yyyy")
-                              : completedVisits[0].scheduledStart
-                                ? format(new Date(completedVisits[0].scheduledStart), "MMM d, yyyy")
-                                : "—"}
-                          </span>
-                          <span className="text-[11px] text-muted-foreground truncate max-w-[80px] shrink-0">
-                            {getVisitTechName(completedVisits[0].assignedTechnicianId)}
-                          </span>
-                          <Badge className="text-[9px] px-1.5 py-0 shrink-0 leading-tight bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
-                            Completed
-                          </Badge>
-                        </div>
-                      </button>
-                    </div>
-                  ) : null}
-
-                  {/* Visit History — completed visits only (Rule B) */}
-                  {completedVisits.length > 0 && (
-                    <div className="mt-3">
-                      <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide px-2">
-                        Visit History ({completedVisits.length})
-                      </span>
-                      <div className="mt-1 space-y-0.5">
-                        {(showAllVisits ? completedVisits : completedVisits.slice(0, 2)).map((visit) => {
-                          const completedDate = visit.checkedOutAt
-                            ? new Date(visit.checkedOutAt)
-                            : visit.scheduledStart
-                              ? new Date(visit.scheduledStart)
-                              : visit.createdAt
-                                ? new Date(visit.createdAt)
-                                : null;
-                          return (
-                            <button
-                              key={visit.id}
-                              onClick={() => setSelectedVisitId(visit.id)}
-                              className="w-full text-left px-2 py-1.5 rounded hover:bg-accent/50 transition-colors"
-                              data-testid={`visit-row-${visit.id}`}
-                            >
-                              <div className="flex items-center gap-2">
-                                <span className="text-[11px] font-medium truncate flex-1">
-                                  {completedDate ? format(completedDate, "MMM d, yyyy") : "—"}
-                                </span>
-                                <span className="text-[11px] text-muted-foreground truncate max-w-[80px] shrink-0">
-                                  {getVisitTechName(visit.assignedTechnicianId)}
-                                </span>
-                              </div>
-                              <div className="text-[10px] text-muted-foreground mt-0.5">
-                                Completed{visit.checkedOutAt ? ` on ${format(new Date(visit.checkedOutAt), "MMM d · h:mm a")}` : ""}
-                              </div>
-                            </button>
-                          );
-                        })}
-                        {completedVisits.length > 2 && (
-                          <button
-                            onClick={() => setShowAllVisits(!showAllVisits)}
-                            className="w-full text-center text-[11px] text-primary hover:underline py-1.5"
-                            data-testid="toggle-show-all-visits"
-                          >
-                            {showAllVisits ? "Show less" : `View all completed visits (${completedVisits.length})`}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-
-          {/* RIGHT COLUMN — Status Stack */}
-          <div className="lg:border-l p-4 text-xs space-y-3">
-            {/* Job number */}
-            <div className="flex items-center justify-between gap-4">
-              <span className="font-medium text-muted-foreground flex items-center gap-1">
+          {/* RIGHT: Primary metadata — compact, aligned grid */}
+          <div className="p-5 lg:w-64 text-xs">
+            <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 items-center">
+              <span className="text-muted-foreground/70 flex items-center gap-1">
                 <Briefcase className="h-3 w-3" />
                 Job
               </span>
-              <span className="font-semibold text-foreground" data-testid="text-job-number">
+              <span className="font-semibold text-foreground text-right" data-testid="text-job-number">
                 #{job.jobNumber}
               </span>
-            </div>
 
-            {/* Invoice */}
-            <div className="flex items-center justify-between gap-4">
-              <span className="font-medium text-muted-foreground flex items-center gap-1">
+              <span className="text-muted-foreground/70 flex items-center gap-1">
                 <Receipt className="h-3 w-3" />
                 Invoice
               </span>
-              {jobInvoice ? (
-                <Link
-                  href={`/invoices/${jobInvoice.id}`}
-                  className="font-semibold text-primary hover:underline"
-                  data-testid="link-invoice"
+              <span className="text-right">
+                {jobInvoice ? (
+                  <Link
+                    href={`/invoices/${jobInvoice.id}`}
+                    className="font-semibold text-primary hover:underline"
+                    data-testid="link-invoice"
+                  >
+                    #{jobInvoice.invoiceNumber || `INV-${jobInvoice.id.slice(0, 6).toUpperCase()}`}
+                  </Link>
+                ) : (
+                  <span className="text-muted-foreground/50" data-testid="text-no-invoice">—</span>
+                )}
+              </span>
+
+              <span className="text-muted-foreground/70">Status</span>
+              <div className="flex justify-end">
+                <Select
+                  value={job.openSubStatus ? `open:${job.openSubStatus}` : job.status}
+                  onValueChange={handleMetaStatusChange}
+                  disabled={updateStatusMutation.isPending}
                 >
-                  #{jobInvoice.invoiceNumber || `INV-${jobInvoice.id.slice(0, 6).toUpperCase()}`}
-                </Link>
-              ) : (
-                <span className="text-[11px] text-muted-foreground" data-testid="text-no-invoice">
-                  Not invoiced
-                </span>
-              )}
-            </div>
+                  <SelectTrigger className="h-6 w-auto min-w-[100px] text-[11px]" data-testid="select-status">
+                    <SelectValue placeholder="Change" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="open">Open (Backlog)</SelectItem>
+                    <SelectItem value="open:in_progress">In Progress</SelectItem>
+                    <SelectItem value="open:on_route">On Route</SelectItem>
+                    <SelectItem value="open:on_hold">On Hold</SelectItem>
+                    <SelectItem value="completed">Completed</SelectItem>
+                    <SelectItem value="invoiced">Invoiced</SelectItem>
+                    <SelectItem value="archived">Archived</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
 
-            {/* Status dropdown */}
-            <div className="flex items-center justify-between gap-4">
-              <span className="font-medium text-muted-foreground">Status</span>
-              <Select
-                value={job.openSubStatus ? `open:${job.openSubStatus}` : job.status}
-                onValueChange={handleMetaStatusChange}
-                disabled={updateStatusMutation.isPending}
-              >
-                <SelectTrigger className="h-6 w-auto min-w-[100px] text-[11px]" data-testid="select-status">
-                  <SelectValue placeholder="Change" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="open">Open (Backlog)</SelectItem>
-                  <SelectItem value="open:in_progress">In Progress</SelectItem>
-                  <SelectItem value="open:on_route">On Route</SelectItem>
-                  <SelectItem value="open:on_hold">On Hold</SelectItem>
-                  <SelectItem value="completed">Completed</SelectItem>
-                  <SelectItem value="invoiced">Invoiced</SelectItem>
-                  <SelectItem value="archived">Archived</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Created on — static, read-only */}
-            <div className="flex items-center justify-between gap-4">
-              <span className="font-medium text-muted-foreground">Created</span>
-              <span className="text-[11px]" data-testid="text-created-date">
+              <span className="text-muted-foreground/70">Created</span>
+              <span className="text-right text-foreground/80" data-testid="text-created-date">
                 {job.createdAt ? format(new Date(job.createdAt), "MMM d, yyyy") : "—"}
               </span>
-            </div>
 
-            {/* Completed on — static, read-only (closedAt is set when job is closed/completed) */}
-            <div className="flex items-center justify-between gap-4">
-              <span className="font-medium text-muted-foreground">Completed</span>
-              <span className="text-[11px]" data-testid="text-completed-date">
+              <span className="text-muted-foreground/70">Completed</span>
+              <span className="text-right text-foreground/80" data-testid="text-completed-date">
                 {job.closedAt ? format(new Date(job.closedAt), "MMM d, yyyy") : "—"}
               </span>
             </div>
 
-            {/* On Hold info (mirrors JobMetaCard on-hold section) */}
+            {/* On Hold info */}
             {job.status === "open" && (job.openSubStatus === "on_hold" || job.openSubStatus === "needs_review") && (
               <div className="pt-2 border-t mt-2 space-y-1.5">
                 <div className="flex items-center gap-1 text-[11px] text-destructive font-medium">
                   {job.openSubStatus === "on_hold" ? (
-                    <>
-                      <Pause className="h-3 w-3" />
-                      <span>On Hold</span>
-                    </>
+                    <><Pause className="h-3 w-3" /><span>On Hold</span></>
                   ) : (
-                    <>
-                      <AlertCircle className="h-3 w-3" />
-                      <span>Needs Review</span>
-                    </>
+                    <><AlertCircle className="h-3 w-3" /><span>Needs Review</span></>
                   )}
                 </div>
                 {job.holdReason && (
@@ -1535,69 +1100,213 @@ export default function JobDetailPage() {
             )}
           </div>
         </div>
-      </div>
 
-      {/* ================================================================
-          MAIN 2-COLUMN LAYOUT — Parts (left) + Sidebar Stack (right)
-          ================================================================ */}
-      <div className="grid gap-3 lg:grid-cols-[3fr_1fr]">
-        {/* LEFT: Parts & Billing + Expenses */}
-        <div className="space-y-3">
-          <PartsBillingCard jobId={jobId!} />
+        {/* ── BODY: 2-column — Main content (left) + Utility rail (right) ── */}
+        <div className="border-t grid gap-0 lg:grid-cols-[1fr_300px]">
 
-          <Card data-testid="card-expenses">
-            <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
-              <CardTitle className="text-sm font-semibold">Expenses</CardTitle>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-xs h-auto p-0 text-primary"
-                onClick={() => toast({ title: "Coming Soon", description: "Expense tracking coming soon." })}
-                data-testid="button-new-expense"
-              >
-                New Expense
-              </Button>
-            </CardHeader>
-            <CardContent>
-              <p className="text-xs text-muted-foreground">
-                Track additional job costs (parking, materials, etc.) here.
-              </p>
-            </CardContent>
-          </Card>
+          {/* ════════════════════════════════════════════════════════════════
+              LEFT: Main working area — Billing → Notes → Visits → Activity
+              ════════════════════════════════════════════════════════════════ */}
+          <div className="lg:border-r min-w-0">
 
-          {job.recurringSeries && (
-            <Card data-testid="card-recurring">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-sm font-semibold flex items-center gap-2">
-                  <Repeat className="h-4 w-4" />
-                  Recurring Series
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm" data-testid="text-series-summary">{job.recurringSeries.baseSummary}</p>
-              </CardContent>
-            </Card>
-          )}
-        </div>
+            {/* ┌─ BILLING SURFACE ─────────────────────────────────────────┐
+                │ Parts & Billing + Expenses as one unified work zone      │
+                └──────────────────────────────────────────────────────────┘ */}
+            <div className="bg-muted/15" data-testid="billing-surface">
+              {/* Parts & Billing — collapsible primary work surface */}
+              <Collapsible open={billingExpanded} onOpenChange={setBillingExpanded}>
+                <CollapsibleTrigger asChild>
+                  <button
+                    className={cn(
+                      "w-full flex items-center justify-between px-5 py-3.5 transition-colors",
+                      "hover:bg-muted/30",
+                      billingExpanded && "border-b border-border/40",
+                    )}
+                    data-testid="trigger-parts-billing"
+                  >
+                    <span className="text-[13px] font-semibold text-foreground flex items-center gap-2">
+                      <DollarSign className="h-4 w-4 text-muted-foreground/70" />
+                      Parts & Billing
+                    </span>
+                    {billingExpanded
+                      ? <ChevronDown className="h-4 w-4 text-muted-foreground/50" />
+                      : <ChevronRight className="h-4 w-4 text-muted-foreground/50" />
+                    }
+                  </button>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <div className="[&>*]:border-0 [&>*]:rounded-none [&>*]:shadow-none [&>*]:bg-transparent" data-testid="parts-billing-wrapper">
+                    <PartsBillingCard jobId={jobId!} />
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
 
-        {/* RIGHT: Sidebar Stack (each card independent, scrollable column) */}
-        <div className="space-y-2">
-          {/* Labour */}
-          <Card data-testid="card-labour">
-            <CardHeader className="flex flex-row items-center justify-between gap-2 pb-3">
-              <CardTitle className="text-sm font-semibold">Labour</CardTitle>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-xs h-auto p-0 text-primary"
-                onClick={() => setShowAddTimeEntry(true)}
-                data-testid="button-new-time-entry"
-              >
-                <Plus className="h-3 w-3 mr-1" />
-                New Time Entry
-              </Button>
-            </CardHeader>
-            <CardContent>
+              {/* Expenses — part of the billing surface */}
+              <div className="border-t border-border/40 px-5 py-4" data-testid="section-expenses">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-[13px] font-semibold text-foreground">Expenses</h3>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs h-auto p-0 text-primary"
+                    onClick={() => toast({ title: "Coming Soon", description: "Expense tracking coming soon." })}
+                    data-testid="button-new-expense"
+                  >
+                    New Expense
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Track additional job costs (parking, materials, etc.) here.
+                </p>
+              </div>
+
+              {/* Recurring series — part of the billing surface */}
+              {job.recurringSeries && (
+                <div className="border-t border-border/40 px-5 py-4" data-testid="section-recurring">
+                  <h3 className="text-[13px] font-semibold flex items-center gap-2 mb-2">
+                    <Repeat className="h-4 w-4 text-muted-foreground/70" />
+                    Recurring Series
+                  </h3>
+                  <p className="text-sm" data-testid="text-series-summary">{job.recurringSeries.baseSummary}</p>
+                </div>
+              )}
+            </div>
+
+            {/* ┌─ NOTES SURFACE ───────────────────────────────────────────┐ */}
+            <div className="border-t-2 border-border/50" data-testid="section-notes">
+              <JobNotesSection jobId={job.id} defaultOpen={notesOpen} embedded />
+            </div>
+
+            {/* ┌─ VISITS SURFACE ──────────────────────────────────────────┐ */}
+            <div className="border-t-2 border-border/50" id="visits-section" data-testid="section-visits">
+              <div className="flex items-center justify-between px-5 py-3.5">
+                <span className="text-[13px] font-semibold text-foreground flex items-center gap-2">
+                  <Calendar className="h-4 w-4 text-muted-foreground/70" />
+                  Visits
+                </span>
+                <span className="text-[11px] text-muted-foreground/50">{allVisits.length} total</span>
+              </div>
+              <div className="px-3 pb-3">
+                {visitsLoading ? (
+                  <div className="flex items-center justify-center py-4">
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  </div>
+                ) : sortedVisits.length === 0 ? (
+                  <div className="text-center py-4 text-muted-foreground">
+                    <Calendar className="h-4 w-4 mx-auto mb-1 opacity-50" />
+                    <p className="text-[11px]">No visits yet</p>
+                  </div>
+                ) : (
+                  <>
+                    {(showAllVisits ? sortedVisits : sortedVisits.slice(0, 5)).map((visit) => (
+                      <button
+                        key={visit.id}
+                        onClick={() => setSelectedVisitId(visit.id)}
+                        className="w-full text-left px-3 py-2 rounded hover:bg-accent/50 transition-colors flex items-center gap-3"
+                        data-testid={`visit-row-${visit.id}`}
+                      >
+                        <span className="text-xs font-medium truncate flex-1">
+                          {formatVisitDate(visit)}
+                        </span>
+                        <span className="text-xs text-muted-foreground truncate max-w-[120px] shrink-0">
+                          {getVisitTechName(visit.assignedTechnicianId)}
+                        </span>
+                        {visit.status !== "scheduled" && (
+                          <Badge className={cn("text-[9px] px-1.5 py-0 shrink-0 leading-tight", VISIT_STATUS_COLORS[visit.status] || "")}>
+                            {VISIT_STATUS_LABELS[visit.status] || visit.status}
+                          </Badge>
+                        )}
+                      </button>
+                    ))}
+                    {sortedVisits.length > 5 && (
+                      <button
+                        onClick={() => setShowAllVisits(!showAllVisits)}
+                        className="w-full text-center text-xs text-primary hover:underline py-2"
+                        data-testid="toggle-show-all-visits"
+                      >
+                        {showAllVisits ? "Show less" : `Show all (${sortedVisits.length})`}
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* ┌─ ACTIVITY ────────────────────────────────────────────────┐ */}
+            <div className="border-t border-border/30">
+              <Collapsible open={activityOpen} onOpenChange={setActivityOpen}>
+                <CollapsibleTrigger asChild>
+                  <button className="w-full flex items-center justify-between px-5 py-3 hover:bg-muted/20 transition-colors" data-testid="trigger-activity">
+                    <span className="text-[13px] font-semibold text-foreground">Activity</span>
+                    {activityOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground/50" /> : <ChevronRight className="h-4 w-4 text-muted-foreground/50" />}
+                  </button>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <div className="px-5 pb-4 pt-1">
+                    <ul className="space-y-2 text-xs">
+                      <li className="flex items-start gap-2">
+                        <span className="mt-1 h-2 w-2 rounded-full bg-primary shrink-0" />
+                        <div>
+                          <div className="font-medium">Job created</div>
+                          <div className="text-muted-foreground">
+                            {job.createdAt ? format(new Date(job.createdAt), "MMMM do, yyyy") : "N/A"}
+                          </div>
+                        </div>
+                      </li>
+                      {job.scheduledStart && (
+                        <li className="flex items-start gap-2">
+                          <span className="mt-1 h-2 w-2 rounded-full bg-blue-500 shrink-0" />
+                          <div>
+                            <div className="font-medium">Scheduled</div>
+                            <div className="text-muted-foreground">{format(new Date(job.scheduledStart), "MMMM do, yyyy")}</div>
+                          </div>
+                        </li>
+                      )}
+                      {job.actualStart && (
+                        <li className="flex items-start gap-2">
+                          <span className="mt-1 h-2 w-2 rounded-full bg-green-500 shrink-0" />
+                          <div>
+                            <div className="font-medium">Work started</div>
+                            <div className="text-muted-foreground">{format(new Date(job.actualStart), "MMMM do, yyyy")}</div>
+                          </div>
+                        </li>
+                      )}
+                      {job.actualEnd && (
+                        <li className="flex items-start gap-2">
+                          <span className="mt-1 h-2 w-2 rounded-full bg-green-600 shrink-0" />
+                          <div>
+                            <div className="font-medium">Work completed</div>
+                            <div className="text-muted-foreground">{format(new Date(job.actualEnd), "MMMM do, yyyy")}</div>
+                          </div>
+                        </li>
+                      )}
+                    </ul>
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            </div>
+          </div>
+
+          {/* ════════════════════════════════════════════════════════════════
+              RIGHT: Utility rail — Labour, Equipment, Timeline, History
+              Unified sidebar with consistent module rhythm, no card-in-card
+              ════════════════════════════════════════════════════════════════ */}
+          <div>
+            {/* Labour — primary sidebar module */}
+            <div className="px-5 py-4" data-testid="section-labour">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[13px] font-semibold text-foreground">Labour</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs h-auto p-0 text-primary"
+                  onClick={() => setShowAddTimeEntry(true)}
+                  data-testid="button-new-time-entry"
+                >
+                  <Plus className="h-3 w-3 mr-1" />
+                  New Time Entry
+                </Button>
+              </div>
               <LabourCardContent
                 jobId={jobId!}
                 onEditEntry={(entry) => {
@@ -1605,74 +1314,32 @@ export default function JobDetailPage() {
                   setShowEditTimeEntry(true);
                 }}
               />
-            </CardContent>
-          </Card>
+            </div>
 
-          {/* Notes */}
-          <JobNotesSection jobId={job.id} defaultOpen={notesOpen} />
+            {/* Sidebar divider */}
+            <div className="mx-5 border-t border-border/40" />
 
-          {/* Equipment */}
-          <JobEquipmentSection jobId={job.id} locationId={job.locationId} />
+            {/* Equipment */}
+            <div className="[&>*]:border-0 [&>*]:rounded-none [&>*]:shadow-none [&>*]:bg-transparent">
+              <JobEquipmentSection jobId={job.id} locationId={job.locationId} />
+            </div>
 
-          {/* Status Timeline */}
-          <JobStatusTimeline jobId={job.id} defaultOpen={false} />
+            {/* Sidebar divider */}
+            <div className="mx-5 border-t border-border/40" />
 
-          {/* Scheduling History */}
-          <SchedulingHistory jobId={job.id} defaultOpen={false} />
+            {/* Status Timeline */}
+            <div className="[&>*]:border-0 [&>*]:rounded-none [&>*]:shadow-none [&>*]:bg-transparent">
+              <JobStatusTimeline jobId={job.id} defaultOpen={false} />
+            </div>
 
-          {/* Activity */}
-          <Collapsible open={activityOpen} onOpenChange={setActivityOpen}>
-            <Card>
-              <CollapsibleTrigger asChild>
-                <button className="w-full flex items-center justify-between px-4 py-3 hover-elevate" data-testid="trigger-activity">
-                  <span className="text-sm font-semibold">Activity</span>
-                  {activityOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
-                </button>
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <div className="border-t px-4 pb-4 pt-3">
-                  <ul className="space-y-2 text-xs">
-                    <li className="flex items-start gap-2">
-                      <span className="mt-1 h-2 w-2 rounded-full bg-primary shrink-0" />
-                      <div>
-                        <div className="font-medium">Job created</div>
-                        <div className="text-muted-foreground">
-                          {job.createdAt ? format(new Date(job.createdAt), "MMMM do, yyyy") : "N/A"}
-                        </div>
-                      </div>
-                    </li>
-                    {job.scheduledStart && (
-                      <li className="flex items-start gap-2">
-                        <span className="mt-1 h-2 w-2 rounded-full bg-blue-500 shrink-0" />
-                        <div>
-                          <div className="font-medium">Scheduled</div>
-                          <div className="text-muted-foreground">{format(new Date(job.scheduledStart), "MMMM do, yyyy")}</div>
-                        </div>
-                      </li>
-                    )}
-                    {job.actualStart && (
-                      <li className="flex items-start gap-2">
-                        <span className="mt-1 h-2 w-2 rounded-full bg-green-500 shrink-0" />
-                        <div>
-                          <div className="font-medium">Work started</div>
-                          <div className="text-muted-foreground">{format(new Date(job.actualStart), "MMMM do, yyyy")}</div>
-                        </div>
-                      </li>
-                    )}
-                    {job.actualEnd && (
-                      <li className="flex items-start gap-2">
-                        <span className="mt-1 h-2 w-2 rounded-full bg-green-600 shrink-0" />
-                        <div>
-                          <div className="font-medium">Work completed</div>
-                          <div className="text-muted-foreground">{format(new Date(job.actualEnd), "MMMM do, yyyy")}</div>
-                        </div>
-                      </li>
-                    )}
-                  </ul>
-                </div>
-              </CollapsibleContent>
-            </Card>
-          </Collapsible>
+            {/* Sidebar divider */}
+            <div className="mx-5 border-t border-border/40" />
+
+            {/* Scheduling History */}
+            <div className="[&>*]:border-0 [&>*]:rounded-none [&>*]:shadow-none [&>*]:bg-transparent">
+              <SchedulingHistory jobId={job.id} defaultOpen={false} />
+            </div>
+          </div>
         </div>
       </div>
 

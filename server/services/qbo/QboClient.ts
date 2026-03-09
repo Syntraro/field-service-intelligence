@@ -427,8 +427,10 @@ export function getQboEnvironment(): "sandbox" | "production" {
 
 /**
  * Check if import is allowed in the current environment.
- * Production import is blocked by default — returns false for production.
+ * Import operations are READ-ONLY (QBO → App) and safe in all environments.
+ * Previously blocked in production as a safety gate during sandbox development;
+ * now allowed since imports never write to QBO (enforced by isImportReadOnlyEnforced).
  */
 export function isImportAllowedInEnvironment(): boolean {
-  return getQboEnvironment() !== "production";
+  return true;
 }

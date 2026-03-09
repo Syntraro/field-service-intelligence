@@ -3,6 +3,7 @@ import { eq, and, desc, inArray, isNull, sql } from "drizzle-orm";
 import { customerCompanies, clients, jobs, invoices } from "@shared/schema";
 import type { Client } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset } from "./base";
+import { geocodeToLatLng } from "../utils/geocode";
 
 // Orphan location info for admin linking
 export interface OrphanLocation {
@@ -124,6 +125,42 @@ export class CustomerCompanyRepository extends BaseRepository {
       .returning();
 
     return company;
+  }
+
+  /**
+   * Update customer company fields (tenant-scoped).
+   * Only updates fields that are explicitly provided.
+   */
+  async updateCustomerCompany(
+    companyId: string,
+    customerCompanyId: string,
+    data: {
+      name?: string;
+      phone?: string | null;
+      email?: string | null;
+      billingStreet?: string | null;
+      billingCity?: string | null;
+      billingProvince?: string | null;
+      billingPostalCode?: string | null;
+      billingCountry?: string | null;
+      isActive?: boolean;
+    }
+  ): Promise<typeof customerCompanies.$inferSelect | null> {
+    this.assertCompanyId(companyId);
+
+    const [updated] = await db
+      .update(customerCompanies)
+      .set(data)
+      .where(
+        and(
+          eq(customerCompanies.id, customerCompanyId),
+          eq(customerCompanies.companyId, companyId),
+          isNull(customerCompanies.deletedAt),
+        )
+      )
+      .returning();
+
+    return updated ?? null;
   }
 
   /**
@@ -365,6 +402,9 @@ export class CustomerCompanyRepository extends BaseRepository {
       throw this.notFoundError("Customer company");
     }
 
+    // Auto-geocode address if lat/lng not provided
+    const coords = await geocodeToLatLng(data.address, data.city, data.province, data.postalCode);
+
     const [location] = await db
       .insert(clients)
       .values({
@@ -386,6 +426,73 @@ export class CustomerCompanyRepository extends BaseRepository {
         isPrimary: false,
         needsDetails: false,
         selectedMonths: [],
+        lat: coords?.lat ?? null,
+        lng: coords?.lng ?? null,
+      })
+      .returning();
+
+    return location;
+  }
+
+  /**
+   * Part A: Transaction-aware variant of createLocationUnderCustomerCompany.
+   * Accepts an external transaction so the caller can bundle location + contact
+   * creation atomically (no partial-save state possible).
+   */
+  async createLocationUnderCustomerCompanyTx(
+    tx: any,
+    companyId: string,
+    userId: string,
+    customerCompanyId: string,
+    data: {
+      location?: string;
+      address?: string | null;
+      city?: string | null;
+      province?: string | null;
+      postalCode?: string | null;
+      contactName?: string | null;
+      email?: string | null;
+      phone?: string | null;
+      roofLadderCode?: string | null;
+      billWithParent?: boolean;
+      inactive?: boolean;
+    }
+  ): Promise<Client> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(customerCompanyId, "customerCompanyId");
+
+    // Get customer company to inherit name
+    const company = await this.getCustomerCompany(companyId, customerCompanyId);
+    if (!company) {
+      throw this.notFoundError("Customer company");
+    }
+
+    // Auto-geocode address (outside transaction — external API call is fine)
+    const coords = await geocodeToLatLng(data.address, data.city, data.province, data.postalCode);
+
+    const [location] = await tx
+      .insert(clients)
+      .values({
+        companyId,
+        userId,
+        parentCompanyId: customerCompanyId,
+        companyName: company.name,
+        location: data.location || "",
+        address: data.address ?? null,
+        city: data.city ?? null,
+        province: data.province ?? null,
+        postalCode: data.postalCode ?? null,
+        contactName: data.contactName ?? null,
+        email: data.email ?? null,
+        phone: data.phone ?? null,
+        roofLadderCode: data.roofLadderCode ?? null,
+        billWithParent: data.billWithParent ?? true,
+        inactive: data.inactive ?? false,
+        isPrimary: false,
+        needsDetails: false,
+        selectedMonths: [],
+        lat: coords?.lat ?? null,
+        lng: coords?.lng ?? null,
       })
       .returning();
 

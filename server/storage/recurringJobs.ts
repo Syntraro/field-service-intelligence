@@ -5,11 +5,15 @@
  */
 
 import { db } from "../db";
-import { eq, and, desc, asc, gte, lte, sql } from "drizzle-orm";
+import { eq, and, desc, asc, gte, lte, sql, inArray, isNull, or } from "drizzle-orm";
 import {
   recurringJobTemplates,
   recurringJobInstances,
   jobs,
+  jobVisits,
+  customerCompanies,
+  clientLocations,
+  users,
   type RecurringJobTemplate,
   type RecurringJobInstance,
   type InsertRecurringJobTemplate,
@@ -131,6 +135,9 @@ export class RecurringJobsRepository extends BaseRepository {
       autoSchedule?: boolean;
       scheduledTimeLocal?: string | null;
       includeLocationPmParts?: boolean;
+      // PM Phase 3: Service window
+      serviceWindowDaysBefore?: number;
+      serviceWindowDaysAfter?: number;
     }
   ): Promise<RecurringJobTemplate> {
     this.assertCompanyId(companyId);
@@ -166,6 +173,9 @@ export class RecurringJobsRepository extends BaseRepository {
         autoSchedule: data.autoSchedule ?? false,
         scheduledTimeLocal: data.scheduledTimeLocal ?? null,
         includeLocationPmParts: data.includeLocationPmParts ?? false,
+        // PM Phase 3: Service window defaults
+        serviceWindowDaysBefore: data.serviceWindowDaysBefore ?? 7,
+        serviceWindowDaysAfter: data.serviceWindowDaysAfter ?? 14,
       })
       .returning();
 
@@ -249,6 +259,40 @@ export class RecurringJobsRepository extends BaseRepository {
       .returning({ id: recurringJobTemplates.id });
 
     return result.length > 0;
+  }
+
+  /**
+   * Duplicate a recurring job template (PM Phase 2 - copy flow)
+   *
+   * Creates a new template with the same configuration but:
+   * - New UUID, fresh timestamps
+   * - Title suffixed with " (Copy)"
+   * - Starts in paused state (isActive = false)
+   */
+  async duplicateTemplate(
+    companyId: string,
+    templateId: string
+  ): Promise<RecurringJobTemplate | null> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(templateId, "templateId");
+
+    const source = await this.getTemplate(companyId, templateId);
+    if (!source) return null;
+
+    // Strip system fields, override title + active state
+    const { id, createdAt, updatedAt, ...rest } = source;
+
+    const [copy] = await db
+      .insert(recurringJobTemplates)
+      .values({
+        ...rest,
+        companyId,
+        title: `${source.title} (Copy)`,
+        isActive: false, // Start paused so user can review before activating
+      })
+      .returning();
+
+    return copy;
   }
 
   // ============================================================================
@@ -399,6 +443,296 @@ export class RecurringJobsRepository extends BaseRepository {
 
     return updated ?? null;
   }
+  // ============================================================================
+  // PM Phase 3+4A: Upcoming Planning Queue with Scheduling Visibility
+  // ============================================================================
+
+  /**
+   * Get upcoming PM instances across all active templates for the company.
+   *
+   * Phase 4A: Enhanced with visit scheduling data, dual compliance/scheduling
+   * states, and completion timing for operational visibility.
+   *
+   * Two-pass approach:
+   *   1. Main query joins instances→templates→jobs→customer→location→tech
+   *   2. Batch-fetch visits for all jobs in the result set
+   *
+   * This avoids complex lateral joins while keeping the query fast.
+   */
+  async getUpcomingQueue(
+    companyId: string,
+    options?: {
+      from?: string;
+      to?: string;
+      statuses?: string[];
+      limit?: number;
+      offset?: number;
+    }
+  ): Promise<UpcomingQueueItem[]> {
+    this.assertCompanyId(companyId);
+
+    const conditions = [
+      eq(recurringJobInstances.companyId, companyId),
+    ];
+
+    if (options?.from) {
+      conditions.push(gte(recurringJobInstances.instanceDate, options.from));
+    }
+    if (options?.to) {
+      conditions.push(lte(recurringJobInstances.instanceDate, options.to));
+    }
+    if (options?.statuses && options.statuses.length > 0) {
+      conditions.push(inArray(recurringJobInstances.status, options.statuses));
+    }
+
+    // Pass 1: Core query — instances + templates + jobs + names
+    const rows = await db
+      .select({
+        instanceId: recurringJobInstances.id,
+        instanceDate: recurringJobInstances.instanceDate,
+        instanceStatus: recurringJobInstances.status,
+        generatedJobId: recurringJobInstances.generatedJobId,
+        instanceCreatedAt: recurringJobInstances.createdAt,
+        templateId: recurringJobTemplates.id,
+        templateTitle: recurringJobTemplates.title,
+        templateIsActive: recurringJobTemplates.isActive,
+        monthsOfYear: recurringJobTemplates.monthsOfYear,
+        serviceWindowDaysBefore: recurringJobTemplates.serviceWindowDaysBefore,
+        serviceWindowDaysAfter: recurringJobTemplates.serviceWindowDaysAfter,
+        locationId: recurringJobTemplates.locationId,
+        clientId: recurringJobTemplates.clientId,
+        preferredTechnicianId: recurringJobTemplates.preferredTechnicianId,
+        jobId: jobs.id,
+        jobNumber: jobs.jobNumber,
+        jobStatus: jobs.status,
+        jobSummary: jobs.summary,
+        jobCompletedAt: jobs.actualEnd,
+        customerName: customerCompanies.name,
+        locationName: clientLocations.companyName,
+        locationLabel: clientLocations.location,
+        // Phase 4B: Location coordinates + address for proximity grouping
+        locationLat: clientLocations.lat,
+        locationLng: clientLocations.lng,
+        locationAddress: clientLocations.address,
+        locationCity: clientLocations.city,
+        techFirstName: users.firstName,
+        techLastName: users.lastName,
+      })
+      .from(recurringJobInstances)
+      .innerJoin(recurringJobTemplates, eq(recurringJobInstances.templateId, recurringJobTemplates.id))
+      .leftJoin(jobs, eq(recurringJobInstances.generatedJobId, jobs.id))
+      .leftJoin(customerCompanies, eq(recurringJobTemplates.clientId, customerCompanies.id))
+      .leftJoin(clientLocations, eq(recurringJobTemplates.locationId, clientLocations.id))
+      .leftJoin(users, eq(recurringJobTemplates.preferredTechnicianId, users.id))
+      .where(and(...conditions))
+      .orderBy(asc(recurringJobInstances.instanceDate))
+      .limit(options?.limit ?? 200)
+      .offset(options?.offset ?? 0);
+
+    // Pass 2: Batch-fetch visits for all linked jobs
+    const jobIds = rows
+      .map((r) => r.jobId)
+      .filter((id): id is string => id !== null);
+
+    // Map jobId → earliest visit info
+    const visitMap = new Map<string, {
+      visitId: string;
+      visitStatus: string;
+      scheduledStart: Date | null;
+      scheduledDate: Date;
+      completedAt: Date | null;
+      assignedTechId: string | null;
+    }>();
+
+    if (jobIds.length > 0) {
+      const visits = await db
+        .select({
+          jobId: jobVisits.jobId,
+          visitId: jobVisits.id,
+          visitStatus: jobVisits.status,
+          scheduledStart: jobVisits.scheduledStart,
+          scheduledDate: jobVisits.scheduledDate,
+          completedAt: jobVisits.completedAt,
+          assignedTechId: jobVisits.assignedTechnicianId,
+        })
+        .from(jobVisits)
+        .where(and(
+          inArray(jobVisits.jobId, jobIds),
+          eq(jobVisits.companyId, companyId),
+        ))
+        .orderBy(asc(jobVisits.scheduledDate));
+
+      // Keep the earliest visit per job (first in date order)
+      for (const v of visits) {
+        if (!visitMap.has(v.jobId)) {
+          visitMap.set(v.jobId, {
+            visitId: v.visitId,
+            visitStatus: v.visitStatus,
+            scheduledStart: v.scheduledStart,
+            scheduledDate: v.scheduledDate,
+            completedAt: v.completedAt,
+            assignedTechId: v.assignedTechId,
+          });
+        }
+      }
+    }
+
+    const today = new Date().toISOString().split("T")[0];
+
+    return rows.map((r) => {
+      const locationDisplay = [r.locationName, r.locationLabel].filter(Boolean).join(" — ");
+      const techName = r.techFirstName ? `${r.techFirstName} ${r.techLastName ?? ""}`.trim() : null;
+
+      const windowBefore = r.serviceWindowDaysBefore ?? 7;
+      const windowAfter = r.serviceWindowDaysAfter ?? 14;
+      const idealDate = new Date(r.instanceDate + "T00:00:00");
+      const windowStart = new Date(idealDate);
+      windowStart.setDate(windowStart.getDate() - windowBefore);
+      const windowEnd = new Date(idealDate);
+      windowEnd.setDate(windowEnd.getDate() + windowAfter);
+
+      const windowStartStr = windowStart.toISOString().split("T")[0];
+      const windowEndStr = windowEnd.toISOString().split("T")[0];
+
+      // Visit data for this job
+      const visit = r.jobId ? visitMap.get(r.jobId) ?? null : null;
+
+      // --- Scheduling state (Phase 4A) ---
+      let schedulingState: UpcomingQueueItem["schedulingState"];
+      if (r.instanceStatus === "skipped") {
+        schedulingState = "skipped";
+      } else if (r.instanceStatus === "canceled") {
+        schedulingState = "canceled";
+      } else if (r.jobStatus === "completed" || r.jobStatus === "invoiced") {
+        schedulingState = "completed";
+      } else if (!r.jobId) {
+        schedulingState = "not_generated";
+      } else if (visit && visit.scheduledStart) {
+        schedulingState = "scheduled";
+      } else {
+        schedulingState = "generated_unscheduled";
+      }
+
+      // --- Compliance state ---
+      let complianceStatus: UpcomingQueueItem["complianceStatus"];
+      if (r.instanceStatus === "skipped") {
+        complianceStatus = "skipped";
+      } else if (r.instanceStatus === "canceled") {
+        complianceStatus = "canceled";
+      } else if (r.jobStatus === "completed" || r.jobStatus === "invoiced") {
+        // Phase 4A: Distinguish on-time vs late completions
+        const completionDate = visit?.completedAt ?? r.jobCompletedAt;
+        if (completionDate) {
+          const completedStr = new Date(completionDate).toISOString().split("T")[0];
+          complianceStatus = completedStr > windowEndStr ? "completed_late" : "completed_on_time";
+        } else {
+          complianceStatus = "completed_on_time"; // Completed but no timestamp — assume on time
+        }
+      } else if (today > windowEndStr) {
+        complianceStatus = "overdue";
+      } else if (today >= windowStartStr && today <= windowEndStr) {
+        const daysToEnd = Math.ceil((windowEnd.getTime() - new Date(today + "T00:00:00").getTime()) / (1000 * 60 * 60 * 24));
+        complianceStatus = daysToEnd <= 3 ? "due_soon" : "in_window";
+      } else {
+        complianceStatus = "upcoming";
+      }
+
+      // Visit scheduled display time
+      const visitScheduledDate = visit?.scheduledStart
+        ? visit.scheduledStart.toISOString()
+        : visit?.scheduledDate
+          ? visit.scheduledDate.toISOString()
+          : null;
+
+      return {
+        instanceId: r.instanceId,
+        instanceDate: r.instanceDate,
+        instanceStatus: r.instanceStatus,
+        templateId: r.templateId,
+        templateTitle: r.templateTitle,
+        templateIsActive: r.templateIsActive,
+        serviceWindowDaysBefore: windowBefore,
+        serviceWindowDaysAfter: windowAfter,
+        windowStart: windowStartStr,
+        windowEnd: windowEndStr,
+        complianceStatus,
+        schedulingState,
+        locationId: r.locationId,
+        locationName: locationDisplay || null,
+        locationLat: r.locationLat ? parseFloat(r.locationLat) : null,
+        locationLng: r.locationLng ? parseFloat(r.locationLng) : null,
+        locationAddress: r.locationAddress ?? null,
+        locationCity: r.locationCity ?? null,
+        clientId: r.clientId,
+        customerName: r.customerName ?? null,
+        preferredTechnicianId: r.preferredTechnicianId,
+        technicianName: techName,
+        generatedJobId: r.generatedJobId,
+        job: r.jobId ? {
+          id: r.jobId,
+          jobNumber: r.jobNumber!,
+          status: r.jobStatus!,
+          summary: r.jobSummary!,
+        } : null,
+        // Phase 4A: Visit scheduling info
+        visit: visit ? {
+          visitId: visit.visitId,
+          visitStatus: visit.visitStatus,
+          scheduledDate: visitScheduledDate,
+          completedAt: visit.completedAt?.toISOString() ?? null,
+          assignedTechnicianId: visit.assignedTechId,
+        } : null,
+      };
+    });
+  }
+}
+
+/** Phase 4A: Scheduling states derived from job/visit data */
+type SchedulingState = "not_generated" | "generated_unscheduled" | "scheduled" | "completed" | "canceled" | "skipped";
+
+/** Phase 4A: Compliance states — expanded with on-time/late distinction */
+type ComplianceStatus = "upcoming" | "in_window" | "due_soon" | "overdue" | "completed_on_time" | "completed_late" | "skipped" | "canceled";
+
+/** Shape returned by getUpcomingQueue */
+export interface UpcomingQueueItem {
+  instanceId: string;
+  instanceDate: string;
+  instanceStatus: string;
+  templateId: string;
+  templateTitle: string;
+  templateIsActive: boolean;
+  serviceWindowDaysBefore: number;
+  serviceWindowDaysAfter: number;
+  windowStart: string;
+  windowEnd: string;
+  complianceStatus: ComplianceStatus;
+  schedulingState: SchedulingState;
+  locationId: string | null;
+  locationName: string | null;
+  /** Phase 4B: Location coordinates for proximity grouping */
+  locationLat: number | null;
+  locationLng: number | null;
+  locationAddress: string | null;
+  locationCity: string | null;
+  clientId: string | null;
+  customerName: string | null;
+  preferredTechnicianId: string | null;
+  technicianName: string | null;
+  generatedJobId: string | null;
+  job: {
+    id: string;
+    jobNumber: number;
+    status: string;
+    summary: string;
+  } | null;
+  /** Phase 4A: Linked visit scheduling info (earliest visit for the job) */
+  visit: {
+    visitId: string;
+    visitStatus: string;
+    scheduledDate: string | null;
+    completedAt: string | null;
+    assignedTechnicianId: string | null;
+  } | null;
 }
 
 // Export singleton instance

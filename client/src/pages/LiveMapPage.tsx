@@ -1,20 +1,22 @@
 /**
- * LiveMapPage — Dispatch-grade live map with techs, visits, and panel.
+ * LiveMapPage — Technician Routes visualization surface.
  *
- * Phase 4B → Upgraded 2026-03-05:
- * - Split layout: map (left) + dispatch panel (right, collapsible)
- * - Technician circle markers (colored by tech, online/offline opacity)
- * - Visit circle markers (numbered by tech sequence, "?" for unassigned)
- * - Right panel grouped by technician with visit list
- * - Technician multi-select filter popover (replaces simple toggle)
- * - Toggles: Show Visits / Show Unassigned
- * - Focus mode: click tech header to filter map to that tech
- * - Auto-refreshes every 15 seconds
- * - Date computed server-side in company timezone (America/Toronto default)
+ * Restructured 2026-03-08 (Technician Routes Implementation):
+ * - Right panel: "Technician Routes" with Unscheduled Visits (top) + Scheduled Routes by tech (below)
+ * - Route line rendering (Polyline) for focused technician
+ * - Numbered map markers for focused technician's stops
+ * - Interaction model: click tech to focus, click stop to fly-to
+ * - Unscheduled jobs fetched from /api/calendar/unscheduled (separate from map data)
+ *
+ * Product rules:
+ * - The map is a VISUALIZATION surface, not a scheduling engine
+ * - No dispatch mutations from the map — use the dispatch board for that
+ * - Route lines shown only for the focused/selected technician
+ * - Visit terminology throughout (not "job" in UI labels)
  */
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { MapContainer, TileLayer, CircleMarker, Tooltip, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, CircleMarker, Tooltip, Polyline, useMap } from "react-leaflet";
 import * as L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { Badge } from "@/components/ui/badge";
@@ -32,40 +34,18 @@ import {
   ChevronDown,
   ChevronRight,
   AlertTriangle,
+  Route,
+  Calendar,
+  Navigation,
 } from "lucide-react";
+import type { MapTechnician, MapVisit, MapDayData, MapUnscheduledJob } from "@shared/types/map";
+import { getTechnicianColor } from "@shared/colors";
 
 // ============================================================================
-// Types
+// Helpers
 // ============================================================================
 
-interface MapTechnician {
-  technicianId: string;
-  name: string;
-  lat: string | null;
-  lng: string | null;
-  online: boolean;
-  lastSeenAt: string | null;
-}
-
-interface MapVisit {
-  visitId: string;
-  technicianId: string | null;
-  locationName: string;
-  scheduledStart: string | null;
-  scheduledEnd: string | null;
-  durationMinutes?: number;
-  lat: string | null;
-  lng: string | null;
-  status: string;
-  source?: "visit" | "job_fallback";
-  risk: {
-    late?: boolean;
-    overdue?: boolean;
-    runningLong?: boolean;
-  };
-}
-
-/** Helper: does this visit have usable map coordinates? */
+/** Does this visit have usable map coordinates? */
 function hasCoords(v: MapVisit): boolean {
   if (!v.lat || !v.lng) return false;
   const lat = parseFloat(v.lat);
@@ -73,26 +53,25 @@ function hasCoords(v: MapVisit): boolean {
   return !isNaN(lat) && !isNaN(lng);
 }
 
-interface MapDayData {
-  date: string;
-  timezone?: string;
-  technicians: MapTechnician[];
-  visits: MapVisit[];
-  meta?: {
-    techniciansTotal?: number;
-    techniciansOnline?: number;
-    jobFallbackCount?: number;
-    visitsTotal?: number;
-    visitsAssigned?: number;
-    visitsUnassigned?: number;
-    visitsWithCoords?: number;
-    visitsMissingCoords?: number;
-    visitsMissingScheduledStart?: number;
-    // Diagnostic hints for empty states (2026-03-05)
-    reasonTechsEmpty?: string;
-    reasonVisitsEmpty?: string;
-    visitsWithScheduledDateButNoStart?: number;
-  };
+function formatTimeAgo(dateStr: string): string {
+  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  return `${Math.floor(minutes / 60)}h ago`;
+}
+
+function formatTime(iso: string | null): string {
+  if (!iso) return "";
+  return new Date(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+function formatDuration(minutes: number | undefined): string {
+  if (!minutes) return "";
+  if (minutes < 60) return `${minutes}m`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m > 0 ? `${h}h${m}m` : `${h}h`;
 }
 
 // ============================================================================
@@ -111,6 +90,28 @@ function useMapDay(date?: string) {
     },
     refetchInterval: 15_000,
     staleTime: 10_000,
+  });
+}
+
+/** Fetch unscheduled jobs for the routes panel backlog section. */
+function useUnscheduledJobs() {
+  return useQuery<MapUnscheduledJob[]>({
+    queryKey: ["/api/calendar/unscheduled", "map"],
+    queryFn: async () => {
+      const res = await fetch("/api/calendar/unscheduled", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch unscheduled jobs");
+      const raw = await res.json();
+      // Map to lightweight shape for map context
+      return (raw as any[]).map((j) => ({
+        id: j.id || j.jobId,
+        jobNumber: j.jobNumber,
+        jobType: j.jobType,
+        summary: j.summary,
+        locationName: j.locationName || "Unknown",
+        customerCompanyName: j.customerCompanyName || null,
+      }));
+    },
+    staleTime: 60_000,
   });
 }
 
@@ -145,32 +146,6 @@ function loadMapPreferences(): MapPreferences {
 
 function saveMapPreferences(prefs: MapPreferences) {
   try { localStorage.setItem(MAP_PREFS_KEY, JSON.stringify(prefs)); } catch { /* ignore */ }
-}
-
-// ============================================================================
-// Helpers
-// ============================================================================
-
-function formatTimeAgo(dateStr: string): string {
-  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  return `${Math.floor(minutes / 60)}h ago`;
-}
-
-function formatTime(iso: string | null): string {
-  if (!iso) return "";
-  return new Date(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-}
-
-const TECH_COLORS = [
-  "#2563eb", "#16a34a", "#9333ea", "#ea580c", "#0891b2",
-  "#be123c", "#4f46e5", "#059669", "#c026d3", "#d97706",
-];
-
-function getTechColor(index: number): string {
-  return TECH_COLORS[index % TECH_COLORS.length];
 }
 
 // ============================================================================
@@ -239,21 +214,16 @@ function TechnicianFilterPopover({
     return technicians.filter((t) => t.name.toLowerCase().includes(q));
   }, [technicians, search]);
 
-  // Empty selectedIds = show all (no filter active)
   const allSelected = selectedIds.size === 0;
 
   const toggle = (id: string) => {
     const next = new Set(selectedIds);
-    if (next.has(id)) {
-      next.delete(id);
-    } else {
-      next.add(id);
-    }
+    next.has(id) ? next.delete(id) : next.add(id);
     onChangeSelected(next);
   };
 
   const selectAll = () => onChangeSelected(new Set());
-  const selectNone = () => onChangeSelected(new Set(["__none__"])); // sentinel: explicitly none
+  const selectNone = () => onChangeSelected(new Set(["__none__"]));
   const selectOnline = () => onChangeSelected(new Set(technicians.filter((t) => t.online).map((t) => t.technicianId)));
   const selectOffline = () => onChangeSelected(new Set(technicians.filter((t) => !t.online).map((t) => t.technicianId)));
 
@@ -264,20 +234,16 @@ function TechnicianFilterPopover({
       <PopoverTrigger asChild>
         <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5">
           <Users className="h-3.5 w-3.5" />
-          Technicians{" "}
-          {allSelected ? "(All)" : `(${activeCount})`}
+          Technicians {allSelected ? "(All)" : `(${activeCount})`}
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-64 p-2 z-[9999]" align="end">
-        {/* Search */}
         <Input
           placeholder="Search technicians..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="h-7 text-xs mb-2"
         />
-
-        {/* Quick actions */}
         <div className="flex items-center gap-1 mb-2 px-1">
           <button onClick={selectAll} className="text-[11px] text-primary hover:underline">All</button>
           <span className="text-[11px] text-muted-foreground">/</span>
@@ -287,8 +253,6 @@ function TechnicianFilterPopover({
           <span className="text-[11px] text-muted-foreground">/</span>
           <button onClick={selectOffline} className="text-[11px] text-primary hover:underline">Offline</button>
         </div>
-
-        {/* Technician checkboxes */}
         <div className="space-y-0.5 max-h-[320px] overflow-y-auto">
           {filtered.map((tech) => {
             const tc = techColorMap.get(tech.technicianId);
@@ -298,14 +262,8 @@ function TechnicianFilterPopover({
                 key={tech.technicianId}
                 className="flex items-center gap-2 px-1.5 py-1.5 rounded hover:bg-muted/50 cursor-pointer"
               >
-                <Checkbox
-                  checked={isChecked}
-                  onCheckedChange={() => toggle(tech.technicianId)}
-                />
-                <div
-                  className="w-2.5 h-2.5 rounded-full shrink-0"
-                  style={{ backgroundColor: tc?.color || "#9ca3af" }}
-                />
+                <Checkbox checked={isChecked} onCheckedChange={() => toggle(tech.technicianId)} />
+                <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: tc?.color || "#9ca3af" }} />
                 <span className="text-xs font-medium flex-1 truncate">{tech.name}</span>
                 <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${tech.online ? 'bg-green-500' : 'bg-gray-300'}`} />
               </label>
@@ -321,34 +279,33 @@ function TechnicianFilterPopover({
 }
 
 // ============================================================================
-// Dispatch Panel
+// RoutesPanel — Technician Routes right panel
+// Unscheduled Visits (top) + Scheduled Routes by technician (below)
 // ============================================================================
 
-function DispatchPanel({
+function RoutesPanel({
   technicians,
   visits,
+  unscheduledJobs,
   techColorMap,
   focusTechId,
   onFocusTech,
   onClickVisit,
-  jobFallbackCount,
-  totalVisitCount,
   meta,
 }: {
   technicians: MapTechnician[];
   visits: MapVisit[];
+  unscheduledJobs: MapUnscheduledJob[];
   techColorMap: Map<string, { color: string; index: number }>;
   focusTechId: string | null;
   onFocusTech: (id: string | null) => void;
   onClickVisit: (v: MapVisit) => void;
-  jobFallbackCount: number;
-  /** Total unfiltered visit count — used to distinguish "no visits" from "filtered out" */
-  totalVisitCount: number;
-  /** Server diagnostic meta for empty-state messaging (2026-03-05) */
-  meta?: MapDayData["meta"];
+  meta?: MapDayData["meta"] | undefined;
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [unscheduledCollapsed, setUnscheduledCollapsed] = useState(false);
 
+  // Group visits by technician, sorted by scheduled_start
   const grouped = useMemo(() => {
     const map = new Map<string, MapVisit[]>();
     for (const v of visits) {
@@ -356,15 +313,29 @@ function DispatchPanel({
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(v);
     }
+    // Sort each tech's visits by scheduled time
+    map.forEach((techVisits) => {
+      techVisits.sort((a: MapVisit, b: MapVisit) => {
+        if (!a.scheduledStart) return 1;
+        if (!b.scheduledStart) return -1;
+        return new Date(a.scheduledStart).getTime() - new Date(b.scheduledStart).getTime();
+      });
+    });
     return map;
   }, [visits]);
 
   const sortedTechs = useMemo(() =>
     [...technicians].sort((a, b) => {
+      // Focused tech first
+      if (focusTechId) {
+        if (a.technicianId === focusTechId) return -1;
+        if (b.technicianId === focusTechId) return 1;
+      }
+      // Then by online status, then name
       if (a.online !== b.online) return a.online ? -1 : 1;
       return a.name.localeCompare(b.name);
     }),
-  [technicians]);
+  [technicians, focusTechId]);
 
   const toggleCollapse = (id: string) => {
     setCollapsed(prev => {
@@ -375,19 +346,66 @@ function DispatchPanel({
   };
 
   const unassignedVisits = grouped.get("__unassigned__") || [];
+  const scheduledCount = visits.filter((v) => v.technicianId).length;
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
+      {/* Panel header */}
       <div className="px-3 py-2 border-b bg-background font-semibold text-sm flex items-center gap-2">
-        <MapPin className="h-4 w-4" />
-        Dispatch
+        <Route className="h-4 w-4" />
+        Technician Routes
         <Badge variant="secondary" className="text-[10px] ml-auto">
-          {visits.length} visits
+          {scheduledCount} scheduled
         </Badge>
       </div>
 
       <div className="flex-1 overflow-y-auto" style={{ scrollbarWidth: "thin" }}>
-        {/* Technician groups */}
+        {/* ── Unscheduled Visits Section (top) ── */}
+        <div className="border-b">
+          <div
+            className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-muted/50 bg-amber-50/50"
+            onClick={() => setUnscheduledCollapsed(!unscheduledCollapsed)}
+          >
+            <button className="shrink-0">
+              {unscheduledCollapsed
+                ? <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                : <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+              }
+            </button>
+            <Calendar className="h-3.5 w-3.5 text-amber-600" />
+            <span className="text-xs font-medium flex-1">Unscheduled Visits</span>
+            <Badge variant="outline" className="text-[10px] px-1 h-4 border-amber-300 text-amber-700">
+              {unscheduledJobs.length}
+            </Badge>
+          </div>
+
+          {!unscheduledCollapsed && (
+            <div className="max-h-[200px] overflow-y-auto" style={{ scrollbarWidth: "thin" }}>
+              {unscheduledJobs.length === 0 ? (
+                <div className="text-xs text-muted-foreground text-center py-3">No unscheduled visits</div>
+              ) : (
+                unscheduledJobs.map((job) => (
+                  <div
+                    key={job.id}
+                    className="flex items-center gap-2 px-3 py-1.5 pl-8 border-b border-dashed text-xs hover:bg-muted/30 cursor-default"
+                  >
+                    <span className="w-4 h-4 rounded-full text-[9px] font-bold flex items-center justify-center text-white bg-amber-500 shrink-0">
+                      !
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <div className="truncate font-medium">{job.locationName}</div>
+                      <div className="text-muted-foreground truncate">
+                        #{job.jobNumber} · {job.jobType}{job.customerCompanyName ? ` · ${job.customerCompanyName}` : ""}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ── Scheduled Routes by Technician ── */}
         {sortedTechs.map((tech) => {
           const techVisits = grouped.get(tech.technicianId) || [];
           const tc = techColorMap.get(tech.technicianId);
@@ -396,6 +414,7 @@ function DispatchPanel({
 
           return (
             <div key={tech.technicianId} className={isFocused ? "bg-primary/5" : ""}>
+              {/* Tech header — click to focus on this tech's route */}
               <div
                 className="flex items-center gap-2 px-3 py-2 border-b cursor-pointer hover:bg-muted/50"
                 onClick={() => onFocusTech(isFocused ? null : tech.technicianId)}
@@ -414,6 +433,9 @@ function DispatchPanel({
                   style={{ backgroundColor: tc?.color || "#9ca3af", borderColor: tc?.color || "#9ca3af" }}
                 />
                 <span className="text-xs font-medium truncate flex-1">{tech.name}</span>
+                {isFocused && (
+                  <Navigation className="h-3 w-3 text-primary shrink-0" />
+                )}
                 <span className={`text-[10px] ${tech.online ? 'text-green-600' : 'text-muted-foreground'}`}>
                   {tech.online ? "Online" : "Offline"}
                 </span>
@@ -422,17 +444,20 @@ function DispatchPanel({
                 )}
               </div>
 
+              {/* Visit stops for this technician */}
               {!isCollapsed && techVisits.map((visit, vi) => {
                 const visitHasCoords = hasCoords(visit);
+                const isCompleted = visit.status === "completed";
                 return (
                   <div
                     key={visit.visitId}
                     className={`flex items-center gap-2 px-3 py-1.5 pl-8 border-b border-dashed text-xs ${
                       visitHasCoords ? 'cursor-pointer hover:bg-muted/30' : 'cursor-default'
-                    }`}
+                    } ${isCompleted ? 'opacity-55' : ''}`}
                     onClick={() => visitHasCoords && onClickVisit(visit)}
-                    title={!visitHasCoords ? "Add address/lat-lng to map this visit" : undefined}
+                    title={!visitHasCoords ? "Add address/lat-lng to map this visit" : "Click to fly to location"}
                   >
+                    {/* Numbered stop marker */}
                     <span
                       className="w-4 h-4 rounded-full text-[9px] font-bold flex items-center justify-center text-white shrink-0"
                       style={{ backgroundColor: tc?.color || "#6b7280" }}
@@ -440,7 +465,7 @@ function DispatchPanel({
                       {vi + 1}
                     </span>
                     <div className="flex-1 min-w-0">
-                      <div className="truncate font-medium">
+                      <div className={`truncate font-medium ${isCompleted ? 'line-through text-muted-foreground' : ''}`}>
                         {visit.locationName}
                         {visit.source === "job_fallback" && (
                           <span className="text-amber-500 ml-1" title="From jobs table (no visit record)">*</span>
@@ -449,13 +474,14 @@ function DispatchPanel({
                       <div className="text-muted-foreground">
                         {formatTime(visit.scheduledStart)}
                         {visit.scheduledEnd ? ` – ${formatTime(visit.scheduledEnd)}` : ""}
+                        {visit.durationMinutes ? ` (${formatDuration(visit.durationMinutes)})` : ""}
                       </div>
                     </div>
                     {!visitHasCoords && (
                       <Badge variant="outline" className="text-[9px] px-1 py-0 h-3.5 text-amber-600 border-amber-300">No coords</Badge>
                     )}
                     <RiskBadges risk={visit.risk} />
-                    {visit.status === "completed" && (
+                    {isCompleted && (
                       <Badge variant="secondary" className="text-[9px] px-1 py-0 h-3.5">Done</Badge>
                     )}
                   </div>
@@ -465,7 +491,7 @@ function DispatchPanel({
           );
         })}
 
-        {/* Unassigned section */}
+        {/* Unassigned scheduled visits (bottom, below tech routes) */}
         {unassignedVisits.length > 0 && (
           <div>
             <div
@@ -492,7 +518,6 @@ function DispatchPanel({
                     visitHasCoords ? "cursor-pointer hover:bg-muted/30" : "cursor-default opacity-75"
                   }`}
                   onClick={() => visitHasCoords && onClickVisit(visit)}
-                  title={!visitHasCoords ? "Add address/lat-lng to map this visit" : undefined}
                 >
                   <span className="w-4 h-4 rounded-full text-[9px] font-bold flex items-center justify-center text-white bg-gray-400 shrink-0">
                     ?
@@ -514,35 +539,20 @@ function DispatchPanel({
           </div>
         )}
 
-        {/* Empty state — distinguish "no visits" from "hidden by filter" + diagnostic hints (2026-03-05) */}
-        {visits.length === 0 && (
+        {/* Empty state */}
+        {visits.length === 0 && unscheduledJobs.length === 0 && (
           <div className="text-center text-sm text-muted-foreground py-8 px-4">
-            {totalVisitCount > 0 ? (
-              <div>
-                <div>{totalVisitCount} visit{totalVisitCount > 1 ? "s" : ""} hidden by current filter</div>
-                <div className="text-xs mt-1">Adjust technician filter or toggle Unassigned to see visits.</div>
+            <div>No visits for today</div>
+            {meta?.reasonTechsEmpty && (
+              <div className="mt-2 text-xs flex items-center justify-center gap-1 text-amber-600">
+                <AlertTriangle className="h-3 w-3" />
+                No active technicians found. Check user settings.
               </div>
-            ) : (
-              <div>
-                <div>No visits for today</div>
-                {meta?.reasonTechsEmpty && (
-                  <div className="mt-2 text-xs flex items-center justify-center gap-1 text-amber-600">
-                    <AlertTriangle className="h-3 w-3" />
-                    No schedulable technicians found. Check user settings (is_schedulable).
-                  </div>
-                )}
-                {meta?.reasonVisitsEmpty && (
-                  <div className="mt-2 text-xs flex items-center justify-center gap-1 text-amber-600">
-                    <AlertTriangle className="h-3 w-3" />
-                    {meta.visitsWithScheduledDateButNoStart} visit{(meta.visitsWithScheduledDateButNoStart ?? 0) > 1 ? "s" : ""} have scheduled_date set but scheduled_start is missing. Run backfill migration.
-                  </div>
-                )}
-                {jobFallbackCount > 0 && !meta?.reasonVisitsEmpty && (
-                  <div className="mt-2 text-xs flex items-center justify-center gap-1 text-amber-600">
-                    <AlertTriangle className="h-3 w-3" />
-                    {jobFallbackCount} scheduled job{jobFallbackCount > 1 ? "s" : ""} exist but have no visit records yet.
-                  </div>
-                )}
+            )}
+            {meta?.reasonVisitsEmpty && (
+              <div className="mt-2 text-xs flex items-center justify-center gap-1 text-amber-600">
+                <AlertTriangle className="h-3 w-3" />
+                {meta.visitsWithScheduledDateButNoStart} visit{(meta.visitsWithScheduledDateButNoStart ?? 0) > 1 ? "s" : ""} have scheduled_date set but scheduled_start is missing.
               </div>
             )}
           </div>
@@ -553,15 +563,70 @@ function DispatchPanel({
 }
 
 // ============================================================================
+// RoutePolyline — renders a route line connecting a focused tech's visit stops
+// ============================================================================
+
+function RoutePolyline({
+  visits,
+  techColor,
+  techPosition,
+}: {
+  visits: MapVisit[];
+  techColor: string;
+  techPosition: [number, number] | null;
+}) {
+  const points = useMemo(() => {
+    const pts: [number, number][] = [];
+    // Start from tech's live position if available
+    if (techPosition) pts.push(techPosition);
+    // Add each visit stop in schedule order
+    for (const v of visits) {
+      if (!v.lat || !v.lng) continue;
+      const lat = parseFloat(v.lat);
+      const lng = parseFloat(v.lng);
+      if (!isNaN(lat) && !isNaN(lng)) pts.push([lat, lng]);
+    }
+    return pts;
+  }, [visits, techPosition]);
+
+  if (points.length < 2) return null;
+
+  return (
+    <Polyline
+      positions={points}
+      pathOptions={{
+        color: techColor,
+        weight: 3,
+        opacity: 0.6,
+        dashArray: "8, 6",
+      }}
+    />
+  );
+}
+
+// ============================================================================
 // Main Component
 // ============================================================================
 
 export default function LiveMapPage() {
-  // Let server compute "today" in company timezone when no date param is passed
-  const { data, isLoading } = useMapDay();
+  const { data, isLoading, error } = useMapDay();
+  const { data: unscheduledJobs = [], error: unscheduledError } = useUnscheduledJobs();
+
+  // Debug: log query state to help trace data wiring issues
+  useEffect(() => {
+    if (error) console.error("[LiveMapPage] useMapDay error:", error);
+    if (unscheduledError) console.error("[LiveMapPage] useUnscheduledJobs error:", unscheduledError);
+    if (data) {
+      console.log("[LiveMapPage] useMapDay data:", {
+        technicians: data.technicians?.length,
+        visits: data.visits?.length,
+        meta: data.meta,
+      });
+    }
+  }, [data, error, unscheduledError]);
+
   const technicians = data?.technicians || [];
   const visits = data?.visits || [];
-  const jobFallbackCount = data?.meta?.jobFallbackCount || 0;
 
   // Load persisted preferences
   const [prefs, setPrefs] = useState<MapPreferences>(loadMapPreferences);
@@ -597,7 +662,7 @@ export default function LiveMapPage() {
   const techColorMap = useMemo(() => {
     const map = new Map<string, { color: string; index: number }>();
     technicians.forEach((t, i) => {
-      map.set(t.technicianId, { color: getTechColor(i), index: i });
+      map.set(t.technicianId, { color: getTechnicianColor(i), index: i });
     });
     return map;
   }, [technicians]);
@@ -605,7 +670,7 @@ export default function LiveMapPage() {
   // Tech filter predicate
   const isTechVisible = useCallback((techId: string): boolean => {
     if (techFilterNone) return false;
-    if (!techFilterActive) return true; // no filter = all visible
+    if (!techFilterActive) return true;
     return selectedTechIds.has(techId);
   }, [selectedTechIds, techFilterActive, techFilterNone]);
 
@@ -616,7 +681,7 @@ export default function LiveMapPage() {
     return filtered;
   }, [technicians, isTechVisible, focusTechId]);
 
-  // Filter techs for panel (same filter, but without lat/lng check)
+  // Filter techs for panel (same filter, without lat/lng check)
   const panelTechs = useMemo(() => {
     let filtered = technicians.filter((t) => isTechVisible(t.technicianId));
     if (focusTechId) filtered = filtered.filter((t) => t.technicianId === focusTechId);
@@ -627,7 +692,6 @@ export default function LiveMapPage() {
   const visibleVisits = useMemo(() => {
     if (!showVisits) return [];
     let filtered = visits.filter((v) => v.lat && v.lng);
-    // Apply tech filter to assigned visits
     filtered = filtered.filter((v) => {
       if (!v.technicianId) return showUnassigned;
       return isTechVisible(v.technicianId);
@@ -636,7 +700,7 @@ export default function LiveMapPage() {
     return filtered;
   }, [visits, showVisits, showUnassigned, isTechVisible, focusTechId]);
 
-  // Filter visits for panel (same logic, no lat/lng check)
+  // Filter visits for panel (no lat/lng check)
   const panelVisits = useMemo(() => {
     let filtered = visits.filter((v) => {
       if (!v.technicianId) return showUnassigned;
@@ -658,6 +722,27 @@ export default function LiveMapPage() {
     }
     return seq;
   }, [visits]);
+
+  // Focused tech's route data for Polyline rendering
+  const focusedTechRoute = useMemo(() => {
+    if (!focusTechId) return null;
+    const techVisits = visits
+      .filter((v) => v.technicianId === focusTechId)
+      .sort((a, b) => {
+        if (!a.scheduledStart) return 1;
+        if (!b.scheduledStart) return -1;
+        return new Date(a.scheduledStart).getTime() - new Date(b.scheduledStart).getTime();
+      });
+    const tech = technicians.find((t) => t.technicianId === focusTechId);
+    const tc = techColorMap.get(focusTechId);
+    let techPosition: [number, number] | null = null;
+    if (tech?.lat && tech?.lng) {
+      const lat = parseFloat(tech.lat);
+      const lng = parseFloat(tech.lng);
+      if (!isNaN(lat) && !isNaN(lng)) techPosition = [lat, lng];
+    }
+    return { visits: techVisits, color: tc?.color || "#3b82f6", techPosition };
+  }, [focusTechId, visits, technicians, techColorMap]);
 
   // Fit bounds points
   const fitPoints = useMemo<[number, number][]>(() => {
@@ -687,8 +772,13 @@ export default function LiveMapPage() {
       {/* Header bar */}
       <div className="flex items-center justify-between px-4 py-2 border-b bg-background shrink-0">
         <div className="flex items-center gap-3">
-          <h1 className="text-lg font-semibold">Live Map</h1>
+          <h1 className="text-lg font-semibold">Technician Routes</h1>
           {isLoading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+          {error && (
+            <Badge variant="destructive" className="text-xs" title={String(error)}>
+              <AlertTriangle className="h-3 w-3 mr-1" /> Map data error
+            </Badge>
+          )}
           <Badge variant="outline" className="text-xs">
             {technicians.length} techs · {onlineCount} online · {visits.length} visits
           </Badge>
@@ -700,7 +790,6 @@ export default function LiveMapPage() {
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Technician multi-select filter */}
           <TechnicianFilterPopover
             technicians={technicians}
             techColorMap={techColorMap}
@@ -708,7 +797,6 @@ export default function LiveMapPage() {
             onChangeSelected={setSelectedTechIds}
           />
 
-          {/* Visit + Unassigned toggles */}
           <label className="flex items-center gap-1.5 text-xs cursor-pointer">
             <Switch checked={showVisits} onCheckedChange={setShowVisits} className="h-4 w-7" />
             <MapPin className="h-3 w-3" /> Visits
@@ -747,6 +835,15 @@ export default function LiveMapPage() {
             <MapRefCapture />
             <FitBounds points={fitPoints} />
 
+            {/* Route line for focused technician */}
+            {focusedTechRoute && (
+              <RoutePolyline
+                visits={focusedTechRoute.visits}
+                techColor={focusedTechRoute.color}
+                techPosition={focusedTechRoute.techPosition}
+              />
+            )}
+
             {/* Technician markers */}
             {visibleTechs.map((tech) => {
               if (!tech.lat || !tech.lng) return null;
@@ -756,17 +853,21 @@ export default function LiveMapPage() {
               const tc = techColorMap.get(tech.technicianId);
               const color = tc?.color || "#9ca3af";
               const ago = tech.lastSeenAt ? formatTimeAgo(tech.lastSeenAt) : "Unknown";
+              const isFocused = focusTechId === tech.technicianId;
 
               return (
                 <CircleMarker
                   key={`tech-${tech.technicianId}`}
                   center={[lat, lng]}
-                  radius={10}
+                  radius={isFocused ? 12 : 10}
                   pathOptions={{
                     color: tech.online ? color : "#9ca3af",
                     fillColor: tech.online ? color : "#d1d5db",
                     fillOpacity: tech.online ? 0.9 : 0.6,
-                    weight: 2,
+                    weight: isFocused ? 3 : 2,
+                  }}
+                  eventHandlers={{
+                    click: () => setFocusTechId(isFocused ? null : tech.technicianId),
                   }}
                 >
                   <Tooltip direction="top" offset={[0, -10]}>
@@ -781,7 +882,7 @@ export default function LiveMapPage() {
               );
             })}
 
-            {/* Visit markers */}
+            {/* Visit markers — enhanced numbered markers for focused tech */}
             {visibleVisits.map((visit) => {
               const lat = parseFloat(visit.lat!);
               const lng = parseFloat(visit.lng!);
@@ -792,20 +893,25 @@ export default function LiveMapPage() {
               const label = seqNum ? String(seqNum) : "?";
               const hasRisk = visit.risk.late || visit.risk.overdue || visit.risk.runningLong;
               const markerColor = hasRisk ? "#dc2626" : (tc?.color || "#6b7280");
+              const isFocusedTechVisit = focusTechId && visit.technicianId === focusTechId;
+              const isCompleted = visit.status === "completed";
 
               return (
                 <CircleMarker
                   key={`visit-${visit.visitId}`}
                   center={[lat, lng]}
-                  radius={7}
+                  radius={isFocusedTechVisit ? 10 : 7}
                   pathOptions={{
                     color: markerColor,
-                    fillColor: markerColor,
-                    fillOpacity: 0.7,
-                    weight: 1.5,
+                    fillColor: isCompleted ? "#9ca3af" : markerColor,
+                    fillOpacity: isCompleted ? 0.4 : (isFocusedTechVisit ? 0.9 : 0.7),
+                    weight: isFocusedTechVisit ? 2.5 : 1.5,
+                  }}
+                  eventHandlers={{
+                    click: () => panToPoint(lat, lng, 17),
                   }}
                 >
-                  <Tooltip direction="top" offset={[0, -8]}>
+                  <Tooltip direction="top" offset={[0, -8]} permanent={isFocusedTechVisit ? true : false}>
                     <div style={{ fontSize: "11px" }}>
                       <div style={{ fontWeight: 600 }}>
                         {label}. {visit.locationName}
@@ -818,7 +924,7 @@ export default function LiveMapPage() {
                       {visit.status === "in_progress" && (
                         <div style={{ color: "#2563eb", fontWeight: 500 }}>In Progress</div>
                       )}
-                      {visit.status === "completed" && (
+                      {isCompleted && (
                         <div style={{ color: "#16a34a", fontWeight: 500 }}>Completed</div>
                       )}
                       {hasRisk && (
@@ -829,9 +935,6 @@ export default function LiveMapPage() {
                             visit.risk.runningLong && "Running long",
                           ].filter(Boolean).join(" · ")}
                         </div>
-                      )}
-                      {visit.source === "job_fallback" && (
-                        <div style={{ color: "#d97706", fontWeight: 500 }}>From job (no visit record)</div>
                       )}
                     </div>
                   </Tooltip>
@@ -844,15 +947,14 @@ export default function LiveMapPage() {
         {/* Right panel */}
         {panelOpen && (
           <div className="w-[320px] border-l bg-background flex flex-col shrink-0">
-            <DispatchPanel
+            <RoutesPanel
               technicians={panelTechs}
               visits={panelVisits}
+              unscheduledJobs={unscheduledJobs}
               techColorMap={techColorMap}
               focusTechId={focusTechId}
               onFocusTech={setFocusTechId}
               onClickVisit={handleClickVisit}
-              jobFallbackCount={jobFallbackCount}
-              totalVisitCount={visits.length}
               meta={data?.meta}
             />
           </div>

@@ -157,7 +157,6 @@ describe("Job Lifecycle Hardening Tests", () => {
       expect(result.patch.scheduledStart).toBeNull();
       expect(result.patch.scheduledEnd).toBeNull();
       expect(result.patch.isAllDay).toBe(false);
-      expect(result.patch.calendarAssignmentId).toBeNull();
       expect(result.finalStatus).toBe("archived");
     });
 
@@ -185,7 +184,6 @@ describe("Job Lifecycle Hardening Tests", () => {
       expect(patch.scheduledStart).toBeNull();
       expect(patch.scheduledEnd).toBeNull();
       expect(patch.isAllDay).toBe(false);
-      expect(patch.calendarAssignmentId).toBeNull();
     });
 
     it("hasScheduleFields detects scheduled jobs", () => {

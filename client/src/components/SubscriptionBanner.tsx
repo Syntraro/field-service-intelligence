@@ -28,7 +28,8 @@ export function SubscriptionBanner() {
   const [dismissed, setDismissed] = useState(false);
 
   const { data: usage } = useQuery<Usage>({
-    queryKey: ["/api/subscriptions/usage"]
+    queryKey: ["/api/subscriptions/usage"],
+    staleTime: 30 * 60_000, // 30 min — subscription data changes infrequently
   });
 
   if (!usage || dismissed) {

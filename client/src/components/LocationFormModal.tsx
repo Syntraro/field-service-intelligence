@@ -65,8 +65,7 @@ export default function LocationFormModal({
   const [lat, setLat] = useState<string | null>(null);
   const [lng, setLng] = useState<string | null>(null);
   const [placeId, setPlaceId] = useState<string | null>(null);
-  const [contactPhone, setContactPhone] = useState("");
-  const [contactEmail, setContactEmail] = useState("");
+  // Part A: Contact fields removed — contacts managed via dedicated Contacts surface
   const [billWithParent, setBillWithParent] = useState(true);
   const [isActive, setIsActive] = useState(true);
 
@@ -119,8 +118,6 @@ export default function LocationFormModal({
       setLat(activeLocation.lat || null);
       setLng(activeLocation.lng || null);
       setPlaceId(activeLocation.placeId || null);
-      setContactPhone(activeLocation.phone || "");
-      setContactEmail(activeLocation.email || "");
       setBillWithParent(activeLocation.billWithParent ?? true);
       setIsActive(!activeLocation.inactive);
     } else {
@@ -135,8 +132,6 @@ export default function LocationFormModal({
       setLat(null);
       setLng(null);
       setPlaceId(null);
-      setContactPhone("");
-      setContactEmail("");
       setBillWithParent(true);
       setIsActive(true);
     }
@@ -214,9 +209,6 @@ export default function LocationFormModal({
     if (lat) payload.lat = lat;
     if (lng) payload.lng = lng;
     if (placeId) payload.placeId = placeId;
-    if (contactPhone.trim()) payload.phone = contactPhone.trim();
-    if (contactEmail.trim()) payload.email = contactEmail.trim();
-
     // keep linkage consistent
     if (parentCompanyId) payload.parentCompanyId = parentCompanyId;
 
@@ -228,7 +220,7 @@ export default function LocationFormModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+      <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle>{isEditIntent ? "Edit Location" : "Add Location"}</DialogTitle>
           <DialogDescription>
@@ -238,7 +230,7 @@ export default function LocationFormModal({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 py-4">
+        <div className="space-y-3 py-2">
           {error && (
             <div className="bg-destructive/10 text-destructive text-sm p-3 rounded-md">
               {error}
@@ -256,7 +248,7 @@ export default function LocationFormModal({
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="site-code">Site Code / Store Number</Label>
+            <Label htmlFor="site-code">Site Code</Label>
             <Input
               id="site-code"
               value={siteCode}
@@ -295,18 +287,7 @@ export default function LocationFormModal({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="contact-phone">Contact Phone</Label>
-              <Input id="contact-phone" value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} disabled={isResolving} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="contact-email">Contact Email</Label>
-              <Input id="contact-email" type="email" value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} disabled={isResolving} />
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between p-4 border rounded-lg bg-muted/30">
+          <div className="flex items-center justify-between p-3 border rounded-lg bg-muted/30">
             <div className="space-y-1">
               <Label className="text-sm font-medium">Bill this location with the parent company</Label>
               <p className="text-xs text-muted-foreground">
@@ -319,7 +300,7 @@ export default function LocationFormModal({
           </div>
 
           {isEditIntent && (
-            <div className="flex items-center justify-between p-4 border rounded-lg">
+            <div className="flex items-center justify-between p-3 border rounded-lg">
               <div className="space-y-1">
                 <Label className="text-sm font-medium">Active</Label>
                 <p className="text-xs text-muted-foreground">

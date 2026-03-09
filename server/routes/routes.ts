@@ -17,12 +17,16 @@ import { z } from "zod";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import type { AuthedRequest } from "../auth/tenantIsolation";
+import { requireFeature } from "../auth/requireFeature";
 import { routeOptimizationService } from "../routeOptimizationService";
 import { db } from "../db";
 import { clientLocations } from "@shared/schema";
 import { eq, and, inArray } from "drizzle-orm";
 
 const router = Router();
+
+// Gate all route optimization endpoints behind feature flag
+router.use(requireFeature("routeOptimizationEnabled"));
 
 // ============================================================================
 // Request / Response schemas

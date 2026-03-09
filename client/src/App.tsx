@@ -6,7 +6,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import Dashboard from "@/pages/Dashboard";
-import Calendar from "@/pages/Calendar";
 import LiveMapPage from "@/pages/LiveMapPage";
 import Jobs from "@/pages/Jobs";
 import JobDetailPage from "@/pages/JobDetailPage";
@@ -83,11 +82,17 @@ import QuickAddClientModal from "@/components/QuickAddClientModal";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import UniversalSearch from "@/components/UniversalSearch";
 import { useState } from "react";
-import { Plus, Settings, AlertTriangle, X, ChevronRight } from "lucide-react";
+import { Plus, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import SuppliersListPage from "@/pages/SuppliersListPage";
 import SupplierDetailPage from "@/pages/SupplierDetailPage";
 import Locations from "@/pages/Locations";
+import PreviewOperationsQueue from "@/pages/PreviewOperationsQueue";
+import DispatchBoard from "@/pages/DispatchPreview";
+import PMWorkspacePage from "@/pages/PMWorkspacePage";
+import PMWizardPage from "@/pages/PMWizardPage";
+import PMDetailPage from "@/pages/PMDetailPage";
+import PMEditPage from "@/pages/PMEditPage";
 
 function Router() {
   const [loc] = useLocation();
@@ -104,14 +109,40 @@ function Router() {
           <Dashboard />
         </ProtectedRoute>
       </Route>
-      <Route path="/calendar">
+      <Route path="/dispatch">
         <ProtectedRoute requireAdmin>
-          <Calendar />
+          <DispatchBoard />
         </ProtectedRoute>
       </Route>
-      <Route path="/live-map">
+      <Route path="/calendar">
+        <ProtectedRoute requireAdmin>
+          <DispatchBoard />
+        </ProtectedRoute>
+      </Route>
+<Route path="/live-map">
         <ProtectedRoute requireAdmin>
           <LiveMapPage />
+        </ProtectedRoute>
+      </Route>
+      {/* PM Phase 2: Dedicated PM workspace, wizard, detail, edit */}
+      <Route path="/pm/new">
+        <ProtectedRoute requireAdmin>
+          <PMWizardPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/pm/:id/edit">
+        <ProtectedRoute requireAdmin>
+          <PMEditPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/pm/:id">
+        <ProtectedRoute requireAdmin>
+          <PMDetailPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/pm">
+        <ProtectedRoute requireAdmin>
+          <PMWorkspacePage />
         </ProtectedRoute>
       </Route>
       <Route path="/jobs">
@@ -380,6 +411,17 @@ function Router() {
           <SupplierDetailPage />
         </ProtectedRoute>
       </Route>
+      {/* Preview / prototype routes (no backend) */}
+      <Route path="/preview/operations-queue">
+        <ProtectedRoute requireAdmin>
+          <PreviewOperationsQueue />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/dispatch-preview">
+        <ProtectedRoute requireAdmin>
+          <DispatchBoard />
+        </ProtectedRoute>
+      </Route>
       <Route component={NotFound} />
     </Switch>
   );
@@ -448,18 +490,12 @@ function PortalProtected({ children }: { children: React.ReactNode }) {
 function AppContent() {
   const [location, setLocation] = useLocation();
   const { user } = useAuth();
-  const [overdueAlertMinimized, setOverdueAlertMinimized] = useState(false);
   const [addClientModalOpen, setAddClientModalOpen] = useState(false);
   const [addJobModalOpen, setAddJobModalOpen] = useState(false);
   const [quickCreateOpen, setQuickCreateOpen] = useState(false);
 
-  // Fetch unscheduled backlog to check for past-month items
-  const { data: unscheduledBacklog = [] } = useQuery<any[]>({
-    queryKey: ["/api/calendar/unscheduled"],
-    enabled: Boolean(user?.id),
-  });
-
-  // Fetch company settings to display company name in header
+  // Company settings for header display — shared query key, TanStack deduplicates
+  // Architecture rule: app shell must NOT fetch dispatch/calendar/scheduling data.
   const { data: companySettings } = useQuery<{ companyName?: string }>({
     queryKey: ["/api/company-settings"],
     enabled: Boolean(user?.id),
@@ -467,26 +503,9 @@ function AppContent() {
   });
   const companyDisplayName = companySettings?.companyName || "";
 
-  // Count past-month unscheduled items from the backlog (within the 3-month window)
-  const now = new Date();
-  const currentYear = now.getFullYear();
-  const currentMonth = now.getMonth() + 1;
-
-  // Past-month items from unscheduled backlog (previous month only, since that's in the window)
-  // Uses canonical date fields (scheduledDate/date/startAt)
-  const totalOverdueCount = unscheduledBacklog.filter(item => {
-    const dateStr = item.scheduledDate || item.date || (item.startAt ? item.startAt.split('T')[0] : null);
-    if (!dateStr) return false;
-    const itemDate = new Date(dateStr + 'T00:00:00');
-    const itemYear = itemDate.getFullYear();
-    const itemMonth = itemDate.getMonth() + 1;
-    return itemYear < currentYear || (itemYear === currentYear && itemMonth < currentMonth);
-  }).length;
-
   const isAuthPage = ['/login', '/signup', '/request-reset', '/reset-password'].includes(location);
   const isPortalPage = location.startsWith('/portal');
   const isTechnicianPage = location === '/technician' || location === '/daily-parts';
-
   // Portal pages use a completely separate layout and auth
   if (isPortalPage) {
     return (
@@ -533,43 +552,7 @@ function AppContent() {
             </div>
           )}
 
-          {/* Minimizable overdue jobs alert - hidden on technician pages */}
-          {!isTechnicianPage && totalOverdueCount > 0 && (
-            overdueAlertMinimized ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setOverdueAlertMinimized(false)}
-                className="gap-1.5 text-destructive hover:text-destructive"
-                data-testid="button-expand-overdue-alert"
-              >
-                <AlertTriangle className="h-4 w-4" />
-                <span className="font-medium">{totalOverdueCount}</span>
-                <ChevronRight className="h-3 w-3" />
-              </Button>
-            ) : (
-              <div
-                className="flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-destructive/10 border border-destructive/20"
-                data-testid="alert-past-unscheduled-header"
-              >
-                <AlertTriangle className="h-4 w-4 text-destructive flex-shrink-0" />
-                <span className="text-sm font-medium">
-                  {totalOverdueCount} overdue job{totalOverdueCount > 1 ? 's' : ''} from past months
-                </span>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-5 w-5 text-muted-foreground hover:text-foreground"
-                  onClick={() => setOverdueAlertMinimized(true)}
-                  data-testid="button-minimize-overdue-alert"
-                >
-                  <X className="h-3 w-3" />
-                </Button>
-              </div>
-            )
-          )}
-
-          {/* Universal search - visible on all pages including technician pages */}
+          {/* Universal search + Quick Create */}
           <div className="flex items-center gap-2">
             <UniversalSearch />
 

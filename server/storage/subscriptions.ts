@@ -4,11 +4,15 @@ import { clients, companies, subscriptionPlans } from "@shared/schema";
 import { BaseRepository } from "./base";
 import { cache, CacheKeys, CacheTTL } from "../services/cache";
 
+// Sentinel value: plans with locationLimit >= this are treated as unlimited
+const UNLIMITED_THRESHOLD = 999999;
+
 // Subscription usage response types
 interface PlanInfo {
   name: string;
   displayName: string | null;
   locationLimit: number;
+  isUnlimited: boolean;
   price: number;
 }
 
@@ -131,8 +135,9 @@ export class SubscriptionRepository extends BaseRepository {
     }
 
     const locations = Number(clientCount[0]?.count || 0);
+    const isUnlimited = plan ? plan.locationLimit >= UNLIMITED_THRESHOLD : false;
     const percentUsed =
-      plan && plan.locationLimit > 0
+      plan && plan.locationLimit > 0 && !isUnlimited
         ? Math.round((locations / plan.locationLimit) * 100)
         : 0;
 
@@ -148,6 +153,7 @@ export class SubscriptionRepository extends BaseRepository {
             name: plan.name,
             displayName: plan.displayName,
             locationLimit: plan.locationLimit,
+            isUnlimited,
             price: plan.monthlyPriceCents ? plan.monthlyPriceCents / 100 : 0,
           }
         : null,
@@ -221,6 +227,16 @@ export class SubscriptionRepository extends BaseRepository {
           "Your subscription is not active. Please update your payment method.",
         current: usage.usage.locations,
         limit: usage.plan.locationLimit,
+      };
+    }
+
+    // Unlimited plans bypass location limit check
+    if (usage.plan.isUnlimited) {
+      return {
+        allowed: true,
+        current: usage.usage.locations,
+        limit: usage.plan.locationLimit,
+        unlimited: true,
       };
     }
 

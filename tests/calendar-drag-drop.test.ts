@@ -18,7 +18,7 @@ import { db } from "../server/db";
 import { jobs, companies, users, clientLocations, customerCompanies } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { jobRepository } from "../server/storage/jobs";
-import { calendarRepository } from "../server/storage/calendar";
+import { schedulingRepository } from "../server/storage/scheduling";
 import { v4 as uuidv4 } from "uuid";
 
 // Test data IDs - cleaned up after tests
@@ -198,7 +198,7 @@ describe("Calendar Drag & Drop Tests", () => {
       expect(job.scheduledStart).toBeNull();
 
       // Verify it's in backlog
-      const backlogBefore = await calendarRepository.getUnscheduledJobs(testCompanyId);
+      const backlogBefore = await schedulingRepository.getUnscheduledJobs(testCompanyId);
       const inBacklog = backlogBefore.find((j) => j.id === job.id);
       expect(inBacklog).toBeDefined();
 
@@ -221,7 +221,7 @@ describe("Calendar Drag & Drop Tests", () => {
       expect(updated!.version).toBe(job.version + 1);
 
       // Verify it's no longer in backlog
-      const backlogAfter = await calendarRepository.getUnscheduledJobs(testCompanyId);
+      const backlogAfter = await schedulingRepository.getUnscheduledJobs(testCompanyId);
       const stillInBacklog = backlogAfter.find((j) => j.id === job.id);
       expect(stillInBacklog).toBeUndefined();
 
@@ -231,7 +231,7 @@ describe("Calendar Drag & Drop Tests", () => {
       const endOfDay = new Date(scheduledStart);
       endOfDay.setHours(23, 59, 59, 999);
 
-      const { jobs: calendarJobs } = await calendarRepository.getScheduledJobsInRangeWithMetadata(
+      const { jobs: calendarJobs } = await schedulingRepository.getScheduledJobsInRangeWithMetadata(
         testCompanyId,
         startOfDay,
         endOfDay,
@@ -378,7 +378,7 @@ describe("Calendar Drag & Drop Tests", () => {
       expect(updated!.scheduledEnd).toBeNull();
 
       // Verify it's back in backlog
-      const backlog = await calendarRepository.getUnscheduledJobs(testCompanyId);
+      const backlog = await schedulingRepository.getUnscheduledJobs(testCompanyId);
       const inBacklog = backlog.find((j) => j.id === job.id);
       expect(inBacklog).toBeDefined();
     });

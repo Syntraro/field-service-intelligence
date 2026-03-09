@@ -279,6 +279,58 @@ router.get(
   })
 );
 
+// GET /api/team/technicians/working-hours - Bulk working hours for all schedulable technicians
+// Returns per-technician working hours (7 days each) plus company business hours as fallback.
+// Used by dispatch board to determine on-shift vs off-shift grouping.
+router.get(
+  "/technicians/working-hours",
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const members = await storage.getTeamMembers(companyId);
+    const { schedulable } = filterSchedulableTechnicians(members, "GET /api/team/technicians/working-hours");
+
+    // Fetch company business hours (fallback for techs without custom schedule)
+    const companyHours = await storage.getCompanyBusinessHours(companyId);
+
+    // Fetch working hours for all schedulable technicians in parallel
+    const techHoursEntries = await Promise.all(
+      schedulable.map(async (m) => {
+        const hours = await storage.getWorkingHours(m.id);
+        return { technicianId: m.id, useCustomSchedule: m.useCustomSchedule ?? false, hours };
+      })
+    );
+
+    // Build response: per-technician schedule (custom or company default)
+    const technicianSchedules = techHoursEntries.map(({ technicianId, useCustomSchedule, hours }) => {
+      if (useCustomSchedule && hours.length > 0) {
+        return {
+          technicianId,
+          source: "custom" as const,
+          days: hours.map(h => ({
+            dayOfWeek: h.dayOfWeek,
+            isWorking: h.isWorking,
+            startTime: h.startTime,
+            endTime: h.endTime,
+          })),
+        };
+      }
+      // Fall back to company business hours
+      return {
+        technicianId,
+        source: "company" as const,
+        days: companyHours.map(ch => ({
+          dayOfWeek: ch.dayOfWeek,
+          isWorking: ch.isOpen,
+          startTime: ch.startMinutes != null ? `${String(Math.floor(ch.startMinutes / 60)).padStart(2, "0")}:${String(ch.startMinutes % 60).padStart(2, "0")}` : null,
+          endTime: ch.endMinutes != null ? `${String(Math.floor(ch.endMinutes / 60)).padStart(2, "0")}:${String(ch.endMinutes % 60).padStart(2, "0")}` : null,
+        })),
+      };
+    });
+
+    res.json({ technicianSchedules });
+  })
+);
+
 // GET /api/team - List all team members with pagination
 router.get(
   "/",

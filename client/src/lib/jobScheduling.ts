@@ -14,7 +14,7 @@
 
 import { apiRequest, queryClient } from "./queryClient";
 import type { JobScheduleValue } from "@/components/jobs/JobScheduleFields";
-import type { ScheduleJobPayload as CalendarSchedulePayload } from "@/hooks/useCalendarApi";
+import type { ScheduleJobPayload as CalendarSchedulePayload } from "@/hooks/useSchedulingApi";
 
 // ============================================================================
 // Types
@@ -298,4 +298,7 @@ function invalidateScheduleQueries(jobId?: string) {
   queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
   // Phase 4 Step C5: single family-wide invalidation covers feed + detail
   queryClient.invalidateQueries({ queryKey: ["jobs"] });
+  // Fix A: Invalidate client/customer-company overview so new jobs appear on detail pages
+  queryClient.invalidateQueries({ queryKey: ["/api/clients"], exact: false });
+  queryClient.invalidateQueries({ queryKey: ["/api/customer-companies"], exact: false });
 }

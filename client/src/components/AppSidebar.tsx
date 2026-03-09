@@ -1,6 +1,5 @@
 import {
   LayoutDashboard,
-  Calendar as CalendarIcon,
   ClipboardList,
   Users,
   FileText,
@@ -16,6 +15,9 @@ import {
   Building2,
   FileCheck,
   MapPin,
+  LayoutGrid,
+  ListChecks,
+  Wrench,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/lib/auth";
@@ -107,11 +109,11 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       testId: "nav-dashboard"
     });
     menuItems.push({
-      title: "Calendar",
-      icon: CalendarIcon,
-      href: "/calendar",
-      isActive: location === "/calendar",
-      testId: "nav-calendar"
+      title: "Dispatch",
+      icon: LayoutGrid,
+      href: "/dispatch",
+      isActive: location === "/dispatch" || location === "/calendar",
+      testId: "nav-dispatch"
     });
     menuItems.push({
       title: "Live Map",
@@ -128,6 +130,14 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       isActive: location === "/jobs" || location.startsWith("/jobs/"),
       testId: "nav-jobs",
       isDivider: true
+    });
+    // PM Phase 2: Dedicated PM workspace nav entry
+    menuItems.push({
+      title: "PM",
+      icon: Wrench,
+      href: "/pm",
+      isActive: location === "/pm" || location.startsWith("/pm/"),
+      testId: "nav-pm"
     });
     menuItems.push({
       title: "Invoices",
@@ -213,6 +223,7 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
                     <SidebarMenuButton
                       asChild
                       isActive={item.isActive}
+                      tooltip={item.title}
                       data-testid={item.testId}
                       className="h-10 text-sidebar-foreground data-[active=true]:bg-white/[0.08] data-[active=true]:border-l-[3px] data-[active=true]:border-l-[var(--brand)] data-[active=true]:font-semibold data-[active=true]:pl-[7px] hover:bg-white/[0.08]"
                     >
@@ -225,6 +236,7 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
                     <SidebarMenuButton
                       isActive={item.isActive}
                       onClick={item.onClick}
+                      tooltip={item.title}
                       data-testid={item.testId}
                       className="h-10 text-sidebar-foreground data-[active=true]:bg-white/[0.08] data-[active=true]:border-l-[3px] data-[active=true]:border-l-[var(--brand)] data-[active=true]:font-semibold data-[active=true]:pl-[7px] hover:bg-white/[0.08]"
                     >
@@ -237,17 +249,45 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+
+        {/* Preview / Legacy — temporary section for prototype and fallback pages */}
+        {user?.role !== "technician" && (
+          <SidebarGroup>
+            <div className="mx-2 border-t border-white/10" />
+            <SidebarGroupLabel className="text-[10px] uppercase tracking-wider text-white/40 px-2 pt-3 pb-1">
+              Preview
+            </SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+<SidebarMenuItem>
+                  <SidebarMenuButton
+                    asChild
+                    isActive={location === "/preview/operations-queue"}
+                    tooltip="Operations Queue"
+                    data-testid="nav-preview-operations-queue"
+                    className="h-10 text-sidebar-foreground data-[active=true]:bg-white/[0.08] data-[active=true]:border-l-[3px] data-[active=true]:border-l-[var(--brand)] data-[active=true]:font-semibold data-[active=true]:pl-[7px] hover:bg-white/[0.08]"
+                  >
+                    <Link href="/preview/operations-queue">
+                      <ListChecks className="h-4 w-4 text-[var(--sidebar-muted)]" />
+                      <span>Operations Queue</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
       </SidebarContent>
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton onClick={() => setFeedbackOpen(true)} data-testid="button-feedback" className="h-10 text-sidebar-foreground hover:bg-white/[0.08]">
+            <SidebarMenuButton onClick={() => setFeedbackOpen(true)} tooltip="Feedback" data-testid="button-feedback" className="h-10 text-sidebar-foreground hover:bg-white/[0.08]">
               <MessageCircle className="h-4 w-4 text-[var(--sidebar-muted)]" />
               <span>Feedback</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
-            <SidebarMenuButton onClick={handleLogout} data-testid="button-logout" className="h-10 text-sidebar-foreground hover:bg-white/[0.08]">
+            <SidebarMenuButton onClick={handleLogout} tooltip="Logout" data-testid="button-logout" className="h-10 text-sidebar-foreground hover:bg-white/[0.08]">
               <LogOut className="h-4 w-4 text-[var(--sidebar-muted)]" />
               <span>Logout</span>
             </SidebarMenuButton>

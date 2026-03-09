@@ -57,6 +57,54 @@ router.get(
   })
 );
 
+// ============================================================================
+// PM Phase 3: Upcoming Planning Queue
+// ============================================================================
+
+/**
+ * GET /api/recurring-templates/upcoming
+ * Get the PM planning queue — upcoming instances with compliance status.
+ *
+ * Query params:
+ * - from: YYYY-MM-DD (default: 30 days ago)
+ * - to: YYYY-MM-DD (default: 90 days from now)
+ * - statuses: comma-separated instance statuses to include (default: all)
+ * - limit: number (default 200)
+ * - offset: number (default 0)
+ *
+ * Returns UpcomingQueueItem[] with computed compliance status.
+ */
+router.get(
+  "/upcoming",
+  requireAuth,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+
+    // Default date range: 30 days ago to 90 days from now
+    const now = new Date();
+    const defaultFrom = new Date(now);
+    defaultFrom.setDate(defaultFrom.getDate() - 30);
+    const defaultTo = new Date(now);
+    defaultTo.setDate(defaultTo.getDate() + 90);
+
+    const from = req.query.from ? String(req.query.from) : defaultFrom.toISOString().split("T")[0];
+    const to = req.query.to ? String(req.query.to) : defaultTo.toISOString().split("T")[0];
+    const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 200;
+    const offset = req.query.offset ? parseInt(String(req.query.offset), 10) : 0;
+    const statuses = req.query.statuses ? String(req.query.statuses).split(",") : undefined;
+
+    const items = await recurringJobsRepository.getUpcomingQueue(companyId, {
+      from,
+      to,
+      statuses,
+      limit,
+      offset,
+    });
+
+    res.json(items);
+  })
+);
+
 /**
  * GET /api/recurring-templates/:id
  * Get a single recurring job template
@@ -261,6 +309,34 @@ router.delete(
     }
 
     res.status(204).send();
+  })
+);
+
+/**
+ * POST /api/recurring-templates/:id/duplicate
+ * Duplicate a recurring job template (PM Phase 2 - copy flow)
+ *
+ * Creates a paused copy with " (Copy)" suffix.
+ * Requires: owner, admin, or dispatcher role
+ */
+router.post(
+  "/:id/duplicate",
+  requireAuth,
+  requireRole(SCHEDULING_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const templateId = req.params.id;
+
+    const copy = await recurringJobsRepository.duplicateTemplate(
+      companyId,
+      templateId
+    );
+
+    if (!copy) {
+      throw createError(404, "Recurring template not found");
+    }
+
+    res.status(201).json(copy);
   })
 );
 

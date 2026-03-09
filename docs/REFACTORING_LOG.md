@@ -4,6 +4,82 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-03-07: Phase 3 — Legacy Contact Surface Cleanup + Server Guardrails + Workspace Audit
+
+### Part A: Legacy Contact Surface Cleanup
+All remaining client/location create/edit surfaces that exposed legacy single-contact fields without disclaimers have been aligned to the canonical Contacts-tab model:
+
+| Surface | Fix Applied |
+|---------|------------|
+| AddClientDialog | "Contact Details" → "Primary Site Contact (Summary)" + helper text |
+| EditClientDialog | Added summary disclaimer above contact fields |
+| NewAddClientDialog | "Contact Information" → "Primary Site Contact (Summary)" + helper text |
+| QuickAddClientModal | Labels → "Site Contact Phone/Email" + summary disclaimer |
+| QuickCreateDrawer | "Primary Contact (optional)" → "Primary Site Contact (summary)" |
+
+Previously aligned (Phase 2): AddClientWithCompanyDialog, LocationFormModal, ClientDetailPage inline add-location.
+
+### Part B: Server-Side Contact Scope Guardrails
+- **Full replace path**: Scope change (company↔location) now rejected with 400 error. Existing scope derived from DB record.
+- **Simple update path**: `locationId`, `association`, `existingContactIds` stripped from payload before `updateContact()` call.
+- **Location ownership validation**: `validateLocationOwnership()` helper confirms locationIds belong to the target customerCompany within the tenant. Called in both POST and PATCH (full replace) contact routes. Prevents cross-company contact association.
+- No "move contact" flow introduced — scope immutability enforced.
+
+### Part C: Client Workspace Data Integrity Audit
+Systematic audit of ClientDetailPage completed. **No issues found:**
+- Header metrics correctly derive from company-scoped data maps
+- Location list signals correctly derive from per-location maps
+- Client tabs use `companyId`/`clientId`; location tabs use `locationId`
+- `LocationDetailPane` uses `key={selectedLoc.id}` for clean re-mount
+- All React Query keys are correctly scoped and collision-safe
+- Activity, contacts, equipment, tags, PM parts all have proper ID scoping
+
+### Files Changed
+- `client/src/components/AddClientDialog.tsx` — legacy label
+- `client/src/components/EditClientDialog.tsx` — legacy label
+- `client/src/components/NewAddClientDialog.tsx` — legacy label
+- `client/src/components/QuickAddClientModal.tsx` — legacy label
+- `client/src/components/QuickCreateDrawer.tsx` — legacy label
+- `server/routes/customer-companies.ts` — scope guardrails
+
+### Not Changed (Intentional)
+- Supplier location dialogs (`AddLocationDialog.tsx`, `EditLocationDialog.tsx`) — different domain, out of scope for client contact architecture
+- `NewClientPage.tsx` — already implements full contact model, legacy fields only used as API bootstrap
+- No "move contact" flow — scope immutability enforced, not relocatable
+
+---
+
+## 2026-03-07: Contact Architecture Hardening — Phase 2
+
+### Architectural Rules Established
+1. Client-level contacts are the source of truth for company-wide contacts.
+2. Location-level contacts are the source of truth for site-specific contacts.
+3. Company-wide contacts are read-only from the location Contacts tab.
+4. Contact scope is immutable during edit (derived from `contact.locationId`, not tab context).
+5. Legacy `contactName`/`contactPhone`/`contactEmail` on `client_locations` are bootstrap/summary fields only.
+
+### Changes
+- `ContactScope` type (`"company" | "location"`) introduced for type-safe scope handling.
+- `STANDARD_CONTACT_ROLES` constant: 9 standard roles with structured multi-select UI.
+- `normalizeContact()` produces consistent shape for rendering: `{id, displayName, email, phone, roles, scope, locationId, isPrimary}`.
+- `ContactFormDialog` scope hardened: edits derive scope from contact's `locationId`, not from active tab. Custom/legacy roles preserved via fallback text input.
+- Company contacts rendered read-only in `LocContactsTab` with explicit helper text.
+- Legacy single-contact fields in `LocationFormModal`, `AddClientWithCompanyDialog`, and inline add-location form labeled as "Primary site contact summary" with pointer to Contacts tab.
+- QBO sync TODO seam added to `PATCH /api/customer-companies/:companyId`.
+
+### Files Changed
+- `client/src/pages/ClientDetailPage.tsx` — core contact hardening
+- `client/src/components/LocationFormModal.tsx` — legacy field labeling
+- `client/src/components/AddClientWithCompanyDialog.tsx` — legacy field labeling
+- `server/routes/customer-companies.ts` — QBO sync seam
+
+### Not Changed (Intentional)
+- QBO sync not activated — seam only. See TODO comment in `customer-companies.ts`.
+- Legacy single-contact fields not removed — backward compat for existing data and external sync.
+- No "move contact" flow (re-scope from company to location or vice versa) — out of scope.
+
+---
+
 ## 2026-03-06: Real-Time Dispatch Freshness — Phase 1
 
 ### Architecture Decision: SSE Over WebSocket

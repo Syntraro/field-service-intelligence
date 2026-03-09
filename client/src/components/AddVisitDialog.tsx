@@ -27,7 +27,7 @@ import {
   invalidateCalendarAndUnscheduledQueries,
   invalidateJobQueries,
   invalidateVisitQueries,
-} from "@/hooks/useCalendarApi";
+} from "@/hooks/useSchedulingApi";
 
 interface AddVisitDialogProps {
   jobId: string;

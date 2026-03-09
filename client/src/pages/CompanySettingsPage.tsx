@@ -93,10 +93,6 @@ export default function CompanySettingsPage() {
     setLocation("/");
   };
 
-  const { data: allClients = [] } = useQuery<any[]>({
-    queryKey: ["/api/clients"],
-  });
-
   const { data: numberingSettings, isLoading: numberingLoading } = useQuery<NumberingSettings>({
     queryKey: ["/api/settings/numbering"],
     enabled: Boolean(user?.id),

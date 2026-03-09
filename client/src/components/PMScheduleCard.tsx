@@ -32,7 +32,6 @@ import { ChevronDown, ChevronRight, Pause, Play, Pencil, Zap, Archive } from "lu
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth";
 import { apiRequest, queryClient } from "@/lib/queryClient";
-import PMSetupModal from "./PMSetupModal";
 import type { RecurringJobTemplate } from "@shared/schema";
 
 
@@ -124,8 +123,6 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
   const { toast } = useToast();
   const { user } = useAuth();
   const [, navigate] = useLocation();
-  const [setupModalOpen, setSetupModalOpen] = useState(false);
-  const [editMode, setEditMode] = useState(false);
   const [archiveDialogOpen, setArchiveDialogOpen] = useState(false);
   const [hardDeleteDialogOpen, setHardDeleteDialogOpen] = useState(false);
   const [hardDeleteConfirmText, setHardDeleteConfirmText] = useState("");
@@ -367,9 +364,10 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
               {!pmTemplate ? (
                 <div className="text-center py-2 space-y-3">
                   <p className="text-muted-foreground text-xs">No PM schedule configured for this location.</p>
+                  {/* PM Phase 2B: Route creation to the dedicated wizard */}
                   <Button
                     size="sm"
-                    onClick={() => { setEditMode(false); setSetupModalOpen(true); }}
+                    onClick={() => navigate(`/pm/new?locationId=${locationId}`)}
                     data-testid="pm-create-btn"
                   >
                     Create PM Schedule
@@ -431,11 +429,12 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
                         {generateMutation.isPending ? "Generating..." : "Generate This Month"}
                       </Button>
                     )}
+                    {/* PM Phase 2C: Route editing to dedicated PM edit page */}
                     <Button
                       variant="outline"
                       size="sm"
                       className="h-7 text-xs"
-                      onClick={() => { setEditMode(true); setSetupModalOpen(true); }}
+                      onClick={() => navigate(`/pm/${pmTemplate.id}/edit`)}
                       data-testid="pm-edit-btn"
                     >
                       <Pencil className="h-3 w-3 mr-1" />
@@ -468,6 +467,18 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
                     </Button>
                   </div>
 
+                  {/* PM Phase 2C: Link to PM detail / workspace */}
+                  <div className="pt-0.5">
+                    <button
+                      type="button"
+                      className="text-[10px] text-primary hover:underline transition-colors"
+                      onClick={() => navigate(`/pm/${pmTemplate.id}`)}
+                      data-testid="pm-view-detail-link"
+                    >
+                      View PM details →
+                    </button>
+                  </div>
+
                   {/* Permanent delete link — owner/admin only */}
                   {canHardDelete && (
                     <div className="pt-0.5">
@@ -487,17 +498,6 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
           </CollapsibleContent>
         </Card>
       </Collapsible>
-
-      {/* Setup / Edit Modal */}
-      <PMSetupModal
-        open={setupModalOpen}
-        onOpenChange={setSetupModalOpen}
-        locationId={locationId}
-        locationName={locationName}
-        companyId={companyId}
-        clientId={clientId}
-        existing={editMode ? pmTemplate : null}
-      />
 
       {/* Archive (soft delete) confirmation */}
       <AlertDialog open={archiveDialogOpen} onOpenChange={setArchiveDialogOpen}>

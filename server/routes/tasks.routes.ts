@@ -105,7 +105,8 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
       notes: validated.notes ?? (validated as any).description ?? undefined,
       clientId: validated.clientId ?? undefined,
       jobId: validated.jobId,
-      estimatedDurationMinutes: validated.estimatedDurationMinutes ?? undefined,
+      // Fix 4: Default task duration to 60 minutes for timeline visibility
+      estimatedDurationMinutes: validated.estimatedDurationMinutes ?? 60,
       scheduledStartAt: (validated.scheduledStartAt && typeof validated.scheduledStartAt === 'string') ? validated.scheduledStartAt : undefined,
       scheduledEndAt: (validated.scheduledEndAt && typeof validated.scheduledEndAt === 'string') ? validated.scheduledEndAt : undefined,
       allDay: validated.allDay ?? false,

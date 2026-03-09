@@ -144,6 +144,34 @@ export class ClientContactRepository extends BaseRepository {
   }
 
   /**
+   * Part A: Transaction-aware variant of createContact.
+   * Accepts an external transaction so the caller can bundle contact creation
+   * with other operations atomically.
+   */
+  async createContactTx(
+    tx: any,
+    companyId: string,
+    data: Omit<InsertClientContact, "companyId">
+  ): Promise<ClientContact> {
+    this.assertCompanyId(companyId);
+    const [row] = await tx
+      .insert(clientContacts)
+      .values({
+        companyId,
+        customerCompanyId: data.customerCompanyId,
+        locationId: data.locationId ?? null,
+        firstName: data.firstName ?? "",
+        lastName: data.lastName ?? "",
+        email: data.email ?? null,
+        phone: data.phone ?? null,
+        roles: data.roles ?? [],
+        isPrimary: data.isPrimary ?? false,
+      })
+      .returning();
+    return row;
+  }
+
+  /**
    * Update a single contact by ID, scoped to tenant.
    */
   async updateContact(

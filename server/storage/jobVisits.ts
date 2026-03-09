@@ -3,6 +3,7 @@ import { and, eq, desc, gte, lte, asc, sql, notInArray, isNull, isNotNull, or } 
 import { activeJobFilter } from "./jobFilters";
 import { jobVisits, jobs, jobNotes, users, clientLocations } from "@shared/schema";
 import { BaseRepository, clampLimit } from "./base";
+import { sanitizeAllDayTimestamps } from "../utils/allDaySanitizer";
 
 // ============================================================================
 // ENRICHED VISIT TYPES — shared response shapes for tech + calendar consumers
@@ -460,18 +461,25 @@ export class JobVisitsRepository extends BaseRepository {
     const primaryTechnicianId = chosen.assignedTechnicianId ?? null;
     const assignedTechnicianIds = chosen.assignedTechnicianIds ?? (primaryTechnicianId ? [primaryTechnicianId] : null);
 
+    // Build update payload, then sanitize all-day timestamps for DB constraint compliance
+    const jobUpdate: any = {
+      scheduledStart,
+      scheduledEnd,
+      isAllDay,
+      durationMinutes,
+      primaryTechnicianId,
+      assignedTechnicianIds,
+      updatedAt: new Date(),
+      version: sql`${jobs.version} + 1`,
+    };
+
+    // Sanitize all-day timestamps: replaces Date objects with UTC-safe SQL expressions
+    // to prevent node-pg timezone serialization from violating jobs_all_day_*_check constraints
+    sanitizeAllDayTimestamps(jobUpdate, jobId);
+
     await db
       .update(jobs)
-      .set({
-        scheduledStart,
-        scheduledEnd,
-        isAllDay,
-        durationMinutes,
-        primaryTechnicianId,
-        assignedTechnicianIds,
-        updatedAt: new Date(),
-        version: sql`${jobs.version} + 1`,
-      })
+      .set(jobUpdate)
       .where(and(eq(jobs.companyId, companyId), eq(jobs.id, jobId)));
   }
 
@@ -531,8 +539,9 @@ export class JobVisitsRepository extends BaseRepository {
         ? input.scheduledEnd
         : new Date(input.scheduledEnd);
     } else if (isAllDay) {
+      // UTC-safe: setUTCHours ensures 23:59:59 UTC regardless of server timezone
       const end = new Date(scheduledStart);
-      end.setHours(23, 59, 59, 0);
+      end.setUTCHours(23, 59, 59, 0);
       scheduledEnd = end;
     } else {
       scheduledEnd = new Date(scheduledStart.getTime() + estimatedDurationMinutes * 60_000);

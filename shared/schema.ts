@@ -3190,6 +3190,8 @@ export const tenantFeatures = pgTable("tenant_features", {
   // Future feature flags (placeholders)
   routeOptimizationEnabled: boolean("route_optimization_enabled").notNull().default(true),
   multiTechEnabled: boolean("multi_tech_enabled").notNull().default(true),
+  // Live Map feature flag — gated separately due to map tile / real-time infrastructure costs
+  liveMapEnabled: boolean("live_map_enabled").notNull().default(true),
   // Customer portal feature flags
   customerPortalEnabled: boolean("customer_portal_enabled").notNull().default(false),
   customerPortalPaymentsEnabled: boolean("customer_portal_payments_enabled").notNull().default(false),
@@ -3211,6 +3213,7 @@ export const updateTenantFeaturesSchema = z.object({
   qboEnabled: z.boolean().optional(),
   routeOptimizationEnabled: z.boolean().optional(),
   multiTechEnabled: z.boolean().optional(),
+  liveMapEnabled: z.boolean().optional(),
   customerPortalEnabled: z.boolean().optional(),
   customerPortalPaymentsEnabled: z.boolean().optional(),
 });
@@ -3227,6 +3230,7 @@ export const featureKeys = [
   "qboEnabled",
   "routeOptimizationEnabled",
   "multiTechEnabled",
+  "liveMapEnabled",
   "customerPortalEnabled",
   "customerPortalPaymentsEnabled",
 ] as const;
@@ -4094,6 +4098,9 @@ export const recurringJobTemplates = pgTable("recurring_job_templates", {
   autoSchedule: boolean("auto_schedule").notNull().default(false), // false = unscheduled (PM default)
   scheduledTimeLocal: text("scheduled_time_local"), // "HH:MM" 24h, required when autoSchedule = true
   includeLocationPmParts: boolean("include_location_pm_parts").notNull().default(false), // copy location PM parts into job_parts on generation
+  // PM Phase 3: Service window — acceptable date range around ideal PM date
+  serviceWindowDaysBefore: integer("service_window_days_before").notNull().default(7),
+  serviceWindowDaysAfter: integer("service_window_days_after").notNull().default(14),
   // Timestamps
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
@@ -4124,6 +4131,9 @@ export const insertRecurringJobTemplateSchema = createInsertSchema(recurringJobT
   autoSchedule: z.boolean().default(false),
   scheduledTimeLocal: z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
   includeLocationPmParts: z.boolean().default(false),
+  // PM Phase 3: Service window fields
+  serviceWindowDaysBefore: z.number().int().min(0).max(90).default(7),
+  serviceWindowDaysAfter: z.number().int().min(0).max(90).default(14),
 });
 
 export const updateRecurringJobTemplateSchema = z.object({
@@ -4153,6 +4163,9 @@ export const updateRecurringJobTemplateSchema = z.object({
   autoSchedule: z.boolean().optional(),
   scheduledTimeLocal: z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
   includeLocationPmParts: z.boolean().optional(),
+  // PM Phase 3: Service window fields
+  serviceWindowDaysBefore: z.number().int().min(0).max(90).optional(),
+  serviceWindowDaysAfter: z.number().int().min(0).max(90).optional(),
 });
 
 export type InsertRecurringJobTemplate = z.infer<typeof insertRecurringJobTemplateSchema>;

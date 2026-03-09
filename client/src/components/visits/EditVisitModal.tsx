@@ -233,8 +233,9 @@ export function EditVisitModal({
       const isAllDay = scheduleValue.isAllDay || !scheduleValue.time;
 
       if (isAllDay) {
-        payload.scheduledStart = new Date(`${scheduleValue.date}T00:00:00`).toISOString();
-        payload.scheduledEnd = new Date(`${scheduleValue.date}T23:59:59`).toISOString();
+        // All-day: use explicit UTC boundaries (Z suffix) to avoid local-timezone shift
+        payload.scheduledStart = `${scheduleValue.date}T00:00:00.000Z`;
+        payload.scheduledEnd = `${scheduleValue.date}T23:59:59.000Z`;
         payload.isAllDay = true;
         payload.estimatedDurationMinutes = null;
       } else {

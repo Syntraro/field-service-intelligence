@@ -338,7 +338,7 @@ export default function QuickAddClientModal({
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="site-code">Site Code / Store Number</Label>
+                  <Label htmlFor="site-code">Site Code</Label>
                   <Input
                     id="site-code"
                     data-testid="input-site-code"
@@ -409,9 +409,11 @@ export default function QuickAddClientModal({
                 </div>
               </div>
               
+              {/* Phase 3: Legacy contact summary — canonical management via Contacts tab */}
+              <p className="text-xs text-muted-foreground">Primary site contact summary. Manage full contacts from the Contacts tab after creation.</p>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="contact-phone">Contact Phone</Label>
+                  <Label htmlFor="contact-phone">Site Contact Phone</Label>
                   <Input
                     id="contact-phone"
                     data-testid="input-contact-phone"
@@ -421,7 +423,7 @@ export default function QuickAddClientModal({
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="contact-email">Contact Email</Label>
+                  <Label htmlFor="contact-email">Site Contact Email</Label>
                   <Input
                     id="contact-email"
                     data-testid="input-contact-email"

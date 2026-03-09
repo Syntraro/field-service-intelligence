@@ -278,8 +278,10 @@ export default function AddClientDialog({ onSubmit, onCancel, editData }: AddCli
               
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-3">
-                  <Label className="text-sm font-semibold">Contact Details</Label>
-                  
+                  {/* Phase 3: Legacy contact summary — canonical management via Contacts tab */}
+                  <Label className="text-sm font-semibold">Primary Site Contact (Summary)</Label>
+                  <p className="text-[10px] text-muted-foreground -mt-1">Manage full contacts from the Contacts tab after creation.</p>
+
                   <div className="space-y-1.5">
                     <Label htmlFor="contactName" className="text-xs">Contact Name</Label>
                     <Input

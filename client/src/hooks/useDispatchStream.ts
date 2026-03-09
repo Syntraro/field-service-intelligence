@@ -24,6 +24,9 @@ const BROADCAST_CHANNEL_NAME = "dispatch-freshness";
 /**
  * Invalidate the right query keys based on what changed.
  * Uses broad prefix matching — TanStack will refetch only stale queries.
+ *
+ * Phase 1 Map Convergence: Also invalidates /api/map/day so the live map
+ * receives real-time schedule updates via the same SSE stream as dispatch.
  */
 function invalidateForSignal(_signal: DispatchSignal): void {
   // Calendar grid data (events in range)
@@ -34,6 +37,8 @@ function invalidateForSignal(_signal: DispatchSignal): void {
   queryClient.invalidateQueries({ queryKey: ["/api/calendar/needs-follow-up"], exact: false });
   // Day summary counts (Hardening: was missing from initial implementation)
   queryClient.invalidateQueries({ queryKey: ["/api/calendar/day-summary"], exact: false });
+  // Phase 1 Map Convergence: Live map data (visits/techs for map rendering)
+  queryClient.invalidateQueries({ queryKey: ["/api/map/day"], exact: false });
   // Activity timeline in dispatch panel (any open panel will refetch)
   queryClient.invalidateQueries({
     predicate: (query) => {

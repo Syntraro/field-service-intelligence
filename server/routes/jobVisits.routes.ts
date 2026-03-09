@@ -13,6 +13,7 @@ import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
 import { storage } from "../storage/index";
 import { emitDispatch } from "../lib/dispatchBus";
+import { normalizeScheduleTimes } from "../domain/scheduling";
 
 const router = Router();
 
@@ -130,13 +131,25 @@ router.patch(
     const { version, ...data } = req.body;
     const validated = validateSchema(updateVisitSchema, data);
 
-    // Convert ISO strings to Date objects for timestamp columns (Drizzle requires Date)
+    // Normalize all-day timestamps through canonical path to guarantee UTC boundaries.
+    // This prevents local-timezone Date shifts from violating jobs_all_day_*_check constraints.
     const input: Record<string, unknown> = { ...validated };
-    if ("scheduledStart" in input) {
-      input.scheduledStart = input.scheduledStart ? new Date(input.scheduledStart as string) : null;
-    }
-    if ("scheduledEnd" in input) {
-      input.scheduledEnd = input.scheduledEnd ? new Date(input.scheduledEnd as string) : null;
+    if (validated.isAllDay === true && validated.scheduledStart) {
+      const normalized = normalizeScheduleTimes({
+        allDay: true,
+        startAt: validated.scheduledStart as string,
+      });
+      input.scheduledStart = normalized.scheduledStart;
+      input.scheduledEnd = normalized.scheduledEnd;
+      input.isAllDay = true;
+    } else {
+      // Timed or unscheduled: convert ISO strings to Date objects for Drizzle
+      if ("scheduledStart" in input) {
+        input.scheduledStart = input.scheduledStart ? new Date(input.scheduledStart as string) : null;
+      }
+      if ("scheduledEnd" in input) {
+        input.scheduledEnd = input.scheduledEnd ? new Date(input.scheduledEnd as string) : null;
+      }
     }
     if ("scheduledDate" in input && input.scheduledDate) {
       input.scheduledDate = new Date(input.scheduledDate as string);

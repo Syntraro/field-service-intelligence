@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { getMemberDisplayName } from "@/lib/displayName";
 import { useJobVisits, isVisitInactive, isVisitIneligible, getVisitDisplayStatus } from "@/hooks/useJobVisits";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
-import { useUnscheduleVisit } from "@/hooks/useCalendarApi";
+import { useUnscheduleVisit } from "@/hooks/useSchedulingApi";
 import { format } from "date-fns";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";

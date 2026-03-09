@@ -37,7 +37,7 @@ import {
 import { eq, and } from "drizzle-orm";
 import { v4 as uuidv4 } from "uuid";
 import { jobVisitsRepository, isVisitActioned } from "../server/storage/jobVisits";
-import { calendarRepository } from "../server/storage/calendar";
+import { schedulingRepository } from "../server/storage/scheduling";
 
 // Test data IDs - cleaned up after tests
 const TEST_PREFIX = "visit_select_test_";
@@ -502,7 +502,7 @@ describe("Visit Selection & Calendar Invariant Tests", () => {
       expect(job.scheduledStart).not.toBeNull();
 
       // Unschedule via calendar repository
-      await calendarRepository.unscheduleJob(testCompanyId, jobId);
+      await schedulingRepository.unscheduleJob(testCompanyId, jobId);
 
       // Verify visit is now a placeholder (isActive=true, scheduledStart=null)
       const [visit] = await db
@@ -534,7 +534,7 @@ describe("Visit Selection & Calendar Invariant Tests", () => {
       });
 
       // Unschedule (converts visit1 to placeholder)
-      await calendarRepository.unscheduleJob(testCompanyId, jobId);
+      await schedulingRepository.unscheduleJob(testCompanyId, jobId);
 
       // Verify visit1 is now a placeholder (isActive=true, scheduledStart=null)
       const [v1] = await db.select().from(jobVisits).where(eq(jobVisits.id, visit1));
@@ -573,7 +573,7 @@ describe("Visit Selection & Calendar Invariant Tests", () => {
 
       // Reschedule to a new date
       const newDate = getFutureDate(5);
-      await calendarRepository.rescheduleJob(testCompanyId, jobId, {
+      await schedulingRepository.rescheduleJob(testCompanyId, jobId, {
         startAt: newDate,
         endAt: new Date(newDate.getTime() + 60 * 60 * 1000),
         expectedVersion: jobBefore.version,
@@ -680,7 +680,7 @@ describe("Visit Selection & Calendar Invariant Tests", () => {
 
       // Reschedule - should spawn new visit
       const newDate = getFutureDate(5);
-      await calendarRepository.rescheduleJob(testCompanyId, jobId, {
+      await schedulingRepository.rescheduleJob(testCompanyId, jobId, {
         startAt: newDate,
         endAt: new Date(newDate.getTime() + 60 * 60 * 1000),
         expectedVersion: jobBefore.version,
@@ -732,7 +732,7 @@ describe("Visit Selection & Calendar Invariant Tests", () => {
 
       // Schedule a "follow-up" via scheduleJob (POST /api/calendar/schedule)
       const followUpDate = getFutureDate(7);
-      await calendarRepository.scheduleJob(testCompanyId, {
+      await schedulingRepository.scheduleJob(testCompanyId, {
         jobId,
         startAt: followUpDate,
         endAt: new Date(followUpDate.getTime() + 60 * 60 * 1000),
@@ -766,7 +766,7 @@ describe("Visit Selection & Calendar Invariant Tests", () => {
 
       // Schedule first visit
       const scheduleDate = getFutureDate(3);
-      await calendarRepository.scheduleJob(testCompanyId, {
+      await schedulingRepository.scheduleJob(testCompanyId, {
         jobId,
         startAt: scheduleDate,
         endAt: new Date(scheduleDate.getTime() + 60 * 60 * 1000),
@@ -817,7 +817,7 @@ describe("Visit Selection & Calendar Invariant Tests", () => {
       rangeEnd.setDate(rangeEnd.getDate() + 1);
       rangeEnd.setHours(0, 0, 0, 0);
 
-      const result = await calendarRepository.getScheduledJobsInRange(
+      const result = await schedulingRepository.getScheduledJobsInRange(
         testCompanyId,
         rangeStart,
         rangeEnd
@@ -852,7 +852,7 @@ describe("Visit Selection & Calendar Invariant Tests", () => {
       rangeEnd.setDate(rangeEnd.getDate() + 1);
       rangeEnd.setHours(0, 0, 0, 0);
 
-      const result = await calendarRepository.getScheduledJobsInRange(
+      const result = await schedulingRepository.getScheduledJobsInRange(
         testCompanyId,
         rangeStart,
         rangeEnd

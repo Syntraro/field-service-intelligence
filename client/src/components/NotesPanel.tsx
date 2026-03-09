@@ -402,17 +402,18 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
                     </div>
                   )}
 
-                  <div className="flex items-center justify-between mt-2 pt-2 border-t">
-                    <span className="text-[10px] text-muted-foreground">
-                      Added by {note.createdByName || "Unknown"} &middot; {note.createdAt && format(new Date(note.createdAt), "MMM d, yyyy 'at' h:mm a")}
+                  {/* Compact metadata: "Author · Date, Time" */}
+                  <div className="flex items-center justify-between mt-1.5 text-[10px] text-muted-foreground">
+                    <span>
+                      {note.createdByName || "Unknown"} · {note.createdAt && format(new Date(note.createdAt), "MMM d, yyyy, h:mm a")}
                       {note.updatedAt && note.updatedAt !== note.createdAt && " (edited)"}
                     </span>
                     <div className="flex gap-0.5">
-                      <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => startEdit(note)} data-testid={`button-edit-note-${note.id}`}>
-                        <Pencil className="h-3.5 w-3.5" />
+                      <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => startEdit(note)} data-testid={`button-edit-note-${note.id}`}>
+                        <Pencil className="h-3 w-3" />
                       </Button>
-                      <Button variant="ghost" size="sm" className="h-6 w-6 p-0" onClick={() => setDeleteNoteId(note.id)} data-testid={`button-delete-note-${note.id}`}>
-                        <Trash2 className="h-3.5 w-3.5" />
+                      <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => setDeleteNoteId(note.id)} data-testid={`button-delete-note-${note.id}`}>
+                        <Trash2 className="h-3 w-3" />
                       </Button>
                     </div>
                   </div>
