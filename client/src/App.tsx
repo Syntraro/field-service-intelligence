@@ -83,6 +83,7 @@ import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import UniversalSearch from "@/components/UniversalSearch";
 import { useState } from "react";
 import { Plus, Settings } from "lucide-react";
+import syntroLogoPath from "@/assets/syntraro-logo-nobg.png";
 import { Button } from "@/components/ui/button";
 import SuppliersListPage from "@/pages/SuppliersListPage";
 import SupplierDetailPage from "@/pages/SupplierDetailPage";
@@ -544,6 +545,12 @@ function AppContent() {
         {/* Global header — spans full width above sidebar + content */}
         <header className="flex items-center justify-between gap-2 px-4 h-14 shrink-0 bg-white dark:bg-gray-950 border-b border-[var(--card-border)] shadow-[0_1px_0_rgba(0,0,0,0.03)] z-20">
           <SidebarTrigger data-testid="button-sidebar-toggle" />
+
+          <img
+            src={syntroLogoPath}
+            alt="Syntraro"
+            className="h-7 w-auto object-contain"
+          />
 
           {/* Company name - hidden on technician pages */}
           {!isTechnicianPage && companyDisplayName && (
