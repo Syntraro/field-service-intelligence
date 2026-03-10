@@ -86,7 +86,7 @@ interface UpcomingQueueItem {
 
 interface CustomerCompanyLite {
   id: string;
-  companyName: string;
+  name: string;  // Matches customer_companies.name column
 }
 
 // ============================================================================
@@ -387,7 +387,7 @@ export default function PMDetailPage() {
   const locationName = location
     ? [location.companyName, location.location].filter(Boolean).join(" — ")
     : template.locationId ?? "—";
-  const customerName = customerCompany?.companyName ?? "—";
+  const customerName = customerCompany?.name ?? "—";
 
   return (
     <div className="flex flex-col gap-6 p-4 md:p-6 lg:p-8 max-w-4xl mx-auto">

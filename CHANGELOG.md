@@ -8,6 +8,163 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+#### Client CSV Import v1 (2026-03-10)
+
+- **Five-step import wizard** at Settings > Import Clients with: Upload → Map Fields → Preview & Validate → Execute → Results
+- **Shared types** in `shared/clientImportTypes.ts`: `ClientImportRow`, field definitions, header aliases, validation/result types
+- **Backend import service** in `server/services/clientImport.ts`: CSV parsing, header auto-mapping via alias dictionary, row normalization (trim, boolean coercion, postal code normalization), row validation, row execution
+- **API endpoints**:
+  - `POST /api/client-import/preview` — Parse CSV, auto-map headers, normalize/validate rows, check company name dedup, return preview summary
+  - `POST /api/client-import/execute` — Execute validated rows: create customer_company (deduped by exact name), create primary client_location, create optional primary client_contact
+- **Import scope (v1)**: One CSV row = one client package (company + location + optional contact). Create-only, no update/merge. Exact company-name dedup. Max 500 rows.
+- **Primary location logic**: First location for a new company gets `isPrimary=true`. Locations added to existing companies respect existing primary — only set `isPrimary=true` if no existing primary.
+- **Contact rules**: Contact block created only if at least one contact field present. Requires (firstName OR lastName) AND (email OR phone). Auto-set `isPrimary=true`. Created as company-level contact (not legacy flat fields).
+- **Field mapping UI**: Header similarity auto-suggestion, grouped by Company/Billing/Location/Contact, sample value preview, duplicate field prevention
+- **Validation**: Blocked rows (blank company name, invalid email, invalid contact block, invalid postal code). Warning rows (existing company match, blank location name, no contact, no address).
+- **Results**: Summary cards, failed row table with error export to CSV
+- Files added:
+  - `shared/clientImportTypes.ts` — Shared types and field definitions
+  - `server/services/clientImport.ts` — Import service (parse, map, normalize, validate, execute)
+  - `server/routes/clientImport.ts` — API routes (preview + execute)
+  - `client/src/pages/ClientImportPage.tsx` — Five-step import wizard UI
+- Files changed:
+  - `server/routes/index.ts` — Mount `/api/client-import` router
+  - `client/src/App.tsx` — Add `/settings/import-clients` route
+  - `client/src/components/SettingsShell.tsx` — Add "Import Clients" nav item
+
+### Changed
+
+#### PM Phase 4C — Generation Flow + PM Setups Display Fix (2026-03-10)
+
+- **Fix: Client / Location display in PM Setups list** — The `getTemplates()` storage method was returning raw template rows without joining `customer_companies` or `client_locations`, causing the Client/Location column to always show "—". Added LEFT JOINs to return `clientName`, `locationName`, and `locationAddress`. Frontend now renders "Client Name / Address" instead of dashes.
+- **Removed global Generate Now button** — The dangerous "Generate Now" button in the PM Workspace header (which generated jobs for ALL active templates at once) has been removed. PM Setups is now a configuration-only surface (Edit, Duplicate, Pause/Resume).
+- **Moved generation to Upcoming queue** — Generation controls are now in the Upcoming tab:
+  - Row-level "Generate" button for individual eligible instances
+  - Checkbox selection with "Generate Selected (N)" bulk action
+  - Confirmation modal showing customer count, location count, date range before bulk generation
+- **Generation eligibility rules** — Only instances with compliance status `upcoming`, `in_window`, `due_soon`, or `overdue` (and scheduling state `not_generated`) can be generated. Prevents accidental far-future PM generation.
+- **New API endpoint** — `POST /api/recurring-templates/generate-selected` accepts `{ instanceIds: string[] }` for selective instance-level generation (max 100 per request).
+- Files changed:
+  - `server/storage/recurringJobs.ts` — `getTemplates()` now joins customer_companies + client_locations; new `TemplateWithNames` type
+  - `server/domain/recurrence.ts` — New `generateFromInstances()` function for selective generation
+  - `server/routes/recurringJobs.ts` — New `POST /generate-selected` endpoint
+  - `client/src/pages/PMWorkspacePage.tsx` — Removed global Generate Now, added selection checkboxes + row-level Generate + bulk Generate Selected + confirmation modal to Upcoming tab, fixed Client/Location display
+
+### Fixed
+
+#### PM Wizard — Customer Company Not Displaying (2026-03-10)
+
+- **Root cause 1 — Missing list endpoint**: `GET /api/customer-companies` (no `:id` param) did not exist. All routes in customer-companies.ts required `/:companyId`. The wizard's `useQuery({ queryKey: ["/api/customer-companies"] })` silently errored (404 → error state), so `companies` was always `[]`. The company dropdown rendered with zero options.
+- **Root cause 2 — Field name mismatch**: `CustomerCompanyLite` interface used `companyName` but the `customer_companies` table column is `name`. Even if the endpoint existed, `company?.companyName` would always be `undefined`, preventing the selected company name from displaying.
+- **Fix A — New list endpoint**: Added `GET /api/customer-companies` route returning `[{ id, name }]` for the tenant. Added `listCustomerCompanies()` repository method (lightweight: active companies only, ordered by name).
+- **Fix B — Field name alignment**: Changed `CustomerCompanyLite.companyName` → `.name` in both `PMWizardPage.tsx` and `PMDetailPage.tsx`. Updated all references: `company?.companyName` → `company?.name`, `company.companyName` → `company.name`.
+- **Fix C (prior) — Company-first enforcement**: Location picker disabled until company selected, no global location fallback, location selection cannot auto-derive company, template prefill race condition fixed.
+- **Regression tests**: 23 pure-logic tests in `tests/pm-wizard-company-first.test.ts`.
+- Files changed:
+  - `server/routes/customer-companies.ts` — New `GET /` list endpoint
+  - `server/storage/customerCompanies.ts` — New `listCustomerCompanies()` method
+  - `client/src/pages/PMWizardPage.tsx` — `CustomerCompanyLite.name`, all `companyName` → `name` refs, company-first enforcement, template prefill deps
+  - `client/src/pages/PMDetailPage.tsx` — `CustomerCompanyLite.name`, `companyName` → `name` ref
+  - `tests/pm-wizard-company-first.test.ts` — 23 regression tests
+
+### Changed
+
+#### Command Palette Quick Actions Refinement (2026-03-10)
+
+- **Refined default Quick Actions** to focus on true create commands: Create Job, Create Quote, Create Invoice, Create Task, Create PM Contract. Removed navigation shortcuts (Open Dispatch, Open PM, Open Clients, Open Invoices, Open Quotes) from the default list since they duplicate sidebar navigation.
+- **Navigation still searchable**: All removed items moved to the navigation command set and still appear when users search for "dispatch", "pm", "clients", etc.
+- Files changed:
+  - `client/src/components/UniversalSearch.tsx` — Updated `buildCommands()`: added Create Task and Create PM Contract actions, moved 5 "Open ..." items from `action` to `navigation` section
+
+### Added
+
+#### Create Quote Flow — Template Chooser Modal (2026-03-10)
+
+- **QuoteTemplateChooserModal**: New modal opened from command palette "Create Quote" action. Shows searchable list of active quote templates with quick-select for top 5 (default template first, then alphabetical). Includes "Create Blank Quote" option.
+- **NewQuoteModal template support**: Added optional `templateId` prop. When provided, auto-applies the selected template via `POST /api/quote-templates/:id/apply` (replace mode) after quote creation. Non-blocking — if template apply fails, quote is still created.
+- **Command palette wiring**: "Create Quote" now opens the template chooser instead of navigating to `/quotes`. Flow: Chooser → select template or blank → NewQuoteModal (location + details) → quote created with template applied.
+- **Quick-select fallback**: Uses first 5 active templates sorted by default flag then alphabetical name (no usage tracking yet).
+- Files changed:
+  - `client/src/components/QuoteTemplateChooserModal.tsx` — New component
+  - `client/src/components/NewQuoteModal.tsx` — Added `templateId` prop, auto-apply on creation
+  - `client/src/App.tsx` — Import new components, add state for chooser/template, wire up callbacks
+
+#### Command Palette — Quick Actions + Navigation + Search (2026-03-10)
+
+- **Command Palette**: Upgraded header search bar into a Linear/Raycast-style command palette with three sections: Quick Actions, Navigation, and Search Results.
+- **Cmd+K / Ctrl+K shortcut**: Global keyboard shortcut opens/closes the palette, with browser default prevented via `capture: true` listener.
+- **Quick Actions** (8): Create Job, Create Quote, Create Invoice, Open Dispatch, Open PM, Open Clients, Open Invoices, Open Quotes.
+- **Navigation shortcuts** (12): Dashboard, Dispatch, Live Map, Jobs, PM, Invoices, Quotes, Clients, Suppliers, Reports, Settings, Admin — all with keyword aliases for fuzzy matching.
+- **Ranked matching**: Exact label match → starts-with → contains → keyword match → multi-word match. Commands ranked above search results.
+- **Preserved search**: Existing `/api/search` integration unchanged — debounced, grouped by type (invoice > job > company > location > supplier).
+- **Keyboard navigation**: ArrowUp/Down, Enter to select, Esc to close, Tab trapped while open, scroll-into-view for selected item.
+- **Create callbacks**: Create Job opens QuickAddJobDialog, Create Quote navigates to /quotes, Create Invoice navigates to /invoices.
+- Files changed:
+  - `client/src/components/UniversalSearch.tsx` — Full rewrite: command palette architecture with static commands, scoring, unified palette items, floating panel UI, global keyboard shortcut
+  - `client/src/App.tsx` — Pass `onCreateJob`, `onCreateQuote`, `onCreateInvoice` callbacks to UniversalSearch
+
+### Changed
+
+#### Sidebar Navigation Grouping — Workflow Sections (2026-03-10)
+
+- **Sidebar items reorganized** into 5 logical workflow sections with visible dividers:
+  1. Live Operations: Dashboard, Dispatch, Live Map
+  2. Work Management: Jobs, PM, Invoices, Quotes
+  3. Relationships: Clients, Suppliers
+  4. System / Back Office: Reports
+  5. Settings + Admin (conditional)
+- **Divider styling improved**: Changed from `border-t border-white/10 my-2` to explicit `height: 1px, background: rgba(255,255,255,0.12), margin: 12px` for better visibility.
+- **Item order unchanged**: All sidebar items keep original order; only grouping via divider placement changed.
+- Files changed:
+  - `client/src/components/AppSidebar.tsx` — Added `isDivider` to Clients and Reports items, updated divider element styling
+
+#### Primary UI Color Update — Syntraro Green #82BA58 (2026-03-10)
+
+- **Primary color updated**: Replaced old brand green (#2F7D32) with Syntraro green (#82BA58) across all CSS variables and hardcoded values.
+  - `--primary`: HSL 94 45% 54% (was 122 45% 34%)
+  - `--brand`: #82BA58 (was #2F7D32)
+  - `--brand-hover`: #6FA846 (was #256329)
+  - `--ring`: HSL 95 50% 68% (#A6D683) for focus rings
+- **+ New button**: Updated inline styles to #82BA58 / hover #6FA846.
+- **Focus rings**: Input, AddressAutocomplete, and UniversalSearch focus rings now use rgba(130,186,88,...) / #A6D683.
+- **Status pill success**: Updated light-mode success variant to use new green rgba values.
+- **Active badge**: LocationDetailPage active status badge updated to new green.
+- Files changed:
+  - `client/src/index.css` — All CSS variable definitions (light + dark mode)
+  - `client/src/App.tsx` — + New button inline styles
+  - `client/src/components/ui/input.tsx` — Focus border/shadow colors
+  - `client/src/components/ui/AddressAutocomplete.tsx` — Focus border/shadow colors
+  - `client/src/components/ui/status-pill.tsx` — Success variant colors
+  - `client/src/components/UniversalSearch.tsx` — Search input focus ring
+  - `client/src/pages/LocationDetailPage.tsx` — Active status badge
+
+#### App Shell Cleanup — Header & Sidebar Layout Refinement (2026-03-10)
+
+- **Sidebar toggle relocated**: Moved the collapse/expand toggle from the header into the sidebar header, so it belongs visually to the sidebar shell.
+- **Header branding re-aligned**: Logo shifted further left (reduced header padding), removed extra wrapper div around company name, increased gap between logo and tenant name from `gap-2.5` to `gap-4`.
+- **Search bar moved rightward**: Search no longer centered in header; now sits right-aligned before the action controls (+ New, More menu) for a more balanced layout.
+- **Ctrl+K hint removed**: Search placeholder changed from "Search or run command… (Ctrl+K)" to "Search or run command…" until the keyboard shortcut is implemented.
+- Files changed:
+  - `client/src/App.tsx` — Removed SidebarTrigger from header, adjusted header padding/layout, search positioning
+  - `client/src/components/AppSidebar.tsx` — Added SidebarTrigger import, placed toggle in SidebarHeader
+  - `client/src/components/UniversalSearch.tsx` — Removed (Ctrl+K) from placeholder text
+
+#### App Shell Cleanup — Header More Menu, Sidebar Streamlining (2026-03-10)
+
+- **Header color matched to sidebar**: Header now uses `var(--sidebar-bg)` (#243241) — exact same CSS variable as the sidebar — instead of hardcoded `#1F2937`. Header and sidebar read as one continuous shell.
+- **Sidebar Feedback/Logout removed**: Removed Feedback and Logout buttons from the sidebar footer, freeing vertical space for future nav items.
+- **Header More menu**: Replaced standalone Settings gear icon with a `⋯` (MoreHorizontal) dropdown containing Settings, Feedback, and Logout (with separator above Logout). All actions preserved, just relocated.
+- **Logout moved to header**: Logout handler moved from AppSidebar to App.tsx AppContent, triggered via More dropdown.
+- **Feedback moved to header**: FeedbackDialog ownership moved from AppSidebar to App.tsx, opened via More dropdown.
+- **Operations Queue Preview removed**: Removed sidebar "Preview" section with Operations Queue nav entry, and removed the `/preview/operations-queue` route + `PreviewOperationsQueue` import.
+- **Search placeholder updated**: Changed from "Search jobs, invoices, clients..." to "Search or run command… (Ctrl+K)" to support future command palette pattern.
+- Files changed:
+  - `client/src/App.tsx` — Header More dropdown, logout/feedback handlers, FeedbackDialog, removed operations queue route/import, color fix
+  - `client/src/components/AppSidebar.tsx` — Removed Feedback, Logout, Operations Queue Preview, cleaned up unused imports
+  - `client/src/components/UniversalSearch.tsx` — Updated placeholder text
+
+### Added
+
 #### PM Phase 4B — Queue Grouping Views: Location, Client, Proximity (2026-03-09)
 
 - **Grouping mode selector**: Segmented control (None / Location / Client / Proximity) at top of Upcoming tab lets dispatchers switch queue views instantly.

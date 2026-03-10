@@ -23,6 +23,7 @@ import { AuthedRequest } from "../auth/tenantIsolation";
 import {
   generateInstances,
   generateForSingleTemplate,
+  generateFromInstances,
   previewGeneration,
 } from "../domain/recurrence";
 
@@ -375,6 +376,34 @@ router.get(
 // ============================================================================
 // Generation
 // ============================================================================
+
+/**
+ * POST /api/recurring-templates/generate-selected
+ * Phase 4C: Generate jobs from specific instance IDs (selective generation).
+ *
+ * Body: { instanceIds: string[] }
+ *
+ * Only processes instances in "pending" status. Used by the Upcoming queue
+ * for safe, selective PM generation instead of global generation.
+ *
+ * Requires: owner, admin, or dispatcher role
+ */
+router.post(
+  "/generate-selected",
+  requireAuth,
+  requireRole(SCHEDULING_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId;
+    const schema = z.object({
+      instanceIds: z.array(z.string().uuid()).min(1).max(100),
+    });
+    const { instanceIds } = validateSchema(schema, req.body);
+
+    const result = await generateFromInstances(companyId, instanceIds);
+
+    res.json(result);
+  })
+);
 
 /**
  * POST /api/recurring-templates/generate

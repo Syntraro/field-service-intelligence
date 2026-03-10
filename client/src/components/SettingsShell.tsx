@@ -23,6 +23,7 @@ import {
   Wallet,
   BarChart3,
   Globe,
+  Upload,
 } from "lucide-react";
 
 /** Navigation item definition for the settings sidebar */
@@ -133,6 +134,13 @@ const settingsNavItems: SettingsNavItem[] = [
     title: "Business Hours",
     description: "Set operating hours",
     testId: "nav-business-hours-settings",
+  },
+  {
+    href: "/settings/import-clients",
+    icon: Upload,
+    title: "Import Clients",
+    description: "Import clients from CSV",
+    testId: "nav-import-clients-settings",
   },
 ];
 

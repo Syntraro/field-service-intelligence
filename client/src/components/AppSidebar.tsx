@@ -4,10 +4,7 @@ import {
   Users,
   FileText,
   Shield,
-  LogOut,
   Smartphone,
-  MessageCircle,
-  UserCheck,
   ShieldAlert,
   Settings,
   Package,
@@ -16,64 +13,28 @@ import {
   FileCheck,
   MapPin,
   LayoutGrid,
-  ListChecks,
   Wrench,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/lib/auth";
-import { useToast } from "@/hooks/use-toast";
-import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
-import type { CompanySettings } from "@shared/schema";
 import {
   Sidebar,
   SidebarContent,
-  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarTrigger,
 } from "@/components/ui/sidebar";
-import FeedbackDialog from "./FeedbackDialog";
 interface AppSidebarProps {
   onDashboardClick?: () => void;
 }
 
 export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
   const [location, setLocation] = useLocation();
-  const { user, logout } = useAuth();
-  const { toast } = useToast();
-  const [feedbackOpen, setFeedbackOpen] = useState(false);
-
-  const { data: companySettings } = useQuery<CompanySettings | null>({
-    queryKey: ["/api/company-settings"],
-    enabled: Boolean(user?.id),
-    retry: false,
-    staleTime: 5 * 60 * 1000,
-    refetchOnMount: false,
-    refetchOnWindowFocus: false,
-  });
-
-
-  const handleLogout = async () => {
-    try {
-      await logout();
-      setLocation("/login");
-      toast({
-        title: "Logged out",
-        description: "You have been successfully logged out",
-      });
-    } catch (error) {
-      toast({
-        variant: "destructive",
-        title: "Logout failed",
-        description: "Could not log out. Please try again.",
-      });
-    }
-  };
+  const { user } = useAuth();
 
   const menuItems = [];
 
@@ -122,7 +83,7 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       isActive: location === "/live-map",
       testId: "nav-live-map"
     });
-    // --- Divider 1 --- Operations: Jobs, Invoices, Quotes, Clients, Suppliers, Reports
+    // --- Divider 1 --- Work Management: Jobs, PM, Invoices, Quotes
     menuItems.push({
       title: "Jobs",
       icon: ClipboardList,
@@ -131,7 +92,6 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       testId: "nav-jobs",
       isDivider: true
     });
-    // PM Phase 2: Dedicated PM workspace nav entry
     menuItems.push({
       title: "PM",
       icon: Wrench,
@@ -153,12 +113,14 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       isActive: location === "/quotes" || location.startsWith("/quotes/"),
       testId: "nav-quotes"
     });
+    // --- Divider 2 --- Relationships: Clients, Suppliers
     menuItems.push({
       title: "Clients",
       icon: Users,
       href: "/clients",
       isActive: location === "/clients" || location.startsWith("/clients/"),
-      testId: "nav-clients"
+      testId: "nav-clients",
+      isDivider: true
     });
     menuItems.push({
       title: "Suppliers",
@@ -167,14 +129,16 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       isActive: location === "/suppliers" || location.startsWith("/suppliers/"),
       testId: "nav-suppliers"
     });
+    // --- Divider 3 --- System / Back Office: Reports
     menuItems.push({
       title: "Reports",
       icon: FileText,
       href: "/reports",
       isActive: location === "/reports" || location.startsWith("/reports/"),
-      testId: "nav-reports"
+      testId: "nav-reports",
+      isDivider: true
     });
-    // --- Divider 2 --- System: Settings, Admin
+    // --- Divider 4 --- Settings, Admin
     menuItems.push({
       title: "Settings",
       icon: Settings,
@@ -209,7 +173,10 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
 
   return (
     <Sidebar collapsible="icon" className="bg-sidebar text-sidebar-foreground">
-      <SidebarHeader className="px-2 py-2 h-0" />
+      {/* Sidebar collapse/expand toggle — relocated from header */}
+      <SidebarHeader className="px-2 py-2">
+        <SidebarTrigger data-testid="button-sidebar-toggle" className="text-white/85 hover:text-white hover:bg-white/10 h-8 w-8" />
+      </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupContent>
@@ -217,7 +184,7 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
               {menuItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
                   {(item as any).isDivider && (
-                    <div className="my-2 mx-2 border-t border-white/10" />
+                    <div className="mx-2" style={{ height: 1, background: 'rgba(255,255,255,0.12)', marginTop: 12, marginBottom: 12 }} />
                   )}
                   {item.href ? (
                     <SidebarMenuButton
@@ -250,51 +217,7 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {/* Preview / Legacy — temporary section for prototype and fallback pages */}
-        {user?.role !== "technician" && (
-          <SidebarGroup>
-            <div className="mx-2 border-t border-white/10" />
-            <SidebarGroupLabel className="text-[10px] uppercase tracking-wider text-white/40 px-2 pt-3 pb-1">
-              Preview
-            </SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-<SidebarMenuItem>
-                  <SidebarMenuButton
-                    asChild
-                    isActive={location === "/preview/operations-queue"}
-                    tooltip="Operations Queue"
-                    data-testid="nav-preview-operations-queue"
-                    className="h-10 text-sidebar-foreground data-[active=true]:bg-white/[0.08] data-[active=true]:border-l-[3px] data-[active=true]:border-l-[var(--brand)] data-[active=true]:font-semibold data-[active=true]:pl-[7px] hover:bg-white/[0.08]"
-                  >
-                    <Link href="/preview/operations-queue">
-                      <ListChecks className="h-4 w-4 text-[var(--sidebar-muted)]" />
-                      <span>Operations Queue</span>
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
       </SidebarContent>
-      <SidebarFooter>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton onClick={() => setFeedbackOpen(true)} tooltip="Feedback" data-testid="button-feedback" className="h-10 text-sidebar-foreground hover:bg-white/[0.08]">
-              <MessageCircle className="h-4 w-4 text-[var(--sidebar-muted)]" />
-              <span>Feedback</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton onClick={handleLogout} tooltip="Logout" data-testid="button-logout" className="h-10 text-sidebar-foreground hover:bg-white/[0.08]">
-              <LogOut className="h-4 w-4 text-[var(--sidebar-muted)]" />
-              <span>Logout</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-      </SidebarFooter>
-      <FeedbackDialog open={feedbackOpen} onOpenChange={setFeedbackOpen} />
     </Sidebar>
   );
 }

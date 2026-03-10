@@ -12,10 +12,10 @@
   --sidebar-text: #e2e8f0;
   --sidebar-muted: #94a3b8;
   --sidebar-hover: rgba(255,255,255,0.08);
-  --brand: #2F7D32;
-  --brand-hover: #256329;
-  --brand-ring: rgba(47,125,50,0.18);
-  --primary-green: #2F7D32;
+  --brand: #82BA58;
+  --brand-hover: #6FA846;
+  --brand-ring: rgba(130,186,88,0.18);
+  --primary-green: #82BA58;
   --radius-sm: 6px;
   --spacing-page: 24px;
   --spacing-card: 16px;
@@ -36,7 +36,7 @@
    * Custom color palette
    * Background: #F7F9FB | Card: #FFFFFF | Border: #E5E7EB
    * Foreground: #1F2933 | Muted: #6B7280
-   * Primary (Green): #2F7D32 | Warning: #F9A825 | Danger: #E53935
+   * Primary (Green): #82BA58 | Warning: #F9A825 | Danger: #E53935
    */
   --background: 210 25% 98%;
   --foreground: 209 27% 16%;
@@ -48,15 +48,15 @@
   --sidebar: 211 29% 20%;
   --sidebar-foreground: 214 32% 91%;
   --sidebar-border: 211 25% 26%;
-  --sidebar-primary: 122 45% 34%;
+  --sidebar-primary: 94 45% 54%;
   --sidebar-primary-foreground: 0 0% 100%;
   --sidebar-accent: 211 25% 26%;
   --sidebar-accent-foreground: 214 32% 91%;
-  --sidebar-ring: 122 45% 34%;
+  --sidebar-ring: 95 50% 68%;
   --popover: 0 0% 100%;
   --popover-foreground: 209 27% 16%;
   --popover-border: 224 25% 91%;
-  --primary: 122 45% 34%;
+  --primary: 94 45% 54%;
   --primary-foreground: 0 0% 100%;
   --secondary: 228 33% 98%;
   --secondary-foreground: 209 27% 16%;
@@ -78,7 +78,7 @@
   --status-unscheduled-foreground: 0 0% 100%;
 
   --input: 224 25% 91%;
-  --ring: 122 45% 34%;
+  --ring: 95 50% 68%;
   --chart-1: 217 91% 35%;
   --chart-2: 45 93% 38%;
   --chart-3: 142 76% 32%;
@@ -171,11 +171,11 @@
   --sidebar: 211 29% 20%;
   --sidebar-foreground: 214 32% 91%;
   --sidebar-border: 211 25% 26%;
-  --sidebar-primary: 142 50% 45%;
+  --sidebar-primary: 94 45% 54%;
   --sidebar-primary-foreground: 0 0% 100%;
   --sidebar-accent: 211 25% 26%;
   --sidebar-accent-foreground: 214 32% 91%;
-  --sidebar-ring: 142 50% 45%;
+  --sidebar-ring: 95 50% 68%;
 
   --popover: 228 22% 11%;
 
@@ -183,7 +183,7 @@
 
   --popover-border: 228 14% 18%;
 
-  --primary: 142 50% 45%;
+  --primary: 94 45% 54%;
 
   --primary-foreground: 0 0% 100%;
 
@@ -217,7 +217,7 @@
   --status-unscheduled-foreground: 0 0% 100%;
 
   --input: 228 14% 18%;
-  --ring: 142 50% 45%;
+  --ring: 95 50% 68%;
   --chart-1: 217 91% 65%;
   --chart-2: 45 93% 62%;
   --chart-3: 142 76% 58%;

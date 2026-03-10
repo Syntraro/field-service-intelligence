@@ -88,7 +88,7 @@ const STEPS = [
 
 interface CustomerCompanyLite {
   id: string;
-  companyName: string;
+  name: string;  // Matches customer_companies.name column
 }
 
 interface WizardState {
@@ -206,36 +206,35 @@ function StepTarget({
 
   const allLocations = (locationsData ?? []).filter((c: Client) => !c.inactive);
 
-  // Filter locations by selected company
+  // Filter locations by selected company — empty until a company is chosen (company-first enforcement)
   const filteredLocations = state.customerCompanyId
     ? allLocations.filter((loc) => loc.parentCompanyId === state.customerCompanyId)
-    : allLocations;
+    : [];
 
   const handleSelectCompany = (companyId: string) => {
     const company = companies.find((c) => c.id === companyId);
+    // Clear location if it doesn't belong to the newly selected company
+    const locationStillValid =
+      state.locationId &&
+      allLocations.some((l) => l.id === state.locationId && l.parentCompanyId === companyId);
     onChange({
       customerCompanyId: companyId,
-      customerName: company?.companyName ?? "",
-      locationId: "",
-      locationName: "",
+      customerName: company?.name ?? "",
+      locationId: locationStillValid ? state.locationId : "",
+      locationName: locationStillValid ? state.locationName : "",
     });
     setCompanyOpen(false);
   };
 
   const handleSelectLocation = (locationId: string) => {
-    const loc = allLocations.find((c) => c.id === locationId);
+    // Company-first: only allow selecting locations that belong to the already-selected company
+    if (!state.customerCompanyId) return;
+    const loc = filteredLocations.find((c) => c.id === locationId);
     if (loc) {
-      // Auto-fill customer if not already set
-      const customerPatch: Partial<WizardState> = {
+      onChange({
         locationId: loc.id,
         locationName: [loc.companyName, loc.location].filter(Boolean).join(" — "),
-      };
-      if (!state.customerCompanyId && loc.parentCompanyId) {
-        const company = companies.find((c) => c.id === loc.parentCompanyId);
-        customerPatch.customerCompanyId = loc.parentCompanyId;
-        customerPatch.customerName = company?.companyName ?? loc.companyName;
-      }
-      onChange(customerPatch);
+      });
     }
     setLocationOpen(false);
   };
@@ -273,7 +272,7 @@ function StepTarget({
                   {companies.map((company) => (
                     <CommandItem
                       key={company.id}
-                      value={company.companyName}
+                      value={company.name}
                       onSelect={() => handleSelectCompany(company.id)}
                     >
                       <Check
@@ -281,7 +280,7 @@ function StepTarget({
                           state.customerCompanyId === company.id ? "opacity-100" : "opacity-0"
                         }`}
                       />
-                      {company.companyName}
+                      {company.name}
                     </CommandItem>
                   ))}
                 </CommandGroup>
@@ -290,22 +289,23 @@ function StepTarget({
           </PopoverContent>
         </Popover>
         <p className="text-xs text-muted-foreground">
-          Optional — you can also pick a location directly.
+          Select a customer first, then choose one of their service locations below.
         </p>
       </div>
 
-      {/* Location Picker */}
+      {/* Location Picker — disabled until a customer company is selected */}
       <div className="space-y-2">
         <Label>Service Location</Label>
-        <Popover open={locationOpen} onOpenChange={setLocationOpen}>
+        <Popover open={locationOpen} onOpenChange={(open) => { if (state.customerCompanyId) setLocationOpen(open); }}>
           <PopoverTrigger asChild>
             <Button
               variant="outline"
               role="combobox"
               className="w-full justify-between font-normal"
+              disabled={!state.customerCompanyId}
               data-testid="pm-wizard-location-select"
             >
-              {state.locationName || "Select a location..."}
+              {state.locationName || (state.customerCompanyId ? "Select a location..." : "Select a customer first")}
               <ChevronsUpDown className="ml-2 h-4 w-4 opacity-50" />
             </Button>
           </PopoverTrigger>
@@ -764,6 +764,7 @@ function StepReview({ state }: { state: WizardState }) {
   const schedLabel = state.autoSchedule
     ? `Auto at ${state.scheduledTimeLocal}, ${state.defaultDurationMinutes} min`
     : "Manual (unscheduled)";
+  const missingTarget = !state.customerCompanyId || !state.locationId;
 
   return (
     <div className="space-y-5">
@@ -774,9 +775,15 @@ function StepReview({ state }: { state: WizardState }) {
         </p>
       </div>
 
+      {missingTarget && (
+        <div className="rounded-md border border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          Customer and location are required. Go back to Step 1 to select them.
+        </div>
+      )}
+
       <div className="rounded-lg border divide-y text-sm">
-        <Row label="Customer" value={state.customerName || "—"} />
-        <Row label="Location" value={state.locationName || "—"} />
+        <Row label="Customer" value={state.customerName || "— (required)"} error={!state.customerCompanyId} />
+        <Row label="Location" value={state.locationName || "— (required)"} error={!state.locationId} />
         <Row label="PM Name" value={state.title || "—"} />
         {state.description && <Row label="Notes" value={state.description} />}
         <Row label="Months" value={monthNames || "None selected"} />
@@ -791,11 +798,11 @@ function StepReview({ state }: { state: WizardState }) {
   );
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+function Row({ label, value, error }: { label: string; value: string; error?: boolean }) {
   return (
     <div className="flex items-center justify-between px-4 py-2.5">
       <span className="text-muted-foreground">{label}</span>
-      <span className="font-medium text-right max-w-[60%]">{value}</span>
+      <span className={`font-medium text-right max-w-[60%] ${error ? "text-destructive" : ""}`}>{value}</span>
     </div>
   );
 }
@@ -846,7 +853,7 @@ export default function PMWizardPage() {
           locationId: loc.id,
           locationName: [loc.companyName, loc.location].filter(Boolean).join(" — "),
           customerCompanyId: loc.parentCompanyId ?? "",
-          customerName: company?.companyName ?? loc.companyName,
+          customerName: company?.name ?? loc.companyName,
           title: prev.title || `PM - ${loc.companyName}${loc.location ? ` — ${loc.location}` : ""}`,
         }));
         // Skip target step if location is prefilled
@@ -855,26 +862,31 @@ export default function PMWizardPage() {
     }
   }, [prefillLocationId, allLocations.length, companies.length]);
 
-  // Prefill from existing template
+  // Prefill from existing template — depends on allLocations + companies for company/location resolution
   useEffect(() => {
-    if (prefillTemplateId && templates.length > 0) {
+    if (prefillTemplateId && templates.length > 0 && allLocations.length > 0) {
       const tpl = templates.find((t) => t.id === prefillTemplateId);
       if (tpl) {
         applyTemplateToState(tpl);
       }
     }
-  }, [prefillTemplateId, templates.length]);
+  }, [prefillTemplateId, templates.length, allLocations.length, companies.length]);
 
   function applyTemplateToState(tpl: RecurringJobTemplate) {
     const loc = allLocations.find((c) => c.id === tpl.locationId);
-    const company = companies.find((c) => c.id === loc?.parentCompanyId);
+    const company = loc?.parentCompanyId
+      ? companies.find((c) => c.id === loc.parentCompanyId)
+      : undefined;
+    // Resolve both company and location together — never set location without company
+    const resolvedCompanyId = loc?.parentCompanyId ?? "";
+    const resolvedCompanyName = company?.name ?? loc?.companyName ?? "";
 
     setState((prev) => ({
       ...prev,
-      // Don't override location if already set by prefill
-      customerCompanyId: prev.customerCompanyId || loc?.parentCompanyId || "",
-      customerName: prev.customerName || company?.companyName || loc?.companyName || "",
-      locationId: prev.locationId || tpl.locationId || "",
+      // Don't override location if already set by prefill; always keep company+location paired
+      customerCompanyId: prev.customerCompanyId || resolvedCompanyId,
+      customerName: prev.customerName || resolvedCompanyName,
+      locationId: prev.locationId || (resolvedCompanyId ? tpl.locationId || "" : ""),
       locationName: prev.locationName || (loc ? [loc.companyName, loc.location].filter(Boolean).join(" — ") : ""),
       fromTemplateId: tpl.id,
       title: `${tpl.title} (Copy)`,
@@ -914,14 +926,14 @@ export default function PMWizardPage() {
     }
   }, [step]);
 
-  // Step validation
+  // Step validation — company + location required from step 0 onward
   function canProceed(): boolean {
     switch (step) {
-      case 0: return Boolean(state.locationId);
+      case 0: return Boolean(state.customerCompanyId) && Boolean(state.locationId);
       case 1: return true; // from-scratch is default
       case 2: return Boolean(state.title.trim()) && state.months.length > 0;
       case 3: return true;
-      case 4: return true;
+      case 4: return Boolean(state.customerCompanyId) && Boolean(state.locationId);
       default: return false;
     }
   }
@@ -1033,7 +1045,7 @@ export default function PMWizardPage() {
         ) : (
           <Button
             onClick={() => createMutation.mutate()}
-            disabled={createMutation.isPending}
+            disabled={createMutation.isPending || !canProceed()}
             data-testid="pm-wizard-create"
           >
             {createMutation.isPending ? (

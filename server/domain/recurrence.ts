@@ -811,6 +811,153 @@ export async function generateForSingleTemplate(
 }
 
 /**
+ * Phase 4C: Generate jobs from specific instance IDs (selective generation).
+ *
+ * Used by the Upcoming queue to generate jobs for selected instances only,
+ * rather than running the full template-level generation.
+ *
+ * @param companyId - Company ID for authorization
+ * @param instanceIds - Array of instance IDs to generate jobs for
+ * @returns Generation results
+ */
+export async function generateFromInstances(
+  companyId: string,
+  instanceIds: string[]
+): Promise<GenerationResult> {
+  const result: GenerationResult = {
+    templatesProcessed: 0,
+    instancesCreated: 0,
+    jobsCreated: 0,
+    errors: [],
+  };
+
+  if (instanceIds.length === 0) return result;
+
+  // Recover stale claims first
+  await recoverStaleClaims(companyId);
+
+  const templateIds = new Set<string>();
+
+  for (const instanceId of instanceIds) {
+    // Fetch the instance
+    const [instance] = await db
+      .select()
+      .from(recurringJobInstances)
+      .where(
+        and(
+          eq(recurringJobInstances.id, instanceId),
+          eq(recurringJobInstances.companyId, companyId)
+        )
+      )
+      .limit(1);
+
+    if (!instance) {
+      result.errors.push(`Instance ${instanceId} not found`);
+      continue;
+    }
+
+    if (instance.status !== "pending") {
+      result.errors.push(`Instance ${instanceId} is not pending (status: ${instance.status})`);
+      continue;
+    }
+
+    // Get the template
+    const [template] = await db
+      .select()
+      .from(recurringJobTemplates)
+      .where(
+        and(
+          eq(recurringJobTemplates.id, instance.templateId),
+          eq(recurringJobTemplates.companyId, companyId)
+        )
+      )
+      .limit(1);
+
+    if (!template) {
+      result.errors.push(`Template for instance ${instanceId} not found`);
+      continue;
+    }
+
+    if (!template.locationId) {
+      result.errors.push(`Template ${template.id} has no location`);
+      continue;
+    }
+
+    templateIds.add(template.id);
+
+    // Claim the instance
+    const claimed = await claimInstanceForJobCreation(instance.id);
+    if (!claimed) {
+      continue; // Already claimed by another process
+    }
+
+    // Compute scheduling fields
+    const occurrenceDate = parseLocalDate(instance.instanceDate);
+    let scheduledStart: Date | null = null;
+    let scheduledEnd: Date | null = null;
+
+    if (template.autoSchedule && template.scheduledTimeLocal) {
+      const [hh, mm] = template.scheduledTimeLocal.split(":").map(Number);
+      scheduledStart = new Date(occurrenceDate);
+      scheduledStart.setHours(hh, mm, 0, 0);
+      const durationMin = template.defaultDurationMinutes ?? 60;
+      scheduledEnd = new Date(scheduledStart.getTime() + durationMin * 60 * 1000);
+    }
+
+    try {
+      const newJob = await jobRepository.createJob(template.companyId, {
+        locationId: template.locationId!,
+        summary: template.title,
+        description: template.description,
+        jobType: (template.jobType ?? "maintenance") as JobType,
+        priority: (template.priority ?? "medium") as JobPriority,
+        primaryTechnicianId: template.preferredTechnicianId,
+        status: "open" as JobStatus,
+        openSubStatus: template.openSubStatusDefault ?? null,
+        holdReason: (template.openSubStatusDefault === "on_hold" ? template.holdReason : null) as HoldReason | null,
+        scheduledStart: scheduledStart ? scheduledStart.toISOString() : null,
+        scheduledEnd: scheduledEnd ? scheduledEnd.toISOString() : null,
+        isAllDay: false,
+        recurrenceTemplateId: template.id,
+        recurrenceInstanceDate: instance.instanceDate,
+      });
+
+      // Copy PM parts if enabled
+      if (template.includeLocationPmParts && template.locationId) {
+        try {
+          await copyLocationPMPartsToJob(template.companyId, template.locationId, newJob.id);
+        } catch (partsCopyErr) {
+          console.error(`[recurrence] Failed to copy PM parts for job ${newJob.id}:`, partsCopyErr);
+        }
+      }
+
+      // Mark instance as generated
+      await db
+        .update(recurringJobInstances)
+        .set({
+          generatedJobId: newJob.id,
+          status: "generated",
+          claimedAt: null,
+        })
+        .where(eq(recurringJobInstances.id, instance.id));
+
+      result.jobsCreated++;
+    } catch (error) {
+      // Revert to pending on failure
+      await db
+        .update(recurringJobInstances)
+        .set({ status: "pending" })
+        .where(eq(recurringJobInstances.id, instance.id));
+      const message = error instanceof Error ? error.message : String(error);
+      result.errors.push(`Instance ${instanceId}: ${message}`);
+    }
+  }
+
+  result.templatesProcessed = templateIds.size;
+  return result;
+}
+
+/**
  * Preview generation without creating jobs (dry run)
  *
  * @param companyId - Company ID to preview for

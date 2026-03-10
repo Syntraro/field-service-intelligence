@@ -10,7 +10,7 @@
  * Route: /pm
  */
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation, Link } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -18,7 +18,16 @@ import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -45,7 +54,6 @@ import {
   Pause,
   Copy,
   Pencil,
-  CalendarClock,
   Loader2,
   AlertCircle,
   Wrench,
@@ -66,6 +74,7 @@ import {
   ChevronDown,
   ChevronRight,
   Navigation,
+  Zap,
 } from "lucide-react";
 
 // ============================================================================
@@ -81,6 +90,7 @@ interface RecurringTemplate {
   locationId: string | null;
   clientName?: string | null;
   locationName?: string | null;
+  locationAddress?: string | null;
   recurrenceKind: string;
   intervalMonths: number;
   monthsOfYear: number[] | null;
@@ -479,7 +489,14 @@ function PMSetupsTab({
           {templates.map((tpl) => (
             <TableRow key={tpl.id} className="cursor-pointer hover:bg-muted/50" onClick={() => setLocation(`/pm/${tpl.id}`)} data-testid={`pm-row-${tpl.id}`}>
               <TableCell className="font-medium">
-                {tpl.clientName || tpl.locationName ? (<div>{tpl.clientName && <div>{tpl.clientName}</div>}{tpl.locationName && <div className="text-xs text-muted-foreground">{tpl.locationName}</div>}</div>) : "—"}
+                {tpl.clientName || tpl.locationName ? (
+                  <div>
+                    {tpl.clientName && <div>{tpl.clientName}</div>}
+                    {(tpl.locationAddress || tpl.locationName) && (
+                      <div className="text-xs text-muted-foreground">{tpl.locationAddress || tpl.locationName}</div>
+                    )}
+                  </div>
+                ) : "—"}
               </TableCell>
               <TableCell>{tpl.title}</TableCell>
               <TableCell>{formatRecurrence(tpl.recurrenceKind, tpl.intervalMonths)}</TableCell>
@@ -606,6 +623,68 @@ function applyFilter(items: UpcomingQueueItem[], filter: string): UpcomingQueueI
 }
 
 // ============================================================================
+// Phase 4C: Generation eligibility + confirmation modal
+// ============================================================================
+
+/** Phase 4C: Eligible compliance statuses for generation */
+const GENERATION_ELIGIBLE_STATUSES = new Set(["upcoming", "in_window", "due_soon", "overdue"]);
+
+/** Check if an upcoming item is eligible for generation */
+function isGenerationEligible(item: UpcomingQueueItem): boolean {
+  return (
+    item.schedulingState === "not_generated" &&
+    GENERATION_ELIGIBLE_STATUSES.has(item.complianceStatus)
+  );
+}
+
+/** Phase 4C: Confirmation modal shown before bulk generation */
+function GenerateConfirmModal({
+  open,
+  onClose,
+  onConfirm,
+  items,
+  isPending,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+  items: UpcomingQueueItem[];
+  isPending: boolean;
+}) {
+  const customerCount = new Set(items.map((i) => i.clientId).filter(Boolean)).size;
+  const locationCount = new Set(items.map((i) => i.locationId).filter(Boolean)).size;
+  const dates = items.map((i) => i.instanceDate).sort();
+  const earliest = dates[0] ?? "—";
+  const latest = dates[dates.length - 1] ?? "—";
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Generate {items.length} PM job{items.length !== 1 ? "s" : ""}?</DialogTitle>
+          <DialogDescription>
+            This will create work orders for the selected PM instances.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2 text-sm py-2">
+          <div className="flex justify-between"><span className="text-muted-foreground">Customers:</span><span className="font-medium">{customerCount}</span></div>
+          <div className="flex justify-between"><span className="text-muted-foreground">Locations:</span><span className="font-medium">{locationCount}</span></div>
+          <div className="flex justify-between"><span className="text-muted-foreground">Earliest due:</span><span className="font-medium">{earliest}</span></div>
+          <div className="flex justify-between"><span className="text-muted-foreground">Latest due:</span><span className="font-medium">{latest}</span></div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={isPending}>Cancel</Button>
+          <Button onClick={onConfirm} disabled={isPending}>
+            {isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Zap className="mr-2 h-4 w-4" />}
+            Confirm
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ============================================================================
 // Phase 4B: Upcoming Tab with Grouping Modes
 // ============================================================================
 
@@ -618,8 +697,12 @@ const GROUP_MODE_OPTIONS: { value: GroupMode; label: string; icon: React.ReactNo
 
 function UpcomingTab() {
   const [, setLocation] = useLocation();
+  const { toast } = useToast();
   const [statusFilter, setStatusFilter] = useState<string>("needs_action");
   const [groupMode, setGroupMode] = useState<GroupMode>("none");
+  // Phase 4C: Selection state for bulk generation
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   const { data: items = [], isLoading, isError } = useQuery<UpcomingQueueItem[]>({
     queryKey: ["/api/recurring-templates/upcoming"],
@@ -628,6 +711,67 @@ function UpcomingTab() {
 
   // Apply filter first, then group
   const filteredItems = useMemo(() => applyFilter(items, statusFilter), [items, statusFilter]);
+
+  // Phase 4C: Eligible items in current view
+  const eligibleIds = useMemo(
+    () => new Set(filteredItems.filter(isGenerationEligible).map((i) => i.instanceId)),
+    [filteredItems]
+  );
+
+  // Phase 4C: Items selected for generation (intersection of selected + eligible)
+  const selectedEligible = useMemo(
+    () => items.filter((i) => selectedIds.has(i.instanceId) && isGenerationEligible(i)),
+    [items, selectedIds]
+  );
+
+  // Phase 4C: Toggle single selection
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
+  // Phase 4C: Toggle all eligible in current filtered view
+  const toggleSelectAll = useCallback(() => {
+    setSelectedIds((prev) => {
+      const allSelected = Array.from(eligibleIds).every((id) => prev.has(id));
+      const next = new Set(prev);
+      if (allSelected) {
+        eligibleIds.forEach((id) => next.delete(id));
+      } else {
+        eligibleIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  }, [eligibleIds]);
+
+  // Phase 4C: Generate mutation (selective by instance IDs)
+  const generateMutation = useMutation({
+    mutationFn: async (instanceIds: string[]) =>
+      apiRequest("/api/recurring-templates/generate-selected", {
+        method: "POST",
+        body: JSON.stringify({ instanceIds }),
+      }),
+    onSuccess: (data: { jobsCreated?: number }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates/upcoming"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      setSelectedIds(new Set());
+      setConfirmOpen(false);
+      toast({ title: "Generation complete", description: `${data?.jobsCreated ?? 0} job(s) created.` });
+    },
+    onError: () => {
+      setConfirmOpen(false);
+      toast({ title: "Generation failed", variant: "destructive" });
+    },
+  });
+
+  // Phase 4C: Single-row generate
+  const handleGenerateOne = useCallback((item: UpcomingQueueItem) => {
+    generateMutation.mutate([item.instanceId]);
+  }, [generateMutation]);
 
   // Compute groups
   const groups = useMemo((): QueueGroup[] => {
@@ -648,6 +792,8 @@ function UpcomingTab() {
     }
     return { overdue, dueSoon, unscheduled, needsAction };
   }, [items]);
+
+  const allEligibleSelected = eligibleIds.size > 0 && Array.from(eligibleIds).every((id) => selectedIds.has(id));
 
   if (isLoading) {
     return (
@@ -688,7 +834,7 @@ function UpcomingTab() {
         )}
       </div>
 
-      {/* Controls: Filter + Group By */}
+      {/* Controls: Filter + Group By + Bulk Generate */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2">
           <Filter className="h-4 w-4 text-muted-foreground" />
@@ -699,6 +845,18 @@ function UpcomingTab() {
             </SelectContent>
           </Select>
         </div>
+
+        {/* Phase 4C: Bulk generate button */}
+        {selectedEligible.length > 0 && (
+          <Button
+            size="sm"
+            onClick={() => setConfirmOpen(true)}
+            disabled={generateMutation.isPending}
+          >
+            {generateMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Zap className="mr-2 h-4 w-4" />}
+            Generate Selected ({selectedEligible.length})
+          </Button>
+        )}
 
         {/* Phase 4B: Group-by segmented control */}
         <div className="flex items-center gap-1 ml-auto border rounded-lg p-0.5 bg-muted/30">
@@ -719,6 +877,15 @@ function UpcomingTab() {
         </div>
       </div>
 
+      {/* Phase 4C: Confirmation modal */}
+      <GenerateConfirmModal
+        open={confirmOpen}
+        onClose={() => setConfirmOpen(false)}
+        onConfirm={() => generateMutation.mutate(selectedEligible.map((i) => i.instanceId))}
+        items={selectedEligible}
+        isPending={generateMutation.isPending}
+      />
+
       {/* Grouped view */}
       {groupMode !== "none" ? (
         <div>
@@ -736,41 +903,77 @@ function UpcomingTab() {
           </p>
         </div>
       ) : (
-        /* Flat (ungrouped) view */
+        /* Flat (ungrouped) view with selection checkboxes */
         <>
           <Card><CardContent className="p-0"><div className="overflow-x-auto">
             <Table>
               <TableHeader><TableRow>
+                <TableHead className="w-10">
+                  {eligibleIds.size > 0 && (
+                    <Checkbox
+                      checked={allEligibleSelected}
+                      onCheckedChange={toggleSelectAll}
+                      aria-label="Select all eligible"
+                    />
+                  )}
+                </TableHead>
                 <TableHead>Compliance</TableHead><TableHead>Scheduling</TableHead><TableHead>PM Setup</TableHead>
                 <TableHead>Customer / Location</TableHead><TableHead>Target Date</TableHead><TableHead>Window</TableHead>
                 <TableHead>Visit Date</TableHead><TableHead>Tech</TableHead><TableHead>Job</TableHead>
+                <TableHead className="w-24">Actions</TableHead>
               </TableRow></TableHeader>
               <TableBody>
-                {filteredItems.map((item) => (
-                  <TableRow key={item.instanceId} className="cursor-pointer hover:bg-muted/50" onClick={() => setLocation(`/pm/${item.templateId}`)}>
-                    <TableCell><ComplianceBadge status={item.complianceStatus} /></TableCell>
-                    <TableCell><SchedulingBadge state={item.schedulingState} /></TableCell>
-                    <TableCell className="font-medium max-w-[180px] truncate">{item.templateTitle}</TableCell>
-                    <TableCell>
-                      <div className="max-w-[180px]">
-                        {item.customerName && <div className="text-sm truncate">{item.customerName}</div>}
-                        {item.locationName && <div className="text-xs text-muted-foreground truncate">{item.locationName}</div>}
-                        {!item.customerName && !item.locationName && "—"}
-                      </div>
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-sm">{item.instanceDate}</TableCell>
-                    <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{item.windowStart} — {item.windowEnd}</TableCell>
-                    <TableCell className="text-sm whitespace-nowrap">
-                      {item.visit?.scheduledDate ? formatDateTime(item.visit.scheduledDate) : <span className="text-muted-foreground">—</span>}
-                    </TableCell>
-                    <TableCell className="text-sm">{item.technicianName || <span className="text-muted-foreground">—</span>}</TableCell>
-                    <TableCell onClick={(e) => e.stopPropagation()}>
-                      {item.job ? (
-                        <Link href={`/jobs/${item.job.id}`} className="text-primary hover:underline font-medium text-sm">#{item.job.jobNumber}</Link>
-                      ) : <span className="text-muted-foreground text-sm">—</span>}
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {filteredItems.map((item) => {
+                  const eligible = isGenerationEligible(item);
+                  return (
+                    <TableRow key={item.instanceId} className="cursor-pointer hover:bg-muted/50" onClick={() => setLocation(`/pm/${item.templateId}`)}>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        {eligible && (
+                          <Checkbox
+                            checked={selectedIds.has(item.instanceId)}
+                            onCheckedChange={() => toggleSelect(item.instanceId)}
+                            aria-label={`Select ${item.templateTitle}`}
+                          />
+                        )}
+                      </TableCell>
+                      <TableCell><ComplianceBadge status={item.complianceStatus} /></TableCell>
+                      <TableCell><SchedulingBadge state={item.schedulingState} /></TableCell>
+                      <TableCell className="font-medium max-w-[180px] truncate">{item.templateTitle}</TableCell>
+                      <TableCell>
+                        <div className="max-w-[180px]">
+                          {item.customerName && <div className="text-sm truncate">{item.customerName}</div>}
+                          {item.locationName && <div className="text-xs text-muted-foreground truncate">{item.locationName}</div>}
+                          {!item.customerName && !item.locationName && "—"}
+                        </div>
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap text-sm">{item.instanceDate}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{item.windowStart} — {item.windowEnd}</TableCell>
+                      <TableCell className="text-sm whitespace-nowrap">
+                        {item.visit?.scheduledDate ? formatDateTime(item.visit.scheduledDate) : <span className="text-muted-foreground">—</span>}
+                      </TableCell>
+                      <TableCell className="text-sm">{item.technicianName || <span className="text-muted-foreground">—</span>}</TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        {item.job ? (
+                          <Link href={`/jobs/${item.job.id}`} className="text-primary hover:underline font-medium text-sm">#{item.job.jobNumber}</Link>
+                        ) : <span className="text-muted-foreground text-sm">—</span>}
+                      </TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
+                        {eligible && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 text-xs"
+                            disabled={generateMutation.isPending}
+                            onClick={() => handleGenerateOne(item)}
+                          >
+                            <Zap className="mr-1 h-3 w-3" />
+                            Generate
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           </div></CardContent></Card>
@@ -809,16 +1012,7 @@ export default function PMWorkspacePage() {
     onError: () => { toast({ title: "Error", description: "Failed to update template status.", variant: "destructive" }); },
   });
 
-  const generateMutation = useMutation({
-    mutationFn: async () => apiRequest("/api/recurring-templates/generate", { method: "POST", body: JSON.stringify({}) }),
-    onSuccess: (data: { generated?: number } | undefined) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates/upcoming"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
-      toast({ title: "Generation complete", description: data?.generated ? `${data.generated} job(s) generated.` : "Check Upcoming tab." });
-    },
-    onError: () => { toast({ title: "Generation failed", variant: "destructive" }); },
-  });
+  // Phase 4C: Removed global generateMutation — generation moved to Upcoming tab
 
   return (
     <div className="flex flex-col gap-6 p-4 md:p-6 lg:p-8 max-w-7xl mx-auto">
@@ -828,10 +1022,7 @@ export default function PMWorkspacePage() {
           <p className="text-sm text-muted-foreground">Manage recurring maintenance schedules</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => generateMutation.mutate()} disabled={generateMutation.isPending}>
-            {generateMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CalendarClock className="mr-2 h-4 w-4" />}
-            Generate Now
-          </Button>
+          {/* Phase 4C: Global Generate Now removed — use Upcoming tab for selective generation */}
           <Button onClick={() => setLocation("/pm/new")}><Plus className="mr-2 h-4 w-4" />New PM Setup</Button>
         </div>
       </div>

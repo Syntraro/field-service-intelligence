@@ -4111,6 +4111,7 @@ export const recurringJobTemplates = pgTable("recurring_job_templates", {
 
 export const insertRecurringJobTemplateSchema = createInsertSchema(recurringJobTemplates).omit({
   id: true,
+  companyId: true, // Tenant companyId is injected server-side from req.companyId
   createdAt: true,
   updatedAt: true,
 }).extend({

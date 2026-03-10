@@ -42,6 +42,27 @@ export class CustomerCompanyRepository extends BaseRepository {
   // ========================================
 
   /**
+   * List all customer companies for a tenant (lightweight: id + name only).
+   * Used by PM wizard company picker and other selectors.
+   */
+  async listCustomerCompanies(
+    companyId: string
+  ): Promise<{ id: string; name: string }[]> {
+    this.assertCompanyId(companyId);
+
+    return db
+      .select({ id: customerCompanies.id, name: customerCompanies.name })
+      .from(customerCompanies)
+      .where(
+        and(
+          eq(customerCompanies.companyId, companyId),
+          eq(customerCompanies.isActive, true)
+        )
+      )
+      .orderBy(customerCompanies.name);
+  }
+
+  /**
    * Get customer company by ID (tenant-scoped)
    */
   async getCustomerCompany(

@@ -74,6 +74,8 @@ import intelligenceRouter from "./intelligence";
 import equipmentCatalogItemsRouter from "./equipmentCatalogItems.routes";
 // Dispatch map aggregator
 import mapRouter from "./map";
+// Client CSV import (v1)
+import clientImportRouter from "./clientImport";
 
 /**
  * Register all API routes in a single place.
@@ -275,6 +277,9 @@ export function registerRoutes(app: Express): Server {
 
   // Dispatch map aggregator
   app.use("/api/map", mapRouter);
+
+  // Client CSV import (v1): preview + execute
+  app.use("/api/client-import", clientImportRouter);
 
   // Admin timesheets: day/week views, edit/delete time entries
   app.use("/api/admin/timesheets", adminTimesheetsRouter);

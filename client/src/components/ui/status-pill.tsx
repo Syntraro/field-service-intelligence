@@ -13,7 +13,7 @@ const variantClasses: Record<PillVariant, string> = {
   neutral:
     "bg-[#F3F4F6] text-[#374151] border-[#E5E7EB] dark:bg-gray-800 dark:text-gray-300 dark:border-gray-700",
   success:
-    "bg-[rgba(47,125,50,0.12)] text-[#2F7D32] border-[rgba(47,125,50,0.25)] dark:bg-green-950/40 dark:text-green-400 dark:border-green-800",
+    "bg-[rgba(130,186,88,0.12)] text-[#5F9438] border-[rgba(130,186,88,0.25)] dark:bg-green-950/40 dark:text-green-400 dark:border-green-800",
   warning:
     "bg-[rgba(245,158,11,0.14)] text-[#92400E] border-[rgba(245,158,11,0.28)] dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800",
   danger:

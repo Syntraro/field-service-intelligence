@@ -361,7 +361,7 @@ export default function LocationDetailPage() {
               <div className="flex flex-wrap items-center gap-2 text-xs">
                 <Badge
                   variant={isActive ? "default" : "secondary"}
-                  className={isActive ? "bg-[rgba(47,125,50,0.12)] text-[#2F7D32] hover:bg-[rgba(47,125,50,0.12)]" : ""}
+                  className={isActive ? "bg-[rgba(130,186,88,0.12)] text-[#5F9438] hover:bg-[rgba(130,186,88,0.12)]" : ""}
                 >
                   {isActive ? "Active" : "Inactive"}
                 </Badge>

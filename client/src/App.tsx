@@ -4,6 +4,7 @@ import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider, useAuth } from "@/lib/auth";
+import { useToast } from "@/hooks/use-toast";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import Dashboard from "@/pages/Dashboard";
 import LiveMapPage from "@/pages/LiveMapPage";
@@ -54,6 +55,7 @@ import TimeAlertSettingsPage from "@/pages/TimeAlertSettingsPage";
 import TimeBillingRulesPage from "@/pages/TimeBillingRulesPage";
 import RegionalSettingsPage from "@/pages/RegionalSettingsPage";
 import BusinessHoursSettingsPage from "@/pages/BusinessHoursSettingsPage";
+import ClientImportPage from "@/pages/ClientImportPage";
 import TagsSettingsPage from "@/pages/TagsSettingsPage";
 import { TimezoneSetupBanner } from "@/components/TimezoneSetupBanner";
 import { TimezoneSetupDialog } from "@/components/TimezoneSetupDialog";
@@ -74,20 +76,30 @@ import { PortalAuthProvider, usePortalAuth } from "@/lib/portalAuth";
 import { ActivityProvider } from "@/lib/activityStore";
 import { QuickCreateDrawer } from "@/components/QuickCreateDrawer";
 import { SettingsShell } from "@/components/SettingsShell";
-import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { SubscriptionBanner } from "@/components/SubscriptionBanner";
 import { ImpersonationBanner } from "@/components/ImpersonationBanner";
 import QuickAddClientModal from "@/components/QuickAddClientModal";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import UniversalSearch from "@/components/UniversalSearch";
+import { QuoteTemplateChooserModal } from "@/components/QuoteTemplateChooserModal";
+import { NewQuoteModal } from "@/components/NewQuoteModal";
 import { useState } from "react";
-import { Plus, Settings } from "lucide-react";
+import { Plus, MoreHorizontal, Settings, MessageCircle, LogOut } from "lucide-react";
+import syntaroLogo from "@/assets/Syntraro Logo Transparent.png";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import FeedbackDialog from "@/components/FeedbackDialog";
 import SuppliersListPage from "@/pages/SuppliersListPage";
 import SupplierDetailPage from "@/pages/SupplierDetailPage";
 import Locations from "@/pages/Locations";
-import PreviewOperationsQueue from "@/pages/PreviewOperationsQueue";
 import DispatchBoard from "@/pages/DispatchPreview";
 import PMWorkspacePage from "@/pages/PMWorkspacePage";
 import PMWizardPage from "@/pages/PMWizardPage";
@@ -346,6 +358,11 @@ function Router() {
           <BusinessHoursSettingsPage />
         </ProtectedRoute>
       </Route>
+      <Route path="/settings/import-clients">
+        <ProtectedRoute requireAdmin>
+          <ClientImportPage />
+        </ProtectedRoute>
+      </Route>
       <Route path="/company-settings">
         <ProtectedRoute requireAdmin>
           <CompanySettingsPage />
@@ -409,12 +426,6 @@ function Router() {
       <Route path="/suppliers/:id">
         <ProtectedRoute requireAdmin>
           <SupplierDetailPage />
-        </ProtectedRoute>
-      </Route>
-      {/* Preview / prototype routes (no backend) */}
-      <Route path="/preview/operations-queue">
-        <ProtectedRoute requireAdmin>
-          <PreviewOperationsQueue />
         </ProtectedRoute>
       </Route>
       <Route path="/dispatch-preview">
@@ -489,10 +500,15 @@ function PortalProtected({ children }: { children: React.ReactNode }) {
 
 function AppContent() {
   const [location, setLocation] = useLocation();
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
+  const { toast } = useToast();
   const [addClientModalOpen, setAddClientModalOpen] = useState(false);
   const [addJobModalOpen, setAddJobModalOpen] = useState(false);
   const [quickCreateOpen, setQuickCreateOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [quoteChooserOpen, setQuoteChooserOpen] = useState(false);
+  const [newQuoteModalOpen, setNewQuoteModalOpen] = useState(false);
+  const [selectedQuoteTemplateId, setSelectedQuoteTemplateId] = useState<string | null>(null);
 
   // Company settings for header display — shared query key, TanStack deduplicates
   // Architecture rule: app shell must NOT fetch dispatch/calendar/scheduling data.
@@ -516,8 +532,18 @@ function AppContent() {
   }
 
   const handleDashboardClick = () => {
-    // Navigate to dashboard and clear query params
     setLocation('/');
+  };
+
+  /** Logout handler — moved from sidebar to header More menu */
+  const handleLogout = async () => {
+    try {
+      await logout();
+      setLocation("/login");
+      toast({ title: "Logged out", description: "You have been successfully logged out" });
+    } catch {
+      toast({ variant: "destructive", title: "Logout failed", description: "Could not log out. Please try again." });
+    }
   };
 
   const handleAddClient = () => {
@@ -541,42 +567,66 @@ function AppContent() {
   return (
     <SidebarProvider defaultOpen={true} style={style as React.CSSProperties}>
       <div className="flex flex-col h-screen w-full bg-background">
-        {/* Global header — spans full width above sidebar + content */}
-        <header className="flex items-center justify-between gap-2 px-4 h-14 shrink-0 bg-white dark:bg-gray-950 border-b border-[var(--card-border)] shadow-[0_1px_0_rgba(0,0,0,0.03)] z-20">
-          <SidebarTrigger data-testid="button-sidebar-toggle" />
+        {/* Global header — dark app shell, color matched to sidebar via --sidebar-bg */}
+        <header className="flex items-center gap-4 px-3 h-16 shrink-0 z-20" style={{ background: 'var(--sidebar-bg)', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
+          {/* Left: Syntraro logo branding (sidebar toggle moved to AppSidebar) */}
+          <Link href="/" className="flex items-center gap-4 shrink-0 cursor-pointer no-underline" data-testid="header-logo">
+            <img src={syntaroLogo} alt="Syntraro" className="h-12 w-auto object-contain shrink-0" />
+            {!isTechnicianPage && companyDisplayName && (
+              <span className="text-white/70 text-xs truncate max-w-[180px]">{companyDisplayName}</span>
+            )}
+          </Link>
 
-          {/* Company name - hidden on technician pages */}
-          {!isTechnicianPage && companyDisplayName && (
-            <div className="ml-3 text-base font-semibold text-foreground truncate max-w-[260px]">
-              {companyDisplayName}
+          {/* Spacer pushes search + actions to the right */}
+          <div className="flex-1" />
+
+          {/* Search — right-aligned, before action controls */}
+          <UniversalSearch
+            onCreateJob={() => setAddJobModalOpen(true)}
+            onCreateQuote={() => setQuoteChooserOpen(true)}
+            onCreateInvoice={() => setLocation("/invoices")}
+          />
+
+          {/* Right: Quick Create + More menu */}
+          {!isTechnicianPage && (
+            <div className="flex items-center gap-2 shrink-0">
+              <Button
+                size="sm"
+                data-testid="button-create-new"
+                className="gap-1.5 h-8 px-3 text-sm text-white font-medium"
+                style={{ background: '#82BA58' }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = '#6FA846')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = '#82BA58')}
+                onClick={() => setQuickCreateOpen(true)}
+              >
+                <Plus className="h-4 w-4" />
+                <span>New</span>
+              </Button>
+              {/* More menu — Settings, Feedback, Logout */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" data-testid="button-more-menu" className="text-white/85 hover:text-white hover:bg-white/10">
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" sideOffset={8} className="w-44">
+                  <DropdownMenuItem onClick={() => setLocation("/company-settings")} data-testid="menu-settings">
+                    <Settings className="h-4 w-4 mr-2" />
+                    Settings
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setFeedbackOpen(true)} data-testid="menu-feedback">
+                    <MessageCircle className="h-4 w-4 mr-2" />
+                    Feedback
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={handleLogout} data-testid="menu-logout">
+                    <LogOut className="h-4 w-4 mr-2" />
+                    Logout
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           )}
-
-          {/* Universal search + Quick Create */}
-          <div className="flex items-center gap-2">
-            <UniversalSearch />
-
-            {/* Quick Create drawer — replaces dropdown for +New */}
-            {!isTechnicianPage && (
-              <>
-                <Button
-                  variant="default"
-                  size="sm"
-                  data-testid="button-create-new"
-                  className="gap-1.5 h-8 px-3 text-sm"
-                  onClick={() => setQuickCreateOpen(true)}
-                >
-                  <Plus className="h-4 w-4" />
-                  <span>New</span>
-                </Button>
-                <Button variant="ghost" size="icon" asChild data-testid="button-settings">
-                  <Link href="/company-settings">
-                    <Settings className="h-4 w-4" />
-                  </Link>
-                </Button>
-              </>
-            )}
-          </div>
         </header>
         {/* Sidebar + page content row */}
         <div className="flex flex-1 overflow-hidden">
@@ -605,7 +655,21 @@ function AppContent() {
         onOpenChange={setQuickCreateOpen}
         onNewJob={() => { setQuickCreateOpen(false); setAddJobModalOpen(true); }}
       />
+      <QuoteTemplateChooserModal
+        open={quoteChooserOpen}
+        onOpenChange={setQuoteChooserOpen}
+        onSelect={(templateId) => {
+          setSelectedQuoteTemplateId(templateId);
+          setNewQuoteModalOpen(true);
+        }}
+      />
+      <NewQuoteModal
+        open={newQuoteModalOpen}
+        onOpenChange={setNewQuoteModalOpen}
+        templateId={selectedQuoteTemplateId}
+      />
       <TimezoneSetupDialog />
+      <FeedbackDialog open={feedbackOpen} onOpenChange={setFeedbackOpen} />
     </SidebarProvider>
   );
 }

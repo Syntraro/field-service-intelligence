@@ -42,6 +42,8 @@ import type { Quote } from "@shared/schema";
 interface NewQuoteModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** If provided, auto-apply this quote template after quote creation */
+  templateId?: string | null;
 }
 
 interface LocationOption {
@@ -51,7 +53,7 @@ interface LocationOption {
   parentCompanyName?: string;
 }
 
-export function NewQuoteModal({ open, onOpenChange }: NewQuoteModalProps) {
+export function NewQuoteModal({ open, onOpenChange, templateId }: NewQuoteModalProps) {
   const { toast } = useToast();
   const { logActivity } = useActivityStore();
   const [, setLocation] = useLocation();
@@ -98,7 +100,20 @@ export function NewQuoteModal({ open, onOpenChange }: NewQuoteModalProps) {
         }),
       });
     },
-    onSuccess: (quote) => {
+    onSuccess: async (quote) => {
+      // Auto-apply template if one was selected in the chooser
+      if (templateId) {
+        try {
+          await apiRequest(`/api/quote-templates/${templateId}/apply`, {
+            method: "POST",
+            body: JSON.stringify({ quoteId: quote.id, mode: "replace" }),
+          });
+        } catch (err) {
+          console.error("Failed to apply quote template:", err);
+          // Non-blocking — quote is already created, user can apply template manually
+        }
+      }
+
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
       queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
       logActivity({
@@ -108,7 +123,8 @@ export function NewQuoteModal({ open, onOpenChange }: NewQuoteModalProps) {
         label: `Created Quote #${quote.quoteNumber}`,
         meta: title || undefined,
       });
-      toast({ title: "Quote created", description: `Quote ${quote.quoteNumber} has been created` });
+      const templateMsg = templateId ? " with template" : "";
+      toast({ title: "Quote created", description: `Quote ${quote.quoteNumber} has been created${templateMsg}` });
       onOpenChange(false);
       resetForm();
       setLocation(`/quotes/${quote.id}`);

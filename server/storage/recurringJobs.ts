@@ -40,40 +40,58 @@ export interface InstanceWithJob {
   } | null;
 }
 
+/**
+ * Phase 4C: Template with joined client/location display names
+ */
+export interface TemplateWithNames extends RecurringJobTemplate {
+  clientName: string | null;
+  locationName: string | null;
+  locationAddress: string | null;
+}
+
 export class RecurringJobsRepository extends BaseRepository {
   // ============================================================================
   // Templates CRUD
   // ============================================================================
 
   /**
-   * Get all recurring job templates for a company
+   * Get all recurring job templates for a company.
+   *
+   * Phase 4C: Joins customer_companies and client_locations to return
+   * clientName, locationName, locationAddress for PM Setups list display.
    */
   async getTemplates(
     companyId: string,
     options?: { activeOnly?: boolean }
-  ): Promise<RecurringJobTemplate[]> {
+  ): Promise<TemplateWithNames[]> {
     this.assertCompanyId(companyId);
 
-    let query = db
-      .select()
-      .from(recurringJobTemplates)
-      .where(eq(recurringJobTemplates.companyId, companyId))
-      .orderBy(desc(recurringJobTemplates.createdAt));
-
+    const conditions = [eq(recurringJobTemplates.companyId, companyId)];
     if (options?.activeOnly) {
-      query = db
-        .select()
-        .from(recurringJobTemplates)
-        .where(
-          and(
-            eq(recurringJobTemplates.companyId, companyId),
-            eq(recurringJobTemplates.isActive, true)
-          )
-        )
-        .orderBy(desc(recurringJobTemplates.createdAt));
+      conditions.push(eq(recurringJobTemplates.isActive, true));
     }
 
-    return await query;
+    const rows = await db
+      .select({
+        template: recurringJobTemplates,
+        clientName: customerCompanies.name,
+        locationName: clientLocations.companyName,
+        locationLabel: clientLocations.location,
+        locationAddress: clientLocations.address,
+        locationCity: clientLocations.city,
+      })
+      .from(recurringJobTemplates)
+      .leftJoin(customerCompanies, eq(recurringJobTemplates.clientId, customerCompanies.id))
+      .leftJoin(clientLocations, eq(recurringJobTemplates.locationId, clientLocations.id))
+      .where(and(...conditions))
+      .orderBy(desc(recurringJobTemplates.createdAt));
+
+    return rows.map((r) => ({
+      ...r.template,
+      clientName: r.clientName ?? null,
+      locationName: [r.locationName, r.locationLabel].filter(Boolean).join(" — ") || null,
+      locationAddress: [r.locationAddress, r.locationCity].filter(Boolean).join(", ") || null,
+    }));
   }
 
   /**

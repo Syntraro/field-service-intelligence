@@ -49,6 +49,17 @@ const router = Router();
 router.use(requireCompanyContext);
 
 /**
+ * GET /api/customer-companies
+ * Returns a lightweight list of all customer companies for the tenant (id + name).
+ * Used by PM wizard company picker and other selectors.
+ */
+router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId } = req;
+  const list = await customerCompanyRepository.listCustomerCompanies(companyId!);
+  res.json(list);
+}));
+
+/**
  * GET /api/customer-companies/:companyId
  * Returns the customer company record for the current tenant (companyId context).
  */

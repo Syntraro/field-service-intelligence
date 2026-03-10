@@ -1,20 +1,21 @@
 /**
- * UniversalSearch - Global search component for header
+ * UniversalSearch — Command Palette + Global Search
  *
- * Searches across jobs, invoices, customer companies, locations, and suppliers.
- * Features: debounce 200ms, grouped results, keyboard navigation, routing.
+ * Combines quick actions, navigation shortcuts, and the existing data search
+ * into a single keyboard-driven command palette (Linear / Raycast style).
  *
- * Phase 4 of RALPH global search implementation.
- *
- * Updated 2026-02-06:
- * - Stable group ordering: invoice > job > customerCompany > location > supplier
- * - Invoices always appear above jobs in results
+ * Trigger: click the header search bar, or press Cmd+K / Ctrl+K.
+ * Sections: Quick Actions → Navigation → Search Results (ranked in that order).
+ * Preserves all original search behavior (debounced /api/search, grouped results).
  */
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useLocation } from "wouter";
-import { Search, Loader2, Briefcase, FileText, Building2, MapPin, Truck } from "lucide-react";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Search, Loader2, Briefcase, FileText, Building2, MapPin, Truck,
+  Plus, LayoutDashboard, LayoutGrid, ClipboardList, Receipt, FileCheck,
+  Users, Wrench, Settings, Shield, Navigation, Zap,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ========================================
@@ -29,8 +30,8 @@ interface SearchResult {
   title: string;
   subtitle: string | null;
   match: string | null;
-  customerCompanyId?: string; // For customerCompany results: customer_companies.id
-  tenantCompanyId?: string;   // For customerCompany results: owning company (tenant) ID
+  customerCompanyId?: string;
+  tenantCompanyId?: string;
 }
 
 interface SearchResponse {
@@ -38,14 +39,65 @@ interface SearchResponse {
   query: string;
 }
 
+/** A static command entry (quick action or navigation shortcut) */
+interface CommandItem {
+  id: string;
+  label: string;
+  /** Searchable keywords (lowercase) — label is always searched too */
+  keywords: string[];
+  icon: React.ComponentType<{ className?: string }>;
+  section: "action" | "navigation";
+  route?: string;
+  /** If provided, called instead of navigating */
+  action?: () => void;
+}
+
+/** Unified palette row — either a command or a search result */
+type PaletteItem =
+  | { kind: "command"; item: CommandItem }
+  | { kind: "search"; item: SearchResult };
+
 // ========================================
-// CONSTANTS
+// STATIC COMMANDS
 // ========================================
 
-// Stable group order: invoices first (especially important for numeric queries like "1001")
+/** Build static commands — create actions use runtime callbacks when provided */
+function buildCommands(callbacks: { onCreateJob?: () => void; onCreateQuote?: () => void; onCreateInvoice?: () => void }): CommandItem[] {
+  return [
+    // Quick Actions — true create commands only (navigation lives in sidebar)
+    { id: "create-job",         label: "Create Job",         keywords: ["new job", "add job", "create work order"], icon: Plus, section: "action", action: callbacks.onCreateJob },
+    { id: "create-quote",       label: "Create Quote",       keywords: ["new quote", "add quote"], icon: Plus, section: "action", action: callbacks.onCreateQuote },
+    { id: "create-invoice",     label: "Create Invoice",     keywords: ["new invoice", "add invoice", "bill"], icon: Plus, section: "action", action: callbacks.onCreateInvoice },
+    { id: "create-task",        label: "Create Task",        keywords: ["new task", "add task", "supplier visit"], icon: Plus, section: "action", route: "/dispatch?newTask=1" },
+    { id: "create-pm-contract", label: "Create PM Contract", keywords: ["new contract", "add contract", "pm contract", "preventive maintenance contract"], icon: Plus, section: "action", route: "/pm?newContract=1" },
+    // Navigation — these appear only when the user searches for them
+    { id: "open-dispatch",  label: "Open Dispatch",  keywords: ["dispatch", "calendar", "schedule"], icon: LayoutGrid, section: "navigation", route: "/dispatch" },
+    { id: "open-pm",        label: "Open PM",        keywords: ["pm", "preventive maintenance"], icon: Wrench, section: "navigation", route: "/pm" },
+    { id: "open-clients",   label: "Open Clients",   keywords: ["clients", "customers"], icon: Users, section: "navigation", route: "/clients" },
+    { id: "open-invoices",  label: "Open Invoices",  keywords: ["invoices", "billing"], icon: Receipt, section: "navigation", route: "/invoices" },
+    { id: "open-quotes",    label: "Open Quotes",    keywords: ["quotes", "estimates"], icon: FileCheck, section: "navigation", route: "/quotes" },
+    { id: "nav-dashboard",  label: "Dashboard",      keywords: ["home", "overview"], icon: LayoutDashboard, section: "navigation", route: "/" },
+    { id: "nav-dispatch",   label: "Dispatch",       keywords: ["dispatch", "calendar", "schedule", "disp"], icon: LayoutGrid, section: "navigation", route: "/dispatch" },
+    { id: "nav-livemap",    label: "Live Map",       keywords: ["live map", "gps", "tracking", "map"], icon: Navigation, section: "navigation", route: "/live-map" },
+    { id: "nav-jobs",       label: "Jobs",           keywords: ["jobs", "job", "work orders"], icon: ClipboardList, section: "navigation", route: "/jobs" },
+    { id: "nav-pm",         label: "PM",             keywords: ["pm", "preventive maintenance", "preventative"], icon: Wrench, section: "navigation", route: "/pm" },
+    { id: "nav-invoices",   label: "Invoices",       keywords: ["invoices", "invoice", "billing", "inv"], icon: Receipt, section: "navigation", route: "/invoices" },
+    { id: "nav-quotes",     label: "Quotes",         keywords: ["quotes", "quote", "estimates", "estimate"], icon: FileCheck, section: "navigation", route: "/quotes" },
+    { id: "nav-clients",    label: "Clients",        keywords: ["clients", "client", "customers", "customer", "cli"], icon: Users, section: "navigation", route: "/clients" },
+    { id: "nav-suppliers",  label: "Suppliers",      keywords: ["suppliers", "supplier", "vendor", "vendors"], icon: Building2, section: "navigation", route: "/suppliers" },
+    { id: "nav-reports",    label: "Reports",        keywords: ["reports", "report", "analytics"], icon: FileText, section: "navigation", route: "/reports" },
+    { id: "nav-settings",   label: "Settings",       keywords: ["settings", "preferences", "config"], icon: Settings, section: "navigation", route: "/settings" },
+    { id: "nav-admin",      label: "Admin",          keywords: ["admin", "tenants", "administration"], icon: Shield, section: "navigation", route: "/admin/tenants" },
+  ];
+}
+
+// ========================================
+// SEARCH RESULT HELPERS (preserved from original)
+// ========================================
+
 const TYPE_ORDER: SearchResultType[] = ["invoice", "job", "customerCompany", "location", "supplier"];
 
-const TYPE_ICONS: Record<SearchResultType, typeof Briefcase> = {
+const TYPE_ICONS: Record<SearchResultType, React.ComponentType<{ className?: string }>> = {
   job: Briefcase,
   invoice: FileText,
   customerCompany: Building2,
@@ -70,10 +122,52 @@ const TYPE_ROUTES: Record<SearchResultType, (id: string) => string> = {
 };
 
 // ========================================
+// MATCHING
+// ========================================
+
+/** Score a command against a query. Higher = better match, 0 = no match. */
+function scoreCommand(cmd: CommandItem, q: string): number {
+  const lower = q.toLowerCase();
+  const labelLower = cmd.label.toLowerCase();
+
+  // Exact label match
+  if (labelLower === lower) return 100;
+  // Label starts with query
+  if (labelLower.startsWith(lower)) return 80;
+  // Label contains query
+  if (labelLower.includes(lower)) return 60;
+
+  // Check each keyword
+  for (const kw of cmd.keywords) {
+    if (kw === lower) return 70;
+    if (kw.startsWith(lower)) return 55;
+    if (kw.includes(lower)) return 40;
+  }
+
+  // Multi-word: check if all query words appear somewhere
+  const words = lower.split(/\s+/).filter(Boolean);
+  if (words.length > 1) {
+    const searchable = `${labelLower} ${cmd.keywords.join(" ")}`;
+    if (words.every((w) => searchable.includes(w))) return 50;
+  }
+
+  return 0;
+}
+
+// ========================================
 // COMPONENT
 // ========================================
 
-export default function UniversalSearch() {
+interface UniversalSearchProps {
+  /** Callback to open the create-job flow from the command palette */
+  onCreateJob?: () => void;
+  /** Callback to open the create-quote flow */
+  onCreateQuote?: () => void;
+  /** Callback to open the create-invoice flow */
+  onCreateInvoice?: () => void;
+}
+
+export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateInvoice }: UniversalSearchProps = {}) {
   const [, setLocation] = useLocation();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -81,38 +175,65 @@ export default function UniversalSearch() {
   const [loading, setLoading] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const paletteRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Group results by type
-  const groupedResults = results.reduce((acc, result) => {
-    if (!acc[result.type]) {
-      acc[result.type] = [];
+  // Build commands with create callbacks
+  const commands = useMemo(
+    () => buildCommands({ onCreateJob, onCreateQuote, onCreateInvoice }),
+    [onCreateJob, onCreateQuote, onCreateInvoice],
+  );
+
+  // ------ Command filtering ------
+  const filteredCommands = useMemo(() => {
+    if (!query.trim()) {
+      // Show all quick actions when empty, hide navigation to keep it compact
+      return commands.filter((c) => c.section === "action");
     }
-    acc[result.type].push(result);
-    return acc;
-  }, {} as Record<SearchResultType, SearchResult[]>);
+    const scored = commands.map((cmd) => ({ cmd, score: scoreCommand(cmd, query) }))
+      .filter((s) => s.score > 0)
+      .sort((a, b) => b.score - a.score);
+    return scored.map((s) => s.cmd);
+  }, [query]);
 
-  // Get ordered types that have results (stable order: invoice > job > ...)
-  const orderedTypes = TYPE_ORDER.filter((t) => groupedResults[t]?.length > 0);
+  // ------ Search results grouping (preserved) ------
+  const groupedResults = useMemo(() => {
+    const acc: Record<string, SearchResult[]> = {};
+    for (const r of results) {
+      (acc[r.type] ??= []).push(r);
+    }
+    return acc as Record<SearchResultType, SearchResult[]>;
+  }, [results]);
 
-  // Flat list for keyboard navigation (follows same visual order)
-  const flatResults = orderedTypes.flatMap((t) => groupedResults[t]);
+  const orderedSearchTypes = TYPE_ORDER.filter((t) => groupedResults[t]?.length > 0);
+  const flatSearchResults = orderedSearchTypes.flatMap((t) => groupedResults[t]);
 
-  // Debounced search
+  // ------ Build unified palette items ------
+  const paletteItems = useMemo<PaletteItem[]>(() => {
+    const items: PaletteItem[] = [];
+    for (const cmd of filteredCommands) items.push({ kind: "command", item: cmd });
+    for (const sr of flatSearchResults) items.push({ kind: "search", item: sr });
+    return items;
+  }, [filteredCommands, flatSearchResults]);
+
+  // Clamp selectedIndex when items change
+  useEffect(() => {
+    setSelectedIndex(0);
+  }, [paletteItems.length]);
+
+  // ------ Debounced API search (preserved) ------
   const search = useCallback(async (searchQuery: string) => {
     if (searchQuery.trim().length < 2) {
       setResults([]);
       setLoading(false);
       return;
     }
-
     setLoading(true);
     try {
       const res = await fetch(`/api/search?q=${encodeURIComponent(searchQuery)}&limit=20`, { credentials: "include" });
       if (res.ok) {
         const data: SearchResponse = await res.json();
         setResults(data.results);
-        setSelectedIndex(0);
       }
     } catch (error) {
       console.error("Search error:", error);
@@ -121,42 +242,49 @@ export default function UniversalSearch() {
     }
   }, []);
 
-  // Handle input change with debounce
+  // ------ Input change with debounce ------
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
     setQuery(value);
-    setOpen(true);
+    if (!open) setOpen(true);
 
-    if (debounceRef.current) {
-      clearTimeout(debounceRef.current);
-    }
-
-    debounceRef.current = setTimeout(() => {
-      search(value);
-    }, 200);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => search(value), 200);
   };
 
-  // Navigate to selected result
-  const handleSelect = (result: SearchResult) => {
-    // For customerCompany, use customerCompanyId (cc.id) for routing
-    const routeId = result.type === "customerCompany" && result.customerCompanyId
-      ? result.customerCompanyId
-      : result.id;
-    const route = TYPE_ROUTES[result.type](routeId);
-    setLocation(route);
+  // ------ Close + reset ------
+  const closePalette = useCallback(() => {
     setOpen(false);
     setQuery("");
     setResults([]);
-  };
+    setSelectedIndex(0);
+    inputRef.current?.blur();
+  }, []);
 
-  // Keyboard navigation
+  // ------ Execute a palette item ------
+  const executeItem = useCallback((item: PaletteItem) => {
+    if (item.kind === "command") {
+      const cmd = item.item;
+      if (cmd.action) {
+        cmd.action();
+      } else if (cmd.route) {
+        setLocation(cmd.route);
+      }
+    } else {
+      const sr = item.item;
+      const routeId = sr.type === "customerCompany" && sr.customerCompanyId
+        ? sr.customerCompanyId : sr.id;
+      setLocation(TYPE_ROUTES[sr.type](routeId));
+    }
+    closePalette();
+  }, [setLocation, closePalette]);
+
+  // ------ Keyboard navigation ------
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (!open || flatResults.length === 0) return;
-
     switch (e.key) {
       case "ArrowDown":
         e.preventDefault();
-        setSelectedIndex((prev) => Math.min(prev + 1, flatResults.length - 1));
+        setSelectedIndex((prev) => Math.min(prev + 1, paletteItems.length - 1));
         break;
       case "ArrowUp":
         e.preventDefault();
@@ -164,135 +292,247 @@ export default function UniversalSearch() {
         break;
       case "Enter":
         e.preventDefault();
-        if (flatResults[selectedIndex]) {
-          handleSelect(flatResults[selectedIndex]);
-        }
+        if (paletteItems[selectedIndex]) executeItem(paletteItems[selectedIndex]);
         break;
       case "Escape":
         e.preventDefault();
-        setOpen(false);
-        inputRef.current?.blur();
+        closePalette();
+        break;
+      case "Tab":
+        // Prevent Tab from moving focus out of the palette unexpectedly
+        if (open) e.preventDefault();
         break;
     }
   };
 
-  // Cleanup debounce on unmount
+  // ------ Global Cmd+K / Ctrl+K listener ------
   useEffect(() => {
-    return () => {
-      if (debounceRef.current) {
-        clearTimeout(debounceRef.current);
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        e.stopPropagation();
+        if (open) {
+          closePalette();
+        } else {
+          setOpen(true);
+          // Small delay so the palette renders before we try to focus
+          requestAnimationFrame(() => inputRef.current?.focus());
+        }
       }
     };
+    document.addEventListener("keydown", handler, { capture: true });
+    return () => document.removeEventListener("keydown", handler, { capture: true });
+  }, [open, closePalette]);
+
+  // ------ Click-outside to close ------
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (paletteRef.current && !paletteRef.current.contains(e.target as Node)) {
+        closePalette();
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open, closePalette]);
+
+  // ------ Focus input when palette opens ------
+  useEffect(() => {
+    if (open) {
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }
+  }, [open]);
+
+  // ------ Cleanup debounce on unmount ------
+  useEffect(() => {
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, []);
 
-  // Maintain focus on input when results change or popover opens
+  // ------ Scroll selected item into view ------
   useEffect(() => {
-    if (open || results.length > 0) {
-      inputRef.current?.focus();
+    if (!open) return;
+    const el = paletteRef.current?.querySelector(`[data-palette-index="${selectedIndex}"]`);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [selectedIndex, open]);
+
+  // ------ Section helpers for rendering ------
+  const actionItems = paletteItems.filter((p) => p.kind === "command" && p.item.section === "action");
+  const navItems = paletteItems.filter((p) => p.kind === "command" && p.item.section === "navigation");
+  const hasSearchResults = flatSearchResults.length > 0;
+
+  /** Offset where search results start in the flat paletteItems list */
+  const searchResultsOffset = filteredCommands.length;
+
+  /** Render a single palette row */
+  const renderRow = (item: PaletteItem, idx: number) => {
+    const isSelected = idx === selectedIndex;
+    if (item.kind === "command") {
+      const cmd = item.item;
+      const Icon = cmd.icon;
+      return (
+        <button
+          key={cmd.id}
+          type="button"
+          data-palette-index={idx}
+          className={cn(
+            "w-full flex items-center gap-3 px-3 py-2 text-left text-sm rounded-md transition-colors",
+            isSelected ? "bg-accent text-accent-foreground" : "hover:bg-muted"
+          )}
+          onClick={() => executeItem(item)}
+          onMouseEnter={() => setSelectedIndex(idx)}
+        >
+          <Icon className="h-4 w-4 text-muted-foreground shrink-0" />
+          <span className="flex-1 truncate">{cmd.label}</span>
+          {cmd.section === "action" && !cmd.route && (
+            <Zap className="h-3 w-3 text-muted-foreground/50 shrink-0" />
+          )}
+        </button>
+      );
     }
-  }, [open, results.length]);
-
-  // Render a single result item
-  const renderResult = (result: SearchResult, index: number) => {
-    const Icon = TYPE_ICONS[result.type];
-    const isSelected = index === selectedIndex;
-
+    // Search result row
+    const sr = item.item;
+    const Icon = TYPE_ICONS[sr.type];
     return (
       <button
-        key={`${result.type}-${result.id}`}
+        key={`${sr.type}-${sr.id}`}
         type="button"
+        data-palette-index={idx}
         className={cn(
           "w-full flex items-start gap-3 px-3 py-2 text-left text-sm rounded-md transition-colors",
           isSelected ? "bg-accent text-accent-foreground" : "hover:bg-muted"
         )}
-        onClick={() => handleSelect(result)}
-        onMouseEnter={() => setSelectedIndex(index)}
+        onClick={() => executeItem(item)}
+        onMouseEnter={() => setSelectedIndex(idx)}
       >
         <Icon className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
         <div className="flex-1 min-w-0">
-          <div className="font-medium truncate">{result.title}</div>
-          {result.subtitle && (
-            <div className="text-xs text-muted-foreground truncate">{result.subtitle}</div>
+          <div className="font-medium truncate">{sr.title}</div>
+          {sr.subtitle && (
+            <div className="text-xs text-muted-foreground truncate">{sr.subtitle}</div>
           )}
         </div>
-        {result.match && (
+        {sr.match && (
           <span className="text-xs text-muted-foreground bg-muted px-1.5 py-0.5 rounded shrink-0">
-            {result.match}
+            {sr.match}
           </span>
         )}
       </button>
     );
   };
 
-  // Track current index across groups for keyboard navigation
-  let currentIndex = 0;
+  // ------ Section header ------
+  const sectionHeader = (label: string) => (
+    <div className="px-3 py-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider select-none">
+      {label}
+    </div>
+  );
+
+  // Determine if palette should show (always show when open — even with empty query for quick actions)
+  const showPalette = open;
 
   return (
-    <Popover open={open && (query.length >= 2 || results.length > 0)} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-          {loading && (
-            <Loader2 className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground animate-spin" />
-          )}
-          <input
-            ref={inputRef}
-            type="text"
-            placeholder="Search jobs, invoices, clients..."
-            value={query}
-            onChange={handleInputChange}
-            onKeyDown={handleKeyDown}
-            onFocus={() => query.length >= 2 && setOpen(true)}
-            data-testid="universal-search-input"
-            className="h-8 w-72 rounded-md border border-input bg-white dark:bg-gray-900 pl-8 pr-8 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-          />
-        </div>
-      </PopoverTrigger>
-      <PopoverContent
-        className="w-80 p-0"
-        align="start"
-        sideOffset={4}
-        onOpenAutoFocus={(e) => e.preventDefault()}
-      >
-        <div className="max-h-96 overflow-y-auto">
-          {query.length < 2 ? (
-            <div className="px-3 py-6 text-center text-sm text-muted-foreground">
-              Type at least 2 characters to search
-            </div>
-          ) : loading && results.length === 0 ? (
-            <div className="px-3 py-6 text-center text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin mx-auto mb-2" />
-              Searching...
-            </div>
-          ) : results.length === 0 ? (
-            <div className="px-3 py-6 text-center text-sm text-muted-foreground">
-              No results found for "{query}"
-            </div>
-          ) : (
-            <div className="py-2">
-              {orderedTypes.map((type) => {
-                const typeResults = groupedResults[type];
-                const startIndex = currentIndex;
-                currentIndex += typeResults.length;
+    <div ref={paletteRef} className="relative">
+      {/* Header search input — always visible */}
+      <div className="relative">
+        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white/60" />
+        {loading && (
+          <Loader2 className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white/60 animate-spin" />
+        )}
+        <input
+          ref={inputRef}
+          type="text"
+          placeholder="Search or run command…"
+          value={query}
+          onChange={handleInputChange}
+          onKeyDown={handleKeyDown}
+          onFocus={() => setOpen(true)}
+          data-testid="universal-search-input"
+          className="h-8 w-72 rounded-md border-none pl-8 pr-8 text-sm text-white placeholder:text-white/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#A6D683]"
+          style={{ background: '#374151' }}
+        />
+      </div>
 
-                return (
-                  <div key={type}>
-                    <div className="px-3 py-1.5 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                      {TYPE_LABELS[type]}
-                    </div>
-                    <div className="px-1">
-                      {typeResults.map((result, i) => renderResult(result, startIndex + i))}
-                    </div>
+      {/* Floating command palette panel */}
+      {showPalette && (
+        <div
+          className="absolute top-[calc(100%+6px)] right-0 w-96 rounded-lg border border-border bg-popover text-popover-foreground shadow-lg z-50 overflow-hidden"
+          data-testid="command-palette"
+        >
+          <div className="max-h-[420px] overflow-y-auto">
+            {/* Quick Actions section */}
+            {actionItems.length > 0 && (
+              <div className="py-1">
+                {sectionHeader("Quick Actions")}
+                <div className="px-1">
+                  {actionItems.map((item) => renderRow(item, paletteItems.indexOf(item)))}
+                </div>
+              </div>
+            )}
+
+            {/* Navigation section */}
+            {navItems.length > 0 && (
+              <div className="py-1">
+                {actionItems.length > 0 && <div className="mx-3 border-t border-border" />}
+                {sectionHeader("Navigation")}
+                <div className="px-1">
+                  {navItems.map((item) => renderRow(item, paletteItems.indexOf(item)))}
+                </div>
+              </div>
+            )}
+
+            {/* Search Results section (preserved original grouped rendering) */}
+            {hasSearchResults && (() => {
+              let srIdx = searchResultsOffset;
+              return (
+                <div className="py-1">
+                  {(actionItems.length > 0 || navItems.length > 0) && (
+                    <div className="mx-3 border-t border-border" />
+                  )}
+                  {sectionHeader("Search Results")}
+                  <div className="px-1">
+                    {orderedSearchTypes.map((type) => {
+                      const typeResults = groupedResults[type];
+                      return (
+                        <div key={type}>
+                          <div className="px-3 py-1 text-[10px] font-medium text-muted-foreground/70 uppercase tracking-wider">
+                            {TYPE_LABELS[type]}
+                          </div>
+                          {typeResults.map((sr) => {
+                            const idx = srIdx++;
+                            return renderRow({ kind: "search", item: sr }, idx);
+                          })}
+                        </div>
+                      );
+                    })}
                   </div>
-                );
-              })}
-            </div>
-          )}
+                </div>
+              );
+            })()}
+
+            {/* Loading state for search */}
+            {loading && results.length === 0 && query.trim().length >= 2 && (
+              <div className="px-3 py-4 text-center text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin mx-auto mb-1.5" />
+                Searching...
+              </div>
+            )}
+
+            {/* No results state — only when query is non-trivial and no commands match either */}
+            {!loading && query.trim().length >= 2 && paletteItems.length === 0 && (
+              <div className="px-3 py-6 text-center text-sm text-muted-foreground">
+                No results for &ldquo;{query}&rdquo;
+              </div>
+            )}
+          </div>
+
+          {/* Footer with keyboard hints */}
+          <div className="border-t px-3 py-1.5 text-[11px] text-muted-foreground flex items-center gap-3">
+            <span><kbd className="font-mono text-[10px] bg-muted px-1 py-0.5 rounded">↑↓</kbd> navigate</span>
+            <span><kbd className="font-mono text-[10px] bg-muted px-1 py-0.5 rounded">↵</kbd> select</span>
+            <span><kbd className="font-mono text-[10px] bg-muted px-1 py-0.5 rounded">esc</kbd> close</span>
+          </div>
         </div>
-        <div className="border-t px-3 py-2 text-xs text-muted-foreground">
-          <span className="font-medium">↑↓</span> navigate · <span className="font-medium">Enter</span> select · <span className="font-medium">Esc</span> close
-        </div>
-      </PopoverContent>
-    </Popover>
+      )}
+    </div>
   );
 }
