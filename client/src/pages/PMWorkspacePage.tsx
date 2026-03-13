@@ -1,24 +1,30 @@
 /**
  * PM Workspace Page — Preventive Maintenance hub
  *
- * PM Phase 4B: Queue grouping views (Location, Client, Proximity).
+ * PM Pivot Phase 1: Due queue-first model. Background generation creates
+ * pending instances only — dispatchers manually generate jobs from the
+ * PM Due Queue via selection + bulk generate.
  *
- * Two tabs:
- *   1. PM Setups — list of recurring PM templates with actions
- *   2. Upcoming — planning queue with grouping modes + filters
+ * Five tabs:
+ *   1. Dashboard (default) — actionable pending PM work needing job generation (formerly PM Due Queue)
+ *   2. Contracts — list of active maintenance contracts
+ *   3. Billing — PM billing management
+ *   4. History — placeholder for generated/completed/skipped/canceled PM work
+ *   5. Templates — reusable job content presets
  *
  * Route: /pm
  */
 
 import { useState, useMemo, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useLocation, Link } from "wouter";
+import { useLocation, useSearch, Link } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -48,12 +54,14 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+// Label and Textarea imports removed — template form moved to PMTemplateEditorPage
 import {
   Plus,
   Play,
   Pause,
   Copy,
   Pencil,
+  Trash2,
   Loader2,
   AlertCircle,
   Wrench,
@@ -75,6 +83,10 @@ import {
   ChevronRight,
   Navigation,
   Zap,
+  Search,
+  ArrowUpDown,
+  DollarSign,
+  Receipt,
 } from "lucide-react";
 
 // ============================================================================
@@ -92,14 +104,45 @@ interface RecurringTemplate {
   locationName?: string | null;
   locationAddress?: string | null;
   recurrenceKind: string;
-  intervalMonths: number;
+  interval: number;
   monthsOfYear: number[] | null;
   generationMode: string | null;
+  generationDayOfMonth: number | null;
   dayOfMonth: number | null;
-  autoSchedule: boolean;
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+  // PM Billing Disposition fields
+  pmBillingModel?: string | null;
+  pmBillingLabel?: string | null;
+  pmContractAmount?: string | null;
+}
+
+/** PM Template — reusable job content blueprint for maintenance plans */
+interface PmTemplateItem {
+  id: string;
+  companyId: string;
+  // Identity
+  name: string;
+  // Default PM content
+  summary: string | null;
+  description: string | null;
+  // Optional scheduling defaults
+  defaultMonthsOfYear: number[] | null;
+  defaultGenerationMode: string | null;
+  defaultGenerationDayOfMonth: number | null;
+  defaultServiceWindowDaysBefore: number | null;
+  defaultServiceWindowDaysAfter: number | null;
+  defaultIncludeLocationPmParts: boolean | null;
+  // Optional billing defaults
+  billingMode: string | null;
+  billingLabel: string | null;
+  defaultPrice: string | null;
+  // Line items
+  defaultLineItemsJson: { description: string; quantity: number; unitPrice: number }[] | null;
+  // Timestamps
+  createdAt: string;
+  updatedAt: string | null;
 }
 
 /** Phase 4A+4B: Upcoming queue item */
@@ -140,8 +183,6 @@ interface QueueGroup {
   overdue: number;
   dueSoon: number;
   needsAction: number;
-  unscheduled: number;
-  scheduled: number;
 }
 
 type GroupMode = "none" | "location" | "client" | "proximity";
@@ -158,18 +199,51 @@ function formatMonths(months: number[] | null): string {
   return months.slice().sort((a, b) => a - b).map((m) => MONTH_ABBR[m - 1]).join(", ");
 }
 
-function formatRecurrence(kind: string, interval: number): string {
+/**
+ * Phase 5: Improved recurrence display.
+ * Derives readable labels from recurrence kind, interval, and selected months.
+ *
+ * Examples: Monthly, Quarterly (Mar, Jun, Sep, Dec), Semi-annual (Apr, Oct),
+ * Selected months: Mar, Apr, May, Jun
+ */
+function formatRecurrence(kind: string, interval: number, months: number[] | null): string {
+  const sorted = months?.slice().sort((a, b) => a - b);
+  const monthCount = sorted?.length ?? 0;
+
+  // If specific months are selected, derive the label from them
+  if (sorted && monthCount > 0 && monthCount < 12) {
+    const monthLabels = sorted.map((m) => MONTH_ABBR[m - 1]);
+    if (monthCount === 4) {
+      // Check if evenly spaced (quarterly)
+      const gaps = sorted.slice(1).map((m, i) => m - sorted[i]);
+      if (gaps.every((g) => g === 3)) return `Quarterly (${monthLabels.join(", ")})`;
+    }
+    if (monthCount === 2) {
+      const gap = sorted[1] - sorted[0];
+      if (gap === 6) return `Semi-annual (${monthLabels.join(", ")})`;
+    }
+    if (monthCount === 1) return `Annual (${monthLabels[0]})`;
+    return `Selected months: ${monthLabels.join(", ")}`;
+  }
+
+  // No specific months — use kind + interval
+  if (kind === "weekly") return interval === 1 ? "Weekly" : `Every ${interval} weeks`;
   if (kind === "monthly") return interval === 1 ? "Monthly" : `Every ${interval} months`;
-  if (kind === "quarterly") return "Quarterly";
-  if (kind === "biannual") return "Every 6 months";
-  if (kind === "annual") return "Annually";
   return interval === 1 ? "Monthly" : `Every ${interval} months`;
 }
 
-function formatGenerationMode(mode: string | null, dayOfMonth: number | null): string {
+/** PM Pivot Phase 1: Shows when PM occurrences are due */
+function formatGenerationDay(mode: string | null, generationDayOfMonth: number | null): string {
   if (mode === "period_start") return "1st of month";
-  if (mode === "day_of_month" && dayOfMonth) return `Day ${dayOfMonth}`;
+  if (mode === "day_of_month" && generationDayOfMonth) return `${ordinal(generationDayOfMonth)} of month`;
   return "—";
+}
+
+/** Ordinal suffix helper (1st, 2nd, 3rd, 4th...) */
+function ordinal(n: number): string {
+  const s = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
 function formatDateTime(iso: string | null): string {
@@ -194,21 +268,19 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
 function isNeedsAction(item: UpcomingQueueItem): boolean {
   return (
     ["overdue", "due_soon", "in_window"].includes(item.complianceStatus) &&
-    ["not_generated", "generated_unscheduled"].includes(item.schedulingState)
+    item.schedulingState === "not_generated"
   );
 }
 
 /** Compute group-level summary counts */
 function groupCounts(items: UpcomingQueueItem[]) {
-  let overdue = 0, dueSoon = 0, needsAction = 0, unscheduled = 0, scheduled = 0;
+  let overdue = 0, dueSoon = 0, needsAction = 0;
   for (const i of items) {
     if (i.complianceStatus === "overdue") overdue++;
     if (i.complianceStatus === "due_soon") dueSoon++;
-    if (i.schedulingState === "generated_unscheduled") unscheduled++;
-    if (i.schedulingState === "scheduled") scheduled++;
     if (isNeedsAction(i)) needsAction++;
   }
-  return { overdue, dueSoon, needsAction, unscheduled, scheduled };
+  return { overdue, dueSoon, needsAction };
 }
 
 /** Sort groups: overdue first, then due soon, then needs action, then rest */
@@ -405,14 +477,6 @@ function StatusBadge({ isActive }: { isActive: boolean }) {
   );
 }
 
-function AutoScheduleBadge({ enabled }: { enabled: boolean }) {
-  return enabled ? (
-    <Badge variant="outline" className="border-blue-300 bg-blue-50 text-blue-700">Yes</Badge>
-  ) : (
-    <Badge variant="secondary">No</Badge>
-  );
-}
-
 function ComplianceBadge({ status }: { status: UpcomingQueueItem["complianceStatus"] }) {
   const map: Record<string, { className: string; icon: React.ReactNode; label: string }> = {
     overdue: { className: "border-red-300 bg-red-50 text-red-700", icon: <AlertTriangle className="h-3 w-3" />, label: "Overdue" },
@@ -430,7 +494,7 @@ function ComplianceBadge({ status }: { status: UpcomingQueueItem["complianceStat
 
 function SchedulingBadge({ state }: { state: UpcomingQueueItem["schedulingState"] }) {
   const map: Record<string, { className: string; icon: React.ReactNode; label: string }> = {
-    not_generated: { className: "border-gray-300 bg-gray-50 text-gray-500", icon: <FileBox className="h-3 w-3" />, label: "No Job" },
+    not_generated: { className: "border-blue-300 bg-blue-50 text-blue-700", icon: <FileBox className="h-3 w-3" />, label: "Awaiting Generation" },
     generated_unscheduled: { className: "border-yellow-300 bg-yellow-50 text-yellow-700", icon: <CalendarX2 className="h-3 w-3" />, label: "Unscheduled" },
     scheduled: { className: "border-blue-300 bg-blue-50 text-blue-700", icon: <CalendarCheck className="h-3 w-3" />, label: "Scheduled" },
     completed: { className: "border-green-300 bg-green-50 text-green-700", icon: <CheckCircle2 className="h-3 w-3" />, label: "Done" },
@@ -442,82 +506,162 @@ function SchedulingBadge({ state }: { state: UpcomingQueueItem["schedulingState"
 }
 
 // ============================================================================
-// PM Setups Tab (unchanged)
+// PM Contracts Tab (PM Pivot Phase 1: renamed from Maintenance Plans)
 // ============================================================================
 
+/** Sort key type for PM Contracts table */
+type PlanSortKey = "customer" | "location" | "name" | "recurrence" | "status" | "generation";
+type SortDir = "asc" | "desc";
+
 function PMSetupsTab({
-  templates, isLoading, isError, onToggleActive, isToggling,
+  templates, isLoading, isError, onToggleActive, isToggling, onDelete, isDeleting,
 }: {
   templates: RecurringTemplate[];
   isLoading: boolean;
   isError: boolean;
   onToggleActive: (id: string, isActive: boolean) => void;
   isToggling: boolean;
+  onDelete: (id: string, title: string) => void;
+  isDeleting: boolean;
 }) {
   const [, setLocation] = useLocation();
+  // Phase 5B Part 2: Search state
+  const [search, setSearch] = useState("");
+  // Phase 5B Part 3: Sort state
+  const [sortKey, setSortKey] = useState<PlanSortKey>("customer");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+
+  const toggleSort = useCallback((key: PlanSortKey) => {
+    setSortKey((prev) => {
+      if (prev === key) { setSortDir((d) => d === "asc" ? "desc" : "asc"); return prev; }
+      setSortDir("asc");
+      return key;
+    });
+  }, []);
+
+  // Phase 5B Part 2: Filter by search
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase().trim();
+    if (!q) return templates;
+    return templates.filter((tpl) =>
+      (tpl.clientName ?? "").toLowerCase().includes(q) ||
+      (tpl.locationName ?? "").toLowerCase().includes(q) ||
+      tpl.title.toLowerCase().includes(q)
+    );
+  }, [templates, search]);
+
+  // Phase 5B Part 3: Sort
+  const sorted = useMemo(() => {
+    const cmp = (a: RecurringTemplate, b: RecurringTemplate): number => {
+      let va: string, vb: string;
+      switch (sortKey) {
+        case "customer": va = (a.clientName ?? "").toLowerCase(); vb = (b.clientName ?? "").toLowerCase(); break;
+        case "location": va = (a.locationName ?? "").toLowerCase(); vb = (b.locationName ?? "").toLowerCase(); break;
+        case "name": va = a.title.toLowerCase(); vb = b.title.toLowerCase(); break;
+        case "recurrence": va = formatRecurrence(a.recurrenceKind, a.interval, a.monthsOfYear); vb = formatRecurrence(b.recurrenceKind, b.interval, b.monthsOfYear); break;
+        case "status": va = a.isActive ? "0" : "1"; vb = b.isActive ? "0" : "1"; break;
+        case "generation": va = formatGenerationDay(a.generationMode, a.generationDayOfMonth); vb = formatGenerationDay(b.generationMode, b.generationDayOfMonth); break;
+        default: return 0;
+      }
+      const result = va.localeCompare(vb);
+      return sortDir === "desc" ? -result : result;
+    };
+    return [...filtered].sort(cmp);
+  }, [filtered, sortKey, sortDir]);
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-16">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        <span className="ml-2 text-muted-foreground">Loading templates...</span>
+        <span className="ml-2 text-muted-foreground">Loading PM contracts...</span>
       </div>
     );
   }
   if (isError) {
-    return <Card><CardContent className="flex items-center gap-2 py-8 text-destructive"><AlertCircle className="h-5 w-5" /><span>Failed to load PM templates.</span></CardContent></Card>;
+    return <Card><CardContent className="flex items-center gap-2 py-8 text-destructive"><AlertCircle className="h-5 w-5" /><span>Failed to load PM contracts.</span></CardContent></Card>;
   }
   if (templates.length === 0) {
     return (
       <Card><CardContent className="flex flex-col items-center gap-4 py-16 text-center">
         <Wrench className="h-12 w-12 text-muted-foreground/50" />
-        <div><p className="text-lg font-medium">No PM setups yet</p><p className="text-sm text-muted-foreground">Create your first preventive maintenance template.</p></div>
-        <Button onClick={() => setLocation("/pm/new")}><Plus className="mr-2 h-4 w-4" />New PM Setup</Button>
+        <div><p className="text-lg font-medium">No PM contracts yet</p><p className="text-sm text-muted-foreground">Create your first preventive maintenance contract.</p></div>
+        <Button onClick={() => setLocation("/pm/new")}><Plus className="mr-2 h-4 w-4" />New PM Contract</Button>
       </CardContent></Card>
     );
   }
 
+  /** Sortable column header helper */
+  const SortHead = ({ label, col }: { label: string; col: PlanSortKey }) => (
+    <TableHead className="cursor-pointer select-none" onClick={() => toggleSort(col)}>
+      <span className="inline-flex items-center gap-1">
+        {label}
+        <ArrowUpDown className={`h-3 w-3 ${sortKey === col ? "text-foreground" : "text-muted-foreground/40"}`} />
+      </span>
+    </TableHead>
+  );
+
   return (
-    <Card><CardContent className="p-0"><div className="overflow-x-auto">
-      <Table>
-        <TableHeader><TableRow>
-          <TableHead>Client / Location</TableHead><TableHead>PM Name</TableHead><TableHead>Recurrence</TableHead>
-          <TableHead>Months</TableHead><TableHead>Status</TableHead><TableHead>Generation Mode</TableHead>
-          <TableHead>Auto Schedule</TableHead><TableHead className="text-right">Actions</TableHead>
-        </TableRow></TableHeader>
-        <TableBody>
-          {templates.map((tpl) => (
-            <TableRow key={tpl.id} className="cursor-pointer hover:bg-muted/50" onClick={() => setLocation(`/pm/${tpl.id}`)} data-testid={`pm-row-${tpl.id}`}>
-              <TableCell className="font-medium">
-                {tpl.clientName || tpl.locationName ? (
-                  <div>
-                    {tpl.clientName && <div>{tpl.clientName}</div>}
-                    {(tpl.locationAddress || tpl.locationName) && (
-                      <div className="text-xs text-muted-foreground">{tpl.locationAddress || tpl.locationName}</div>
-                    )}
+    <div className="space-y-3">
+      {/* Phase 5B Part 2: Search input */}
+      <div className="relative max-w-sm">
+        <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+        <Input
+          placeholder="Search PM contracts..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="pl-8 h-9"
+          data-testid="input-pm-search"
+        />
+      </div>
+
+      <Card><CardContent className="p-0"><div className="overflow-x-auto">
+        <Table>
+          <TableHeader><TableRow>
+            <SortHead label="Customer" col="customer" />
+            <SortHead label="Location" col="location" />
+            <SortHead label="Contract Name" col="name" />
+            <SortHead label="Recurrence" col="recurrence" />
+            <SortHead label="Status" col="status" />
+            <SortHead label="Due on" col="generation" />
+            <TableHead className="text-right">Actions</TableHead>
+          </TableRow></TableHeader>
+          <TableBody>
+            {sorted.map((tpl) => (
+              <TableRow key={tpl.id} className="cursor-pointer hover:bg-muted/50" onClick={() => setLocation(`/pm/${tpl.id}`)} data-testid={`pm-row-${tpl.id}`}>
+                {/* Phase 5B Part 1: Clean customer/location/address — no repeated company name */}
+                <TableCell className="font-medium max-w-[180px] truncate">{tpl.clientName || "—"}</TableCell>
+                <TableCell>
+                  <div className="max-w-[180px]">
+                    {tpl.locationName && <div className="text-sm truncate">{tpl.locationName}</div>}
+                    {tpl.locationAddress && <div className="text-xs text-muted-foreground/70 truncate">{tpl.locationAddress}</div>}
+                    {!tpl.locationName && !tpl.locationAddress && "—"}
                   </div>
-                ) : "—"}
-              </TableCell>
-              <TableCell>{tpl.title}</TableCell>
-              <TableCell>{formatRecurrence(tpl.recurrenceKind, tpl.intervalMonths)}</TableCell>
-              <TableCell><span className="text-sm">{formatMonths(tpl.monthsOfYear)}</span></TableCell>
-              <TableCell><StatusBadge isActive={tpl.isActive} /></TableCell>
-              <TableCell>{formatGenerationMode(tpl.generationMode, tpl.dayOfMonth)}</TableCell>
-              <TableCell><AutoScheduleBadge enabled={tpl.autoSchedule} /></TableCell>
-              <TableCell className="text-right">
-                <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
-                  <Button variant="ghost" size="icon" title="Edit" onClick={() => setLocation(`/pm/${tpl.id}/edit`)}><Pencil className="h-4 w-4" /></Button>
-                  <Button variant="ghost" size="icon" title="Duplicate" onClick={() => setLocation(`/pm/new?duplicate=${tpl.id}`)}><Copy className="h-4 w-4" /></Button>
-                  <Button variant="ghost" size="icon" title={tpl.isActive ? "Pause" : "Resume"} disabled={isToggling} onClick={() => onToggleActive(tpl.id, !tpl.isActive)}>
-                    {tpl.isActive ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-                  </Button>
-                </div>
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </div></CardContent></Card>
+                </TableCell>
+                <TableCell>{tpl.title}</TableCell>
+                <TableCell className="text-sm">{formatRecurrence(tpl.recurrenceKind, tpl.interval, tpl.monthsOfYear)}</TableCell>
+                <TableCell><StatusBadge isActive={tpl.isActive} /></TableCell>
+                <TableCell>{formatGenerationDay(tpl.generationMode, tpl.generationDayOfMonth)}</TableCell>
+                <TableCell className="text-right">
+                  <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                    <Button variant="ghost" size="icon" title="Edit" onClick={() => setLocation(`/pm/${tpl.id}/edit`)}><Pencil className="h-4 w-4" /></Button>
+                    <Button variant="ghost" size="icon" title="Duplicate" onClick={() => setLocation(`/pm/new?duplicate=${tpl.id}`)}><Copy className="h-4 w-4" /></Button>
+                    <Button variant="ghost" size="icon" title={tpl.isActive ? "Pause" : "Resume"} disabled={isToggling} onClick={() => onToggleActive(tpl.id, !tpl.isActive)}>
+                      {tpl.isActive ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                    </Button>
+                    <Button variant="ghost" size="icon" title="Delete" disabled={isDeleting} onClick={() => onDelete(tpl.id, tpl.title)}>
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+            {sorted.length === 0 && (
+              <TableRow><TableCell colSpan={7} className="text-center py-8 text-sm text-muted-foreground">No contracts match your search.</TableCell></TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </div></CardContent></Card>
+    </div>
   );
 }
 
@@ -525,21 +669,55 @@ function PMSetupsTab({
 // Phase 4B: Queue Item Row (reusable in flat + grouped views)
 // ============================================================================
 
-function QueueItemRow({ item, onClick }: { item: UpcomingQueueItem; onClick: () => void }) {
+/** Phase 4B: Reusable queue row with optional checkbox for grouped + flat views */
+function QueueItemRow({ item, onClick, showCheckbox, isSelected, isEligible, onToggle }: {
+  item: UpcomingQueueItem;
+  onClick: () => void;
+  showCheckbox?: boolean;
+  isSelected?: boolean;
+  isEligible?: boolean;
+  onToggle?: (id: string) => void;
+}) {
+  // Phase 5B: Only show visit date when truly scheduled
+  const hasRealVisitDate = item.schedulingState === "scheduled" && item.visit?.scheduledDate;
   return (
     <TableRow className="cursor-pointer hover:bg-muted/50" onClick={onClick}>
+      {showCheckbox && (
+        <TableCell onClick={(e) => e.stopPropagation()}>
+          {isEligible ? (
+            <Checkbox
+              checked={isSelected}
+              onCheckedChange={() => onToggle?.(item.instanceId)}
+              aria-label={`Select ${item.templateTitle}`}
+            />
+          ) : null}
+        </TableCell>
+      )}
       <TableCell><ComplianceBadge status={item.complianceStatus} /></TableCell>
       <TableCell><SchedulingBadge state={item.schedulingState} /></TableCell>
       <TableCell className="font-medium max-w-[180px] truncate">{item.templateTitle}</TableCell>
-      <TableCell className="whitespace-nowrap text-sm">{item.instanceDate}</TableCell>
-      <TableCell className="text-sm whitespace-nowrap">
-        {item.visit?.scheduledDate ? formatDateTime(item.visit.scheduledDate) : <span className="text-muted-foreground">—</span>}
+      {/* Phase 5B: Customer / Location — no repeated company name */}
+      <TableCell>
+        <div className="max-w-[200px]">
+          {item.customerName && <div className="text-sm truncate">{item.customerName}</div>}
+          {item.locationName && <div className="text-xs text-muted-foreground truncate">{item.locationName}</div>}
+          {!item.customerName && !item.locationName && "—"}
+        </div>
       </TableCell>
-      <TableCell className="text-sm">{item.technicianName || <span className="text-muted-foreground">—</span>}</TableCell>
+      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{item.windowStart} — {item.windowEnd}</TableCell>
+      <TableCell className="text-sm whitespace-nowrap">
+        {hasRealVisitDate ? formatDateTime(item.visit!.scheduledDate!) : <span className="text-muted-foreground">—</span>}
+      </TableCell>
       <TableCell onClick={(e) => e.stopPropagation()}>
         {item.job ? (
           <Link href={`/jobs/${item.job.id}`} className="text-primary hover:underline font-medium text-sm">#{item.job.jobNumber}</Link>
         ) : <span className="text-muted-foreground text-sm">—</span>}
+      </TableCell>
+      {/* Phase 5B: Job status column */}
+      <TableCell className="text-xs">
+        {item.job ? (
+          <span className="capitalize">{item.job.status}</span>
+        ) : <span className="text-muted-foreground">—</span>}
       </TableCell>
     </TableRow>
   );
@@ -549,26 +727,51 @@ function QueueItemRow({ item, onClick }: { item: UpcomingQueueItem; onClick: () 
 // Phase 4B: Group Header + Collapsible Group
 // ============================================================================
 
-function GroupSection({ group, onItemClick }: { group: QueueGroup; onItemClick: (templateId: string) => void }) {
+/** Phase 4B: Collapsible group with checkbox support — selection persists across collapse */
+function GroupSection({ group, onItemClick, selectedIds, onToggle, onToggleGroup, showCheckboxes = true }: {
+  group: QueueGroup;
+  onItemClick: (templateId: string) => void;
+  selectedIds: Set<string>;
+  onToggle: (id: string) => void;
+  onToggleGroup: (ids: string[], select: boolean) => void;
+  showCheckboxes?: boolean;
+}) {
   const [open, setOpen] = useState(true);
+
+  // Phase 4B Part E: Eligible items in this group for generation
+  const eligibleIds = useMemo(
+    () => showCheckboxes ? group.items.filter(isGenerationEligible).map((i) => i.instanceId) : [],
+    [group.items, showCheckboxes]
+  );
+  const allGroupSelected = eligibleIds.length > 0 && eligibleIds.every((id) => selectedIds.has(id));
+  const someGroupSelected = eligibleIds.some((id) => selectedIds.has(id));
 
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="border rounded-lg mb-3">
       <CollapsibleTrigger asChild>
         <button className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-muted/50 transition-colors">
           {open ? <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />}
+          {/* Group-level checkbox — only shown when checkboxes are enabled (Due Now view) */}
+          {showCheckboxes && eligibleIds.length > 0 && (
+            <span onClick={(e) => e.stopPropagation()}>
+              <Checkbox
+                checked={allGroupSelected ? true : someGroupSelected ? "indeterminate" : false}
+                onCheckedChange={() => onToggleGroup(eligibleIds, !allGroupSelected)}
+                aria-label={`Select all in ${group.label}`}
+              />
+            </span>
+          )}
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-semibold text-sm truncate">{group.label}</span>
               <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{group.items.length} PM{group.items.length !== 1 ? "s" : ""}</Badge>
               {group.overdue > 0 && <Badge variant="outline" className="border-red-300 bg-red-50 text-red-700 text-[10px] px-1.5 py-0">{group.overdue} overdue</Badge>}
               {group.dueSoon > 0 && <Badge variant="outline" className="border-orange-300 bg-orange-50 text-orange-700 text-[10px] px-1.5 py-0">{group.dueSoon} due soon</Badge>}
-              {group.unscheduled > 0 && <Badge variant="outline" className="border-yellow-300 bg-yellow-50 text-yellow-700 text-[10px] px-1.5 py-0">{group.unscheduled} unscheduled</Badge>}
             </div>
             {group.sublabel && <p className="text-xs text-muted-foreground mt-0.5 truncate">{group.sublabel}</p>}
           </div>
           <div className="text-xs text-muted-foreground shrink-0">
-            {group.needsAction > 0 ? `${group.needsAction} need action` : group.scheduled > 0 ? `${group.scheduled} scheduled` : ""}
+            {group.needsAction > 0 ? `${group.needsAction} need action` : ""}
           </div>
         </button>
       </CollapsibleTrigger>
@@ -576,12 +779,21 @@ function GroupSection({ group, onItemClick }: { group: QueueGroup; onItemClick: 
         <div className="overflow-x-auto border-t">
           <Table>
             <TableHeader><TableRow>
-              <TableHead>Compliance</TableHead><TableHead>Scheduling</TableHead><TableHead>PM Setup</TableHead>
-              <TableHead>Target Date</TableHead><TableHead>Visit Date</TableHead><TableHead>Tech</TableHead><TableHead>Job</TableHead>
+              {showCheckboxes && <TableHead className="w-10" />}
+              <TableHead>Compliance</TableHead><TableHead>Scheduling</TableHead><TableHead>PM Contract</TableHead>
+              <TableHead>Customer / Location</TableHead><TableHead>Window</TableHead><TableHead>Visit</TableHead><TableHead>Job</TableHead><TableHead>Status</TableHead>
             </TableRow></TableHeader>
             <TableBody>
               {group.items.map((item) => (
-                <QueueItemRow key={item.instanceId} item={item} onClick={() => onItemClick(item.templateId)} />
+                <QueueItemRow
+                  key={item.instanceId}
+                  item={item}
+                  onClick={() => onItemClick(item.templateId)}
+                  showCheckbox={showCheckboxes}
+                  isSelected={selectedIds.has(item.instanceId)}
+                  isEligible={showCheckboxes && isGenerationEligible(item)}
+                  onToggle={onToggle}
+                />
               ))}
             </TableBody>
           </Table>
@@ -595,29 +807,40 @@ function GroupSection({ group, onItemClick }: { group: QueueGroup; onItemClick: 
 // Filter options
 // ============================================================================
 
-const FILTER_OPTIONS = [
-  { value: "needs_action", label: "Needs Action" },
-  { value: "all", label: "All" },
+/** Dashboard sub-view: Due Now (actionable) vs Upcoming (planning only) */
+type DashboardSubView = "due_now" | "upcoming_planning";
+
+/** Compliance statuses considered actionable (Due Now surface) */
+const ACTIONABLE_COMPLIANCE = new Set(["overdue", "due_soon", "in_window"]);
+
+/** PM Due Queue filters for the Due Now sub-view */
+const DUE_NOW_FILTER_OPTIONS = [
+  { value: "needs_generation", label: "Needs Generation" },
+  { value: "needs_action", label: "All Needs Action" },
+  { value: "all", label: "All Due" },
   { value: "overdue", label: "Overdue" },
   { value: "due_soon", label: "Due Soon" },
   { value: "in_window", label: "In Window" },
-  { value: "unscheduled", label: "Generated — Unscheduled" },
-  { value: "scheduled", label: "Scheduled" },
-  { value: "upcoming", label: "Upcoming" },
-  { value: "completed", label: "Completed" },
 ] as const;
 
+/** PM Due Queue filters for the Upcoming sub-view (planning only, no generation) */
+const UPCOMING_FILTER_OPTIONS = [
+  { value: "all", label: "All Upcoming" },
+] as const;
+
+/** PM Due Queue filter — all items here are pre-generation (pending instances only) */
 function applyFilter(items: UpcomingQueueItem[], filter: string): UpcomingQueueItem[] {
   switch (filter) {
     case "all": return items;
+    case "needs_generation": return items.filter((i) =>
+      i.schedulingState === "not_generated" &&
+      !["skipped", "canceled"].includes(i.complianceStatus)
+    );
     case "needs_action": return items.filter(isNeedsAction);
     case "overdue": return items.filter((i) => i.complianceStatus === "overdue");
     case "due_soon": return items.filter((i) => i.complianceStatus === "due_soon");
     case "in_window": return items.filter((i) => i.complianceStatus === "in_window");
-    case "unscheduled": return items.filter((i) => i.schedulingState === "generated_unscheduled");
-    case "scheduled": return items.filter((i) => i.schedulingState === "scheduled");
-    case "upcoming": return items.filter((i) => i.complianceStatus === "upcoming" && !["completed", "skipped", "canceled"].includes(i.schedulingState));
-    case "completed": return items.filter((i) => i.complianceStatus === "completed_on_time" || i.complianceStatus === "completed_late");
+    case "upcoming": return items.filter((i) => i.complianceStatus === "upcoming");
     default: return items;
   }
 }
@@ -626,8 +849,8 @@ function applyFilter(items: UpcomingQueueItem[], filter: string): UpcomingQueueI
 // Phase 4C: Generation eligibility + confirmation modal
 // ============================================================================
 
-/** Phase 4C: Eligible compliance statuses for generation */
-const GENERATION_ELIGIBLE_STATUSES = new Set(["upcoming", "in_window", "due_soon", "overdue"]);
+/** Phase 4C: Eligible compliance statuses for generation — "upcoming" excluded to prevent premature generation */
+const GENERATION_ELIGIBLE_STATUSES = new Set(["in_window", "due_soon", "overdue"]);
 
 /** Check if an upcoming item is eligible for generation */
 function isGenerationEligible(item: UpcomingQueueItem): boolean {
@@ -663,7 +886,8 @@ function GenerateConfirmModal({
         <DialogHeader>
           <DialogTitle>Generate {items.length} PM job{items.length !== 1 ? "s" : ""}?</DialogTitle>
           <DialogDescription>
-            This will create work orders for the selected PM instances.
+            These preventive maintenance items will be converted into jobs and moved into the normal job workflow.
+            They will need to be scheduled on your dispatch board.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-2 text-sm py-2">
@@ -698,9 +922,17 @@ const GROUP_MODE_OPTIONS: { value: GroupMode; label: string; icon: React.ReactNo
 function UpcomingTab() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
-  const [statusFilter, setStatusFilter] = useState<string>("needs_action");
+  // Dashboard sub-view: "due_now" (actionable) vs "upcoming_planning" (future, read-only)
+  const [subView, setSubView] = useState<DashboardSubView>("due_now");
+  const isDueNow = subView === "due_now";
+  // Filters: default to "needs_generation" for Due Now, "all" for Upcoming
+  const [dueNowFilter, setDueNowFilter] = useState<string>("needs_generation");
+  const [upcomingFilter, setUpcomingFilter] = useState<string>("all");
+  const statusFilter = isDueNow ? dueNowFilter : upcomingFilter;
+  const setStatusFilter = isDueNow ? setDueNowFilter : setUpcomingFilter;
+  const filterOptions = isDueNow ? DUE_NOW_FILTER_OPTIONS : UPCOMING_FILTER_OPTIONS;
   const [groupMode, setGroupMode] = useState<GroupMode>("none");
-  // Phase 4C: Selection state for bulk generation
+  // Phase 4C: Selection state for bulk generation (only active in Due Now)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmOpen, setConfirmOpen] = useState(false);
 
@@ -709,19 +941,32 @@ function UpcomingTab() {
     queryFn: () => apiRequest("/api/recurring-templates/upcoming"),
   });
 
-  // Apply filter first, then group
-  const filteredItems = useMemo(() => applyFilter(items, statusFilter), [items, statusFilter]);
+  // Split items into actionable (due now) vs future (upcoming planning)
+  const dueNowItems = useMemo(
+    () => items.filter((i) => ACTIONABLE_COMPLIANCE.has(i.complianceStatus)),
+    [items]
+  );
+  const upcomingPlanningItems = useMemo(
+    () => items.filter((i) => i.complianceStatus === "upcoming"),
+    [items]
+  );
+  const baseItems = isDueNow ? dueNowItems : upcomingPlanningItems;
 
-  // Phase 4C: Eligible items in current view
+  // Apply sub-filter within the active sub-view
+  const filteredItems = useMemo(() => applyFilter(baseItems, statusFilter), [baseItems, statusFilter]);
+
+  // Phase 4C: Eligible items in current view (only in Due Now — Upcoming has no generation)
   const eligibleIds = useMemo(
-    () => new Set(filteredItems.filter(isGenerationEligible).map((i) => i.instanceId)),
-    [filteredItems]
+    () => isDueNow
+      ? new Set(filteredItems.filter(isGenerationEligible).map((i) => i.instanceId))
+      : new Set<string>(),
+    [filteredItems, isDueNow]
   );
 
   // Phase 4C: Items selected for generation (intersection of selected + eligible)
   const selectedEligible = useMemo(
-    () => items.filter((i) => selectedIds.has(i.instanceId) && isGenerationEligible(i)),
-    [items, selectedIds]
+    () => isDueNow ? items.filter((i) => selectedIds.has(i.instanceId) && isGenerationEligible(i)) : [],
+    [items, selectedIds, isDueNow]
   );
 
   // Phase 4C: Toggle single selection
@@ -747,6 +992,17 @@ function UpcomingTab() {
     });
   }, [eligibleIds]);
 
+  // Phase 4B Part E: Toggle a group of items (for group-level select all)
+  const toggleGroup = useCallback((ids: string[], select: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        if (select) next.add(id); else next.delete(id);
+      }
+      return next;
+    });
+  }, []);
+
   // Phase 4C: Generate mutation (selective by instance IDs)
   const generateMutation = useMutation({
     mutationFn: async (instanceIds: string[]) =>
@@ -758,20 +1014,23 @@ function UpcomingTab() {
       queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates/upcoming"] });
       queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+      // PM generation bug fix: invalidate dispatch board caches so newly-created
+      // PM jobs appear immediately in the unscheduled panel when user navigates there
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       setSelectedIds(new Set());
       setConfirmOpen(false);
-      toast({ title: "Generation complete", description: `${data?.jobsCreated ?? 0} job(s) created.` });
+      const count = data?.jobsCreated ?? 0;
+      toast({
+        title: `${count} job${count !== 1 ? "s" : ""} created`,
+        description: "These jobs are now in the dispatch workflow. Schedule them from the Dispatch Board.",
+      });
     },
     onError: () => {
       setConfirmOpen(false);
-      toast({ title: "Generation failed", variant: "destructive" });
+      toast({ title: "Generation failed", description: "Could not generate jobs. Please try again.", variant: "destructive" });
     },
   });
-
-  // Phase 4C: Single-row generate
-  const handleGenerateOne = useCallback((item: UpcomingQueueItem) => {
-    generateMutation.mutate([item.instanceId]);
-  }, [generateMutation]);
 
   // Compute groups
   const groups = useMemo((): QueueGroup[] => {
@@ -781,24 +1040,32 @@ function UpcomingTab() {
     return [];
   }, [filteredItems, groupMode]);
 
-  // Summary counts (from all items, not filtered)
+  // Summary counts — scoped to Due Now items only (actionable surface)
   const counts = useMemo(() => {
-    let overdue = 0, dueSoon = 0, unscheduled = 0, needsAction = 0;
-    for (const item of items) {
+    let overdue = 0, dueSoon = 0, inWindow = 0, needsGeneration = 0;
+    for (const item of dueNowItems) {
       if (item.complianceStatus === "overdue") overdue++;
       if (item.complianceStatus === "due_soon") dueSoon++;
-      if (item.schedulingState === "generated_unscheduled") unscheduled++;
-      if (isNeedsAction(item)) needsAction++;
+      if (item.complianceStatus === "in_window") inWindow++;
+      if (isGenerationEligible(item)) needsGeneration++;
     }
-    return { overdue, dueSoon, unscheduled, needsAction };
-  }, [items]);
+    return { overdue, dueSoon, inWindow, needsGeneration };
+  }, [dueNowItems]);
+
+  // Clear selection when switching sub-views
+  const handleSubViewChange = useCallback((view: DashboardSubView) => {
+    setSubView(view);
+    setSelectedIds(new Set());
+  }, []);
 
   const allEligibleSelected = eligibleIds.size > 0 && Array.from(eligibleIds).every((id) => selectedIds.has(id));
+  // Whether to show checkboxes in the current view (Due Now only)
+  const showCheckboxes = isDueNow;
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-16">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /><span className="ml-2 text-muted-foreground">Loading planning queue...</span>
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /><span className="ml-2 text-muted-foreground">Loading PM due queue...</span>
       </div>
     );
   }
@@ -809,30 +1076,65 @@ function UpcomingTab() {
     return (
       <Card><CardContent className="flex flex-col items-center gap-4 py-16 text-center">
         <Clock className="h-12 w-12 text-muted-foreground/50" />
-        <div><p className="text-lg font-medium">No upcoming PM work</p><p className="text-sm text-muted-foreground max-w-md">Create PM setups and run generation to see upcoming maintenance jobs here.</p></div>
+        <div><p className="text-lg font-medium">No PM work due</p><p className="text-sm text-muted-foreground max-w-md">PM contracts with upcoming due dates will appear here. Create a PM contract to get started.</p></div>
       </CardContent></Card>
     );
   }
 
   return (
     <div className="space-y-4">
-      {/* Summary badges */}
-      <div className="flex flex-wrap items-center gap-2">
-        {counts.needsAction > 0 && (
-          <Badge variant="outline" className="border-red-300 bg-red-50 text-red-700 cursor-pointer font-semibold" onClick={() => setStatusFilter("needs_action")}>
-            {counts.needsAction} need action
-          </Badge>
-        )}
-        {counts.overdue > 0 && (
-          <Badge variant="outline" className="border-red-300 bg-red-50 text-red-700 cursor-pointer" onClick={() => setStatusFilter("overdue")}>{counts.overdue} overdue</Badge>
-        )}
-        {counts.dueSoon > 0 && (
-          <Badge variant="outline" className="border-orange-300 bg-orange-50 text-orange-700 cursor-pointer" onClick={() => setStatusFilter("due_soon")}>{counts.dueSoon} due soon</Badge>
-        )}
-        {counts.unscheduled > 0 && (
-          <Badge variant="outline" className="border-yellow-300 bg-yellow-50 text-yellow-700 cursor-pointer" onClick={() => setStatusFilter("unscheduled")}>{counts.unscheduled} unscheduled</Badge>
-        )}
+      {/* Sub-view selector: Due Now / Upcoming */}
+      <div className="flex items-center gap-1 border rounded-lg p-0.5 bg-muted/30 w-fit">
+        <button
+          onClick={() => handleSubViewChange("due_now")}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+            isDueNow ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          <Zap className="h-3.5 w-3.5" />
+          Due Now
+          {counts.needsGeneration > 0 && (
+            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 ml-1">{counts.needsGeneration}</Badge>
+          )}
+        </button>
+        <button
+          onClick={() => handleSubViewChange("upcoming_planning")}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+            !isDueNow ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          <Clock className="h-3.5 w-3.5" />
+          Upcoming
+          {upcomingPlanningItems.length > 0 && (
+            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 ml-1">{upcomingPlanningItems.length}</Badge>
+          )}
+        </button>
       </div>
+
+      {/* Summary badges — only in Due Now view, reflects actionable counts */}
+      {isDueNow && (
+        <div className="flex flex-wrap items-center gap-2">
+          {counts.needsGeneration > 0 && (
+            <Badge variant="outline" className="border-blue-300 bg-blue-50 text-blue-700 cursor-pointer font-semibold" onClick={() => setDueNowFilter("needs_generation")}>
+              {counts.needsGeneration} need generation
+            </Badge>
+          )}
+          {counts.overdue > 0 && (
+            <Badge variant="outline" className="border-red-300 bg-red-50 text-red-700 cursor-pointer" onClick={() => setDueNowFilter("overdue")}>{counts.overdue} overdue</Badge>
+          )}
+          {counts.dueSoon > 0 && (
+            <Badge variant="outline" className="border-orange-300 bg-orange-50 text-orange-700 cursor-pointer" onClick={() => setDueNowFilter("due_soon")}>{counts.dueSoon} due soon</Badge>
+          )}
+        </div>
+      )}
+
+      {/* Upcoming planning view notice */}
+      {!isDueNow && (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/30 rounded-lg px-3 py-2">
+          <Clock className="h-4 w-4 shrink-0" />
+          <span>These PMs are not yet due. They will move to Due Now when their service window opens.</span>
+        </div>
+      )}
 
       {/* Controls: Filter + Group By + Bulk Generate */}
       <div className="flex flex-wrap items-center gap-3">
@@ -841,24 +1143,50 @@ function UpcomingTab() {
           <Select value={statusFilter} onValueChange={setStatusFilter}>
             <SelectTrigger className="w-[200px] h-8 text-sm"><SelectValue /></SelectTrigger>
             <SelectContent>
-              {FILTER_OPTIONS.map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}
+              {filterOptions.map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
 
-        {/* Phase 4C: Bulk generate button */}
-        {selectedEligible.length > 0 && (
+        {/* Bulk actions: only in Due Now view */}
+        {isDueNow && selectedEligible.length > 0 ? (
+          <>
+            <Button
+              size="sm"
+              onClick={() => setConfirmOpen(true)}
+              disabled={generateMutation.isPending}
+            >
+              {generateMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Zap className="mr-2 h-4 w-4" />}
+              Generate Selected ({selectedEligible.length})
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setSelectedIds(new Set())}
+            >
+              Clear Selection
+            </Button>
+          </>
+        ) : isDueNow && eligibleIds.size > 0 ? (
           <Button
             size="sm"
-            onClick={() => setConfirmOpen(true)}
+            variant="outline"
+            onClick={() => {
+              setSelectedIds((prev) => {
+                const next = new Set(prev);
+                eligibleIds.forEach((id) => next.add(id));
+                return next;
+              });
+              setConfirmOpen(true);
+            }}
             disabled={generateMutation.isPending}
           >
-            {generateMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Zap className="mr-2 h-4 w-4" />}
-            Generate Selected ({selectedEligible.length})
+            <Zap className="mr-2 h-4 w-4" />
+            Generate All Filtered ({eligibleIds.size})
           </Button>
-        )}
+        ) : null}
 
-        {/* Phase 4B: Group-by segmented control */}
+        {/* Group-by segmented control */}
         <div className="flex items-center gap-1 ml-auto border rounded-lg p-0.5 bg-muted/30">
           {GROUP_MODE_OPTIONS.map((opt) => (
             <button
@@ -877,14 +1205,16 @@ function UpcomingTab() {
         </div>
       </div>
 
-      {/* Phase 4C: Confirmation modal */}
-      <GenerateConfirmModal
-        open={confirmOpen}
-        onClose={() => setConfirmOpen(false)}
-        onConfirm={() => generateMutation.mutate(selectedEligible.map((i) => i.instanceId))}
-        items={selectedEligible}
-        isPending={generateMutation.isPending}
-      />
+      {/* Phase 4C: Confirmation modal (Due Now only) */}
+      {isDueNow && (
+        <GenerateConfirmModal
+          open={confirmOpen}
+          onClose={() => setConfirmOpen(false)}
+          onConfirm={() => generateMutation.mutate(selectedEligible.map((i) => i.instanceId))}
+          items={selectedEligible}
+          isPending={generateMutation.isPending}
+        />
+      )}
 
       {/* Grouped view */}
       {groupMode !== "none" ? (
@@ -894,82 +1224,104 @@ function UpcomingTab() {
               No items match the current filter.
             </CardContent></Card>
           ) : (
-            groups.map((group) => (
-              <GroupSection key={group.key} group={group} onItemClick={(tid) => setLocation(`/pm/${tid}`)} />
-            ))
+            <>
+              {/* Select all (Due Now only) */}
+              {showCheckboxes && eligibleIds.size > 0 && (
+                <div className="flex items-center gap-2 mb-2">
+                  <Checkbox
+                    checked={allEligibleSelected}
+                    onCheckedChange={toggleSelectAll}
+                    aria-label="Select all eligible across groups"
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    Select all eligible ({eligibleIds.size})
+                  </span>
+                </div>
+              )}
+              {groups.map((group) => (
+                <GroupSection
+                  key={group.key}
+                  group={group}
+                  onItemClick={(tid) => setLocation(`/pm/${tid}`)}
+                  selectedIds={showCheckboxes ? selectedIds : new Set()}
+                  onToggle={toggleSelect}
+                  onToggleGroup={toggleGroup}
+                  showCheckboxes={showCheckboxes}
+                />
+              ))}
+            </>
           )}
           <p className="text-xs text-muted-foreground mt-2">
-            {groups.length} group{groups.length !== 1 ? "s" : ""}, {filteredItems.length} of {items.length} instances.
+            {groups.length} group{groups.length !== 1 ? "s" : ""}, {filteredItems.length} of {baseItems.length} {isDueNow ? "due" : "upcoming"} instances.
           </p>
         </div>
       ) : (
-        /* Flat (ungrouped) view with selection checkboxes */
+        /* Flat (ungrouped) view */
         <>
           <Card><CardContent className="p-0"><div className="overflow-x-auto">
             <Table>
               <TableHeader><TableRow>
-                <TableHead className="w-10">
-                  {eligibleIds.size > 0 && (
-                    <Checkbox
-                      checked={allEligibleSelected}
-                      onCheckedChange={toggleSelectAll}
-                      aria-label="Select all eligible"
-                    />
-                  )}
-                </TableHead>
-                <TableHead>Compliance</TableHead><TableHead>Scheduling</TableHead><TableHead>PM Setup</TableHead>
-                <TableHead>Customer / Location</TableHead><TableHead>Target Date</TableHead><TableHead>Window</TableHead>
-                <TableHead>Visit Date</TableHead><TableHead>Tech</TableHead><TableHead>Job</TableHead>
-                <TableHead className="w-24">Actions</TableHead>
+                {showCheckboxes && (
+                  <TableHead className="w-10">
+                    {eligibleIds.size > 0 && (
+                      <Checkbox
+                        checked={allEligibleSelected}
+                        onCheckedChange={toggleSelectAll}
+                        aria-label="Select all eligible"
+                      />
+                    )}
+                  </TableHead>
+                )}
+                <TableHead>Compliance</TableHead>
+                <TableHead>Scheduling</TableHead>
+                <TableHead>PM Contract</TableHead>
+                <TableHead>Customer / Location</TableHead>
+                <TableHead>Window</TableHead>
+                <TableHead>Visit</TableHead>
+                <TableHead>Job</TableHead>
+                <TableHead>Status</TableHead>
               </TableRow></TableHeader>
               <TableBody>
                 {filteredItems.map((item) => {
-                  const eligible = isGenerationEligible(item);
+                  const eligible = showCheckboxes && isGenerationEligible(item);
+                  const hasRealVisitDate = item.schedulingState === "scheduled" && item.visit?.scheduledDate;
                   return (
                     <TableRow key={item.instanceId} className="cursor-pointer hover:bg-muted/50" onClick={() => setLocation(`/pm/${item.templateId}`)}>
-                      <TableCell onClick={(e) => e.stopPropagation()}>
-                        {eligible && (
-                          <Checkbox
-                            checked={selectedIds.has(item.instanceId)}
-                            onCheckedChange={() => toggleSelect(item.instanceId)}
-                            aria-label={`Select ${item.templateTitle}`}
-                          />
-                        )}
-                      </TableCell>
+                      {showCheckboxes && (
+                        <TableCell onClick={(e) => e.stopPropagation()}>
+                          {eligible ? (
+                            <Checkbox
+                              checked={selectedIds.has(item.instanceId)}
+                              onCheckedChange={() => toggleSelect(item.instanceId)}
+                              aria-label={`Select ${item.templateTitle}`}
+                            />
+                          ) : null}
+                        </TableCell>
+                      )}
                       <TableCell><ComplianceBadge status={item.complianceStatus} /></TableCell>
                       <TableCell><SchedulingBadge state={item.schedulingState} /></TableCell>
                       <TableCell className="font-medium max-w-[180px] truncate">{item.templateTitle}</TableCell>
                       <TableCell>
-                        <div className="max-w-[180px]">
+                        <div className="max-w-[200px]">
                           {item.customerName && <div className="text-sm truncate">{item.customerName}</div>}
                           {item.locationName && <div className="text-xs text-muted-foreground truncate">{item.locationName}</div>}
+                          {item.locationAddress && <div className="text-xs text-muted-foreground/70 truncate">{[item.locationAddress, item.locationCity].filter(Boolean).join(", ")}</div>}
                           {!item.customerName && !item.locationName && "—"}
                         </div>
                       </TableCell>
-                      <TableCell className="whitespace-nowrap text-sm">{item.instanceDate}</TableCell>
                       <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{item.windowStart} — {item.windowEnd}</TableCell>
                       <TableCell className="text-sm whitespace-nowrap">
-                        {item.visit?.scheduledDate ? formatDateTime(item.visit.scheduledDate) : <span className="text-muted-foreground">—</span>}
+                        {hasRealVisitDate ? formatDateTime(item.visit!.scheduledDate!) : <span className="text-muted-foreground">—</span>}
                       </TableCell>
-                      <TableCell className="text-sm">{item.technicianName || <span className="text-muted-foreground">—</span>}</TableCell>
                       <TableCell onClick={(e) => e.stopPropagation()}>
                         {item.job ? (
                           <Link href={`/jobs/${item.job.id}`} className="text-primary hover:underline font-medium text-sm">#{item.job.jobNumber}</Link>
                         ) : <span className="text-muted-foreground text-sm">—</span>}
                       </TableCell>
-                      <TableCell onClick={(e) => e.stopPropagation()}>
-                        {eligible && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 text-xs"
-                            disabled={generateMutation.isPending}
-                            onClick={() => handleGenerateOne(item)}
-                          >
-                            <Zap className="mr-1 h-3 w-3" />
-                            Generate
-                          </Button>
-                        )}
+                      <TableCell className="text-xs">
+                        {item.job ? (
+                          <span className="capitalize">{item.job.status}</span>
+                        ) : <span className="text-muted-foreground">—</span>}
                       </TableCell>
                     </TableRow>
                   );
@@ -977,8 +1329,574 @@ function UpcomingTab() {
               </TableBody>
             </Table>
           </div></CardContent></Card>
-          <p className="text-xs text-muted-foreground">Showing {filteredItems.length} of {items.length} instances.</p>
+          <p className="text-xs text-muted-foreground">Showing {filteredItems.length} of {baseItems.length} {isDueNow ? "due" : "upcoming"} instances.</p>
         </>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// PM Templates Tab — Reusable job content templates (Phase 2 refinement)
+// ============================================================================
+
+const TPL_MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
+
+// TPL_MONTH_PRESETS, BILLING_MODE_OPTIONS, MonthPicker, LineItemRow, FormSection
+// moved to PMTemplateEditorPage — modal removed
+
+
+
+/** Format a brief schedule summary for the template table */
+function formatTplSchedule(tpl: PmTemplateItem): string {
+  if (!tpl.defaultMonthsOfYear || tpl.defaultMonthsOfYear.length === 0) return "—";
+  if (tpl.defaultMonthsOfYear.length === 12) return "Monthly";
+  return tpl.defaultMonthsOfYear.map((m) => TPL_MONTH_LABELS[m - 1]).join(", ");
+}
+
+/** PM Templates tab content — navigates to full-page editor */
+function PMTemplatesTab() {
+  const [, setLocation] = useLocation();
+  const { toast } = useToast();
+
+  const { data: templates = [], isLoading } = useQuery<PmTemplateItem[]>({
+    queryKey: ["/api/pm/templates"],
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => apiRequest(`/api/pm/templates/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/pm/templates"] });
+      toast({ title: "Template deleted" });
+    },
+    onError: (err: Error) => toast({ title: "Failed to delete template", description: err.message, variant: "destructive" }),
+  });
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        <span className="ml-2 text-muted-foreground">Loading templates...</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">
+          Reusable presets for PM contracts. Templates prefill the PM wizard with default content.
+        </p>
+        <Button size="sm" onClick={() => setLocation("/pm/templates/new")}>
+          <Plus className="mr-2 h-4 w-4" />New Template
+        </Button>
+      </div>
+
+      {templates.length === 0 ? (
+        <Card>
+          <CardContent className="flex flex-col items-center gap-4 py-16 text-center">
+            <FileBox className="h-12 w-12 text-muted-foreground/50" />
+            <div>
+              <p className="text-lg font-medium">No PM templates yet</p>
+              <p className="text-sm text-muted-foreground max-w-md">
+                Create a template to prefill job content when setting up new PM contracts.
+              </p>
+            </div>
+            <Button onClick={() => setLocation("/pm/templates/new")}>
+              <Plus className="mr-2 h-4 w-4" />Create First Template
+            </Button>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card>
+          <CardContent className="p-0">
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Template Name</TableHead>
+                    <TableHead>Schedule</TableHead>
+                    <TableHead>Billing</TableHead>
+                    <TableHead className="text-center">Items</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {templates.map((tpl) => (
+                    <TableRow key={tpl.id} className="cursor-pointer" onClick={() => setLocation(`/pm/templates/${tpl.id}/edit`)}>
+                      <TableCell className="font-medium">{tpl.name}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {formatTplSchedule(tpl)}
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {tpl.billingMode ? (
+                          <span>{tpl.billingMode === "per_visit" ? "Per visit" : tpl.billingMode}{tpl.defaultPrice ? ` · $${tpl.defaultPrice}` : ""}</span>
+                        ) : "—"}
+                      </TableCell>
+                      <TableCell className="text-center text-sm">
+                        {tpl.defaultLineItemsJson?.length ?? 0}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                          <Button variant="ghost" size="icon" title="Edit" onClick={() => setLocation(`/pm/templates/${tpl.id}/edit`)}>
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            title="Delete"
+                            disabled={deleteMutation.isPending}
+                            onClick={() => {
+                              if (confirm(`Delete template "${tpl.name}"?`)) {
+                                deleteMutation.mutate(tpl.id);
+                              }
+                            }}
+                          >
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// PM Billing Oversight Tab
+// ============================================================================
+
+/** PM job with billing fields for oversight display */
+interface PmBillingJob {
+  id: string;
+  jobNumber: number;
+  summary: string;
+  status: string;
+  pmBillingModel: string | null;
+  pmBillingDisposition: string | null;
+  pmBillingStatus: string | null;
+  pmBillingLabel: string | null;
+  invoiceId: string | null;
+  recurrenceTemplateId: string | null;
+  closedAt: string | null;
+  locationId: string;
+}
+
+/** Format billing model for display */
+function formatBillingModelLabel(model: string | null): string {
+  switch (model) {
+    case "per_visit": return "Per Visit";
+    case "monthly_fixed": return "Monthly Fixed";
+    case "annual_prepaid": return "Annual Prepaid";
+    case "do_not_bill": return "Do Not Bill";
+    default: return "Not set";
+  }
+}
+
+/** Format billing disposition for display */
+function formatDispositionLabel(d: string | null): string {
+  switch (d) {
+    case "invoice_on_completion": return "Invoice required";
+    case "covered_by_contract": return "Covered by contract";
+    case "archive_no_invoice": return "No invoice expected";
+    default: return "—";
+  }
+}
+
+/** Determine PM billing exception state */
+function getPmBillingExceptionState(job: PmBillingJob): {
+  isException: boolean;
+  reason: string | null;
+} {
+  // Per-visit job completed but no invoice
+  if (job.pmBillingDisposition === "invoice_on_completion" &&
+      ["completed", "archived"].includes(job.status) &&
+      !job.invoiceId) {
+    return { isException: true, reason: "Per-visit PM completed but no invoice created" };
+  }
+  // Covered by contract but invoice was created (possible error)
+  if ((job.pmBillingDisposition === "covered_by_contract" || job.pmBillingDisposition === "archive_no_invoice") &&
+      job.invoiceId) {
+    return { isException: true, reason: "No-invoice PM has an invoice attached" };
+  }
+  return { isException: false, reason: null };
+}
+
+/** PM Billing Phase 2: Billing event from API */
+interface BillingEventRow {
+  event: {
+    id: string;
+    companyId: string;
+    pmContractId: string;
+    billingModelSnapshot: string;
+    periodStart: string;
+    periodEnd: string;
+    billingDate: string;
+    status: string;
+    invoiceId: string | null;
+    amountSnapshot: string | null;
+    billingLabelSnapshot: string | null;
+    notes: string | null;
+    createdAt: string;
+  };
+  contractTitle: string | null;
+  contractLocationId: string | null;
+  contractClientId: string | null;
+}
+
+/** Format billing event status as badge */
+function BillingEventStatusBadge({ status }: { status: string }) {
+  const map: Record<string, { className: string; label: string }> = {
+    pending: { className: "border-yellow-300 bg-yellow-50 text-yellow-700", label: "Pending" },
+    invoiced: { className: "border-green-300 bg-green-50 text-green-700", label: "Invoiced" },
+    skipped: { className: "border-gray-300 bg-gray-50 text-gray-600", label: "Skipped" },
+    canceled: { className: "border-red-200 bg-red-50 text-red-600", label: "Canceled" },
+    billing_exception: { className: "border-red-300 bg-red-50 text-red-700", label: "Exception" },
+  };
+  const cfg = map[status] ?? map.pending;
+  return <Badge variant="outline" className={`text-xs ${cfg.className}`}>{cfg.label}</Badge>;
+}
+
+function PMBillingTab({ contracts }: { contracts: RecurringTemplate[] }) {
+  const [, setLocation] = useLocation();
+  const { toast } = useToast();
+
+  // Fetch PM jobs for per-visit billing oversight
+  const { data: pmJobs = [], isLoading: jobsLoading } = useQuery<PmBillingJob[]>({
+    queryKey: ["/api/jobs", "pm-billing"],
+    queryFn: async () => {
+      const res = await apiRequest("/api/jobs?jobType=maintenance&limit=200");
+      const allJobs = (res?.data || res || []) as PmBillingJob[];
+      return allJobs.filter((j: any) => j.recurrenceTemplateId);
+    },
+  });
+
+  // PM Billing Phase 2: Fetch contract billing events
+  const { data: billingEvents = [], isLoading: eventsLoading } = useQuery<BillingEventRow[]>({
+    queryKey: ["/api/pm/billing/events"],
+    queryFn: () => apiRequest("/api/pm/billing/events"),
+  });
+
+  // PM Billing Phase 2: Manual billing run trigger
+  const runBillingMutation = useMutation({
+    mutationFn: () => apiRequest("/api/pm/billing/run", { method: "POST" }),
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/pm/billing/events"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+      toast({
+        title: "PM billing run complete",
+        description: `${data.eventsCreated ?? 0} events created, ${data.invoicesCreated ?? 0} invoices created.`,
+      });
+    },
+    onError: () => toast({ title: "Billing run failed", variant: "destructive" }),
+  });
+
+  // Categorize PM jobs into billing buckets (per-visit oversight)
+  const buckets = useMemo(() => {
+    const pendingInvoice: PmBillingJob[] = [];
+    const coveredByContract: PmBillingJob[] = [];
+    const exceptions: (PmBillingJob & { exceptionReason: string })[] = [];
+    const invoiced: PmBillingJob[] = [];
+
+    for (const job of pmJobs) {
+      const exState = getPmBillingExceptionState(job);
+      if (exState.isException) {
+        exceptions.push({ ...job, exceptionReason: exState.reason! });
+      } else if (job.status === "invoiced" || job.invoiceId) {
+        invoiced.push(job);
+      } else if (job.pmBillingDisposition === "invoice_on_completion" &&
+                 ["completed"].includes(job.status)) {
+        pendingInvoice.push(job);
+      } else if (job.pmBillingDisposition === "covered_by_contract" ||
+                 job.pmBillingDisposition === "archive_no_invoice") {
+        if (["completed", "archived"].includes(job.status)) {
+          coveredByContract.push(job);
+        }
+      }
+    }
+
+    return { pendingInvoice, coveredByContract, exceptions, invoiced };
+  }, [pmJobs]);
+
+  // PM Billing Phase 2: Categorize billing events
+  const eventBuckets = useMemo(() => {
+    const pending = billingEvents.filter((r) => r.event.status === "pending");
+    const billed = billingEvents.filter((r) => r.event.status === "invoiced");
+    const eventExceptions = billingEvents.filter((r) => r.event.status === "billing_exception");
+    const skipped = billingEvents.filter((r) => r.event.status === "skipped");
+    return { pending, billed, eventExceptions, skipped };
+  }, [billingEvents]);
+
+  // Contract billing summary
+  const contractSummary = useMemo(() => {
+    const byModel: Record<string, number> = {};
+    for (const c of contracts) {
+      const model = c.pmBillingModel || "not_set";
+      byModel[model] = (byModel[model] || 0) + 1;
+    }
+    return byModel;
+  }, [contracts]);
+
+  const isLoading = jobsLoading || eventsLoading;
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        <span className="ml-2 text-muted-foreground">Loading PM billing data...</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Contract Billing Summary + Run Billing button */}
+      <Card>
+        <CardContent className="pt-4">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold flex items-center gap-2">
+              <DollarSign className="h-4 w-4 text-muted-foreground" />
+              Contract Billing Summary
+            </h3>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => runBillingMutation.mutate()}
+              disabled={runBillingMutation.isPending}
+            >
+              {runBillingMutation.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Zap className="mr-2 h-3.5 w-3.5" />}
+              Run Billing Now
+            </Button>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            {[
+              { label: "Per Visit", key: "per_visit", className: "text-blue-600" },
+              { label: "Monthly Fixed", key: "monthly_fixed", className: "text-purple-600" },
+              { label: "Annual Prepaid", key: "annual_prepaid", className: "text-indigo-600" },
+              { label: "Do Not Bill", key: "do_not_bill", className: "text-gray-500" },
+              { label: "Not Set", key: "not_set", className: "text-orange-600" },
+            ].map(({ label, key, className }) => (
+              <div key={key} className="text-center">
+                <p className="text-xs text-muted-foreground">{label}</p>
+                <p className={`text-lg font-semibold ${className}`}>
+                  {contractSummary[key] || 0}
+                </p>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* PM Billing Phase 2: Contract Billing Events — Exceptions */}
+      {eventBuckets.eventExceptions.length > 0 && (
+        <Card>
+          <CardContent className="pt-4">
+            <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-red-500" />
+              Contract Billing Exceptions
+              <Badge variant="outline" className="border-red-300 bg-red-50 text-red-700 text-xs">{eventBuckets.eventExceptions.length}</Badge>
+            </h3>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader><TableRow>
+                  <TableHead>Contract</TableHead><TableHead>Period</TableHead>
+                  <TableHead>Model</TableHead><TableHead>Issue</TableHead><TableHead>Status</TableHead>
+                </TableRow></TableHeader>
+                <TableBody>
+                  {eventBuckets.eventExceptions.map((r) => (
+                    <TableRow key={r.event.id} className="cursor-pointer" onClick={() => setLocation(`/pm/${r.event.pmContractId}`)}>
+                      <TableCell className="font-medium text-sm">{r.contractTitle ?? "—"}</TableCell>
+                      <TableCell className="text-sm">{r.event.periodStart} — {r.event.periodEnd}</TableCell>
+                      <TableCell className="text-sm">{formatBillingModelLabel(r.event.billingModelSnapshot)}</TableCell>
+                      <TableCell className="text-xs text-red-600">{r.event.notes ?? "Billing exception"}</TableCell>
+                      <TableCell><BillingEventStatusBadge status={r.event.status} /></TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Per-visit job exceptions */}
+      {buckets.exceptions.length > 0 && (
+        <Card>
+          <CardContent className="pt-4">
+            <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-red-500" />
+              Per-Visit Billing Exceptions
+              <Badge variant="outline" className="border-red-300 bg-red-50 text-red-700 text-xs">{buckets.exceptions.length}</Badge>
+            </h3>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader><TableRow>
+                  <TableHead>Job</TableHead><TableHead>Billing Model</TableHead>
+                  <TableHead>Disposition</TableHead><TableHead>Exception</TableHead>
+                  <TableHead>Status</TableHead>
+                </TableRow></TableHeader>
+                <TableBody>
+                  {buckets.exceptions.map((job) => (
+                    <TableRow key={job.id} className="cursor-pointer" onClick={() => setLocation(`/jobs/${job.id}`)}>
+                      <TableCell className="font-medium">#{job.jobNumber}</TableCell>
+                      <TableCell className="text-sm">{formatBillingModelLabel(job.pmBillingModel)}</TableCell>
+                      <TableCell className="text-sm">{formatDispositionLabel(job.pmBillingDisposition)}</TableCell>
+                      <TableCell className="text-xs text-red-600">{job.exceptionReason}</TableCell>
+                      <TableCell className="text-xs capitalize">{job.status}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* PM Billing Phase 2: Pending contract billing events */}
+      {eventBuckets.pending.length > 0 && (
+        <Card>
+          <CardContent className="pt-4">
+            <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
+              <Clock className="h-4 w-4 text-yellow-500" />
+              Billing Events Awaiting Invoice
+              <Badge variant="outline" className="border-yellow-300 bg-yellow-50 text-yellow-700 text-xs">{eventBuckets.pending.length}</Badge>
+            </h3>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader><TableRow>
+                  <TableHead>Contract</TableHead><TableHead>Period</TableHead>
+                  <TableHead>Amount</TableHead><TableHead>Model</TableHead><TableHead>Status</TableHead>
+                </TableRow></TableHeader>
+                <TableBody>
+                  {eventBuckets.pending.map((r) => (
+                    <TableRow key={r.event.id} className="cursor-pointer" onClick={() => setLocation(`/pm/${r.event.pmContractId}`)}>
+                      <TableCell className="font-medium text-sm">{r.event.billingLabelSnapshot ?? r.contractTitle ?? "—"}</TableCell>
+                      <TableCell className="text-sm">{r.event.periodStart} — {r.event.periodEnd}</TableCell>
+                      <TableCell className="text-sm">{r.event.amountSnapshot ? `$${r.event.amountSnapshot}` : "—"}</TableCell>
+                      <TableCell className="text-sm">{formatBillingModelLabel(r.event.billingModelSnapshot)}</TableCell>
+                      <TableCell><BillingEventStatusBadge status={r.event.status} /></TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Per-visit jobs awaiting invoice */}
+      <Card>
+        <CardContent className="pt-4">
+          <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
+            <Receipt className="h-4 w-4 text-blue-500" />
+            Per-Visit Jobs Awaiting Invoice
+            {buckets.pendingInvoice.length > 0 && (
+              <Badge variant="outline" className="border-blue-300 bg-blue-50 text-blue-700 text-xs">{buckets.pendingInvoice.length}</Badge>
+            )}
+          </h3>
+          {buckets.pendingInvoice.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-2">No per-visit PM jobs currently awaiting invoice.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader><TableRow>
+                  <TableHead>Job</TableHead><TableHead>Summary</TableHead>
+                  <TableHead>Label</TableHead><TableHead>Status</TableHead>
+                </TableRow></TableHeader>
+                <TableBody>
+                  {buckets.pendingInvoice.map((job) => (
+                    <TableRow key={job.id} className="cursor-pointer" onClick={() => setLocation(`/jobs/${job.id}`)}>
+                      <TableCell className="font-medium">#{job.jobNumber}</TableCell>
+                      <TableCell className="text-sm max-w-[200px] truncate">{job.summary}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{job.pmBillingLabel || "—"}</TableCell>
+                      <TableCell className="text-xs capitalize">{job.status}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* PM Billing Phase 2: Invoiced contract billing events */}
+      {eventBuckets.billed.length > 0 && (
+        <Card>
+          <CardContent className="pt-4">
+            <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
+              <DollarSign className="h-4 w-4 text-green-500" />
+              Contract Billing — Invoiced
+              <Badge variant="outline" className="border-green-300 bg-green-50 text-green-700 text-xs">{eventBuckets.billed.length}</Badge>
+            </h3>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader><TableRow>
+                  <TableHead>Contract</TableHead><TableHead>Period</TableHead>
+                  <TableHead>Amount</TableHead><TableHead>Invoice</TableHead><TableHead>Status</TableHead>
+                </TableRow></TableHeader>
+                <TableBody>
+                  {eventBuckets.billed.map((r) => (
+                    <TableRow key={r.event.id}>
+                      <TableCell className="font-medium text-sm cursor-pointer text-primary hover:underline" onClick={() => setLocation(`/pm/${r.event.pmContractId}`)}>
+                        {r.event.billingLabelSnapshot ?? r.contractTitle ?? "—"}
+                      </TableCell>
+                      <TableCell className="text-sm">{r.event.periodStart} — {r.event.periodEnd}</TableCell>
+                      <TableCell className="text-sm">{r.event.amountSnapshot ? `$${r.event.amountSnapshot}` : "—"}</TableCell>
+                      <TableCell>
+                        {r.event.invoiceId ? (
+                          <span className="text-primary hover:underline cursor-pointer text-sm" onClick={() => setLocation(`/invoices/${r.event.invoiceId}`)}>View Invoice</span>
+                        ) : <span className="text-muted-foreground text-sm">—</span>}
+                      </TableCell>
+                      <TableCell><BillingEventStatusBadge status={r.event.status} /></TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Covered by Contract — no invoice expected (per-visit jobs) */}
+      <Card>
+        <CardContent className="pt-4">
+          <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
+            <CheckCircle2 className="h-4 w-4 text-green-500" />
+            Covered by Contract / No Invoice
+            {buckets.coveredByContract.length > 0 && (
+              <Badge variant="outline" className="border-green-300 bg-green-50 text-green-700 text-xs">{buckets.coveredByContract.length}</Badge>
+            )}
+          </h3>
+          {buckets.coveredByContract.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-2">No contract-covered PM work completed yet.</p>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              {buckets.coveredByContract.length} PM job{buckets.coveredByContract.length !== 1 ? "s" : ""} completed — covered by PM contracts. No per-job invoices expected.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Recently Invoiced PM work (per-visit jobs) */}
+      {buckets.invoiced.length > 0 && (
+        <Card>
+          <CardContent className="pt-4">
+            <h3 className="text-sm font-semibold mb-3 flex items-center gap-2">
+              <DollarSign className="h-4 w-4 text-green-500" />
+              Per-Visit PM — Invoiced
+              <Badge variant="outline" className="border-green-300 bg-green-50 text-green-700 text-xs">{buckets.invoiced.length}</Badge>
+            </h3>
+            <p className="text-sm text-muted-foreground">
+              {buckets.invoiced.length} per-visit PM job{buckets.invoiced.length !== 1 ? "s" : ""} invoiced.
+            </p>
+          </CardContent>
+        </Card>
       )}
     </div>
   );
@@ -990,8 +1908,12 @@ function UpcomingTab() {
 
 export default function PMWorkspacePage() {
   const [, setLocation] = useLocation();
+  const search = useSearch();
   const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState("setups");
+  // Support ?tab=templates deep link from wizard
+  const tabParam = useMemo(() => new URLSearchParams(search).get("tab"), [search]);
+  // Phase 5 Part 3: Default to Upcoming (operational queue first)
+  const [activeTab, setActiveTab] = useState(tabParam || "upcoming");
 
   const { data: templates = [], isLoading, isError } = useQuery<RecurringTemplate[]>({
     queryKey: ["/api/recurring-templates"],
@@ -1007,39 +1929,90 @@ export default function PMWorkspacePage() {
     },
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
-      toast({ title: variables.isActive ? "Template resumed" : "Template paused" });
+      toast({ title: variables.isActive ? "PM contract resumed" : "PM contract paused" });
     },
     onError: () => { toast({ title: "Error", description: "Failed to update template status.", variant: "destructive" }); },
   });
 
-  // Phase 4C: Removed global generateMutation — generation moved to Upcoming tab
+  // Smart delete: hard-deletes if no generated jobs, archives + cancels pending if has activity
+  const deleteContractMutation = useMutation({
+    mutationFn: async (id: string) => {
+      return apiRequest<{ action: "deleted" | "archived"; instancesCanceled?: number }>(
+        `/api/recurring-templates/${id}`, { method: "DELETE" }
+      );
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates/upcoming"] });
+      // Truthful message — never say "deleted" when the action was "archived"
+      const wasArchived = data?.action === "archived";
+      const canceledCount = data?.instancesCanceled ?? 0;
+      if (wasArchived) {
+        toast({
+          title: "PM contract archived",
+          description: `Contract deactivated (has job history).${canceledCount > 0 ? ` ${canceledCount} pending due item(s) canceled.` : ""}`,
+        });
+      } else {
+        toast({
+          title: "PM contract deleted",
+          description: "Contract and all instances permanently removed.",
+        });
+      }
+    },
+    onError: (err: Error) => toast({ title: "Failed to delete contract", description: err.message, variant: "destructive" }),
+  });
+
+  const handleDeleteContract = (id: string, title: string) => {
+    if (confirm(`Delete PM contract "${title}"?\n\nIf this contract has generated jobs, it will be archived instead of deleted.`)) {
+      deleteContractMutation.mutate(id);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-6 p-4 md:p-6 lg:p-8 max-w-7xl mx-auto">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Preventive Maintenance</h1>
-          <p className="text-sm text-muted-foreground">Manage recurring maintenance schedules</p>
+          <p className="text-sm text-muted-foreground">Manage PM contracts and generate jobs from due work</p>
         </div>
         <div className="flex items-center gap-2">
-          {/* Phase 4C: Global Generate Now removed — use Upcoming tab for selective generation */}
-          <Button onClick={() => setLocation("/pm/new")}><Plus className="mr-2 h-4 w-4" />New PM Setup</Button>
+          {/* PM Pivot Phase 1: Primary action creates a new PM contract */}
+          <Button onClick={() => setLocation("/pm/new")}><Plus className="mr-2 h-4 w-4" />New PM Contract</Button>
         </div>
       </div>
 
+      {/* Tab labels: Dashboard (due queue), Contracts, Billing, History (placeholder), Templates */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
-          <TabsTrigger value="setups">
-            PM Setups
-            {pmTemplates.length > 0 && <Badge variant="secondary" className="ml-2 px-1.5 py-0 text-xs">{pmTemplates.length}</Badge>}
-          </TabsTrigger>
-          <TabsTrigger value="upcoming">Upcoming</TabsTrigger>
+          <TabsTrigger value="upcoming">Dashboard</TabsTrigger>
+          <TabsTrigger value="plans">Contracts</TabsTrigger>
+          <TabsTrigger value="billing">Billing</TabsTrigger>
+          <TabsTrigger value="history">History</TabsTrigger>
+          <TabsTrigger value="templates">Templates</TabsTrigger>
         </TabsList>
-        <TabsContent value="setups" className="mt-4">
-          <PMSetupsTab templates={pmTemplates} isLoading={isLoading} isError={isError} onToggleActive={(id, isActive) => toggleActiveMutation.mutate({ id, isActive })} isToggling={toggleActiveMutation.isPending} />
-        </TabsContent>
         <TabsContent value="upcoming" className="mt-4">
           <UpcomingTab />
+        </TabsContent>
+        <TabsContent value="plans" className="mt-4">
+          <PMSetupsTab templates={pmTemplates} isLoading={isLoading} isError={isError} onToggleActive={(id, isActive) => toggleActiveMutation.mutate({ id, isActive })} isToggling={toggleActiveMutation.isPending} onDelete={handleDeleteContract} isDeleting={deleteContractMutation.isPending} />
+        </TabsContent>
+        <TabsContent value="billing" className="mt-4">
+          <PMBillingTab contracts={pmTemplates} />
+        </TabsContent>
+        <TabsContent value="history" className="mt-4">
+          {/* History placeholder — will show generated/completed/skipped/canceled PM work */}
+          <Card>
+            <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+              <Clock className="h-12 w-12 text-muted-foreground/40 mb-4" />
+              <h3 className="text-lg font-semibold mb-1">PM History</h3>
+              <p className="text-sm text-muted-foreground max-w-md">
+                Generated, completed, skipped, and canceled PM work will appear here. This feature is coming soon.
+              </p>
+            </CardContent>
+          </Card>
+        </TabsContent>
+        <TabsContent value="templates" className="mt-4">
+          <PMTemplatesTab />
         </TabsContent>
       </Tabs>
     </div>

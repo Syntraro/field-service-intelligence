@@ -114,6 +114,11 @@ export interface JobHeaderDetail extends JobFeedItem {
   recurringSeriesId: string | null;
   recurrenceTemplateId: string | null;
   recurrenceInstanceDate: string | null;
+  // PM Billing Disposition fields
+  pmBillingModel: string | null;
+  pmBillingDisposition: string | null;
+  pmBillingStatus: string | null;
+  pmBillingLabel: string | null;
   deletedAt: string | null;
   previousStatus: string | null;
   closedBy: string | null;
@@ -191,6 +196,11 @@ const detailSelectFields = {
   recurringSeriesId: jobs.recurringSeriesId,
   recurrenceTemplateId: jobs.recurrenceTemplateId,
   recurrenceInstanceDate: jobs.recurrenceInstanceDate,
+  // PM Billing Disposition
+  pmBillingModel: jobs.pmBillingModel,
+  pmBillingDisposition: jobs.pmBillingDisposition,
+  pmBillingStatus: jobs.pmBillingStatus,
+  pmBillingLabel: jobs.pmBillingLabel,
   deletedAt: jobs.deletedAt,
   previousStatus: jobs.previousStatus,
   closedBy: jobs.closedBy,
@@ -273,6 +283,10 @@ function mapDetailRow(row: any): JobHeaderDetail {
     recurringSeriesId: row.recurringSeriesId ?? null,
     recurrenceTemplateId: row.recurrenceTemplateId ?? null,
     recurrenceInstanceDate: row.recurrenceInstanceDate ?? null,
+    pmBillingModel: row.pmBillingModel ?? null,
+    pmBillingDisposition: row.pmBillingDisposition ?? null,
+    pmBillingStatus: row.pmBillingStatus ?? null,
+    pmBillingLabel: row.pmBillingLabel ?? null,
     deletedAt: toISOOrNull(row.deletedAt),
     previousStatus: row.previousStatus ?? null,
     closedBy: row.closedBy ?? null,

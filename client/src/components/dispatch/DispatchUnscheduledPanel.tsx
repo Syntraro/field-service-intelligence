@@ -1,37 +1,69 @@
 /**
  * DispatchUnscheduledPanel — right panel showing visits waiting to be dispatched.
- * Cards are draggable sources for scheduling onto technician lanes.
+ * Cards are draggable sources (drag mode) or click-selectable (click mode).
  * Item 6: Collapsible — collapses to a slim vertical tab to maximize timeline width.
  * Search and scroll state are preserved across collapse/expand cycles.
  */
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { Input } from "@/components/ui/input";
-import { Search, Inbox, PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Search, Inbox, PanelRightClose, PanelRightOpen, X } from "lucide-react";
 import type { DispatchVisit } from "./dispatchPreviewTypes";
+import type { SchedulingMode } from "./DispatchBoardHeader";
 import DispatchUnscheduledCard from "./DispatchUnscheduledCard";
+
+/** Known job type values for filtering */
+const JOB_TYPE_OPTIONS = [
+  { value: "all", label: "All Types" },
+  { value: "maintenance", label: "PM" },
+  { value: "repair", label: "Repair" },
+  { value: "service", label: "Service" },
+  { value: "install", label: "Install" },
+  { value: "inspection", label: "Inspection" },
+] as const;
 
 type Props = {
   visits: DispatchVisit[];
   savingIds: Set<string>;
   selectedVisitId?: string | null;
   onSelectVisit?: (visit: DispatchVisit) => void;
+  /** Scheduling mode — controls drag vs click behavior on cards */
+  schedulingMode?: SchedulingMode;
+  /** Click mode: the visit currently selected for placement */
+  pendingClickVisitId?: string | null;
+  /** Click mode: callback to select a visit for placement */
+  onClickSelect?: (visit: DispatchVisit) => void;
+  /** Click mode: callback to cancel placement */
+  onCancelPlacement?: () => void;
 };
 
-export default function DispatchUnscheduledPanel({ visits, savingIds, selectedVisitId, onSelectVisit }: Props) {
+export default function DispatchUnscheduledPanel({
+  visits, savingIds, selectedVisitId, onSelectVisit,
+  schedulingMode = "drag", pendingClickVisitId, onClickSelect, onCancelPlacement,
+}: Props) {
   const [search, setSearch] = useState("");
+  const [jobTypeFilter, setJobTypeFilter] = useState("all");
   // Item 6: Collapse state — preserved across renders
   const [collapsed, setCollapsed] = useState(false);
 
-  const filtered = search.trim()
-    ? visits.filter(v => {
-        const q = search.toLowerCase();
-        return (
-          v.summary.toLowerCase().includes(q) ||
-          v.locationName.toLowerCase().includes(q) ||
-          String(v.jobNumber).includes(q)
-        );
-      })
-    : visits;
+  const isClickMode = schedulingMode === "click";
+  const hasPending = !!pendingClickVisitId;
+
+  // Filter by search and job type
+  const filtered = useMemo(() => {
+    let result = visits;
+    if (jobTypeFilter !== "all") {
+      result = result.filter(v => (v.jobType ?? "").toLowerCase() === jobTypeFilter);
+    }
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      result = result.filter(v =>
+        v.summary.toLowerCase().includes(q) ||
+        v.locationName.toLowerCase().includes(q) ||
+        String(v.jobNumber).includes(q)
+      );
+    }
+    return result;
+  }, [visits, search, jobTypeFilter]);
 
   const toggleCollapse = useCallback(() => setCollapsed(c => !c), []);
 
@@ -89,7 +121,40 @@ export default function DispatchUnscheduledPanel({ visits, savingIds, selectedVi
             className="h-7 pl-7 text-xs"
           />
         </div>
+        {/* Job type filter */}
+        <div className="flex flex-wrap gap-1 mt-2">
+          {JOB_TYPE_OPTIONS.map(opt => (
+            <button
+              key={opt.value}
+              onClick={() => setJobTypeFilter(opt.value)}
+              className={`rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                jobTypeFilter === opt.value
+                  ? "bg-primary text-white"
+                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
       </div>
+
+      {/* Click mode: placement instruction banner */}
+      {isClickMode && hasPending && (
+        <div className="border-b bg-emerald-50 px-3 py-2 flex items-center gap-2">
+          <div className="flex-1">
+            <p className="text-[11px] font-semibold text-emerald-800">Click a time slot to schedule</p>
+            <p className="text-[10px] text-emerald-600">Select a technician row and time on the board</p>
+          </div>
+          <button
+            onClick={onCancelPlacement}
+            className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-200 text-emerald-700 hover:bg-emerald-300 transition-colors"
+            title="Cancel placement"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
 
       {/* Cards */}
       <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
@@ -99,8 +164,9 @@ export default function DispatchUnscheduledPanel({ visits, savingIds, selectedVi
               key={v.id}
               visit={v}
               isSaving={savingIds.has(v.id)}
-              isSelected={selectedVisitId === v.id}
-              onSelect={onSelectVisit}
+              isSelected={isClickMode ? pendingClickVisitId === v.id : selectedVisitId === v.id}
+              onSelect={isClickMode ? onClickSelect : onSelectVisit}
+              schedulingMode={schedulingMode}
             />
           ))
         ) : (

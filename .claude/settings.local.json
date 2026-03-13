@@ -118,7 +118,8 @@
       "Bash(npm run db:migrate:one -- migrations/2026_03_08_seed_subscription_plans.sql 2>&1)",
       "Bash(npm run db:migrate:one -- migrations/2026_03_08_add_live_map_feature_flag.sql 2>&1)",
       "Bash(cat > /dev/null << 'EOF'\n# Comprehensive list of all QBO, OAuth, and environment configuration files\nEOF\necho \"Files found successfully\")",
-      "Bash(npm run db:migrate:one -- migrations/2026_03_09_pm_service_windows.sql 2>&1)"
+      "Bash(npm run db:migrate:one -- migrations/2026_03_09_pm_service_windows.sql 2>&1)",
+      "Bash(npm run:*)"
     ]
   }
 }

@@ -6,6 +6,369 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### Dispatch Board — False Version Conflicts + Slow Saving UX (2026-03-12)
+
+- **Bug**: Normal dispatch moves/reschedules/resizes were frequently blocked by false version-conflict toasts ("This schedule changed while you were editing it") and intrusive "Saving..." text that made interactions feel blocked for 1-1.5 seconds.
+- **Root causes**:
+  1. **Stale version from refetch race**: After a successful mutation, `patchCachedVersion(v2)` patched the cache, then `backgroundInvalidate()` triggered a refetch. If a second mutation fired before the refetch completed, the refetch response (containing v2) arrived and overwrote the second mutation's `patchCachedVersion(v3)` — reverting cache to stale v2. Next move sent stale v2 → 409.
+  2. **`isVersionConflict()` regex too broad**: `/version/i.test(msg)` and `/conflict/i.test(msg)` matched ANY error containing those words, not just real version conflicts. False-positived on unrelated errors.
+  3. **"Saving..." text replaced card content**: `markSaving` → `clearSaving` spanned the full API round-trip, replacing the visit block's normal content with a spinner and "Saving..." text for 1-1.5s.
+  4. **Drag disabled during saving**: `disabled: isSaving` prevented chaining moves without waiting for the API call to complete, despite `chainForVisit` already serializing mutations safely.
+- **Fixes applied**:
+  - **Cancel-before-patch**: Added `cancelAndPatchVersion()` — cancels any in-flight refetches before patching the cached version, preventing the refetch-overwrites-patch race. All mutations now use this instead of bare `patchCachedVersion()`.
+  - **Tightened conflict detection**: `isVersionConflict()` now only matches HTTP 409 status (explicit backend version-mismatch response). Removed overly broad regex patterns.
+  - **Removed "Saving..." text**: Visit and task blocks now keep their normal content visible during saving. A subtle small spinner appears in the top-left corner as the only saving indicator — no content replacement.
+  - **Enabled drag during saving**: Removed `isSaving` from the `disabled` condition on draggable blocks. Users can now chain moves without waiting. Resize handles also remain available during saving.
+  - **Increased invalidation delay**: `backgroundInvalidate` delay increased from 150ms to 800ms to further reduce refetch-overwrites-patch timing windows.
+- Files changed: `client/src/components/dispatch/useDispatchPreviewMutations.ts`, `client/src/components/dispatch/DispatchVisitBlock.tsx`, `client/src/components/dispatch/DispatchTaskBlock.tsx`, `client/src/components/dispatch/DispatchUnscheduledCard.tsx`
+
+#### Dispatch Board — Concurrency/UX Bug during Rapid Resize & Reschedule (2026-03-12)
+
+- **Bug**: Two live errors during rapid resize/reschedule on the Dispatch Board:
+  1. "Not found" runtime error overlay from `queryClient.ts`/`useDispatchPreviewMutations.ts`
+  2. Version mismatch: "Expected version: 12, Actual version: 13" — backend optimistic lock rejection
+- **Root causes**:
+  1. `resizeVisit` did not use `chainForVisit()` — allowed overlapping mutations on the same visit to fire simultaneously
+  2. `resizeVisit` did not call `freshVersion()` or `patchCachedVersion()` — subsequent mutations read stale version from cache
+  3. `resizeVisit` did not use `markSaving()`/`clearSaving()` — item not marked as in-flight during resize
+  4. All visit mutations used `throw err` in catch blocks — propagated to unhandled promise rejection causing runtime error overlay
+- **Fixes applied**:
+  - **Per-visit serialization**: `resizeVisit` now uses `chainForVisit()` so rapid resizes on the same visit queue sequentially, each reading the latest server-returned version
+  - **Version tracking**: `resizeVisit` now calls `freshVersion()` before API call and `patchCachedVersion()` with server response, closing the version gap
+  - **Saving state**: `resizeVisit` now uses `markSaving()`/`clearSaving()` to disable interactions during in-flight mutations
+  - **Graceful error recovery**: All mutations (`scheduleVisit`, `rescheduleVisit`, `resizeVisit`, `unscheduleVisit`, `updateVisitCrew`, `updateVisitStatus`, `deleteVisit`, `rescheduleTask`) now use `handleMutationError()` — shows recovery toast instead of crashing with runtime overlay
+  - **Error detection helpers**: Added `isVersionConflict()` and `isNotFoundError()` for structured error classification
+  - **Force refresh**: Added `forceRefresh()` for immediate (non-debounced) cache invalidation after conflict/not-found recovery
+- Files changed: `client/src/components/dispatch/useDispatchPreviewMutations.ts`
+
+#### PM Generation → Dispatch Board Handoff — Cache invalidation + duration forwarding (2026-03-12)
+
+- **Bug**: PM-generated jobs did not appear on the Dispatch Board's unscheduled panel after generation. The user would generate a PM due item, see the job in the Jobs area, but the Dispatch Board showed stale data.
+- **Root cause**: The PM generation mutation's `onSuccess` handler invalidated `/api/jobs` and PM-related caches, but did NOT invalidate `/api/calendar/unscheduled` (the Dispatch Board's data source). TanStack Query's 60-second `staleTime` meant the dispatch board served cached data without the newly-created PM jobs.
+- **Fix 1 — Cache invalidation**: Added `queryClient.invalidateQueries` for both `/api/calendar/unscheduled` and `/api/calendar` in the PM generation `onSuccess` handler. PM-generated jobs now appear immediately on the Dispatch Board after generation.
+- **Fix 2 — Duration forwarding**: PM generation now passes `template.defaultDurationMinutes` to `createJob()`, so the visit gets the correct estimated duration instead of hardcoded 60 minutes. The unscheduled endpoint now includes `durationMinutes` in its response, and the frontend mapper uses it instead of hardcoding 60.
+- Files changed: `client/src/pages/PMWorkspacePage.tsx`, `server/domain/recurrence.ts`, `server/routes/scheduling.ts`, `shared/types/scheduling.ts`, `client/src/components/dispatch/dispatchPreviewMappers.ts`
+
+### Added
+
+#### Dispatch Board — Click-to-Schedule Mode + Shared Placement Resolver (2026-03-12)
+
+- **Feature**: First-class click-to-schedule mode alongside existing drag-and-drop scheduling on the Dispatch Board.
+  - Toggle between Drag and Click modes via header buttons (day view only).
+  - **Click mode**: Select an unscheduled visit card → hover over lane rows for live preview → click to schedule. Cancel via Escape, re-click same card, or mode switch.
+  - **Drag mode**: Unchanged behavior — no regression.
+- **Shared Placement Resolver** (`dispatchPlacementResolver.ts`): Canonical single-source-of-truth for ALL board placement calculations:
+  - `pxToSnappedMinutes()` — pixel-to-time conversion (replaces 3 duplicated implementations)
+  - `clientXToRelativePx()` — coordinate transform (scroll + grab offset)
+  - `resolvePlacement()` — full placement pipeline: snap → overlap check → auto-resolve → ISO times → preview pixels
+  - Used by: drag preview, drag commit, click preview, click commit (4 code paths, 1 resolver)
+- **Drag mode unified**: Drag preview (`dragHasOverlap` + `DispatchDragPreview`) and drag commit (`handleDragEnd` day-view) now route through `resolvePlacement()`. Eliminated local `pxToSnappedMinutes()`, `computeDropTime()`, and direct `checkOverlap`/`findNearestValidSlot` calls from the orchestrator.
+- **Job type filter**: Added type filter pills (All/PM/Repair/Service/Install/Inspection) in the Unscheduled Panel header.
+- **Dead code removed**: `DispatchDragPreview` component no longer used (preview rendered inline from PlacementResult). Local `pxToSnappedMinutes`, `computeDropTime` functions removed from DispatchPreview.tsx. Unused imports cleaned up.
+- Files changed: `client/src/pages/DispatchPreview.tsx`, `client/src/components/dispatch/DispatchBoardHeader.tsx`, `client/src/components/dispatch/DispatchLaneRow.tsx`, `client/src/components/dispatch/DispatchTimeline.tsx`, `client/src/components/dispatch/DispatchUnscheduledPanel.tsx`, `client/src/components/dispatch/DispatchUnscheduledCard.tsx`
+- Files created: `client/src/components/dispatch/dispatchPlacementResolver.ts`
+
+### Fixed
+
+#### PM Dashboard — Split Due Now / Upcoming to prevent accidental generation (2026-03-12)
+
+- **Problem**: The PM Dashboard mixed actionable due items (overdue, due soon, in window) with future upcoming PMs in the same generation surface. Users could accidentally bulk-generate jobs for PMs that weren't actually ready yet.
+- **Fix**: Added a "Due Now" / "Upcoming" sub-view selector inside the Dashboard tab.
+  - **Due Now** (default): Shows only actionable items (overdue, due soon, in window). Generation controls, checkboxes, and "Generate All Filtered" are available here.
+  - **Upcoming**: Shows future PMs not yet in their service window. No checkboxes, no bulk generate, informational banner explains items will move to Due Now when their window opens.
+- **Generation eligibility**: Removed "upcoming" from `GENERATION_ELIGIBLE_STATUSES` — only overdue, due_soon, and in_window items can be generated.
+- **Summary badges**: Now reflect only the actionable Due Now count, not a mixed total.
+- **Footer counts**: Scoped to the active sub-view.
+- Files changed: `client/src/pages/PMWorkspacePage.tsx`
+
+#### Technician Routes Map — Ghost warning count from deleted jobs (2026-03-12)
+
+- **Bug**: The diagnostic banner "X visits have scheduled_date set but scheduled_start is missing" was counting 4 visits belonging to soft-deleted/cancelled jobs. These visits were excluded from the active map surface but still matched the diagnostic query.
+- **Root cause**: The diagnostic gap-count query in `/api/map/day` only filtered `job_visits` by `is_active` and `archived_at`, but did not join the `jobs` table to exclude soft-deleted parents (`deleted_at IS NOT NULL`), cancelled/voided jobs, or non-active visit statuses.
+- **Fix**: Added `JOIN jobs` with `deleted_at IS NULL` and `status NOT IN ('cancelled','voided')` filters, plus `jv.status IN (ACTIVE_VISIT_STATUSES)` to match the main visit query's criteria.
+- Files changed: `server/routes/map.ts`
+
+#### PM Contract Deletion — False "deleted" message, dashboard leakage, orphaned instances (2026-03-11)
+
+Three bugs found and fixed via live database truth-trace:
+
+- **Bug 1 — False "deleted" toast**: The old DELETE handler returned `204 No Content`. `apiRequest` returns `undefined` for 204 responses. Toast checked `data?.action === "archived"` which evaluates to `false` on `undefined`, always showing "PM contract deleted" even when the backend only deactivated. **Fix**: DELETE now returns `200` with `{ action, instancesCanceled }` body. Toast messages are branched explicitly on `data.action` value.
+- **Bug 2 — Dashboard leakage**: `getUpcomingQueue()` used `INNER JOIN` on `recurringJobTemplates` but did NOT filter by `isActive`. Inactive/archived contracts' pending instances still appeared as actionable due items on Dashboard. **Fix**: Added `eq(recurringJobTemplates.isActive, true)` to the query conditions.
+- **Bug 3 — Pending instances survive archive**: When a contract was deactivated, its pending instances remained in DB untouched, leaking to Dashboard. **Fix**: `deactivateTemplate()` now cancels all pending (not-yet-generated) instances as part of the archive operation. Return type changed to `{ deactivated: boolean; instancesCanceled: number }`.
+- **Data cleanup**: Ran one-time scripts to cancel 4 leaking pending instances and hard-delete 3 contracts that had no downstream activity but were incorrectly deactivated by the old handler.
+- **Decision rules after fix**:
+  - Hard delete: no instances with `generatedJobId IS NOT NULL` → delete template (CASCADE removes all instances)
+  - Archive: has generated job references → set `isActive=false` + cancel all pending instances + return `{ action: "archived", instancesCanceled: N }`
+  - Pending-only instances do NOT prevent hard delete — they cascade-delete with the template
+- Files changed: `server/routes/recurringJobs.ts`, `server/storage/recurringJobs.ts`, `client/src/pages/PMWorkspacePage.tsx`, `client/src/pages/PMDetailPage.tsx`
+
+#### PM Templates — Delete verified correct (2026-03-11)
+
+- `DELETE /api/pm/templates/:id` does a real hard delete from DB, returns `{ success: true }` (200, not 204). Frontend invalidates query and shows "Template deleted". No misleading-message bug.
+- Files verified: `server/routes/pmTemplates.ts`
+
+### Fixed
+
+#### PM Subsystem Alignment — Create-month instance generation bug (2026-03-11)
+
+- **Root cause**: `computePmOccurrences()` in `server/domain/recurrence.ts` excluded current-month occurrences when `generationMode: "period_start"` because the occurrence date (1st of month) was before the template `startDate` (creation date, e.g. 11th). The `occDate >= templateStart` check filtered out the current cycle.
+- **Fix**: Added same-calendar-month exception — if the occurrence is in the same year/month as `templateStart`, it passes the filter regardless of day comparison.
+- **Server-side generation on CREATE**: POST `/api/recurring-templates` now calls `generateForSingleTemplate()` after creating an active template with a location, ensuring current-cycle instances are created server-side rather than relying on the fragile client-side post-create call.
+- **Client-side simplification**: Removed the redundant client-side `generate?scope=current_month` call from `PMWizardPage.tsx` since the server now handles this.
+- **Edit behavior**: Added TODO comment on PATCH handler noting that edit-triggered current-cycle due-state should be handled via explicit user prompt, not silent auto-backfill.
+- Files changed: `server/domain/recurrence.ts`, `server/routes/recurringJobs.ts`, `client/src/pages/PMWizardPage.tsx`
+
+### Changed
+
+#### PM Wizard — Remove scheduling/assignment fields, improve UX (2026-03-11)
+
+- **Removed from wizard Step 3 (PM Details)**:
+  - "Automatically assign a scheduled time" checkbox + time/duration inputs
+  - "Default assigned technician" dropdown
+  - These are dispatch concerns, not PM contract setup concerns.
+- **Removed from Review screen (Step 5)**:
+  - "Scheduling" row (was showing "Manual (unscheduled)")
+  - Location now shows location name only, not "Company — Location" (customer shown separately)
+- **Contract term UX**: Replaced raw end-date input with structured term picker:
+  - Ongoing (no end date)
+  - 1 year (auto-calculated from start date)
+  - Custom duration (number + months/years)
+  - Specific end date (date picker)
+- **Searchable template picker**: Template selection in Step 2 now uses a searchable combobox (Command/Popover pattern) with search by name/summary, replacing the plain Select dropdown.
+- **Template prefill**: `applyPmTemplate()` continues to prefill all applicable fields including `includeLocationPmParts`, months, generation mode, service window, and billing defaults.
+- Files changed: `client/src/pages/PMWizardPage.tsx`
+
+#### PM Template Editor — Product/service catalog search already functional (2026-03-11)
+
+- **Verified**: `PMTemplateEditorPage.tsx` line items already search the real `/api/items` catalog, bind to canonical product IDs, allow quantity/price editing, and support freeform fallback. No changes needed.
+- Files verified: `client/src/pages/PMTemplateEditorPage.tsx`
+
+### Changed
+
+#### PM Workspace — Tab label cleanup and History placeholder (2026-03-11)
+
+- **Renamed tabs** to remove redundant "PM" prefix since the page header already identifies the module:
+  - "PM Due Queue" → "Dashboard"
+  - "PM Contracts" → "Contracts"
+  - "PM Billing" → "Billing"
+  - "Templates" → "Templates" (unchanged)
+- **Added "History" tab** placeholder between Billing and Templates. Will eventually show generated/completed/skipped/canceled PM work. Currently renders an empty state with a "coming soon" message.
+- **Tab order** is now: Dashboard | Contracts | Billing | History | Templates
+- **No routing or functionality changes** — Dashboard still renders the PM Due Queue content, all other tabs unchanged.
+- Files changed: `client/src/pages/PMWorkspacePage.tsx`
+
+### Fixed
+
+#### PM Due Queue — Enforce pre-generation boundary (2026-03-11)
+
+- **Backend**: `getUpcomingQueue()` in `server/storage/recurringJobs.ts` now filters `generatedJobId IS NULL`, ensuring only pending (not-yet-generated) PM instances appear in the PM Due Queue. Generated jobs belong on the Dispatch Board.
+- **Removed "unscheduled" filter/badge/logic**: The PM Due Queue no longer references "Generated — Unscheduled" as a filter, count badge, or group badge. That state belongs to generated jobs on Dispatch.
+- **Removed post-generation filters**: "Scheduled" and "Completed" filters removed from the PM Due Queue dropdown — those states can't exist for pre-generation instances.
+- **PM Contracts tab label**: Removed numeric count badge; tab now reads "PM Contracts" only.
+- **Preserved**: Checkbox selection, select-all, "Generate Selected" bulk action, and confirmation dialog remain intact for valid pending instances.
+- Files changed: `server/storage/recurringJobs.ts`, `client/src/pages/PMWorkspacePage.tsx`
+
+#### PM Due Queue — Bulk generation UX + Detail page history (2026-03-11)
+
+- **"Generate All Filtered" button**: One-click shortcut to select all eligible items and open confirmation dialog. Appears when no items are manually selected and eligible items exist.
+- **"Clear Selection" button**: Explicit button to deselect all items, shown when items are selected.
+- **Confirmation dialog wording**: Updated to clearly state PM items will be "converted into jobs and moved into the normal job workflow."
+- **Post-generation success toast**: Now states "These jobs are now in the dispatch workflow. Schedule them from the Dispatch Board."
+- **PMDetailPage categorized history**: PM History section reorganized into three clear groups:
+  - "Due — Awaiting Generation" (pending instances with no generated job)
+  - "Generated — In Progress" (instances with active jobs not yet completed)
+  - "PM History" (completed, skipped, or canceled instances)
+- **OperationalSummary cleanup**: Removed `generated_unscheduled` references to align with PM Due Queue boundary.
+- Files changed: `client/src/pages/PMWorkspacePage.tsx`, `client/src/pages/PMDetailPage.tsx`
+
+### Changed
+
+#### PM Billing Phase 2 — Contract Billing Events + Invoice Generation (2026-03-11)
+
+- **New `pm_billing_events` table**: Tracks contract-period billing events for `monthly_fixed` and `annual_prepaid` PM contracts. Fields: `id`, `company_id`, `pm_contract_id`, `billing_model_snapshot`, `period_start`, `period_end`, `billing_date`, `status`, `invoice_id`, `amount_snapshot`, `billing_label_snapshot`, `notes`, timestamps.
+- **Idempotent event creation**: Unique index on `(pm_contract_id, period_start)` prevents duplicate billing events. Query-before-insert + constraint violation fallback ensure safe concurrent runs.
+- **Billing event engine** (`server/services/pmBillingService.ts`):
+  - `processContractBilling()` — creates missing billing events for current period
+  - `createInvoiceForEvent()` — creates canonical invoices from pending billing events
+  - `runBillingForAllTenants()` — scans all companies with contract-billed PM contracts
+  - `runBillingForCompany()` — single-company billing (for API trigger)
+  - Monthly: one event per calendar month (`YYYY-MM-01` to last day)
+  - Annual: one event per anniversary period based on contract start date
+- **Invoice creation from billing events**: New `createInvoiceFromBillingEvent()` in `server/storage/invoices.ts` — authorized via `PM_BILLING_SERVICE` source. Creates invoices with no `jobId` (contract billing, not job billing). Includes single line item with billing label + period description.
+- **Scheduler integration**: Billing runs automatically after PM instance generation in `pmAutoGeneration.ts` (startup + every 6 hours)
+- **API routes** (`server/routes/pmBilling.ts`):
+  - `GET /api/pm/billing/events` — all events for company
+  - `GET /api/pm/billing/events/:contractId` — events for specific contract
+  - `POST /api/pm/billing/run` — manual billing trigger
+  - `POST /api/pm/billing/events/:id/skip` — skip a pending event
+  - `GET /api/pm/billing/summary` — billing oversight summary
+- **PM Billing tab upgrade**: Now shows contract billing events (pending, invoiced, exceptions) alongside per-visit job billing. Added "Run Billing Now" button for manual trigger. Separate sections for contract billing exceptions vs per-visit exceptions.
+- **PM detail billing visibility**: Contract-billed PM contracts now show a "Contract Billing Events" card with: last billed date, next expected date, event history table with period/amount/status/invoice link.
+- **Per-visit flow preserved**: No changes to `per_visit` billing. Jobs still carry disposition snapshots, closeout guidance still works, per-visit exceptions still detected.
+- Migration: `migrations/2026_03_11_pm_billing_events.sql`
+- Files added:
+  - `server/services/pmBillingService.ts` — PM billing event engine
+  - `server/routes/pmBilling.ts` — PM billing API routes
+  - `migrations/2026_03_11_pm_billing_events.sql` — pm_billing_events table
+- Files changed:
+  - `shared/schema.ts` — Added `pmBillingEvents` table, `PmBillingEventStatus` type, insert schema
+  - `server/storage/invoices.ts` — Added `PM_BILLING_SERVICE` source, `createInvoiceFromBillingEvent()` method
+  - `server/services/pmAutoGeneration.ts` — Integrated billing run after instance generation
+  - `server/routes/index.ts` — Registered `/api/pm/billing` routes
+  - `client/src/pages/PMWorkspacePage.tsx` — Enhanced PM Billing tab with billing events display
+  - `client/src/pages/PMDetailPage.tsx` — Added `PMBillingEventsCard` component for contract detail
+
+#### PM Phase 4B — Due Queue Grouping Views (2026-03-11)
+
+- **Checkbox selection in grouped view**: `GroupSection` now renders checkboxes for generation-eligible items across all grouping modes (location, client, proximity). Selections persist across group collapse/expand.
+- **Group-level select all**: Each group header has a checkbox that selects/deselects all eligible items in that group. Shows indeterminate state when partial selection exists.
+- **Cross-group select all**: "Select all eligible" checkbox appears above grouped view to select/deselect all eligible items across all groups at once.
+- **Bulk generate across groups**: "Generate Selected (N)" button works identically whether items are selected from flat view or across multiple groups — uses same `generateFromInstances()` path.
+- **Indeterminate checkbox support**: Updated `Checkbox` component to render minus icon for `checked="indeterminate"` state with proper Radix UI styling.
+- **QueueItemRow refactored**: Now accepts optional `showCheckbox`, `isSelected`, `isEligible`, `onToggle` props — reused in both flat and grouped views, eliminating column layout duplication.
+- No schema changes, no migrations, no new API endpoints. All grouping is client-side using existing query results.
+- Files changed:
+  - `client/src/pages/PMWorkspacePage.tsx` — `GroupSection` + `QueueItemRow` updated with selection support, `UpcomingTab` passes selection state to groups
+  - `client/src/components/ui/checkbox.tsx` — Added indeterminate state visual (minus icon)
+
+#### PM Billing Disposition + PM Billing Oversight Foundation (2026-03-11)
+
+- **PM contract billing fields**: Added `pm_billing_model`, `pm_billing_label`, `pm_contract_amount` to `recurring_job_templates` table for contract-level billing configuration
+- **Job billing disposition snapshot**: Added `pm_billing_model`, `pm_billing_disposition`, `pm_billing_status`, `pm_billing_label` to `jobs` table. Billing behavior is stamped at job generation time from the PM contract
+- **Billing disposition derivation**: `deriveBillingDisposition()` in `server/domain/recurrence.ts` maps contract billing model → job-level disposition + initial status:
+  - `per_visit` → `invoice_on_completion` / `pending_invoice`
+  - `monthly_fixed` / `annual_prepaid` → `covered_by_contract` / `no_invoice_expected`
+  - `do_not_bill` → `archive_no_invoice` / `no_invoice_expected`
+- **Lifecycle billing status updates**: `jobLifecycle.ts` now updates `pmBillingStatus` on transitions:
+  - `invoice_now` → sets `pmBillingStatus: "invoiced"`
+  - `archive` with `invoice_on_completion` disposition → sets `pmBillingStatus: "billing_exception"` (per-visit job archived without invoice)
+  - `archive` with other PM dispositions → sets `pmBillingStatus: "no_invoice_expected"`
+- **PM Billing closeout guidance**: Job detail page shows billing model, disposition badge, and actionable closeout guidance for PM jobs (e.g., "Create invoice for this visit" or "No invoice needed — covered by contract")
+- **PM Billing oversight tab**: New "PM Billing" tab in PM Workspace with contract billing summary, billing exceptions, awaiting invoice queue, covered-by-contract list, and invoiced PM work
+- **PM contract edit page**: Added Billing section with billing model selector, billing label, and contract amount fields
+- **PM contract detail page**: Added Billing card showing configured billing model, label, and contract amount
+- Migration: `migrations/2026_03_11_pm_billing_disposition.sql`
+- Files changed:
+  - `shared/schema.ts` — Added PM billing enums, contract billing fields, job billing fields
+  - `migrations/2026_03_11_pm_billing_disposition.sql` — New migration for billing columns
+  - `server/domain/recurrence.ts` — `deriveBillingDisposition()`, billing snapshot in `generateFromInstances()`
+  - `server/domain/jobLifecycle.ts` — PM billing status updates on invoice/archive transitions
+  - `server/storage/jobsFeed.ts` — PM billing fields in job header detail query
+  - `client/src/hooks/useJobsFeed.ts` — PM billing fields in `JobHeaderDetail` type
+  - `client/src/pages/JobDetailPage.tsx` — PM Billing guidance panel
+  - `client/src/pages/PMWorkspacePage.tsx` — PM Billing oversight tab
+  - `client/src/pages/PMEditPage.tsx` — Billing section in contract editor
+  - `client/src/pages/PMDetailPage.tsx` — Billing card in contract detail
+
+#### PM Pivot Phase 1 — Due Queue + Manual Job Generation (2026-03-11)
+
+- **Core change: Background PM generation no longer auto-creates jobs.** `generateForTemplate()` now creates pending instances only. Instances remain in "pending" status until a dispatcher manually generates jobs from the PM Due Queue.
+- **Manual job generation via `generateFromInstances()`**: This existing function is now the canonical path for creating jobs. Dispatchers select pending due instances and generate jobs through bulk selection.
+- **PM Due Queue (renamed from "Upcoming")**: Default tab now shows pending PM work needing job generation. Default filter changed to "Needs Generation" — shows all pending instances awaiting job creation.
+- **New "Needs Generation" filter**: Primary filter showing pending items not yet converted to jobs. "Awaiting Generation" scheduling badge replaces "No Job" for pending instances.
+- **Language cleanup**: "PM Setup" → "PM Contract", "Maintenance Plans" → "PM Contracts", "Upcoming" tab → "PM Due Queue", "Jobs created on" → "Due on", "Generate This Month" → "Create Due Instances", "Generated Work" → "PM History"
+- **Confirmation dialog updated**: Now reads "These PM items will be converted into jobs and will need to be scheduled on your dispatch board."
+- **Success toast updated**: Now reads "Jobs created and ready for dispatch scheduling."
+- **Templates tab de-emphasized**: Tab renamed to just "Templates", description updated to emphasize they are "reusable presets for PM contracts"
+- **Auto-generation service updated**: Log messages reflect instances-only behavior, no longer mention job creation
+- No schema changes or migrations required. No new tables introduced.
+- Files changed:
+  - `server/domain/recurrence.ts` — `generateForTemplate()` creates instances only (no claim/job creation)
+  - `server/services/pmAutoGeneration.ts` — Updated docs and log messages for instances-only behavior
+  - `server/routes/recurringJobs.ts` — Updated route documentation for PM pivot model
+  - `client/src/pages/PMWorkspacePage.tsx` — Renamed tabs, updated filters, language cleanup, "Needs Generation" filter
+  - `client/src/pages/PMDetailPage.tsx` — Updated labels, button text, section headers for PM pivot model
+
+#### PM Template UX Rework — Full-Page Editor + Bug Fix (2026-03-10)
+
+- **Full-page editor**: PM template create/edit moved from cramped modal dialog to full-page routes (`/pm/templates/new`, `/pm/templates/:id/edit`)
+- **Simplified UI**: Removed unnecessary section headers ("Template Identity", "Default PM Content") and explanatory copy ("Define a reusable blueprint..."). Clean layout with labeled fields and optional section dividers.
+- **Products & Services integration**: Template line items now search/select from existing Products & Services catalog via typeahead dropdown, with quantity + unit price support. Freeform entry still supported.
+- **Single-line template names**: Template list table and wizard dropdown show only template name (no subtitle/summary subtext)
+- **Fixed "Failed to create template" bug**: Old modal's `onError` handler swallowed the real error message. New full-page editor surfaces actual backend error in toast description for proper debugging.
+- **Template table simplified**: Removed "Default Summary" column from template list table; rows are clickable to navigate to edit page
+- **Top + bottom save actions**: Save Template and Cancel buttons appear both at top-right header and at page bottom, so users never need to scroll to save.
+- **Modal removed**: `PmTemplateFormDialog`, `FormSection`, `LineItemRow`, old `MonthPicker` and related constants removed from PMWorkspacePage (~350 lines eliminated)
+- **Wizard integration preserved**: Template dropdown/selection in PM wizard still works, template prefill unchanged
+- Files changed:
+  - `client/src/App.tsx` — Added routes for `/pm/templates/new` and `/pm/templates/:id/edit`
+  - `client/src/pages/PMTemplateEditorPage.tsx` — Full-page template editor (already existed, now routed)
+  - `client/src/pages/PMWorkspacePage.tsx` — Removed modal/dialog code, PMTemplatesTab navigates to full pages
+- No schema or migration changes required
+
+### Added
+
+#### PM Template System — Phase 2 Refinement (2026-03-10)
+
+- **Template identity distinction**: Template Name (internal blueprint label) is clearly separated from Default PM Summary (prefill for job title) and Default Description (job body).
+- **Optional scheduling defaults**: Templates can now store default months, service window (days before/after), generation mode/day, and include-location-parts flag. All optional — null means "not set" and wizard uses its own defaults.
+- **Optional billing defaults**: New fields for billing mode (per_visit/monthly/annually/none), billing label, and default price. Prefill-only; no invoicing logic changes.
+- **Sectioned template form**: Form reorganized into 5 clear sections — Template Identity, Default PM Content, Scheduling Defaults (optional), Billing Defaults (optional), Line Items (optional).
+- **Expanded wizard prefill**: `applyPmTemplate()` now prefills months, generation mode, service window, and location parts from template when values are present. Missing values left at wizard defaults.
+- **Parts duplication warning**: Shown in template form (when location parts + line items both active) and in wizard review step.
+- **Equipment linking placeholder**: TODO comment in wizard steps array for future "Link existing equipment" step.
+- **Template table enriched**: Columns now show Schedule (months preview), Billing (mode + price), in addition to Name/Summary/Items.
+- Schema changes: Added 9 nullable columns to `pm_templates` (scheduling + billing defaults)
+- Files added:
+  - `migrations/2026_03_10_pm_templates_phase2.sql` — Add optional default columns
+- Files changed:
+  - `shared/schema.ts` — Extended `pmTemplates` table with scheduling/billing columns, billing mode enum
+  - `client/src/pages/PMWorkspacePage.tsx` — Rewrote template form dialog with sections, enriched table, month picker
+  - `client/src/pages/PMWizardPage.tsx` — Expanded `applyPmTemplate()` prefill, review step warning, equipment TODO
+
+#### PM Template System — Foundation (2026-03-10)
+
+- **New `pm_templates` table**: Reusable job content templates for maintenance plans (id, company_id, name, summary, description, default_line_items_json)
+- **CRUD API**: `GET/POST/PATCH/DELETE /api/pm/templates` — all scoped by company_id
+- **PM Templates tab**: Third tab on PM Workspace page (Upcoming, Maintenance Plans, PM Templates) with table listing, create/edit dialog, duplicate, delete
+- **Template form**: Fields for template name, default PM summary, job description, optional line items (JSONB). Includes warning about location parts duplication.
+- **Wizard integration**: Step 2 "Setup Type" replaced "Copy from existing PM setup" with "Use PM template". Dropdown of available templates with prefill. Empty state links to template creation.
+- **Template application**: Selected template prefills wizard fields (PM Name, Description). User can modify everything before saving.
+- **Deep link support**: `?tab=templates` query param on /pm route opens directly to PM Templates tab
+- Files added:
+  - `migrations/2026_03_10_pm_templates.sql` — Create pm_templates table
+  - `server/routes/pmTemplates.ts` — PM Templates CRUD API
+- Files changed:
+  - `shared/schema.ts` — Added `pmTemplates` table, insert/update schemas, types
+  - `server/routes/index.ts` — Mount `/api/pm/templates` router
+  - `client/src/pages/PMWorkspacePage.tsx` — Added PM Templates tab with management UI
+  - `client/src/pages/PMWizardPage.tsx` — Replaced "Copy from existing" with "Use PM template" in Step 2
+
+### Changed
+
+#### Job Page — Apply Template Action Restored (2026-03-10)
+
+- **Restored "Apply Template" as first-class action** in the Parts & Billing section, placed directly next to "Add Line Item" button
+- **New template picker dialog** with: search input, default templates section (starred), full template list with descriptions, scrollable for large template libraries
+- **Existing behavior preserved**: Replace/Merge mode confirmation dialog still appears when job already has line items; direct apply when job is empty
+- Files changed:
+  - `client/src/components/PartsBillingCard.tsx` — Replaced Select dropdown with Button + Template Picker Dialog, added `TemplatePickerList` component
+
+#### PM Workspace List Cleanup — Phase 5B (2026-03-10)
+
+- **Part 1 — Fix client/location display**: Backend `getTemplates()` and `getUpcomingQueue()` now return `locationLabel` (site name) separately instead of joining `companyName + location` which duplicated the customer company name.
+- **Part 2 — Search in Maintenance Plans**: Added search input to filter plans by title, customer name, or location.
+- **Part 3 — Sortable columns**: Maintenance Plans table headers are clickable to sort by Customer, Title, Recurrence, Status, or Generation. Toggle ascending/descending.
+- **Parts 4-7 — Upcoming queue column cleanup**: Removed Target Date, Tech, and Actions columns. Added Customer/Location (split display), Window (start—end), and Job Status columns. Fixed visit date bug (was showing job creation timestamp for unscheduled visits — now only shows date when `schedulingState === "scheduled"`). Updated both flat view and grouped view (`QueueItemRow` + `GroupSection`) to match final layout: Compliance, Scheduling, PM Plan, Customer/Location, Window, Visit, Job, Status.
+- Files changed:
+  - `client/src/pages/PMWorkspacePage.tsx` — Search, sorting, column layout cleanup for flat + grouped views
+  - `server/storage/recurringJobs.ts` — `getTemplates()` and `getUpcomingQueue()` location name fix
+
+#### PM Workspace UX Improvements — Phase 5 (2026-03-10)
+
+- **Part 1 — Remove Auto Schedule column**: Removed Auto Schedule column from Maintenance Plans list. Auto-scheduling is not part of the current dispatch architecture; all generated PM visits start unscheduled.
+- **Part 2 — Rename tab**: "PM Setups" → "Maintenance Plans" to better reflect the page shows existing plans, not configuration.
+- **Part 3 — Default landing tab**: PM workspace now opens to the "Upcoming" tab (operational queue) instead of Maintenance Plans.
+- **Part 4 — Client/Location display**: Three-line hierarchy in both Maintenance Plans and Upcoming tables: Client name, Location name, Address. Backend already returns `clientName`, `locationName`, `locationAddress`.
+- **Part 5 — Fix recurrence display**: Fixed "Every undefined months" bug. Root cause: frontend type used `intervalMonths` but backend returns `interval`. Now uses `interval` and derives smart labels from months: Monthly, Quarterly (Mar, Jun, Sep, Dec), Semi-annual (Apr, Oct), Selected months: Mar, Apr, May, Jun.
+- **Part 6 — Rename generation label**: "Generation Mode" column renamed to "Jobs created on" with improved formatting (e.g., "1st of month", "15th of month").
+- **Part 7 — Unscheduled status verification**: Confirmed backend scheduling state logic correctly classifies generated visits with `scheduledStart === null` as `generated_unscheduled`. These appear in Upcoming queue under "Needs Action" filter.
+- **Part 8 — Generation workflow**: Generation controls remain in the Upcoming queue (row-level + bulk generate with confirmation modal), not on the Maintenance Plans page. Global "Generate Now" was already removed in Phase 4C.
+- Files changed:
+  - `client/src/pages/PMWorkspacePage.tsx` — Tab rename, reorder, default change, Auto Schedule column removal, recurrence display fix, client/location display improvement, generation label rename, `AutoScheduleBadge` component removed
+
 ### Added
 
 #### Client CSV Import v1 (2026-03-10)

@@ -39,6 +39,18 @@ type Props = {
   timelineEndHour?: number;
   /** Item 6: Click empty slot handler */
   onEmptySlotClick?: (techId: string, minuteOfDay: number) => void;
+  /** Click-to-schedule: preview node to show at hover position */
+  clickPreview?: React.ReactNode;
+  /** Click-to-schedule: whether this lane is being hovered with a pending placement */
+  isClickHoverTarget?: boolean;
+  /** Click-to-schedule: commit handler — click on this lane to schedule */
+  onClickSchedule?: (techId: string, relativeX: number) => void;
+  /** Click-to-schedule: hover handler — mouse move updates preview */
+  onClickHover?: (techId: string, relativeX: number) => void;
+  /** Click-to-schedule: hover leave handler */
+  onClickHoverLeave?: () => void;
+  /** Whether click-to-schedule placement is active (a visit is selected for scheduling) */
+  isPlacementActive?: boolean;
 };
 
 export default function DispatchLaneRow({
@@ -49,6 +61,8 @@ export default function DispatchLaneRow({
   timelineStartHour: startHour = TIMELINE_START_HOUR,
   timelineEndHour: endHour,
   onEmptySlotClick,
+  clickPreview, isClickHoverTarget, onClickSchedule, onClickHover, onClickHoverLeave,
+  isPlacementActive,
 }: Props) {
   const isUnassigned = tech.id === UNASSIGNED_TECH_ID;
   const dropData: DispatchDropData = { technicianId: tech.id };
@@ -84,7 +98,17 @@ export default function DispatchLaneRow({
   const lastBlockInteractionRef = useRef(0);
 
   // Item 6: Click empty slot — compute time from click position
+  // In click-to-schedule mode, this handler is bypassed in favor of onClickSchedule
   const handleLaneClick = useCallback((e: React.MouseEvent) => {
+    // Click-to-schedule: commit placement on click
+    if (isPlacementActive && onClickSchedule) {
+      const target = e.target as HTMLElement;
+      if (target.closest("[data-dispatch-block]")) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const relativeX = e.clientX - rect.left;
+      onClickSchedule(tech.id, relativeX);
+      return;
+    }
     if (!onEmptySlotClick) return;
     // Only fire on clicks directly on the lane background (not on blocks)
     const target = e.target as HTMLElement;
@@ -97,7 +121,20 @@ export default function DispatchLaneRow({
     const snapped = Math.round(minutesFromStart / 15) * 15;
     const minuteOfDay = startHour * 60 + Math.max(0, snapped);
     onEmptySlotClick(tech.id, minuteOfDay);
-  }, [onEmptySlotClick, startHour, tech.id]);
+  }, [onEmptySlotClick, startHour, tech.id, isPlacementActive, onClickSchedule]);
+
+  // Click-to-schedule: hover tracking for preview
+  const handleLaneMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!isPlacementActive || !onClickHover) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const relativeX = e.clientX - rect.left;
+    onClickHover(tech.id, relativeX);
+  }, [isPlacementActive, onClickHover, tech.id]);
+
+  const handleLaneMouseLeave = useCallback(() => {
+    if (!isPlacementActive || !onClickHoverLeave) return;
+    onClickHoverLeave();
+  }, [isPlacementActive, onClickHoverLeave]);
 
   // Track pointerup on dispatch blocks to suppress subsequent click events from resize/drag
   const handleLanePointerUp = useCallback((e: React.PointerEvent) => {
@@ -112,9 +149,12 @@ export default function DispatchLaneRow({
       ref={setNodeRef}
       onClick={handleLaneClick}
       onPointerUp={handleLanePointerUp}
+      onMouseMove={handleLaneMouseMove}
+      onMouseLeave={handleLaneMouseLeave}
       className={`group relative flex ${!isLast ? "border-b border-slate-200/80" : ""} ${
         isOver ? overBg : ""
-      } transition-colors ${onEmptySlotClick ? "cursor-pointer" : ""}`}
+      } ${isClickHoverTarget ? "bg-emerald-50/30" : ""}
+      transition-colors ${isPlacementActive ? "cursor-crosshair" : onEmptySlotClick ? "cursor-pointer" : ""}`}
       style={{ height: LANE_HEIGHT_PX, width: totalWidth }}
     >
       {/* Goal 2: Hour cell grid lines — alternating subtle fill for half-day rhythm */}
@@ -147,6 +187,9 @@ export default function DispatchLaneRow({
 
       {/* Drag preview indicator */}
       {isOver && dragPreview}
+
+      {/* Click-to-schedule preview indicator */}
+      {isClickHoverTarget && clickPreview}
 
       {/* Timed visit blocks — pass lane blocks for resize overlap clamping */}
       {timedVisits.map(v => {

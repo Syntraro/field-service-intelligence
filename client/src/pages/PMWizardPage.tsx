@@ -20,10 +20,9 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { useLocation, useSearch } from "wouter";
+import { useLocation, useSearch, Link } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -63,7 +62,7 @@ import {
   Package,
   ClipboardCheck,
 } from "lucide-react";
-import type { Client, RecurringJobTemplate } from "@shared/schema";
+import type { Client, RecurringJobTemplate, PmTemplate } from "@shared/schema";
 
 // ============================================================================
 // Types & Constants
@@ -83,6 +82,7 @@ const STEPS = [
   { key: "type", label: "Setup Type", icon: Building2 },
   { key: "basics", label: "PM Details", icon: Wrench },
   { key: "parts", label: "Parts", icon: Package },
+  // TODO Phase 2+: Add optional "Equipment" step here to link existing equipment at selected location
   { key: "review", label: "Review", icon: ClipboardCheck },
 ] as const;
 
@@ -91,6 +91,9 @@ interface CustomerCompanyLite {
   name: string;  // Matches customer_companies.name column
 }
 
+/** Contract term mode for PM end-date calculation */
+type ContractTermMode = "ongoing" | "1_year" | "custom" | "specific";
+
 interface WizardState {
   // Step 1 — target
   customerCompanyId: string;
@@ -98,24 +101,44 @@ interface WizardState {
   locationName: string;
   customerName: string;
   // Step 2 — type
-  fromTemplateId: string | null;
+  fromTemplateId: string | null; // Legacy: copy from existing maintenance plan
+  fromPmTemplateId: string | null; // New: use PM template for prefill
   // Step 3 — basics
   title: string;
   description: string;
   months: number[];
   generationMode: "period_start" | "day_of_month";
   generationDayOfMonth: number;
-  autoSchedule: boolean;
-  scheduledTimeLocal: string;
-  defaultDurationMinutes: number;
   startDate: string;
-  endDate: string;
-  preferredTechnicianId: string;
+  // Contract term fields (replaces raw endDate)
+  contractTermMode: ContractTermMode;
+  contractTermValue: number; // for "custom" mode — number of months or years
+  contractTermUnit: "months" | "years"; // for "custom" mode
+  endDate: string; // for "specific" mode or computed from term
   // Step 4 — parts
   includeLocationPmParts: boolean;
   // PM Phase 3: Service window
   serviceWindowDaysBefore: number;
   serviceWindowDaysAfter: number;
+}
+
+/** Compute end date from contract term mode and start date */
+function computeEndDate(startDate: string, mode: ContractTermMode, termValue: number, termUnit: "months" | "years", specificEndDate: string): string {
+  if (mode === "ongoing") return "";
+  if (mode === "specific") return specificEndDate;
+  if (!startDate) return "";
+  const start = new Date(startDate + "T00:00:00");
+  if (mode === "1_year") {
+    start.setFullYear(start.getFullYear() + 1);
+    return start.toISOString().split("T")[0];
+  }
+  // custom
+  if (termUnit === "years") {
+    start.setFullYear(start.getFullYear() + termValue);
+  } else {
+    start.setMonth(start.getMonth() + termValue);
+  }
+  return start.toISOString().split("T")[0];
 }
 
 function initialState(): WizardState {
@@ -125,17 +148,17 @@ function initialState(): WizardState {
     locationName: "",
     customerName: "",
     fromTemplateId: null,
+    fromPmTemplateId: null,
     title: "",
     description: "",
     months: [],
     generationMode: "period_start",
     generationDayOfMonth: 1,
-    autoSchedule: false,
-    scheduledTimeLocal: "09:00",
-    defaultDurationMinutes: 120,
     startDate: new Date().toISOString().split("T")[0],
+    contractTermMode: "ongoing",
+    contractTermValue: 12,
+    contractTermUnit: "months",
     endDate: "",
-    preferredTechnicianId: "",
     includeLocationPmParts: true,
     serviceWindowDaysBefore: 7,
     serviceWindowDaysAfter: 14,
@@ -348,28 +371,83 @@ function StepTarget({
 }
 
 // ============================================================================
+// Searchable Template Picker (Part 2C)
+// ============================================================================
+
+function TemplatePickerCombobox({
+  templates,
+  selectedId,
+  onSelect,
+}: {
+  templates: PmTemplate[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selectedName = templates.find((t) => t.id === selectedId)?.name ?? "";
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          role="combobox"
+          className="ml-4 w-[320px] justify-between font-normal"
+          data-testid="pm-wizard-template-select"
+        >
+          {selectedName || "Select a template..."}
+          <ChevronsUpDown className="ml-2 h-4 w-4 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[320px] p-0" align="start">
+        <Command>
+          <CommandInput placeholder="Search templates..." />
+          <CommandList>
+            <CommandEmpty>No templates found.</CommandEmpty>
+            <CommandGroup>
+              {templates.map((t) => (
+                <CommandItem
+                  key={t.id}
+                  value={[t.name, t.summary, t.description].filter(Boolean).join(" ")}
+                  onSelect={() => { onSelect(t.id); setOpen(false); }}
+                >
+                  <Check className={`mr-2 h-4 w-4 ${selectedId === t.id ? "opacity-100" : "opacity-0"}`} />
+                  <div className="min-w-0">
+                    <div className="font-medium truncate">{t.name}</div>
+                    {t.summary && <div className="text-xs text-muted-foreground truncate">{t.summary}</div>}
+                  </div>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+// ============================================================================
 // Step 2 — Setup Type
 // ============================================================================
 
 function StepType({
   state,
   onChange,
-  templates,
+  pmTemplates,
 }: {
   state: WizardState;
   onChange: (patch: Partial<WizardState>) => void;
-  templates: RecurringJobTemplate[];
+  pmTemplates: PmTemplate[];
 }) {
-  const pmTemplates = templates.filter(
-    (t) => t.jobType === "maintenance" || (t.monthsOfYear && t.monthsOfYear.length > 0)
-  );
+  // Determine which mode is selected
+  const mode: "scratch" | "pm_template" = state.fromPmTemplateId ? "pm_template" : "scratch";
 
   return (
     <div className="space-y-5">
       <div>
         <h2 className="text-lg font-semibold">How do you want to start?</h2>
         <p className="text-sm text-muted-foreground mt-1">
-          Create from scratch or use an existing PM setup as a starting point.
+          Create from scratch or use a PM template to prefill job content.
         </p>
       </div>
 
@@ -377,9 +455,9 @@ function StepType({
         {/* From scratch */}
         <button
           type="button"
-          onClick={() => onChange({ fromTemplateId: null })}
+          onClick={() => onChange({ fromTemplateId: null, fromPmTemplateId: null })}
           className={`text-left p-4 rounded-lg border-2 transition-colors ${
-            state.fromTemplateId === null
+            mode === "scratch"
               ? "border-primary bg-primary/5"
               : "border-border hover:border-primary/30"
           }`}
@@ -391,48 +469,50 @@ function StepType({
           </p>
         </button>
 
-        {/* From existing template */}
-        {pmTemplates.length > 0 && (
-          <div className="space-y-2">
-            <button
-              type="button"
-              onClick={() => {
-                if (!state.fromTemplateId) {
-                  onChange({ fromTemplateId: pmTemplates[0].id });
-                }
-              }}
-              className={`w-full text-left p-4 rounded-lg border-2 transition-colors ${
-                state.fromTemplateId
-                  ? "border-primary bg-primary/5"
-                  : "border-border hover:border-primary/30"
-              }`}
-              data-testid="pm-wizard-from-existing"
-            >
-              <div className="font-medium">Copy from existing PM setup</div>
-              <p className="text-sm text-muted-foreground mt-0.5">
-                Start with settings from another PM schedule, then adjust.
-              </p>
-            </button>
+        {/* Use PM template */}
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={() => {
+              if (pmTemplates.length > 0 && !state.fromPmTemplateId) {
+                onChange({ fromPmTemplateId: pmTemplates[0].id, fromTemplateId: null });
+              } else if (pmTemplates.length > 0) {
+                // Already in template mode — keep it selected
+                onChange({ fromTemplateId: null });
+              }
+            }}
+            className={`w-full text-left p-4 rounded-lg border-2 transition-colors ${
+              mode === "pm_template"
+                ? "border-primary bg-primary/5"
+                : "border-border hover:border-primary/30"
+            }`}
+            data-testid="pm-wizard-from-template"
+          >
+            <div className="font-medium">Use PM template</div>
+            <p className="text-sm text-muted-foreground mt-0.5">
+              Prefill job content from a reusable template, then customize.
+            </p>
+          </button>
 
-            {state.fromTemplateId && (
-              <Select
-                value={state.fromTemplateId}
-                onValueChange={(id) => onChange({ fromTemplateId: id })}
-              >
-                <SelectTrigger className="ml-4 w-auto" data-testid="pm-wizard-template-select">
-                  <SelectValue placeholder="Select a template..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {pmTemplates.map((t) => (
-                    <SelectItem key={t.id} value={t.id}>
-                      {t.title} {t.isActive ? "" : "(Paused)"}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          </div>
-        )}
+          {/* Searchable template picker — shown when in PM template mode */}
+          {mode === "pm_template" && pmTemplates.length > 0 && (
+            <TemplatePickerCombobox
+              templates={pmTemplates}
+              selectedId={state.fromPmTemplateId}
+              onSelect={(id) => onChange({ fromPmTemplateId: id })}
+            />
+          )}
+
+          {/* No templates available */}
+          {pmTemplates.length === 0 && (
+            <div className="ml-4 p-3 rounded-md bg-muted/50 text-sm">
+              <p className="text-muted-foreground">No templates available. Create your first template.</p>
+              <Link href="/pm?tab=templates" className="text-primary hover:underline text-sm font-medium">
+                Go to PM Templates →
+              </Link>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -449,9 +529,6 @@ function StepBasics({
   state: WizardState;
   onChange: (patch: Partial<WizardState>) => void;
 }) {
-  const { teamMembers } = useTechniciansDirectory();
-  const schedulableTechs = teamMembers.filter((t) => t.isSchedulable);
-
   const toggleMonth = (m: number) => {
     const newMonths = state.months.includes(m)
       ? state.months.filter((v) => v !== m)
@@ -566,46 +643,6 @@ function StepBasics({
         </div>
       </div>
 
-      {/* Auto Schedule */}
-      <div className="space-y-2">
-        <div className="flex items-center gap-2">
-          <Checkbox
-            id="pm-wizard-auto"
-            checked={state.autoSchedule}
-            onCheckedChange={(v) => onChange({ autoSchedule: Boolean(v) })}
-            data-testid="pm-wizard-auto-schedule"
-          />
-          <Label htmlFor="pm-wizard-auto" className="cursor-pointer">
-            Automatically assign a scheduled time
-          </Label>
-        </div>
-        {state.autoSchedule && (
-          <div className="flex items-center gap-3 pl-6">
-            <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">Time</Label>
-              <Input
-                type="time"
-                className="w-28 h-7 text-sm"
-                value={state.scheduledTimeLocal}
-                onChange={(e) => onChange({ scheduledTimeLocal: e.target.value })}
-                data-testid="pm-wizard-time"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs text-muted-foreground">Duration (min)</Label>
-              <Input
-                type="number"
-                min={1}
-                className="w-20 h-7 text-sm"
-                value={state.defaultDurationMinutes}
-                onChange={(e) => onChange({ defaultDurationMinutes: parseInt(e.target.value, 10) || 120 })}
-                data-testid="pm-wizard-duration"
-              />
-            </div>
-          </div>
-        )}
-      </div>
-
       {/* PM Phase 3: Service Window */}
       <div className="space-y-2">
         <Label>Service window</Label>
@@ -641,49 +678,82 @@ function StepBasics({
       </div>
 
       {/* Start Date */}
-      <div className="grid grid-cols-2 gap-4">
-        <div className="space-y-2">
-          <Label>Start date</Label>
-          <Input
-            type="date"
-            value={state.startDate}
-            onChange={(e) => onChange({ startDate: e.target.value })}
-            data-testid="pm-wizard-start-date"
-          />
-        </div>
-        <div className="space-y-2">
-          <Label>End date (optional)</Label>
-          <Input
-            type="date"
-            value={state.endDate}
-            onChange={(e) => onChange({ endDate: e.target.value })}
-            data-testid="pm-wizard-end-date"
-          />
-        </div>
+      <div className="space-y-2">
+        <Label>Start date</Label>
+        <Input
+          type="date"
+          value={state.startDate}
+          onChange={(e) => onChange({ startDate: e.target.value })}
+          className="w-48"
+          data-testid="pm-wizard-start-date"
+        />
       </div>
 
-      {/* Preferred Technician */}
-      {schedulableTechs.length > 0 && (
+      {/* Contract Term */}
+      <div className="space-y-2">
+        <Label>Contract term</Label>
         <div className="space-y-2">
-          <Label>Default assigned technician (optional)</Label>
-          <Select
-            value={state.preferredTechnicianId || "none"}
-            onValueChange={(v) => onChange({ preferredTechnicianId: v === "none" ? "" : v })}
-          >
-            <SelectTrigger data-testid="pm-wizard-technician">
-              <SelectValue placeholder="Unassigned" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">Unassigned</SelectItem>
-              {schedulableTechs.map((tech) => (
-                <SelectItem key={tech.id} value={tech.id}>
-                  {tech.fullName}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {(["ongoing", "1_year", "custom", "specific"] as const).map((mode) => {
+            const labels: Record<ContractTermMode, string> = {
+              ongoing: "Ongoing (no end date)",
+              "1_year": "1 year",
+              custom: "Custom duration",
+              specific: "Specific end date",
+            };
+            return (
+              <label key={mode} className="flex items-center gap-2 text-sm cursor-pointer">
+                <input
+                  type="radio"
+                  name="contractTerm"
+                  checked={state.contractTermMode === mode}
+                  onChange={() => onChange({ contractTermMode: mode })}
+                  className="accent-primary"
+                />
+                {labels[mode]}
+              </label>
+            );
+          })}
         </div>
-      )}
+        {state.contractTermMode === "custom" && (
+          <div className="flex items-center gap-2 pl-6">
+            <Input
+              type="number"
+              min={1}
+              max={120}
+              className="w-20 h-7 text-sm"
+              value={state.contractTermValue}
+              onChange={(e) => onChange({ contractTermValue: parseInt(e.target.value, 10) || 1 })}
+              data-testid="pm-wizard-term-value"
+            />
+            <Select
+              value={state.contractTermUnit}
+              onValueChange={(v) => onChange({ contractTermUnit: v as "months" | "years" })}
+            >
+              <SelectTrigger className="w-28 h-7 text-sm"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="months">months</SelectItem>
+                <SelectItem value="years">years</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+        {state.contractTermMode === "specific" && (
+          <div className="pl-6">
+            <Input
+              type="date"
+              value={state.endDate}
+              onChange={(e) => onChange({ endDate: e.target.value })}
+              className="w-48"
+              data-testid="pm-wizard-end-date"
+            />
+          </div>
+        )}
+        {state.contractTermMode !== "ongoing" && state.contractTermMode !== "specific" && state.startDate && (
+          <p className="text-xs text-muted-foreground pl-6">
+            Ends: {computeEndDate(state.startDate, state.contractTermMode, state.contractTermValue, state.contractTermUnit, state.endDate) || "—"}
+          </p>
+        )}
+      </div>
     </div>
   );
 }
@@ -755,16 +825,25 @@ function StepParts({
 // Step 5 — Review
 // ============================================================================
 
-function StepReview({ state }: { state: WizardState }) {
+function StepReview({ state, pmTemplate }: { state: WizardState; pmTemplate: PmTemplate | null }) {
   const monthNames = state.months.map((m) => MONTH_LABELS[m - 1]).join(", ");
   const genLabel =
     state.generationMode === "period_start"
       ? "Start of each month"
       : `Day ${state.generationDayOfMonth} of each month`;
-  const schedLabel = state.autoSchedule
-    ? `Auto at ${state.scheduledTimeLocal}, ${state.defaultDurationMinutes} min`
-    : "Manual (unscheduled)";
   const missingTarget = !state.customerCompanyId || !state.locationId;
+  // Compute effective end date for display
+  const effectiveEndDate = computeEndDate(state.startDate, state.contractTermMode, state.contractTermValue, state.contractTermUnit, state.endDate);
+  const termLabels: Record<ContractTermMode, string> = {
+    ongoing: "Ongoing",
+    "1_year": "1 year",
+    custom: `${state.contractTermValue} ${state.contractTermUnit}`,
+    specific: "Specific end date",
+  };
+  // Part 4: Show location name only (customer is shown separately)
+  const locationOnly = state.locationName?.includes(" — ")
+    ? state.locationName.split(" — ").slice(1).join(" — ")
+    : state.locationName;
 
   return (
     <div className="space-y-5">
@@ -783,17 +862,25 @@ function StepReview({ state }: { state: WizardState }) {
 
       <div className="rounded-lg border divide-y text-sm">
         <Row label="Customer" value={state.customerName || "— (required)"} error={!state.customerCompanyId} />
-        <Row label="Location" value={state.locationName || "— (required)"} error={!state.locationId} />
+        <Row label="Location" value={locationOnly || "— (required)"} error={!state.locationId} />
         <Row label="PM Name" value={state.title || "—"} />
         {state.description && <Row label="Notes" value={state.description} />}
         <Row label="Months" value={monthNames || "None selected"} />
         <Row label="Job creation" value={genLabel} />
-        <Row label="Scheduling" value={schedLabel} />
         <Row label="Start date" value={state.startDate || "Today"} />
-        {state.endDate && <Row label="End date" value={state.endDate} />}
+        <Row label="Contract term" value={termLabels[state.contractTermMode]} />
+        {effectiveEndDate && <Row label="End date" value={effectiveEndDate} />}
         <Row label="Service window" value={`${state.serviceWindowDaysBefore}d before — ${state.serviceWindowDaysAfter}d after`} />
         <Row label="Location PM parts" value={state.includeLocationPmParts ? "Included" : "Not included"} />
+        {pmTemplate && <Row label="From template" value={pmTemplate.name} />}
       </div>
+
+      {/* Part 7: Warning if both location parts and template line items active */}
+      {state.includeLocationPmParts && Array.isArray(pmTemplate?.defaultLineItemsJson) && pmTemplate.defaultLineItemsJson.length > 0 && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+          This template includes line items and location PM parts are enabled. Template line items may duplicate included parts.
+        </div>
+      )}
     </div>
   );
 }
@@ -823,9 +910,14 @@ export default function PMWizardPage() {
   const prefillLocationId = params.get("locationId");
   const prefillTemplateId = params.get("fromTemplateId") || params.get("duplicate");
 
-  // Fetch all templates for prefill/type step
+  // Fetch all maintenance plans for legacy prefill
   const { data: templates = [] } = useQuery<RecurringJobTemplate[]>({
     queryKey: ["/api/recurring-templates"],
+  });
+
+  // Fetch PM templates for the type step
+  const { data: pmTemplatesList = [] } = useQuery<PmTemplate[]>({
+    queryKey: ["/api/pm/templates"],
   });
 
   // Fetch all locations for prefill
@@ -883,7 +975,6 @@ export default function PMWizardPage() {
 
     setState((prev) => ({
       ...prev,
-      // Don't override location if already set by prefill; always keep company+location paired
       customerCompanyId: prev.customerCompanyId || resolvedCompanyId,
       customerName: prev.customerName || resolvedCompanyName,
       locationId: prev.locationId || (resolvedCompanyId ? tpl.locationId || "" : ""),
@@ -894,12 +985,9 @@ export default function PMWizardPage() {
       months: tpl.monthsOfYear ?? [],
       generationMode: tpl.generationMode === "day_of_month" ? "day_of_month" : "period_start",
       generationDayOfMonth: tpl.generationDayOfMonth ?? 1,
-      autoSchedule: tpl.autoSchedule ?? false,
-      scheduledTimeLocal: tpl.scheduledTimeLocal ?? "09:00",
-      defaultDurationMinutes: tpl.defaultDurationMinutes ?? 120,
       startDate: new Date().toISOString().split("T")[0],
+      contractTermMode: tpl.endDate ? "specific" : "ongoing",
       endDate: tpl.endDate ?? "",
-      preferredTechnicianId: tpl.preferredTechnicianId ?? "",
       includeLocationPmParts: tpl.includeLocationPmParts ?? true,
       serviceWindowDaysBefore: tpl.serviceWindowDaysBefore ?? 7,
       serviceWindowDaysAfter: tpl.serviceWindowDaysAfter ?? 14,
@@ -910,9 +998,48 @@ export default function PMWizardPage() {
     setState((prev) => ({ ...prev, ...patch }));
   }
 
+  /** Apply PM template content to wizard state — prefill-only, one-way copy */
+  function applyPmTemplate(tpl: PmTemplate) {
+    setState((prev) => {
+      const patch: Partial<WizardState> = {
+        fromPmTemplateId: tpl.id,
+        fromTemplateId: null,
+        // Content defaults
+        title: tpl.summary || tpl.name,
+        description: tpl.description ?? "",
+      };
+      // Optional scheduling defaults — only apply if template has them
+      if (tpl.defaultMonthsOfYear && tpl.defaultMonthsOfYear.length > 0) {
+        patch.months = tpl.defaultMonthsOfYear;
+      }
+      if (tpl.defaultGenerationMode) {
+        patch.generationMode = tpl.defaultGenerationMode as "period_start" | "day_of_month";
+      }
+      if (tpl.defaultGenerationDayOfMonth != null) {
+        patch.generationDayOfMonth = tpl.defaultGenerationDayOfMonth;
+      }
+      if (tpl.defaultServiceWindowDaysBefore != null) {
+        patch.serviceWindowDaysBefore = tpl.defaultServiceWindowDaysBefore;
+      }
+      if (tpl.defaultServiceWindowDaysAfter != null) {
+        patch.serviceWindowDaysAfter = tpl.defaultServiceWindowDaysAfter;
+      }
+      if (tpl.defaultIncludeLocationPmParts != null) {
+        patch.includeLocationPmParts = tpl.defaultIncludeLocationPmParts;
+      }
+      return { ...prev, ...patch };
+    });
+  }
+
   // When user selects a template in Step 2, prefill state
   function handleTypeChange(patch: Partial<WizardState>) {
     onChange(patch);
+    // PM template selected
+    if (patch.fromPmTemplateId) {
+      const tpl = pmTemplatesList.find((t) => t.id === patch.fromPmTemplateId);
+      if (tpl) applyPmTemplate(tpl);
+    }
+    // Legacy: copy from existing maintenance plan
     if (patch.fromTemplateId) {
       const tpl = templates.find((t) => t.id === patch.fromTemplateId);
       if (tpl) applyTemplateToState(tpl);
@@ -941,27 +1068,32 @@ export default function PMWizardPage() {
   // Create mutation
   const createMutation = useMutation({
     mutationFn: async () => {
+      // Compute effective end date from contract term
+      const effectiveEndDate = computeEndDate(
+        state.startDate, state.contractTermMode,
+        state.contractTermValue, state.contractTermUnit, state.endDate
+      );
       const payload = {
         title: state.title.trim(),
         description: state.description.trim() || null,
         notes: null,
         locationId: state.locationId || null,
-        clientId: state.customerCompanyId || null, // FK to customer_companies
+        clientId: state.customerCompanyId || null,
         jobType: "maintenance" as const,
         recurrenceKind: "monthly" as const,
         interval: 1,
         startDate: state.startDate || new Date().toISOString().split("T")[0],
-        endDate: state.endDate || null,
+        endDate: effectiveEndDate || null,
         monthsOfYear: state.months,
         generationMode: state.generationMode,
         generationDayOfMonth: state.generationMode === "day_of_month" ? state.generationDayOfMonth : null,
-        autoSchedule: state.autoSchedule,
-        scheduledTimeLocal: state.autoSchedule ? state.scheduledTimeLocal : null,
-        defaultDurationMinutes: state.autoSchedule ? state.defaultDurationMinutes : null,
+        autoSchedule: false,
+        scheduledTimeLocal: null,
+        defaultDurationMinutes: null,
         includeLocationPmParts: state.includeLocationPmParts,
         serviceWindowDaysBefore: state.serviceWindowDaysBefore,
         serviceWindowDaysAfter: state.serviceWindowDaysAfter,
-        preferredTechnicianId: state.preferredTechnicianId || null,
+        preferredTechnicianId: null,
         isActive: true,
       };
       return apiRequest<RecurringJobTemplate>("/api/recurring-templates", {
@@ -969,23 +1101,11 @@ export default function PMWizardPage() {
         body: JSON.stringify(payload),
       });
     },
-    onSuccess: async (savedTemplate) => {
+    onSuccess: async () => {
+      // Server-side POST handler now auto-generates current-cycle instances,
+      // so no client-side generate call is needed.
       queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
-
-      // Auto-generate current month job if applicable
-      const currentMonth = new Date().getMonth() + 1;
-      if (savedTemplate?.id && state.months.includes(currentMonth)) {
-        try {
-          await apiRequest(
-            `/api/recurring-templates/${savedTemplate.id}/generate?scope=current_month`,
-            { method: "POST" }
-          );
-          queryClient.invalidateQueries({ queryKey: ["jobs"] });
-        } catch {
-          // Non-fatal
-        }
-      }
-
+      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates/upcoming"] });
       toast({
         title: "PM setup created",
         description: `"${state.title}" is now active and will generate jobs automatically.`,
@@ -1014,10 +1134,10 @@ export default function PMWizardPage() {
       <Card>
         <CardContent className="pt-6">
           {step === 0 && <StepTarget state={state} onChange={onChange} />}
-          {step === 1 && <StepType state={state} onChange={handleTypeChange} templates={templates} />}
+          {step === 1 && <StepType state={state} onChange={handleTypeChange} pmTemplates={pmTemplatesList} />}
           {step === 2 && <StepBasics state={state} onChange={onChange} />}
           {step === 3 && <StepParts state={state} onChange={onChange} />}
-          {step === 4 && <StepReview state={state} />}
+          {step === 4 && <StepReview state={state} pmTemplate={state.fromPmTemplateId ? pmTemplatesList.find((t) => t.id === state.fromPmTemplateId) ?? null : null} />}
         </CardContent>
       </Card>
 

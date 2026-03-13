@@ -294,6 +294,12 @@ function applyCloseTransition(
         previousStatus: currentStatus,
         closedAt: new Date(),
         closedBy: actor.userId,
+        // Part E: PM billing status on archive — exception if per-visit skipped invoice
+        ...(job.pmBillingDisposition === "invoice_on_completion"
+          ? { pmBillingStatus: "billing_exception" }
+          : job.pmBillingDisposition
+            ? { pmBillingStatus: "no_invoice_expected" }
+            : {}),
       };
 
       auditEvents.push({
@@ -338,7 +344,8 @@ function applyCloseTransition(
         ...openSubStatusPatch,
         status: "invoiced",
         invoiceId: intent.invoiceId,
-        // No undo for invoiced jobs
+        // Part E: Update PM billing status when invoicing a PM job
+        ...(job.pmBillingDisposition ? { pmBillingStatus: "invoiced" } : {}),
       };
 
       auditEvents.push({

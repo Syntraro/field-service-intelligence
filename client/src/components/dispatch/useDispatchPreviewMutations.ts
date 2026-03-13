@@ -20,7 +20,35 @@ import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { CalendarRangeResponseDto, CalendarEventDto, UnscheduledJobDto } from "@shared/types/scheduling";
 
+import { isApiError } from "@/lib/queryClient";
+
 type SavingSet = Set<string>;
+
+// ============================================================================
+// Concurrency: graceful error detection + recovery
+// ============================================================================
+
+/** Detect version-conflict / optimistic-locking errors from backend.
+ *  Only matches HTTP 409 (explicit backend version-mismatch response).
+ *  Previous regex patterns (/version/i, /conflict/i) were too broad and
+ *  false-positived on unrelated errors that happened to contain those words. */
+function isVersionConflict(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const status = (err as any).status ?? 0;
+  return status === 409;
+}
+
+/** Detect "Not found" errors — stale client state after a prior mutation changed the item */
+function isNotFoundError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const msg = (err as any).message ?? "";
+  const status = (err as any).status ?? 0;
+  return status === 404 || /not found/i.test(msg);
+}
+
+/** User-facing recovery messages */
+const VERSION_CONFLICT_MSG = "This schedule changed while you were editing it. The board has been refreshed.";
+const NOT_FOUND_MSG = "This item was moved or changed. The board has been refreshed.";
 
 interface ScheduleParams {
   jobId: string;
@@ -450,22 +478,66 @@ export function useDispatchPreviewMutations() {
   /**
    * Background invalidation — fires and forgets.
    * Debounced: if another mutation is in-flight, skip (that mutation will trigger its own).
-   * Starvation prevention: if >5s since last invalidation, force it regardless of in-flight count.
+   * Starvation prevention: if >10s since last invalidation, force it regardless of in-flight count.
+   * Delay increased to 800ms to prevent refetch-overwrites-optimistic-patch races.
    */
   const backgroundInvalidate = useCallback(() => {
-    // Slight delay so rapid mutations batch naturally
     setTimeout(() => {
       const elapsed = Date.now() - lastInvalidateRef.current;
-      // Skip if mutations in-flight AND last invalidation was recent (< 5s)
-      if (inflightRef.current > 0 && elapsed < 5000) return;
+      // Skip if mutations in-flight AND last invalidation was recent (< 10s)
+      if (inflightRef.current > 0 && elapsed < 10000) return;
       lastInvalidateRef.current = Date.now();
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
       queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
-      // Item 5: Ensure technician working hours are fresh for on-shift/off-shift grouping
       queryClient.invalidateQueries({ queryKey: ["/api/team/technicians/working-hours"] });
-    }, 150);
+    }, 800);
   }, [queryClient]);
+
+  /**
+   * Force-refresh all dispatch caches immediately (no debounce, ignores in-flight).
+   * Used after version-conflict or not-found recovery to ensure UI shows server truth.
+   */
+  const forceRefresh = useCallback(() => {
+    lastInvalidateRef.current = Date.now();
+    queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
+  }, [queryClient]);
+
+  /**
+   * Cancel any in-flight refetches, then patch cached version.
+   * This prevents a race where a background refetch (from a previous mutation's
+   * invalidation) arrives and overwrites our freshly-patched version with stale data.
+   * Without this, the sequence: move A → patchV2 → invalidate → move B → patchV3 →
+   * refetch-A arrives with V2 → cache reverts to V2 → next move sends stale V2 → 409.
+   */
+  const cancelAndPatchVersion = useCallback(async (visitId: string, newVersion: number) => {
+    await queryClient.cancelQueries({ queryKey: ["/api/calendar"] });
+    await queryClient.cancelQueries({ queryKey: ["/api/calendar/unscheduled"] });
+    patchCachedVersion(queryClient, visitId, newVersion);
+  }, [queryClient]);
+
+  /**
+   * Graceful error handler — shows recovery toast + refetches instead of crashing.
+   * Returns true if the error was handled gracefully (caller should NOT rethrow).
+   */
+  const handleMutationError = useCallback((err: unknown, fallbackTitle: string): boolean => {
+    if (isVersionConflict(err)) {
+      toast({ title: "Schedule conflict", description: VERSION_CONFLICT_MSG });
+      forceRefresh();
+      return true;
+    }
+    if (isNotFoundError(err)) {
+      toast({ title: "Item changed", description: NOT_FOUND_MSG });
+      forceRefresh();
+      return true;
+    }
+    // Non-recoverable error — show destructive toast
+    const msg = (err as any)?.message || `Failed: ${fallbackTitle}`;
+    toast({ variant: "destructive", title: fallbackTitle, description: msg });
+    return false;
+  }, [toast, forceRefresh]);
 
   /**
    * Resolve the latest version for a visit. Logs debug info for tracing staleness.
@@ -504,24 +576,25 @@ export function useDispatchPreviewMutations() {
       const version = freshVersion(visitId);
       const snapshot = snapshotDispatchCache(queryClient);
 
+      markSaving(visitId);
       inflightRef.current++;
       try {
         const resp = await apiRequest<{ version?: number }>("/api/calendar/schedule", {
           method: "POST",
           body: JSON.stringify({ jobId, technicianUserId, startAt, endAt, version }),
         });
-        // Patch cache with server-returned version for subsequent chained mutations
-        if (resp?.version != null) patchCachedVersion(queryClient, visitId, resp.version);
+        // Cancel pending refetches then patch version to prevent stale-refetch overwrites
+        if (resp?.version != null) await cancelAndPatchVersion(visitId, resp.version);
         backgroundInvalidate();
       } catch (err: any) {
         restoreDispatchCache(queryClient, snapshot);
-        toast({ variant: "destructive", title: "Schedule failed", description: err?.message || "Failed to schedule visit" });
-        throw err;
+        handleMutationError(err, "Schedule failed");
       } finally {
         inflightRef.current--;
+        clearSaving(visitId);
       }
     });
-  }, [freshVersion, queryClient, backgroundInvalidate, toast, chainForVisit]);
+  }, [freshVersion, queryClient, backgroundInvalidate, handleMutationError, chainForVisit, markSaving, clearSaving, cancelAndPatchVersion]);
 
   /** Reschedule an existing scheduled visit. Fallback routing: new then old. */
   const rescheduleVisit = useCallback(async (params: RescheduleParams) => {
@@ -539,6 +612,7 @@ export function useDispatchPreviewMutations() {
         console.log(`[DISPATCH] rescheduleVisit visitId=${visitId} jobId=${jobId} version=${version} allDay=${allDay}`);
       }
 
+      markSaving(visitId);
       inflightRef.current++;
       try {
         let resp: any;
@@ -549,26 +623,31 @@ export function useDispatchPreviewMutations() {
             body: JSON.stringify({ technicianUserId, startAt, endAt, version, allDay: allDay ?? false }),
           });
         } catch (newErr: any) {
-          if (newErr?.message?.includes("Not found") || newErr?.status === 404) {
-            resp = await apiRequest(`/api/calendar/schedule/${jobId}`, {
-              method: "PATCH",
-              body: JSON.stringify({ technicianUserId, startAt, endAt, version }),
-            });
-          } else {
-            throw newErr;
+          // Graceful recovery: not-found means stale state — refetch instead of fallback cascade
+          if (isNotFoundError(newErr)) {
+            restoreDispatchCache(queryClient, snapshot);
+            handleMutationError(newErr, "Reschedule failed");
+            return;
           }
+          // Version conflict — graceful recovery
+          if (isVersionConflict(newErr)) {
+            restoreDispatchCache(queryClient, snapshot);
+            handleMutationError(newErr, "Reschedule failed");
+            return;
+          }
+          throw newErr;
         }
-        if (resp?.version != null) patchCachedVersion(queryClient, visitId, resp.version);
+        if (resp?.version != null) await cancelAndPatchVersion(visitId, resp.version);
         backgroundInvalidate();
       } catch (err: any) {
         restoreDispatchCache(queryClient, snapshot);
-        toast({ variant: "destructive", title: "Reschedule failed", description: err?.message || "Failed to reschedule visit" });
-        throw err;
+        handleMutationError(err, "Reschedule failed");
       } finally {
         inflightRef.current--;
+        clearSaving(visitId);
       }
     });
-  }, [freshVersion, queryClient, backgroundInvalidate, toast, chainForVisit]);
+  }, [freshVersion, queryClient, backgroundInvalidate, handleMutationError, chainForVisit, markSaving, clearSaving, cancelAndPatchVersion]);
 
   /** Unschedule a visit — returns it to backlog. Fallback routing. */
   const unscheduleVisit = useCallback(async (params: UnscheduleParams) => {
@@ -582,6 +661,7 @@ export function useDispatchPreviewMutations() {
       const version = freshVersion(visitId);
       const snapshot = snapshotDispatchCache(queryClient);
 
+      markSaving(visitId);
       inflightRef.current++;
       try {
         let resp: any;
@@ -591,6 +671,13 @@ export function useDispatchPreviewMutations() {
             body: JSON.stringify({ version }),
           });
         } catch (newErr: any) {
+          // Graceful recovery for not-found and version conflicts
+          if (isNotFoundError(newErr) || isVersionConflict(newErr)) {
+            restoreDispatchCache(queryClient, snapshot);
+            handleMutationError(newErr, "Unschedule failed");
+            return;
+          }
+          // Fallback to legacy endpoint
           if (newErr?.message?.includes("Not found") || newErr?.status === 404) {
             resp = await apiRequest(`/api/calendar/unschedule/${jobId}`, {
               method: "POST",
@@ -600,54 +687,72 @@ export function useDispatchPreviewMutations() {
             throw newErr;
           }
         }
-        if (resp?.version != null) patchCachedVersion(queryClient, visitId, resp.version);
+        if (resp?.version != null) await cancelAndPatchVersion(visitId, resp.version);
         backgroundInvalidate();
       } catch (err: any) {
         restoreDispatchCache(queryClient, snapshot);
-        toast({ variant: "destructive", title: "Unschedule failed", description: err?.message || "Failed to unschedule visit" });
-        throw err;
+        handleMutationError(err, "Unschedule failed");
       } finally {
         inflightRef.current--;
+        clearSaving(visitId);
       }
     });
-  }, [freshVersion, queryClient, backgroundInvalidate, toast, chainForVisit]);
+  }, [freshVersion, queryClient, backgroundInvalidate, handleMutationError, chainForVisit, markSaving, clearSaving, cancelAndPatchVersion]);
 
-  /** Resize a visit — change duration. Fallback routing. */
+  /** Resize a visit — change duration. Serialized per-visit to prevent version conflicts. */
   const resizeVisit = useCallback(async (params: ResizeParams) => {
     const { visitId, jobId, scheduledStart, scheduledEnd, newEndTime } = params;
-    const snapshot = snapshotDispatchCache(queryClient);
 
-    // Optimistic: patch endAt/duration immediately
+    // Optimistic: patch endAt/duration immediately (outside chain for instant feedback)
     optimisticResize(queryClient, visitId, newEndTime);
-    inflightRef.current++;
-    try {
+
+    // Chain per-visit: version resolved after any prior mutation completes
+    return chainForVisit(visitId, async () => {
+      const version = freshVersion(visitId);
+      const snapshot = snapshotDispatchCache(queryClient);
+
+      markSaving(visitId);
+      inflightRef.current++;
       try {
-        await apiRequest(`/api/calendar/visit/${visitId}/resize`, {
-          method: "POST",
-          body: JSON.stringify({ newEndTime }),
-        });
-      } catch (newErr: any) {
-        if (newErr?.message?.includes("Not found") || newErr?.status === 404) {
-          await apiRequest("/api/calendar/resize", {
+        let resp: any;
+        try {
+          resp = await apiRequest(`/api/calendar/visit/${visitId}/resize`, {
             method: "POST",
-            body: JSON.stringify({
-              job: { id: jobId, scheduledStart, scheduledEnd },
-              newEndTime,
-            }),
+            body: JSON.stringify({ newEndTime, version }),
           });
-        } else {
-          throw newErr;
+        } catch (newErr: any) {
+          // Graceful recovery for not-found and version conflicts
+          if (isNotFoundError(newErr) || isVersionConflict(newErr)) {
+            restoreDispatchCache(queryClient, snapshot);
+            handleMutationError(newErr, "Resize failed");
+            return;
+          }
+          // Fallback to legacy endpoint
+          if (newErr?.message?.includes("Not found") || newErr?.status === 404) {
+            resp = await apiRequest("/api/calendar/resize", {
+              method: "POST",
+              body: JSON.stringify({
+                job: { id: jobId, scheduledStart, scheduledEnd },
+                newEndTime,
+              }),
+            });
+          } else {
+            throw newErr;
+          }
         }
+        // Cancel pending refetches then patch version to prevent stale-refetch overwrites
+        const patchVer = resp?.version ?? resp?.visitVersion;
+        if (patchVer != null) await cancelAndPatchVersion(visitId, patchVer);
+        backgroundInvalidate();
+      } catch (err: any) {
+        restoreDispatchCache(queryClient, snapshot);
+        handleMutationError(err, "Resize failed");
+      } finally {
+        inflightRef.current--;
+        clearSaving(visitId);
       }
-      backgroundInvalidate();
-    } catch (err: any) {
-      restoreDispatchCache(queryClient, snapshot);
-      toast({ variant: "destructive", title: "Resize failed", description: err?.message || "Failed to resize visit" });
-      throw err;
-    } finally {
-      inflightRef.current--;
-    }
-  }, [queryClient, backgroundInvalidate, toast]);
+    });
+  }, [freshVersion, queryClient, backgroundInvalidate, handleMutationError, chainForVisit, markSaving, clearSaving, cancelAndPatchVersion]);
 
   /** Reschedule a task — PATCH /api/tasks/:id with new scheduledStartAt/EndAt */
   const rescheduleTask = useCallback(async (params: RescheduleTaskParams) => {
@@ -667,12 +772,11 @@ export function useDispatchPreviewMutations() {
       backgroundInvalidate();
     } catch (err: any) {
       restoreDispatchCache(queryClient, snapshot);
-      toast({ variant: "destructive", title: "Task reschedule failed", description: err?.message || "Failed to reschedule task" });
-      throw err;
+      handleMutationError(err, "Task reschedule failed");
     } finally {
       inflightRef.current--;
     }
-  }, [queryClient, backgroundInvalidate, toast]);
+  }, [queryClient, backgroundInvalidate, handleMutationError]);
 
   /** Update visit crew roster (multi-tech assignment). PATCH /api/calendar/visit/:visitId/assign-crew */
   const updateVisitCrew = useCallback(async (params: UpdateCrewParams) => {
@@ -694,17 +798,16 @@ export function useDispatchPreviewMutations() {
           method: "PATCH",
           body: JSON.stringify({ technicianUserIds, version }),
         });
-        if (resp?.version != null) patchCachedVersion(queryClient, visitId, resp.version);
+        if (resp?.version != null) await cancelAndPatchVersion(visitId, resp.version);
         backgroundInvalidate();
       } catch (err: any) {
-        toast({ variant: "destructive", title: "Crew update failed", description: err?.message || "Failed to update crew" });
-        throw err;
+        handleMutationError(err, "Crew update failed");
       } finally {
         inflightRef.current--;
         clearSaving(visitId);
       }
     });
-  }, [markSaving, clearSaving, backgroundInvalidate, toast, freshVersion, queryClient, chainForVisit]);
+  }, [markSaving, clearSaving, backgroundInvalidate, handleMutationError, freshVersion, queryClient, chainForVisit, cancelAndPatchVersion]);
 
   /** Update visit status. POST /api/jobs/:jobId/visits/:visitId/status */
   const updateVisitStatus = useCallback(async (params: { visitId: string; jobId: string; status: string }) => {
@@ -718,13 +821,12 @@ export function useDispatchPreviewMutations() {
       });
       backgroundInvalidate();
     } catch (err: any) {
-      toast({ variant: "destructive", title: "Status update failed", description: err?.message || "Failed to update visit status" });
-      throw err;
+      handleMutationError(err, "Status update failed");
     } finally {
       inflightRef.current--;
       clearSaving(visitId);
     }
-  }, [markSaving, clearSaving, backgroundInvalidate, toast]);
+  }, [markSaving, clearSaving, backgroundInvalidate, handleMutationError]);
 
   /** Soft-delete a visit. DELETE /api/jobs/:jobId/visits/:visitId */
   const deleteVisit = useCallback(async (params: { visitId: string; jobId: string }) => {
@@ -741,12 +843,11 @@ export function useDispatchPreviewMutations() {
       backgroundInvalidate();
     } catch (err: any) {
       restoreDispatchCache(queryClient, snapshot);
-      toast({ variant: "destructive", title: "Delete failed", description: err?.message || "Failed to delete visit" });
-      throw err;
+      handleMutationError(err, "Delete failed");
     } finally {
       inflightRef.current--;
     }
-  }, [queryClient, backgroundInvalidate, toast]);
+  }, [queryClient, backgroundInvalidate, handleMutationError]);
 
   /** Item 8: Complete a task — POST /api/tasks/:id/close */
   const completeTask = useCallback(async (taskId: string) => {

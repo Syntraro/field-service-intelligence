@@ -5,7 +5,7 @@
  * Route: /dispatch (primary), /calendar (alias)
  */
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { addDays, subDays, addWeeks, subWeeks, startOfDay, startOfWeek, endOfWeek, eachDayOfInterval, addMinutes, format } from "date-fns";
+import { addDays, subDays, addWeeks, subWeeks, startOfWeek, endOfWeek, eachDayOfInterval, addMinutes, format } from "date-fns";
 import { AlertCircle, Loader2, CalendarPlus, ClipboardList, Truck } from "lucide-react";
 import {
   DndContext,
@@ -24,11 +24,8 @@ import type { DispatchDragData, DispatchDropData } from "@/components/dispatch/d
 import { useDispatchPreviewData } from "@/components/dispatch/useDispatchPreviewData";
 import { useDispatchWeekData } from "@/components/dispatch/useDispatchWeekData";
 import { useDispatchPreviewMutations } from "@/components/dispatch/useDispatchPreviewMutations";
-import {
-  TIMELINE_START_HOUR, TIMELINE_END_HOUR, HOUR_WIDTH_PX, TIMELINE_HOURS, SNAP_MINUTES, PX_PER_MINUTE,
-  getTimelineConfig,
-} from "@/components/dispatch/dispatchPreviewUtils";
-import { checkOverlap, findNearestValidSlot } from "@/components/dispatch/dispatchOverlapUtils";
+import { getTimelineConfig } from "@/components/dispatch/dispatchPreviewUtils";
+// checkOverlap + findNearestValidSlot now accessed via resolvePlacement() shared resolver
 import { useTechnicianWorkingHours, isTechWorkingOnDate, isTechWorkingInRange } from "@/hooks/useTechnicianWorkingHours";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -39,46 +36,22 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 
-import DispatchBoardHeader, { type DispatchView } from "@/components/dispatch/DispatchBoardHeader";
+import DispatchBoardHeader, { type DispatchView, type SchedulingMode } from "@/components/dispatch/DispatchBoardHeader";
+import { resolvePlacement, clientXToRelativePx, type PlacementResult } from "@/components/dispatch/dispatchPlacementResolver";
 import DispatchFiltersBar from "@/components/dispatch/DispatchFiltersBar";
 import DispatchTechnicianSidebar from "@/components/dispatch/DispatchTechnicianSidebar";
 import DispatchTimeline from "@/components/dispatch/DispatchTimeline";
 import DispatchUnscheduledPanel from "@/components/dispatch/DispatchUnscheduledPanel";
 import DispatchDetailPanel from "@/components/dispatch/DispatchDetailPanel";
-import DispatchDragPreview from "@/components/dispatch/DispatchDragPreview";
+// DispatchDragPreview removed — drag preview now rendered inline from shared dragPlacement result
 import WeekDispatchGrid from "@/components/dispatch/WeekDispatchGrid";
 import { queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import { TaskDialog } from "@/components/TaskDialog";
 
-/** Compute scheduled start ISO string from pixel position within the timeline.
- *  Item 4: Parameterized for 24h mode — accepts dynamic startHour and total hours. */
-function computeDropTime(
-  dropClientX: number,
-  timelineRect: DOMRect,
-  scrollLeft: number,
-  selectedDate: Date,
-  startHour = TIMELINE_START_HOUR,
-  totalHours = TIMELINE_HOURS.length,
-): string {
-  const relativeX = dropClientX - timelineRect.left + scrollLeft;
-  const totalMinutesFromStart = (relativeX / HOUR_WIDTH_PX) * 60;
-  const snappedMinutes = Math.round(totalMinutesFromStart / SNAP_MINUTES) * SNAP_MINUTES;
-  const clampedMinutes = Math.max(0, Math.min(snappedMinutes, totalHours * 60 - SNAP_MINUTES));
-  const absoluteMinutes = startHour * 60 + clampedMinutes;
-  const day = startOfDay(selectedDate);
-  return addMinutes(day, absoluteMinutes).toISOString();
-}
-
-/** Convert pixel X in timeline to snapped minutes from midnight.
- *  Item 4: Parameterized for 24h mode. */
-function pxToSnappedMinutes(relativeX: number, startHour = TIMELINE_START_HOUR, endHour = TIMELINE_END_HOUR): number {
-  const totalMinutesFromStart = (relativeX / HOUR_WIDTH_PX) * 60;
-  const snapped = Math.round(totalMinutesFromStart / SNAP_MINUTES) * SNAP_MINUTES;
-  const timelineMax = (endHour - startHour) * 60;
-  return startHour * 60 + Math.max(0, Math.min(snapped, timelineMax - SNAP_MINUTES));
-}
+// Local pxToSnappedMinutes and computeDropTime removed — unified into
+// dispatchPlacementResolver.ts resolvePlacement() (shared by drag + click modes)
 
 export default function DispatchPreview() {
   const { toast } = useToast();
@@ -177,6 +150,38 @@ export default function DispatchPreview() {
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
+
+  // ── Scheduling mode: drag (default) or click-to-schedule ──
+  const [schedulingMode, setSchedulingMode] = useState<SchedulingMode>("drag");
+  // Click-to-schedule state
+  const [pendingClickVisit, setPendingClickVisit] = useState<DispatchDragData | null>(null);
+  const [clickHoverTechId, setClickHoverTechId] = useState<string | null>(null);
+  const [clickPlacement, setClickPlacement] = useState<PlacementResult | null>(null);
+
+  // Cancel click placement on mode change
+  const handleSchedulingModeChange = useCallback((mode: SchedulingMode) => {
+    setSchedulingMode(mode);
+    setPendingClickVisit(null);
+    setClickHoverTechId(null);
+    setClickPlacement(null);
+  }, []);
+
+  // Cancel click placement
+  const cancelClickPlacement = useCallback(() => {
+    setPendingClickVisit(null);
+    setClickHoverTechId(null);
+    setClickPlacement(null);
+  }, []);
+
+  // Escape key cancels click placement
+  useEffect(() => {
+    if (!pendingClickVisit) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") cancelClickPlacement();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [pendingClickVisit, cancelClickPlacement]);
 
   // ── Technician multi-select filter (shared Day/Week) ──
   const [selectedTechIds, setSelectedTechIds] = useState<Set<string>>(new Set());
@@ -323,22 +328,32 @@ export default function DispatchPreview() {
     [sortedTechnicians, selectedTechIds],
   );
 
-  // ── Overlap detection for drag preview ──
-  // Item 1: Subtract grab offset so overlap detection matches preview position
-  const dragHasOverlap = useMemo(() => {
-    if (!activeDragData || !activeOverTechId || activeOverTechId === UNASSIGNED_TECH_ID) return false;
+  // ── Drag placement via shared resolver (overlap detection + preview position) ──
+  // Unified: replaces separate dragHasOverlap + DispatchDragPreview inline math
+  const dragPlacement = useMemo((): PlacementResult | null => {
+    if (!activeDragData || !activeOverTechId || activeOverTechId === UNASSIGNED_TECH_ID) return null;
     const scrollEl = timelineScrollRef.current;
-    if (!scrollEl) return false;
+    if (!scrollEl) return null;
 
-    const relativeX = dragPointerX - scrollEl.getBoundingClientRect().left + scrollEl.scrollLeft - dragGrabBlockXRef.current;
-    const startMinutes = pxToSnappedMinutes(relativeX, tlConfig.startHour, tlConfig.endHour);
-    const endMinutes = startMinutes + activeDragData.durationMinutes;
-
+    const relativeX = clientXToRelativePx(
+      dragPointerX,
+      scrollEl.getBoundingClientRect(),
+      scrollEl.scrollLeft,
+      dragGrabBlockXRef.current,
+    );
     const laneVisits = visitsByTech.get(activeOverTechId) ?? [];
-    // Fix 2: Include tasks in overlap detection
     const laneTasks = tasksByTech.get(activeOverTechId) ?? [];
-    return checkOverlap(startMinutes, endMinutes, laneVisits, activeDragData.visitId, laneTasks);
-  }, [activeDragData, activeOverTechId, dragPointerX, visitsByTech, tasksByTech, tlConfig]);
+    return resolvePlacement(relativeX, activeOverTechId, activeDragData.durationMinutes, {
+      selectedDate,
+      startHour: tlConfig.startHour,
+      endHour: tlConfig.endHour,
+      laneVisits,
+      laneTasks,
+      excludeId: activeDragData.visitId,
+    });
+  }, [activeDragData, activeOverTechId, dragPointerX, visitsByTech, tasksByTech, selectedDate, tlConfig]);
+
+  const dragHasOverlap = dragPlacement?.hasOverlap ?? false;
 
   // ── DnD handlers ──
   const handleDragStart = useCallback((event: DragStartEvent) => {
@@ -489,36 +504,34 @@ export default function DispatchPreview() {
       return;
     }
 
-    // ── Day view drop (pixel-based) ──
+    // ── Day view drop — shared placement resolver (pixel-based, auto-resolve overlap) ──
     const scrollEl = timelineScrollRef.current;
     if (!scrollEl) return;
 
-    const timelineRect = scrollEl.getBoundingClientRect();
-    const scrollLeft = scrollEl.scrollLeft;
     const activatorEvent = event.activatorEvent as PointerEvent | undefined;
     if (!activatorEvent) return;
 
-    // Item 1: Subtract grab offset so drop position matches the block's left edge, not cursor
     const finalX = activatorEvent.clientX + (event.delta?.x ?? 0);
-    const relativeX = finalX - timelineRect.left + scrollLeft - dragGrabBlockXRef.current;
-    const proposedStartMinutes = pxToSnappedMinutes(relativeX, tlConfig.startHour, tlConfig.endHour);
+    const relativeX = clientXToRelativePx(
+      finalX,
+      scrollEl.getBoundingClientRect(),
+      scrollEl.scrollLeft,
+      dragGrabBlockXRef.current,
+    );
     const laneVisits = visitsByTech.get(dropData.technicianId) ?? [];
     const laneTasks = tasksByTech.get(dropData.technicianId) ?? [];
-    const validStartMinutes = findNearestValidSlot(
-      proposedStartMinutes,
-      dragData.durationMinutes,
+    const placement = resolvePlacement(relativeX, dropData.technicianId, dragData.durationMinutes, {
+      selectedDate,
+      startHour: tlConfig.startHour,
+      endHour: tlConfig.endHour,
       laneVisits,
-      dragData.visitId,
-      SNAP_MINUTES,
-      tlConfig.startHour,
-      tlConfig.endHour,
       laneTasks,
-    );
-    if (validStartMinutes === null) return;
+      excludeId: dragData.visitId,
+    }, { autoResolveOverlap: true });
+    if (!placement.isValid) return;
 
-    const day = startOfDay(selectedDate);
-    const startAt = addMinutes(day, validStartMinutes).toISOString();
-    const endAt = addMinutes(new Date(startAt), dragData.durationMinutes).toISOString();
+    const startAt = placement.startAt;
+    const endAt = placement.endAt;
 
     // Stabilization: version resolved internally by mutations from fresh cache
     const executeMutation = () => {
@@ -746,6 +759,118 @@ export default function DispatchPreview() {
     setQuickCreate({ techId, minuteOfDay });
   }, [toast]);
 
+  // ── Click-to-schedule handlers ──
+  // Select an unscheduled visit for click placement
+  const handleClickSelectVisit = useCallback((visit: DispatchVisit) => {
+    if (pendingClickVisit?.visitId === visit.id) {
+      // Clicking same visit again cancels placement
+      cancelClickPlacement();
+      return;
+    }
+    setPendingClickVisit({
+      type: "unscheduled-visit",
+      visitId: visit.id,
+      jobId: visit.jobId,
+      jobNumber: visit.jobNumber,
+      technicianId: null,
+      durationMinutes: visit.durationMinutes,
+      version: visit.version,
+      isMultiTech: false,
+      originalStart: null,
+    });
+    setClickHoverTechId(null);
+    setClickPlacement(null);
+  }, [pendingClickVisit, cancelClickPlacement]);
+
+  // Hover over a lane row — compute live placement preview via shared resolver
+  const handleClickHover = useCallback((techId: string, relativeX: number) => {
+    if (!pendingClickVisit) return;
+    if (techId === UNASSIGNED_TECH_ID) return;
+    setClickHoverTechId(techId);
+    const laneVisits = visitsByTech.get(techId) ?? [];
+    const laneTasks = tasksByTech.get(techId) ?? [];
+    const placement = resolvePlacement(relativeX, techId, pendingClickVisit.durationMinutes, {
+      selectedDate,
+      startHour: tlConfig.startHour,
+      endHour: tlConfig.endHour,
+      laneVisits,
+      laneTasks,
+      excludeId: pendingClickVisit.visitId,
+    });
+    setClickPlacement(placement);
+  }, [pendingClickVisit, visitsByTech, tasksByTech, selectedDate, tlConfig]);
+
+  const handleClickHoverLeave = useCallback(() => {
+    setClickHoverTechId(null);
+    setClickPlacement(null);
+  }, []);
+
+  // Commit click placement — schedule the visit at the resolved position
+  const handleClickSchedule = useCallback((techId: string, relativeX: number) => {
+    if (!pendingClickVisit) return;
+    if (techId === UNASSIGNED_TECH_ID) return;
+    const laneVisits = visitsByTech.get(techId) ?? [];
+    const laneTasks = tasksByTech.get(techId) ?? [];
+    // Resolve final placement with overlap auto-resolution
+    const placement = resolvePlacement(relativeX, techId, pendingClickVisit.durationMinutes, {
+      selectedDate,
+      startHour: tlConfig.startHour,
+      endHour: tlConfig.endHour,
+      laneVisits,
+      laneTasks,
+      excludeId: pendingClickVisit.visitId,
+    }, { autoResolveOverlap: true });
+
+    if (!placement.isValid) {
+      toast({ title: "No valid slot", description: "Could not find a valid time slot at this position." });
+      return;
+    }
+
+    // Off-shift check
+    const targetTech = sortedTechnicians.find(t => t.id === techId);
+    const executeMutation = () => {
+      scheduleVisit({
+        jobId: pendingClickVisit.jobId,
+        visitId: pendingClickVisit.visitId,
+        technicianUserId: techId,
+        startAt: placement.startAt,
+        endAt: placement.endAt,
+      });
+      cancelClickPlacement();
+    };
+
+    if (targetTech && targetTech.isWorking === false) {
+      setOffShiftConfirm({ action: executeMutation, techName: targetTech.name });
+    } else {
+      executeMutation();
+    }
+  }, [pendingClickVisit, visitsByTech, tasksByTech, selectedDate, tlConfig, scheduleVisit, sortedTechnicians, cancelClickPlacement, toast]);
+
+  // Click preview node — rendered inside the hovered lane using placement result directly
+  const clickPreviewNode = useMemo(() => {
+    if (!clickPlacement) return null;
+    const bgColor = clickPlacement.hasOverlap
+      ? "bg-red-200/60 border-red-500"
+      : "bg-emerald-200/50 border-emerald-400";
+    return (
+      <div
+        className={`pointer-events-none absolute top-0 bottom-0 rounded border-2 border-dashed ${bgColor} z-30`}
+        style={{ left: clickPlacement.previewLeft, width: clickPlacement.previewWidth }}
+      >
+        <div className={`absolute -top-6 left-0 rounded px-1.5 py-0.5 text-[10px] font-bold whitespace-nowrap shadow ${
+          clickPlacement.hasOverlap ? "bg-red-600 text-white" : "bg-emerald-700 text-white"
+        }`}>
+          {clickPlacement.startTimeLabel} – {clickPlacement.endTimeLabel}
+        </div>
+        {clickPlacement.hasOverlap && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="rounded bg-red-600 px-2.5 py-1 text-[11px] font-bold text-white shadow-md uppercase tracking-wide">Overlap</div>
+          </div>
+        )}
+      </div>
+    );
+  }, [clickPlacement]);
+
   // ── Selection (detail panel) — supports both visits and tasks ──
   // Fix 5: Ref for detecting clicks outside the detail panel
   const panelRef = useRef<HTMLDivElement>(null);
@@ -829,24 +954,30 @@ export default function DispatchPreview() {
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, [selectedVisitId, selectedTaskId]);
 
-  // ── Drag preview node for the active lane ──
-  // Item 1: Subtract grab X offset so preview shows where block's LEFT edge will land
+  // ── Drag preview node — renders from shared dragPlacement result (same pattern as click preview) ──
   const dragPreviewNode = useMemo(() => {
-    if (!activeDragData || !activeOverTechId) return null;
-    const scrollEl = timelineScrollRef.current;
-    if (!scrollEl) return null;
-    const relativeX = dragPointerX - scrollEl.getBoundingClientRect().left + scrollEl.scrollLeft - dragGrabBlockXRef.current;
+    if (!dragPlacement) return null;
+    const bgColor = dragPlacement.hasOverlap
+      ? "bg-red-200/60 border-red-500"
+      : "bg-emerald-200/50 border-emerald-400";
     return (
-      <DispatchDragPreview
-        pointerX={relativeX}
-        durationMinutes={activeDragData.durationMinutes}
-        selectedDate={selectedDate}
-        hasOverlap={dragHasOverlap}
-        timelineStartHour={tlConfig.startHour}
-        timelineEndHour={tlConfig.endHour}
-      />
+      <div
+        className={`pointer-events-none absolute top-0 bottom-0 rounded border-2 border-dashed ${bgColor} z-30`}
+        style={{ left: dragPlacement.previewLeft, width: dragPlacement.previewWidth }}
+      >
+        <div className={`absolute -top-6 left-0 rounded px-1.5 py-0.5 text-[10px] font-bold whitespace-nowrap shadow ${
+          dragPlacement.hasOverlap ? "bg-red-600 text-white" : "bg-emerald-700 text-white"
+        }`}>
+          {dragPlacement.startTimeLabel} – {dragPlacement.endTimeLabel}
+        </div>
+        {dragPlacement.hasOverlap && (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="rounded bg-red-600 px-2.5 py-1 text-[11px] font-bold text-white shadow-md uppercase tracking-wide">Overlap</div>
+          </div>
+        )}
+      </div>
     );
-  }, [activeDragData, activeOverTechId, dragPointerX, selectedDate, dragHasOverlap, tlConfig]);
+  }, [dragPlacement]);
 
   // ── Error state ──
   if (error) {
@@ -943,6 +1074,8 @@ export default function DispatchPreview() {
           onViewChange={setActiveView}
           show24Hour={show24Hour}
           onToggle24Hour={onToggle24Hour}
+          schedulingMode={schedulingMode}
+          onSchedulingModeChange={handleSchedulingModeChange}
         />
 
         {/* Filters — shared across Day and Week */}
@@ -991,7 +1124,13 @@ export default function DispatchPreview() {
                 timelineHours={tlConfig.hours}
                 timelineStartHour={tlConfig.startHour}
                 timelineEndHour={tlConfig.endHour}
-                onEmptySlotClick={handleEmptySlotClick}
+                onEmptySlotClick={pendingClickVisit ? undefined : handleEmptySlotClick}
+                clickPreviewNode={clickPreviewNode}
+                clickHoverTechId={clickHoverTechId}
+                onClickSchedule={handleClickSchedule}
+                onClickHover={handleClickHover}
+                onClickHoverLeave={handleClickHoverLeave}
+                isPlacementActive={!!pendingClickVisit}
               />
               {showDetailPanel ? detailPanel : (
                 <DispatchUnscheduledPanel
@@ -999,6 +1138,10 @@ export default function DispatchPreview() {
                   savingIds={savingIds}
                   selectedVisitId={selectedVisitId}
                   onSelectVisit={handleSelectVisit}
+                  schedulingMode={schedulingMode}
+                  pendingClickVisitId={pendingClickVisit?.visitId ?? null}
+                  onClickSelect={handleClickSelectVisit}
+                  onCancelPlacement={cancelClickPlacement}
                 />
               )}
             </>

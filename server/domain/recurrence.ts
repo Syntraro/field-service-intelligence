@@ -25,12 +25,16 @@ import {
   recurringJobTemplates,
   recurringJobInstances,
   companySettings,
+  jobs,
   type RecurringJobTemplate,
   type RecurringJobInstance,
   type JobType,
   type JobPriority,
   type JobStatus,
   type HoldReason,
+  type PmBillingModel,
+  type PmBillingDisposition,
+  type PmBillingStatus,
 } from "@shared/schema";
 import { jobRepository } from "../storage/jobs";
 import { copyLocationPMPartsToJob } from "../services/pmJobParts";
@@ -307,8 +311,13 @@ function computePmOccurrences(
       const day = clampDayOfMonth(cursor.getFullYear(), cursor.getMonth(), targetDay);
       const occDate = new Date(cursor.getFullYear(), cursor.getMonth(), day);
 
+      // PM create-month fix: allow occurrences in the same calendar month as templateStart
+      // even if the occurrence day (e.g. 1st) is before the templateStart day (e.g. 11th).
+      // This ensures a PM created mid-month still generates the current-cycle due instance.
+      const inStartMonth = occDate.getFullYear() === templateStart.getFullYear() &&
+                           occDate.getMonth() === templateStart.getMonth();
       if (
-        occDate >= templateStart &&
+        (occDate >= templateStart || inStartMonth) &&
         occDate >= window.startDate &&
         occDate <= window.endDate &&
         (!templateEnd || occDate <= templateEnd)
@@ -481,15 +490,18 @@ async function claimInstanceForJobCreation(
 }
 
 /**
- * Generate recurring job instances for a single template
+ * Generate recurring job instances for a single template.
  *
- * CONCURRENCY-SAFE: Uses atomic UPDATE to prevent duplicate job creation
- * under race conditions.
+ * PM Pivot Phase 1: Creates instances in "pending" status only.
+ * Does NOT auto-create jobs — dispatchers generate jobs manually
+ * from the PM due queue via generateFromInstances().
+ *
+ * Idempotent: safe to rerun; uses onConflictDoNothing + unique constraint.
  *
  * @param template - The recurring job template
  * @param windowStart - Start date of generation window
  * @param windowEnd - End date of generation window
- * @returns Number of jobs created
+ * @returns Number of instances created (jobsCreated always 0)
  */
 async function generateForTemplate(
   template: RecurringJobTemplate,
@@ -497,7 +509,6 @@ async function generateForTemplate(
   windowEnd: Date
 ): Promise<{ instancesCreated: number; jobsCreated: number }> {
   let instancesCreated = 0;
-  let jobsCreated = 0;
 
   // Compute occurrence dates
   const occurrenceDates = computeOccurrenceDates(template, windowStart, windowEnd);
@@ -505,12 +516,9 @@ async function generateForTemplate(
   for (const occurrenceDate of occurrenceDates) {
     const instanceDateStr = formatDateString(occurrenceDate);
 
-    // Step 1: Ensure instance row exists (idempotent via unique constraint)
-    let instance: RecurringJobInstance | undefined;
-
-    // Try to find existing instance
+    // Ensure instance row exists (idempotent via unique constraint)
     const [existingInstance] = await db
-      .select()
+      .select({ id: recurringJobInstances.id })
       .from(recurringJobInstances)
       .where(
         and(
@@ -520,153 +528,43 @@ async function generateForTemplate(
       )
       .limit(1);
 
-    if (!existingInstance) {
-      // Create new instance - use onConflictDoNothing for race safety
-      // Status defaults to "pending" (job not yet created)
-      try {
-        const [newInstance] = await db
-          .insert(recurringJobInstances)
-          .values({
-            companyId: template.companyId,
-            templateId: template.id,
-            instanceDate: instanceDateStr,
-            status: "pending",
-          })
-          .onConflictDoNothing()
-          .returning();
-
-        if (newInstance) {
-          instance = newInstance;
-          instancesCreated++;
-        } else {
-          // Race: another process created it, fetch it
-          const [refetched] = await db
-            .select()
-            .from(recurringJobInstances)
-            .where(
-              and(
-                eq(recurringJobInstances.templateId, template.id),
-                eq(recurringJobInstances.instanceDate, instanceDateStr)
-              )
-            )
-            .limit(1);
-          instance = refetched;
-        }
-      } catch (error) {
-        // Unique constraint violation - fetch the existing one
-        const [refetched] = await db
-          .select()
-          .from(recurringJobInstances)
-          .where(
-            and(
-              eq(recurringJobInstances.templateId, template.id),
-              eq(recurringJobInstances.instanceDate, instanceDateStr)
-            )
-          )
-          .limit(1);
-        instance = refetched;
-      }
-    } else {
-      instance = existingInstance;
+    if (existingInstance) {
+      continue; // Already exists — skip (idempotent)
     }
 
-    if (!instance) {
-      continue; // Shouldn't happen, but safety check
-    }
-
-    // Skip if instance is not in "pending" status (already generated, skipped, or canceled)
-    if (instance.status !== "pending") {
-      continue;
-    }
-
-    // Step 2: CONCURRENCY-SAFE - Atomically claim the instance
-    const claimedInstance = await claimInstanceForJobCreation(instance.id);
-
-    if (!claimedInstance) {
-      // Another process already claimed this instance, skip
-      continue;
-    }
-
-    // Step 3: Compute scheduling fields based on template PM settings
-    let scheduledStart: Date | null = null;
-    let scheduledEnd: Date | null = null;
-
-    if (template.autoSchedule && template.scheduledTimeLocal) {
-      // Parse HH:MM and combine with occurrence date
-      const [hh, mm] = template.scheduledTimeLocal.split(":").map(Number);
-      scheduledStart = new Date(occurrenceDate);
-      scheduledStart.setHours(hh, mm, 0, 0);
-      // Set end using defaultDurationMinutes or fallback to 60 min
-      const durationMin = template.defaultDurationMinutes ?? 60;
-      scheduledEnd = new Date(scheduledStart.getTime() + durationMin * 60 * 1000);
-    }
-
-    // Step 4: Create the job with recurrence linkage
+    // Create new instance in "pending" status — no job auto-creation
     try {
-      const newJob = await jobRepository.createJob(template.companyId, {
-        // Link to location
-        locationId: template.locationId!,
-        // Job details from template
-        summary: template.title,
-        description: template.description,
-        jobType: (template.jobType ?? "maintenance") as JobType,
-        priority: (template.priority ?? "medium") as JobPriority,
-        // Technician assignment
-        primaryTechnicianId: template.preferredTechnicianId,
-        // Phase 2 Step 6: All jobs start as "open" with optional openSubStatus from template
-        status: "open" as JobStatus,
-        openSubStatus: template.openSubStatusDefault ?? null,
-        holdReason: (template.openSubStatusDefault === "on_hold" ? template.holdReason : null) as HoldReason | null,
-        // Scheduling: null (unscheduled) unless autoSchedule is true
-        scheduledStart: scheduledStart ? scheduledStart.toISOString() : null,
-        scheduledEnd: scheduledEnd ? scheduledEnd.toISOString() : null,
-        isAllDay: false,
-        // Recurrence linkage (v1.1)
-        recurrenceTemplateId: template.id,
-        recurrenceInstanceDate: instanceDateStr,
-      });
-
-      // Step 5: Copy location PM parts into job_parts if enabled
-      if (template.includeLocationPmParts && template.locationId) {
-        try {
-          await copyLocationPMPartsToJob(template.companyId, template.locationId, newJob.id);
-        } catch (partsCopyErr) {
-          // Log but don't fail the entire job creation — parts can be added manually
-          console.error(`[recurrence] Failed to copy PM parts for job ${newJob.id}:`, partsCopyErr);
-        }
-      }
-
-      // Step 6: Update instance with actual job ID and set status to "generated"
-      // Clear claimedAt since we're done
-      await db
-        .update(recurringJobInstances)
-        .set({
-          generatedJobId: newJob.id,
-          status: "generated",
-          claimedAt: null,
+      const [newInstance] = await db
+        .insert(recurringJobInstances)
+        .values({
+          companyId: template.companyId,
+          templateId: template.id,
+          instanceDate: instanceDateStr,
+          status: "pending",
         })
-        .where(eq(recurringJobInstances.id, instance.id));
+        .onConflictDoNothing()
+        .returning();
 
-      jobsCreated++;
-    } catch (error) {
-      // Job creation failed - revert status back to "pending"
-      await db
-        .update(recurringJobInstances)
-        .set({ status: "pending" })
-        .where(eq(recurringJobInstances.id, instance.id));
-      throw error;
+      if (newInstance) {
+        instancesCreated++;
+      }
+    } catch {
+      // Unique constraint race — another process created it, safe to skip
     }
   }
 
-  return { instancesCreated, jobsCreated };
+  // PM Pivot Phase 1: jobsCreated is always 0 from background generation
+  return { instancesCreated, jobsCreated: 0 };
 }
 
 /**
- * Generate recurring job instances for all active templates in a company
+ * PM Pivot Phase 1: Create pending due instances for all active PM contracts.
+ * Does NOT auto-create jobs — instances remain in "pending" status
+ * until a dispatcher manually generates jobs via generateFromInstances().
  *
  * @param companyId - Company ID to generate for
  * @param windowDays - Number of days ahead to generate (default 45)
- * @returns Generation results
+ * @returns Generation results (jobsCreated will always be 0)
  */
 export async function generateInstances(
   companyId: string,
@@ -727,12 +625,13 @@ export async function generateInstances(
 }
 
 /**
- * Generate recurring job instances for a single template
+ * PM Pivot Phase 1: Create pending due instances for a single PM contract.
+ * Does NOT auto-create jobs — instances remain in "pending" status.
  *
  * @param companyId - Company ID for authorization
  * @param templateId - Template ID to generate for
  * @param windowDays - Number of days ahead to generate (default 45)
- * @returns Generation results
+ * @returns Generation results (jobsCreated will always be 0)
  */
 export async function generateForSingleTemplate(
   companyId: string,
@@ -781,23 +680,19 @@ export async function generateForSingleTemplate(
     const today = await getCompanyToday(companyId);
     const windowEnd = addDays(today, windowDays);
 
-    // PM fix: use 1st of current month as window start so period_start / day_of_month
+      // PM fix: use 1st of current month as window start so period_start / day_of_month
     // occurrences earlier in the month are not excluded (bug: occDate < today was dropped)
     const windowStart = pmWindowStart(today, template);
-
-    if (process.env.NODE_ENV !== "production" && windowStart.getTime() !== today.getTime()) {
-      console.warn("[pm-generate] windowStart overridden to month start", {
-        templateId, windowStart: formatDateString(windowStart),
-        originalStart: formatDateString(today), windowDays,
-        generationMode: template.generationMode,
-      });
-    }
 
     const { instancesCreated, jobsCreated } = await generateForTemplate(
       template,
       windowStart,
       windowEnd
     );
+
+    if (instancesCreated > 0) {
+      console.log(`[pm-generate] Created ${instancesCreated} instance(s) for template ${templateId}`);
+    }
 
     result.templatesProcessed = 1;
     result.instancesCreated = instancesCreated;
@@ -808,6 +703,32 @@ export async function generateForSingleTemplate(
   }
 
   return result;
+}
+
+// ============================================================================
+// PM Billing Disposition Logic
+// ============================================================================
+
+/**
+ * Derive the billing disposition for a PM-generated job based on contract billing model.
+ * Snapshot at generation time so contract changes don't retroactively affect existing jobs.
+ */
+function deriveBillingDisposition(billingModel: string | null): {
+  disposition: PmBillingDisposition;
+  initialStatus: PmBillingStatus;
+} {
+  switch (billingModel) {
+    case "per_visit":
+      return { disposition: "invoice_on_completion", initialStatus: "pending_invoice" };
+    case "monthly_fixed":
+    case "annual_prepaid":
+      return { disposition: "covered_by_contract", initialStatus: "no_invoice_expected" };
+    case "do_not_bill":
+      return { disposition: "archive_no_invoice", initialStatus: "no_invoice_expected" };
+    default:
+      // No billing model set — default to per-visit (invoice expected)
+      return { disposition: "invoice_on_completion", initialStatus: "pending_invoice" };
+  }
 }
 
 /**
@@ -904,6 +825,9 @@ export async function generateFromInstances(
       scheduledEnd = new Date(scheduledStart.getTime() + durationMin * 60 * 1000);
     }
 
+    // PM Billing Disposition: Derive billing snapshot from contract
+    const billing = deriveBillingDisposition(template.pmBillingModel);
+
     try {
       const newJob = await jobRepository.createJob(template.companyId, {
         locationId: template.locationId!,
@@ -918,8 +842,15 @@ export async function generateFromInstances(
         scheduledStart: scheduledStart ? scheduledStart.toISOString() : null,
         scheduledEnd: scheduledEnd ? scheduledEnd.toISOString() : null,
         isAllDay: false,
+        // PM duration: forward template duration so visit gets correct estimate
+        durationMinutes: template.defaultDurationMinutes ?? 60,
         recurrenceTemplateId: template.id,
         recurrenceInstanceDate: instance.instanceDate,
+        // PM Billing Disposition: Snapshot from contract at generation time
+        pmBillingModel: template.pmBillingModel ?? null,
+        pmBillingDisposition: billing.disposition,
+        pmBillingStatus: billing.initialStatus,
+        pmBillingLabel: template.pmBillingLabel ?? template.title,
       });
 
       // Copy PM parts if enabled

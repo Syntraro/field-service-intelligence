@@ -31,7 +31,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, Trash2, Loader2, Check, X, FileText, GripVertical } from "lucide-react";
+import { Plus, Trash2, Loader2, Check, X, FileText, GripVertical, Search, Star } from "lucide-react";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   DndContext,
   closestCenter,
@@ -110,6 +111,9 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
     templateName: string;
     mode: "replace" | "merge";
   }>({ open: false, templateId: null, templateName: "", mode: "replace" });
+  // Template picker dialog state
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+  const [templateSearch, setTemplateSearch] = useState("");
   const lastSyncedPartsRef = useRef<string>("");
 
   const { data: jobParts = [], isLoading: partsLoading } = useQuery<JobPart[]>({
@@ -566,32 +570,16 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
               Add Line Item
             </Button>
             {isOfficeUser && jobTemplates.length > 0 && (
-              <Select
-                onValueChange={(templateId) => {
-                  if (templateId) {
-                    handleApplyTemplate(templateId);
-                  }
-                }}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { setTemplatePickerOpen(true); setTemplateSearch(""); }}
                 disabled={applyTemplateMutation.isPending}
+                data-testid="button-apply-template"
               >
-                <SelectTrigger
-                  className="h-8 w-auto min-w-[160px]"
-                  data-testid="select-apply-template"
-                >
-                  <FileText className="h-3 w-3 mr-1" />
-                  <SelectValue placeholder="Apply Template..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {jobTemplates.map((template) => (
-                    <SelectItem key={template.id} value={template.id}>
-                      {template.name}
-                      {template.isDefaultForJobType && (
-                        <span className="ml-1 text-xs text-muted-foreground">(Default)</span>
-                      )}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                <FileText className="h-3 w-3 mr-1" />
+                Apply Template
+              </Button>
             )}
             {applyTemplateMutation.isPending && (
               <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -679,6 +667,37 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
         </DialogContent>
       </Dialog>
 
+      {/* Template Picker Dialog — search, recent/default, full list */}
+      <Dialog open={templatePickerOpen} onOpenChange={setTemplatePickerOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Apply Template</DialogTitle>
+            <DialogDescription>
+              Select a template to populate line items on this job.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="relative">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search templates..."
+              value={templateSearch}
+              onChange={(e) => setTemplateSearch(e.target.value)}
+              className="pl-8 h-9"
+              autoFocus
+              data-testid="input-template-search"
+            />
+          </div>
+          <TemplatePickerList
+            templates={jobTemplates}
+            search={templateSearch}
+            onSelect={(templateId) => {
+              setTemplatePickerOpen(false);
+              handleApplyTemplate(templateId);
+            }}
+          />
+        </DialogContent>
+      </Dialog>
+
       <AddProductModal
         open={productModalState.open}
         initialName={productModalState.seedName}
@@ -687,6 +706,90 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
         isSaving={createProductMutation.isPending}
       />
     </>
+  );
+}
+
+/**
+ * Template Picker List — shows defaults/recent first, then all templates.
+ * Supports search filtering by name.
+ */
+function TemplatePickerList({
+  templates,
+  search,
+  onSelect,
+}: {
+  templates: JobTemplate[];
+  search: string;
+  onSelect: (templateId: string) => void;
+}) {
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase().trim();
+    if (!q) return templates;
+    return templates.filter((t) => t.name.toLowerCase().includes(q));
+  }, [templates, search]);
+
+  // Split into default and rest
+  const defaults = useMemo(() => filtered.filter((t) => t.isDefaultForJobType), [filtered]);
+  const rest = useMemo(() => filtered.filter((t) => !t.isDefaultForJobType), [filtered]);
+
+  if (filtered.length === 0) {
+    return (
+      <div className="py-8 text-center text-sm text-muted-foreground">
+        {search ? "No templates match your search." : "No templates available."}
+      </div>
+    );
+  }
+
+  return (
+    <ScrollArea className="max-h-[320px]">
+      <div className="space-y-1 py-1">
+        {defaults.length > 0 && (
+          <>
+            <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground flex items-center gap-1.5">
+              <Star className="h-3 w-3" />
+              Default Templates
+            </div>
+            {defaults.map((t) => (
+              <button
+                key={t.id}
+                className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-left hover:bg-muted transition-colors"
+                onClick={() => onSelect(t.id)}
+                data-testid={`template-option-${t.id}`}
+              >
+                <FileText className="h-4 w-4 text-primary shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium truncate">{t.name}</div>
+                  {t.description && <div className="text-xs text-muted-foreground truncate">{t.description}</div>}
+                </div>
+              </button>
+            ))}
+          </>
+        )}
+        {rest.length > 0 && (
+          <>
+            {defaults.length > 0 && (
+              <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">
+                All Templates
+              </div>
+            )}
+            {rest.map((t) => (
+              <button
+                key={t.id}
+                className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm text-left hover:bg-muted transition-colors"
+                onClick={() => onSelect(t.id)}
+                data-testid={`template-option-${t.id}`}
+              >
+                <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate">{t.name}</div>
+                  {t.description && <div className="text-xs text-muted-foreground truncate">{t.description}</div>}
+                </div>
+              </button>
+            ))}
+          </>
+        )}
+      </div>
+    </ScrollArea>
   );
 }
 

@@ -205,6 +205,30 @@ router.post(
 
     const template = await recurringJobsRepository.createTemplate(companyId, data);
 
+    // PM create-month fix: On CREATE, immediately generate pending due instances
+    // so a newly created PM contract that is already due for the current cycle
+    // appears on the Dashboard without relying on the background scheduler or client call.
+    // This is CREATE-only behavior; EDIT does NOT auto-generate (see Part 5 TODO below).
+    if (template.isActive && template.locationId) {
+      try {
+        console.log(`[PM-CREATE] Generating instances for new template ${template.id}`, {
+          generationMode: template.generationMode,
+          monthsOfYear: template.monthsOfYear,
+          startDate: template.startDate,
+          jobType: template.jobType,
+          locationId: template.locationId,
+          isActive: template.isActive,
+        });
+        const genResult = await generateForSingleTemplate(companyId, template.id);
+        console.log(`[PM-CREATE] Generation result for ${template.id}:`, genResult);
+      } catch (genErr) {
+        // Non-fatal: template was created successfully, generation can be retried
+        console.error(`[recurringJobs] Post-create generation failed for ${template.id}:`, genErr);
+      }
+    } else {
+      console.log(`[PM-CREATE] Skipping generation: isActive=${template.isActive}, locationId=${template.locationId}`);
+    }
+
     res.status(201).json(template);
   })
 );
@@ -276,15 +300,23 @@ router.patch(
       throw createError(404, "Recurring template not found");
     }
 
+    // TODO: If an edit makes the PM contract due for the current cycle (e.g. adding
+    // the current month to monthsOfYear), we should NOT silently auto-generate instances.
+    // Instead, the UI should prompt the user: "This contract is now due for the current
+    // cycle. Generate a due instance?" This avoids surprising backfill behavior on edit.
+
     res.json(updated);
   })
 );
 
 /**
  * DELETE /api/recurring-templates/:id
- * Deactivate a recurring job template (soft delete)
+ * Smart delete: hard-deletes if no downstream activity (no generated jobs),
+ * otherwise archives (deactivate + cancel pending instances) to preserve job history.
  *
- * Use ?hard=true for permanent deletion
+ * Use ?force=hard for forced permanent deletion regardless of activity.
+ *
+ * Returns 200 with { action, instancesCanceled } so the UI shows truthful messages.
  *
  * Requires: owner, admin, or dispatcher role
  */
@@ -295,21 +327,39 @@ router.delete(
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const templateId = req.params.id;
-    const hardDelete = req.query.hard === "true";
+    const forceHard = req.query.force === "hard";
 
-    let success: boolean;
-
-    if (hardDelete) {
-      success = await recurringJobsRepository.deleteTemplate(companyId, templateId);
-    } else {
-      success = await recurringJobsRepository.deactivateTemplate(companyId, templateId);
-    }
-
-    if (!success) {
+    // Verify template exists
+    const existing = await recurringJobsRepository.getTemplate(companyId, templateId);
+    if (!existing) {
       throw createError(404, "Recurring template not found");
     }
 
-    res.status(204).send();
+    let action: "deleted" | "archived";
+    let instancesCanceled = 0;
+
+    if (forceHard) {
+      // Forced hard delete — caller takes responsibility for data loss
+      await recurringJobsRepository.deleteTemplate(companyId, templateId);
+      action = "deleted";
+    } else {
+      // Smart delete: check for downstream activity (generated jobs)
+      const hasActivity = await recurringJobsRepository.hasDownstreamActivity(companyId, templateId);
+
+      if (hasActivity) {
+        // Archive: deactivate + cancel all pending instances so they stop
+        // appearing as actionable due items on the Dashboard
+        const result = await recurringJobsRepository.deactivateTemplate(companyId, templateId);
+        instancesCanceled = result.instancesCanceled;
+        action = "archived";
+      } else {
+        // No generated jobs — safe to hard delete (cascade removes pending instances)
+        await recurringJobsRepository.deleteTemplate(companyId, templateId);
+        action = "deleted";
+      }
+    }
+
+    res.json({ action, instancesCanceled });
   })
 );
 
@@ -379,12 +429,13 @@ router.get(
 
 /**
  * POST /api/recurring-templates/generate-selected
- * Phase 4C: Generate jobs from specific instance IDs (selective generation).
+ * PM Pivot Phase 1: Generate jobs from selected pending PM instances.
  *
  * Body: { instanceIds: string[] }
  *
- * Only processes instances in "pending" status. Used by the Upcoming queue
- * for safe, selective PM generation instead of global generation.
+ * This is the canonical path for job creation in the PM pivot model.
+ * Dispatchers select due instances from the PM queue and generate jobs manually.
+ * Only processes instances in "pending" status. Concurrency-safe via atomic claim.
  *
  * Requires: owner, admin, or dispatcher role
  */
@@ -407,7 +458,8 @@ router.post(
 
 /**
  * POST /api/recurring-templates/generate
- * Generate job instances for all active templates
+ * PM Pivot Phase 1: Create pending due instances for all active PM contracts.
+ * Does NOT auto-create jobs — use generate-selected for manual job creation.
  *
  * Query params:
  * - windowDays: number (default 45)
@@ -436,7 +488,8 @@ router.post(
 
 /**
  * POST /api/recurring-templates/:id/generate
- * Generate job instances for a single template
+ * PM Pivot Phase 1: Create pending due instances for a single PM contract.
+ * Does NOT auto-create jobs — use generate-selected for manual job creation.
  *
  * Query params:
  * - windowDays: number (default 45)

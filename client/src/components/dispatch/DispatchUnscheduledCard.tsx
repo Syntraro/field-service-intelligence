@@ -1,23 +1,28 @@
 /**
- * DispatchUnscheduledCard — compact 2-line draggable unscheduled visit card.
- * Optimized for dense backlog display (20+ items).
+ * DispatchUnscheduledCard — compact 2-line unscheduled visit card.
+ * Supports two modes: draggable (drag mode) or click-selectable (click mode).
  * Line 1: customerName — summary
  * Line 2: locationName . duration . #jobNumber
  */
 import { useDraggable } from "@dnd-kit/core";
 import type { DispatchVisit } from "./dispatchPreviewTypes";
 import type { DispatchDragData } from "./dispatchDndTypes";
+import type { SchedulingMode } from "./DispatchBoardHeader";
 import { formatDuration, visitStatusDot, priorityIndicator } from "./dispatchPreviewUtils";
-import { GripVertical, Loader2 } from "lucide-react";
+import { GripVertical, Loader2, MousePointer } from "lucide-react";
 
 type Props = {
   visit: DispatchVisit;
   isSaving?: boolean;
   isSelected?: boolean;
   onSelect?: (visit: DispatchVisit) => void;
+  /** Scheduling mode — controls drag vs click behavior */
+  schedulingMode?: SchedulingMode;
 };
 
-export default function DispatchUnscheduledCard({ visit, isSaving, isSelected, onSelect }: Props) {
+export default function DispatchUnscheduledCard({ visit, isSaving, isSelected, onSelect, schedulingMode = "drag" }: Props) {
+  const isClickMode = schedulingMode === "click";
+
   const dragData: DispatchDragData = {
     type: "unscheduled-visit",
     visitId: visit.id,
@@ -30,10 +35,11 @@ export default function DispatchUnscheduledCard({ visit, isSaving, isSelected, o
     originalStart: null,
   };
 
+  // Disable drag in click mode — cards are click-selectable instead
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `unscheduled-${visit.id}`,
     data: dragData,
-    disabled: isSaving,
+    disabled: isClickMode,
   });
 
   const priorityCls = priorityIndicator(visit.priority);
@@ -41,16 +47,18 @@ export default function DispatchUnscheduledCard({ visit, isSaving, isSelected, o
   return (
     <div
       ref={setNodeRef}
-      {...listeners}
-      {...attributes}
+      {...(isClickMode ? {} : listeners)}
+      {...(isClickMode ? {} : attributes)}
       data-dispatch-block="unscheduled-visit"
       onClick={() => onSelect?.(visit)}
       className={`group flex items-center gap-1 rounded border bg-white px-1.5 py-1 transition-shadow hover:shadow-sm ${
         priorityCls ? `border-l-[3px] ${priorityCls}` : ""
-      } ${isDragging ? "opacity-40 shadow-lg" : ""} ${isSaving ? "opacity-60 pointer-events-none" : ""} ${isSelected ? "ring-2 ring-emerald-500" : ""} cursor-grab active:cursor-grabbing`}
+      } ${isDragging ? "opacity-40 shadow-lg" : ""} ${isSelected ? "ring-2 ring-emerald-500 bg-emerald-50/50" : ""} ${isClickMode ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"}`}
     >
       {isSaving ? (
         <Loader2 className="h-3.5 w-3.5 flex-shrink-0 animate-spin text-emerald-400" />
+      ) : isClickMode ? (
+        <MousePointer className={`h-3.5 w-3.5 flex-shrink-0 ${isSelected ? "text-emerald-500" : "text-slate-300 group-hover:text-slate-400"}`} />
       ) : (
         <GripVertical className="h-3.5 w-3.5 flex-shrink-0 text-slate-300 group-hover:text-slate-400" />
       )}

@@ -41,6 +41,18 @@ type Props = {
   timelineEndHour?: number;
   /** Item 6: Click empty slot handler */
   onEmptySlotClick?: (techId: string, minuteOfDay: number) => void;
+  /** Click-to-schedule: preview node factory */
+  clickPreviewNode?: React.ReactNode;
+  /** Click-to-schedule: which tech lane is being hovered */
+  clickHoverTechId?: string | null;
+  /** Click-to-schedule: commit handler */
+  onClickSchedule?: (techId: string, relativeX: number) => void;
+  /** Click-to-schedule: hover handler */
+  onClickHover?: (techId: string, relativeX: number) => void;
+  /** Click-to-schedule: hover leave handler */
+  onClickHoverLeave?: () => void;
+  /** Whether click-to-schedule placement is active */
+  isPlacementActive?: boolean;
 };
 
 /** Goal 2: Strengthened red "now" indicator line — wider stroke, subtle glow for visibility on busy boards */
@@ -71,6 +83,8 @@ export default function DispatchTimeline({
   timelineStartHour: startHour = TIMELINE_START_HOUR,
   timelineEndHour: endHour,
   onEmptySlotClick,
+  clickPreviewNode, clickHoverTechId, onClickSchedule, onClickHover, onClickHoverLeave,
+  isPlacementActive,
 }: Props) {
   const localRef = useRef<HTMLDivElement>(null);
   const scrollRef = timelineScrollRef ?? localRef;
@@ -233,6 +247,12 @@ export default function DispatchTimeline({
                           timelineStartHour={startHour}
                           timelineEndHour={endHour}
                           onEmptySlotClick={onEmptySlotClick}
+                          clickPreview={clickHoverTechId === t.id ? clickPreviewNode : undefined}
+                          isClickHoverTarget={clickHoverTechId === t.id}
+                          onClickSchedule={onClickSchedule}
+                          onClickHover={onClickHover}
+                          onClickHoverLeave={onClickHoverLeave}
+                          isPlacementActive={isPlacementActive}
                         />
                       ))}
                       {offShift.length > 0 && (
@@ -264,6 +284,12 @@ export default function DispatchTimeline({
                               timelineStartHour={startHour}
                               timelineEndHour={endHour}
                               onEmptySlotClick={onEmptySlotClick}
+                              clickPreview={clickHoverTechId === t.id ? clickPreviewNode : undefined}
+                              isClickHoverTarget={clickHoverTechId === t.id}
+                              onClickSchedule={onClickSchedule}
+                              onClickHover={onClickHover}
+                              onClickHoverLeave={onClickHoverLeave}
+                              isPlacementActive={isPlacementActive}
                             />
                           ))}
                         </>

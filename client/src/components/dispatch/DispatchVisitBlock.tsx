@@ -59,10 +59,11 @@ export default function DispatchVisitBlock({ visit, left, width, techColor, isSa
 
   // Multi-tech visits need unique DnD IDs per lane to avoid dnd-kit collisions
   const draggableId = laneTechId ? `scheduled-${visit.id}--${laneTechId}` : `scheduled-${visit.id}`;
+  // Allow drag even while saving — chainForVisit serializes mutations safely
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: draggableId,
     data: dragData,
-    disabled: isSaving || isResizing,
+    disabled: isResizing,
   });
 
   // Suppress click after drag: track when isDragging transitions false
@@ -172,17 +173,12 @@ export default function DispatchVisitBlock({ visit, left, width, techColor, isSa
       data-dispatch-block="visit"
       className={`group/visit absolute top-1 bottom-1 rounded border ${statusCls} ${priorityCls ? `border-l-[3px] ${priorityCls}` : ""} overflow-visible transition-shadow hover:shadow-md hover:z-10 ${
         isDragging ? "opacity-40 shadow-lg z-30" : ""
-      } ${isSaving ? "opacity-60" : ""} ${isResizing ? "z-20 shadow-lg" : ""} ${isSelected ? "ring-2 ring-emerald-500 ring-offset-1 shadow-md shadow-emerald-200/50 z-20" : ""} ${!isResizing ? "cursor-grab active:cursor-grabbing" : ""} ${isCompleted ? "opacity-55" : ""}`}
+      } ${isResizing ? "z-20 shadow-lg" : ""} ${isSelected ? "ring-2 ring-emerald-500 ring-offset-1 shadow-md shadow-emerald-200/50 z-20" : ""} ${!isResizing ? "cursor-grab active:cursor-grabbing" : ""} ${isCompleted ? "opacity-55" : ""}`}
       style={{ left, width: effectiveWidth }}
       title={`${visit.customerName}\n${visit.summary}\n${visit.locationName}\n#${visit.jobNumber} · ${formatDuration(visit.durationMinutes)}`}
     >
       <div className="flex h-full flex-col justify-center px-2 py-1 overflow-hidden">
-        {isSaving ? (
-          <div className="flex items-center gap-1">
-            <Loader2 className="h-3 w-3 animate-spin" />
-            <span className="text-[10px]">Saving...</span>
-          </div>
-        ) : !isNarrow ? (
+        {!isNarrow ? (
           <>
             <div className="flex items-center gap-1 truncate">
               {isCompleted && <CheckCircle2 className="h-3 w-3 flex-shrink-0 text-slate-400" />}
@@ -208,6 +204,12 @@ export default function DispatchVisitBlock({ visit, left, width, techColor, isSa
           </div>
         )}
       </div>
+      {/* Subtle saving indicator — small spinner in top-left, no content replacement */}
+      {isSaving && (
+        <div className="absolute top-0.5 left-0.5 flex items-center justify-center">
+          <Loader2 className="h-2.5 w-2.5 animate-spin text-emerald-500/70" />
+        </div>
+      )}
 
       {/* Tech color accent bar */}
       {techColor && (
@@ -229,8 +231,8 @@ export default function DispatchVisitBlock({ visit, left, width, techColor, isSa
         </button>
       )}
 
-      {/* Resize handle — right edge */}
-      {!isSaving && !isDragging && (
+      {/* Resize handle — right edge (available during saving — chainForVisit serializes mutations) */}
+      {!isDragging && (
         <div
           onPointerDown={handleResizePointerDown}
           className={`absolute top-0 bottom-0 right-0 w-2 cursor-ew-resize ${

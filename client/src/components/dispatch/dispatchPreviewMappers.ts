@@ -80,7 +80,8 @@ export function mapUnscheduledToDispatchVisit(job: UnscheduledJobDto): DispatchV
     technicianIds: job.assignedTechnicianIds ?? (job.primaryTechnicianId ? [job.primaryTechnicianId] : []),
     scheduledStart: null,
     scheduledEnd: null,
-    durationMinutes: 60,
+    // PM dispatch fix: use actual job duration from backend (falls back to 60 for legacy jobs)
+    durationMinutes: job.durationMinutes ?? 60,
     isAllDay: false,
     priority: "normal",
     version: job.version,

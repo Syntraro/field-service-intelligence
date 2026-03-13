@@ -76,6 +76,9 @@ import equipmentCatalogItemsRouter from "./equipmentCatalogItems.routes";
 import mapRouter from "./map";
 // Client CSV import (v1)
 import clientImportRouter from "./clientImport";
+// PM Templates: reusable job content templates for maintenance plans
+import pmTemplatesRouter from "./pmTemplates";
+import pmBillingRouter from "./pmBilling";
 
 /**
  * Register all API routes in a single place.
@@ -222,6 +225,8 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/permissions", permissionsRouter); // Permissions: list all permissions
   console.log("[ROUTES] ✓ Mounted /api/permissions (canonical permissions router)");
   app.use("/api/recurring-templates", recurringJobsRouter); // Recurring jobs: templates + generation
+  app.use("/api/pm/templates", pmTemplatesRouter); // PM Templates: reusable job content for maintenance plans
+  app.use("/api/pm/billing", pmBillingRouter); // PM Billing Phase 2: contract billing events + oversight
   app.use("/api/tax", taxRouter); // Tax: rates + groups CRUD
   app.use("/api/search", searchRouter); // Universal search: jobs, invoices, customers, locations, suppliers
 

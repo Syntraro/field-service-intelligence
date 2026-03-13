@@ -534,6 +534,8 @@ router.get(
       primaryTechnicianId: job.primaryTechnicianId,
       technicians: job.technicians,
       version: job.version,
+      // PM dispatch fix: forward duration so dispatch board shows correct block size
+      durationMinutes: job.durationMinutes,
     }));
 
     res.json(transformedJobs);

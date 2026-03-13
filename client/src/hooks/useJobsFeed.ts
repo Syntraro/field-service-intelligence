@@ -61,6 +61,11 @@ export interface JobHeaderDetail extends JobFeedItem {
   recurringSeriesId: string | null;
   recurrenceTemplateId: string | null;
   recurrenceInstanceDate: string | null;
+  // PM Billing Disposition fields
+  pmBillingModel: string | null;
+  pmBillingDisposition: string | null;
+  pmBillingStatus: string | null;
+  pmBillingLabel: string | null;
   deletedAt: string | null;
   previousStatus: string | null;
   closedBy: string | null;

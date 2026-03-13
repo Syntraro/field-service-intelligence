@@ -89,7 +89,8 @@ export class RecurringJobsRepository extends BaseRepository {
     return rows.map((r) => ({
       ...r.template,
       clientName: r.clientName ?? null,
-      locationName: [r.locationName, r.locationLabel].filter(Boolean).join(" — ") || null,
+      // Phase 5B: Return location label (site name) separately — avoid repeating company name
+      locationName: r.locationLabel || r.locationName || null,
       locationAddress: [r.locationAddress, r.locationCity].filter(Boolean).join(", ") || null,
     }));
   }
@@ -229,12 +230,14 @@ export class RecurringJobsRepository extends BaseRepository {
   }
 
   /**
-   * Deactivate a recurring job template (soft delete)
+   * Deactivate a recurring job template (soft delete / archive).
+   * Also cancels all pending (not-yet-generated) instances so they stop
+   * appearing as actionable due items on the Dashboard.
    */
   async deactivateTemplate(
     companyId: string,
     templateId: string
-  ): Promise<boolean> {
+  ): Promise<{ deactivated: boolean; instancesCanceled: number }> {
     this.assertCompanyId(companyId);
     this.validateUUID(templateId, "templateId");
 
@@ -252,12 +255,57 @@ export class RecurringJobsRepository extends BaseRepository {
       )
       .returning({ id: recurringJobTemplates.id });
 
-    return result.length > 0;
+    if (result.length === 0) {
+      return { deactivated: false, instancesCanceled: 0 };
+    }
+
+    // Cancel all pending instances — they are no longer actionable since the
+    // contract is archived. Generated instances (with jobs) are preserved.
+    const canceled = await db
+      .update(recurringJobInstances)
+      .set({ status: "canceled" })
+      .where(
+        and(
+          eq(recurringJobInstances.templateId, templateId),
+          eq(recurringJobInstances.companyId, companyId),
+          eq(recurringJobInstances.status, "pending"),
+          isNull(recurringJobInstances.generatedJobId)
+        )
+      )
+      .returning({ id: recurringJobInstances.id });
+
+    return { deactivated: true, instancesCanceled: canceled.length };
   }
 
   /**
-   * Delete a recurring job template (hard delete)
-   * Note: This will cascade delete all instances
+   * Check if a template has downstream activity (instances with generated jobs
+   * or jobs linked via recurrenceTemplateId). Used to decide hard delete vs archive.
+   */
+  async hasDownstreamActivity(
+    companyId: string,
+    templateId: string
+  ): Promise<boolean> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(templateId, "templateId");
+
+    // Check for any instance that was converted to a job
+    const [row] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(recurringJobInstances)
+      .where(
+        and(
+          eq(recurringJobInstances.templateId, templateId),
+          eq(recurringJobInstances.companyId, companyId),
+          sql`${recurringJobInstances.generatedJobId} IS NOT NULL`
+        )
+      );
+
+    return (row?.count ?? 0) > 0;
+  }
+
+  /**
+   * Delete a recurring job template (hard delete).
+   * Cascade deletes all instances. Only safe when hasDownstreamActivity is false.
    */
   async deleteTemplate(
     companyId: string,
@@ -491,6 +539,11 @@ export class RecurringJobsRepository extends BaseRepository {
 
     const conditions = [
       eq(recurringJobInstances.companyId, companyId),
+      // PM Due Queue boundary: only show instances not yet converted into jobs
+      isNull(recurringJobInstances.generatedJobId),
+      // Only show instances from active contracts — archived/deactivated contracts
+      // must not surface actionable due items on the Dashboard
+      eq(recurringJobTemplates.isActive, true),
     ];
 
     if (options?.from) {
@@ -598,7 +651,8 @@ export class RecurringJobsRepository extends BaseRepository {
     const today = new Date().toISOString().split("T")[0];
 
     return rows.map((r) => {
-      const locationDisplay = [r.locationName, r.locationLabel].filter(Boolean).join(" — ");
+      // Phase 5B: Use location label (site name) — avoid repeating company name
+      const locationDisplay = r.locationLabel || r.locationName || "";
       const techName = r.techFirstName ? `${r.techFirstName} ${r.techLastName ?? ""}`.trim() : null;
 
       const windowBefore = r.serviceWindowDaysBefore ?? 7;

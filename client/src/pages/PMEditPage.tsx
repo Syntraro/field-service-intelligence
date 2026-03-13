@@ -74,6 +74,10 @@ interface EditFormState {
   // PM Phase 3: Service window
   serviceWindowDaysBefore: number;
   serviceWindowDaysAfter: number;
+  // PM Billing Disposition: Contract-level billing rules
+  pmBillingModel: string;
+  pmBillingLabel: string;
+  pmContractAmount: string;
 }
 
 function templateToFormState(tpl: RecurringJobTemplate): EditFormState {
@@ -93,6 +97,10 @@ function templateToFormState(tpl: RecurringJobTemplate): EditFormState {
     isActive: tpl.isActive,
     serviceWindowDaysBefore: tpl.serviceWindowDaysBefore ?? 7,
     serviceWindowDaysAfter: tpl.serviceWindowDaysAfter ?? 14,
+    // PM Billing Disposition
+    pmBillingModel: (tpl as any).pmBillingModel ?? "",
+    pmBillingLabel: (tpl as any).pmBillingLabel ?? "",
+    pmContractAmount: (tpl as any).pmContractAmount ?? "",
   };
 }
 
@@ -196,6 +204,10 @@ export default function PMEditPage() {
         endDate: form.endDate || null,
         preferredTechnicianId: form.preferredTechnicianId || null,
         isActive: form.isActive,
+        // PM Billing Disposition: Contract-level billing rules
+        pmBillingModel: form.pmBillingModel || null,
+        pmBillingLabel: form.pmBillingLabel.trim() || null,
+        pmContractAmount: form.pmContractAmount || null,
       };
       return apiRequest(`/api/recurring-templates/${template.id}`, {
         method: "PATCH",
@@ -205,7 +217,7 @@ export default function PMEditPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
       queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates", templateId] });
-      toast({ title: "PM setup updated" });
+      toast({ title: "PM contract updated" });
       setLocation(`/pm/${templateId}`);
     },
     onError: (err: Error) => {
@@ -493,6 +505,61 @@ export default function PMEditPage() {
               </Select>
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      {/* PM Billing Section */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-semibold flex items-center gap-2">
+            <Wrench className="h-4 w-4 text-muted-foreground" />
+            PM Billing
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label>Billing model</Label>
+            <Select
+              value={form.pmBillingModel || "none"}
+              onValueChange={(v) => onChange({ pmBillingModel: v === "none" ? "" : v })}
+            >
+              <SelectTrigger data-testid="pm-edit-billing-model">
+                <SelectValue placeholder="Not set" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Not set</SelectItem>
+                <SelectItem value="per_visit">Per Visit — Invoice each completed job</SelectItem>
+                <SelectItem value="monthly_fixed">Monthly Fixed — Covered by monthly contract</SelectItem>
+                <SelectItem value="annual_prepaid">Annual Prepaid — Covered by annual contract</SelectItem>
+                <SelectItem value="do_not_bill">Do Not Bill — No invoice expected</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Determines how PM jobs are billed at completion. This is stamped onto each generated job.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label>Billing label (optional)</Label>
+              <Input
+                value={form.pmBillingLabel}
+                onChange={(e) => onChange({ pmBillingLabel: e.target.value })}
+                placeholder="e.g. Quarterly RTU PM"
+                data-testid="pm-edit-billing-label"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Contract amount (optional)</Label>
+              <Input
+                type="number"
+                step="0.01"
+                value={form.pmContractAmount}
+                onChange={(e) => onChange({ pmContractAmount: e.target.value })}
+                placeholder="0.00"
+                data-testid="pm-edit-contract-amount"
+              />
+            </div>
+          </div>
         </CardContent>
       </Card>
 

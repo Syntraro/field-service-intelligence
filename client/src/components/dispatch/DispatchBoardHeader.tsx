@@ -1,12 +1,14 @@
 /**
- * DispatchBoardHeader — top bar with title, date nav, view toggles (Day/Week).
- * Supports Day and Week views. Month is still disabled.
+ * DispatchBoardHeader — top bar with title, date nav, view toggles (Day/Week),
+ * and scheduling mode selector (Drag / Click-to-Schedule).
  */
 import { Button } from "@/components/ui/button";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, GripVertical, MousePointer } from "lucide-react";
 import { format, startOfWeek, endOfWeek } from "date-fns";
 
 export type DispatchView = "day" | "week";
+/** Scheduling interaction mode */
+export type SchedulingMode = "drag" | "click";
 
 type Props = {
   selectedDate: Date;
@@ -18,12 +20,16 @@ type Props = {
   /** Item 7: Show 24-hour timeline toggle (day view only) */
   show24Hour?: boolean;
   onToggle24Hour?: () => void;
+  /** Scheduling mode: drag or click-to-schedule */
+  schedulingMode?: SchedulingMode;
+  onSchedulingModeChange?: (mode: SchedulingMode) => void;
 };
 
 export default function DispatchBoardHeader({
   selectedDate, onPrevDay, onNextDay, onToday,
   activeView = "day", onViewChange,
   show24Hour, onToggle24Hour,
+  schedulingMode = "drag", onSchedulingModeChange,
 }: Props) {
   const isToday = format(selectedDate, "yyyy-MM-dd") === format(new Date(), "yyyy-MM-dd");
 
@@ -51,8 +57,37 @@ export default function DispatchBoardHeader({
         </Button>
       </div>
 
-      {/* Item 7: 24-hour toggle + view toggles */}
+      {/* Scheduling mode + 24-hour toggle + view toggles */}
       <div className="flex items-center gap-3">
+        {/* Scheduling mode selector — Drag / Click */}
+        {activeView === "day" && onSchedulingModeChange && (
+          <div className="inline-flex items-center rounded-lg border bg-white p-0.5">
+            <button
+              onClick={() => onSchedulingModeChange("drag")}
+              className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                schedulingMode === "drag"
+                  ? "bg-primary text-white shadow-sm"
+                  : "text-muted-foreground hover:text-foreground hover:bg-slate-50"
+              }`}
+              title="Drag to schedule"
+            >
+              <GripVertical className="h-3 w-3" />
+              Drag
+            </button>
+            <button
+              onClick={() => onSchedulingModeChange("click")}
+              className={`flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${
+                schedulingMode === "click"
+                  ? "bg-primary text-white shadow-sm"
+                  : "text-muted-foreground hover:text-foreground hover:bg-slate-50"
+              }`}
+              title="Click to schedule"
+            >
+              <MousePointer className="h-3 w-3" />
+              Click
+            </button>
+          </div>
+        )}
         {activeView === "day" && onToggle24Hour && (
           <button
             onClick={onToggle24Hour}

@@ -271,14 +271,20 @@ router.get(
       _meta.reasonTechsEmpty = "No active, non-deleted users found for this company.";
     }
     if (visits.length === 0) {
+      // Diagnostic: count visits with scheduled_date but no scheduled_start,
+      // filtering out visits tied to soft-deleted/cancelled jobs (fixes ghost count bug)
       const gapResult = await db.execute(sql`
         SELECT COUNT(*)::int AS "count"
-        FROM job_visits
-        WHERE company_id = ${companyId}
-          AND is_active = true
-          AND archived_at IS NULL
-          AND scheduled_start IS NULL
-          AND scheduled_date IS NOT NULL
+        FROM job_visits jv
+        JOIN jobs j ON j.id = jv.job_id AND j.company_id = ${companyId}
+        WHERE jv.company_id = ${companyId}
+          AND jv.is_active = true
+          AND jv.archived_at IS NULL
+          AND jv.scheduled_start IS NULL
+          AND jv.scheduled_date IS NOT NULL
+          AND j.deleted_at IS NULL
+          AND j.status NOT IN ('cancelled', 'voided')
+          AND jv.status IN (${sql.join(ACTIVE_VISIT_STATUSES.map(s => sql`${s}`), sql`, `)})
       `);
       const gapCount = (gapResult.rows as any[])[0]?.count || 0;
       _meta.visitsWithScheduledDateButNoStart = gapCount;

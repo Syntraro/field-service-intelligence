@@ -1696,6 +1696,11 @@ export const jobs = pgTable("jobs", {
   // Recurrence linkage (v1.1 - template-based generation)
   recurrenceTemplateId: varchar("recurrence_template_id"), // FK to recurring_job_templates (defined later in schema)
   recurrenceInstanceDate: date("recurrence_instance_date"), // Date this job was generated for
+  // PM Billing Disposition: Snapshot of billing rules at job generation time
+  pmBillingModel: text("pm_billing_model"), // Snapshot from contract: per_visit | monthly_fixed | annual_prepaid | do_not_bill
+  pmBillingDisposition: text("pm_billing_disposition"), // Derived: invoice_on_completion | covered_by_contract | archive_no_invoice
+  pmBillingStatus: text("pm_billing_status"), // Lifecycle: pending_invoice | invoiced | no_invoice_expected | billing_exception
+  pmBillingLabel: text("pm_billing_label"), // Human-readable label snapshot from contract
   // REMOVED: calendarAssignmentId - scheduling is now stored directly on jobs table
   // See: scheduledStart, scheduledEnd, isAllDay fields above
   // Hold state fields (when status = "on_hold")
@@ -4062,6 +4067,76 @@ export type GenerationMode = typeof generationModeEnum[number];
 // Template only controls the openSubStatus default (null for normal backlog, "on_hold" for held jobs).
 // templateStatusDefaultEnum removed - use openSubStatusEnum for openSubStatusDefault.
 
+// ============================================================================
+// PM TEMPLATES — Reusable job content templates for maintenance plans
+// ============================================================================
+
+export const pmBillingModeEnum = ["per_visit", "monthly", "annually", "none"] as const;
+export type PmBillingMode = typeof pmBillingModeEnum[number];
+
+// PM Billing Disposition: Contract-level billing models for PM contracts
+export const pmBillingModelEnum = ["per_visit", "monthly_fixed", "annual_prepaid", "do_not_bill"] as const;
+export type PmBillingModel = typeof pmBillingModelEnum[number];
+
+// PM Billing Disposition: Job-level billing dispositions derived from contract
+export const pmBillingDispositionEnum = ["invoice_on_completion", "covered_by_contract", "archive_no_invoice"] as const;
+export type PmBillingDisposition = typeof pmBillingDispositionEnum[number];
+
+// PM Billing Status: Tracks billing lifecycle on PM jobs
+export const pmBillingStatusEnum = ["pending_invoice", "invoiced", "no_invoice_expected", "billing_exception"] as const;
+export type PmBillingStatus = typeof pmBillingStatusEnum[number];
+
+export const pmTemplates = pgTable("pm_templates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+
+  // --- Template identity ---
+  name: text("name").notNull(), // Internal blueprint name (e.g. "RTU Cooling PM")
+
+  // --- Default PM content ---
+  summary: text("summary"), // Default PM summary/title applied to maintenance plan/job
+  description: text("description"), // Default job description body
+
+  // --- Optional scheduling defaults ---
+  defaultMonthsOfYear: integer("default_months_of_year").array(), // [1..12]
+  defaultGenerationMode: text("default_generation_mode"), // "period_start" | "day_of_month"
+  defaultGenerationDayOfMonth: integer("default_generation_day_of_month"), // 1..31
+  defaultServiceWindowDaysBefore: integer("default_service_window_days_before"),
+  defaultServiceWindowDaysAfter: integer("default_service_window_days_after"),
+  defaultIncludeLocationPmParts: boolean("default_include_location_pm_parts"),
+
+  // --- Optional billing defaults ---
+  billingMode: text("billing_mode"), // per_visit | monthly | annually | none
+  billingLabel: text("billing_label"), // e.g. "Preventive Maintenance"
+  defaultPrice: numeric("default_price"), // e.g. "249.00"
+
+  // --- Optional line items ---
+  defaultLineItemsJson: jsonb("default_line_items_json"), // Prefill line items
+
+  // --- Timestamps ---
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+}, (table) => ({
+  companyIdx: index("pm_templates_company_idx").on(table.companyId),
+}));
+
+export const insertPmTemplateSchema = createInsertSchema(pmTemplates).omit({
+  id: true,
+  companyId: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const updatePmTemplateSchema = insertPmTemplateSchema.partial();
+
+export type PmTemplate = typeof pmTemplates.$inferSelect;
+export type InsertPmTemplate = z.infer<typeof insertPmTemplateSchema>;
+export type UpdatePmTemplate = z.infer<typeof updatePmTemplateSchema>;
+
+// ============================================================================
+// RECURRING JOB TEMPLATES - Maintenance Plans
+// ============================================================================
+
 export const recurringJobTemplates = pgTable("recurring_job_templates", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
@@ -4101,6 +4176,10 @@ export const recurringJobTemplates = pgTable("recurring_job_templates", {
   // PM Phase 3: Service window — acceptable date range around ideal PM date
   serviceWindowDaysBefore: integer("service_window_days_before").notNull().default(7),
   serviceWindowDaysAfter: integer("service_window_days_after").notNull().default(14),
+  // PM Billing Disposition: Contract-level billing rules
+  pmBillingModel: text("pm_billing_model"), // per_visit | monthly_fixed | annual_prepaid | do_not_bill
+  pmBillingLabel: text("pm_billing_label"), // Human-readable billing label (e.g. "Quarterly RTU PM")
+  pmContractAmount: numeric("pm_contract_amount", { precision: 12, scale: 2 }), // Contract/service amount
   // Timestamps
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
@@ -4135,6 +4214,10 @@ export const insertRecurringJobTemplateSchema = createInsertSchema(recurringJobT
   // PM Phase 3: Service window fields
   serviceWindowDaysBefore: z.number().int().min(0).max(90).default(7),
   serviceWindowDaysAfter: z.number().int().min(0).max(90).default(14),
+  // PM Billing Disposition: Contract-level billing rules
+  pmBillingModel: z.enum(pmBillingModelEnum).nullable().optional(),
+  pmBillingLabel: z.string().nullable().optional(),
+  pmContractAmount: z.string().nullable().optional(), // numeric stored as string
 });
 
 export const updateRecurringJobTemplateSchema = z.object({
@@ -4167,6 +4250,10 @@ export const updateRecurringJobTemplateSchema = z.object({
   // PM Phase 3: Service window fields
   serviceWindowDaysBefore: z.number().int().min(0).max(90).optional(),
   serviceWindowDaysAfter: z.number().int().min(0).max(90).optional(),
+  // PM Billing Disposition: Contract-level billing rules
+  pmBillingModel: z.enum(pmBillingModelEnum).nullable().optional(),
+  pmBillingLabel: z.string().nullable().optional(),
+  pmContractAmount: z.string().nullable().optional(),
 });
 
 export type InsertRecurringJobTemplate = z.infer<typeof insertRecurringJobTemplateSchema>;
@@ -4207,6 +4294,55 @@ export const insertRecurringJobInstanceSchema = createInsertSchema(recurringJobI
 
 export type InsertRecurringJobInstance = z.infer<typeof insertRecurringJobInstanceSchema>;
 export type RecurringJobInstance = typeof recurringJobInstances.$inferSelect;
+
+// ============================================================================
+// PM BILLING EVENTS — Contract-period billing for monthly_fixed / annual_prepaid
+// ============================================================================
+
+/**
+ * PM Billing Phase 2: Tracks contract-period billing events.
+ * One event per billing period per PM contract (monthly or annual).
+ * Links to canonical invoices for traceability.
+ */
+export const pmBillingEventStatusEnum = ["pending", "invoiced", "skipped", "canceled", "billing_exception"] as const;
+export type PmBillingEventStatus = typeof pmBillingEventStatusEnum[number];
+
+export const pmBillingEvents = pgTable("pm_billing_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  pmContractId: varchar("pm_contract_id").notNull().references(() => recurringJobTemplates.id, { onDelete: "cascade" }),
+  billingModelSnapshot: text("billing_model_snapshot").notNull(), // per_visit | monthly_fixed | annual_prepaid
+  periodStart: date("period_start").notNull(), // Billing period start (e.g. 2026-04-01)
+  periodEnd: date("period_end").notNull(), // Billing period end (e.g. 2026-04-30)
+  billingDate: date("billing_date").notNull(), // Date event becomes actionable
+  status: text("status").notNull().default("pending"), // pending | invoiced | skipped | canceled | billing_exception
+  invoiceId: varchar("invoice_id").references(() => invoices.id, { onDelete: "set null" }),
+  amountSnapshot: numeric("amount_snapshot", { precision: 12, scale: 2 }), // Snapshotted from contract at creation
+  billingLabelSnapshot: text("billing_label_snapshot"), // Human-readable label snapshot
+  notes: text("notes"), // Optional notes (e.g. skip reason)
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+}, (table) => ({
+  companyIdx: index("pm_billing_events_company_idx").on(table.companyId),
+  contractIdx: index("pm_billing_events_contract_idx").on(table.pmContractId),
+  // Idempotency: one event per contract per billing period
+  contractPeriodUniq: uniqueIndex("pm_billing_events_contract_period_uniq").on(table.pmContractId, table.periodStart),
+  statusIdx: index("pm_billing_events_status_idx").on(table.companyId, table.status),
+}));
+
+export const insertPmBillingEventSchema = createInsertSchema(pmBillingEvents).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  status: z.enum(pmBillingEventStatusEnum).default("pending"),
+  periodStart: z.string(),
+  periodEnd: z.string(),
+  billingDate: z.string(),
+});
+
+export type InsertPmBillingEvent = z.infer<typeof insertPmBillingEventSchema>;
+export type PmBillingEvent = typeof pmBillingEvents.$inferSelect;
 
 // ============================================================================
 // TAX RATES & TAX GROUPS (v1 multi-tax system for Canadian HVAC)

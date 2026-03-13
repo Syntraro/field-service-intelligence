@@ -1160,6 +1160,82 @@ export default function JobDetailPage() {
                 </p>
               </div>
 
+              {/* PM Billing Disposition — guidance for PM-generated jobs */}
+              {job.pmBillingDisposition && (
+                <div className="border-t border-border/40 px-5 py-4" data-testid="section-pm-billing">
+                  <h3 className="text-[13px] font-semibold flex items-center gap-2 mb-3">
+                    <Briefcase className="h-4 w-4 text-muted-foreground/70" />
+                    PM Billing
+                  </h3>
+                  <div className="space-y-2 text-sm">
+                    {job.pmBillingLabel && (
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Contract</span>
+                        <span className="font-medium">{job.pmBillingLabel}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Billing model</span>
+                      <span className="font-medium">
+                        {job.pmBillingModel === "per_visit" ? "Per Visit" :
+                         job.pmBillingModel === "monthly_fixed" ? "Monthly Fixed" :
+                         job.pmBillingModel === "annual_prepaid" ? "Annual Prepaid" :
+                         job.pmBillingModel === "do_not_bill" ? "Do Not Bill" : "Not set"}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-muted-foreground">Job billing action</span>
+                      <Badge variant="outline" className={cn(
+                        "text-xs",
+                        job.pmBillingDisposition === "invoice_on_completion"
+                          ? "border-blue-300 bg-blue-50 text-blue-700"
+                          : job.pmBillingDisposition === "covered_by_contract"
+                          ? "border-green-300 bg-green-50 text-green-700"
+                          : "border-gray-300 bg-gray-50 text-gray-600"
+                      )}>
+                        {job.pmBillingDisposition === "invoice_on_completion" ? "Invoice required on completion" :
+                         job.pmBillingDisposition === "covered_by_contract" ? "Covered by PM contract" :
+                         job.pmBillingDisposition === "archive_no_invoice" ? "No job invoice expected" :
+                         job.pmBillingDisposition}
+                      </Badge>
+                    </div>
+                    {/* Closeout guidance */}
+                    {job.status === "completed" && (
+                      <div className={cn(
+                        "mt-2 p-2.5 rounded-md text-xs",
+                        job.pmBillingDisposition === "invoice_on_completion"
+                          ? "bg-blue-50 text-blue-800 border border-blue-200"
+                          : "bg-green-50 text-green-800 border border-green-200"
+                      )}>
+                        {job.pmBillingDisposition === "invoice_on_completion"
+                          ? "This PM job should be invoiced. Create an invoice to close out this job."
+                          : job.pmBillingDisposition === "covered_by_contract"
+                          ? "This PM job is covered by the contract. No per-job invoice needed — mark as invoiced or archive."
+                          : "No invoice is expected for this job. You can archive it directly."}
+                      </div>
+                    )}
+                    {/* PM billing status */}
+                    {job.pmBillingStatus && (
+                      <div className="flex justify-between items-center pt-1">
+                        <span className="text-muted-foreground">Billing status</span>
+                        <span className={cn("text-xs font-medium",
+                          job.pmBillingStatus === "invoiced" ? "text-green-600" :
+                          job.pmBillingStatus === "pending_invoice" ? "text-blue-600" :
+                          job.pmBillingStatus === "no_invoice_expected" ? "text-gray-500" :
+                          job.pmBillingStatus === "billing_exception" ? "text-red-600" : ""
+                        )}>
+                          {job.pmBillingStatus === "invoiced" ? "Invoiced" :
+                           job.pmBillingStatus === "pending_invoice" ? "Pending invoice" :
+                           job.pmBillingStatus === "no_invoice_expected" ? "No invoice expected" :
+                           job.pmBillingStatus === "billing_exception" ? "Billing exception" :
+                           job.pmBillingStatus}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Recurring series — part of the billing surface */}
               {job.recurringSeries && (
                 <div className="border-t border-border/40 px-5 py-4" data-testid="section-recurring">

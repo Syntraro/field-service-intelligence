@@ -83,10 +83,11 @@ export default function DispatchTaskBlock({ task, isSaving, isSelected, onSelect
     version: 0,
   };
 
+  // Allow drag even while saving — chainForVisit serializes mutations safely
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `task-${task.id}`,
     data: dragData,
-    disabled: isSaving || isResizing,
+    disabled: isResizing,
   });
 
   useEffect(() => {
@@ -187,17 +188,12 @@ export default function DispatchTaskBlock({ task, isSaving, isSelected, onSelect
       data-dispatch-block="task"
       className={`group/task absolute top-1 bottom-1 rounded border border-dashed border-blue-300 bg-blue-50/80 text-blue-700 overflow-visible hover:shadow-sm hover:z-10 transition-shadow ${
         isDragging ? "opacity-40 shadow-lg z-30" : ""
-      } ${isSaving ? "opacity-60" : ""} ${isResizing ? "z-20 shadow-lg" : ""} ${isSelected ? "ring-2 ring-blue-500 ring-offset-1 shadow-md shadow-blue-200/50 z-20" : ""} ${!isResizing ? "cursor-grab active:cursor-grabbing" : ""}`}
+      } ${isResizing ? "z-20 shadow-lg" : ""} ${isSelected ? "ring-2 ring-blue-500 ring-offset-1 shadow-md shadow-blue-200/50 z-20" : ""} ${!isResizing ? "cursor-grab active:cursor-grabbing" : ""}`}
       style={{ left: pos.left, width: effectiveWidth }}
       title={`${typeLabel}: ${task.title}\n${formatDuration(task.durationMinutes)}`}
     >
       <div className="flex h-full flex-col justify-center px-2 py-1 overflow-hidden">
-        {isSaving ? (
-          <div className="flex items-center gap-1">
-            <Loader2 className="h-3 w-3 animate-spin" />
-            <span className="text-[10px]">Saving...</span>
-          </div>
-        ) : effectiveWidth > 100 ? (
+        {effectiveWidth > 100 ? (
           <>
             <div className="flex items-center gap-1 truncate">
               {isSupplierType(task.type)
@@ -221,9 +217,15 @@ export default function DispatchTaskBlock({ task, isSaving, isSelected, onSelect
           </div>
         )}
       </div>
+      {/* Subtle saving indicator — small spinner in top-left, no content replacement */}
+      {isSaving && (
+        <div className="absolute top-0.5 left-0.5 flex items-center justify-center">
+          <Loader2 className="h-2.5 w-2.5 animate-spin text-blue-500/70" />
+        </div>
+      )}
 
-      {/* Resize handle — right edge */}
-      {!isSaving && !isDragging && (
+      {/* Resize handle — right edge (available during saving — mutations serialize safely) */}
+      {!isDragging && (
         <div
           onPointerDown={handleResizePointerDown}
           className={`absolute top-0 bottom-0 right-0 w-2 cursor-ew-resize ${

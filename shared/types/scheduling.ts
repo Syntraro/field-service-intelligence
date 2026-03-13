@@ -170,6 +170,8 @@ export interface UnscheduledJobDto {
   technicians: CalendarTechnicianDto[];
   /** Job version for optimistic locking */
   version: number;
+  /** Job duration in minutes (from template, for dispatch board block sizing) */
+  durationMinutes?: number | null;
 }
 
 // ============================================================================

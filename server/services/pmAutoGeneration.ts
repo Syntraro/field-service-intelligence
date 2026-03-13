@@ -1,18 +1,23 @@
 /**
- * PM Auto-Generation Service
+ * PM Instance Generation Service
  *
- * Automatically generates recurring PM job instances on a schedule:
+ * PM Pivot Phase 1: Creates pending PM due instances on a schedule.
+ * Does NOT auto-create jobs — dispatchers generate jobs manually
+ * from the PM due queue.
+ *
+ * Schedule:
  * - 30 seconds after server startup (catch-up run)
  * - Every 6 hours thereafter
  *
  * For each company with active recurring_job_templates, calls
- * generateInstances() which handles dedup, claiming, and job creation.
+ * generateInstances() which creates pending instances (no jobs).
  */
 
 import { db } from "../db";
 import { recurringJobTemplates } from "@shared/schema";
 import { eq, sql } from "drizzle-orm";
 import { generateInstances } from "../domain/recurrence";
+import { runBillingForAllTenants } from "./pmBillingService";
 
 const GENERATION_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 const STARTUP_DELAY_MS = 30 * 1000; // 30 seconds after boot
@@ -54,12 +59,12 @@ export async function runGenerationForAllTenants(): Promise<void> {
         totalJobs += result.jobsCreated;
         totalErrors += result.errors.length;
 
-        if (result.instancesCreated > 0 || result.jobsCreated > 0) {
+        if (result.instancesCreated > 0) {
+          // PM Pivot Phase 1: Only log instance creation (no auto job creation)
           console.log(
             `[PM-AutoGen] Company ${companyId}: ` +
-            `${result.templatesProcessed} templates scanned, ` +
-            `${result.instancesCreated} instances created, ` +
-            `${result.jobsCreated} jobs created` +
+            `${result.templatesProcessed} contracts scanned, ` +
+            `${result.instancesCreated} due instances created` +
             (result.errors.length > 0 ? `, ${result.errors.length} errors` : "")
           );
         }
@@ -78,14 +83,21 @@ export async function runGenerationForAllTenants(): Promise<void> {
   }
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  // PM Pivot Phase 1: Log reflects instances-only (no auto job creation)
   console.log(
     `[PM-AutoGen] Run complete in ${elapsed}s: ` +
     `${companiesProcessed} companies, ` +
-    `${totalTemplates} templates, ` +
-    `${totalInstances} instances created, ` +
-    `${totalJobs} jobs created, ` +
+    `${totalTemplates} contracts, ` +
+    `${totalInstances} due instances created, ` +
     `${totalErrors} errors`
   );
+
+  // PM Billing Phase 2: Run contract billing events after instance generation
+  try {
+    await runBillingForAllTenants();
+  } catch (err) {
+    console.error("[PM-AutoGen] PM billing run failed:", err);
+  }
 }
 
 /**

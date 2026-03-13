@@ -25,6 +25,7 @@ import {
 export const INVOICE_CREATION_SOURCES = [
   "INVOICE_ROUTE",
   "JOB_CLOSE_ROUTE",
+  "PM_BILLING_SERVICE", // PM Billing Phase 2: Contract-period billing events
 ] as const;
 
 /**
@@ -1378,6 +1379,119 @@ export class InvoiceRepository extends BaseRepository {
       }
       throw error;
     }
+  }
+  /**
+   * PM Billing Phase 2: Create an invoice from a PM billing event (contract-period billing).
+   * Unlike createInvoiceFromJob(), this creates invoices NOT tied to a specific job.
+   * Used for monthly_fixed and annual_prepaid PM contracts.
+   */
+  async createInvoiceFromBillingEvent(
+    companyId: string,
+    params: {
+      locationId: string;
+      customerCompanyId: string | null;
+      billingLabel: string;
+      amount: string;
+      periodStart: string;
+      periodEnd: string;
+      billingModel: string;
+    },
+    creationSource: InvoiceCreationSource
+  ): Promise<{ invoice: any; invoiceNumber: string }> {
+    if (creationSource !== "PM_BILLING_SERVICE") {
+      throw new Error("INVOICE_CREATION_GUARD: createInvoiceFromBillingEvent() only allowed from PM_BILLING_SERVICE");
+    }
+    this.assertCompanyId(companyId);
+
+    const { companyCounters } = await import("@shared/schema");
+
+    // Get company settings for payment terms
+    const [settings] = await db
+      .select({ defaultPaymentTermsDays: companySettings.defaultPaymentTermsDays })
+      .from(companySettings)
+      .where(eq(companySettings.companyId, companyId))
+      .limit(1);
+    const paymentTermsDays = settings?.defaultPaymentTermsDays ?? 30;
+
+    return await db.transaction(async (tx) => {
+      // Get or create counter and increment
+      let [counter] = await tx
+        .select()
+        .from(companyCounters)
+        .where(eq(companyCounters.companyId, companyId))
+        .for("update")
+        .limit(1);
+
+      let invoiceNumber = 1001;
+      if (counter) {
+        invoiceNumber = counter.nextInvoiceNumber;
+        await tx
+          .update(companyCounters)
+          .set({ nextInvoiceNumber: invoiceNumber + 1 })
+          .where(eq(companyCounters.companyId, companyId));
+      } else {
+        await tx.insert(companyCounters).values({
+          companyId,
+          nextJobNumber: 100000,
+          nextInvoiceNumber: 1002,
+        });
+      }
+
+      const now = new Date();
+      const issueDate = now.toISOString().split("T")[0];
+      const dueDate = new Date(now.getTime() + paymentTermsDays * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .split("T")[0];
+
+      // Format period description for invoice
+      const periodDesc = params.billingModel === "annual_prepaid"
+        ? `Annual Renewal: ${params.periodStart} to ${params.periodEnd}`
+        : `Billing period: ${params.periodStart} to ${params.periodEnd}`;
+
+      const amount = params.amount || "0";
+
+      // Create the invoice (no jobId — contract billing)
+      const [invoice] = await tx
+        .insert(invoices)
+        .values({
+          companyId,
+          locationId: params.locationId,
+          customerCompanyId: params.customerCompanyId,
+          jobId: null, // Contract billing — not tied to a job
+          invoiceNumber: String(invoiceNumber),
+          status: "draft",
+          issueDate,
+          dueDate,
+          paymentTermsDays,
+          subtotal: amount,
+          taxTotal: "0",
+          total: amount,
+          amountPaid: "0",
+          balance: amount,
+          workDescription: `${params.billingLabel} — ${periodDesc}`,
+        })
+        .returning();
+
+      // Create a single line item for the billing event
+      await tx
+        .insert(invoiceLines)
+        .values({
+          companyId,
+          invoiceId: invoice.id,
+          lineNumber: 1,
+          lineItemType: "service",
+          description: `${params.billingLabel} — ${periodDesc}`,
+          quantity: "1",
+          unitPrice: amount,
+          lineSubtotal: amount,
+          taxRate: "0",
+          taxAmount: "0",
+          lineTotal: amount,
+          source: "manual",
+        });
+
+      return { invoice, invoiceNumber: String(invoiceNumber) };
+    });
   }
 }
 

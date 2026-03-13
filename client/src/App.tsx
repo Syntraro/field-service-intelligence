@@ -105,6 +105,7 @@ import PMWorkspacePage from "@/pages/PMWorkspacePage";
 import PMWizardPage from "@/pages/PMWizardPage";
 import PMDetailPage from "@/pages/PMDetailPage";
 import PMEditPage from "@/pages/PMEditPage";
+import PMTemplateEditorPage from "@/pages/PMTemplateEditorPage";
 
 function Router() {
   const [loc] = useLocation();
@@ -134,6 +135,17 @@ function Router() {
 <Route path="/live-map">
         <ProtectedRoute requireAdmin>
           <LiveMapPage />
+        </ProtectedRoute>
+      </Route>
+      {/* PM Templates: Full-page create/edit */}
+      <Route path="/pm/templates/new">
+        <ProtectedRoute requireAdmin>
+          <PMTemplateEditorPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/pm/templates/:id/edit">
+        <ProtectedRoute requireAdmin>
+          <PMTemplateEditorPage />
         </ProtectedRoute>
       </Route>
       {/* PM Phase 2: Dedicated PM workspace, wizard, detail, edit */}
