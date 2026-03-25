@@ -29,6 +29,7 @@ import type { Invoice, Client, CustomerCompany, Job } from "@shared/schema";
 /** Structured address from the details DTO */
 interface StructuredAddress {
   street: string;
+  street2?: string; // Address line 2 (suite, unit, PO box)
   city: string;
   province: string;
   postalCode: string;
@@ -98,6 +99,8 @@ function formatCurrency(amount: string | number): string {
 function formatAddress(addr: StructuredAddress | null | undefined): string | null {
   if (!addr?.street) return null;
   const parts = [addr.street];
+  // Address line 2 shown on its own line when present
+  if (addr.street2) parts.push(addr.street2);
   const cityLine = [addr.city, addr.province].filter(Boolean).join(", ");
   if (cityLine) parts.push(cityLine);
   if (addr.postalCode) parts.push(addr.postalCode);

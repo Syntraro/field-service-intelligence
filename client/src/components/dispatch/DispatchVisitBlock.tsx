@@ -8,12 +8,13 @@ import { useDraggable } from "@dnd-kit/core";
 import type { DispatchVisit, DispatchTask } from "./dispatchPreviewTypes";
 import type { DispatchDragData } from "./dispatchDndTypes";
 import {
-  visitStatusColor, priorityIndicator, formatDuration, isCompletedStatus,
+  priorityIndicator, formatDuration, isCompletedStatus, jobStateColor,
   HOUR_WIDTH_PX, SNAP_MINUTES, MIN_DURATION_MINUTES, PX_PER_MINUTE,
   TIMELINE_START_HOUR, TIMELINE_END_HOUR,
 } from "./dispatchPreviewUtils";
 import { clampResizeEnd } from "./dispatchOverlapUtils";
-import { Clock, X, Loader2, Users, CheckCircle2 } from "lucide-react";
+import { VisitCardContent } from "./VisitCardContent";
+import { X } from "lucide-react";
 import { addMinutes } from "date-fns";
 
 type Props = {
@@ -23,6 +24,8 @@ type Props = {
   techColor?: string;
   isSaving?: boolean;
   isSelected?: boolean;
+  /** True if this visit overlaps another item on the same technician lane */
+  hasConflict?: boolean;
   onSelect?: (visit: DispatchVisit) => void;
   onUnschedule?: (visit: DispatchVisit) => void;
   onResize?: (visit: DispatchVisit, newEndTime: string) => void;
@@ -36,7 +39,7 @@ type Props = {
   timelineEndHour?: number;
 };
 
-export default function DispatchVisitBlock({ visit, left, width, techColor, isSaving, isSelected, onSelect, onUnschedule, onResize, laneVisits = [], laneTasks = [], laneTechId, timelineEndHour: teHour = TIMELINE_END_HOUR }: Props) {
+export default function DispatchVisitBlock({ visit, left, width, techColor, isSaving, isSelected, hasConflict, onSelect, onUnschedule, onResize, laneVisits = [], laneTasks = [], laneTechId, timelineEndHour: teHour = TIMELINE_END_HOUR }: Props) {
   const isTeamVisit = visit.technicianIds.length > 1;
   const isCompleted = isCompletedStatus(visit.status);
   const dragData: DispatchDragData = {
@@ -56,14 +59,16 @@ export default function DispatchVisitBlock({ visit, left, width, techColor, isSa
   const resizeStartXRef = useRef(0);
   const resizeStartWidthRef = useRef(0);
   const wasDraggingRef = useRef(false);
+  const suppressClickUntilRef = useRef(0);
 
   // Multi-tech visits need unique DnD IDs per lane to avoid dnd-kit collisions
   const draggableId = laneTechId ? `scheduled-${visit.id}--${laneTechId}` : `scheduled-${visit.id}`;
-  // Allow drag even while saving — chainForVisit serializes mutations safely
+  // Allow drag even while saving — chainForVisit serializes mutations safely.
+  // 2026-03-24: Completed visits are non-draggable to prevent accidental reschedule.
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: draggableId,
     data: dragData,
-    disabled: isResizing,
+    disabled: isResizing || isCompleted,
   });
 
   // Suppress click after drag: track when isDragging transitions false
@@ -76,10 +81,14 @@ export default function DispatchVisitBlock({ visit, left, width, techColor, isSa
       wasDraggingRef.current = false;
       return;
     }
+    if (Date.now() < suppressClickUntilRef.current) return;
+    // 2026-03-24: Block click while visit is in saving state (schedule mutation in-flight).
+    // Prevents opening modal against unstable/incomplete data.
+    if (isSaving) return;
     onSelect?.(visit);
-  }, [onSelect, visit]);
+  }, [onSelect, visit, isSaving]);
 
-  const statusCls = visitStatusColor(visit.status);
+  const stateCls = jobStateColor(visit.jobStatus, visit.jobOpenSubStatus);
   const priorityCls = priorityIndicator(visit.priority);
 
   // Ref to hold lane data for closure-based pointer handlers
@@ -126,6 +135,7 @@ export default function DispatchVisitBlock({ visit, left, width, techColor, isSa
     resizeStartXRef.current = e.clientX;
     resizeStartWidthRef.current = Math.max(width - 2, 38);
     setResizeDeltaPx(0);
+    suppressClickUntilRef.current = Date.now() + 2000;
 
     const onPointerMove = (ev: PointerEvent) => {
       setResizeDeltaPx(ev.clientX - resizeStartXRef.current);
@@ -136,6 +146,7 @@ export default function DispatchVisitBlock({ visit, left, width, techColor, isSa
       document.removeEventListener("pointerup", onPointerUp);
       setIsResizing(false);
       setResizeDeltaPx(0);
+      suppressClickUntilRef.current = Date.now() + 500;
 
       const finalDelta = ev.clientX - resizeStartXRef.current;
       const finalWidth = Math.max(resizeStartWidthRef.current + finalDelta, MIN_DURATION_MINUTES * PX_PER_MINUTE);
@@ -171,53 +182,23 @@ export default function DispatchVisitBlock({ visit, left, width, techColor, isSa
       {...(isResizing ? {} : attributes)}
       onClick={handleClick}
       data-dispatch-block="visit"
-      className={`group/visit absolute top-1 bottom-1 rounded border ${statusCls} ${priorityCls ? `border-l-[3px] ${priorityCls}` : ""} overflow-visible transition-shadow hover:shadow-md hover:z-10 ${
+      data-visit-id={visit.id}
+      className={`group/visit absolute top-1 bottom-1 rounded border ${stateCls} ${priorityCls ? `border-l-[3px] ${priorityCls}` : ""} overflow-visible transition-shadow hover:shadow-md hover:z-10 ${
         isDragging ? "opacity-40 shadow-lg z-30" : ""
-      } ${isResizing ? "z-20 shadow-lg" : ""} ${isSelected ? "ring-2 ring-emerald-500 ring-offset-1 shadow-md shadow-emerald-200/50 z-20" : ""} ${!isResizing ? "cursor-grab active:cursor-grabbing" : ""} ${isCompleted ? "opacity-55" : ""}`}
+      } ${isResizing ? "z-20 shadow-lg" : ""} ${isSelected ? "ring-2 ring-emerald-500 ring-offset-1 shadow-md shadow-emerald-200/50 z-20" : ""} ${hasConflict && !isSelected ? "ring-2 ring-red-500 ring-offset-1 shadow-md shadow-red-200/50 border-red-400" : ""} ${!isResizing ? "cursor-grab active:cursor-grabbing" : ""} ${isCompleted ? "opacity-55" : ""}`}
       style={{ left, width: effectiveWidth }}
       title={`${visit.customerName}\n${visit.summary}\n${visit.locationName}\n#${visit.jobNumber} · ${formatDuration(visit.durationMinutes)}`}
     >
       <div className="flex h-full flex-col justify-center px-2 py-1 overflow-hidden">
-        {!isNarrow ? (
-          <>
-            <div className="flex items-center gap-1 truncate">
-              {isCompleted && <CheckCircle2 className="h-3 w-3 flex-shrink-0 text-slate-400" />}
-              <span className={`truncate text-[11px] font-semibold ${isCompleted ? "line-through" : ""}`}>{visit.customerName}</span>
-              {/* Team visit indicator */}
-              {isTeamVisit && (
-                <span className="flex items-center gap-0.5 rounded bg-emerald-100 px-1 py-px text-[8px] font-semibold text-emerald-700 flex-shrink-0">
-                  <Users className="h-2 w-2" />{visit.technicianIds.length}
-                </span>
-              )}
-            </div>
-            <div className="flex items-center gap-1.5 text-[10px] opacity-80">
-              <span className="truncate">{visit.summary}</span>
-              <span className="flex items-center gap-0.5 whitespace-nowrap">
-                <Clock className="h-2.5 w-2.5" />{formatDuration(isResizing ? previewDuration : visit.durationMinutes)}
-              </span>
-            </div>
-          </>
-        ) : (
-          <div className="flex items-center gap-1 truncate">
-            {isCompleted && <CheckCircle2 className="h-2.5 w-2.5 flex-shrink-0 text-slate-400" />}
-            <span className={`truncate text-[10px] font-semibold ${isCompleted ? "line-through" : ""}`}>{visit.customerName}</span>
-          </div>
-        )}
+        <VisitCardContent
+          visit={visit}
+          variant={isNarrow ? "timeline-narrow" : "timeline-wide"}
+          displayDuration={isResizing ? previewDuration : undefined}
+        />
       </div>
-      {/* Subtle saving indicator — small spinner in top-left, no content replacement */}
-      {isSaving && (
-        <div className="absolute top-0.5 left-0.5 flex items-center justify-center">
-          <Loader2 className="h-2.5 w-2.5 animate-spin text-emerald-500/70" />
-        </div>
-      )}
-
-      {/* Tech color accent bar */}
-      {techColor && (
-        <div className="absolute inset-x-0 top-0 h-[2px]" style={{ backgroundColor: techColor }} />
-      )}
-
-      {/* Unschedule button — top-right, visible on hover of this block */}
-      {onUnschedule && !isSaving && !isDragging && !isResizing && (
+      {/* Unschedule button — top-right, visible on hover of this block.
+          2026-03-24: Hidden for completed/terminal visits to prevent accidental unschedule/reopen. */}
+      {onUnschedule && !isSaving && !isDragging && !isResizing && !isCompleted && (
         <button
           onClick={(e) => {
             e.stopPropagation();

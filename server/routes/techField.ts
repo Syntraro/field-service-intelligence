@@ -17,12 +17,14 @@ import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import type { AuthedRequest } from "../auth/tenantIsolation";
 import { db } from "../db";
-import { jobVisits, jobNotes, companySettings } from "@shared/schema";
+import { companySettings } from "@shared/schema";
+import { jobNotesRepository } from "../storage/jobNotes";
 import { and, eq, sql } from "drizzle-orm";
 import { timeTrackingRepository } from "../storage/timeTracking";
 import { jobVisitsRepository } from "../storage/jobVisits";
 // Canonical visit reads — single source of truth (server/storage/visits.ts)
 import { getVisitsForUserInRange } from "../storage/visits";
+import * as lifecycle from "../services/jobLifecycleOrchestrator";
 
 const router = Router();
 
@@ -156,30 +158,25 @@ router.post(
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
     const userId = req.user!.id;
-    const visit = await jobVisitsRepository.getAssignedVisit(companyId, req.params.visitId, userId);
 
+    // Auth: tech must be assigned to this visit
+    const visit = await jobVisitsRepository.getAssignedVisit(companyId, req.params.visitId, userId);
     if (!visit) throw createError(404, "Visit not found or not assigned to you");
-    if (visit.status === "completed" || visit.status === "cancelled") {
-      throw createError(400, "Cannot update a completed or cancelled visit");
-    }
 
     const { at } = validateSchema(timestampSchema, req.body);
     const now = at ? new Date(at) : new Date();
 
-    const [updated] = await db
-      .update(jobVisits)
-      .set({
-        status: "en_route",
-        updatedAt: now,
-        version: visit.version + 1,
-      })
-      .where(and(eq(jobVisits.id, visit.id), eq(jobVisits.companyId, companyId)))
-      .returning();
+    // 2026-03-18 BP-3 fix: Delegate workflow mutation to canonical orchestrator.
+    // Orchestrator owns validation, status write, version increment, and schedule sync.
+    const result = await lifecycle.setVisitEnRoute({
+      type: "SET_VISIT_EN_ROUTE",
+      companyId,
+      visitId: visit.id,
+      jobId: visit.jobId,
+      at: now,
+    });
 
-    // Sync parent job schedule fields from visit state
-    await jobVisitsRepository.syncJobToVisits(companyId, visit.jobId);
-
-    // Start a travel_to_job time entry via the canonical state machine
+    // Tech-field-specific side effect: start travel time entry
     try {
       await timeTrackingRepository.recordJobStatus(companyId, userId, visit.jobId, {
         status: "en_route",
@@ -191,7 +188,7 @@ router.post(
       // Non-fatal: entry may already be running
     }
 
-    res.json(updated);
+    res.json(result.visit);
   })
 );
 
@@ -205,31 +202,25 @@ router.post(
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
     const userId = req.user!.id;
-    const visit = await jobVisitsRepository.getAssignedVisit(companyId, req.params.visitId, userId);
 
+    // Auth: tech must be assigned to this visit
+    const visit = await jobVisitsRepository.getAssignedVisit(companyId, req.params.visitId, userId);
     if (!visit) throw createError(404, "Visit not found or not assigned to you");
-    if (visit.status === "completed" || visit.status === "cancelled") {
-      throw createError(400, "Cannot start a completed or cancelled visit");
-    }
 
     const { at } = validateSchema(timestampSchema, req.body);
     const now = at ? new Date(at) : new Date();
 
-    const [updated] = await db
-      .update(jobVisits)
-      .set({
-        status: "in_progress",
-        checkedInAt: visit.checkedInAt ?? now,
-        updatedAt: now,
-        version: visit.version + 1,
-      })
-      .where(and(eq(jobVisits.id, visit.id), eq(jobVisits.companyId, companyId)))
-      .returning();
+    // 2026-03-18 BP-4 fix: Delegate workflow mutation to canonical orchestrator.
+    // Orchestrator owns validation, status write, checkedInAt, version increment, and schedule sync.
+    const result = await lifecycle.startVisit({
+      type: "START_VISIT",
+      companyId,
+      visitId: visit.id,
+      jobId: visit.jobId,
+      at: now,
+    });
 
-    // Sync parent job schedule fields from visit state
-    await jobVisitsRepository.syncJobToVisits(companyId, visit.jobId);
-
-    // Stop travel entry (if running) + start on_site entry via canonical state machine
+    // Tech-field-specific side effect: stop travel entry + start on_site entry
     try {
       await timeTrackingRepository.recordJobStatus(companyId, userId, visit.jobId, {
         status: "arrived",
@@ -241,7 +232,7 @@ router.post(
       // Non-fatal: time entry may already be running
     }
 
-    res.json(updated);
+    res.json(result.visit);
   })
 );
 
@@ -278,44 +269,20 @@ router.post(
     const { outcome, outcomeNote, at } = validateSchema(completeVisitSchema, req.body);
     const now = at ? new Date(at) : new Date();
 
-    // Compute actual duration if checked in
-    let actualDurationMinutes: number | null = null;
-    if (visit.checkedInAt) {
-      const durationMs = now.getTime() - new Date(visit.checkedInAt).getTime();
-      actualDurationMinutes = Math.round(durationMs / 60000);
-    }
-
-    // Phase A: Write structured outcome fields authoritatively
-    const isFollowUpNeeded = outcome === "needs_parts" || outcome === "needs_followup";
-
-    const [updated] = await db
-      .update(jobVisits)
-      .set({
-        status: "completed",
-        checkedOutAt: now,
-        actualDurationMinutes,
-        // Structured outcome fields (Phase A — authoritative source)
-        outcome,
-        outcomeNote: outcomeNote?.trim() || null,
-        completedByUserId: userId,
-        completedAt: now,
-        isFollowUpNeeded: isFollowUpNeeded,
-        // Legacy text tags preserved for backward compat with old UI surfaces
-        visitNotes: [
-          visit.visitNotes,
-          `[OUTCOME: ${outcome}]${outcomeNote ? ` ${outcomeNote}` : ""}`,
-          `[COMPLETED_BY: ${userId}]`,
-        ]
-          .filter(Boolean)
-          .join("\n"),
-        updatedAt: now,
-        version: visit.version + 1,
-      })
-      .where(and(eq(jobVisits.id, visit.id), eq(jobVisits.companyId, companyId)))
-      .returning();
-
-    // Sync parent job schedule fields from visit state
-    await jobVisitsRepository.syncJobToVisits(companyId, visit.jobId);
+    // Delegate to canonical lifecycle orchestrator (handles visit update,
+    // visitNotes, auto job note, reconciliation, and job schedule sync)
+    const result = await lifecycle.completeVisit({
+      type: "COMPLETE_VISIT",
+      companyId,
+      visitId: visit.id,
+      jobId: visit.jobId,
+      outcome,
+      holdReason: null,
+      holdNotes: outcomeNote?.trim() || null,
+      completedByUserId: userId,
+      outcomeNote: outcomeNote?.trim() || null,
+      visitNumber: visit.visitNumber ?? null,
+    });
 
     // Stop on_site time entry via canonical state machine
     try {
@@ -329,25 +296,7 @@ router.post(
       // Non-fatal
     }
 
-    // Auto-create a note on the job documenting the outcome
-    if (outcomeNote?.trim()) {
-      const outcomeLabels: Record<string, string> = {
-        completed: "Completed",
-        needs_parts: "Needs parts",
-        needs_followup: "Needs follow-up",
-      };
-      await db.insert(jobNotes).values({
-        id: sql`gen_random_uuid()`,
-        companyId,
-        jobId: visit.jobId,
-        userId,
-        noteText: `Visit #${visit.visitNumber} — ${outcomeLabels[outcome]}: ${outcomeNote.trim()}`,
-        createdAt: now,
-        updatedAt: now,
-      });
-    }
-
-    res.json({ visit: updated, outcome });
+    res.json({ visit: result.visit, outcome });
   })
 );
 
@@ -370,20 +319,9 @@ router.post(
     if (!visit) throw createError(404, "Visit not found or not assigned to you");
 
     const { text } = validateSchema(addNoteSchema, req.body);
-    const now = new Date();
 
-    const [note] = await db
-      .insert(jobNotes)
-      .values({
-        id: sql`gen_random_uuid()`,
-        companyId,
-        jobId: visit.jobId,
-        userId,
-        noteText: text.trim(),
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning();
+    // 2026-03-20 Phase 4B: Route through canonical storage method
+    const note = await jobNotesRepository.createJobNote(companyId, visit.jobId, userId, text.trim());
 
     res.status(201).json(note);
   })

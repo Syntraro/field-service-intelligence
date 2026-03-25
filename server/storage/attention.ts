@@ -6,8 +6,8 @@
  */
 
 import { db } from "../db";
-import { attentionItems } from "@shared/schema";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { attentionItems, jobs } from "@shared/schema";
+import { eq, and, desc, sql, isNull, isNotNull } from "drizzle-orm";
 import { clampLimit } from "./base";
 
 export interface AttentionFeedOptions {
@@ -49,7 +49,26 @@ export async function getAttentionItems(opts: AttentionFeedOptions) {
  * Only counts open items.
  */
 export async function getAttentionSummary(tenantId: string) {
-  const rows = await db
+  // For job-type attention items, join to jobs table to exclude orphaned rows
+  // (jobs that were hard-deleted or soft-deleted but whose attention items persist).
+  // Non-job attention items are counted directly.
+  const jobRows = await db
+    .select({
+      ruleType: attentionItems.ruleType,
+      count: sql<number>`COUNT(*)`.as("count"),
+    })
+    .from(attentionItems)
+    .innerJoin(jobs, eq(attentionItems.entityId, jobs.id))
+    .where(and(
+      eq(attentionItems.tenantId, tenantId),
+      eq(attentionItems.status, "open"),
+      eq(attentionItems.entityType, "job"),
+      isNull(jobs.deletedAt),
+      eq(jobs.isActive, true),
+    ))
+    .groupBy(attentionItems.ruleType);
+
+  const nonJobRows = await db
     .select({
       ruleType: attentionItems.ruleType,
       count: sql<number>`COUNT(*)`.as("count"),
@@ -58,13 +77,13 @@ export async function getAttentionSummary(tenantId: string) {
     .where(and(
       eq(attentionItems.tenantId, tenantId),
       eq(attentionItems.status, "open"),
+      sql`${attentionItems.entityType} != 'job'`,
     ))
     .groupBy(attentionItems.ruleType);
 
-  // Build a keyed summary object
   const summary: Record<string, number> = {};
-  for (const row of rows) {
-    summary[row.ruleType] = Number(row.count);
+  for (const row of [...jobRows, ...nonJobRows]) {
+    summary[row.ruleType] = (summary[row.ruleType] ?? 0) + Number(row.count);
   }
   return summary;
 }

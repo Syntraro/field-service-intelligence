@@ -18,7 +18,6 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation, useParams, Link } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -584,11 +583,6 @@ export default function PMDetailPage() {
     [companiesData, template?.clientId]
   );
 
-  const { teamMembers } = useTechniciansDirectory();
-  const preferredTech = useMemo(
-    () => teamMembers.find((t) => t.id === template?.preferredTechnicianId),
-    [teamMembers, template?.preferredTechnicianId]
-  );
 
   // Mutations (unchanged)
   const toggleActiveMutation = useMutation({
@@ -770,9 +764,6 @@ export default function PMDetailPage() {
           <DetailRow label="Job type" value={template.jobType === "maintenance" ? "Preventive Maintenance" : template.jobType} />
           <DetailRow label="Priority" value={template.priority} />
           {template.description && <DetailRow label="Notes" value={template.description} />}
-          {template.preferredTechnicianId && (
-            <DetailRow label="Preferred technician" value={preferredTech?.fullName ?? template.preferredTechnicianId} />
-          )}
         </CardContent>
       </Card>
 
@@ -786,13 +777,6 @@ export default function PMDetailPage() {
         <CardContent className="divide-y">
           <DetailRow label="Months" value={formatMonths(template.monthsOfYear)} />
           <DetailRow label="Occurrences due on" value={formatGenerationMode(template.generationMode, template.generationDayOfMonth)} />
-          <DetailRow label="Auto-schedule">
-            {template.autoSchedule ? (
-              <span className="text-sm font-medium">
-                Yes — {template.scheduledTimeLocal ?? "09:00"}, {template.defaultDurationMinutes ?? 120} min
-              </span>
-            ) : <span className="text-sm font-medium">Manual (unscheduled)</span>}
-          </DetailRow>
           <DetailRow label="Start date" value={template.startDate} />
           {template.endDate && <DetailRow label="End date" value={template.endDate} />}
           <DetailRow

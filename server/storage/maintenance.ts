@@ -2,6 +2,7 @@ import { db } from "../db";
 import { eq, and, isNotNull, isNull, desc, sql } from "drizzle-orm";
 import { jobs, clientLocations } from "@shared/schema";
 import { BaseRepository } from "./base";
+import { effectiveEndExpr } from "../lib/queryHelpers";
 
 /**
  * Maintenance Repository
@@ -41,17 +42,14 @@ export class MaintenanceRepository extends BaseRepository {
     // Derive status from job fields
     // Phase 2 Step 5: Overdue = effectiveEnd < NOW
     // effectiveEnd priority: scheduled_end > scheduled_start + duration_minutes > scheduled_start
+    // 2026-03-18: Uses canonical effectiveEndExpr from queryHelpers.ts
     const statusExpr = sql<string>`
       CASE
         WHEN ${jobs.status} = 'completed' THEN 'completed'
         WHEN ${jobs.status} = 'invoiced' THEN 'invoiced'
         WHEN ${jobs.status} = 'archived' THEN 'archived'
         WHEN ${jobs.scheduledStart} IS NULL THEN 'unscheduled'
-        WHEN CASE
-          WHEN ${jobs.scheduledEnd} IS NOT NULL THEN ${jobs.scheduledEnd}
-          WHEN ${jobs.durationMinutes} IS NOT NULL THEN ${jobs.scheduledStart} + (${jobs.durationMinutes} || ' minutes')::interval
-          ELSE ${jobs.scheduledStart}
-        END < CURRENT_TIMESTAMP THEN 'overdue'
+        WHEN ${effectiveEndExpr} < CURRENT_TIMESTAMP THEN 'overdue'
         WHEN DATE(${jobs.scheduledStart}) = CURRENT_DATE THEN 'today'
         ELSE 'scheduled'
       END

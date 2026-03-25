@@ -64,12 +64,21 @@ export interface CalendarEventDto {
   contactPhone?: string | null;
   /** Location notes (site-specific context) */
   locationNotes?: string | null;
+  /** Location address fields for dispatch detail panel */
+  locationAddress?: string | null;
+  locationCity?: string | null;
+  locationProvinceState?: string | null;
+  locationPostalCode?: string | null;
   /** Job type (e.g., "PM", "Repair", "Install") */
   jobType: string;
   /** Job summary/description */
   summary: string;
   /** Job status (open, completed, invoiced, archived) */
   status: string;
+  /** Job workflow sub-status (null, in_progress, on_hold, on_route) — only when status='open' */
+  openSubStatus?: string | null;
+  /** Hold reason when openSubStatus='on_hold' (parts, customer, access, approval, weather, other) */
+  holdReason?: string | null;
   /** Location ID for the job */
   locationId: string;
   /** Location display name */
@@ -154,6 +163,10 @@ export interface UnscheduledJobDto {
   summary: string;
   /** Job status (always 'open' for backlog) */
   status: string;
+  /** Job workflow sub-status (null, in_progress, on_hold, on_route) */
+  openSubStatus?: string | null;
+  /** Hold reason when openSubStatus='on_hold' */
+  holdReason?: string | null;
   /** Location ID */
   locationId: string;
   /** Location name */
@@ -172,6 +185,14 @@ export interface UnscheduledJobDto {
   version: number;
   /** Job duration in minutes (from template, for dispatch board block sizing) */
   durationMinutes?: number | null;
+  /** Location address fields for dispatch detail panel */
+  locationAddress?: string | null;
+  locationCity?: string | null;
+  locationProvinceState?: string | null;
+  locationPostalCode?: string | null;
+  /** 2026-03-22: Real visit ID from job_visits — enables canonical EditVisitModal opening.
+   *  Null if no active non-terminal visit exists (e.g., all visits archived/completed). */
+  activeVisitId?: string | null;
 }
 
 // ============================================================================

@@ -30,6 +30,7 @@ export function AddLocationDialog({ open, onOpenChange, supplierId }: AddLocatio
   const [formData, setFormData] = useState({
     name: "",
     address: "",
+    address2: "",
     city: "",
     province: "",
     postalCode: "",
@@ -59,6 +60,7 @@ export function AddLocationDialog({ open, onOpenChange, supplierId }: AddLocatio
       setFormData({
         name: "",
         address: "",
+        address2: "",
         city: "",
         province: "",
         postalCode: "",
@@ -142,6 +144,16 @@ export function AddLocationDialog({ open, onOpenChange, supplierId }: AddLocatio
                   }));
                 }}
                 placeholder="Street address"
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="address2">Address Line 2</Label>
+              <Input
+                id="address2"
+                value={formData.address2}
+                onChange={(e) => setFormData({ ...formData, address2: e.target.value })}
+                placeholder="Suite, Unit, Floor (optional)"
               />
             </div>
 

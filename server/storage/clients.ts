@@ -60,7 +60,8 @@ export class ClientRepository extends BaseRepository {
   ): Promise<PaginatedResult<Client>> {
     this.assertCompanyId(companyId);
 
-    const limit = clampLimit(options.limit ?? 50, 200);
+    // Fix: raised max from 200 to 500 to support client list fetching all locations
+    const limit = clampLimit(options.limit ?? 50, 500);
     const page = Math.max(1, options.page ?? 1);
     const offset = options.offset ?? (page - 1) * limit;
 
@@ -72,15 +73,18 @@ export class ClientRepository extends BaseRepository {
 
     // Add inactive filter (for active/inactive tabs)
     // IMPORTANT: NULL inactive values are treated as active (legacy data compatibility)
+    // Fix: when inactive param is omitted (undefined), return ALL locations so the
+    // frontend Clients page can group by company and derive active/inactive status
+    // from child locations. Previously this defaulted to active-only, breaking the
+    // Inactive tab which always showed 0 companies.
     if (options.inactive === true) {
-      // Explicitly requesting inactive clients
       whereConditions.push(eq(clients.inactive, true));
-    } else {
-      // Default: show active clients (inactive = false OR inactive IS NULL)
+    } else if (options.inactive === false) {
       whereConditions.push(
         or(eq(clients.inactive, false), isNull(clients.inactive))!
       );
     }
+    // When options.inactive is undefined → no filter → return all (active + inactive)
 
     // Add search filter
     if (options.search && options.search.trim()) {

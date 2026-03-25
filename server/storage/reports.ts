@@ -1,7 +1,8 @@
 import { db } from "../db";
-import { eq, and, sql, inArray, gt, or, isNull } from "drizzle-orm";
+import { eq, and, sql, inArray, gt } from "drizzle-orm";
 import { invoices, clientLocations, customerCompanies } from "@shared/schema";
 import { BaseRepository } from "./base";
+import { locationDisplayNameExpr } from "../lib/queryHelpers";
 
 export interface ARAgingInvoice {
   id: string;
@@ -72,8 +73,8 @@ export class ReportsRepository extends BaseRepository {
         // Customer company fields
         customerCompanyId: customerCompanies.id,
         customerCompanyName: customerCompanies.name,
-        // Phase 5 Step A5: canonical COALESCE pattern
-        locationDisplayName: sql<string>`COALESCE(${customerCompanies.name}, ${clientLocations.companyName})`,
+        // Phase 5 Step A5: canonical location display name helper
+        locationDisplayName: locationDisplayNameExpr,
       })
       .from(invoices)
       // Phase 5 Step A5: LEFT JOIN to include invoices with no/deleted locations
@@ -83,7 +84,7 @@ export class ReportsRepository extends BaseRepository {
         and(
           eq(invoices.companyId, companyId),
           // Legacy data compatibility: treat NULL isActive as active
-          or(eq(invoices.isActive, true), isNull(invoices.isActive)),
+          eq(invoices.isActive, true),
           inArray(invoices.status, ["sent", "partial_paid"]),
           gt(sql`CAST(${invoices.balance} AS DECIMAL)`, 0)
         )

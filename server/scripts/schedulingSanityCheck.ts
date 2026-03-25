@@ -29,7 +29,8 @@
 
 import { db } from "../db";
 import { sql } from "drizzle-orm";
-import { TERMINAL_STATUSES, BACKLOG_STATUS } from "../domain/scheduling";
+import { BACKLOG_STATUS } from "../domain/scheduling";
+import { JOB_TERMINAL_STATUSES as TERMINAL_STATUSES } from "../domain/jobLifecycle";
 
 // Parse CLI arguments
 const args = process.argv.slice(2);
@@ -50,7 +51,7 @@ const LEGACY_STATUS_MIGRATIONS: Record<string, { status: string; openSubStatus: 
   "closed": { status: "archived", openSubStatus: null },
   "canceled": { status: "archived", openSubStatus: null },
   "cancelled": { status: "archived", openSubStatus: null },
-  "action_required": { status: "open", openSubStatus: "needs_review" },
+  "action_required": { status: "open", openSubStatus: "on_hold" },
   "draft": { status: "open", openSubStatus: null },
   "needs_parts": { status: "open", openSubStatus: "on_hold" },
 };
@@ -173,7 +174,7 @@ async function main() {
             WHEN 'in_progress' THEN 'in_progress'
             WHEN 'on_hold' THEN 'on_hold'
             WHEN 'needs_parts' THEN 'on_hold'
-            WHEN 'action_required' THEN 'needs_review'
+            WHEN 'action_required' THEN 'on_hold'
             ELSE open_sub_status
           END,
           updated_at = NOW()

@@ -3,12 +3,63 @@ import { eq, and, isNull, inArray } from "drizzle-orm";
 import { clientContacts } from "@shared/schema";
 import type { ClientContact, InsertClientContact } from "@shared/schema";
 import { BaseRepository } from "./base";
+import { normalizeForMatch } from "@shared/normalizeForMatch";
 
 /**
  * Repository for client_contacts table.
  * Contacts belong to a customer_company and optionally to a specific location.
  */
 export class ClientContactRepository extends BaseRepository {
+  /**
+   * Find contact by normalized email under a customer company.
+   * In-memory normalized filter (no DB index on email).
+   */
+  async findContactByEmail(
+    companyId: string,
+    customerCompanyId: string,
+    normalizedEmail: string
+  ): Promise<ClientContact | null> {
+    if (!normalizedEmail) return null;
+    const all = await this.getAllContactsForCustomerCompany(companyId, customerCompanyId);
+    return all.find((c) => normalizeForMatch(c.email) === normalizedEmail) ?? null;
+  }
+
+  /**
+   * Find contact by normalized name + phone under a customer company.
+   * Fallback dedup when email is not available.
+   */
+  async findContactByNamePhone(
+    companyId: string,
+    customerCompanyId: string,
+    normalizedName: string,
+    normalizedPhone: string
+  ): Promise<ClientContact | null> {
+    if (!normalizedName || !normalizedPhone) return null;
+    const all = await this.getAllContactsForCustomerCompany(companyId, customerCompanyId);
+    return all.find((c) => {
+      const fullName = normalizeForMatch(`${c.firstName} ${c.lastName}`);
+      const phone = normalizeForMatch(c.phone);
+      return fullName === normalizedName && phone === normalizedPhone;
+    }) ?? null;
+  }
+
+  /**
+   * Find contact by normalized full name under a customer company.
+   * Name-only fallback dedup for contacts without email or phone.
+   */
+  async findContactByName(
+    companyId: string,
+    customerCompanyId: string,
+    normalizedName: string
+  ): Promise<ClientContact | null> {
+    if (!normalizedName) return null;
+    const all = await this.getAllContactsForCustomerCompany(companyId, customerCompanyId);
+    return all.find((c) => {
+      const fullName = normalizeForMatch(`${c.firstName} ${c.lastName}`);
+      return fullName === normalizedName;
+    }) ?? null;
+  }
+
   /**
    * Bulk create contacts for a customer company (and optionally locations).
    * Used during full-create flow.

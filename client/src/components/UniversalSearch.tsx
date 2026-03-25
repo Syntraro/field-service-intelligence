@@ -11,8 +11,9 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useLocation } from "wouter";
+import { useSurfaceController } from "@/hooks/useSurfaceController";
 import {
-  Search, Loader2, Briefcase, FileText, Building2, MapPin, Truck,
+  Search, Loader2, Briefcase, FileText, Building2, MapPin, Truck, UserCircle,
   Plus, LayoutDashboard, LayoutGrid, ClipboardList, Receipt, FileCheck,
   Users, Wrench, Settings, Shield, Navigation, Zap,
 } from "lucide-react";
@@ -22,7 +23,7 @@ import { cn } from "@/lib/utils";
 // TYPES
 // ========================================
 
-type SearchResultType = "job" | "invoice" | "customerCompany" | "location" | "supplier";
+type SearchResultType = "job" | "invoice" | "customerCompany" | "location" | "supplier" | "contact";
 
 interface SearchResult {
   type: SearchResultType;
@@ -95,13 +96,14 @@ function buildCommands(callbacks: { onCreateJob?: () => void; onCreateQuote?: ()
 // SEARCH RESULT HELPERS (preserved from original)
 // ========================================
 
-const TYPE_ORDER: SearchResultType[] = ["invoice", "job", "customerCompany", "location", "supplier"];
+const TYPE_ORDER: SearchResultType[] = ["invoice", "job", "customerCompany", "location", "contact", "supplier"];
 
 const TYPE_ICONS: Record<SearchResultType, React.ComponentType<{ className?: string }>> = {
   job: Briefcase,
   invoice: FileText,
   customerCompany: Building2,
   location: MapPin,
+  contact: UserCircle,
   supplier: Truck,
 };
 
@@ -110,6 +112,7 @@ const TYPE_LABELS: Record<SearchResultType, string> = {
   invoice: "Invoices",
   customerCompany: "Companies",
   location: "Locations",
+  contact: "Contacts",
   supplier: "Suppliers",
 };
 
@@ -118,6 +121,7 @@ const TYPE_ROUTES: Record<SearchResultType, (id: string) => string> = {
   invoice: (id) => `/invoices/${id}`,
   customerCompany: (id) => `/clients/${id}`,
   location: (id) => `/locations/${id}`,
+  contact: (id) => `/clients/${id}`,  // Navigate to parent company (contacts live under companies)
   supplier: (id) => `/suppliers/${id}`,
 };
 
@@ -176,7 +180,10 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const paletteRef = useRef<HTMLDivElement>(null);
-  const debounceRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Surface controller: manages debounce timers and abort signals.
+  // Query cache cleanup not needed here (no React Query) but abort is.
+  const surface = useSurfaceController(open);
 
   // Build commands with create callbacks
   const commands = useMemo(
@@ -221,7 +228,8 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
     setSelectedIndex(0);
   }, [paletteItems.length]);
 
-  // ------ Debounced API search (preserved) ------
+  // ------ Debounced API search with abort support ------
+  // Uses surface.signal so in-flight requests are aborted on close/unmount.
   const search = useCallback(async (searchQuery: string) => {
     if (searchQuery.trim().length < 2) {
       setResults([]);
@@ -230,17 +238,24 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
     }
     setLoading(true);
     try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(searchQuery)}&limit=20`, { credentials: "include" });
+      const res = await fetch(
+        `/api/search?q=${encodeURIComponent(searchQuery)}&limit=30`,
+        { credentials: "include", signal: surface.signal }
+      );
+      // Guard: if surface closed while fetch was in-flight, don't update state
+      if (surface.isStale()) return;
       if (res.ok) {
         const data: SearchResponse = await res.json();
-        setResults(data.results);
+        if (!surface.isStale()) setResults(data.results);
       }
-    } catch (error) {
+    } catch (error: any) {
+      // AbortError is expected when surface closes — silently ignore
+      if (error?.name === "AbortError") return;
       console.error("Search error:", error);
     } finally {
-      setLoading(false);
+      if (!surface.isStale()) setLoading(false);
     }
-  }, []);
+  }, [surface]);
 
   // ------ Input change with debounce ------
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -248,16 +263,19 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
     setQuery(value);
     if (!open) setOpen(true);
 
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => search(value), 200);
+    // Debounce via surface controller — auto-cancelled on close/unmount
+    surface.debounce("search", () => search(value), 200);
   };
 
   // ------ Close + reset ------
+  // All ephemeral state is reset atomically. The surface controller handles
+  // aborting in-flight fetches and cancelling debounce timers.
   const closePalette = useCallback(() => {
     setOpen(false);
     setQuery("");
     setResults([]);
     setSelectedIndex(0);
+    setLoading(false);
     inputRef.current?.blur();
   }, []);
 
@@ -272,7 +290,7 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
       }
     } else {
       const sr = item.item;
-      const routeId = sr.type === "customerCompany" && sr.customerCompanyId
+      const routeId = (sr.type === "customerCompany" || sr.type === "contact") && sr.customerCompanyId
         ? sr.customerCompanyId : sr.id;
       setLocation(TYPE_ROUTES[sr.type](routeId));
     }
@@ -306,16 +324,22 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
   };
 
   // ------ Global Cmd+K / Ctrl+K listener ------
+  // IMPORTANT: Suppresses when a modal dialog is open (e.g., QuickAddJobDialog)
+  // to prevent cross-surface keyboard interference. Checks for Radix Dialog's
+  // [role="dialog"][data-state="open"] in the DOM as the canonical signal.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        // Check if a modal dialog is open — if so, do NOT steal focus
+        const modalOpen = document.querySelector('[role="dialog"][data-state="open"]');
+        if (modalOpen) return; // Let the dialog handle its own keyboard events
+
         e.preventDefault();
         e.stopPropagation();
         if (open) {
           closePalette();
         } else {
           setOpen(true);
-          // Small delay so the palette renders before we try to focus
           requestAnimationFrame(() => inputRef.current?.focus());
         }
       }
@@ -325,10 +349,17 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
   }, [open, closePalette]);
 
   // ------ Click-outside to close ------
+  // Only active when palette is open. Ignores clicks inside modal dialogs
+  // to prevent closing the palette when user clicks inside a dialog that
+  // was opened from a palette action.
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (paletteRef.current && !paletteRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (paletteRef.current && !paletteRef.current.contains(target)) {
+        // Don't close if click landed inside a modal dialog
+        const dialog = (target as Element)?.closest?.('[role="dialog"]');
+        if (dialog) return;
         closePalette();
       }
     };
@@ -342,11 +373,6 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
       requestAnimationFrame(() => inputRef.current?.focus());
     }
   }, [open]);
-
-  // ------ Cleanup debounce on unmount ------
-  useEffect(() => {
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, []);
 
   // ------ Scroll selected item into view ------
   useEffect(() => {

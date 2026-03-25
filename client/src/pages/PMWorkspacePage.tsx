@@ -24,7 +24,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -34,13 +33,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -54,7 +46,8 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-// Label and Textarea imports removed — template form moved to PMTemplateEditorPage
+import { ListToolbar } from "@/components/layout/ListToolbar";
+import { ListSurface, tableRowClass, listPrimaryClass, listSecondaryClass, listResultsClass } from "@/components/ui/list-surface";
 import {
   Plus,
   Play,
@@ -66,14 +59,11 @@ import {
   AlertCircle,
   Wrench,
   Clock,
-  Filter,
   AlertTriangle,
   CheckCircle2,
   CircleDot,
   XCircle,
   SkipForward,
-  CalendarCheck,
-  CalendarX2,
   FileBox,
   MapPin,
   TimerOff,
@@ -83,7 +73,6 @@ import {
   ChevronRight,
   Navigation,
   Zap,
-  Search,
   ArrowUpDown,
   DollarSign,
   Receipt,
@@ -167,7 +156,6 @@ interface UpcomingQueueItem {
   locationCity: string | null;
   clientId: string | null;
   customerName: string | null;
-  preferredTechnicianId: string | null;
   technicianName: string | null;
   generatedJobId: string | null;
   job: { id: string; jobNumber: number; status: string; summary: string } | null;
@@ -492,18 +480,7 @@ function ComplianceBadge({ status }: { status: UpcomingQueueItem["complianceStat
   return <Badge variant="outline" className={`gap-1 ${cfg.className}`}>{cfg.icon}{cfg.label}</Badge>;
 }
 
-function SchedulingBadge({ state }: { state: UpcomingQueueItem["schedulingState"] }) {
-  const map: Record<string, { className: string; icon: React.ReactNode; label: string }> = {
-    not_generated: { className: "border-blue-300 bg-blue-50 text-blue-700", icon: <FileBox className="h-3 w-3" />, label: "Awaiting Generation" },
-    generated_unscheduled: { className: "border-yellow-300 bg-yellow-50 text-yellow-700", icon: <CalendarX2 className="h-3 w-3" />, label: "Unscheduled" },
-    scheduled: { className: "border-blue-300 bg-blue-50 text-blue-700", icon: <CalendarCheck className="h-3 w-3" />, label: "Scheduled" },
-    completed: { className: "border-green-300 bg-green-50 text-green-700", icon: <CheckCircle2 className="h-3 w-3" />, label: "Done" },
-    canceled: { className: "border-red-200 bg-red-50 text-red-600", icon: <XCircle className="h-3 w-3" />, label: "Canceled" },
-    skipped: { className: "border-gray-300 bg-gray-50 text-gray-600", icon: <SkipForward className="h-3 w-3" />, label: "Skipped" },
-  };
-  const cfg = map[state] ?? map.not_generated;
-  return <Badge variant="outline" className={`gap-1 ${cfg.className}`}>{cfg.icon}{cfg.label}</Badge>;
-}
+/* List Standardization: Removed SchedulingBadge — simplified dashboard columns no longer show scheduling state */
 
 // ============================================================================
 // PM Contracts Tab (PM Pivot Phase 1: renamed from Maintenance Plans)
@@ -602,21 +579,16 @@ function PMSetupsTab({
 
   return (
     <div className="space-y-3">
-      {/* Phase 5B Part 2: Search input */}
-      <div className="relative max-w-sm">
-        <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-        <Input
-          placeholder="Search PM contracts..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="pl-8 h-9"
-          data-testid="input-pm-search"
-        />
-      </div>
+      {/* List Standardization: ListToolbar replaces manual Search/Input */}
+      <ListToolbar
+        searchValue={search}
+        onSearchChange={setSearch}
+        searchPlaceholder="Search PM contracts..."
+      />
 
-      <Card><CardContent className="p-0"><div className="overflow-x-auto">
+      <ListSurface><div className="overflow-x-auto">
         <Table>
-          <TableHeader><TableRow>
+          <TableHeader><TableRow className="text-xs font-medium bg-[#FAFAFA] dark:bg-gray-900/50">
             <SortHead label="Customer" col="customer" />
             <SortHead label="Location" col="location" />
             <SortHead label="Contract Name" col="name" />
@@ -627,20 +599,19 @@ function PMSetupsTab({
           </TableRow></TableHeader>
           <TableBody>
             {sorted.map((tpl) => (
-              <TableRow key={tpl.id} className="cursor-pointer hover:bg-muted/50" onClick={() => setLocation(`/pm/${tpl.id}`)} data-testid={`pm-row-${tpl.id}`}>
-                {/* Phase 5B Part 1: Clean customer/location/address — no repeated company name */}
-                <TableCell className="font-medium max-w-[180px] truncate">{tpl.clientName || "—"}</TableCell>
+              <TableRow key={tpl.id} className={tableRowClass} onClick={() => setLocation(`/pm/${tpl.id}`)} data-testid={`pm-row-${tpl.id}`}>
+                <TableCell className={`${listPrimaryClass} max-w-[180px]`}>{tpl.clientName || "—"}</TableCell>
                 <TableCell>
                   <div className="max-w-[180px]">
-                    {tpl.locationName && <div className="text-sm truncate">{tpl.locationName}</div>}
-                    {tpl.locationAddress && <div className="text-xs text-muted-foreground/70 truncate">{tpl.locationAddress}</div>}
+                    {tpl.locationName && <div className={listPrimaryClass}>{tpl.locationName}</div>}
+                    {tpl.locationAddress && <div className={listSecondaryClass}>{tpl.locationAddress}</div>}
                     {!tpl.locationName && !tpl.locationAddress && "—"}
                   </div>
                 </TableCell>
-                <TableCell>{tpl.title}</TableCell>
-                <TableCell className="text-sm">{formatRecurrence(tpl.recurrenceKind, tpl.interval, tpl.monthsOfYear)}</TableCell>
+                <TableCell className={listPrimaryClass}>{tpl.title}</TableCell>
+                <TableCell className={listSecondaryClass}>{formatRecurrence(tpl.recurrenceKind, tpl.interval, tpl.monthsOfYear)}</TableCell>
                 <TableCell><StatusBadge isActive={tpl.isActive} /></TableCell>
-                <TableCell>{formatGenerationDay(tpl.generationMode, tpl.generationDayOfMonth)}</TableCell>
+                <TableCell className={listSecondaryClass}>{formatGenerationDay(tpl.generationMode, tpl.generationDayOfMonth)}</TableCell>
                 <TableCell className="text-right">
                   <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
                     <Button variant="ghost" size="icon" title="Edit" onClick={() => setLocation(`/pm/${tpl.id}/edit`)}><Pencil className="h-4 w-4" /></Button>
@@ -660,7 +631,8 @@ function PMSetupsTab({
             )}
           </TableBody>
         </Table>
-      </div></CardContent></Card>
+      </div></ListSurface>
+      <p className={listResultsClass}>Showing {sorted.length} contract{sorted.length !== 1 ? "s" : ""}.</p>
     </div>
   );
 }
@@ -669,7 +641,7 @@ function PMSetupsTab({
 // Phase 4B: Queue Item Row (reusable in flat + grouped views)
 // ============================================================================
 
-/** Phase 4B: Reusable queue row with optional checkbox for grouped + flat views */
+/** List Standardization: Simplified queue row — 4 columns: Customer, PM Contract, Window, Status */
 function QueueItemRow({ item, onClick, showCheckbox, isSelected, isEligible, onToggle }: {
   item: UpcomingQueueItem;
   onClick: () => void;
@@ -678,12 +650,10 @@ function QueueItemRow({ item, onClick, showCheckbox, isSelected, isEligible, onT
   isEligible?: boolean;
   onToggle?: (id: string) => void;
 }) {
-  // Phase 5B: Only show visit date when truly scheduled
-  const hasRealVisitDate = item.schedulingState === "scheduled" && item.visit?.scheduledDate;
   return (
-    <TableRow className="cursor-pointer hover:bg-muted/50" onClick={onClick}>
+    <TableRow className={tableRowClass} onClick={onClick}>
       {showCheckbox && (
-        <TableCell onClick={(e) => e.stopPropagation()}>
+        <TableCell className="w-10" onClick={(e) => e.stopPropagation()}>
           {isEligible ? (
             <Checkbox
               checked={isSelected}
@@ -693,32 +663,15 @@ function QueueItemRow({ item, onClick, showCheckbox, isSelected, isEligible, onT
           ) : null}
         </TableCell>
       )}
-      <TableCell><ComplianceBadge status={item.complianceStatus} /></TableCell>
-      <TableCell><SchedulingBadge state={item.schedulingState} /></TableCell>
-      <TableCell className="font-medium max-w-[180px] truncate">{item.templateTitle}</TableCell>
-      {/* Phase 5B: Customer / Location — no repeated company name */}
       <TableCell>
         <div className="max-w-[200px]">
-          {item.customerName && <div className="text-sm truncate">{item.customerName}</div>}
-          {item.locationName && <div className="text-xs text-muted-foreground truncate">{item.locationName}</div>}
-          {!item.customerName && !item.locationName && "—"}
+          <div className={listPrimaryClass}>{item.customerName || "—"}</div>
+          {item.locationName && <div className={listSecondaryClass}>{item.locationName}</div>}
         </div>
       </TableCell>
-      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{item.windowStart} — {item.windowEnd}</TableCell>
-      <TableCell className="text-sm whitespace-nowrap">
-        {hasRealVisitDate ? formatDateTime(item.visit!.scheduledDate!) : <span className="text-muted-foreground">—</span>}
-      </TableCell>
-      <TableCell onClick={(e) => e.stopPropagation()}>
-        {item.job ? (
-          <Link href={`/jobs/${item.job.id}`} className="text-primary hover:underline font-medium text-sm">#{item.job.jobNumber}</Link>
-        ) : <span className="text-muted-foreground text-sm">—</span>}
-      </TableCell>
-      {/* Phase 5B: Job status column */}
-      <TableCell className="text-xs">
-        {item.job ? (
-          <span className="capitalize">{item.job.status}</span>
-        ) : <span className="text-muted-foreground">—</span>}
-      </TableCell>
+      <TableCell className={listPrimaryClass}>{item.templateTitle}</TableCell>
+      <TableCell className={`${listSecondaryClass} whitespace-nowrap`}>{item.windowStart} — {item.windowEnd}</TableCell>
+      <TableCell><ComplianceBadge status={item.complianceStatus} /></TableCell>
     </TableRow>
   );
 }
@@ -778,10 +731,10 @@ function GroupSection({ group, onItemClick, selectedIds, onToggle, onToggleGroup
       <CollapsibleContent>
         <div className="overflow-x-auto border-t">
           <Table>
-            <TableHeader><TableRow>
+            <TableHeader><TableRow className="text-xs font-medium bg-[#FAFAFA] dark:bg-gray-900/50">
               {showCheckboxes && <TableHead className="w-10" />}
-              <TableHead>Compliance</TableHead><TableHead>Scheduling</TableHead><TableHead>PM Contract</TableHead>
-              <TableHead>Customer / Location</TableHead><TableHead>Window</TableHead><TableHead>Visit</TableHead><TableHead>Job</TableHead><TableHead>Status</TableHead>
+              <TableHead>Customer</TableHead><TableHead>PM Contract</TableHead>
+              <TableHead>Window</TableHead><TableHead>Status</TableHead>
             </TableRow></TableHeader>
             <TableBody>
               {group.items.map((item) => (
@@ -813,37 +766,8 @@ type DashboardSubView = "due_now" | "upcoming_planning";
 /** Compliance statuses considered actionable (Due Now surface) */
 const ACTIONABLE_COMPLIANCE = new Set(["overdue", "due_soon", "in_window"]);
 
-/** PM Due Queue filters for the Due Now sub-view */
-const DUE_NOW_FILTER_OPTIONS = [
-  { value: "needs_generation", label: "Needs Generation" },
-  { value: "needs_action", label: "All Needs Action" },
-  { value: "all", label: "All Due" },
-  { value: "overdue", label: "Overdue" },
-  { value: "due_soon", label: "Due Soon" },
-  { value: "in_window", label: "In Window" },
-] as const;
-
-/** PM Due Queue filters for the Upcoming sub-view (planning only, no generation) */
-const UPCOMING_FILTER_OPTIONS = [
-  { value: "all", label: "All Upcoming" },
-] as const;
-
-/** PM Due Queue filter — all items here are pre-generation (pending instances only) */
-function applyFilter(items: UpcomingQueueItem[], filter: string): UpcomingQueueItem[] {
-  switch (filter) {
-    case "all": return items;
-    case "needs_generation": return items.filter((i) =>
-      i.schedulingState === "not_generated" &&
-      !["skipped", "canceled"].includes(i.complianceStatus)
-    );
-    case "needs_action": return items.filter(isNeedsAction);
-    case "overdue": return items.filter((i) => i.complianceStatus === "overdue");
-    case "due_soon": return items.filter((i) => i.complianceStatus === "due_soon");
-    case "in_window": return items.filter((i) => i.complianceStatus === "in_window");
-    case "upcoming": return items.filter((i) => i.complianceStatus === "upcoming");
-    default: return items;
-  }
-}
+/* List Standardization: Removed DUE_NOW_FILTER_OPTIONS, UPCOMING_FILTER_OPTIONS, and applyFilter —
+   sub-filter dropdowns removed; all items in each sub-view are shown directly. */
 
 // ============================================================================
 // Phase 4C: Generation eligibility + confirmation modal
@@ -876,10 +800,6 @@ function GenerateConfirmModal({
 }) {
   const customerCount = new Set(items.map((i) => i.clientId).filter(Boolean)).size;
   const locationCount = new Set(items.map((i) => i.locationId).filter(Boolean)).size;
-  const dates = items.map((i) => i.instanceDate).sort();
-  const earliest = dates[0] ?? "—";
-  const latest = dates[dates.length - 1] ?? "—";
-
   return (
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="sm:max-w-md">
@@ -890,11 +810,10 @@ function GenerateConfirmModal({
             They will need to be scheduled on your dispatch board.
           </DialogDescription>
         </DialogHeader>
+        {/* Simplified: removed earliest/latest due date fields to keep modal actionable */}
         <div className="space-y-2 text-sm py-2">
           <div className="flex justify-between"><span className="text-muted-foreground">Customers:</span><span className="font-medium">{customerCount}</span></div>
           <div className="flex justify-between"><span className="text-muted-foreground">Locations:</span><span className="font-medium">{locationCount}</span></div>
-          <div className="flex justify-between"><span className="text-muted-foreground">Earliest due:</span><span className="font-medium">{earliest}</span></div>
-          <div className="flex justify-between"><span className="text-muted-foreground">Latest due:</span><span className="font-medium">{latest}</span></div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={isPending}>Cancel</Button>
@@ -921,16 +840,14 @@ const GROUP_MODE_OPTIONS: { value: GroupMode; label: string; icon: React.ReactNo
 
 function UpcomingTab() {
   const [, setLocation] = useLocation();
+  const search = useSearch();
   const { toast } = useToast();
+  // Dashboard urgency filter from URL: ?urgency=overdue|coming_due → due_now, ?urgency=upcoming → upcoming_planning
+  const urgencyParam = useMemo(() => new URLSearchParams(search).get("urgency"), [search]);
+  const initialSubView: DashboardSubView = urgencyParam === "upcoming" ? "upcoming_planning" : "due_now";
   // Dashboard sub-view: "due_now" (actionable) vs "upcoming_planning" (future, read-only)
-  const [subView, setSubView] = useState<DashboardSubView>("due_now");
+  const [subView, setSubView] = useState<DashboardSubView>(initialSubView);
   const isDueNow = subView === "due_now";
-  // Filters: default to "needs_generation" for Due Now, "all" for Upcoming
-  const [dueNowFilter, setDueNowFilter] = useState<string>("needs_generation");
-  const [upcomingFilter, setUpcomingFilter] = useState<string>("all");
-  const statusFilter = isDueNow ? dueNowFilter : upcomingFilter;
-  const setStatusFilter = isDueNow ? setDueNowFilter : setUpcomingFilter;
-  const filterOptions = isDueNow ? DUE_NOW_FILTER_OPTIONS : UPCOMING_FILTER_OPTIONS;
   const [groupMode, setGroupMode] = useState<GroupMode>("none");
   // Phase 4C: Selection state for bulk generation (only active in Due Now)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -952,8 +869,8 @@ function UpcomingTab() {
   );
   const baseItems = isDueNow ? dueNowItems : upcomingPlanningItems;
 
-  // Apply sub-filter within the active sub-view
-  const filteredItems = useMemo(() => applyFilter(baseItems, statusFilter), [baseItems, statusFilter]);
+  // List Standardization: removed sub-filter dropdown — show all items in each sub-view
+  const filteredItems = baseItems;
 
   // Phase 4C: Eligible items in current view (only in Due Now — Upcoming has no generation)
   const eligibleIds = useMemo(
@@ -1115,15 +1032,15 @@ function UpcomingTab() {
       {isDueNow && (
         <div className="flex flex-wrap items-center gap-2">
           {counts.needsGeneration > 0 && (
-            <Badge variant="outline" className="border-blue-300 bg-blue-50 text-blue-700 cursor-pointer font-semibold" onClick={() => setDueNowFilter("needs_generation")}>
+            <Badge variant="outline" className="border-blue-300 bg-blue-50 text-blue-700 font-semibold">
               {counts.needsGeneration} need generation
             </Badge>
           )}
           {counts.overdue > 0 && (
-            <Badge variant="outline" className="border-red-300 bg-red-50 text-red-700 cursor-pointer" onClick={() => setDueNowFilter("overdue")}>{counts.overdue} overdue</Badge>
+            <Badge variant="outline" className="border-red-300 bg-red-50 text-red-700">{counts.overdue} overdue</Badge>
           )}
           {counts.dueSoon > 0 && (
-            <Badge variant="outline" className="border-orange-300 bg-orange-50 text-orange-700 cursor-pointer" onClick={() => setDueNowFilter("due_soon")}>{counts.dueSoon} due soon</Badge>
+            <Badge variant="outline" className="border-orange-300 bg-orange-50 text-orange-700">{counts.dueSoon} due soon</Badge>
           )}
         </div>
       )}
@@ -1136,18 +1053,8 @@ function UpcomingTab() {
         </div>
       )}
 
-      {/* Controls: Filter + Group By + Bulk Generate */}
+      {/* Controls: Group By + Bulk Generate */}
       <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2">
-          <Filter className="h-4 w-4 text-muted-foreground" />
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-[200px] h-8 text-sm"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {filterOptions.map((opt) => <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>)}
-            </SelectContent>
-          </Select>
-        </div>
-
         {/* Bulk actions: only in Due Now view */}
         {isDueNow && selectedEligible.length > 0 ? (
           <>
@@ -1251,16 +1158,16 @@ function UpcomingTab() {
               ))}
             </>
           )}
-          <p className="text-xs text-muted-foreground mt-2">
-            {groups.length} group{groups.length !== 1 ? "s" : ""}, {filteredItems.length} of {baseItems.length} {isDueNow ? "due" : "upcoming"} instances.
+          <p className={listResultsClass}>
+            {groups.length} group{groups.length !== 1 ? "s" : ""}, {filteredItems.length} {isDueNow ? "due" : "upcoming"} instance{filteredItems.length !== 1 ? "s" : ""}.
           </p>
         </div>
       ) : (
-        /* Flat (ungrouped) view */
+        /* List Standardization: Flat (ungrouped) view — simplified 4 columns */
         <>
-          <Card><CardContent className="p-0"><div className="overflow-x-auto">
+          <ListSurface><div className="overflow-x-auto">
             <Table>
-              <TableHeader><TableRow>
+              <TableHeader><TableRow className="text-xs font-medium bg-[#FAFAFA] dark:bg-gray-900/50">
                 {showCheckboxes && (
                   <TableHead className="w-10">
                     {eligibleIds.size > 0 && (
@@ -1272,64 +1179,27 @@ function UpcomingTab() {
                     )}
                   </TableHead>
                 )}
-                <TableHead>Compliance</TableHead>
-                <TableHead>Scheduling</TableHead>
+                <TableHead>Customer</TableHead>
                 <TableHead>PM Contract</TableHead>
-                <TableHead>Customer / Location</TableHead>
                 <TableHead>Window</TableHead>
-                <TableHead>Visit</TableHead>
-                <TableHead>Job</TableHead>
                 <TableHead>Status</TableHead>
               </TableRow></TableHeader>
               <TableBody>
-                {filteredItems.map((item) => {
-                  const eligible = showCheckboxes && isGenerationEligible(item);
-                  const hasRealVisitDate = item.schedulingState === "scheduled" && item.visit?.scheduledDate;
-                  return (
-                    <TableRow key={item.instanceId} className="cursor-pointer hover:bg-muted/50" onClick={() => setLocation(`/pm/${item.templateId}`)}>
-                      {showCheckboxes && (
-                        <TableCell onClick={(e) => e.stopPropagation()}>
-                          {eligible ? (
-                            <Checkbox
-                              checked={selectedIds.has(item.instanceId)}
-                              onCheckedChange={() => toggleSelect(item.instanceId)}
-                              aria-label={`Select ${item.templateTitle}`}
-                            />
-                          ) : null}
-                        </TableCell>
-                      )}
-                      <TableCell><ComplianceBadge status={item.complianceStatus} /></TableCell>
-                      <TableCell><SchedulingBadge state={item.schedulingState} /></TableCell>
-                      <TableCell className="font-medium max-w-[180px] truncate">{item.templateTitle}</TableCell>
-                      <TableCell>
-                        <div className="max-w-[200px]">
-                          {item.customerName && <div className="text-sm truncate">{item.customerName}</div>}
-                          {item.locationName && <div className="text-xs text-muted-foreground truncate">{item.locationName}</div>}
-                          {item.locationAddress && <div className="text-xs text-muted-foreground/70 truncate">{[item.locationAddress, item.locationCity].filter(Boolean).join(", ")}</div>}
-                          {!item.customerName && !item.locationName && "—"}
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{item.windowStart} — {item.windowEnd}</TableCell>
-                      <TableCell className="text-sm whitespace-nowrap">
-                        {hasRealVisitDate ? formatDateTime(item.visit!.scheduledDate!) : <span className="text-muted-foreground">—</span>}
-                      </TableCell>
-                      <TableCell onClick={(e) => e.stopPropagation()}>
-                        {item.job ? (
-                          <Link href={`/jobs/${item.job.id}`} className="text-primary hover:underline font-medium text-sm">#{item.job.jobNumber}</Link>
-                        ) : <span className="text-muted-foreground text-sm">—</span>}
-                      </TableCell>
-                      <TableCell className="text-xs">
-                        {item.job ? (
-                          <span className="capitalize">{item.job.status}</span>
-                        ) : <span className="text-muted-foreground">—</span>}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
+                {filteredItems.map((item) => (
+                  <QueueItemRow
+                    key={item.instanceId}
+                    item={item}
+                    onClick={() => setLocation(`/pm/${item.templateId}`)}
+                    showCheckbox={showCheckboxes}
+                    isSelected={selectedIds.has(item.instanceId)}
+                    isEligible={showCheckboxes && isGenerationEligible(item)}
+                    onToggle={toggleSelect}
+                  />
+                ))}
               </TableBody>
             </Table>
-          </div></CardContent></Card>
-          <p className="text-xs text-muted-foreground">Showing {filteredItems.length} of {baseItems.length} {isDueNow ? "due" : "upcoming"} instances.</p>
+          </div></ListSurface>
+          <p className={listResultsClass}>Showing {filteredItems.length} {isDueNow ? "due" : "upcoming"} instance{filteredItems.length !== 1 ? "s" : ""}.</p>
         </>
       )}
     </div>
@@ -1408,61 +1278,59 @@ function PMTemplatesTab() {
           </CardContent>
         </Card>
       ) : (
-        <Card>
-          <CardContent className="p-0">
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Template Name</TableHead>
-                    <TableHead>Schedule</TableHead>
-                    <TableHead>Billing</TableHead>
-                    <TableHead className="text-center">Items</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
+        <ListSurface>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow className="text-xs font-medium bg-[#FAFAFA] dark:bg-gray-900/50">
+                  <TableHead>Template Name</TableHead>
+                  <TableHead>Schedule</TableHead>
+                  <TableHead>Billing</TableHead>
+                  <TableHead className="text-center">Items</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {templates.map((tpl) => (
+                  <TableRow key={tpl.id} className={tableRowClass} onClick={() => setLocation(`/pm/templates/${tpl.id}/edit`)}>
+                    <TableCell className={listPrimaryClass}>{tpl.name}</TableCell>
+                    <TableCell className={listSecondaryClass}>
+                      {formatTplSchedule(tpl)}
+                    </TableCell>
+                    <TableCell className={listSecondaryClass}>
+                      {tpl.billingMode ? (
+                        <span>{tpl.billingMode === "per_visit" ? "Per visit" : tpl.billingMode}{tpl.defaultPrice ? ` · $${tpl.defaultPrice}` : ""}</span>
+                      ) : "—"}
+                    </TableCell>
+                    <TableCell className="text-center text-sm">
+                      {tpl.defaultLineItemsJson?.length ?? 0}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
+                        <Button variant="ghost" size="icon" title="Edit" onClick={() => setLocation(`/pm/templates/${tpl.id}/edit`)}>
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title="Delete"
+                          disabled={deleteMutation.isPending}
+                          onClick={() => {
+                            if (confirm(`Delete template "${tpl.name}"?`)) {
+                              deleteMutation.mutate(tpl.id);
+                            }
+                          }}
+                        >
+                          <Trash2 className="h-4 w-4 text-destructive" />
+                        </Button>
+                      </div>
+                    </TableCell>
                   </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {templates.map((tpl) => (
-                    <TableRow key={tpl.id} className="cursor-pointer" onClick={() => setLocation(`/pm/templates/${tpl.id}/edit`)}>
-                      <TableCell className="font-medium">{tpl.name}</TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {formatTplSchedule(tpl)}
-                      </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
-                        {tpl.billingMode ? (
-                          <span>{tpl.billingMode === "per_visit" ? "Per visit" : tpl.billingMode}{tpl.defaultPrice ? ` · $${tpl.defaultPrice}` : ""}</span>
-                        ) : "—"}
-                      </TableCell>
-                      <TableCell className="text-center text-sm">
-                        {tpl.defaultLineItemsJson?.length ?? 0}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
-                          <Button variant="ghost" size="icon" title="Edit" onClick={() => setLocation(`/pm/templates/${tpl.id}/edit`)}>
-                            <Pencil className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            title="Delete"
-                            disabled={deleteMutation.isPending}
-                            onClick={() => {
-                              if (confirm(`Delete template "${tpl.name}"?`)) {
-                                deleteMutation.mutate(tpl.id);
-                              }
-                            }}
-                          >
-                            <Trash2 className="h-4 w-4 text-destructive" />
-                          </Button>
-                        </div>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </ListSurface>
       )}
     </div>
   );
@@ -1693,7 +1561,7 @@ function PMBillingTab({ contracts }: { contracts: RecurringTemplate[] }) {
         </CardContent>
       </Card>
 
-      {/* PM Billing Phase 2: Contract Billing Events — Exceptions */}
+      {/* List Standardization: Contract Billing Exceptions */}
       {eventBuckets.eventExceptions.length > 0 && (
         <Card>
           <CardContent className="pt-4">
@@ -1704,16 +1572,16 @@ function PMBillingTab({ contracts }: { contracts: RecurringTemplate[] }) {
             </h3>
             <div className="overflow-x-auto">
               <Table>
-                <TableHeader><TableRow>
+                <TableHeader><TableRow className="text-xs font-medium bg-[#FAFAFA] dark:bg-gray-900/50">
                   <TableHead>Contract</TableHead><TableHead>Period</TableHead>
                   <TableHead>Model</TableHead><TableHead>Issue</TableHead><TableHead>Status</TableHead>
                 </TableRow></TableHeader>
                 <TableBody>
                   {eventBuckets.eventExceptions.map((r) => (
-                    <TableRow key={r.event.id} className="cursor-pointer" onClick={() => setLocation(`/pm/${r.event.pmContractId}`)}>
-                      <TableCell className="font-medium text-sm">{r.contractTitle ?? "—"}</TableCell>
-                      <TableCell className="text-sm">{r.event.periodStart} — {r.event.periodEnd}</TableCell>
-                      <TableCell className="text-sm">{formatBillingModelLabel(r.event.billingModelSnapshot)}</TableCell>
+                    <TableRow key={r.event.id} className={tableRowClass} onClick={() => setLocation(`/pm/${r.event.pmContractId}`)}>
+                      <TableCell className={listPrimaryClass}>{r.contractTitle ?? "—"}</TableCell>
+                      <TableCell className={listSecondaryClass}>{r.event.periodStart} — {r.event.periodEnd}</TableCell>
+                      <TableCell className={listSecondaryClass}>{formatBillingModelLabel(r.event.billingModelSnapshot)}</TableCell>
                       <TableCell className="text-xs text-red-600">{r.event.notes ?? "Billing exception"}</TableCell>
                       <TableCell><BillingEventStatusBadge status={r.event.status} /></TableCell>
                     </TableRow>
@@ -1736,17 +1604,17 @@ function PMBillingTab({ contracts }: { contracts: RecurringTemplate[] }) {
             </h3>
             <div className="overflow-x-auto">
               <Table>
-                <TableHeader><TableRow>
+                <TableHeader><TableRow className="text-xs font-medium bg-[#FAFAFA] dark:bg-gray-900/50">
                   <TableHead>Job</TableHead><TableHead>Billing Model</TableHead>
                   <TableHead>Disposition</TableHead><TableHead>Exception</TableHead>
                   <TableHead>Status</TableHead>
                 </TableRow></TableHeader>
                 <TableBody>
                   {buckets.exceptions.map((job) => (
-                    <TableRow key={job.id} className="cursor-pointer" onClick={() => setLocation(`/jobs/${job.id}`)}>
-                      <TableCell className="font-medium">#{job.jobNumber}</TableCell>
-                      <TableCell className="text-sm">{formatBillingModelLabel(job.pmBillingModel)}</TableCell>
-                      <TableCell className="text-sm">{formatDispositionLabel(job.pmBillingDisposition)}</TableCell>
+                    <TableRow key={job.id} className={tableRowClass} onClick={() => setLocation(`/jobs/${job.id}`)}>
+                      <TableCell className={listPrimaryClass}>#{job.jobNumber}</TableCell>
+                      <TableCell className={listSecondaryClass}>{formatBillingModelLabel(job.pmBillingModel)}</TableCell>
+                      <TableCell className={listSecondaryClass}>{formatDispositionLabel(job.pmBillingDisposition)}</TableCell>
                       <TableCell className="text-xs text-red-600">{job.exceptionReason}</TableCell>
                       <TableCell className="text-xs capitalize">{job.status}</TableCell>
                     </TableRow>
@@ -1758,7 +1626,7 @@ function PMBillingTab({ contracts }: { contracts: RecurringTemplate[] }) {
         </Card>
       )}
 
-      {/* PM Billing Phase 2: Pending contract billing events */}
+      {/* Pending contract billing events */}
       {eventBuckets.pending.length > 0 && (
         <Card>
           <CardContent className="pt-4">
@@ -1769,17 +1637,17 @@ function PMBillingTab({ contracts }: { contracts: RecurringTemplate[] }) {
             </h3>
             <div className="overflow-x-auto">
               <Table>
-                <TableHeader><TableRow>
+                <TableHeader><TableRow className="text-xs font-medium bg-[#FAFAFA] dark:bg-gray-900/50">
                   <TableHead>Contract</TableHead><TableHead>Period</TableHead>
                   <TableHead>Amount</TableHead><TableHead>Model</TableHead><TableHead>Status</TableHead>
                 </TableRow></TableHeader>
                 <TableBody>
                   {eventBuckets.pending.map((r) => (
-                    <TableRow key={r.event.id} className="cursor-pointer" onClick={() => setLocation(`/pm/${r.event.pmContractId}`)}>
-                      <TableCell className="font-medium text-sm">{r.event.billingLabelSnapshot ?? r.contractTitle ?? "—"}</TableCell>
-                      <TableCell className="text-sm">{r.event.periodStart} — {r.event.periodEnd}</TableCell>
-                      <TableCell className="text-sm">{r.event.amountSnapshot ? `$${r.event.amountSnapshot}` : "—"}</TableCell>
-                      <TableCell className="text-sm">{formatBillingModelLabel(r.event.billingModelSnapshot)}</TableCell>
+                    <TableRow key={r.event.id} className={tableRowClass} onClick={() => setLocation(`/pm/${r.event.pmContractId}`)}>
+                      <TableCell className={listPrimaryClass}>{r.event.billingLabelSnapshot ?? r.contractTitle ?? "—"}</TableCell>
+                      <TableCell className={listSecondaryClass}>{r.event.periodStart} — {r.event.periodEnd}</TableCell>
+                      <TableCell className={listSecondaryClass}>{r.event.amountSnapshot ? `$${r.event.amountSnapshot}` : "—"}</TableCell>
+                      <TableCell className={listSecondaryClass}>{formatBillingModelLabel(r.event.billingModelSnapshot)}</TableCell>
                       <TableCell><BillingEventStatusBadge status={r.event.status} /></TableCell>
                     </TableRow>
                   ))}
@@ -1805,16 +1673,16 @@ function PMBillingTab({ contracts }: { contracts: RecurringTemplate[] }) {
           ) : (
             <div className="overflow-x-auto">
               <Table>
-                <TableHeader><TableRow>
+                <TableHeader><TableRow className="text-xs font-medium bg-[#FAFAFA] dark:bg-gray-900/50">
                   <TableHead>Job</TableHead><TableHead>Summary</TableHead>
                   <TableHead>Label</TableHead><TableHead>Status</TableHead>
                 </TableRow></TableHeader>
                 <TableBody>
                   {buckets.pendingInvoice.map((job) => (
-                    <TableRow key={job.id} className="cursor-pointer" onClick={() => setLocation(`/jobs/${job.id}`)}>
-                      <TableCell className="font-medium">#{job.jobNumber}</TableCell>
-                      <TableCell className="text-sm max-w-[200px] truncate">{job.summary}</TableCell>
-                      <TableCell className="text-sm text-muted-foreground">{job.pmBillingLabel || "—"}</TableCell>
+                    <TableRow key={job.id} className={tableRowClass} onClick={() => setLocation(`/jobs/${job.id}`)}>
+                      <TableCell className={listPrimaryClass}>#{job.jobNumber}</TableCell>
+                      <TableCell className={`${listSecondaryClass} max-w-[200px]`}>{job.summary}</TableCell>
+                      <TableCell className={listSecondaryClass}>{job.pmBillingLabel || "—"}</TableCell>
                       <TableCell className="text-xs capitalize">{job.status}</TableCell>
                     </TableRow>
                   ))}
@@ -1825,7 +1693,7 @@ function PMBillingTab({ contracts }: { contracts: RecurringTemplate[] }) {
         </CardContent>
       </Card>
 
-      {/* PM Billing Phase 2: Invoiced contract billing events */}
+      {/* Contract Billing — Invoiced */}
       {eventBuckets.billed.length > 0 && (
         <Card>
           <CardContent className="pt-4">
@@ -1836,18 +1704,18 @@ function PMBillingTab({ contracts }: { contracts: RecurringTemplate[] }) {
             </h3>
             <div className="overflow-x-auto">
               <Table>
-                <TableHeader><TableRow>
+                <TableHeader><TableRow className="text-xs font-medium bg-[#FAFAFA] dark:bg-gray-900/50">
                   <TableHead>Contract</TableHead><TableHead>Period</TableHead>
                   <TableHead>Amount</TableHead><TableHead>Invoice</TableHead><TableHead>Status</TableHead>
                 </TableRow></TableHeader>
                 <TableBody>
                   {eventBuckets.billed.map((r) => (
                     <TableRow key={r.event.id}>
-                      <TableCell className="font-medium text-sm cursor-pointer text-primary hover:underline" onClick={() => setLocation(`/pm/${r.event.pmContractId}`)}>
+                      <TableCell className={`${listPrimaryClass} cursor-pointer text-primary hover:underline`} onClick={() => setLocation(`/pm/${r.event.pmContractId}`)}>
                         {r.event.billingLabelSnapshot ?? r.contractTitle ?? "—"}
                       </TableCell>
-                      <TableCell className="text-sm">{r.event.periodStart} — {r.event.periodEnd}</TableCell>
-                      <TableCell className="text-sm">{r.event.amountSnapshot ? `$${r.event.amountSnapshot}` : "—"}</TableCell>
+                      <TableCell className={listSecondaryClass}>{r.event.periodStart} — {r.event.periodEnd}</TableCell>
+                      <TableCell className={listSecondaryClass}>{r.event.amountSnapshot ? `$${r.event.amountSnapshot}` : "—"}</TableCell>
                       <TableCell>
                         {r.event.invoiceId ? (
                           <span className="text-primary hover:underline cursor-pointer text-sm" onClick={() => setLocation(`/invoices/${r.event.invoiceId}`)}>View Invoice</span>
@@ -1910,10 +1778,14 @@ export default function PMWorkspacePage() {
   const [, setLocation] = useLocation();
   const search = useSearch();
   const { toast } = useToast();
-  // Support ?tab=templates deep link from wizard
-  const tabParam = useMemo(() => new URLSearchParams(search).get("tab"), [search]);
+  // Support ?tab=templates deep link from wizard, ?urgency=overdue|coming_due|upcoming from dashboard
+  const urlParams = useMemo(() => new URLSearchParams(search), [search]);
+  const tabParam = urlParams.get("tab");
+  const urgencyParam = urlParams.get("urgency");
   // Phase 5 Part 3: Default to Upcoming (operational queue first)
   const [activeTab, setActiveTab] = useState(tabParam || "upcoming");
+  // Dashboard urgency filter: when set, the upcoming tab filters to this tier only
+  const [urgencyFilter, setUrgencyFilter] = useState<string | null>(urgencyParam);
 
   const { data: templates = [], isLoading, isError } = useQuery<RecurringTemplate[]>({
     queryKey: ["/api/recurring-templates"],
@@ -1972,7 +1844,7 @@ export default function PMWorkspacePage() {
     <div className="flex flex-col gap-6 p-4 md:p-6 lg:p-8 max-w-7xl mx-auto">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Preventive Maintenance</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">Preventive Maintenance</h1>
           <p className="text-sm text-muted-foreground">Manage PM contracts and generate jobs from due work</p>
         </div>
         <div className="flex items-center gap-2">

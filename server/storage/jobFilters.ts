@@ -14,7 +14,7 @@
  */
 
 import { isNull, eq, and, type SQL } from "drizzle-orm";
-import { jobs } from "@shared/schema";
+import { jobs, clientLocations as clients, customerCompanies } from "@shared/schema";
 
 /**
  * Drizzle ORM filter: returns a composable SQL fragment requiring
@@ -72,3 +72,29 @@ export const JOB_ACTIVE_WORK_SQL_J =
  */
 export const JOB_ACTIVE_WORK_SQL =
   "jobs.deleted_at IS NULL AND jobs.is_active = true AND jobs.status = 'open'";
+
+// ============================================================================
+// Client Location (clientLocations) Filters
+// ============================================================================
+
+/**
+ * Not-deleted client location filter.
+ * Semantics: clientLocations.deletedAt IS NULL.
+ * Does NOT check `inactive` — that is a separate business concept.
+ */
+export function notDeletedClientFilter(): SQL {
+  return isNull(clients.deletedAt)!;
+}
+
+// ============================================================================
+// Customer Company Filters
+// ============================================================================
+
+/**
+ * Not-deleted customer company filter.
+ * Semantics: customerCompanies.deletedAt IS NULL.
+ * Does NOT check isActive — only one listing query combines both.
+ */
+export function notDeletedCustomerCompanyFilter(): SQL {
+  return isNull(customerCompanies.deletedAt)!;
+}

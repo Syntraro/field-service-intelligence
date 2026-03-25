@@ -80,7 +80,7 @@ interface QuickAddPartData {
 const JOB_TYPE_OPTIONS = [
   { value: "", label: "None" },
   { value: "service_call", label: "Service Call" },
-  { value: "pm", label: "PM" },
+  { value: "maintenance", label: "PM" },
   { value: "install", label: "Install" },
   { value: "repair", label: "Repair" },
   { value: "inspection", label: "Inspection" },

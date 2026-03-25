@@ -11,6 +11,7 @@ import {
   DndContext,
   DragOverlay,
   PointerSensor,
+  pointerWithin,
   useSensor,
   useSensors,
   type DragStartEvent,
@@ -19,12 +20,13 @@ import {
 } from "@dnd-kit/core";
 
 import type { VisitStatus, DispatchVisit, DispatchTask, Technician } from "@/components/dispatch/dispatchPreviewTypes";
-import { VISIT_STATUS_OPTIONS, UNASSIGNED_TECH_ID } from "@/components/dispatch/dispatchPreviewTypes";
+import { UNASSIGNED_TECH_ID } from "@/components/dispatch/dispatchPreviewTypes";
+import { VISIT_STATUS_OPTIONS } from "@/lib/visitStatusDisplay";
 import type { DispatchDragData, DispatchDropData } from "@/components/dispatch/dispatchDndTypes";
 import { useDispatchPreviewData } from "@/components/dispatch/useDispatchPreviewData";
 import { useDispatchWeekData } from "@/components/dispatch/useDispatchWeekData";
 import { useDispatchPreviewMutations } from "@/components/dispatch/useDispatchPreviewMutations";
-import { getTimelineConfig } from "@/components/dispatch/dispatchPreviewUtils";
+import { getTimelineConfig, HOUR_WIDTH_PX } from "@/components/dispatch/dispatchPreviewUtils";
 // checkOverlap + findNearestValidSlot now accessed via resolvePlacement() shared resolver
 import { useTechnicianWorkingHours, isTechWorkingOnDate, isTechWorkingInRange } from "@/hooks/useTechnicianWorkingHours";
 import {
@@ -36,16 +38,19 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 
-import DispatchBoardHeader, { type DispatchView, type SchedulingMode } from "@/components/dispatch/DispatchBoardHeader";
+import DispatchBoardHeader, { type DispatchView } from "@/components/dispatch/DispatchBoardHeader";
 import { resolvePlacement, clientXToRelativePx, type PlacementResult } from "@/components/dispatch/dispatchPlacementResolver";
 import DispatchFiltersBar from "@/components/dispatch/DispatchFiltersBar";
 import DispatchTechnicianSidebar from "@/components/dispatch/DispatchTechnicianSidebar";
-import DispatchTimeline from "@/components/dispatch/DispatchTimeline";
+import DispatchTimeline, { ANY_TIME_COL_WIDTH } from "@/components/dispatch/DispatchTimeline";
 import DispatchUnscheduledPanel from "@/components/dispatch/DispatchUnscheduledPanel";
 import DispatchDetailPanel from "@/components/dispatch/DispatchDetailPanel";
 // DispatchDragPreview removed — drag preview now rendered inline from shared dragPlacement result
 import WeekDispatchGrid from "@/components/dispatch/WeekDispatchGrid";
-import { queryClient } from "@/lib/queryClient";
+// 2026-03-21: Canonical visit-edit modal — used for lifecycle actions (complete, reopen, delete)
+// instead of duplicating that logic in the dispatch panel. See REFACTORING_LOG.md.
+import { EditVisitModal } from "@/components/visits/EditVisitModal";
+import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import { TaskDialog } from "@/components/TaskDialog";
@@ -130,7 +135,9 @@ export default function DispatchPreview() {
   const error = activeView === "week" ? weekData.error : dayData.error;
 
   // ── Mutations ──
-  const { scheduleVisit, rescheduleVisit, unscheduleVisit, resizeVisit, rescheduleTask, completeTask, reopenTask, deleteTask, updateVisitCrew, updateVisitStatus, deleteVisit, savingIds } =
+  // 2026-03-21: reopenVisit, completeVisitWithOutcome, deleteVisit removed — lifecycle
+  // actions now routed through canonical EditVisitModal via handleOpenVisitEditor.
+  const { scheduleVisit, rescheduleVisit, unscheduleVisit, resizeVisit, rescheduleTask, completeTask, reopenTask, deleteTask, updateVisitCrew, updateVisitStatus, savingIds } =
     useDispatchPreviewMutations();
 
   // ── Timeline scroll ref (for computing drop positions) ──
@@ -138,8 +145,20 @@ export default function DispatchPreview() {
 
   // ── DnD state ──
   const [activeDragData, setActiveDragData] = useState<DispatchDragData | null>(null);
-  const [dragPointerX, setDragPointerX] = useState<number>(0);
   const [activeOverTechId, setActiveOverTechId] = useState<string | null>(null);
+
+  // Scroll-sync fix: Live drag pointer is stored in a ref (not state) so that
+  // auto-scroll can bump a tick counter to force placement recomputation in the
+  // same frame — without waiting for the next DragMove event. Previously,
+  // dragPointerX was React state that only updated on pointer movement, causing
+  // a growing offset between the preview position and the cursor during
+  // auto-scroll (old scrollLeft + stale pointer → drift).
+  const dragPointerXRef = useRef<number>(0);
+  // Tick counter: incremented after auto-scroll mutates scrollLeft/scrollTop.
+  // The dragPlacement useMemo depends on this so it recomputes immediately,
+  // reading the live pointer ref + live scrollLeft in the same render frame.
+  const [dragTick, setDragTick] = useState(0);
+
   // Fix 1: Origin lane locking — prevent visit jumping to adjacent lane on drag start
   const originLaneRef = useRef<string | null>(null);
   const isDraggingRef = useRef(false);
@@ -147,48 +166,27 @@ export default function DispatchPreview() {
   const dragGrabOffsetRef = useRef<{ x: number; y: number }>({ x: 10, y: 10 });
   // Item 1: Grab X offset within the block — used to align preview/drop to block's left edge
   const dragGrabBlockXRef = useRef(0);
+  // External drag lifecycle: tracks whether drag originates from Unscheduled panel (sidebar)
+  const isExternalDragRef = useRef(false);
+  // Managed timer ref for crew-update delay — cleared on unmount to prevent orphaned mutations
+  const crewUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Cleanup: cancel crew-update timer on unmount to prevent orphaned mutation calls
+  useEffect(() => {
+    return () => {
+      if (crewUpdateTimerRef.current) clearTimeout(crewUpdateTimerRef.current);
+    };
+  }, []);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
   );
 
-  // ── Scheduling mode: drag (default) or click-to-schedule ──
-  const [schedulingMode, setSchedulingMode] = useState<SchedulingMode>("drag");
-  // Click-to-schedule state
-  const [pendingClickVisit, setPendingClickVisit] = useState<DispatchDragData | null>(null);
-  const [clickHoverTechId, setClickHoverTechId] = useState<string | null>(null);
-  const [clickPlacement, setClickPlacement] = useState<PlacementResult | null>(null);
-
-  // Cancel click placement on mode change
-  const handleSchedulingModeChange = useCallback((mode: SchedulingMode) => {
-    setSchedulingMode(mode);
-    setPendingClickVisit(null);
-    setClickHoverTechId(null);
-    setClickPlacement(null);
-  }, []);
-
-  // Cancel click placement
-  const cancelClickPlacement = useCallback(() => {
-    setPendingClickVisit(null);
-    setClickHoverTechId(null);
-    setClickPlacement(null);
-  }, []);
-
-  // Escape key cancels click placement
-  useEffect(() => {
-    if (!pendingClickVisit) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") cancelClickPlacement();
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [pendingClickVisit, cancelClickPlacement]);
-
   // ── Technician multi-select filter (shared Day/Week) ──
+  // 2026-03-23: UNASSIGNED_TECH_ID included in filter state so users can toggle the lane
   const [selectedTechIds, setSelectedTechIds] = useState<Set<string>>(new Set());
   const [hasInitialized, setHasInitialized] = useState(false);
   useEffect(() => {
     if (!hasInitialized && technicians.length > 0) {
-      setSelectedTechIds(new Set(technicians.map(t => t.id)));
+      setSelectedTechIds(new Set([...technicians.map(t => t.id), UNASSIGNED_TECH_ID]));
       setHasInitialized(true);
     }
   }, [technicians, hasInitialized]);
@@ -201,7 +199,7 @@ export default function DispatchPreview() {
     });
   }, []);
   const onTechSelectAll = useCallback(
-    () => setSelectedTechIds(new Set(technicians.map(t => t.id))),
+    () => setSelectedTechIds(new Set([...technicians.map(t => t.id), UNASSIGNED_TECH_ID])),
     [technicians],
   );
   const onTechClearAll = useCallback(() => setSelectedTechIds(new Set()), []);
@@ -230,9 +228,13 @@ export default function DispatchPreview() {
     [scheduledVisits, selectedStatuses],
   );
 
+  // 2026-03-23: hasUnassignedVisits drives the "Unassigned" filter option visibility
+  const hasUnassignedVisits = unassignedScheduled.length > 0;
+
   const visibleTechs = useMemo(() => {
     const filtered = sortedTechnicians.filter(t => selectedTechIds.has(t.id));
-    if (unassignedScheduled.length > 0) {
+    // 2026-03-23: Unassigned lane now respects filter toggle (not auto-appended)
+    if (hasUnassignedVisits && selectedTechIds.has(UNASSIGNED_TECH_ID)) {
       filtered.push({
         id: UNASSIGNED_TECH_ID,
         name: "Unassigned",
@@ -242,7 +244,7 @@ export default function DispatchPreview() {
       });
     }
     return filtered;
-  }, [sortedTechnicians, selectedTechIds, unassignedScheduled.length]);
+  }, [sortedTechnicians, selectedTechIds, hasUnassignedVisits]);
 
   /** Multi-tech: place each visit in every assigned technician's lane */
   const visitsByTech = useMemo(() => {
@@ -276,25 +278,6 @@ export default function DispatchPreview() {
     return map;
   }, [visibleTechs, scheduledTasks]);
 
-  // Any Time capacity warning — soft limit at 3 per technician/day
-  const ANY_TIME_WARN_THRESHOLD = 3;
-  /** Count allDay visits for a technician on the current dispatch day, excluding a specific visit */
-  const countAnyTimeVisits = useCallback((techId: string, excludeVisitId?: string): number => {
-    const techVisits = visitsByTech.get(techId) ?? [];
-    return techVisits.filter(v => v.isAllDay && v.id !== excludeVisitId).length;
-  }, [visitsByTech]);
-
-  /** Show a warning toast if adding/converting to Any Time would exceed threshold */
-  const warnIfAnyTimeOverloaded = useCallback((techId: string, excludeVisitId?: string) => {
-    const count = countAnyTimeVisits(techId, excludeVisitId);
-    if (count >= ANY_TIME_WARN_THRESHOLD) {
-      toast({
-        title: "Any Time capacity",
-        description: `This technician already has ${count} Any Time visits today. Consider scheduling a specific time.`,
-      });
-    }
-  }, [countAnyTimeVisits, toast]);
-
   // ── Week view: filter weekDays and data by hideWeekends + tech/status filters ──
   const filteredWeekDays = useMemo(() => {
     if (!hideWeekends) return weekData.weekDays;
@@ -323,24 +306,61 @@ export default function DispatchPreview() {
     return map;
   }, [weekData.tasksByTechByDay, selectedTechIds]);
 
-  const weekVisibleTechs = useMemo(
-    () => sortedTechnicians.filter(t => selectedTechIds.has(t.id)),
-    [sortedTechnicians, selectedTechIds],
-  );
+  // Week view: include virtual Unassigned lane only when filter is active
+  const hasUnassignedWeekVisits = weekData.visitsByTechByDay.has(UNASSIGNED_TECH_ID);
+  const weekVisibleTechs = useMemo(() => {
+    const filtered = sortedTechnicians.filter(t => selectedTechIds.has(t.id));
+    if (hasUnassignedWeekVisits && selectedTechIds.has(UNASSIGNED_TECH_ID)) {
+      filtered.push({
+        id: UNASSIGNED_TECH_ID,
+        name: "Unassigned",
+        initials: "??",
+        color: "#94a3b8",
+        status: "off",
+      });
+    }
+    return filtered;
+  }, [sortedTechnicians, selectedTechIds, hasUnassignedWeekVisits]);
 
   // ── Drag placement via shared resolver (overlap detection + preview position) ──
-  // Unified: replaces separate dragHasOverlap + DispatchDragPreview inline math
+  // Unified: replaces separate dragHasOverlap + DispatchDragPreview inline math.
+  //
+  // Scroll-sync fix: dragPointerXRef (ref) holds the live pointer clientX.
+  // dragTick (state) is bumped by auto-scroll to force recomputation even when
+  // the pointer hasn't moved. This ensures the placement reads the CURRENT
+  // scrollLeft and pointer position in the SAME render frame, eliminating the
+  // drift that occurred when auto-scroll changed scrollLeft but dragPointerX
+  // state was still stale from the prior DragMove event.
   const dragPlacement = useMemo((): PlacementResult | null => {
+    // dragTick is in the dependency array solely to trigger recomputation after
+    // auto-scroll; its value is not used in the calculation.
+    void dragTick;
+
     if (!activeDragData || !activeOverTechId || activeOverTechId === UNASSIGNED_TECH_ID) return null;
     const scrollEl = timelineScrollRef.current;
     if (!scrollEl) return null;
 
+    const pointerX = dragPointerXRef.current;
+    const rect = scrollEl.getBoundingClientRect();
+
+    // External drag: suppress preview until pointer is inside the board's
+    // horizontal bounds. This prevents transient coordinates from the sidebar
+    // zone resolving to a misleading end-of-day slot.
+    if (isExternalDragRef.current) {
+      if (pointerX < rect.left || pointerX > rect.right) return null;
+    }
+
     const relativeX = clientXToRelativePx(
-      dragPointerX,
-      scrollEl.getBoundingClientRect(),
+      pointerX,
+      rect,
       scrollEl.scrollLeft,
       dragGrabBlockXRef.current,
-    );
+    ) - ANY_TIME_COL_WIDTH;
+
+    // Guard: negative relativeX means pointer is before the timeline start;
+    // don't resolve placement (would clamp to 0 = misleading first-slot snap).
+    if (relativeX < 0) return null;
+
     const laneVisits = visitsByTech.get(activeOverTechId) ?? [];
     const laneTasks = tasksByTech.get(activeOverTechId) ?? [];
     return resolvePlacement(relativeX, activeOverTechId, activeDragData.durationMinutes, {
@@ -351,7 +371,7 @@ export default function DispatchPreview() {
       laneTasks,
       excludeId: activeDragData.visitId,
     });
-  }, [activeDragData, activeOverTechId, dragPointerX, visitsByTech, tasksByTech, selectedDate, tlConfig]);
+  }, [activeDragData, activeOverTechId, dragTick, visitsByTech, tasksByTech, selectedDate, tlConfig]);
 
   const dragHasOverlap = dragPlacement?.hasOverlap ?? false;
 
@@ -364,6 +384,9 @@ export default function DispatchPreview() {
       originLaneRef.current = data.technicianId ?? null;
       isDraggingRef.current = true;
 
+      // External drag detection: sidebar card has no meaningful timeline offset
+      isExternalDragRef.current = data.type === "unscheduled-visit";
+
       // BUG 2 fix: Capture pointer-to-element-corner offset for DragOverlay alignment.
       // dnd-kit positions DragOverlay at elementPosition + delta, so the overlay's left edge
       // is offset from the cursor by the grab point. Compensating in the overlay transform
@@ -371,7 +394,9 @@ export default function DispatchPreview() {
       const pointerEvent = event.activatorEvent as PointerEvent | undefined;
       const target = pointerEvent?.target as HTMLElement | undefined;
       const dragEl = target?.closest("[data-dispatch-block]") as HTMLElement | null;
-      if (pointerEvent && dragEl) {
+      if (pointerEvent) dragPointerXRef.current = pointerEvent.clientX;
+      if (pointerEvent && dragEl && !isExternalDragRef.current) {
+        // Internal drag: capture grab offset within the on-board block
         const rect = dragEl.getBoundingClientRect();
         dragGrabOffsetRef.current = {
           x: pointerEvent.clientX - rect.left,
@@ -380,6 +405,8 @@ export default function DispatchPreview() {
         // Item 1: Capture grab X offset within the block for preview/drop alignment
         dragGrabBlockXRef.current = pointerEvent.clientX - rect.left;
       } else {
+        // External drag: sidebar card position is irrelevant to timeline placement.
+        // Zero offset ensures drop/preview resolve to where the pointer actually is.
         dragGrabOffsetRef.current = { x: 10, y: 10 };
         dragGrabBlockXRef.current = 0;
       }
@@ -389,38 +416,75 @@ export default function DispatchPreview() {
   const handleDragMove = useCallback((event: DragMoveEvent) => {
     const activatorEvent = event.activatorEvent as PointerEvent | undefined;
     if (activatorEvent) {
-      setDragPointerX(activatorEvent.clientX + (event.delta?.x ?? 0));
+      // Scroll-sync fix: write live pointer to ref (instant, no render delay).
+      // The dragPlacement useMemo reads this ref on every recomputation.
+      dragPointerXRef.current = activatorEvent.clientX + (event.delta?.x ?? 0);
+      // Bump tick to trigger dragPlacement recomputation for this pointer move.
+      // This replaces the old setDragPointerX(state) that was in the useMemo deps.
+      setDragTick(t => t + 1);
     }
     const overData = event.over?.data.current as DispatchDropData | undefined;
     // Fix 1: Use detected lane if available, fall back to origin lane
     const detectedLane = overData?.technicianId ?? null;
     setActiveOverTechId(detectedLane ?? originLaneRef.current);
 
-    // Goal 4: Auto-scroll timeline when pointer nears edges
+    // Auto-scroll timeline when pointer nears edges
     const scrollEl = timelineScrollRef.current;
     if (!scrollEl || !activatorEvent) return;
     const pointerX = activatorEvent.clientX + (event.delta?.x ?? 0);
     const pointerY = activatorEvent.clientY + (event.delta?.y ?? 0);
     const rect = scrollEl.getBoundingClientRect();
+
+    // Pointer-inside-container guards: only scroll when pointer is actually
+    // within the scroll container bounds. Without this, dragging from outside
+    // (e.g. the Unscheduled sidebar) produces unbounded scroll velocity
+    // because the edge-distance formula goes negative.
+    const insideH = pointerX >= rect.left && pointerX <= rect.right;
+    const insideV = pointerY >= rect.top && pointerY <= rect.bottom;
+
+    const isExternal = isExternalDragRef.current;
     const EDGE_PX = 60;
     const MAX_SPEED = 12;
     let dx = 0;
     let dy = 0;
-    // Horizontal auto-scroll
-    if (pointerX < rect.left + EDGE_PX) {
-      dx = -MAX_SPEED * (1 - (pointerX - rect.left) / EDGE_PX);
-    } else if (pointerX > rect.right - EDGE_PX) {
-      dx = MAX_SPEED * (1 - (rect.right - pointerX) / EDGE_PX);
+
+    // Horizontal auto-scroll:
+    // - External drag (from Unscheduled panel): DISABLED. The board must stay
+    //   stable so the user can drop onto the currently visible time slots.
+    //   Scroll first, then drag — not the other way around.
+    // - Internal drag (within board): enabled only when pointer is inside the
+    //   container (prevents unbounded velocity when pointer exits the edge).
+    //   Phase 8 fix: cap rightward scroll at timeline end to prevent over-scroll
+    //   that traps the preview at the far-right boundary.
+    if (!isExternal && insideH && insideV) {
+      if (pointerX < rect.left + EDGE_PX) {
+        dx = -MAX_SPEED * (1 - (pointerX - rect.left) / EDGE_PX);
+      } else if (pointerX > rect.right - EDGE_PX) {
+        // Cap: don't scroll right if timeline end is already visible
+        const totalTimelinePx = (tlConfig.endHour - tlConfig.startHour) * HOUR_WIDTH_PX;
+        const maxScroll = totalTimelinePx - scrollEl.clientWidth;
+        if (scrollEl.scrollLeft < maxScroll) {
+          dx = MAX_SPEED * (1 - (rect.right - pointerX) / EDGE_PX);
+        }
+      }
     }
-    // Vertical auto-scroll
-    if (pointerY < rect.top + EDGE_PX) {
-      dy = -MAX_SPEED * (1 - (pointerY - rect.top) / EDGE_PX);
-    } else if (pointerY > rect.bottom - EDGE_PX) {
-      dy = MAX_SPEED * (1 - (rect.bottom - pointerY) / EDGE_PX);
+    // Vertical auto-scroll: allowed for both internal and external drag
+    // (needed to reach different technician lanes), but only when pointer is
+    // horizontally inside the container.
+    if (insideH && insideV) {
+      if (pointerY < rect.top + EDGE_PX) {
+        dy = -MAX_SPEED * (1 - (pointerY - rect.top) / EDGE_PX);
+      } else if (pointerY > rect.bottom - EDGE_PX) {
+        dy = MAX_SPEED * (1 - (rect.bottom - pointerY) / EDGE_PX);
+      }
     }
     if (dx !== 0 || dy !== 0) {
       scrollEl.scrollLeft += dx;
       scrollEl.scrollTop += dy;
+      // Scroll-sync fix: the tick bump at the top of this handler already
+      // ensures dragPlacement recomputes in this batch. The useMemo reads
+      // scrollLeft live from the DOM, so the freshly-mutated scroll position
+      // and the current pointer ref are both available in the same frame.
     }
   }, []);
 
@@ -431,6 +495,7 @@ export default function DispatchPreview() {
     setActiveOverTechId(null);
     originLaneRef.current = null;
     isDraggingRef.current = false;
+    isExternalDragRef.current = false;
 
     const { over } = event;
     if (!over || !dragData) return;
@@ -439,13 +504,14 @@ export default function DispatchPreview() {
     if (!dropData?.technicianId || dropData.technicianId === UNASSIGNED_TECH_ID) return;
 
     // ── Week view drop (cell-based: dayKey present) ──
+    // ── Week view drop (cell-based: dayKey present) ──
+    // Preserve original time-of-day, change date to target dayKey
     if (dropData.dayKey) {
-      // Preserve original time-of-day, change date to target dayKey
       const originalStart = dragData.originalStart ? new Date(dragData.originalStart) : null;
       const timeH = originalStart ? originalStart.getHours() : 9;
       const timeM = originalStart ? originalStart.getMinutes() : 0;
-      const [y, m, d] = dropData.dayKey.split("-").map(Number);
-      const newDay = new Date(y, m - 1, d, timeH, timeM, 0, 0);
+      const [y2, m2, d2] = dropData.dayKey.split("-").map(Number);
+      const newDay = new Date(y2, m2 - 1, d2, timeH, timeM, 0, 0);
       const startAt = newDay.toISOString();
       const endAt = addMinutes(newDay, dragData.durationMinutes).toISOString();
 
@@ -493,6 +559,7 @@ export default function DispatchPreview() {
       };
 
       // Off-shift check for week view drop target
+      const [y, m, d] = dropData.dayKey.split("-").map(Number);
       const targetTech = sortedTechnicians.find(t => t.id === dropData.technicianId);
       const targetDate = new Date(y, m - 1, d);
       const isOffShiftOnDay = targetTech && !isTechWorkingOnDate(scheduleMap, targetTech.id, targetDate);
@@ -517,7 +584,7 @@ export default function DispatchPreview() {
       scrollEl.getBoundingClientRect(),
       scrollEl.scrollLeft,
       dragGrabBlockXRef.current,
-    );
+    ) - ANY_TIME_COL_WIDTH;
     const laneVisits = visitsByTech.get(dropData.technicianId) ?? [];
     const laneTasks = tasksByTech.get(dropData.technicianId) ?? [];
     const placement = resolvePlacement(relativeX, dropData.technicianId, dragData.durationMinutes, {
@@ -528,7 +595,10 @@ export default function DispatchPreview() {
       laneTasks,
       excludeId: dragData.visitId,
     }, { autoResolveOverlap: true });
-    if (!placement.isValid) return;
+    if (!placement.isValid) {
+      toast({ title: "Could not place visit", description: "Try dropping in an open time slot." });
+      return;
+    }
 
     const startAt = placement.startAt;
     const endAt = placement.endAt;
@@ -595,6 +665,7 @@ export default function DispatchPreview() {
   // ── Unschedule handler ──
   // Stabilization: version resolved internally by mutation from fresh cache
   const handleUnschedule = useCallback((visit: DispatchVisit) => {
+    if (visit.kind !== "visit") return; // Guard: backlog items cannot be unscheduled (already unscheduled)
     unscheduleVisit({ visitId: visit.id, jobId: visit.jobId });
   }, [unscheduleVisit]);
 
@@ -608,9 +679,12 @@ export default function DispatchPreview() {
       startAt,
       endAt,
     });
-    // If additional technicians selected, update crew after a short delay to let schedule complete
+    // If additional technicians selected, update crew after a short delay to let schedule complete.
+    // Timer tracked in crewUpdateTimerRef so it can be cancelled on unmount.
     if (additionalTechIds && additionalTechIds.length > 0) {
-      setTimeout(() => {
+      if (crewUpdateTimerRef.current) clearTimeout(crewUpdateTimerRef.current);
+      crewUpdateTimerRef.current = setTimeout(() => {
+        crewUpdateTimerRef.current = null;
         updateVisitCrew({
           visitId: visit.id,
           technicianUserIds: [techId, ...additionalTechIds],
@@ -619,13 +693,34 @@ export default function DispatchPreview() {
     }
   }, [scheduleVisit, updateVisitCrew]);
 
-  // ── Visit status change handler (complete / reopen) ──
+  // ── Visit status change handler (non-terminal transitions only) ──
   const handleUpdateStatus = useCallback((visit: DispatchVisit, status: string) => {
+    if (visit.kind !== "visit") return; // Guard: backlog items have no real visitId
     updateVisitStatus({ visitId: visit.id, jobId: visit.jobId, status });
   }, [updateVisitStatus]);
 
+  // 2026-03-22: handleOpenVisitEditor removed — visits now open EditVisitModal
+  // directly from handleSelectVisit. No intermediate dispatch panel for real visits.
+
+  // Update visit notes via PATCH /api/jobs/:jobId/visits/:visitId
+  const handleUpdateVisitNotes = useCallback(async (visit: DispatchVisit, notes: string) => {
+    if (visit.kind !== "visit") return; // Guard: backlog items have no real visitId
+    try {
+      await apiRequest(`/api/jobs/${visit.jobId}/visits/${visit.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ visitNotes: notes, version: visit.version }),
+      });
+      // Refresh calendar data so the detail panel sees the updated notes
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      toast({ title: "Notes saved" });
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message || "Failed to save notes", variant: "destructive" });
+    }
+  }, [toast]);
+
   // ── Resize handlers ──
   const handleResize = useCallback((visit: DispatchVisit, newEndTime: string) => {
+    if (visit.kind !== "visit") return; // Guard: backlog items cannot be resized
     resizeVisit({
       visitId: visit.id,
       jobId: visit.jobId,
@@ -662,6 +757,7 @@ export default function DispatchPreview() {
   // ── Reschedule from detail panel (with off-shift confirmation) ──
   // Stabilization: version resolved internally by mutation from fresh cache
   const handleRescheduleFromPanel = useCallback((visit: DispatchVisit, newStart: string, newEnd: string, techId?: string, allDay?: boolean) => {
+    if (visit.kind !== "visit") return; // Guard: backlog items use scheduleVisit, not reschedule
     const executeMutation = () => {
       rescheduleVisit({
         visitId: visit.id,
@@ -673,12 +769,6 @@ export default function DispatchPreview() {
       });
     };
 
-    // Any Time capacity warning: warn if converting to allDay and tech already has >= threshold
-    if (allDay && !visit.isAllDay) {
-      const effectiveTechId = techId ?? visit.technicianId;
-      if (effectiveTechId) warnIfAnyTimeOverloaded(effectiveTechId, visit.id);
-    }
-
     // Check if reassigning to an off-shift technician
     if (techId) {
       const targetTech = sortedTechnicians.find(t => t.id === techId);
@@ -688,7 +778,7 @@ export default function DispatchPreview() {
       }
     }
     executeMutation();
-  }, [rescheduleVisit, sortedTechnicians, warnIfAnyTimeOverloaded]);
+  }, [rescheduleVisit, sortedTechnicians]);
 
   // ── Reschedule task from detail panel (with off-shift confirmation) ──
   const handleRescheduleTaskFromPanel = useCallback((task: DispatchTask, newStart: string, newEnd: string, techId?: string) => {
@@ -716,6 +806,7 @@ export default function DispatchPreview() {
   // ── Crew update from detail panel (with off-shift confirmation) ──
   // Stabilization: version resolved internally by mutation from fresh cache
   const handleUpdateCrew = useCallback((visit: DispatchVisit, technicianIds: string[]) => {
+    if (visit.kind !== "visit") return; // Guard: backlog items have no real visitId for crew update
     const executeMutation = () => {
       updateVisitCrew({
         visitId: visit.id,
@@ -759,144 +850,73 @@ export default function DispatchPreview() {
     setQuickCreate({ techId, minuteOfDay });
   }, [toast]);
 
-  // ── Click-to-schedule handlers ──
-  // Select an unscheduled visit for click placement
-  const handleClickSelectVisit = useCallback((visit: DispatchVisit) => {
-    if (pendingClickVisit?.visitId === visit.id) {
-      // Clicking same visit again cancels placement
-      cancelClickPlacement();
-      return;
-    }
-    setPendingClickVisit({
-      type: "unscheduled-visit",
-      visitId: visit.id,
-      jobId: visit.jobId,
-      jobNumber: visit.jobNumber,
-      technicianId: null,
-      durationMinutes: visit.durationMinutes,
-      version: visit.version,
-      isMultiTech: false,
-      originalStart: null,
-    });
-    setClickHoverTechId(null);
-    setClickPlacement(null);
-  }, [pendingClickVisit, cancelClickPlacement]);
-
-  // Hover over a lane row — compute live placement preview via shared resolver
-  const handleClickHover = useCallback((techId: string, relativeX: number) => {
-    if (!pendingClickVisit) return;
-    if (techId === UNASSIGNED_TECH_ID) return;
-    setClickHoverTechId(techId);
-    const laneVisits = visitsByTech.get(techId) ?? [];
-    const laneTasks = tasksByTech.get(techId) ?? [];
-    const placement = resolvePlacement(relativeX, techId, pendingClickVisit.durationMinutes, {
-      selectedDate,
-      startHour: tlConfig.startHour,
-      endHour: tlConfig.endHour,
-      laneVisits,
-      laneTasks,
-      excludeId: pendingClickVisit.visitId,
-    });
-    setClickPlacement(placement);
-  }, [pendingClickVisit, visitsByTech, tasksByTech, selectedDate, tlConfig]);
-
-  const handleClickHoverLeave = useCallback(() => {
-    setClickHoverTechId(null);
-    setClickPlacement(null);
-  }, []);
-
-  // Commit click placement — schedule the visit at the resolved position
-  const handleClickSchedule = useCallback((techId: string, relativeX: number) => {
-    if (!pendingClickVisit) return;
-    if (techId === UNASSIGNED_TECH_ID) return;
-    const laneVisits = visitsByTech.get(techId) ?? [];
-    const laneTasks = tasksByTech.get(techId) ?? [];
-    // Resolve final placement with overlap auto-resolution
-    const placement = resolvePlacement(relativeX, techId, pendingClickVisit.durationMinutes, {
-      selectedDate,
-      startHour: tlConfig.startHour,
-      endHour: tlConfig.endHour,
-      laneVisits,
-      laneTasks,
-      excludeId: pendingClickVisit.visitId,
-    }, { autoResolveOverlap: true });
-
-    if (!placement.isValid) {
-      toast({ title: "No valid slot", description: "Could not find a valid time slot at this position." });
-      return;
-    }
-
-    // Off-shift check
-    const targetTech = sortedTechnicians.find(t => t.id === techId);
-    const executeMutation = () => {
-      scheduleVisit({
-        jobId: pendingClickVisit.jobId,
-        visitId: pendingClickVisit.visitId,
-        technicianUserId: techId,
-        startAt: placement.startAt,
-        endAt: placement.endAt,
-      });
-      cancelClickPlacement();
-    };
-
-    if (targetTech && targetTech.isWorking === false) {
-      setOffShiftConfirm({ action: executeMutation, techName: targetTech.name });
-    } else {
-      executeMutation();
-    }
-  }, [pendingClickVisit, visitsByTech, tasksByTech, selectedDate, tlConfig, scheduleVisit, sortedTechnicians, cancelClickPlacement, toast]);
-
-  // Click preview node — rendered inside the hovered lane using placement result directly
-  const clickPreviewNode = useMemo(() => {
-    if (!clickPlacement) return null;
-    const bgColor = clickPlacement.hasOverlap
-      ? "bg-red-200/60 border-red-500"
-      : "bg-emerald-200/50 border-emerald-400";
-    return (
-      <div
-        className={`pointer-events-none absolute top-0 bottom-0 rounded border-2 border-dashed ${bgColor} z-30`}
-        style={{ left: clickPlacement.previewLeft, width: clickPlacement.previewWidth }}
-      >
-        <div className={`absolute -top-6 left-0 rounded px-1.5 py-0.5 text-[10px] font-bold whitespace-nowrap shadow ${
-          clickPlacement.hasOverlap ? "bg-red-600 text-white" : "bg-emerald-700 text-white"
-        }`}>
-          {clickPlacement.startTimeLabel} – {clickPlacement.endTimeLabel}
-        </div>
-        {clickPlacement.hasOverlap && (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="rounded bg-red-600 px-2.5 py-1 text-[11px] font-bold text-white shadow-md uppercase tracking-wide">Overlap</div>
-          </div>
-        )}
-      </div>
-    );
-  }, [clickPlacement]);
-
   // ── Selection (detail panel) — supports both visits and tasks ──
   // Fix 5: Ref for detecting clicks outside the detail panel
   const panelRef = useRef<HTMLDivElement>(null);
   const [selectedVisitId, setSelectedVisitId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
 
+  // 2026-03-22: Canonical visit editor modal state — opens EditVisitModal directly
+  // when user clicks a real visit on the dispatch board (no intermediate panel).
+  const [visitEditorState, setVisitEditorState] = useState<{
+    open: boolean;
+    visitId: string;
+    jobId: string;
+    customerName?: string;
+    customerCompanyId?: string;
+    jobNumber?: number;
+    jobSummary?: string;
+    locationName?: string;
+    locationAddress?: string;
+  } | null>(null);
+
+  // Draggable floating panel: offset from center (user can drag the panel around)
+  const [panelDragOffset, setPanelDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const panelDragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
+
+  // 2026-03-22: Clicking any visit with a real visitId opens EditVisitModal directly.
+  // Both scheduled (kind="visit") and unscheduled (kind="backlog") items can carry
+  // a visitId. Items without a visitId (rare edge case: no active visit exists)
+  // are not actionable — the user needs to schedule the job first.
   const handleSelectVisit = useCallback((visit: DispatchVisit) => {
     setSelectedTaskId(null);
-    setSelectedVisitId(prev => prev === visit.id ? null : visit.id);
+    const effectiveVisitId = visit.visitId;
+    if (effectiveVisitId) {
+      // Open canonical EditVisitModal directly with visit identity + display context
+      // 2026-03-23: Include location context for modal header
+      const addressParts = [visit.locationAddress, visit.locationCity, visit.locationProvinceState].filter(Boolean);
+      setVisitEditorState({
+        open: true,
+        visitId: effectiveVisitId,
+        jobId: visit.jobId,
+        customerName: visit.customerName,
+        customerCompanyId: visit.customerCompanyId || undefined,
+        jobNumber: visit.jobNumber,
+        jobSummary: visit.summary,
+        locationName: visit.locationName,
+        locationAddress: addressParts.join(", "),
+      });
+    }
+    // Items without a visitId: no-op (schedule the job via drag-to-lane first)
   }, []);
 
   const handleSelectTask = useCallback((task: DispatchTask) => {
     setSelectedVisitId(null);
-    setSelectedTaskId(prev => prev === task.id ? null : task.id);
+    setSelectedTaskId(prev => {
+      const next = prev === task.id ? null : task.id;
+      if (next !== prev) setPanelDragOffset({ x: 0, y: 0 });
+      return next;
+    });
   }, []);
 
   const handleCloseDetail = useCallback(() => {
     setSelectedVisitId(null);
     setSelectedTaskId(null);
+    // Reset drag offset so next open starts centered
+    setPanelDragOffset({ x: 0, y: 0 });
   }, []);
 
-  // ── Visit delete handler (needs handleCloseDetail) ──
-  const handleDeleteVisit = useCallback((visit: DispatchVisit) => {
-    deleteVisit({ visitId: visit.id, jobId: visit.jobId });
-    handleCloseDetail();
-  }, [deleteVisit, handleCloseDetail]);
+  // 2026-03-21: handleDeleteVisit removed — delete now handled by canonical EditVisitModal.
 
   const selectedVisit = useMemo(
     () => selectedVisitId ? allVisits.find(v => v.id === selectedVisitId) ?? null : null,
@@ -949,9 +969,24 @@ export default function DispatchPreview() {
       if (target.closest("[role='listbox']")) return;
       setSelectedVisitId(null);
       setSelectedTaskId(null);
+      setPanelDragOffset({ x: 0, y: 0 });
     }
     document.addEventListener("mousedown", handleOutsideClick);
     return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, [selectedVisitId, selectedTaskId]);
+
+  // Escape key closes the quick editor and resets drag offset
+  useEffect(() => {
+    if (!selectedVisitId && !selectedTaskId) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setSelectedVisitId(null);
+        setSelectedTaskId(null);
+        setPanelDragOffset({ x: 0, y: 0 });
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
   }, [selectedVisitId, selectedTaskId]);
 
   // ── Drag preview node — renders from shared dragPlacement result (same pattern as click preview) ──
@@ -1017,30 +1052,61 @@ export default function DispatchPreview() {
     return { visits: [], tasks: [] };
   }, [selectedVisit, selectedTask, visitsByTech, tasksByTech]);
 
-  // ── Detail panel rendering (Fix 5: wrapped in ref div for outside-click detection) ──
-  const showDetailPanel = selectedVisit || selectedTask;
-  // Dispatcher-polish: h-full on ref wrapper preserves flex layout in the parent overflow-hidden container
-  const detailPanel = selectedVisit ? (
-    <div ref={panelRef} className="h-full">
-      <DispatchDetailPanel
-        entityType="visit"
-        visit={selectedVisit}
-        technicians={technicians}
-        laneVisits={selectedLaneData.visits}
-        laneTasks={selectedLaneData.tasks}
-        onClose={handleCloseDetail}
-        onUnschedule={selectedVisit.scheduledStart ? handleUnschedule : undefined}
-        onReschedule={handleRescheduleFromPanel}
-        onResize={handleResize}
-        onUpdateCrew={handleUpdateCrew}
-        onUpdateStatus={handleUpdateStatus}
-        onDeleteVisit={handleDeleteVisit}
-        onScheduleFromPanel={!selectedVisit.scheduledStart ? handleScheduleFromPanel : undefined}
-        boardDate={selectedDate}
-      />
-    </div>
-  ) : selectedTask ? (
-    <div ref={panelRef} className="h-full">
+  // ── Floating detail panel — centered overlay with drag support ──
+  // Panel drag handler: mousedown on the drag-handle area starts tracking.
+  // Cleanup ref ensures mousemove/mouseup listeners are removed on unmount
+  // even if the user hasn't released the mouse (e.g., tab switch, navigation).
+  const panelDragCleanupRef = useRef<(() => void) | null>(null);
+  const handlePanelDragStart = useCallback((e: React.MouseEvent) => {
+    // Only drag from the header drag-handle area, not from interactive elements
+    const target = e.target as HTMLElement;
+    if (target.closest("a, button, input, select, textarea, [data-radix-popper-content-wrapper]")) return;
+    // Only allow drag from the header region (marked with data-panel-drag-handle)
+    if (!target.closest("[data-panel-drag-handle]")) return;
+    e.preventDefault();
+    // Clean up any prior drag listeners (defensive against rapid re-drags)
+    panelDragCleanupRef.current?.();
+    panelDragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      origX: panelDragOffset.x,
+      origY: panelDragOffset.y,
+    };
+    const onMove = (me: MouseEvent) => {
+      if (!panelDragRef.current) return;
+      setPanelDragOffset({
+        x: panelDragRef.current.origX + (me.clientX - panelDragRef.current.startX),
+        y: panelDragRef.current.origY + (me.clientY - panelDragRef.current.startY),
+      });
+    };
+    const onUp = () => {
+      panelDragRef.current = null;
+      panelDragCleanupRef.current = null;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    panelDragCleanupRef.current = onUp;
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [panelDragOffset]);
+  // Cleanup: remove orphaned panel drag listeners on unmount
+  useEffect(() => {
+    return () => { panelDragCleanupRef.current?.(); };
+  }, []);
+
+  const panelStyle: React.CSSProperties = {
+    position: "fixed",
+    top: `calc(50% + ${panelDragOffset.y}px)`,
+    left: `calc(50% + ${panelDragOffset.x}px)`,
+    transform: "translate(-50%, -50%)",
+    zIndex: 50,
+    maxHeight: "85vh",
+  };
+
+  // 2026-03-22: Floating panel is now only used for tasks. Real visits open
+  // EditVisitModal directly (no intermediate panel). Backlog items are not selectable.
+  const floatingEditor = selectedTask ? (
+    <div ref={panelRef} style={panelStyle} className="flex flex-col" onMouseDown={handlePanelDragStart}>
       <DispatchDetailPanel
         entityType="task"
         task={selectedTask}
@@ -1052,13 +1118,46 @@ export default function DispatchPreview() {
         onCompleteTask={handleCompleteTask}
         onReopenTask={handleReopenTask}
         onDeleteTask={handleDeleteTask}
+        mode="popover"
       />
     </div>
+  ) : null;
+
+  // 2026-03-23: Canonical visit editor modal — opens directly when user clicks a
+  // real visit on the dispatch board. Delegates scheduling to canonical dispatch
+  // mutation system so modal and drag-drop share the same optimistic cache logic.
+  const visitEditorModal = visitEditorState?.open ? (
+    <EditVisitModal
+      open={true}
+      onOpenChange={(open) => {
+        if (!open) {
+          setVisitEditorState(null);
+          handleCloseDetail();
+        }
+      }}
+      jobId={visitEditorState.jobId}
+      visitId={visitEditorState.visitId}
+      customerName={visitEditorState.customerName}
+      customerCompanyId={visitEditorState.customerCompanyId}
+      jobNumber={visitEditorState.jobNumber}
+      jobSummary={visitEditorState.jobSummary}
+      locationName={visitEditorState.locationName}
+      locationAddress={visitEditorState.locationAddress}
+      onDispatchSchedule={scheduleVisit}
+      onDispatchReschedule={rescheduleVisit}
+      onDispatchUpdateCrew={updateVisitCrew}
+      onAfterMutation={() => {
+        // Ensure dispatch board refreshes after lifecycle action
+        queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+      }}
+    />
   ) : null;
 
   return (
     <DndContext
       sensors={sensors}
+      collisionDetection={pointerWithin}
       onDragStart={handleDragStart}
       onDragMove={handleDragMove}
       onDragEnd={handleDragEnd}
@@ -1074,8 +1173,6 @@ export default function DispatchPreview() {
           onViewChange={setActiveView}
           show24Hour={show24Hour}
           onToggle24Hour={onToggle24Hour}
-          schedulingMode={schedulingMode}
-          onSchedulingModeChange={handleSchedulingModeChange}
         />
 
         {/* Filters — shared across Day and Week */}
@@ -1087,6 +1184,7 @@ export default function DispatchPreview() {
           onTechClearAll={onTechClearAll}
           selectedStatuses={selectedStatuses}
           onStatusToggle={onStatusToggle}
+          includeUnassigned={activeView === "week" ? hasUnassignedWeekVisits : hasUnassignedVisits}
           showHideWeekends={activeView === "week"}
           hideWeekends={hideWeekends}
           onToggleHideWeekends={onToggleHideWeekends}
@@ -1124,26 +1222,14 @@ export default function DispatchPreview() {
                 timelineHours={tlConfig.hours}
                 timelineStartHour={tlConfig.startHour}
                 timelineEndHour={tlConfig.endHour}
-                onEmptySlotClick={pendingClickVisit ? undefined : handleEmptySlotClick}
-                clickPreviewNode={clickPreviewNode}
-                clickHoverTechId={clickHoverTechId}
-                onClickSchedule={handleClickSchedule}
-                onClickHover={handleClickHover}
-                onClickHoverLeave={handleClickHoverLeave}
-                isPlacementActive={!!pendingClickVisit}
+                onEmptySlotClick={handleEmptySlotClick}
               />
-              {showDetailPanel ? detailPanel : (
-                <DispatchUnscheduledPanel
-                  visits={unscheduledVisits}
-                  savingIds={savingIds}
-                  selectedVisitId={selectedVisitId}
-                  onSelectVisit={handleSelectVisit}
-                  schedulingMode={schedulingMode}
-                  pendingClickVisitId={pendingClickVisit?.visitId ?? null}
-                  onClickSelect={handleClickSelectVisit}
-                  onCancelPlacement={cancelClickPlacement}
-                />
-              )}
+              <DispatchUnscheduledPanel
+                visits={unscheduledVisits}
+                savingIds={savingIds}
+                selectedVisitId={selectedVisitId}
+                onSelectVisit={handleSelectVisit}
+              />
             </>
           ) : (
             /* ── Week View ── */
@@ -1157,31 +1243,35 @@ export default function DispatchPreview() {
                 onSelectVisit={handleSelectVisit}
                 onSelectTask={handleSelectTask}
               />
-              {showDetailPanel ? detailPanel : (
-                <DispatchUnscheduledPanel
-                  visits={unscheduledVisits}
-                  savingIds={savingIds}
-                  selectedVisitId={selectedVisitId}
-                  onSelectVisit={handleSelectVisit}
-                />
-              )}
+              <DispatchUnscheduledPanel
+                visits={unscheduledVisits}
+                savingIds={savingIds}
+                selectedVisitId={selectedVisitId}
+                onSelectVisit={handleSelectVisit}
+              />
             </>
           )}
         </div>
       </div>
 
-      {/* Drag overlay — compact ghost near cursor, low opacity so lane preview stays readable */}
-      {/* BUG 2 fix: Ghost transform compensates for grab offset so it's always anchored
-          near the cursor, regardless of where the user grabbed the card (sidebar vs timeline) */}
+      {/* Floating detail panel — centered draggable overlay for visit/task inspection */}
+      {floatingEditor}
+
+      {/* 2026-03-21: Canonical visit editor modal for lifecycle actions */}
+      {visitEditorModal}
+
+      {/* Drag overlay — Phase 8: suppress floating ghost when in-grid preview is active
+          to avoid redundant dual visuals (pale-blue ghost + green grid preview).
+          Ghost only shows while dragging outside the board or before a lane is detected. */}
       <DragOverlay dropAnimation={null}>
-        {draggedVisit && (
+        {!dragPlacement && draggedVisit && (
           <div className="pointer-events-none rounded border border-blue-300 bg-blue-50 px-2 py-1 shadow-md opacity-70 max-w-[160px]"
             style={{ transform: `translate(${dragGrabOffsetRef.current.x - 10}px, ${dragGrabOffsetRef.current.y - 10}px)` }}>
             <p className="text-[10px] font-semibold text-blue-800 truncate">{draggedVisit.customerName}</p>
             <p className="text-[9px] text-blue-500">#{draggedVisit.jobNumber}</p>
           </div>
         )}
-        {draggedTask && (
+        {!dragPlacement && draggedTask && (
           <div className="pointer-events-none rounded border border-dashed border-violet-300 bg-violet-50 px-2 py-1 shadow-md opacity-70 max-w-[160px]"
             style={{ transform: `translate(${dragGrabOffsetRef.current.x - 10}px, ${dragGrabOffsetRef.current.y - 10}px)` }}>
             <p className="text-[10px] font-semibold text-violet-800 truncate">{draggedTask.title}</p>

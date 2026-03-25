@@ -4,6 +4,11 @@ import { activeJobFilter } from "./jobFilters";
 import { jobVisits, jobs, jobNotes, users, clientLocations } from "@shared/schema";
 import { BaseRepository, clampLimit } from "./base";
 import { sanitizeAllDayTimestamps } from "../utils/allDaySanitizer";
+import {
+  activeVisitGuard,
+  scheduleEligibleVisitFilter,
+  uncompletedVisitFilter,
+} from "../lib/visitPredicates";
 
 // ============================================================================
 // ENRICHED VISIT TYPES — shared response shapes for tech + calendar consumers
@@ -72,8 +77,7 @@ export class JobVisitsRepository extends BaseRepository {
 
     const where: any[] = [
       eq(jobVisits.companyId, filters.companyId),
-      eq(jobVisits.isActive, true), // Soft delete filter
-      isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
+      activeVisitGuard(),
     ];
 
     if (filters.jobId) where.push(eq(jobVisits.jobId, filters.jobId));
@@ -154,8 +158,7 @@ export class JobVisitsRepository extends BaseRepository {
         and(
           eq(jobVisits.id, visitId),
           eq(jobVisits.companyId, companyId),
-          eq(jobVisits.isActive, true), // Soft delete filter
-          isNull(jobVisits.archivedAt) // Exclude archived visits (2026-03-05)
+          activeVisitGuard()
         )
       );
 
@@ -174,23 +177,14 @@ export class JobVisitsRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
-    const EXCLUDED: string[] = ["cancelled", "completed"];
     const now = new Date();
 
-    // Pull all eligible visits for this job
+    // Pull all schedule-eligible visits for this job
+    // 2026-03-18: Uses canonical predicate from visitPredicates.ts
     const visitRows = await db
       .select()
       .from(jobVisits)
-      .where(
-        and(
-          eq(jobVisits.companyId, companyId),
-          eq(jobVisits.jobId, jobId),
-          eq(jobVisits.isActive, true),
-          isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
-          sql`${jobVisits.scheduledStart} IS NOT NULL`,
-          notInArray(jobVisits.status, EXCLUDED)
-        )
-      )
+      .where(scheduleEligibleVisitFilter(companyId, jobId))
       .orderBy(asc(jobVisits.scheduledStart));
 
     if (!visitRows.length) {
@@ -249,8 +243,7 @@ export class JobVisitsRepository extends BaseRepository {
         and(
           eq(jobVisits.id, visitId),
           eq(jobVisits.companyId, companyId),
-          eq(jobVisits.isActive, true),
-          isNull(jobVisits.archivedAt) // Exclude archived visits (2026-03-05)
+          activeVisitGuard()
         )
       );
 
@@ -334,8 +327,7 @@ export class JobVisitsRepository extends BaseRepository {
         and(
           eq(jobVisits.id, visitId),
           eq(jobVisits.companyId, companyId),
-          eq(jobVisits.isActive, true),
-          isNull(jobVisits.archivedAt) // Exclude archived visits (2026-03-05)
+          activeVisitGuard()
         )
       );
 
@@ -368,10 +360,8 @@ export class JobVisitsRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
-    // Consider these visit statuses as "not scheduled"
-    const EXCLUDED: string[] = ["cancelled", "completed"];
-
-    // Pull candidate visits for this job
+    // Pull schedule-eligible visits for this job
+    // 2026-03-18: Uses canonical predicate from visitPredicates.ts
     const visitRows = await db
       .select({
         id: jobVisits.id,
@@ -384,26 +374,28 @@ export class JobVisitsRepository extends BaseRepository {
         isActive: jobVisits.isActive,
       })
       .from(jobVisits)
-      .where(
-        and(
-          eq(jobVisits.companyId, companyId),
-          eq(jobVisits.jobId, jobId),
-          eq(jobVisits.isActive, true),
-          isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
-          // scheduled_start must exist
-          sql`${jobVisits.scheduledStart} IS NOT NULL`,
-          // exclude terminal visit states
-          notInArray(jobVisits.status, EXCLUDED)
-        )
-      )
+      .where(scheduleEligibleVisitFilter(companyId, jobId))
       .orderBy(asc(jobVisits.scheduledStart));
 
     if (!visitRows.length) {
       // UNSCHEDULE BRANCH: No eligible visits exist (all cancelled/completed or none created).
-      // We clear ALL mirrored fields including technician assignments because:
-      // - The job's schedule fields are a mirror of the "next visit", not independent data
-      // - When there's nothing to mirror, we reset to unscheduled state
-      // This is transitional until calendar moves fully to job_visits (Model B).
+      // 2026-03-18: Guard against clearing schedule fields on completed/on_hold jobs.
+      // When reconciliation has already set the job to a non-backlog state, clearing
+      // schedule fields would cause the job to appear as unscheduled backlog in the
+      // window between sync and reconciliation, or after reconciliation has run.
+      const [currentJob] = await db
+        .select({ status: jobs.status, openSubStatus: jobs.openSubStatus })
+        .from(jobs)
+        .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
+
+      if (currentJob) {
+        // Don't clear schedule for completed/invoiced/archived jobs — they're done
+        if (currentJob.status !== "open") return;
+        // Don't clear schedule for on_hold jobs — they're deliberately parked, not backlog
+        if (currentJob.openSubStatus === "on_hold") return;
+      }
+
+      // Genuine unschedule: job is open with no eligible visits and not on hold
       await db
         .update(jobs)
         .set({
@@ -674,7 +666,12 @@ export class JobVisitsRepository extends BaseRepository {
     const [updated] = await db
       .update(jobVisits)
       .set(updates)
-      .where(and(eq(jobVisits.id, visitId), eq(jobVisits.companyId, companyId)))
+      // 2026-03-18: SQL-level soft-delete guard — defense-in-depth alongside getJobVisit() prefetch
+      .where(and(
+        eq(jobVisits.id, visitId),
+        eq(jobVisits.companyId, companyId),
+        activeVisitGuard()
+      ))
       .returning();
 
     // Step 2.4: Sync job schedule from visits after update
@@ -717,7 +714,7 @@ export class JobVisitsRepository extends BaseRepository {
    * Update visit status with auto timestamps
    * Part 4: Calls mirrorNextVisitToJob after status change
    */
-  async updateJobVisitStatus(companyId: string, visitId: string, status: string) {
+  async updateJobVisitStatus(companyId: string, visitId: string, status: string, options?: { skipSync?: boolean }) {
     const existing = await this.getJobVisit(companyId, visitId);
     if (!existing) {
       throw this.notFoundError("Visit");
@@ -729,35 +726,33 @@ export class JobVisitsRepository extends BaseRepository {
       version: existing.version + 1,
     };
 
-    // Auto-set timestamps based on status transitions
+    // Auto-set checkedInAt when office sets status to on_site (manual status flow).
+    // This is the canonical check-in path for the office status endpoint.
     if (status === "on_site" && !existing.checkedInAt) {
       updates.checkedInAt = new Date();
     }
 
-    if (status === "completed") {
-      // Auto check-out if checked in but not yet checked out
-      if (existing.checkedInAt && !existing.checkedOutAt) {
-        const checkOutTime = new Date();
-        updates.checkedOutAt = checkOutTime;
-        const durationMs = checkOutTime.getTime() - new Date(existing.checkedInAt).getTime();
-        updates.actualDurationMinutes = Math.round(durationMs / 60000);
-      }
-      // Phase A: Write structured completion fields when completing via office flow
-      // Default outcome to "completed" if not already set by tech endpoint
-      if (!existing.outcome) {
-        updates.completedAt = new Date();
-        updates.outcome = "completed";
-      }
-    }
+    // 2026-03-20: Removed unreachable completed-status auto-timestamp branch.
+    // Visit completion is canonically owned by the orchestrator (COMPLETE_VISIT intent).
+    // The route at jobVisits.routes.ts:224 rejects status="completed" before reaching here.
+    // The only other caller (cancelVisit) passes "cancelled". No path can trigger completed.
 
     const [updated] = await db
       .update(jobVisits)
       .set(updates)
-      .where(and(eq(jobVisits.id, visitId), eq(jobVisits.companyId, companyId)))
+      // 2026-03-18: SQL-level soft-delete guard — defense-in-depth alongside getJobVisit() prefetch
+      .where(and(
+        eq(jobVisits.id, visitId),
+        eq(jobVisits.companyId, companyId),
+        activeVisitGuard()
+      ))
       .returning();
 
     // Step 2.4: Sync job schedule from visits after status change
-    await this.syncJobScheduleFromVisits(companyId, existing.jobId);
+    // 2026-03-18: skipSync allows completion paths to reconcile job FIRST, then sync
+    if (!options?.skipSync) {
+      await this.syncJobScheduleFromVisits(companyId, existing.jobId);
+    }
 
     return updated;
   }
@@ -783,7 +778,12 @@ export class JobVisitsRepository extends BaseRepository {
         updatedAt: new Date(),
         version: existing.version + 1,
       })
-      .where(and(eq(jobVisits.id, visitId), eq(jobVisits.companyId, companyId)))
+      // 2026-03-18: SQL-level soft-delete guard — defense-in-depth alongside getJobVisit() prefetch
+      .where(and(
+        eq(jobVisits.id, visitId),
+        eq(jobVisits.companyId, companyId),
+        activeVisitGuard()
+      ))
       .returning();
 
     // Step 2.4: Sync job schedule from visits after check-in
@@ -792,44 +792,9 @@ export class JobVisitsRepository extends BaseRepository {
     return updated;
   }
 
-  /**
-   * Check out from a visit
-   */
-  async checkOutJobVisit(companyId: string, visitId: string) {
-    const existing = await this.getJobVisit(companyId, visitId);
-    if (!existing) {
-      throw this.notFoundError("Visit");
-    }
-
-    if (!existing.checkedInAt) {
-      throw this.validationError("Cannot check out before checking in");
-    }
-
-    if (existing.checkedOutAt) {
-      return existing; // Already checked out
-    }
-
-    const checkOutTime = new Date();
-    const durationMs = checkOutTime.getTime() - new Date(existing.checkedInAt).getTime();
-    const actualDurationMinutes = Math.round(durationMs / 60000);
-
-    const [updated] = await db
-      .update(jobVisits)
-      .set({
-        checkedOutAt: checkOutTime,
-        actualDurationMinutes,
-        status: "completed",
-        updatedAt: new Date(),
-        version: existing.version + 1,
-      })
-      .where(and(eq(jobVisits.id, visitId), eq(jobVisits.companyId, companyId)))
-      .returning();
-
-    // Step 2.4: Sync job schedule from visits after check-out
-    await this.syncJobScheduleFromVisits(companyId, existing.jobId);
-
-    return updated;
-  }
+  // 2026-03-18: checkOutJobVisit() DELETED — check-out is now metadata-only (recorded
+  // via updateJobVisit in the route handler). Visit completion goes through the
+  // canonical lifecycle orchestrator's COMPLETE_VISIT intent.
   /**
    * Get uncompleted visits for a job.
    * Uncompleted = is_active=true AND status NOT IN ('completed','cancelled').
@@ -839,61 +804,17 @@ export class JobVisitsRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
-    const TERMINAL: string[] = ["completed", "cancelled"];
+    // 2026-03-18: Uses canonical predicate from visitPredicates.ts
     return db
       .select()
       .from(jobVisits)
-      .where(
-        and(
-          eq(jobVisits.companyId, companyId),
-          eq(jobVisits.jobId, jobId),
-          eq(jobVisits.isActive, true),
-          isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
-          notInArray(jobVisits.status, TERMINAL)
-        )
-      )
+      .where(uncompletedVisitFilter(companyId, jobId))
       .orderBy(asc(jobVisits.visitNumber));
   }
 
-  /**
-   * Bulk-complete uncompleted visits for a job.
-   * Sets status='completed', checkedOutAt=now(), actualDurationMinutes (if checkedInAt exists).
-   * Used by close-job with autoCompleteOpenVisits=true.
-   */
-  async bulkCompleteVisits(companyId: string, jobId: string) {
-    this.assertCompanyId(companyId);
-    this.validateUUID(jobId, "jobId");
-
-    const uncompleted = await this.getUncompletedVisits(companyId, jobId);
-    if (!uncompleted.length) return [];
-
-    const now = new Date();
-    const completed = [];
-
-    for (const visit of uncompleted) {
-      const updates: any = {
-        status: "completed",
-        checkedOutAt: now,
-        updatedAt: now,
-        version: visit.version + 1,
-      };
-      // Compute duration if checkedInAt exists (matches existing transition logic)
-      if (visit.checkedInAt) {
-        const durationMs = now.getTime() - new Date(visit.checkedInAt).getTime();
-        updates.actualDurationMinutes = Math.round(durationMs / 60000);
-      }
-      const [updated] = await db
-        .update(jobVisits)
-        .set(updates)
-        .where(and(eq(jobVisits.id, visit.id), eq(jobVisits.companyId, companyId)))
-        .returning();
-      completed.push(updated);
-    }
-
-    // Sync job schedule after bulk completion
-    await this.syncJobScheduleFromVisits(companyId, jobId);
-    return completed;
-  }
+  // 2026-03-18: bulkCompleteVisits() DELETED — the orchestrator's BULK_COMPLETE_VISITS
+  // intent now owns this logic and writes structured outcome fields (outcome, completedAt,
+  // isFollowUpNeeded) that the old helper omitted.
 }
 
 export const jobVisitsRepository = new JobVisitsRepository();

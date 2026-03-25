@@ -6,18 +6,22 @@ import {
   jobParts,
   jobEquipment,
   jobVisits,
+  invoices,
   locationEquipment,
   recurringJobSeries,
   recurringJobPhases,
   companyCounters,
   clients,
   customerCompanies,
+  attentionItems,
   jobStatusEvents,
   jobScheduleAudit,
   users,
+  items,
 } from "@shared/schema";
 import type { InsertJob, Job, InsertJobPart, JobPart, InsertJobStatusEvent, JobStatusEvent } from "@shared/schema";
 import { BaseRepository } from "./base";
+import { locationDisplayNameExpr } from "../lib/queryHelpers";
 import { sanitizeAllDayTimestamps } from "../utils/allDaySanitizer";
 import { IS_DEV } from "../utils/devFlags";
 import { resolveTechnicianName } from "../lib/resolveTechnicianName";
@@ -30,6 +34,7 @@ import {
   type LifecycleIntent,
   type TransitionActor,
 } from "../domain/jobLifecycle";
+import { activeJobFilter } from "./jobFilters";
 
 interface JobFilters {
   status?: string;
@@ -130,38 +135,181 @@ export class JobRepository extends BaseRepository {
   }
 
   /**
-   * Get next job number for company
+   * Get next job number for company — self-healing allocator.
+   *
+   * Within a single transaction:
+   *   1. Read storedNext from companyCounters (create row if missing)
+   *   2. Derive derivedNext = MAX(existing jobs.jobNumber) + 1 (default 100000)
+   *   3. Allocate GREATEST(storedNext, derivedNext)
+   *   4. Persist allocated + 1 as the new counter value
+   *
+   * This protects against stale counters caused by imports, scripts,
+   * backfills, restores, manual edits, or any path that writes job
+   * numbers without bumping the counter.
    */
   private async getNextJobNumber(companyId: string): Promise<number> {
     return await db.transaction(async (tx) => {
-      // Get or create counter
-      let counter = await tx.query.companyCounters.findFirst({
-        where: eq(companyCounters.companyId, companyId),
-      });
+      // 1. Lock + read counter row with SELECT ... FOR UPDATE.
+      //    This serializes concurrent allocators for the same company —
+      //    the second transaction blocks here until the first commits.
+      const [locked] = await tx
+        .select({
+          nextJobNumber: companyCounters.nextJobNumber,
+        })
+        .from(companyCounters)
+        .where(eq(companyCounters.companyId, companyId))
+        .for("update");
 
-      if (!counter) {
-        // Create initial counter with 6-digit job numbers
+      let storedNext: number;
+      if (!locked) {
+        // First-ever job for this company — create counter row.
+        // ON CONFLICT handles the race where two transactions both see
+        // no row and try to insert simultaneously.
         const [created] = await tx
           .insert(companyCounters)
           .values({ companyId, nextJobNumber: 100000, nextInvoiceNumber: 1001 })
+          .onConflictDoNothing()
           .returning();
-        counter = created;
+
+        if (created) {
+          storedNext = created.nextJobNumber;
+        } else {
+          // Lost the insert race — re-read with lock
+          const [retry] = await tx
+            .select({ nextJobNumber: companyCounters.nextJobNumber })
+            .from(companyCounters)
+            .where(eq(companyCounters.companyId, companyId))
+            .for("update");
+          storedNext = retry.nextJobNumber;
+        }
+      } else {
+        storedNext = locked.nextJobNumber;
       }
 
-      const jobNumber = counter.nextJobNumber;
+      // 2. Derive high-water mark from existing job numbers
+      const [maxRow] = await tx
+        .select({ maxNum: sql<number>`COALESCE(MAX(${jobs.jobNumber}), 0)::int` })
+        .from(jobs)
+        .where(eq(jobs.companyId, companyId));
 
-      // Increment for next time
+      const derivedNext = (maxRow?.maxNum ?? 0) + 1;
+
+      // 3. Allocate: never regress below either source
+      const allocated = Math.max(storedNext, derivedNext, 100000);
+
+      // 4. Persist counter for next allocation
       await tx
         .update(companyCounters)
-        .set({ nextJobNumber: jobNumber + 1 })
+        .set({ nextJobNumber: allocated + 1 })
         .where(eq(companyCounters.companyId, companyId));
 
-      return jobNumber;
+      return allocated;
     });
   }
 
+  /**
+   * Create a job with an explicit job number (for CSV import).
+   * Does NOT auto-generate a job number or create an initial visit.
+   * Archived import jobs don't need calendar entries.
+   */
+  async createJobWithExplicitNumber(
+    companyId: string,
+    jobNumber: number,
+    jobData: Record<string, unknown>,
+    /** Optional transaction handle — when provided, participates in caller's
+     *  transaction instead of running standalone. Used by job import service
+     *  for multi-entity atomicity (location + job + note). */
+    txHandle?: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  ): Promise<any> {
+    this.assertCompanyId(companyId);
+    const conn = txHandle ?? db;
+    const [createdJob] = await conn
+      .insert(jobs)
+      .values({
+        ...jobData,
+        companyId,
+        jobNumber,
+        status: "archived",
+      } as any)
+      .returning();
+    return createdJob;
+  }
 
+  /**
+   * Reset job number counter to at least max(existing job numbers) + 1.
+   * Called after import to prevent future auto-generated numbers from colliding.
+   * Uses GREATEST to never regress the counter.
+   */
+  async resetJobNumberCounter(companyId: string): Promise<{ newNextJobNumber: number }> {
+    this.assertCompanyId(companyId);
+    const [maxRow] = await db
+      .select({ maxNum: sql<number>`COALESCE(MAX(${jobs.jobNumber}), 0)::int` })
+      .from(jobs)
+      .where(eq(jobs.companyId, companyId));
+    const needed = (maxRow?.maxNum ?? 0) + 1;
 
+    await db
+      .update(companyCounters)
+      .set({ nextJobNumber: sql`GREATEST(${companyCounters.nextJobNumber}, ${needed})` })
+      .where(eq(companyCounters.companyId, companyId));
+
+    const [counter] = await db
+      .select({ nextJobNumber: companyCounters.nextJobNumber })
+      .from(companyCounters)
+      .where(eq(companyCounters.companyId, companyId));
+    return { newNextJobNumber: counter?.nextJobNumber ?? needed };
+  }
+
+  /**
+   * Update a job's number with uniqueness check and counter bump.
+   * Runs in a transaction to ensure atomicity:
+   *   1. Check no other job in the same company uses the new number
+   *   2. Update the job row
+   *   3. Advance companyCounters.nextJobNumber if needed (GREATEST)
+   */
+  async updateJobNumber(companyId: string, jobId: string, newJobNumber: number): Promise<void> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(jobId, "jobId");
+
+    await db.transaction(async (tx) => {
+      // 1. Check uniqueness — is newJobNumber already used by a different job in this company?
+      const [conflict] = await tx
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(
+          and(
+            eq(jobs.companyId, companyId),
+            eq(jobs.jobNumber, newJobNumber),
+            sql`${jobs.id} != ${jobId}`
+          )
+        )
+        .limit(1);
+
+      if (conflict) {
+        const err = new Error(`Job number #${newJobNumber} is already in use.`);
+        (err as any).code = "JOB_NUMBER_DUPLICATE";
+        (err as any).statusCode = 409;
+        throw err;
+      }
+
+      // 2. Update the job row
+      const [updated] = await tx
+        .update(jobs)
+        .set({ jobNumber: newJobNumber, updatedAt: new Date() })
+        .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+        .returning({ id: jobs.id });
+
+      if (!updated) {
+        throw this.notFoundError("Job");
+      }
+
+      // 3. Advance counter so future auto-generated numbers follow the new high-water mark
+      await tx
+        .update(companyCounters)
+        .set({ nextJobNumber: sql`GREATEST(${companyCounters.nextJobNumber}, ${newJobNumber + 1})` })
+        .where(eq(companyCounters.companyId, companyId));
+    });
+  }
 
   /**
    * Get jobs with optional filters (paginated)
@@ -203,7 +351,7 @@ export class JobRepository extends BaseRepository {
       updatedAt: jobs.updatedAt,
       // Enriched location fields for frontend compatibility
       // Use parent company name if available, otherwise fall back to location's companyName
-      locationCompanyName: sql<string>`COALESCE(${customerCompanies.name}, ${clients.companyName})`,
+      locationCompanyName: locationDisplayNameExpr,
       locationName: clients.location,
       locationCity: clients.city,
       locationAddress: clients.address,
@@ -320,6 +468,7 @@ export class JobRepository extends BaseRepository {
         primaryTechnicianId: jobs.primaryTechnicianId,
         assignedTechnicianIds: jobs.assignedTechnicianIds,
         status: jobs.status,
+        openSubStatus: jobs.openSubStatus,
         priority: jobs.priority,
         jobType: jobs.jobType,
         summary: jobs.summary,
@@ -342,11 +491,7 @@ export class JobRepository extends BaseRepository {
         holdNotes: jobs.holdNotes,
         nextActionDate: jobs.nextActionDate,
         onHoldAt: jobs.onHoldAt,
-        // Legacy action required fields (kept for backward compatibility)
-        actionRequiredReason: jobs.actionRequiredReason,
-        actionRequiredNotes: jobs.actionRequiredNotes,
-        actionRequiredAt: jobs.actionRequiredAt,
-        actionRequiredEscalatedAt: jobs.actionRequiredEscalatedAt,
+        // 2026-03-18: Legacy actionRequired* fields removed — use canonical hold fields above
         // Undo close support
         previousStatus: jobs.previousStatus,
         closedAt: jobs.closedAt,
@@ -524,8 +669,8 @@ export class JobRepository extends BaseRepository {
       const rows = await db
         .update(jobs)
         .set(updateData)
-        // Prevent updates to deleted/deactivated jobs
-        .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), isNull(jobs.deletedAt), eq(jobs.isActive, true)))
+        // Prevent updates to deleted/deactivated jobs (canonical filter)
+        .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), activeJobFilter()))
         .returning();
 
       return rows[0] ?? null;
@@ -566,88 +711,123 @@ export class JobRepository extends BaseRepository {
 
     return rows[0];
   }
-  /**
-   * Update job status (increments version)
-   */
-  async updateJobStatus(
-    companyId: string,
-    jobId: string,
-    status: string
-  ): Promise<Job | null> {
-    this.assertCompanyId(companyId);
-    this.validateUUID(jobId, "jobId");
-
-    const updates: any = {
-      status,
-      version: sql`${jobs.version} + 1`, // Increment version
-      updatedAt: new Date()
-    };
-
-    // Set timestamps based on status and openSubStatus
-    // "in_progress" is now an openSubStatus, not a status
-    // "completed" is the terminal status for finished work
-    if (status === "completed") {
-      // Set end time when job reaches completed state
-      updates.actualEnd = new Date();
-    }
-
-    const rows = await db
-      .update(jobs)
-      .set(updates)
-      // Prevent status updates to deleted/deactivated jobs
-      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), isNull(jobs.deletedAt), eq(jobs.isActive, true)))
-      .returning();
-
-    return rows[0] ?? null;
-  }
+  // 2026-03-18: updateJobStatus() DELETED — lifecycle writes must go through
+  // jobLifecycleOrchestrator. Use updateJobStatusWithEvent() for audit-traced writes,
+  // or transitionJobStatus() for domain-validated lifecycle transitions.
 
   /**
-   * Delete job (soft delete)
-   * Sets deletedAt timestamp and increments version for optimistic locking.
-   * Also sets isActive = false for legacy compatibility.
+   * Delete job — conditional hard-delete vs soft-delete based on invoice existence.
+   *
+   * Invoice guard checks TWO sources (belt-and-suspenders):
+   *   1. jobs.invoiceId — the canonical FK from job → invoice
+   *   2. invoices table — any row where invoices.jobId = this job
+   *      (invoices.jobId is denormalized with no FK constraint, so it could
+   *       reference a job even if jobs.invoiceId is NULL due to data inconsistency)
+   *
+   * If EITHER source shows an invoice: soft delete to preserve financial integrity.
+   * Sets deletedAt + isActive = false so it's hidden from active job lists but
+   * invoice references remain valid.
+   *
+   * If NO invoice exists anywhere: hard delete the job row.
+   * All dependent rows (job_visits, job_parts, job_equipment, job_status_events,
+   * job_schedule_audit) cascade-delete via FK constraints. Work sessions and
+   * timesheet entries have onDelete: "set null" so they lose the jobId reference
+   * but remain intact for payroll purposes.
    */
   async deleteJob(companyId: string, jobId: string): Promise<boolean> {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
-    const now = new Date();
-    const rows = await db
-      .update(jobs)
-      .set({
-        deletedAt: now,
-        isActive: false,
-        version: sql`${jobs.version} + 1`,
-        updatedAt: now,
-      })
+    // Fetch job to check invoice linkage before deciding delete strategy
+    const [job] = await db
+      .select({ id: jobs.id, invoiceId: jobs.invoiceId })
+      .from(jobs)
       .where(
         and(
           eq(jobs.id, jobId),
           eq(jobs.companyId, companyId),
-          // Only delete if not already deleted
           isNull(jobs.deletedAt)
         )
-      )
-      .returning();
+      );
 
-    return rows.length > 0;
+    if (!job) return false;
+
+    // Belt-and-suspenders: also check invoices table for any row referencing this job.
+    // invoices.jobId is denormalized (no FK constraint), so it could reference a job
+    // even if jobs.invoiceId is NULL due to partial transaction failure or data migration.
+    let hasInvoice = Boolean(job.invoiceId);
+    if (!hasInvoice) {
+      const [linkedInvoice] = await db
+        .select({ id: invoices.id })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.companyId, companyId),
+            eq(invoices.jobId, jobId)
+          )
+        )
+        .limit(1);
+      hasInvoice = Boolean(linkedInvoice);
+    }
+
+    if (hasInvoice) {
+      // Soft delete — invoice exists, preserve financial integrity
+      const now = new Date();
+      await db
+        .update(jobs)
+        .set({
+          deletedAt: now,
+          isActive: false,
+          version: sql`${jobs.version} + 1`,
+          updatedAt: now,
+        })
+        .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
+    } else {
+      // Hard delete — no invoice in either direction, safe to remove completely.
+      // FK cascades handle job_visits, job_parts, job_equipment,
+      // job_status_events, job_schedule_audit. Work sessions/timesheets
+      // get jobId set to null.
+      await db
+        .delete(jobs)
+        .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
+    }
+
+    // Clean up attention items for this job — attention_items has no FK to jobs,
+    // so orphaned rows would continue driving dashboard counts after deletion.
+    await db
+      .delete(attentionItems)
+      .where(and(
+        eq(attentionItems.tenantId, companyId),
+        eq(attentionItems.entityType, "job"),
+        eq(attentionItems.entityId, jobId),
+      ));
+
+    return true;
   }
 
   /**
-   * Get job parts
+   * Get job parts — LEFT JOINs items to resolve itemType from catalog.
+   * No active/deleted filter on items: inactive items still have a valid type.
    */
-  async getJobParts(companyId: string, jobId: string): Promise<JobPart[]> {
+  async getJobParts(companyId: string, jobId: string): Promise<(JobPart & { itemType: string | null })[]> {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
-    return await db
-      .select()
+    const rows = await db
+      .select({
+        jobPart: jobParts,
+        itemType: items.type,
+      })
       .from(jobParts)
+      .leftJoin(items, eq(jobParts.productId, items.id))
       .where(and(
         eq(jobParts.companyId, companyId), // Tenant isolation
         eq(jobParts.jobId, jobId),
         eq(jobParts.isActive, true)
       ))
       .orderBy(jobParts.sortOrder);
+
+    return rows.map(r => ({ ...r.jobPart, itemType: r.itemType }));
   }
 
   /**
@@ -905,13 +1085,47 @@ export class JobRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
-    return await db
-      .select()
+    // Join location_equipment to hydrate the nested `equipment` object
+    // expected by the frontend's JobEquipmentWithDetails contract.
+    const rows = await db
+      .select({
+        // Junction row fields
+        id: jobEquipment.id,
+        companyId: jobEquipment.companyId,
+        jobId: jobEquipment.jobId,
+        equipmentId: jobEquipment.equipmentId,
+        notes: jobEquipment.notes,
+        createdAt: jobEquipment.createdAt,
+        updatedAt: jobEquipment.updatedAt,
+        // Nested equipment fields
+        equipment: {
+          id: locationEquipment.id,
+          companyId: locationEquipment.companyId,
+          locationId: locationEquipment.locationId,
+          name: locationEquipment.name,
+          equipmentType: locationEquipment.equipmentType,
+          manufacturer: locationEquipment.manufacturer,
+          modelNumber: locationEquipment.modelNumber,
+          serialNumber: locationEquipment.serialNumber,
+          tagNumber: locationEquipment.tagNumber,
+          installDate: locationEquipment.installDate,
+          warrantyExpiry: locationEquipment.warrantyExpiry,
+          notes: locationEquipment.notes,
+          nameplatePhotoId: locationEquipment.nameplatePhotoId,
+          isActive: locationEquipment.isActive,
+          deletedAt: locationEquipment.deletedAt,
+          createdAt: locationEquipment.createdAt,
+          updatedAt: locationEquipment.updatedAt,
+        },
+      })
       .from(jobEquipment)
+      .innerJoin(locationEquipment, eq(jobEquipment.equipmentId, locationEquipment.id))
       .where(and(
-        eq(jobEquipment.companyId, companyId), // Tenant isolation
+        eq(jobEquipment.companyId, companyId),
         eq(jobEquipment.jobId, jobId)
       ));
+
+    return rows;
   }
 
   /**
@@ -1182,82 +1396,9 @@ export class JobRepository extends BaseRepository {
     });
   }
 
-  /**
-   * Atomically perform multiple status transitions and log events for each.
-   * Used by the close endpoint which may have intermediate states.
-   *
-   * @param companyId - Company ID for tenant isolation
-   * @param jobId - Job ID to update
-   * @param transitions - Array of status transitions to perform
-   * @param changedBy - User ID who triggered the change
-   * @returns Updated job after all transitions
-   */
-  async updateJobStatusWithMultipleEvents(
-    companyId: string,
-    jobId: string,
-    transitions: Array<{
-      fromStatus: string;
-      toStatus: string;
-      note?: string | null;
-      meta?: Record<string, unknown> | null;
-      additionalUpdates?: Record<string, unknown>;
-    }>,
-    changedBy: string | null
-  ): Promise<Job> {
-    this.assertCompanyId(companyId);
-    this.validateUUID(jobId, "jobId");
-
-    if (transitions.length === 0) {
-      throw new Error("At least one transition is required");
-    }
-
-    return await db.transaction(async (tx) => {
-      let updatedJob: Job | null = null;
-
-      for (const transition of transitions) {
-        const { fromStatus, toStatus, note, meta, additionalUpdates } = transition;
-
-        // Update job with the current transition
-        const updatePayload: Record<string, unknown> = {
-          status: toStatus,
-          ...additionalUpdates,
-        };
-
-        const normalizedPayload = this.normalizeDateFields(updatePayload);
-
-        const [job] = await tx
-          .update(jobs)
-          .set({
-            ...normalizedPayload,
-            version: sql`${jobs.version} + 1`,
-            updatedAt: new Date(),
-          })
-          .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
-          .returning();
-
-        if (!job) {
-          throw this.notFoundError("Job");
-        }
-
-        updatedJob = job;
-
-        // Create status event for this transition
-        await tx
-          .insert(jobStatusEvents)
-          .values({
-            companyId,
-            jobId,
-            changedBy,
-            fromStatus,
-            toStatus,
-            note: note || null,
-            meta: meta || null,
-          });
-      }
-
-      return updatedJob!;
-    });
-  }
+  // 2026-03-18: updateJobStatusWithMultipleEvents() DELETED — dead code with zero callers.
+  // Close operations now use single-step transitionJobStatus() via the lifecycle engine.
+  // See docs/REFACTORING_LOG.md for details.
 
   /**
    * Get job status events for audit trail, sorted by changedAt desc
@@ -1417,16 +1558,12 @@ export class JobRepository extends BaseRepository {
         holdNotes: jobs.holdNotes,
         nextActionDate: jobs.nextActionDate,
         onHoldAt: jobs.onHoldAt,
-        // Legacy fields (kept for backward compatibility)
-        actionRequiredReason: jobs.actionRequiredReason,
-        actionRequiredNotes: jobs.actionRequiredNotes,
-        actionRequiredAt: jobs.actionRequiredAt,
-        actionRequiredEscalatedAt: jobs.actionRequiredEscalatedAt,
+        // 2026-03-18: Legacy actionRequired* fields removed — use canonical hold fields above
         primaryTechnicianId: jobs.primaryTechnicianId,
         createdAt: jobs.createdAt,
         // Location info
         locationName: clients.location,
-        locationCompanyName: sql<string>`COALESCE(${customerCompanies.name}, ${clients.companyName})`,
+        locationCompanyName: locationDisplayNameExpr,
         locationAddress: clients.address,
         locationCity: clients.city,
       })
@@ -1440,7 +1577,7 @@ export class JobRepository extends BaseRepository {
           isNull(jobs.deletedAt),
           eq(jobs.isActive, true),
           eq(jobs.status, "open"),
-          sql`${jobs.openSubStatus} IN ('on_hold', 'needs_review')`
+          eq(jobs.openSubStatus, "on_hold")
         )
       )
       .orderBy(

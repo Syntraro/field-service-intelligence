@@ -17,6 +17,8 @@ import { and, eq, gte, lte, asc, isNull, sql, type SQL } from "drizzle-orm";
 import { jobVisits, jobs, clientLocations, customerCompanies } from "@shared/schema";
 import type { QueryCtx } from "../lib/queryCtx";
 import { activeJobFilter } from "./jobFilters";
+import { activeVisitGuard } from "../lib/visitPredicates";
+import { locationDisplayNameExpr } from "../lib/queryHelpers";
 import type {
   EnrichedVisit,
   VisitJobInfo,
@@ -41,7 +43,7 @@ const ENRICHED_VISIT_SELECT = {
   jobPriority: jobs.priority,
   locationId: clientLocations.id,
   // Phase 5.3 G3: COALESCE parent company name for consistent display across surfaces
-  locationCompanyName: sql<string>`COALESCE(${customerCompanies.name}, ${clientLocations.companyName})`,
+  locationCompanyName: locationDisplayNameExpr,
   locationLocation: clientLocations.location,
   locationAddress: clientLocations.address,
   locationCity: clientLocations.city,
@@ -129,8 +131,7 @@ export async function getVisitsForUserInRange(
     .where(
       and(
         eq(jobVisits.companyId, tenantId),
-        eq(jobVisits.isActive, true),
-        isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
+        activeVisitGuard(),
         // Phase 5.3 G4: exclude visits for soft-deleted/inactive jobs
         activeJobFilter(),
         gte(jobVisits.scheduledStart, start),
@@ -162,8 +163,7 @@ export async function getUnscheduledVisitsForUser(
     .where(
       and(
         eq(jobVisits.companyId, tenantId),
-        eq(jobVisits.isActive, true),
-        isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
+        activeVisitGuard(),
         // Phase 5.3 G4: exclude visits for soft-deleted/inactive jobs
         activeJobFilter(),
         isNull(jobVisits.scheduledStart),
@@ -197,8 +197,7 @@ export async function getVisitByIdForUser(
       and(
         eq(jobVisits.id, visitId),
         eq(jobVisits.companyId, tenantId),
-        eq(jobVisits.isActive, true),
-        isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
+        activeVisitGuard(),
         // Phase 5.3 G4: exclude visits for soft-deleted/inactive jobs
         activeJobFilter(),
         assignedToUser(userId)
@@ -235,8 +234,7 @@ export async function getVisitsForTenantInRange(
 
   const conditions = [
     eq(jobVisits.companyId, tenantId),
-    eq(jobVisits.isActive, true),
-    isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
+    activeVisitGuard(),
     // Phase 5.3 G4: exclude visits for soft-deleted/inactive jobs
     activeJobFilter(),
     gte(jobVisits.scheduledStart, start),
@@ -370,8 +368,7 @@ export async function getVisitFeed(
   // Build conditions array
   const conditions: SQL[] = [
     eq(jobVisits.companyId, ctx.tenantId),
-    eq(jobVisits.isActive, true),
-    isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
+    activeVisitGuard(),
     // Phase 5.3 G4: exclude visits for soft-deleted/inactive jobs
     activeJobFilter(),
   ];

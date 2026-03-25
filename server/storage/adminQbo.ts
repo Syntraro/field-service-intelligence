@@ -16,6 +16,7 @@ import {
   clientLocations,
   invoices,
 } from "@shared/schema";
+import { notDeletedClientFilter } from "./jobFilters";
 
 // ============================================================================
 // TYPES
@@ -611,7 +612,7 @@ class AdminQboRepository {
         count: sql<number>`count(*)::int`,
       })
       .from(clientLocations)
-      .where(isNull(clientLocations.deletedAt))
+      .where(notDeletedClientFilter())
       .groupBy(clientLocations.companyId, sql`CASE WHEN ${clientLocations.qboCustomerId} IS NOT NULL THEN 'SYNCED' ELSE 'NOT_SYNCED' END`);
 
     // Get invoice sync stats per company

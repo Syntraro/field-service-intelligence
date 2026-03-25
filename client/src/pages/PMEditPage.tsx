@@ -14,21 +14,12 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation, useParams } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   ChevronLeft,
   Loader2,
@@ -38,20 +29,11 @@ import {
   Package,
   AlertCircle,
 } from "lucide-react";
+import { PmMonthPicker } from "@/components/pm/PmMonthPicker";
+import { PmGenerationModeSelector } from "@/components/pm/PmGenerationModeSelector";
+import { PmServiceWindowInputs } from "@/components/pm/PmServiceWindowInputs";
+import { PmBillingFields } from "@/components/pm/PmBillingFields";
 import type { RecurringJobTemplate, Client } from "@shared/schema";
-
-// ============================================================================
-// Constants
-// ============================================================================
-
-const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
-
-const MONTH_PRESETS = [
-  { label: "Quarterly", months: [1, 4, 7, 10] },
-  { label: "Bi-Annual", months: [4, 10] },
-  { label: "Annual", months: [4] },
-  { label: "Monthly", months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
-] as const;
 
 // ============================================================================
 // Form State
@@ -63,12 +45,8 @@ interface EditFormState {
   months: number[];
   generationMode: "period_start" | "day_of_month";
   generationDayOfMonth: number;
-  autoSchedule: boolean;
-  scheduledTimeLocal: string;
-  defaultDurationMinutes: number;
   startDate: string;
   endDate: string;
-  preferredTechnicianId: string;
   includeLocationPmParts: boolean;
   isActive: boolean;
   // PM Phase 3: Service window
@@ -87,12 +65,8 @@ function templateToFormState(tpl: RecurringJobTemplate): EditFormState {
     months: tpl.monthsOfYear ?? [],
     generationMode: tpl.generationMode === "day_of_month" ? "day_of_month" : "period_start",
     generationDayOfMonth: tpl.generationDayOfMonth ?? 1,
-    autoSchedule: tpl.autoSchedule ?? false,
-    scheduledTimeLocal: tpl.scheduledTimeLocal ?? "09:00",
-    defaultDurationMinutes: tpl.defaultDurationMinutes ?? 120,
     startDate: tpl.startDate ?? "",
     endDate: tpl.endDate ?? "",
-    preferredTechnicianId: tpl.preferredTechnicianId ?? "",
     includeLocationPmParts: tpl.includeLocationPmParts ?? false,
     isActive: tpl.isActive,
     serviceWindowDaysBefore: tpl.serviceWindowDaysBefore ?? 7,
@@ -113,9 +87,6 @@ export default function PMEditPage() {
   const params = useParams<{ id: string }>();
   const templateId = params.id;
   const { toast } = useToast();
-  const { teamMembers } = useTechniciansDirectory();
-  const schedulableTechs = teamMembers.filter((t) => t.isSchedulable);
-
   const [form, setForm] = useState<EditFormState | null>(null);
 
   // Fetch existing template
@@ -162,14 +133,6 @@ export default function PMEditPage() {
     setForm((prev) => prev ? { ...prev, ...patch } : prev);
   }
 
-  const toggleMonth = (m: number) => {
-    if (!form) return;
-    const newMonths = form.months.includes(m)
-      ? form.months.filter((v) => v !== m)
-      : [...form.months, m].sort((a, b) => a - b);
-    onChange({ months: newMonths });
-  };
-
   // Validation
   const errors: string[] = [];
   if (form) {
@@ -177,9 +140,6 @@ export default function PMEditPage() {
     if (form.months.length === 0) errors.push("Select at least 1 month.");
     if (form.generationMode === "day_of_month" && (form.generationDayOfMonth < 1 || form.generationDayOfMonth > 31)) {
       errors.push("Day of month must be 1–31.");
-    }
-    if (form.autoSchedule && !/^\d{2}:\d{2}$/.test(form.scheduledTimeLocal)) {
-      errors.push("Scheduled time must be HH:MM.");
     }
   }
   const isValid = form !== null && errors.length === 0;
@@ -194,15 +154,11 @@ export default function PMEditPage() {
         monthsOfYear: form.months,
         generationMode: form.generationMode,
         generationDayOfMonth: form.generationMode === "day_of_month" ? form.generationDayOfMonth : null,
-        autoSchedule: form.autoSchedule,
-        scheduledTimeLocal: form.autoSchedule ? form.scheduledTimeLocal : null,
-        defaultDurationMinutes: form.autoSchedule ? form.defaultDurationMinutes : null,
         includeLocationPmParts: form.includeLocationPmParts,
         serviceWindowDaysBefore: form.serviceWindowDaysBefore,
         serviceWindowDaysAfter: form.serviceWindowDaysAfter,
         startDate: form.startDate || undefined,
         endDate: form.endDate || null,
-        preferredTechnicianId: form.preferredTechnicianId || null,
         isActive: form.isActive,
         // PM Billing Disposition: Contract-level billing rules
         pmBillingModel: form.pmBillingModel || null,
@@ -312,154 +268,27 @@ export default function PMEditPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-5">
-          {/* Month Picker */}
-          <div className="space-y-2">
-            <Label>Which months should this run?</Label>
-            <div className="flex flex-wrap gap-1.5">
-              {MONTH_LABELS.map((label, idx) => {
-                const monthNum = idx + 1;
-                const selected = form.months.includes(monthNum);
-                return (
-                  <button
-                    key={monthNum}
-                    type="button"
-                    onClick={() => toggleMonth(monthNum)}
-                    className={`rounded-full px-3 py-1 text-xs font-medium border transition-colors ${
-                      selected
-                        ? "bg-primary text-primary-foreground border-primary"
-                        : "bg-background text-muted-foreground border-border hover:border-primary/50"
-                    }`}
-                    data-testid={`pm-edit-month-${monthNum}`}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="flex flex-wrap gap-2 mt-1">
-              {MONTH_PRESETS.map((preset) => (
-                <button
-                  key={preset.label}
-                  type="button"
-                  onClick={() => onChange({ months: [...preset.months] })}
-                  className="text-xs text-primary hover:underline"
-                >
-                  {preset.label}
-                </button>
-              ))}
-            </div>
-          </div>
+          <PmMonthPicker
+            months={form.months}
+            onChange={(months) => onChange({ months })}
+            testIdPrefix="pm-edit"
+          />
 
-          {/* Generation Mode */}
-          <div className="space-y-2">
-            <Label>When should jobs be created?</Label>
-            <div className="space-y-2">
-              <label className="flex items-center gap-2 text-sm cursor-pointer">
-                <input
-                  type="radio"
-                  name="generationMode"
-                  checked={form.generationMode === "period_start"}
-                  onChange={() => onChange({ generationMode: "period_start" })}
-                  className="accent-primary"
-                />
-                Start of each scheduled month
-              </label>
-              <label className="flex items-center gap-2 text-sm cursor-pointer">
-                <input
-                  type="radio"
-                  name="generationMode"
-                  checked={form.generationMode === "day_of_month"}
-                  onChange={() => onChange({ generationMode: "day_of_month" })}
-                  className="accent-primary"
-                />
-                <span>Specific day:</span>
-                <Input
-                  type="number"
-                  min={1}
-                  max={31}
-                  className="w-16 h-7 text-sm"
-                  value={form.generationDayOfMonth}
-                  onChange={(e) => onChange({ generationDayOfMonth: parseInt(e.target.value, 10) || 1 })}
-                  disabled={form.generationMode !== "day_of_month"}
-                  data-testid="pm-edit-day-of-month"
-                />
-              </label>
-            </div>
-          </div>
+          <PmGenerationModeSelector
+            generationMode={form.generationMode}
+            generationDayOfMonth={form.generationDayOfMonth}
+            onModeChange={(generationMode) => onChange({ generationMode })}
+            onDayChange={(generationDayOfMonth) => onChange({ generationDayOfMonth })}
+            testIdPrefix="pm-edit"
+          />
 
-          {/* Auto Schedule */}
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Checkbox
-                id="pm-edit-auto"
-                checked={form.autoSchedule}
-                onCheckedChange={(v) => onChange({ autoSchedule: Boolean(v) })}
-                data-testid="pm-edit-auto-schedule"
-              />
-              <Label htmlFor="pm-edit-auto" className="cursor-pointer">
-                Automatically assign a scheduled time
-              </Label>
-            </div>
-            {form.autoSchedule && (
-              <div className="flex items-center gap-3 pl-6">
-                <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Time</Label>
-                  <Input
-                    type="time"
-                    className="w-28 h-7 text-sm"
-                    value={form.scheduledTimeLocal}
-                    onChange={(e) => onChange({ scheduledTimeLocal: e.target.value })}
-                    data-testid="pm-edit-time"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs text-muted-foreground">Duration (min)</Label>
-                  <Input
-                    type="number"
-                    min={1}
-                    className="w-20 h-7 text-sm"
-                    value={form.defaultDurationMinutes}
-                    onChange={(e) => onChange({ defaultDurationMinutes: parseInt(e.target.value, 10) || 120 })}
-                    data-testid="pm-edit-duration"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* PM Phase 3: Service Window */}
-          <div className="space-y-2">
-            <Label>Service window</Label>
-            <p className="text-xs text-muted-foreground">
-              Acceptable date range around the ideal PM date.
-            </p>
-            <div className="flex items-center gap-3">
-              <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">Days before</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  max={90}
-                  className="w-20 h-7 text-sm"
-                  value={form.serviceWindowDaysBefore}
-                  onChange={(e) => onChange({ serviceWindowDaysBefore: parseInt(e.target.value, 10) || 0 })}
-                  data-testid="pm-edit-window-before"
-                />
-              </div>
-              <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">Days after</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  max={90}
-                  className="w-20 h-7 text-sm"
-                  value={form.serviceWindowDaysAfter}
-                  onChange={(e) => onChange({ serviceWindowDaysAfter: parseInt(e.target.value, 10) || 0 })}
-                  data-testid="pm-edit-window-after"
-                />
-              </div>
-            </div>
-          </div>
+          <PmServiceWindowInputs
+            daysBefore={form.serviceWindowDaysBefore}
+            daysAfter={form.serviceWindowDaysAfter}
+            onDaysBeforeChange={(serviceWindowDaysBefore) => onChange({ serviceWindowDaysBefore })}
+            onDaysAfterChange={(serviceWindowDaysAfter) => onChange({ serviceWindowDaysAfter })}
+            testIdPrefix="pm-edit"
+          />
 
           {/* Dates */}
           <div className="grid grid-cols-2 gap-4">
@@ -483,28 +312,6 @@ export default function PMEditPage() {
             </div>
           </div>
 
-          {/* Preferred Technician */}
-          {schedulableTechs.length > 0 && (
-            <div className="space-y-2">
-              <Label>Default assigned technician (optional)</Label>
-              <Select
-                value={form.preferredTechnicianId || "none"}
-                onValueChange={(v) => onChange({ preferredTechnicianId: v === "none" ? "" : v })}
-              >
-                <SelectTrigger data-testid="pm-edit-technician">
-                  <SelectValue placeholder="Unassigned" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">Unassigned</SelectItem>
-                  {schedulableTechs.map((tech) => (
-                    <SelectItem key={tech.id} value={tech.id}>
-                      {tech.fullName}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
         </CardContent>
       </Card>
 
@@ -516,50 +323,16 @@ export default function PMEditPage() {
             PM Billing
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label>Billing model</Label>
-            <Select
-              value={form.pmBillingModel || "none"}
-              onValueChange={(v) => onChange({ pmBillingModel: v === "none" ? "" : v })}
-            >
-              <SelectTrigger data-testid="pm-edit-billing-model">
-                <SelectValue placeholder="Not set" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">Not set</SelectItem>
-                <SelectItem value="per_visit">Per Visit — Invoice each completed job</SelectItem>
-                <SelectItem value="monthly_fixed">Monthly Fixed — Covered by monthly contract</SelectItem>
-                <SelectItem value="annual_prepaid">Annual Prepaid — Covered by annual contract</SelectItem>
-                <SelectItem value="do_not_bill">Do Not Bill — No invoice expected</SelectItem>
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">
-              Determines how PM jobs are billed at completion. This is stamped onto each generated job.
-            </p>
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label>Billing label (optional)</Label>
-              <Input
-                value={form.pmBillingLabel}
-                onChange={(e) => onChange({ pmBillingLabel: e.target.value })}
-                placeholder="e.g. Quarterly RTU PM"
-                data-testid="pm-edit-billing-label"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>Contract amount (optional)</Label>
-              <Input
-                type="number"
-                step="0.01"
-                value={form.pmContractAmount}
-                onChange={(e) => onChange({ pmContractAmount: e.target.value })}
-                placeholder="0.00"
-                data-testid="pm-edit-contract-amount"
-              />
-            </div>
-          </div>
+        <CardContent>
+          <PmBillingFields
+            billingModel={form.pmBillingModel}
+            billingLabel={form.pmBillingLabel}
+            contractAmount={form.pmContractAmount}
+            onBillingModelChange={(pmBillingModel) => onChange({ pmBillingModel })}
+            onBillingLabelChange={(pmBillingLabel) => onChange({ pmBillingLabel })}
+            onContractAmountChange={(pmContractAmount) => onChange({ pmContractAmount })}
+            testIdPrefix="pm-edit"
+          />
         </CardContent>
       </Card>
 

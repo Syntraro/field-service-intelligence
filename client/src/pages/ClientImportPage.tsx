@@ -1,15 +1,15 @@
 /**
- * Client CSV Import Wizard — Settings > Import Clients
+ * Client CSV Import Wizard — Settings > Import Clients (v2 — Production Hardened)
  *
  * Five-step wizard:
  *   1. Upload CSV
  *   2. Map columns to Syntraro fields
- *   3. Preview & validate
+ *   3. Preview & validate (with dedup detection + action badges)
  *   4. Execute import
- *   5. View results
+ *   5. View results (with created vs matched counts)
  *
- * v1: One row = one client package (company + location + optional contact).
- * Create-only. Exact company-name dedup. No repeated-row aggregation.
+ * v2: Normalized matching, location/contact dedup, billing conflict warnings,
+ *     within-CSV duplicate detection, per-row transaction safety.
  */
 
 import { useState, useMemo, useCallback } from "react";
@@ -57,8 +57,10 @@ import type {
   ImportPreviewResponse,
   ImportExecuteResponse,
   ClientImportRow,
+  ImportEntityAction,
 } from "@shared/clientImportTypes";
 import { IMPORT_FIELD_DEFS } from "@shared/clientImportTypes";
+import { parseCSV } from "@shared/csvParser";
 
 // ============================================================================
 // Types
@@ -79,6 +81,17 @@ const GROUP_LABELS: Record<string, string> = {
   location: "Primary Location",
   contact: "Primary Contact",
 };
+
+// ============================================================================
+// Action Badge — shows create/match/skip for each entity
+// ============================================================================
+
+function ActionBadge({ action }: { action?: ImportEntityAction }) {
+  if (action === "create") return <Badge variant="outline" className="border-green-300 bg-green-50 text-green-700 text-[10px] px-1">new</Badge>;
+  if (action === "match") return <Badge variant="outline" className="border-blue-300 bg-blue-50 text-blue-700 text-[10px] px-1">exists</Badge>;
+  if (action === "skip") return <Badge variant="outline" className="border-gray-300 bg-gray-50 text-gray-500 text-[10px] px-1">skip</Badge>;
+  return null; // undefined action — don't render badge
+}
 
 // ============================================================================
 // Step 1: Upload
@@ -105,7 +118,7 @@ function UploadStep({ onUpload }: { onUpload: (text: string, fileName: string) =
         <CardTitle className="flex items-center gap-2"><Upload className="h-5 w-5" />Upload CSV File</CardTitle>
         <CardDescription>
           Each row imports one client package: one company, one location, and one optional contact.
-          If a company name already exists, the location will be added to that company.
+          Duplicate companies, locations, and contacts are automatically detected and skipped.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -137,8 +150,8 @@ function UploadStep({ onUpload }: { onUpload: (text: string, fileName: string) =
           <p className="text-xs text-muted-foreground mt-1">Maximum 500 rows, 5MB</p>
         </div>
         <div className="mt-4 p-3 rounded-md bg-muted/50 text-xs text-muted-foreground space-y-1">
-          <p>Multiple contacts and multiple locations per company are not supported in this version.</p>
-          <p>Repeated company rows are treated independently — not grouped or merged.</p>
+          <p>Re-importing the same CSV is safe — duplicates are automatically detected and skipped.</p>
+          <p>Company matching is case-insensitive. Locations are matched by address. Contacts are matched by email or name+phone.</p>
         </div>
       </CardContent>
     </Card>
@@ -257,11 +270,57 @@ function MapStep({
 // Step 3: Preview & Validate
 // ============================================================================
 
+type PreviewFilter = "all" | "errors" | "warnings" | "clean";
+
 function PreviewStep({ preview }: { preview: ImportPreviewResponse }) {
-  const { summary, rows } = preview;
+  const { summary, rows, warningLegend } = preview;
+  const [filter, setFilter] = useState<PreviewFilter>("all");
+
+  const filteredRows = useMemo(() => {
+    if (filter === "all") return rows;
+    if (filter === "errors") return rows.filter(r => r.status === "blocked");
+    if (filter === "warnings") return rows.filter(r => r.status === "warning");
+    return rows.filter(r => r.status === "valid");
+  }, [rows, filter]);
+
+  // CSV export helpers
+  const exportCSV = useCallback((filename: string, targetRows: ValidatedRow[]) => {
+    const csvRows = ["Row,Status,Company,Location,Contact,Errors,Warnings"];
+    for (const r of targetRows) {
+      const errors = (r.errors ?? []).map(e => e.message).join("; ");
+      const warns = (r.warningCodes ?? []).map(c => `W${c}`).join(", ") || (r.warnings ?? []).join("; ");
+      csvRows.push([
+        r.rowIndex + 1,
+        r.status,
+        `"${(r.normalized.companyName || "").replace(/"/g, '""')}"`,
+        `"${(r.normalized.locationName || r.normalized.companyName || "").replace(/"/g, '""')}"`,
+        `"${[r.normalized.contactFirstName, r.normalized.contactLastName].filter(Boolean).join(" ").replace(/"/g, '""')}"`,
+        `"${errors.replace(/"/g, '""')}"`,
+        `"${warns.replace(/"/g, '""')}"`,
+      ].join(","));
+    }
+    const blob = new Blob([csvRows.join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const errorRows = useMemo(() => rows.filter(r => r.status === "blocked"), [rows]);
+  const warningRows = useMemo(() => rows.filter(r => r.status === "warning"), [rows]);
 
   return (
     <div className="space-y-4">
+      {/* Within-CSV duplicate warning */}
+      {(summary.withinCsvDuplicates ?? 0) > 0 && (
+        <div className="p-3 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-sm flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          {summary.withinCsvDuplicates ?? 0} duplicate row{(summary.withinCsvDuplicates ?? 0) !== 1 ? "s" : ""} detected within the CSV (same company + address). Duplicate locations will be skipped.
+        </div>
+      )}
+
       {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <SummaryCard label="Total Rows" value={summary.totalRows} />
@@ -269,59 +328,128 @@ function PreviewStep({ preview }: { preview: ImportPreviewResponse }) {
         <SummaryCard label="Warnings" value={summary.warningRows} variant="yellow" />
         <SummaryCard label="Blocked" value={summary.blockedRows} variant="red" />
       </div>
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <SummaryCard label="New Companies" value={summary.newCompanies} variant="blue" />
         <SummaryCard label="Existing Companies" value={summary.matchedExistingCompanies} />
+        <SummaryCard label="Locations Matched" value={summary.locationsMatched ?? 0} />
+        <SummaryCard label="Contacts Matched" value={summary.contactsMatched ?? 0} />
       </div>
 
-      {/* Row table */}
+      {/* Warning legend (compact indexed reference) */}
+      {warningLegend && Object.keys(warningLegend).length > 0 && (
+        <Card>
+          <CardHeader className="py-2 px-4">
+            <CardTitle className="text-xs font-medium text-muted-foreground">Warning Legend</CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-3 pt-0">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-0.5">
+              {Object.entries(warningLegend).map(([code, msg]) => (
+                <div key={code} className="flex items-start gap-1.5 text-xs">
+                  <Badge variant="outline" className="border-yellow-300 bg-yellow-50 text-yellow-700 text-[9px] px-1 py-0 shrink-0 font-mono">W{code}</Badge>
+                  <span className="text-muted-foreground">{msg}</span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Row table with filtering and export */}
       <Card>
-        <CardHeader className="py-3">
-          <CardTitle className="text-sm">Row Preview</CardTitle>
+        <CardHeader className="py-3 flex flex-row items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <CardTitle className="text-sm">Row Preview</CardTitle>
+            {/* Filter buttons */}
+            <div className="flex items-center gap-1 ml-2">
+              {([
+                { key: "all", label: "All", count: rows.length },
+                { key: "errors", label: "Errors", count: errorRows.length },
+                { key: "warnings", label: "Warnings", count: warningRows.length },
+                { key: "clean", label: "Clean", count: summary.validRows },
+              ] as const).map(f => (
+                <button
+                  key={f.key}
+                  onClick={() => setFilter(f.key)}
+                  className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                    filter === f.key
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-muted-foreground hover:bg-muted/80"
+                  }`}
+                >
+                  {f.label} ({f.count})
+                </button>
+              ))}
+            </div>
+          </div>
+          {/* Export buttons */}
+          <div className="flex items-center gap-1.5">
+            {errorRows.length > 0 && (
+              <Button variant="outline" size="sm" className="h-7 text-[10px]" onClick={() => exportCSV("import-errors.csv", errorRows)}>
+                <Download className="h-3 w-3 mr-1" />Errors
+              </Button>
+            )}
+            {warningRows.length > 0 && (
+              <Button variant="outline" size="sm" className="h-7 text-[10px]" onClick={() => exportCSV("import-warnings.csv", warningRows)}>
+                <Download className="h-3 w-3 mr-1" />Warnings
+              </Button>
+            )}
+            <Button variant="outline" size="sm" className="h-7 text-[10px]" onClick={() => exportCSV("import-preview.csv", rows)}>
+              <Download className="h-3 w-3 mr-1" />All
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="p-0">
-          <ScrollArea className="max-h-[400px]">
+          <div className="overflow-auto max-h-[500px]">
             <Table>
-              <TableHeader>
+              <TableHeader className="sticky top-0 z-10 bg-background">
                 <TableRow>
-                  <TableHead className="w-12">#</TableHead>
-                  <TableHead className="w-20">Status</TableHead>
+                  <TableHead className="w-10">#</TableHead>
+                  <TableHead className="w-16">Status</TableHead>
                   <TableHead>Company</TableHead>
                   <TableHead>Location</TableHead>
                   <TableHead>Contact</TableHead>
-                  <TableHead>Notes</TableHead>
+                  <TableHead className="w-[200px]">Notes</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {rows.map((row) => (
+                {filteredRows.map((row) => (
                   <TableRow key={row.rowIndex} className={row.status === "blocked" ? "bg-destructive/5" : ""}>
-                    <TableCell className="text-xs text-muted-foreground">{row.rowIndex + 1}</TableCell>
-                    <TableCell><StatusBadge status={row.status} /></TableCell>
-                    <TableCell className="text-sm">
-                      <div className="flex items-center gap-1.5">
-                        {row.normalized.companyName || "—"}
-                        {row.matchesExisting && <Badge variant="outline" className="text-[10px] px-1">existing</Badge>}
+                    <TableCell className="text-[10px] text-muted-foreground py-1.5">{row.rowIndex + 1}</TableCell>
+                    <TableCell className="py-1.5"><StatusBadge status={row.status} /></TableCell>
+                    <TableCell className="text-xs py-1.5">
+                      <div className="flex items-center gap-1">
+                        <span className="truncate max-w-[140px]">{row.normalized.companyName || "—"}</span>
+                        <ActionBadge action={row.companyAction} />
                       </div>
                     </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {row.normalized.locationName || row.normalized.companyName || "—"}
+                    <TableCell className="text-xs text-muted-foreground py-1.5">
+                      <div className="flex items-center gap-1">
+                        <span className="truncate max-w-[120px]">{row.normalized.locationName || row.normalized.companyName || "—"}</span>
+                        <ActionBadge action={row.locationAction} />
+                      </div>
                     </TableCell>
-                    <TableCell className="text-sm text-muted-foreground">
-                      {[row.normalized.contactFirstName, row.normalized.contactLastName].filter(Boolean).join(" ") || "—"}
+                    <TableCell className="text-xs text-muted-foreground py-1.5">
+                      <div className="flex items-center gap-1">
+                        <span className="truncate max-w-[100px]">{[row.normalized.contactFirstName, row.normalized.contactLastName].filter(Boolean).join(" ") || "—"}</span>
+                        <ActionBadge action={row.contactAction} />
+                      </div>
                     </TableCell>
-                    <TableCell className="text-xs max-w-[250px]">
-                      {row.errors.length > 0 && (
-                        <div className="text-destructive">{row.errors.map((e) => e.message).join("; ")}</div>
+                    <TableCell className="text-[10px] py-1.5">
+                      {(row.errors?.length ?? 0) > 0 && (
+                        <div className="text-destructive">{(row.errors ?? []).map((e) => e.message).join("; ")}</div>
                       )}
-                      {row.warnings.length > 0 && (
-                        <div className="text-yellow-600">{row.warnings.join("; ")}</div>
+                      {(row.warningCodes?.length ?? 0) > 0 && (
+                        <span className="text-yellow-600 font-mono">{(row.warningCodes ?? []).map(c => `W${c}`).join(" ")}</span>
                       )}
                     </TableCell>
                   </TableRow>
                 ))}
+                {filteredRows.length === 0 && (
+                  <TableRow><TableCell colSpan={6} className="text-center text-xs text-muted-foreground py-6">No rows match the selected filter.</TableCell></TableRow>
+                )}
               </TableBody>
             </Table>
-          </ScrollArea>
+          </div>
         </CardContent>
       </Card>
     </div>
@@ -391,9 +519,11 @@ function ResultsStep({ results }: { results: ImportExecuteResponse }) {
             <SummaryCard label="Companies Created" value={summary.companiesCreated} variant="blue" />
             <SummaryCard label="Companies Matched" value={summary.companiesMatched} />
           </div>
-          <div className="grid grid-cols-2 gap-3 mt-3">
-            <SummaryCard label="Locations Created" value={summary.locationsCreated} variant="green" />
-            <SummaryCard label="Contacts Created" value={summary.contactsCreated} variant="green" />
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
+            <SummaryCard label="Locations Created" value={summary.locationsCreated ?? 0} variant="green" />
+            <SummaryCard label="Locations Matched" value={summary.locationsMatched ?? 0} />
+            <SummaryCard label="Contacts Created" value={summary.contactsCreated ?? 0} variant="green" />
+            <SummaryCard label="Contacts Matched" value={summary.contactsMatched ?? 0} />
           </div>
         </CardContent>
       </Card>
@@ -458,9 +588,14 @@ export default function ClientImportPage() {
         // First call — set up mappings from auto-suggestion
         setParsedHeaders(data.headers);
         setMappings(data.suggestedMappings);
-        // Parse sample rows locally for display
-        const lines = csvText.split(/\r?\n/).filter((l) => l.trim());
-        setSampleRows(lines.slice(1, 6).map((l) => l.split(",")));
+        // Use server-parsed sample rows if available, otherwise parse
+        // client-side with the shared quote-aware CSV parser.
+        // Never use naive String.split(",") — it breaks on quoted fields
+        // containing commas (e.g. "Jan, May, Sep" or multi-email fields).
+        const samples = data.sampleData?.length
+          ? data.sampleData
+          : parseCSV(csvText).slice(1, 6);
+        setSampleRows(samples);
         setStep("map");
       } else {
         setStep("preview");
@@ -534,7 +669,7 @@ export default function ClientImportPage() {
       <div>
         <h1 className="text-xl font-bold tracking-tight">Import Clients</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Import clients from a CSV file. Each row creates one company, one location, and one optional contact.
+          Import clients from a CSV file. Duplicates are automatically detected and skipped for safe re-imports.
         </p>
       </div>
 
@@ -566,6 +701,30 @@ export default function ClientImportPage() {
 
       {step === "map" && (
         <>
+          {preview?.columnCountWarnings && preview.columnCountWarnings.length > 0 && (
+            <Card className="border-amber-200 bg-amber-50">
+              <CardContent className="py-3 px-4">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-amber-800">Column count mismatch detected</p>
+                    <p className="text-xs text-amber-700">
+                      Some rows have more columns than the header row. This typically happens when a field
+                      (like E-mails) contains unquoted commas, which shifts all subsequent columns.
+                      Verify the sample values below match the expected data for each field.
+                    </p>
+                    <details className="text-xs text-amber-600">
+                      <summary className="cursor-pointer">Details ({preview.columnCountWarnings.length} rows affected)</summary>
+                      <ul className="mt-1 space-y-0.5 pl-4 list-disc">
+                        {preview.columnCountWarnings.slice(0, 5).map((w, i) => <li key={i}>{w}</li>)}
+                        {preview.columnCountWarnings.length > 5 && <li>... and {preview.columnCountWarnings.length - 5} more</li>}
+                      </ul>
+                    </details>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
           <MapStep
             headers={parsedHeaders}
             mappings={mappings}

@@ -13,6 +13,7 @@
  */
 
 import { apiRequest, queryClient } from "./queryClient";
+import { detectScheduleConflict } from "./scheduleOverlapCheck";
 import type { JobScheduleValue } from "@/components/jobs/JobScheduleFields";
 import type { ScheduleJobPayload as CalendarSchedulePayload } from "@/hooks/useSchedulingApi";
 
@@ -30,6 +31,8 @@ export interface ScheduleJobResult {
   success: boolean;
   job?: any;
   error?: string;
+  /** True if the saved schedule overlaps another item on the technician's schedule */
+  hasConflict?: boolean;
 }
 
 // ============================================================================
@@ -49,22 +52,9 @@ export function scheduleValueToPayload(
     return null;
   }
 
-  const isAllDay = value.isAllDay || !value.time;
-
-  if (isAllDay) {
-    // All-day event: only date needed
-    return {
-      jobId,
-      allDay: true,
-      date: value.date,
-      technicianUserId: value.primaryTechnicianId || undefined,
-      notes,
-    };
-  }
-
-  // Timed event: compute start/end times
-  const [hours, minutes] = value.time.split(":").map(Number);
-  const startDate = new Date(`${value.date}T${value.time}:00`);
+  // Timed event: compute start/end times (allDay removed from product UX)
+  const time = value.time || "09:00"; // fallback to 9:00 AM if no time set
+  const startDate = new Date(`${value.date}T${time}:00`);
   const endDate = new Date(
     startDate.getTime() + value.durationMinutes * 60000
   );
@@ -133,6 +123,17 @@ export async function applyJobSchedule(
       return { success: false, error: "Invalid schedule value" };
     }
 
+    // Conflict detection: check for overlap but do NOT change scheduled times
+    let hasConflict = false;
+    if (payload.startAt && payload.endAt && payload.technicianUserId && value.date) {
+      hasConflict = await detectScheduleConflict(
+        payload.technicianUserId, value.date,
+        payload.startAt, payload.endAt,
+        value.durationMinutes,
+        options?.visitId,
+      );
+    }
+
     // Determine if this is an update (has visitId) or first-schedule.
     // If no visitId but isUpdate is true, fetch the current visit automatically (2026-03-06).
     let visitId = options?.visitId;
@@ -166,7 +167,7 @@ export async function applyJobSchedule(
         }
       );
       invalidateScheduleQueries(jobId);
-      return { success: true, job: result };
+      return { success: true, job: result, hasConflict };
     } else {
       // First-schedule: POST /api/calendar/schedule (creates visit)
       const result = await apiRequest("/api/calendar/schedule", {
@@ -174,7 +175,7 @@ export async function applyJobSchedule(
         body: JSON.stringify(payload),
       });
       invalidateScheduleQueries(jobId);
-      return { success: true, job: result };
+      return { success: true, job: result, hasConflict };
     }
   } catch (error: any) {
     console.error("[jobScheduling] applyJobSchedule error:", error);
@@ -246,39 +247,36 @@ export async function createJobWithSchedule(
       assignedTechnicianIds: scheduleValue?.assignedTechnicianIds || [],
     };
 
-    // If has schedule data, compute and include scheduling fields directly
+    // If has schedule data, compute scheduling fields and detect conflict
+    let hasConflict = false;
     if (hasSchedule && scheduleValue) {
-      const isAllDay = scheduleValue.isAllDay || !scheduleValue.time;
+      const time = scheduleValue.time || "09:00"; // fallback to 9:00 AM
+      const startDate = new Date(`${scheduleValue.date}T${time}:00`);
+      const endDate = new Date(startDate.getTime() + scheduleValue.durationMinutes * 60000);
 
-      if (isAllDay) {
-        // All-day: start at 00:00:00.000Z, end at 23:59:59.000Z (same day)
-        // Matches DB constraints: jobs_all_day_start_midnight_check, jobs_all_day_end_2359_check
-        jobPayload.scheduledStart = `${scheduleValue.date}T00:00:00.000Z`;
-        jobPayload.scheduledEnd = `${scheduleValue.date}T23:59:59.000Z`;
-        jobPayload.isAllDay = true;
-      } else {
-        // Timed event
-        const startDate = new Date(
-          `${scheduleValue.date}T${scheduleValue.time}:00`
-        );
-        const endDate = new Date(
-          startDate.getTime() + scheduleValue.durationMinutes * 60000
-        );
+      jobPayload.scheduledStart = startDate.toISOString();
+      jobPayload.scheduledEnd = endDate.toISOString();
+      jobPayload.isAllDay = false;
 
-        jobPayload.scheduledStart = startDate.toISOString();
-        jobPayload.scheduledEnd = endDate.toISOString();
-        jobPayload.isAllDay = false;
+      // Conflict detection: check but do NOT change scheduled times
+      const techId = scheduleValue.primaryTechnicianId || null;
+      if (techId && scheduleValue.date) {
+        hasConflict = await detectScheduleConflict(
+          techId, scheduleValue.date,
+          startDate.toISOString(), endDate.toISOString(),
+          scheduleValue.durationMinutes,
+        );
       }
     }
 
-    // Create the job
+    // Create the job — save at user's requested time regardless of conflict
     const result = await apiRequest("/api/jobs", {
       method: "POST",
       body: JSON.stringify(jobPayload),
     });
 
     invalidateScheduleQueries();
-    return { success: true, job: result };
+    return { success: true, job: result, hasConflict };
   } catch (error: any) {
     console.error("[jobScheduling] createJobWithSchedule error:", error);
     return {

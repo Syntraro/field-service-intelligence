@@ -9,11 +9,10 @@ import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { requireFeature } from "../auth/requireFeature";
-import { assertInvoiceStatusTransition } from "../statusRules";
+import { assertInvoiceStatusTransition } from "../domain/jobLifecycle";
+import { invoiceStatusEnum } from "@shared/schema";
 import type { InvoiceStatus } from "@shared/schema";
-import { taxRepository } from "../storage/tax";
-import { invoiceTaxLines } from "@shared/schema";
-import { db as invoiceDb } from "../db";
+import { createInvoiceFromJob as createInvoiceFromJobService, calculateDueDate } from "../services/invoiceCreationService";
 import {
   isBillingLocked,
   isQboSynced,
@@ -28,9 +27,10 @@ import {
 import { generateInvoicePdf } from "../services/invoicePdfService";
 // Phase 1 Architecture: Event Log
 import { logEventAsync } from "../lib/events";
+import * as lifecycle from "../services/jobLifecycleOrchestrator";
 // Phase 5 Step A4: canonical invoice feed builders
 import { getQueryCtx } from "../lib/queryCtx";
-import { getInvoicesFeed, getInvoiceStats as getCanonicalInvoiceStats } from "../storage/invoicesFeed";
+import { getInvoicesFeed, getInvoiceStats as getCanonicalInvoiceStats, UNPAID_INVOICE_STATUSES } from "../storage/invoicesFeed";
 
 const router = Router();
 
@@ -67,8 +67,8 @@ const createInvoiceFromJobSchema = z.object({
 }).strict();
 
 const updateInvoiceSchema = z.object({
-  // Status changes should use dedicated endpoints (send, void) - this allows notes-only updates
-  status: z.enum(["draft", "sent", "partial_paid", "paid", "voided"]).optional(),
+  // 2026-03-18: Uses canonical invoiceStatusEnum from shared/schema.ts (was hardcoded, missing awaiting_payment)
+  status: z.enum(invoiceStatusEnum).optional(),
   issueDate: z.string().datetime().optional(),
   dueDate: z.string().optional().nullable(), // Accepts date string or null (for custom terms)
   // Payment terms - when changed, dueDate is recalculated; null = custom terms
@@ -192,7 +192,7 @@ router.get("/stats", asyncHandler(async (req: AuthedRequest, res: Response) => {
 router.get("/dashboard", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const ctx = getQueryCtx(req);
   const { items } = await getInvoicesFeed(ctx, {
-    statuses: ["awaiting_payment", "sent", "partial_paid"],
+    statuses: UNPAID_INVOICE_STATUSES,
     unpaidOnly: true,
     limit: 20,
     sortBy: "dueDate",
@@ -238,36 +238,31 @@ router.get("/:id/details", asyncHandler(async (req: AuthedRequest, res: Response
   const companyId = req.companyId!;
   const invoiceId = req.params.id;
 
-  // 1. Get the invoice with basic client data
+  // P3-03: Phase 1 — getInvoice must complete first (404 guard + extract IDs)
   const invoice = await storage.getInvoice(companyId, invoiceId);
   if (!invoice) {
-    // Diagnostic log for debugging 404s (no PII, just IDs)
     console.warn(
       `[invoices/:id/details] 404 Not Found - companyId=${companyId}, invoiceId=${invoiceId}`
     );
     throw createError(404, "Invoice not found");
   }
 
-  // 2. Get invoice lines
-  const lines = await storage.getInvoiceLines(companyId, invoiceId);
+  // P3-03: Phase 2 — lines, location, job are independent reads (parallel)
+  const [lines, location, job] = await Promise.all([
+    storage.getInvoiceLines(companyId, invoiceId),
+    storage.getClient(companyId, invoice.locationId),
+    invoice.jobId ? storage.getJob(companyId, invoice.jobId) : Promise.resolve(null),
+  ]);
 
-  // 3. Get the client location (via invoice.locationId)
-  const location = await storage.getClient(companyId, invoice.locationId);
   if (!location) {
     throw createError(400, "Invoice has invalid location reference");
   }
 
-  // 4. Get the customer company (via location.parentCompanyId or invoice.customerCompanyId)
+  // P3-03: Phase 3 — customerCompany depends on location.parentCompanyId (sequential)
   let customerCompany = null;
   const customerCompanyId = invoice.customerCompanyId || location.parentCompanyId;
   if (customerCompanyId) {
     customerCompany = await storage.getCustomerCompany(companyId, customerCompanyId);
-  }
-
-  // 5. Get the job (if invoice.jobId exists)
-  let job = null;
-  if (invoice.jobId) {
-    job = await storage.getJob(companyId, invoice.jobId);
   }
 
   // 6. Build structured address + contact fields for Jobber-style header
@@ -275,6 +270,7 @@ router.get("/:id/details", asyncHandler(async (req: AuthedRequest, res: Response
   const billingAddress = customerCompany?.billingStreet
     ? {
         street: customerCompany.billingStreet,
+        street2: customerCompany.billingStreet2 || "",
         city: customerCompany.billingCity || "",
         province: customerCompany.billingProvince || "",
         postalCode: customerCompany.billingPostalCode || "",
@@ -283,6 +279,7 @@ router.get("/:id/details", asyncHandler(async (req: AuthedRequest, res: Response
     : location.address
       ? {
           street: location.address,
+          street2: location.address2 || "",
           city: location.city || "",
           province: location.province || "",
           postalCode: location.postalCode || "",
@@ -294,6 +291,7 @@ router.get("/:id/details", asyncHandler(async (req: AuthedRequest, res: Response
   const serviceAddress = location.address
     ? {
         street: location.address,
+        street2: location.address2 || "",
         city: location.city || "",
         province: location.province || "",
         postalCode: location.postalCode || "",
@@ -436,66 +434,14 @@ router.post("/from-job/:jobId", requireRole(MANAGER_ROLES), asyncHandler(async (
   const validated = validateSchema(createInvoiceFromJobSchema, req.body);
 
   try {
-    // PHASE A.1: Pass creation source to satisfy invoice creation guard
-    const result = await storage.createInvoiceFromJob(
+    // 2026-03-19: Canonical create-from-job workflow (F-05 hardening).
+    // Service owns: create → refresh → tax → snapshot, all inside a transaction.
+    const result = await createInvoiceFromJobService(
       req.companyId!,
       req.params.jobId,
       { markJobCompleted: validated.markJobCompleted },
       "INVOICE_ROUTE"
     );
-
-    // Only refresh invoice lines if newly created (skip for idempotent return)
-    if (result.created) {
-      await storage.refreshInvoiceFromJob(req.companyId!, result.invoice.id);
-
-      // v1 Tax Integration: Apply default tax group to new invoices
-      // Also snapshot the group composition into invoice_tax_lines so later
-      // edits to rates/groups do NOT affect this invoice.
-      const defaultGroup = await taxRepository.getDefaultTaxGroup(req.companyId!);
-      if (defaultGroup && defaultGroup.rates.length > 0) {
-        const combinedRate = defaultGroup.rates.reduce(
-          (sum, r) => sum + parseFloat(r.rate || "0"), 0
-        );
-        // Set taxGroupId on the invoice
-        await storage.updateInvoice(req.companyId!, result.invoice.id, undefined, {
-          taxGroupId: defaultGroup.id,
-        });
-        // Apply combined rate to each line item's taxRate
-        const lines = await storage.getInvoiceLines(req.companyId!, result.invoice.id);
-        let invoiceSubtotal = 0;
-        for (const line of lines) {
-          const lineSubtotal = parseFloat(line.lineSubtotal || "0");
-          invoiceSubtotal += lineSubtotal;
-          const taxAmount = lineSubtotal * (combinedRate / 100);
-          const lineTotal = lineSubtotal + taxAmount;
-          await storage.updateInvoiceLine(req.companyId!, result.invoice.id, line.id, {
-            taxRate: String(combinedRate / 100), // Decimal format (e.g., 0.13 for 13%)
-            taxAmount: String(taxAmount.toFixed(2)),
-            lineTotal: String(lineTotal.toFixed(2)),
-          });
-        }
-
-        // Snapshot: write one invoice_tax_lines row per component rate
-        const snapshotRows = defaultGroup.rates.map((r) => {
-          const pct = parseFloat(r.rate || "0");
-          const taxAmt = invoiceSubtotal * (pct / 100);
-          return {
-            companyId: req.companyId!,
-            invoiceId: result.invoice.id,
-            taxRateId: r.id,
-            taxRateName: r.name,
-            ratePercent: r.rate,
-            taxableAmount: String(invoiceSubtotal.toFixed(2)),
-            taxAmount: String(taxAmt.toFixed(2)),
-            taxGroupId: defaultGroup.id,
-            taxGroupName: defaultGroup.name,
-          };
-        });
-        if (snapshotRows.length > 0) {
-          await invoiceDb.insert(invoiceTaxLines).values(snapshotRows);
-        }
-      }
-    }
 
     // Phase 1: Log invoice creation event
     if (result.created) {
@@ -506,6 +452,23 @@ router.post("/from-job/:jobId", requireRole(MANAGER_ROLES), asyncHandler(async (
         summary: `Invoice #${result.invoice.invoiceNumber} created from job`,
         meta: { invoiceNumber: result.invoice.invoiceNumber, jobId: req.params.jobId },
       });
+    }
+
+    // 2026-03-18: Canonical MARK_INVOICED lifecycle transition.
+    // Invoice creation is separate from lifecycle — callers opt in explicitly.
+    if (result.created && validated.markJobCompleted) {
+      const job = await storage.getJob(req.companyId!, req.params.jobId);
+      if (job) {
+        const actor = { userId: req.user?.id || "unknown", role: req.user?.role || "unknown" };
+        await lifecycle.markInvoiced({
+          type: "MARK_INVOICED",
+          companyId: req.companyId!,
+          jobId: req.params.jobId,
+          version: job.version ?? 0,
+          actor,
+          invoiceId: result.invoice.id,
+        });
+      }
     }
 
     // Include created flag to inform caller if this was new or existing
@@ -555,14 +518,14 @@ router.patch("/:id", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async
     // the constraint violation and return a clear 409 error.
 
     // When paymentTermsDays is a number (standard terms), recalculate dueDate
+    // 2026-03-19: Uses canonical calculateDueDate (F-06 hardening)
     if (patch.paymentTermsDays !== undefined && patch.paymentTermsDays !== null && !patch.dueDate) {
       const issuedAt = invoice.issuedAt
         ? new Date(invoice.issuedAt)
         : invoice.issueDate
           ? new Date(invoice.issueDate)
           : new Date();
-      const dueDate = new Date(issuedAt.getTime() + patch.paymentTermsDays * 24 * 60 * 60 * 1000);
-      finalPatch.dueDate = dueDate.toISOString().split("T")[0];
+      finalPatch.dueDate = calculateDueDate(issuedAt, patch.paymentTermsDays);
     }
     // When paymentTermsDays is null (custom terms), dueDate must be provided directly
     if (patch.paymentTermsDays === null && patch.dueDate) {
@@ -668,11 +631,11 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
   }
 
   // Ensure dueDate is set (compute from issuedAt + paymentTermsDays if missing)
+  // 2026-03-19: Uses canonical calculateDueDate (F-06 hardening)
   if (!invoice.dueDate) {
     const issuedAt = invoice.issuedAt ? new Date(invoice.issuedAt) : now;
     const paymentTermsDays = invoice.paymentTermsDays ?? 30;
-    const dueDate = new Date(issuedAt.getTime() + paymentTermsDays * 24 * 60 * 60 * 1000);
-    updatePayload.dueDate = dueDate.toISOString().split("T")[0];
+    updatePayload.dueDate = calculateDueDate(issuedAt, paymentTermsDays);
   }
 
   let warning: string | undefined;
@@ -750,6 +713,15 @@ router.post("/:id/void", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
     updatePayload
   );
 
+  // 2026-03-20 Phase 4A: Log invoice voided event
+  logEventAsync(getQueryCtx(req), {
+    eventType: "invoice.voided",
+    entityType: "invoice",
+    entityId: req.params.id,
+    summary: `Invoice #${invoice.invoiceNumber} voided`,
+    meta: { invoiceNumber: invoice.invoiceNumber, fromStatus: invoice.status },
+  });
+
   const response: Record<string, unknown> = { ...updated };
   if (warning) {
     response._qboWarning = warning;
@@ -798,6 +770,7 @@ router.get("/:id/pdf", asyncHandler(async (req: AuthedRequest, res: Response) =>
     location: {
       companyName: location.companyName,
       address: location.address,
+      address2: location.address2,
       city: location.city,
       provinceState: location.province,
       postalCode: location.postalCode,
@@ -851,11 +824,11 @@ router.patch("/:id/sent", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
     }
 
     // Ensure dueDate is set
+    // 2026-03-19: Uses canonical calculateDueDate (F-06 hardening)
     if (!invoice.dueDate) {
       const issuedAt = invoice.issuedAt ? new Date(invoice.issuedAt) : now;
       const paymentTermsDays = invoice.paymentTermsDays ?? 30;
-      const dueDate = new Date(issuedAt.getTime() + paymentTermsDays * 24 * 60 * 60 * 1000);
-      updatePayload.dueDate = dueDate.toISOString().split("T")[0];
+      updatePayload.dueDate = calculateDueDate(issuedAt, paymentTermsDays);
     }
   } else {
     // Undo sent: awaiting_payment -> draft (only if no payments)

@@ -142,6 +142,20 @@ const settingsNavItems: SettingsNavItem[] = [
     description: "Import clients from CSV",
     testId: "nav-import-clients-settings",
   },
+  {
+    href: "/settings/import-jobs",
+    icon: Upload,
+    title: "Import Jobs",
+    description: "Import historical jobs from CSV",
+    testId: "nav-import-jobs-settings",
+  },
+  {
+    href: "/settings/import-products",
+    icon: Upload,
+    title: "Import Products",
+    description: "Import products & services from CSV",
+    testId: "nav-import-products-settings",
+  },
 ];
 
 export function SettingsShell({ children }: { children: React.ReactNode }) {

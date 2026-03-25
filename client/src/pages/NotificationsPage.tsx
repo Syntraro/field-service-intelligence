@@ -345,6 +345,7 @@ export default function NotificationsPage() {
       return response.json();
     },
     refetchInterval: 30000,
+    refetchIntervalInBackground: false,
     staleTime: 15000,
   });
 

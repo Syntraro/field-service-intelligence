@@ -26,6 +26,7 @@ import { getQueryCtx } from "../lib/queryCtx";
 import { routeOptimizationService } from "../routeOptimizationService";
 import { db } from "../db";
 import { sql } from "drizzle-orm";
+import { JOB_ACTIVE_SQL_J } from "../storage/jobFilters";
 
 const router = Router();
 
@@ -302,6 +303,7 @@ router.post(
           FROM jobs j
           JOIN client_locations cl ON cl.id = j.location_id
           WHERE j.id = ${visit.jobId} AND j.company_id = ${tenantId}
+            AND ${sql.raw(JOB_ACTIVE_SQL_J)}
         `);
         const loc = (rows as any[])[0];
         if (!loc?.lat || !loc?.lng) {

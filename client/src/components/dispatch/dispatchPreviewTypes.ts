@@ -3,24 +3,24 @@
  * Standalone — no dependency on legacy calendar types.
  */
 
+/**
+ * 2026-03-17: Normalized visit status union.
+ * - Removed "open" (not a real visit status; visits start as "scheduled")
+ * - Added "on_hold" and "cancelled"
+ * - "on_site" retained for backward compat with DB data but normalized to "in_progress" in UI
+ */
 export type VisitStatus =
-  | "open"
   | "scheduled"
   | "dispatched"
   | "en_route"
-  | "on_site"
+  | "on_site"      // legacy DB value — display as "In Progress"
   | "in_progress"
-  | "completed";
+  | "on_hold"
+  | "completed"
+  | "cancelled";
 
-export const VISIT_STATUS_OPTIONS: { value: VisitStatus; label: string }[] = [
-  { value: "open", label: "Open" },
-  { value: "scheduled", label: "Scheduled" },
-  { value: "dispatched", label: "Dispatched" },
-  { value: "en_route", label: "En Route" },
-  { value: "on_site", label: "On Site" },
-  { value: "in_progress", label: "In Progress" },
-  { value: "completed", label: "Completed" },
-];
+// 2026-03-20: VISIT_STATUS_OPTIONS removed — canonical owner is lib/visitStatusDisplay.ts.
+// Import from there instead of defining a duplicate here.
 
 export type Technician = {
   id: string;
@@ -42,6 +42,10 @@ export type DispatchVisit = {
   jobId: string;
   summary: string;
   status: VisitStatus;
+  /** Parent job status (open, completed, invoiced, archived) */
+  jobStatus: string;
+  /** Job workflow sub-status (null, in_progress, on_hold, on_route) */
+  jobOpenSubStatus: string | null;
   locationName: string;
   customerName: string;
   technicianId: string | null;
@@ -54,6 +58,13 @@ export type DispatchVisit = {
   priority: "normal" | "high" | "urgent";
   /** Optimistic locking version from backend */
   version: number;
+  /** Discriminant: "visit" = real scheduled visit, "backlog" = unscheduled backlog item.
+   * Both may carry a real visitId — use visitId for modal opening, not id. */
+  kind: "visit" | "backlog";
+  /** 2026-03-22: Real visit ID from job_visits table. For scheduled visits, equals `id`.
+   *  For backlog items, may be present if the job has an active visit placeholder.
+   *  Null if no active visit exists. Use this for EditVisitModal, not `id`. */
+  visitId: string | null;
   // Extended fields for detail panel (mapped from CalendarEventDto when available)
   jobType?: string;
   locationId?: string;
@@ -66,6 +77,11 @@ export type DispatchVisit = {
   visitNotes?: string | null;
   /** Display names of all assigned technicians */
   technicianNames?: string[];
+  /** Location address fields for dispatch detail panel */
+  locationAddress?: string | null;
+  locationCity?: string | null;
+  locationProvinceState?: string | null;
+  locationPostalCode?: string | null;
 };
 
 /** Task item rendered on the dispatch timeline */

@@ -1,5 +1,6 @@
 import { Router, Response } from "express";
-import * as service from "../services/jobVisits.service";
+// 2026-03-18: Deprecated service wrapper removed — import canonical repository directly
+import { jobVisitsRepository } from "../storage/jobVisits";
 import { z } from "zod";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
@@ -8,12 +9,13 @@ import { paginatedCompat } from "../utils/paginatedResponse";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
-import { jobVisitStatusEnum } from "../../shared/schema";
+import { jobVisitStatusEnum, visitOutcomeEnum, holdReasonEnum } from "../../shared/schema";
 import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
 import { storage } from "../storage/index";
 import { emitDispatch } from "../lib/dispatchBus";
 import { normalizeScheduleTimes } from "../domain/scheduling";
+import * as lifecycle from "../services/jobLifecycleOrchestrator";
 
 const router = Router();
 
@@ -35,6 +37,8 @@ const updateVisitSchema = z.object({
   isAllDay: z.boolean().optional(),
   estimatedDurationMinutes: z.number().int().min(0).nullable().optional(),
   assignedTechnicianId: z.string().uuid().nullable().optional(),
+  // 2026-03-23: Multi-tech support — persists full crew list (storage already handles this field)
+  assignedTechnicianIds: z.array(z.string().uuid()).optional(),
   visitNotes: z.string().max(2000).nullable().optional(),
 });
 
@@ -55,7 +59,7 @@ router.get(
 
     // PHASE 4: If ?all=true, return all visits including inactive for Job Detail panel
     if (req.query.all === "true") {
-      const visits = await service.listAllJobVisitsForJob(companyId, req.params.jobId);
+      const visits = await jobVisitsRepository.listAllJobVisitsForJob(companyId, req.params.jobId);
       return res.json(visits);
     }
 
@@ -65,7 +69,7 @@ router.get(
     const offset = params.offset ?? 0;
     const limit = params.limit;
 
-    const result = await service.listJobVisits({
+    const result = await jobVisitsRepository.listJobVisits({
       companyId,
       jobId: req.params.jobId,
       status: req.query.status as string | undefined,
@@ -93,7 +97,7 @@ router.post(
 
     const validated = validateSchema(createVisitSchema, req.body);
 
-    const visit = await service.createJobVisit(
+    const visit = await jobVisitsRepository.createJobVisit(
       companyId,
       req.params.jobId,
       validated
@@ -112,7 +116,7 @@ router.get(
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
 
-    const visit = await service.getJobVisit(companyId, req.params.visitId);
+    const visit = await jobVisitsRepository.getJobVisit(companyId, req.params.visitId);
     if (!visit) {
       throw createError(404, "Visit not found");
     }
@@ -156,7 +160,7 @@ router.patch(
     }
 
     try {
-      const updated = await service.updateJobVisit(
+      const updated = await jobVisitsRepository.updateJobVisit(
         companyId,
         req.params.visitId,
         version,
@@ -183,32 +187,56 @@ router.patch(
   })
 );
 
-/* DELETE /api/jobs/:jobId/visits/:visitId - Delete visit (soft delete) */
+/* DELETE /api/jobs/:jobId/visits/:visitId - Delete visit (soft delete)
+ * 2026-03-24: Placeholder visit #1 guard REMOVED. Any visit can now be deleted.
+ * When deleting the last actionable visit on an open job, the job is moved to
+ * on_hold via canonical placeJobOnHold() so it surfaces for dispatcher review
+ * instead of falling into the unscheduled backlog. */
 router.delete(
   "/:jobId/visits/:visitId",
   requireRole(MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
+    const jobId = req.params.jobId;
 
-    // Guard: prevent deleting placeholder visit #1 (visitNumber=1, unscheduled, active)
-    const visit = await service.getJobVisit(companyId, req.params.visitId);
+    const visit = await jobVisitsRepository.getJobVisit(companyId, req.params.visitId);
     if (!visit) {
       throw createError(404, "Visit not found");
     }
-    if (visit.visitNumber === 1 && !visit.scheduledStart && visit.isActive) {
-      throw createError(409, "Cannot delete placeholder visit #1. Unschedule or clear it instead.");
+
+    // Soft-delete the visit through canonical storage path (sets isActive=false,
+    // calls syncJobScheduleFromVisits which clears job schedule fields if needed)
+    const result = await jobVisitsRepository.deleteJobVisit(companyId, req.params.visitId);
+
+    // Post-delete: if zero actionable visits remain on an open job that is not
+    // already on_hold, move to on_hold so the job surfaces for dispatcher review
+    // instead of appearing as unscheduled backlog.
+    const remaining = await jobVisitsRepository.getUncompletedVisits(companyId, jobId);
+    if (remaining.length === 0) {
+      // Guard: only place on hold if job is open and not already on_hold.
+      // Terminal jobs (completed/invoiced/archived) are skipped.
+      const job = await storage.getJob(companyId, jobId);
+      if (job && job.status === "open" && job.openSubStatus !== "on_hold") {
+        await lifecycle.placeJobOnHold({
+          type: "PLACE_JOB_ON_HOLD",
+          companyId,
+          jobId,
+          holdReason: "other",
+          holdNotes: "All visits removed — needs dispatcher review",
+          changedBy: req.user?.id || "system",
+        });
+      }
     }
 
-    const result = await service.deleteJobVisit(companyId, req.params.visitId);
-
-    // Technician-originated dispatch signal: visit removed from calendar
+    // Dispatch signal: visit removed from calendar
     emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: req.params.visitId, ts: new Date().toISOString() });
 
     res.json(result);
   })
 );
 
-/* POST /api/jobs/:jobId/visits/:visitId/status - Update visit status */
+/* POST /api/jobs/:jobId/visits/:visitId/status - Update visit status (non-terminal only) */
+/* 2026-03-18: Completion redirected to orchestrator via /complete endpoint */
 router.post(
   "/:jobId/visits/:visitId/status",
   requireRole(MANAGER_ROLES),
@@ -217,22 +245,22 @@ router.post(
 
     const { status } = validateSchema(updateStatusSchema, req.body);
 
-    // Fix C: Reject uncompleting a visit when job is in a terminal status.
-    // Moving a visit away from "completed" on a closed job would create
-    // an inconsistent state (completed job with active visit).
-    const TERMINAL_JOB_STATUSES = ["completed", "invoiced", "archived"];
-    if (status !== "completed") {
-      const job = await storage.getJob(companyId, req.params.jobId);
-      if (job && TERMINAL_JOB_STATUSES.includes(job.status)) {
-        throw createError(409, "Reopen job to uncomplete a visit.");
-      }
+    // Reject completion via this endpoint — must use /complete with outcome
+    if (status === "completed") {
+      throw createError(400, "Visit completion requires an explicit outcome. Use POST /api/jobs/:jobId/visits/:visitId/complete instead.");
     }
 
-    const updated = await service.updateJobVisitStatus(
-      companyId,
-      req.params.visitId,
-      status
-    );
+    // Fix C: Reject uncompleting a visit when job is in a terminal status.
+    const TERMINAL_JOB_STATUSES = ["completed", "invoiced", "archived"];
+    const job = await storage.getJob(companyId, req.params.jobId);
+    if (job && TERMINAL_JOB_STATUSES.includes(job.status)) {
+      const err = createError(409, "Reopen job to uncomplete a visit.");
+      (err as any).code = "JOB_TERMINAL";
+      throw err;
+    }
+
+    // Non-terminal status transitions — not lifecycle, just workflow
+    const updated = await jobVisitsRepository.updateJobVisitStatus(companyId, req.params.visitId, status);
 
     // Phase 4B.1: Emit milestone event for status transitions
     const ctx = getQueryCtx(req);
@@ -244,20 +272,103 @@ router.post(
         summary: `Visit started (job ${req.params.jobId})`,
         meta: { jobId: req.params.jobId, status },
       });
-    } else if (status === "completed") {
-      logEventAsync(ctx, {
-        eventType: "visit.completed",
-        entityType: "visit",
-        entityId: req.params.visitId,
-        summary: `Visit completed (job ${req.params.jobId})`,
-        meta: { jobId: req.params.jobId },
-      });
     }
 
-    // Technician-originated dispatch signal: visit status dot/checkmark changes on board
     emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: req.params.visitId, ts: new Date().toISOString() });
 
     res.json(updated);
+  })
+);
+
+/* POST /api/jobs/:jobId/visits/:visitId/complete - Complete visit with explicit outcome */
+/* 2026-03-17: Primary completion endpoint with outcome selection + parent job reconciliation */
+const completeVisitWithOutcomeSchema = z.object({
+  outcome: z.enum(visitOutcomeEnum),
+  holdReason: z.enum(holdReasonEnum).nullable().optional(),
+  holdNotes: z.string().max(2000).nullable().optional(),
+}).strict().refine(
+  (data) => {
+    // holdReason required when outcome is not "completed"
+    if (data.outcome !== "completed" && !data.holdReason) return false;
+    return true;
+  },
+  { message: "Hold reason is required when outcome is 'needs_parts' or 'needs_followup'" }
+);
+
+router.post(
+  "/:jobId/visits/:visitId/complete",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const { jobId, visitId } = req.params;
+
+    const { outcome, holdReason, holdNotes } = validateSchema(
+      completeVisitWithOutcomeSchema,
+      req.body
+    );
+
+    // 2026-03-18: Delegate entirely to the lifecycle orchestrator
+    const result = await lifecycle.completeVisit({
+      type: "COMPLETE_VISIT",
+      companyId,
+      visitId,
+      jobId,
+      outcome,
+      holdReason,
+      holdNotes,
+      completedByUserId: req.user?.id || "unknown",
+    });
+
+    // Emit events
+    const ctx = getQueryCtx(req);
+    logEventAsync(ctx, {
+      eventType: "visit.completed",
+      entityType: "visit",
+      entityId: visitId,
+      summary: `Visit completed with outcome=${outcome} (job ${jobId})`,
+      meta: { jobId, outcome, holdReason, result },
+    });
+
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visitId, ts: new Date().toISOString() });
+
+    res.json(result);
+  })
+);
+
+/* POST /api/jobs/:jobId/visits/:visitId/reopen - Reopen a completed visit */
+/* 2026-03-20: Auto-reopens parent job if terminal, then resets visit to scheduled. */
+router.post(
+  "/:jobId/visits/:visitId/reopen",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const { jobId, visitId } = req.params;
+    const userId = req.user?.id || "unknown";
+    const userRole = req.user?.role || "unknown";
+
+    const result = await lifecycle.reopenVisit({
+      type: "REOPEN_VISIT",
+      companyId,
+      visitId,
+      jobId,
+      actor: { userId, role: userRole },
+    });
+
+    const ctx = getQueryCtx(req);
+    logEventAsync(ctx, {
+      eventType: "visit.reopened",
+      entityType: "visit",
+      entityId: visitId,
+      summary: `Visit reopened (job ${jobId})${result.jobWasReopened ? " — parent job auto-reopened" : ""}`,
+      meta: { jobId, jobWasReopened: result.jobWasReopened },
+    });
+
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visitId, ts: new Date().toISOString() });
+    if (result.jobWasReopened) {
+      emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: jobId, ts: new Date().toISOString() });
+    }
+
+    res.json(result);
   })
 );
 
@@ -268,7 +379,7 @@ router.post(
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
 
-    const visit = await service.checkInJobVisit(companyId, req.params.visitId);
+    const visit = await jobVisitsRepository.checkInJobVisit(companyId, req.params.visitId);
 
     // Phase 4B.1: Emit visit.started event on check-in
     const ctx = getQueryCtx(req);
@@ -288,28 +399,32 @@ router.post(
 );
 
 /* POST /api/jobs/:jobId/visits/:visitId/check-out - Check out from visit */
+/* 2026-03-18: Check-out records metadata only — does NOT complete the visit */
+/* Completion is a separate action via /complete endpoint */
 router.post(
   "/:jobId/visits/:visitId/check-out",
   requireRole(MANAGER_ROLES),
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId!;
 
-    const visit = await service.checkOutJobVisit(companyId, req.params.visitId);
+    // Check-out records metadata only — does NOT complete the visit
+    // Completion is a separate action via /complete endpoint
+    const visit = await jobVisitsRepository.getJobVisit(companyId, req.params.visitId);
+    if (!visit) throw createError(404, "Visit not found");
+    if (!visit.checkedInAt) throw createError(400, "Cannot check out before checking in");
+    if (visit.checkedOutAt) return res.json(visit); // Already checked out
 
-    // Phase 4B.1: Emit visit.completed event on check-out
-    const ctx = getQueryCtx(req);
-    logEventAsync(ctx, {
-      eventType: "visit.completed",
-      entityType: "visit",
-      entityId: req.params.visitId,
-      summary: `Technician checked out from visit (job ${req.params.jobId})`,
-      meta: { jobId: req.params.jobId, trigger: "check-out" },
+    const checkOutTime = new Date();
+    const durationMs = checkOutTime.getTime() - new Date(visit.checkedInAt).getTime();
+    const actualDurationMinutes = Math.round(durationMs / 60000);
+
+    const updated = await jobVisitsRepository.updateJobVisit(companyId, req.params.visitId, visit.version, {
+      checkedOutAt: checkOutTime,
+      actualDurationMinutes,
     });
 
-    // Technician-originated dispatch signal: completed checkmark appears on board
     emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: req.params.visitId, ts: new Date().toISOString() });
-
-    res.json(visit);
+    res.json(updated);
   })
 );
 
@@ -325,7 +440,7 @@ router.post(
     const { jobId, visitId } = req.params;
 
     // Verify visit exists and belongs to company
-    const visit = await service.getJobVisit(companyId, visitId);
+    const visit = await jobVisitsRepository.getJobVisit(companyId, visitId);
     if (!visit) throw createError(404, "Visit not found");
 
     // Log tech.arrived milestone event
@@ -357,7 +472,7 @@ router.post(
     const { jobId, visitId } = req.params;
 
     // Verify visit exists and belongs to company
-    const visit = await service.getJobVisit(companyId, visitId);
+    const visit = await jobVisitsRepository.getJobVisit(companyId, visitId);
     if (!visit) throw createError(404, "Visit not found");
 
     // Log tech.departed milestone event
@@ -395,14 +510,14 @@ router.post(
     const { visitId } = req.params;
     const { reason } = validateSchema(archiveVisitSchema, req.body || {});
 
-    const visit = await service.getJobVisit(companyId, visitId);
+    const visit = await jobVisitsRepository.getJobVisit(companyId, visitId);
     if (!visit) throw createError(404, "Visit not found");
 
     if (visit.archivedAt) {
       throw createError(409, "Visit is already archived");
     }
 
-    const updated = await service.updateJobVisit(
+    const updated = await jobVisitsRepository.updateJobVisit(
       companyId,
       visitId,
       visit.version,

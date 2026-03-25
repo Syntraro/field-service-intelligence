@@ -45,7 +45,7 @@ function TechRow({ tech, weekDays, visitsByTechByDay, tasksByTechByDay, selected
         >
           {tech.initials}
         </div>
-        <p className={`truncate text-xs font-medium ${isOffShift ? "text-slate-400" : "text-foreground"}`}>
+        <p className={`truncate text-[13px] font-medium leading-tight ${isOffShift ? "text-slate-400" : "text-foreground"}`}>
           {tech.name}
         </p>
       </div>

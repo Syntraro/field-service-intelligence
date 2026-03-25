@@ -1,13 +1,11 @@
 import { useMutation, UseMutationOptions } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
+import { queryClient } from "@/lib/queryClient";
 import { toast } from "@/hooks/use-toast";
 
 // Common query key groups for invalidation
 export const QUERY_GROUPS = {
   calendar: [
     ["/api/calendar"],
-    ["/api/calendar/all"],
-    ["/api/calendar/overdue"],
     ["/api/calendar/unscheduled"],
   ],
   // Phase 4 Step C5: canonical family key
@@ -119,27 +117,3 @@ export function useMutationWithToast<TData = unknown, TVariables = void>({
 }
 
 // Convenience functions for common API patterns
-interface ApiMutationOptions<TData, TVariables> extends Omit<MutationWithToastOptions<TData, TVariables>, "mutationFn"> {
-  url: string | ((variables: TVariables) => string);
-  method: "POST" | "PATCH" | "PUT" | "DELETE";
-}
-
-/**
- * Create a mutation that calls an API endpoint
- */
-export function useApiMutation<TData = unknown, TVariables = Record<string, unknown>>({
-  url,
-  method,
-  ...options
-}: ApiMutationOptions<TData, TVariables>) {
-  return useMutationWithToast<TData, TVariables>({
-    ...options,
-    mutationFn: async (variables) => {
-      const endpoint = typeof url === "function" ? url(variables) : url;
-      return apiRequest<TData>(endpoint, {
-        method,
-        body: method !== "DELETE" ? JSON.stringify(variables) : undefined,
-      });
-    },
-  });
-}

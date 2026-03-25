@@ -28,7 +28,7 @@ export function getTimelineConfig(show24Hour: boolean) {
   const hours = show24Hour ? TIMELINE_HOURS_24 : TIMELINE_HOURS;
   return { startHour, endHour, hours };
 }
-export const HOUR_WIDTH_PX = 120;
+export const HOUR_WIDTH_PX = 104;
 export const LANE_HEIGHT_PX = 64;
 /** Shared height for off-shift divider row across sidebar, any-time column, and timeline grid */
 export const DIVIDER_HEIGHT_PX = 26;
@@ -42,17 +42,68 @@ export function formatHour(hour: number): string {
   return hour < 12 ? `${hour} AM` : `${hour - 12} PM`;
 }
 
-/** Job visit status colors — green accent family for scheduled/dispatched states */
+/**
+ * Job visit status colors — green accent family for scheduled/dispatched states.
+ * 2026-03-17: Removed "open", added "on_hold"/"cancelled", normalized "on_site" → same as "in_progress"
+ */
 export function visitStatusColor(status: VisitStatus): string {
   switch (status) {
-    case "open":        return "bg-slate-100 text-slate-700 border-slate-300";
     case "scheduled":   return "bg-emerald-50 text-emerald-800 border-emerald-200";
     case "dispatched":  return "bg-green-50 text-green-800 border-green-300";
     case "en_route":    return "bg-amber-50 text-amber-700 border-amber-200";
-    case "on_site":     return "bg-orange-50 text-orange-700 border-orange-200";
+    case "on_site":     return "bg-lime-50 text-lime-800 border-lime-300"; // legacy — same as in_progress
     case "in_progress": return "bg-lime-50 text-lime-800 border-lime-300";
+    case "on_hold":     return "bg-orange-50 text-orange-700 border-orange-200";
     case "completed":   return "bg-slate-50 text-slate-400 border-slate-200";
+    case "cancelled":   return "bg-gray-50 text-gray-400 border-gray-200";
+    default:            return "bg-slate-100 text-slate-700 border-slate-300";
   }
+}
+
+/**
+ * Job-state card color for dispatch cards — solid fill model.
+ * 4-state model based on PARENT JOB status (not visit status):
+ *   - Dispatched/Scheduled (open, no sub-status) → Solid green
+ *   - In Progress (open + in_progress sub-status) → Solid blue
+ *   - Needs Action (open + on_hold) → Solid orange
+ *   - Completed/Closed (completed, invoiced, archived) → Gray
+ *
+ * Returns bg + text + border classes applied directly to the card container.
+ */
+export function jobStateColor(
+  jobStatus: string,
+  openSubStatus: string | null,
+): string {
+  // Terminal job states → gray
+  if (jobStatus === "completed" || jobStatus === "invoiced" || jobStatus === "archived") {
+    return "bg-slate-100 text-slate-500 border-slate-300";
+  }
+  // Open + on_hold → solid orange (needs action / follow-up)
+  if (openSubStatus === "on_hold") {
+    return "bg-orange-100 text-orange-900 border-orange-400";
+  }
+  // Open + in_progress / on_route → solid blue
+  if (openSubStatus === "in_progress" || openSubStatus === "on_route") {
+    return "bg-blue-100 text-blue-900 border-blue-400";
+  }
+  // Default open/scheduled → solid green
+  return "bg-green-100 text-green-900 border-green-400";
+}
+
+/**
+ * Job-state label for dispatch surfaces — companion to jobStateColor().
+ * Returns a human-readable label derived from the parent job status.
+ */
+export function jobStateLabel(
+  jobStatus: string,
+  openSubStatus: string | null,
+): string {
+  if (jobStatus === "completed" || jobStatus === "invoiced" || jobStatus === "archived") {
+    return jobStatus === "invoiced" ? "Invoiced" : jobStatus === "archived" ? "Archived" : "Completed";
+  }
+  if (openSubStatus === "on_hold") return "On Hold";
+  if (openSubStatus === "in_progress" || openSubStatus === "on_route") return "In Progress";
+  return "Active";
 }
 
 /** Returns true if the visit status indicates a completed/done visit */
@@ -60,16 +111,43 @@ export function isCompletedStatus(status: VisitStatus): boolean {
   return status === "completed";
 }
 
+/**
+ * Normalize visit status for display.
+ * 2026-03-17: Maps legacy "on_site" → "in_progress" for consistent UI display.
+ */
+export function normalizeVisitStatusForDisplay(status: string): VisitStatus {
+  if (status === "on_site") return "in_progress";
+  if (status === "open") return "scheduled"; // legacy fallback
+  return status as VisitStatus;
+}
+
+/** Get human-readable label for a visit status */
+export function visitStatusLabel(status: VisitStatus | string): string {
+  const normalized = normalizeVisitStatusForDisplay(status);
+  switch (normalized) {
+    case "scheduled":   return "Scheduled";
+    case "dispatched":  return "Dispatched";
+    case "en_route":    return "En Route";
+    case "in_progress": return "In Progress";
+    case "on_hold":     return "On Hold";
+    case "completed":   return "Completed";
+    case "cancelled":   return "Cancelled";
+    default:            return status;
+  }
+}
+
 /** Job visit status dots — green family for scheduled/dispatched */
 export function visitStatusDot(status: VisitStatus): string {
   switch (status) {
-    case "open":        return "bg-slate-400";
     case "scheduled":   return "bg-emerald-500";
     case "dispatched":  return "bg-green-500";
     case "en_route":    return "bg-amber-500";
-    case "on_site":     return "bg-orange-500";
+    case "on_site":     return "bg-lime-500"; // legacy — same as in_progress
     case "in_progress": return "bg-lime-500";
+    case "on_hold":     return "bg-orange-500";
     case "completed":   return "bg-slate-300";
+    case "cancelled":   return "bg-gray-300";
+    default:            return "bg-slate-400";
   }
 }
 

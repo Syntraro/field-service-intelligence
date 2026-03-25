@@ -6,14 +6,17 @@
  */
 import { useRef, useEffect, useMemo, useState, useCallback } from "react";
 import type { DispatchVisit, DispatchTask, Technician } from "./dispatchPreviewTypes";
-import { CalendarDays } from "lucide-react";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { TIMELINE_HOURS, HOUR_WIDTH_PX, LANE_HEIGHT_PX, DIVIDER_HEIGHT_PX, formatHour, BUSINESS_START_HOUR, TIMELINE_START_HOUR } from "./dispatchPreviewUtils";
 import DispatchLaneRow from "./DispatchLaneRow";
 import { countItemsBefore, countItemsAfter, EarlyIndicator, LateIndicator } from "./DispatchOutsideWindowIndicators";
 
-/** Fixed-width column for any-time visits, pinned left before the scrollable timeline grid */
-const ANY_TIME_COL_WIDTH = 80;
+// PERF-08: Stable empty-array constants so React.memo on DispatchLaneRow can
+// skip re-renders for empty lanes (avoids new [] reference each render).
+const EMPTY_VISITS: DispatchVisit[] = [];
+const EMPTY_TASKS: DispatchTask[] = [];
+
+/** Any Time column removed — constant kept at 0 for coordinate math compatibility in DispatchPreview */
+export const ANY_TIME_COL_WIDTH = 0;
 
 type Props = {
   technicians: Technician[];
@@ -41,18 +44,6 @@ type Props = {
   timelineEndHour?: number;
   /** Item 6: Click empty slot handler */
   onEmptySlotClick?: (techId: string, minuteOfDay: number) => void;
-  /** Click-to-schedule: preview node factory */
-  clickPreviewNode?: React.ReactNode;
-  /** Click-to-schedule: which tech lane is being hovered */
-  clickHoverTechId?: string | null;
-  /** Click-to-schedule: commit handler */
-  onClickSchedule?: (techId: string, relativeX: number) => void;
-  /** Click-to-schedule: hover handler */
-  onClickHover?: (techId: string, relativeX: number) => void;
-  /** Click-to-schedule: hover leave handler */
-  onClickHoverLeave?: () => void;
-  /** Whether click-to-schedule placement is active */
-  isPlacementActive?: boolean;
 };
 
 /** Goal 2: Strengthened red "now" indicator line — wider stroke, subtle glow for visibility on busy boards */
@@ -83,8 +74,6 @@ export default function DispatchTimeline({
   timelineStartHour: startHour = TIMELINE_START_HOUR,
   timelineEndHour: endHour,
   onEmptySlotClick,
-  clickPreviewNode, clickHoverTechId, onClickSchedule, onClickHover, onClickHoverLeave,
-  isPlacementActive,
 }: Props) {
   const localRef = useRef<HTMLDivElement>(null);
   const scrollRef = timelineScrollRef ?? localRef;
@@ -127,8 +116,8 @@ export default function DispatchTimeline({
     const result: { techId: string; pixelTop: number; earlyCount: number; lateCount: number }[] = [];
     // Working technicians
     working.forEach((t, i) => {
-      const visits = visitsByTech.get(t.id) || [];
-      const tasks = tasksByTech?.get(t.id) || [];
+      const visits = visitsByTech.get(t.id) ?? EMPTY_VISITS;
+      const tasks = tasksByTech?.get(t.id) ?? EMPTY_TASKS;
       const early = countItemsBefore(visits, tasks);
       const late = countItemsAfter(visits, tasks);
       if (early > 0 || late > 0) {
@@ -137,8 +126,8 @@ export default function DispatchTimeline({
     });
     // Off-shift technicians (offset by divider)
     offShift.forEach((t, i) => {
-      const visits = visitsByTech.get(t.id) || [];
-      const tasks = tasksByTech?.get(t.id) || [];
+      const visits = visitsByTech.get(t.id) ?? EMPTY_VISITS;
+      const tasks = tasksByTech?.get(t.id) ?? EMPTY_TASKS;
       const early = countItemsBefore(visits, tasks);
       const late = countItemsAfter(visits, tasks);
       if (early > 0 || late > 0) {
@@ -153,60 +142,7 @@ export default function DispatchTimeline({
     <div className="relative flex-1 overflow-hidden">
       {/* Scrollable content */}
       <div ref={scrollRef as React.RefObject<HTMLDivElement>} className="h-full overflow-x-auto overflow-y-auto bg-white">
-        <div className="flex" style={{ minWidth: ANY_TIME_COL_WIDTH + totalWidth }}>
-          {/* ── Fixed "Any Time" column — sticky left, scrolls vertically with lanes ── */}
-          <div className="sticky left-0 z-20 flex-shrink-0 bg-white border-r border-slate-200" style={{ width: ANY_TIME_COL_WIDTH }}>
-            {/* Header cell — matches sidebar h-8 and hour header row */}
-            <div className="sticky top-0 z-10 flex items-center justify-center h-8 border-b bg-amber-50/60 text-[10px] font-semibold text-amber-700 uppercase tracking-wide">
-              Any Time
-            </div>
-            {/* Per-tech any-time cells — mirrors sidebar and lane row splitting */}
-            {technicians.length > 0 ? (
-              (() => {
-                const working = technicians.filter(t => t.isWorking !== false);
-                const offShift = technicians.filter(t => t.isWorking === false);
-                return (
-                  <>
-                    {working.map((t, i) => (
-                      <AnyTimeCell
-                        key={t.id}
-                        techId={t.id}
-                        visits={(visitsByTech.get(t.id) || []).filter(v => v.isAllDay)}
-                        savingIds={savingIds}
-                        selectedVisitId={selectedVisitId}
-                        onSelectVisit={onSelectVisit}
-                        isLast={i === working.length - 1 && offShift.length === 0}
-                      />
-                    ))}
-                    {offShift.length > 0 && (
-                      <>
-                        {/* Off-shift divider — matches sidebar OffShiftDivider and timeline divider height (DIVIDER_HEIGHT_PX) */}
-                        <div className="flex items-center border-b bg-slate-50/80" style={{ height: DIVIDER_HEIGHT_PX }}>
-                          <div className="flex-1 h-px bg-slate-200 mx-1" />
-                        </div>
-                        {offShift.map((t, i) => (
-                          <AnyTimeCell
-                            key={t.id}
-                            techId={t.id}
-                            visits={(visitsByTech.get(t.id) || []).filter(v => v.isAllDay)}
-                            savingIds={savingIds}
-                            selectedVisitId={selectedVisitId}
-                            onSelectVisit={onSelectVisit}
-                            isLast={i === offShift.length - 1}
-                          />
-                        ))}
-                      </>
-                    )}
-                  </>
-                );
-              })()
-            ) : (
-              <div style={{ height: LANE_HEIGHT_PX }} />
-            )}
-          </div>
-
-          {/* ── Timeline grid (hour columns + lanes) ── */}
-          <div style={{ minWidth: totalWidth }}>
+        <div style={{ minWidth: totalWidth }}>
             {/* Hour header row */}
             <div className="sticky top-0 z-10 flex h-8 border-b bg-slate-50">
               {hours.map(h => (
@@ -230,8 +166,8 @@ export default function DispatchTimeline({
                         <DispatchLaneRow
                           key={t.id}
                           tech={t}
-                          visits={visitsByTech.get(t.id) || []}
-                          tasks={tasksByTech?.get(t.id) || []}
+                          visits={visitsByTech.get(t.id) ?? EMPTY_VISITS}
+                          tasks={tasksByTech?.get(t.id) ?? EMPTY_TASKS}
                           isLast={i === working.length - 1 && offShift.length === 0}
                           savingIds={savingIds}
                           selectedVisitId={selectedVisitId}
@@ -247,12 +183,6 @@ export default function DispatchTimeline({
                           timelineStartHour={startHour}
                           timelineEndHour={endHour}
                           onEmptySlotClick={onEmptySlotClick}
-                          clickPreview={clickHoverTechId === t.id ? clickPreviewNode : undefined}
-                          isClickHoverTarget={clickHoverTechId === t.id}
-                          onClickSchedule={onClickSchedule}
-                          onClickHover={onClickHover}
-                          onClickHoverLeave={onClickHoverLeave}
-                          isPlacementActive={isPlacementActive}
                         />
                       ))}
                       {offShift.length > 0 && (
@@ -267,8 +197,8 @@ export default function DispatchTimeline({
                             <DispatchLaneRow
                               key={t.id}
                               tech={t}
-                              visits={visitsByTech.get(t.id) || []}
-                              tasks={tasksByTech?.get(t.id) || []}
+                              visits={visitsByTech.get(t.id) ?? EMPTY_VISITS}
+                              tasks={tasksByTech?.get(t.id) ?? EMPTY_TASKS}
                               isLast={i === offShift.length - 1}
                               savingIds={savingIds}
                               selectedVisitId={selectedVisitId}
@@ -284,12 +214,6 @@ export default function DispatchTimeline({
                               timelineStartHour={startHour}
                               timelineEndHour={endHour}
                               onEmptySlotClick={onEmptySlotClick}
-                              clickPreview={clickHoverTechId === t.id ? clickPreviewNode : undefined}
-                              isClickHoverTarget={clickHoverTechId === t.id}
-                              onClickSchedule={onClickSchedule}
-                              onClickHover={onClickHover}
-                              onClickHoverLeave={onClickHoverLeave}
-                              isPlacementActive={isPlacementActive}
                             />
                           ))}
                         </>
@@ -304,7 +228,6 @@ export default function DispatchTimeline({
               )}
             </div>
           </div>
-        </div>
       </div>
 
       {/* Non-scrolling outside-window indicator overlay */}
@@ -335,85 +258,3 @@ export default function DispatchTimeline({
   );
 }
 
-/**
- * AnyTimeCell — a single tech's cell in the fixed Any Time column.
- * Shows compact chips for any-time (allDay) visits assigned to this tech.
- */
-/** Max visible Any Time chips per cell — overflow rendered as clickable +N */
-const ANY_TIME_VISIBLE_CAP = 3;
-
-function AnyTimeCell({
-  techId, visits, savingIds, selectedVisitId, onSelectVisit, isLast,
-}: {
-  techId: string;
-  visits: DispatchVisit[];
-  savingIds: Set<string>;
-  selectedVisitId?: string | null;
-  onSelectVisit?: (visit: DispatchVisit) => void;
-  isLast: boolean;
-}) {
-  // Stable sort: by visit id (creation order) to prevent jumping
-  const sorted = useMemo(() => [...visits].sort((a, b) => a.id.localeCompare(b.id)), [visits]);
-  const visible = sorted.slice(0, ANY_TIME_VISIBLE_CAP);
-  const overflow = sorted.slice(ANY_TIME_VISIBLE_CAP);
-
-  const chipClasses = (v: DispatchVisit) =>
-    `flex items-center gap-0.5 rounded-full border border-amber-300/70 bg-amber-50 px-1.5 py-px text-[9px] font-medium text-amber-800 hover:bg-amber-100 transition-colors truncate max-w-full ${
-      selectedVisitId === v.id ? "ring-2 ring-blue-500 bg-amber-100" : ""
-    } ${savingIds.has(v.id) ? "opacity-60" : ""}`;
-
-  return (
-    <div
-      className={`flex flex-col items-center justify-center gap-0.5 overflow-hidden px-1 ${
-        !isLast ? "border-b border-slate-200/80" : ""
-      }`}
-      style={{ height: LANE_HEIGHT_PX, width: ANY_TIME_COL_WIDTH }}
-    >
-      {sorted.length === 0 ? (
-        <span className="text-[9px] text-slate-300">—</span>
-      ) : (
-        visible.map(v => (
-          <button
-            key={`at-${v.id}`}
-            onClick={() => onSelectVisit?.(v)}
-            data-dispatch-block="anytime"
-            className={chipClasses(v)}
-            title={`${v.customerName} — ${v.summary}`}
-          >
-            <CalendarDays className="h-2 w-2 text-amber-600 flex-shrink-0" />
-            <span className="truncate">{v.customerName?.split(" ")[0] || "Visit"}</span>
-          </button>
-        ))
-      )}
-      {overflow.length > 0 && (
-        <Popover>
-          <PopoverTrigger asChild>
-            <button
-              data-dispatch-block="anytime"
-              className="text-[8px] text-amber-600 font-medium hover:text-amber-800 hover:underline cursor-pointer"
-              title={`${overflow.length} more Any Time visits`}
-            >
-              +{overflow.length}
-            </button>
-          </PopoverTrigger>
-          <PopoverContent className="w-48 p-1 z-[9999]" align="start" side="right">
-            <p className="text-[10px] font-semibold text-muted-foreground px-1.5 py-1">
-              +{overflow.length} more
-            </p>
-            {overflow.map(v => (
-              <button
-                key={`at-overflow-${v.id}`}
-                onClick={() => onSelectVisit?.(v)}
-                className={chipClasses(v) + " w-full mb-0.5"}
-                title={`${v.customerName} — ${v.summary}`}
-              >
-                <CalendarDays className="h-2 w-2 text-amber-600 flex-shrink-0" />
-                <span className="truncate">{v.customerName?.split(" ")[0] || "Visit"}</span>
-              </button>
-            ))}
-          </PopoverContent>
-        </Popover>
-      )}
-    </div>
-  );
-}

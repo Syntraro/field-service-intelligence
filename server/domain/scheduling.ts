@@ -26,7 +26,7 @@
  * - "in_progress"  - Work actively being performed
  * - "on_hold"      - Job is blocked (requires holdReason)
  * - "on_route"     - Technician traveling to job site
- * - "needs_review" - Needs supervisor/manager review
+ * - (needs_review: removed — migrated to on_hold)
  *
  * INVARIANT: openSubStatus must be NULL when status !== 'open'
  *
@@ -40,17 +40,16 @@
  */
 
 import type { JobStatus, OpenSubStatus } from "@shared/schema";
-import { normalizeJobStatus, isJobScheduled, isJobAssigned, isBacklogEligible } from "@shared/schema";
-import { TERMINAL_STATUSES } from "../statusRules";
+import { isJobScheduled, isJobAssigned, isBacklogEligible } from "@shared/schema";
+import { JOB_TERMINAL_STATUSES, isTerminalStatus } from "./jobLifecycle";
 import { resolveTechnicianName } from "../lib/resolveTechnicianName";
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-// TERMINAL_STATUSES imported from ../statusRules (canonical source)
-// Re-exported for backwards compatibility with existing consumers
-export { TERMINAL_STATUSES };
+// 2026-03-19: Re-export from canonical lifecycle authority (jobLifecycle.ts).
+export { JOB_TERMINAL_STATUSES };
 
 /**
  * Statuses that appear in the unscheduled sidebar (backlog)
@@ -62,13 +61,8 @@ export const BACKLOG_STATUS: JobStatus = "open";
 // Status Helpers
 // ============================================================================
 
-/**
- * Check if a status is terminal (job workflow complete)
- */
-export function isTerminalStatus(status: string): boolean {
-  const normalized = normalizeJobStatus(status);
-  return TERMINAL_STATUSES.includes(normalized);
-}
+// 2026-03-18: isTerminalStatus() removed — canonical owner is jobLifecycle.ts.
+// Imported directly above for internal use. No re-export needed (zero external consumers).
 
 /**
  * Check if a job should appear in the backlog (unscheduled sidebar)
@@ -80,7 +74,7 @@ export function isTerminalStatus(status: string): boolean {
  */
 export function isBacklogJob(job: JobLike): boolean {
   // Normalize status before checking (handles legacy values)
-  const normalizedStatus = normalizeJobStatus(job.status ?? "open");
+  const normalizedStatus = (job.status ?? "open") as JobStatus;
   return isBacklogEligible({ ...job, status: normalizedStatus });
 }
 
@@ -91,7 +85,7 @@ export function isBacklogJob(job: JobLike): boolean {
  * - IS scheduled (scheduledStart IS NOT NULL)
  */
 export function isCalendarJob(job: JobLike): boolean {
-  const normalized = normalizeJobStatus(job.status ?? "open");
+  const normalized = (job.status ?? "open") as JobStatus;
   if (normalized !== "open") {
     return false;
   }
@@ -350,7 +344,7 @@ export class TerminalJobImmutableError extends Error {
   constructor(jobId: string | undefined, currentStatus: string) {
     super(
       `Cannot modify schedule/status for terminal job ${jobId || "unknown"} (status=${currentStatus}). ` +
-      `Terminal jobs (${TERMINAL_STATUSES.join(", ")}) require explicit workflow transitions.`
+      `Terminal jobs (${JOB_TERMINAL_STATUSES.join(", ")}) require explicit workflow transitions.`
     );
     this.name = "TerminalJobImmutableError";
   }
@@ -368,7 +362,7 @@ export function assertTerminalImmutable(
     return;
   }
 
-  const currentStatus = normalizeJobStatus(existingJob.status);
+  const currentStatus = existingJob.status as JobStatus;
 
   if (!isTerminalStatus(currentStatus)) {
     return;
@@ -631,7 +625,7 @@ export function assertSchedulingInvariants(job: JobLike, contextLabel: string): 
     return;
   }
 
-  const status = job.status ? normalizeJobStatus(job.status) : null;
+  const status = job.status ? (job.status as JobStatus) : null;
   const scheduledStart = job.scheduledStart
     ? (typeof job.scheduledStart === "string" ? new Date(job.scheduledStart) : job.scheduledStart)
     : null;
@@ -767,7 +761,7 @@ export function assertCalendarQueryResults(results: JobLike[], contextLabel: str
   }
 
   for (const job of results) {
-    const status = job.status ? normalizeJobStatus(job.status) : null;
+    const status = job.status ? (job.status as JobStatus) : null;
 
     // Calendar results must be open
     if (status !== "open") {
@@ -795,7 +789,7 @@ export function assertBacklogQueryResults(results: JobLike[], contextLabel: stri
   }
 
   for (const job of results) {
-    const status = job.status ? normalizeJobStatus(job.status) : null;
+    const status = job.status ? (job.status as JobStatus) : null;
 
     // Backlog results must be open
     if (status !== "open") {
@@ -1055,9 +1049,9 @@ export function applyJobSchedulingPatch(
   });
 
   // STATUS: Scheduling doesn't change lifecycle status - it stays 'open' for active jobs
-  const existingStatus = existingJob?.status ? normalizeJobStatus(existingJob.status) : "open";
+  const existingStatus = existingJob?.status ? existingJob.status as JobStatus : "open";
   const status = patchIntent.status !== undefined && patchIntent.status !== null
-    ? normalizeJobStatus(patchIntent.status)
+    ? (patchIntent.status as JobStatus)
     : existingStatus;
 
   // OPEN SUB-STATUS: Preserve or update based on patch

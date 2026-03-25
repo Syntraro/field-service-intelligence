@@ -17,6 +17,7 @@ import { Calendar } from "@/components/ui/calendar";
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { useSurfaceController } from "@/hooks/useSurfaceController";
 import { useToast } from "@/hooks/use-toast";
 import { useActivityStore } from "@/lib/activityStore";
 import { format, parseISO } from "date-fns";
@@ -27,6 +28,15 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Command,
   CommandEmpty,
@@ -50,7 +60,20 @@ import {
 } from "@/components/ui/select";
 import { Check, ChevronsUpDown, Loader2, Plus, CalendarIcon, Users, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { Client, Job, InsertJob } from "@shared/schema";
+import type { Job, InsertJob } from "@shared/schema";
+
+/** Shape returned by GET /api/clients/search-locations */
+interface LocationSearchResult {
+  id: string;
+  company_name: string;
+  location: string | null;
+  address: string | null;
+  city: string | null;
+  parent_company_id: string | null;
+  parent_company_name: string | null;
+  needs_details: boolean;
+  match_rank?: number;
+}
 import {
   type JobScheduleValue,
   createDefaultScheduleValue,
@@ -231,6 +254,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     description: "",
   });
 
+  const [showConflictAlert, setShowConflictAlert] = useState(false);
   const [formData, setFormData] = useState(getDefaultFormData());
   const [scheduleValue, setScheduleValue] = useState<JobScheduleValue>(
     createDefaultScheduleValue({ unscheduled: true })
@@ -261,31 +285,76 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     }
   }, [open, editJob, preselectedLocationId, initialSchedule]);
 
+  // Surface controller: manages abort, debounce, cache cleanup on close/unmount
+  const surface = useSurfaceController(open, {
+    queryKeys: ["/api/clients/search-locations"],
+  });
+
   useEffect(() => {
     if (!open) {
       setFormData(getDefaultFormData());
       setScheduleValue(createDefaultScheduleValue({ unscheduled: true }));
+      setLocationSearch("");
+      setDebouncedSearch("");
+      setLocationOpen(false);
+      setShowQuickCreate(false);
+      setQuickCreateName("");
+      setShowConflictAlert(false);
     }
   }, [open]);
 
   // ── Data queries ──
+  // Server-backed location search with surface-managed debounce.
+  // All ephemeral search state is local; query cache is cleaned on close.
+  const [locationSearch, setLocationSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
 
-  const { data: clientsResponse } = useQuery<{ data: Client[], pagination: any }>({
-    queryKey: ["/api/clients"],
+  // Debounce via surface controller — auto-cancelled on close/unmount
+  useEffect(() => {
+    surface.debounce("location-search", () => setDebouncedSearch(locationSearch), 300);
+  }, [locationSearch, surface]);
+
+  // Server search query — uses surface.signal to abort on close
+  const { data: searchResults = [], isFetching: isSearching } = useQuery<LocationSearchResult[]>({
+    queryKey: ["/api/clients/search-locations", debouncedSearch],
+    queryFn: async ({ signal }) => {
+      const q = encodeURIComponent(debouncedSearch);
+      const res = await fetch(`/api/clients/search-locations?q=${q}&limit=30`, { signal });
+      if (!res.ok) throw new Error("Search failed");
+      return res.json();
+    },
     enabled: open,
+    staleTime: 10_000,
   });
 
-  const clients = clientsResponse?.data || [];
-
-  const activeLocations = useMemo(() => {
-    return clients.filter(c => !c.inactive).sort((a, b) =>
-      (a.companyName || "").localeCompare(b.companyName || "")
-    );
-  }, [clients]);
+  // Fetch selected location by ID if not already in search results
+  // (e.g., when editing a job or preselecting a location)
+  const { data: selectedLocationData } = useQuery<LocationSearchResult[]>({
+    queryKey: ["/api/clients/search-locations", "selected", formData.locationId],
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`/api/clients/${formData.locationId}`, { signal });
+      if (!res.ok) return [];
+      const client = await res.json();
+      return [{
+        id: client.id,
+        company_name: client.companyName,
+        location: client.location,
+        address: client.address,
+        city: client.city,
+        parent_company_id: client.parentCompanyId,
+        parent_company_name: null,
+        needs_details: client.needsDetails,
+      }];
+    },
+    enabled: open && !!formData.locationId && !searchResults.some(r => r.id === formData.locationId),
+    staleTime: 30_000,
+  });
 
   const selectedLocation = useMemo(() => {
-    return clients.find(c => c.id === formData.locationId);
-  }, [clients, formData.locationId]);
+    const fromSearch = searchResults.find(r => r.id === formData.locationId);
+    if (fromSearch) return fromSearch;
+    return selectedLocationData?.[0] ?? null;
+  }, [searchResults, selectedLocationData, formData.locationId]);
 
   // ── Schedule helpers ──
 
@@ -306,7 +375,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     if (checked) {
       updateSchedule({ unscheduled: true, date: "", time: "", isAllDay: false });
     } else {
-      updateSchedule({ unscheduled: false, date: format(new Date(), "yyyy-MM-dd") });
+      updateSchedule({ unscheduled: false, date: format(new Date(), "yyyy-MM-dd"), time: "09:00", isAllDay: false });
     }
   }, [updateSchedule]);
 
@@ -328,23 +397,22 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
         scheduleValue
       );
       if (!result.success) throw new Error(result.error || "Failed to create job");
-      return result.job;
+      return result;
     },
-    onSuccess: (job: any) => {
+    onSuccess: (result: any) => {
+      const job = result.job;
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      // Fix A: Invalidate client/company overview so new jobs appear on detail pages
       queryClient.invalidateQueries({ queryKey: ["/api/clients"], exact: false });
       queryClient.invalidateQueries({ queryKey: ["/api/customer-companies"], exact: false });
 
-      const client = clients.find(c => c.id === formData.locationId);
       logActivity({
         type: "created",
         entityType: "job",
         entityId: job?.id || "",
         label: `Created Job${job?.jobNumber ? ` #${job.jobNumber}` : ""}`,
-        meta: client?.companyName || formData.summary || undefined,
+        meta: selectedLocation?.company_name || formData.summary || undefined,
       });
 
       toast({
@@ -353,16 +421,23 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
           ? "Job has been added to the backlog."
           : "Job has been created and scheduled.",
       });
-      if (client?.needsDetails) {
-        setTimeout(() => {
+      if (selectedLocation?.needs_details) {
+        // Use surface.timeout so this is auto-cancelled if dialog unmounts
+        const name = selectedLocation.company_name;
+        surface.timeout("needs-details-reminder", () => {
           toast({
             title: "Reminder",
-            description: `Don't forget to complete the details for "${client.companyName}"!`,
+            description: `Don't forget to complete the details for "${name}"!`,
           });
         }, 1500);
       }
 
-      onOpenChange(false);
+      if (result.hasConflict) {
+        // Show conflict alert — defer modal close until user acknowledges
+        setShowConflictAlert(true);
+      } else {
+        onOpenChange(false);
+      }
       onSuccess?.();
     },
     onError: (error: Error) => {
@@ -403,13 +478,14 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
 
   const quickCreateClientMutation = useMutation({
     mutationFn: async (companyName: string) => {
-      return await apiRequest<{ client: Client }>("/api/clients/quick-create", {
+      return await apiRequest<{ client: { id: string } }>("/api/clients/quick-create", {
         method: "POST",
         body: JSON.stringify({ companyName }),
       });
     },
     onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/clients/search-locations"] });
       if (result.client?.id) {
         setFormData(prev => ({ ...prev, locationId: result.client.id }));
         logActivity({
@@ -466,6 +542,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
   };
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-xl" data-testid="dialog-quick-add-job">
         <DialogHeader>
@@ -487,7 +564,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                 >
                   {selectedLocation ? (
                     <span className="truncate">
-                      {selectedLocation.companyName}
+                      {selectedLocation.company_name}
                       {selectedLocation.location && (
                         <span className="text-muted-foreground ml-1">— {selectedLocation.location}</span>
                       )}
@@ -499,10 +576,17 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
-                <Command>
-                  <CommandInput placeholder="Search locations..." data-testid="input-search-locations" />
+                <Command shouldFilter={false}>
+                  <CommandInput
+                    placeholder="Search locations..."
+                    data-testid="input-search-locations"
+                    value={locationSearch}
+                    onValueChange={setLocationSearch}
+                  />
                   <CommandList>
-                    <CommandEmpty>No locations found.</CommandEmpty>
+                    <CommandEmpty>
+                      {isSearching ? "Searching..." : "No locations found."}
+                    </CommandEmpty>
                     <CommandGroup>
                       <CommandItem
                         onSelect={() => setShowQuickCreate(true)}
@@ -515,10 +599,10 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                     </CommandGroup>
                     <CommandSeparator />
                     <CommandGroup heading="Locations">
-                      {activeLocations.map(location => (
+                      {searchResults.map(location => (
                         <CommandItem
                           key={location.id}
-                          value={`${location.companyName} ${location.location || ""} ${location.address || ""}`}
+                          value={location.id}
                           onSelect={() => {
                             setFormData(prev => ({ ...prev, locationId: location.id }));
                             setLocationOpen(false);
@@ -533,11 +617,14 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                           />
                           <div className="flex flex-col min-w-0">
                             <span className="truncate text-sm">
-                              {location.companyName}
-                              {location.location && location.location !== location.companyName && (
+                              {location.company_name}
+                              {location.location && location.location !== location.company_name && (
                                 <span className="text-muted-foreground font-normal"> — {location.location}</span>
                               )}
                             </span>
+                            {location.parent_company_name && location.parent_company_name !== location.company_name && (
+                              <span className="text-[10px] text-blue-600/70 truncate">{location.parent_company_name}</span>
+                            )}
                             {location.address && (
                               <span className="text-xs text-muted-foreground truncate">
                                 {[location.address, location.city].filter(Boolean).join(", ")}
@@ -649,31 +736,18 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               </Popover>
 
               {/* Time input — native type="time" for predictable entry */}
-              {!isAllDay && (
-                <Input
-                  type="time"
-                  value={scheduleValue.time || ""}
-                  onChange={(e) => updateSchedule({ time: e.target.value, isAllDay: false })}
-                  disabled={isScheduleDisabled}
-                  className="h-9 w-[110px] text-xs"
-                  step={900}
-                  data-testid="input-time"
-                />
-              )}
+              <Input
+                type="time"
+                value={scheduleValue.time || ""}
+                onChange={(e) => updateSchedule({ time: e.target.value, isAllDay: false })}
+                disabled={isScheduleDisabled}
+                className="h-9 w-[110px] text-xs"
+                step={900}
+                data-testid="input-time"
+              />
 
-              {/* All Day toggle */}
-              <label className="flex items-center gap-1.5 cursor-pointer shrink-0">
-                <Checkbox
-                  checked={isAllDay}
-                  onCheckedChange={(checked) => updateSchedule({ time: checked ? "" : "09:00", isAllDay: !!checked })}
-                  disabled={isScheduleDisabled}
-                  data-testid="checkbox-all-day"
-                />
-                <span className="text-xs text-muted-foreground whitespace-nowrap">All day</span>
-              </label>
-
-              {/* Duration (only for timed events) */}
-              {!isAllDay && (
+              {/* Duration */}
+              {!scheduleValue.unscheduled && (
                 <Select
                   value={String(scheduleValue.durationMinutes)}
                   onValueChange={(v) => updateSchedule({ durationMinutes: Number(v) })}
@@ -744,5 +818,20 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
         </form>
       </DialogContent>
     </Dialog>
+
+    <AlertDialog open={showConflictAlert} onOpenChange={setShowConflictAlert}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Scheduling conflict detected</AlertDialogTitle>
+          <AlertDialogDescription>
+            This item overlaps another scheduled item. Please review the dispatch board.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogAction onClick={() => { setShowConflictAlert(false); onOpenChange(false); }}>OK</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }

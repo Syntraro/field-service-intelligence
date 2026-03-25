@@ -78,6 +78,7 @@ export default function SupportConsole() {
   const { data: auditLogs = [] } = useQuery<AuditLog[]>({
     queryKey: ["/api/admin/audit-logs", { limit: 50 }],
     refetchInterval: 10000, // Refresh every 10 seconds
+    refetchIntervalInBackground: false,
   });
 
   // Start impersonation mutation

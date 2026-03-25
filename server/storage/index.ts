@@ -32,6 +32,7 @@ import { permissionRepository } from "./permissions";
 import { clientNotesRepository } from "./clientNotes";
 import { filesRepository } from "./files";
 import { noteAttachmentRepository } from "./noteAttachments";
+import { jobNoteAttachmentRepository } from "./jobNoteAttachments";
 import { quoteRepository } from "./quotes";
 import { quoteTemplateRepository } from "./quoteTemplates";
 import { schedulingRepository } from "./scheduling";
@@ -79,7 +80,7 @@ export interface IStorage {
   deleteClients: typeof clientRepository.deleteClients;
   getClientReport: typeof clientRepository.getClientReport;
   getAssignmentsByClient: typeof clientRepository.getAssignmentsByClient;
-  getAllCalendarAssignments: typeof clientRepository.getAllCalendarAssignments;
+  // 2026-03-20: getAllCalendarAssignments DELETED — zero callers, replaced by getCalendarAssignmentsInRange
   getCalendarAssignmentsInRange: typeof clientRepository.getCalendarAssignmentsInRange;
   getClientParts: typeof clientRepository.getClientParts;
   addClientPart: typeof clientRepository.addClientPart;
@@ -97,7 +98,8 @@ export interface IStorage {
   getJob: typeof jobRepository.getJob;
   createJob: typeof jobRepository.createJob;
   updateJob: typeof jobRepository.updateJob;
-  updateJobStatus: typeof jobRepository.updateJobStatus;
+  updateJobNumber: typeof jobRepository.updateJobNumber;
+  // 2026-03-18: updateJobStatus DELETED — lifecycle writes go through orchestrator
   deleteJob: typeof jobRepository.deleteJob;
   getJobParts: typeof jobRepository.getJobParts;
   createJobPart: typeof jobRepository.createJobPart;
@@ -113,23 +115,25 @@ export interface IStorage {
   reconcileJobInvoiceLinks: typeof jobRepository.reconcileJobInvoiceLinks;
   createRecurringJobSeries: typeof jobRepository.createRecurringJobSeries;
   createRecurringJobPhase: typeof jobRepository.createRecurringJobPhase;
-  createJobStatusEvent: typeof jobRepository.createJobStatusEvent;
+  // 2026-03-20: createJobStatusEvent DELETED — zero callers via barrel; events created internally by transitionJobStatus/updateJobStatusWithEvent
   getJobStatusEvents: typeof jobRepository.getJobStatusEvents;
   getJobScheduleHistory: typeof jobRepository.getJobScheduleHistory;
   getActionRequiredJobs: typeof jobRepository.getActionRequiredJobs;
   updateJobStatusWithEvent: typeof jobRepository.updateJobStatusWithEvent;
-  updateJobStatusWithMultipleEvents: typeof jobRepository.updateJobStatusWithMultipleEvents;
   transitionJobStatus: typeof jobRepository.transitionJobStatus;
+  createJobWithExplicitNumber: typeof jobRepository.createJobWithExplicitNumber;
+  resetJobNumberCounter: typeof jobRepository.resetJobNumberCounter;
 
   // Invoice operations
   getInvoices: typeof invoiceRepository.getInvoices;
   getInvoice: typeof invoiceRepository.getInvoice;
   getInvoiceByJobId: typeof invoiceRepository.getInvoiceByJobId;
-  getInvoiceStats: typeof invoiceRepository.getInvoiceStats;
-  getDashboardInvoices: typeof invoiceRepository.getDashboardInvoices;
+  // 2026-03-20: getInvoiceStats DELETED — zero callers; canonical version in invoicesFeed.ts
+  // 2026-03-20: getDashboardInvoices DELETED — zero callers; dashboard uses invoicesFeed.ts
   getInvoiceLines: typeof invoiceRepository.getInvoiceLines;
   createInvoiceLine: typeof invoiceRepository.createInvoiceLine;
   updateInvoiceLine: typeof invoiceRepository.updateInvoiceLine;
+  batchApplyLineTax: typeof invoiceRepository.batchApplyLineTax;
   deleteInvoiceLine: typeof invoiceRepository.deleteInvoiceLine;
   refreshInvoiceFromJob: typeof invoiceRepository.refreshInvoiceFromJob;
   updateInvoice: typeof invoiceRepository.updateInvoice;
@@ -185,9 +189,9 @@ export interface IStorage {
   getSubscriptionUsage: typeof subscriptionRepository.getSubscriptionUsage;
   canAddLocation: typeof subscriptionRepository.canAddLocation;
 
-  createCompany: (data: { name: string; email: string }) => Promise<any>;
-getInvitationByToken: (token: string) => Promise<any>;
-updateInvitation: (id: string, data: { status: string }) => Promise<any>;
+  // 2026-03-20: createCompany DELETED — zero callers
+  getInvitationByToken: (token: string) => Promise<any>;
+  updateInvitation: (id: string, data: { status: string }) => Promise<any>;
   
   // Company operations
   getCompanySettings: typeof companyRepository.getCompanySettings;
@@ -220,8 +224,7 @@ updateInvitation: (id: string, data: { status: string }) => Promise<any>;
   getCalendarScheduledJobsInDateRange: typeof schedulingRepository.getScheduledJobsInRange;
   getCalendarJob: typeof schedulingRepository.getJobById;
   scheduleCalendarJob: typeof schedulingRepository.scheduleJob;
-  validateCalendarTechnician: typeof schedulingRepository.validateTechnicianBelongsToTenant;
-  validateCalendarJob: typeof schedulingRepository.validateJobBelongsToTenant;
+  // 2026-03-20: validateCalendarTechnician and validateCalendarJob DELETED — zero callers.
 
   // Tax operations (v1 multi-tax system)
   getTaxRates: typeof taxRepository.getTaxRates;
@@ -275,7 +278,6 @@ export const storage: IStorage = {
   deleteClients: clientRepository.deleteClients.bind(clientRepository),
   getClientReport: clientRepository.getClientReport.bind(clientRepository),
   getAssignmentsByClient: clientRepository.getAssignmentsByClient.bind(clientRepository),
-  getAllCalendarAssignments: clientRepository.getAllCalendarAssignments.bind(clientRepository),
   getCalendarAssignmentsInRange: clientRepository.getCalendarAssignmentsInRange.bind(clientRepository),
   getClientParts: clientRepository.getClientParts.bind(clientRepository),
   addClientPart: clientRepository.addClientPart.bind(clientRepository),
@@ -293,7 +295,8 @@ export const storage: IStorage = {
   getJob: jobRepository.getJob.bind(jobRepository),
   createJob: jobRepository.createJob.bind(jobRepository),
   updateJob: jobRepository.updateJob.bind(jobRepository),
-  updateJobStatus: jobRepository.updateJobStatus.bind(jobRepository),
+  updateJobNumber: jobRepository.updateJobNumber.bind(jobRepository),
+  // 2026-03-18: updateJobStatus DELETED — lifecycle writes go through orchestrator
   deleteJob: jobRepository.deleteJob.bind(jobRepository),
   getJobParts: jobRepository.getJobParts.bind(jobRepository),
   createJobPart: jobRepository.createJobPart.bind(jobRepository),
@@ -309,23 +312,22 @@ export const storage: IStorage = {
   reconcileJobInvoiceLinks: jobRepository.reconcileJobInvoiceLinks.bind(jobRepository),
   createRecurringJobSeries: jobRepository.createRecurringJobSeries.bind(jobRepository),
   createRecurringJobPhase: jobRepository.createRecurringJobPhase.bind(jobRepository),
-  createJobStatusEvent: jobRepository.createJobStatusEvent.bind(jobRepository),
   getJobStatusEvents: jobRepository.getJobStatusEvents.bind(jobRepository),
   getJobScheduleHistory: jobRepository.getJobScheduleHistory.bind(jobRepository),
   getActionRequiredJobs: jobRepository.getActionRequiredJobs.bind(jobRepository),
   updateJobStatusWithEvent: jobRepository.updateJobStatusWithEvent.bind(jobRepository),
-  updateJobStatusWithMultipleEvents: jobRepository.updateJobStatusWithMultipleEvents.bind(jobRepository),
   transitionJobStatus: jobRepository.transitionJobStatus.bind(jobRepository),
+  createJobWithExplicitNumber: jobRepository.createJobWithExplicitNumber.bind(jobRepository),
+  resetJobNumberCounter: jobRepository.resetJobNumberCounter.bind(jobRepository),
 
   // Invoice operations
   getInvoices: invoiceRepository.getInvoices.bind(invoiceRepository),
   getInvoice: invoiceRepository.getInvoice.bind(invoiceRepository),
   getInvoiceByJobId: invoiceRepository.getInvoiceByJobId.bind(invoiceRepository),
-  getInvoiceStats: invoiceRepository.getInvoiceStats.bind(invoiceRepository),
-  getDashboardInvoices: invoiceRepository.getDashboardInvoices.bind(invoiceRepository),
   getInvoiceLines: invoiceRepository.getInvoiceLines.bind(invoiceRepository),
   createInvoiceLine: invoiceRepository.createInvoiceLine.bind(invoiceRepository),
   updateInvoiceLine: invoiceRepository.updateInvoiceLine.bind(invoiceRepository),
+  batchApplyLineTax: invoiceRepository.batchApplyLineTax.bind(invoiceRepository),
   deleteInvoiceLine: invoiceRepository.deleteInvoiceLine.bind(invoiceRepository),
   refreshInvoiceFromJob: invoiceRepository.refreshInvoiceFromJob.bind(invoiceRepository),
   updateInvoice: invoiceRepository.updateInvoice.bind(invoiceRepository),
@@ -392,22 +394,6 @@ export const storage: IStorage = {
   upsertCompanyBusinessHours: businessHoursRepository.upsertCompanyBusinessHours.bind(businessHoursRepository),
   getBusinessHoursForDow: businessHoursRepository.getBusinessHoursForDow.bind(businessHoursRepository),
 
-  createCompany: async (data: { name: string; email: string }) => {
-    const { companies } = await import("@shared/schema");
-    const { db } = await import("../db");
-
-    const [company] = await db
-      .insert(companies)
-      .values({
-        name: data.name,
-        email: data.email,
-        trialEndsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000), // 14 day trial
-      })
-      .returning();
-
-    return company;
-  },
-
   getInvitationByToken: async (token: string) => {
     const { invitations } = await import("@shared/schema");
     const { db } = await import("../db");
@@ -456,8 +442,7 @@ export const storage: IStorage = {
   getCalendarScheduledJobsInDateRange: schedulingRepository.getScheduledJobsInRange.bind(schedulingRepository),
   getCalendarJob: schedulingRepository.getJobById.bind(schedulingRepository),
   scheduleCalendarJob: schedulingRepository.scheduleJob.bind(schedulingRepository),
-  validateCalendarTechnician: schedulingRepository.validateTechnicianBelongsToTenant.bind(schedulingRepository),
-  validateCalendarJob: schedulingRepository.validateJobBelongsToTenant.bind(schedulingRepository),
+  // 2026-03-20: validateCalendarTechnician and validateCalendarJob DELETED — zero callers.
 
   // Tax operations (v1 multi-tax system)
   getTaxRates: taxRepository.getTaxRates.bind(taxRepository),
@@ -495,6 +480,7 @@ export {
   clientNotesRepository,
   filesRepository,
   noteAttachmentRepository,
+  jobNoteAttachmentRepository,
   quoteRepository,
   quoteTemplateRepository,
   schedulingRepository,

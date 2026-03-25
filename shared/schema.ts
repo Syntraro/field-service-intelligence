@@ -322,11 +322,13 @@ export const customerCompanies = pgTable("customer_companies", {
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   // Company information
   name: text("name").notNull(), // Main company name (maps to QBO DisplayName for parent)
+  nameNormalized: text("name_normalized").notNull().default(""), // Lowercase, trimmed, whitespace-collapsed — used for case-insensitive dedup
   legalName: text("legal_name"), // Official legal name if different
   phone: text("phone"),
   email: text("email"),
   // Billing address (used for QBO BillAddr)
-  billingStreet: text("billing_street"),
+  billingStreet: text("billing_street"), // Address line 1
+  billingStreet2: text("billing_street2"), // Address line 2 (suite, unit, PO box, etc.)
   billingCity: text("billing_city"),
   billingProvince: text("billing_province"),
   billingPostalCode: text("billing_postal_code"),
@@ -410,7 +412,8 @@ export const clientLocations = pgTable("client_locations", {
   companyName: text("company_name").notNull(),
   location: text("location"), // Location/site name (e.g. "Toronto Warehouse")
   // Service address
-  address: text("address"),
+  address: text("address"), // Address line 1
+  address2: text("address2"), // Address line 2 (suite, unit, floor, bay, etc.)
   city: text("city"),
   province: text("province"),
   postalCode: text("postal_code"),
@@ -534,6 +537,9 @@ export const items = pgTable("items", {
   category: text("category"), // Simple category/group label
   // Status
   isActive: boolean("is_active").default(true),
+  // Future-proofing fields (Products & Services CSV import)
+  estimatedDurationMinutes: integer("estimated_duration_minutes"), // Service duration in minutes (nullable)
+  trackInventory: boolean("track_inventory").notNull().default(false), // Inventory tracking toggle (default off)
   // QBO sync fields for Items
   qboItemId: text("qbo_item_id"), // QBO Item id if/when synced
   qboSyncToken: text("qbo_sync_token"), // QBO sync token for optimistic locking on updates
@@ -1033,8 +1039,22 @@ export const noteAttachments = pgTable("note_attachments", {
 
 export type NoteAttachment = typeof noteAttachments.$inferSelect;
 
-// Invoice statuses - Canonical lifecycle: draft → sent → partial_paid/paid (with void from any non-terminal)
-export const invoiceStatusEnum = ["draft", "sent", "partial_paid", "paid", "voided"] as const;
+// Job note attachments — join table linking job notes to files (mirrors note_attachments for client notes)
+export const jobNoteAttachments = pgTable("job_note_attachments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  noteId: varchar("note_id").notNull().references(() => jobNotes.id, { onDelete: "cascade" }),
+  fileId: varchar("file_id").notNull().references(() => files.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdBy: varchar("created_by").references(() => users.id),
+});
+
+export type JobNoteAttachment = typeof jobNoteAttachments.$inferSelect;
+
+// Invoice statuses — Canonical lifecycle: draft → awaiting_payment → partial_paid/paid (with void from any non-terminal)
+// "sent" is a legacy alias for "awaiting_payment" — kept for backward compatibility with existing persisted data.
+// The send-invoice endpoint writes "awaiting_payment" as the canonical value.
+export const invoiceStatusEnum = ["draft", "awaiting_payment", "sent", "partial_paid", "paid", "voided"] as const;
 export type InvoiceStatus = typeof invoiceStatusEnum[number];
 
 // Invoice line item types
@@ -1330,7 +1350,7 @@ export type Payment = typeof payments.$inferSelect;
 // - "in_progress" - Work actively being performed
 // - "on_hold"     - Job is blocked (requires holdReason)
 // - "on_route"    - Technician traveling to job site
-// - "needs_review" - Needs supervisor/manager review
+// - (needs_review: removed — migrated to on_hold)
 //
 // INVARIANT: openSubStatus must be NULL when status !== 'open'
 //
@@ -1350,74 +1370,14 @@ export const openSubStatusEnum = [
   "in_progress",   // Work actively being performed
   "on_hold",       // Job is blocked (requires holdReason)
   "on_route",      // Technician traveling to job site
-  "needs_review",  // Needs supervisor/manager review
+  // needs_review: REMOVED — data migrated to on_hold, zero live rows, columns dropped.
 ] as const;
 export type OpenSubStatus = typeof openSubStatusEnum[number];
 
-// Legacy status values that may exist in database (for migration/normalization)
-export const legacyJobStatusEnum = [
-  "assigned",           // MIGRATED: derive from assignedTechnicianIds
-  "unscheduled",        // MIGRATED: derive from scheduledStart IS NULL
-  "scheduled",          // MIGRATED: derive from scheduledStart IS NOT NULL
-  "in_progress",        // MIGRATED: open + openSubStatus='in_progress'
-  "on_hold",            // MIGRATED: open + openSubStatus='on_hold'
-  "requires_invoicing", // MIGRATED: completed
-  "closed",             // MIGRATED: archived
-  "canceled",           // MIGRATED: archived
-  "cancelled",          // MIGRATED: archived (UK spelling)
-] as const;
-
-/**
- * Normalize job status to the four canonical lifecycle values.
- *
- * Migration mapping:
- * - "open" -> "open"
- * - "assigned" -> "open" (assignment is derived from assignedTechnicianIds)
- * - "unscheduled" -> "open" (scheduling is derived from scheduledStart)
- * - "scheduled" -> "open" (scheduling is derived from scheduledStart)
- * - "in_progress" -> "open" (workflow state, use openSubStatus)
- * - "on_hold" -> "open" (workflow state, use openSubStatus)
- * - "completed" -> "completed"
- * - "requires_invoicing" -> "completed"
- * - "invoiced" -> "invoiced"
- * - "closed" -> "archived"
- * - "canceled" -> "archived"
- * - "cancelled" -> "archived"
- * - "archived" -> "archived"
- */
-export function normalizeJobStatus(status: string): JobStatus {
-  switch (status) {
-    // Already canonical
-    case "open":
-    case "completed":
-    case "invoiced":
-    case "archived":
-      return status;
-
-    // Map to "open" (these are now derived states or workflow sub-statuses)
-    case "assigned":
-    case "unscheduled":
-    case "scheduled":
-    case "in_progress":
-    case "on_hold":
-      return "open";
-
-    // Map to "completed"
-    case "requires_invoicing":
-      return "completed";
-
-    // Map to "archived"
-    case "closed":
-    case "canceled":
-    case "cancelled":
-      return "archived";
-
-    default:
-      // Unknown status, default to open
-      console.warn(`[normalizeJobStatus] Unknown status "${status}", defaulting to "open"`);
-      return "open";
-  }
-}
+// 2026-03-18: normalizeJobStatus() REMOVED — DB CHECK constraint (jobs_status_check)
+// guarantees only canonical values exist: open, completed, invoiced, archived.
+// Live DB verified: zero legacy rows, constraint enforced at PostgreSQL level.
+// All code now operates directly on canonical status values.
 
 /**
  * Derive openSubStatus from legacy status.
@@ -1477,10 +1437,15 @@ export function isJobAssigned(job: {
 export function isBacklogEligible(job: {
   status?: string | null;
   scheduledStart?: Date | string | null;
+  openSubStatus?: string | null;
 }): boolean {
   // Must be open status
   const status = job.status ?? "open";
   if (status !== "open") {
+    return false;
+  }
+  // 2026-03-17: On-hold jobs are deliberately parked, not unscheduled backlog
+  if ((job as any).openSubStatus === "on_hold") {
     return false;
   }
   // Must NOT be scheduled
@@ -1505,6 +1470,62 @@ export function isBacklogEligible(job: {
  * @returns true if job is overdue
  */
 /**
+ * Canonical effective-end computation — SINGLE SOURCE OF TRUTH (JS-side).
+ *
+ * Computes the time by which a job or visit should have completed.
+ * Used by isJobOverdue() and visitIntelligence for consistent overdue/running-long detection.
+ *
+ * Resolution priority:
+ * 1. scheduledEnd if present (includes all-day jobs which have 23:59:59 end time)
+ * 2. scheduledStart + duration if duration present (supports both durationMinutes and estimatedDurationMinutes)
+ * 3. scheduledStart as fallback (point-in-time job/visit, overdue once start time passes)
+ * 4. null if no scheduledStart
+ *
+ * SQL equivalent: effectiveEndExpr in server/lib/queryHelpers.ts (must be kept in sync).
+ * SQL operates on jobs-table fields only and does not include estimatedDurationMinutes
+ * (which exists on jobVisits, not jobs). This JS function may be used with broader
+ * entity shapes; do not expand SQL semantics unless the underlying jobs schema changes.
+ *
+ * 2026-03-18: Extracted from inline logic in isJobOverdue() and visitIntelligence.ts
+ * to eliminate a proven computation drift (visitIntelligence was missing the
+ * scheduledStart-only fallback).
+ * SYNC: tests/effective-end-sync.test.ts enforces parity for job-scoped fields only.
+ */
+export function getEffectiveEnd(entity: {
+  scheduledStart?: Date | string | null;
+  scheduledEnd?: Date | string | null;
+  durationMinutes?: number | null;
+  estimatedDurationMinutes?: number | null;
+}): Date | null {
+  if (!entity.scheduledStart) {
+    return null;
+  }
+
+  if (entity.scheduledEnd) {
+    return entity.scheduledEnd instanceof Date
+      ? entity.scheduledEnd
+      : new Date(entity.scheduledEnd);
+  }
+
+  // Nullish check: 0 is a valid duration (resolves to scheduledStart via start + 0).
+  // This aligns with SQL where durationMinutes = 0 IS NOT NULL → branch selected.
+  const duration = entity.durationMinutes != null
+    ? entity.durationMinutes
+    : entity.estimatedDurationMinutes;
+  if (duration != null) {
+    const startDate = entity.scheduledStart instanceof Date
+      ? entity.scheduledStart
+      : new Date(entity.scheduledStart);
+    return new Date(startDate.getTime() + duration * 60 * 1000);
+  }
+
+  // Fallback: scheduledStart itself (point-in-time)
+  return entity.scheduledStart instanceof Date
+    ? entity.scheduledStart
+    : new Date(entity.scheduledStart);
+}
+
+/**
  * Canonical overdue predicate - AUTHORITATIVE RULE
  *
  * A job is overdue ONLY when:
@@ -1512,10 +1533,7 @@ export function isBacklogEligible(job: {
  * - scheduledStart IS NOT NULL (backlog/unscheduled is NEVER overdue)
  * - effectiveEnd < now (job should have finished by now)
  *
- * effectiveEnd resolution order:
- * 1. scheduledEnd if present (includes all-day jobs which have 23:59:59 end time)
- * 2. scheduledStart + durationMinutes if durationMinutes present
- * 3. scheduledStart as fallback (point-in-time job, overdue once start time passes)
+ * Uses getEffectiveEnd() for the canonical effective-end computation.
  *
  * For all-day jobs: MODEL A sets scheduledEnd to 23:59:59 of that day, so they're
  * only overdue once the entire day has passed.
@@ -1523,6 +1541,7 @@ export function isBacklogEligible(job: {
 export function isJobOverdue(
   job: {
     status?: string | null;
+    openSubStatus?: string | null;
     scheduledStart?: Date | string | null;
     scheduledEnd?: Date | string | null;
     durationMinutes?: number | null;
@@ -1535,6 +1554,12 @@ export function isJobOverdue(
     return false;
   }
 
+  // Jobs actively being worked are not overdue-attention
+  const sub = job.openSubStatus;
+  if (sub === "in_progress" || sub === "on_route") {
+    return false;
+  }
+
   // Must be scheduled to be overdue (backlog is never overdue)
   if (!isJobScheduled(job)) {
     return false;
@@ -1542,25 +1567,10 @@ export function isJobOverdue(
 
   const currentTime = now ?? new Date();
 
-  // Determine effectiveEnd with priority order
-  let effectiveEnd: Date;
-
-  if (job.scheduledEnd) {
-    // Priority 1: Use explicit scheduledEnd (includes all-day jobs with 23:59:59 end)
-    effectiveEnd = job.scheduledEnd instanceof Date
-      ? job.scheduledEnd
-      : new Date(job.scheduledEnd);
-  } else if (job.durationMinutes && job.durationMinutes > 0) {
-    // Priority 2: Compute from scheduledStart + durationMinutes
-    const startDate = job.scheduledStart instanceof Date
-      ? job.scheduledStart
-      : new Date(job.scheduledStart!);
-    effectiveEnd = new Date(startDate.getTime() + job.durationMinutes * 60 * 1000);
-  } else {
-    // Priority 3: Fallback to scheduledStart (point-in-time job)
-    effectiveEnd = job.scheduledStart instanceof Date
-      ? job.scheduledStart
-      : new Date(job.scheduledStart!);
+  // 2026-03-18: Uses canonical getEffectiveEnd() instead of inline computation
+  const effectiveEnd = getEffectiveEnd(job);
+  if (!effectiveEnd) {
+    return false;
   }
 
   // Job is overdue if it should have finished by now
@@ -1578,6 +1588,27 @@ export const holdReasonEnum = [
   "other",      // Other reason (see notes)
 ] as const;
 export type HoldReason = typeof holdReasonEnum[number];
+
+/** Canonical hold reason labels — single source of truth for UI display */
+export const HOLD_REASON_LABELS: Record<HoldReason, string> = {
+  parts:    "Waiting for Parts",
+  customer: "Customer Approval",
+  access:   "Access Issue",
+  approval: "Internal Approval",
+  weather:  "Weather Delay",
+  other:    "Other",
+};
+
+/** Hold reason options for UI dropdowns (derived from schema enum + labels) */
+export const HOLD_REASON_OPTIONS = holdReasonEnum.map(value => ({
+  value,
+  label: HOLD_REASON_LABELS[value],
+}));
+
+/** Get human-readable label for a hold reason value */
+export function getHoldReasonLabel(value: string): string {
+  return HOLD_REASON_LABELS[value as HoldReason] ?? value;
+}
 
 // Job priority enum values
 export const jobPriorityEnum = ["low", "medium", "high", "urgent"] as const;
@@ -1668,7 +1699,7 @@ export const jobs = pgTable("jobs", {
   // See shared/schema.ts jobStatusEnum for valid values: open, completed, invoiced, archived
   status: text("status").notNull().default("open"),
   // Workflow sub-status (only valid when status = 'open')
-  // See shared/schema.ts openSubStatusEnum: in_progress, on_hold, on_route, needs_review
+  // See shared/schema.ts openSubStatusEnum: in_progress, on_hold, on_route
   openSubStatus: text("open_sub_status"),
   holdReason: text("hold_reason"), // Required when openSubStatus = "on_hold" (parts, customer, access, approval, weather, other)
   priority: text("priority").notNull().default("medium"),
@@ -1707,11 +1738,9 @@ export const jobs = pgTable("jobs", {
   holdNotes: text("hold_notes"),                        // Optional notes about why job is on hold
   nextActionDate: date("next_action_date"),             // Optional follow-up date
   onHoldAt: timestamp("on_hold_at"),                    // When job entered on_hold status (for aging)
-  // Legacy fields (kept for backward compatibility during migration)
-  actionRequiredReason: text("action_required_reason"), // DEPRECATED: use holdReason
-  actionRequiredNotes: text("action_required_notes"),   // DEPRECATED: use holdNotes
-  actionRequiredAt: timestamp("action_required_at"),    // DEPRECATED: use onHoldAt
-  actionRequiredEscalatedAt: timestamp("action_required_escalated_at"), // DEPRECATED
+  // 2026-03-18: actionRequired* columns DROPPED from DB.
+  // Data migrated to canonical hold fields (onHoldAt, holdReason, holdNotes).
+  // See: migrations/2026_03_18_drop_deprecated_action_required_columns.sql
   // Undo close support (20-second window)
   previousStatus: text("previous_status"),              // Status before close, for undo
   closedAt: timestamp("closed_at"),                     // When job was closed, for undo window
@@ -1791,11 +1820,15 @@ export const insertJobSchema = createInsertSchema(jobs).omit({
 });
 
 export const updateJobSchema = z.object({
+  // Editable job number — integer, positive, no decimals
+  jobNumber: z.number().int().positive().optional(),
   locationId: z.string().optional(),
   primaryTechnicianId: z.string().nullable().optional(),
   assignedTechnicianIds: z.array(z.string()).nullable().optional(),
-  status: z.enum(jobStatusEnum).optional(),
-  holdReason: z.enum(holdReasonEnum).nullable().optional(),
+  // 2026-03-18: status and holdReason removed from generic update schema.
+  // Lifecycle fields MUST be written through jobLifecycleOrchestrator only.
+  // status: REMOVED — use lifecycle orchestrator intents
+  // holdReason: REMOVED — use PLACE_JOB_ON_HOLD intent
   priority: z.enum(jobPriorityEnum).optional(),
   jobType: z.enum(jobTypeEnum).optional(),
   summary: z.string().optional(),
@@ -1814,19 +1847,14 @@ export const updateJobSchema = z.object({
   invoiceId: z.string().nullable().optional(),
   qboInvoiceId: z.string().nullable().optional(),
   billingNotes: z.string().nullable().optional(),
-  // Hold state fields
-  holdNotes: z.string().nullable().optional(),
-  nextActionDate: z.string().nullable().optional(), // Accept ISO date string (YYYY-MM-DD)
-  onHoldAt: z.string().nullable().optional(), // When job entered on_hold status
-  // Legacy action required fields (kept for backward compatibility)
-  actionRequiredReason: z.string().nullable().optional(),
-  actionRequiredNotes: z.string().nullable().optional(),
-  actionRequiredAt: z.string().nullable().optional(),
-  actionRequiredEscalatedAt: z.string().nullable().optional(),
-  // Undo close support
-  previousStatus: z.string().nullable().optional(),
-  closedAt: z.string().nullable().optional(), // Accept ISO timestamp string
-  closedBy: z.string().nullable().optional(),
+  // 2026-03-18: Hold/lifecycle/deprecated fields removed from generic update schema.
+  // holdNotes: REMOVED — use UPDATE_HOLD_METADATA intent
+  // nextActionDate: REMOVED — use UPDATE_HOLD_METADATA intent
+  // onHoldAt: REMOVED — managed by orchestrator
+  // actionRequired* columns: DROPPED from DB (2026-03-18)
+  // previousStatus: REMOVED — managed by lifecycle engine
+  // closedAt: REMOVED — managed by lifecycle engine
+  // closedBy: REMOVED — managed by lifecycle engine
   isActive: z.boolean().optional(),
   // Optimistic locking
   version: z.number().int().optional(), // Expected version for optimistic locking
@@ -2687,6 +2715,7 @@ export const supplierLocations = pgTable("supplier_locations", {
   // Location details
   name: text("name").notNull(),
   address: text("address"),
+  address2: text("address2"), // Address line 2 (suite, unit, floor, bay)
   city: text("city"),
   province: text("province"),
   postalCode: text("postal_code"),
@@ -3487,6 +3516,7 @@ export const timeEntries = pgTable("time_entries", {
   // Optional links
   workSessionId: varchar("work_session_id").references(() => workSessions.id, { onDelete: "set null" }),
   jobId: varchar("job_id").references(() => jobs.id, { onDelete: "set null" }),
+  visitId: varchar("visit_id").references(() => jobVisits.id, { onDelete: "set null" }), // Phase: labor unification — nullable FK for visit attribution
   // Entry type
   type: text("type").notNull(), // TimeEntryType
   // Time tracking
@@ -3519,6 +3549,8 @@ export const timeEntries = pgTable("time_entries", {
   techStartIdx: index("time_entries_tech_start_idx").on(table.companyId, table.technicianId, table.startAt),
   // Index for finding entries by job
   jobIdx: index("time_entries_job_idx").on(table.companyId, table.jobId),
+  // Index for finding entries by visit (labor unification)
+  visitIdx: index("time_entries_visit_idx").on(table.companyId, table.visitId),
   // Index for finding uninvoiced entries
   invoiceIdx: index("time_entries_invoice_idx").on(table.companyId, table.invoiceId),
   // Partial index for finding running entries (endAt IS NULL) - enforced in code
@@ -3692,6 +3724,7 @@ export const managerUpdateTimeEntrySchema = z.object({
   type: z.enum(timeEntryTypeEnum).optional(),
   startAt: z.string().datetime().optional(),
   endAt: z.string().datetime().nullable().optional(),
+  jobId: z.string().nullable().optional(), // Reassign time entry to a different job
   overrideInvoiceLock: z.boolean().optional(),
   overrideReason: z.string().optional(), // Required if overrideInvoiceLock is true for invoiced entries
 });
@@ -4148,12 +4181,12 @@ export const recurringJobTemplates = pgTable("recurring_job_templates", {
   description: text("description"),
   notes: text("notes"),
   defaultDurationMinutes: integer("default_duration_minutes"),
-  preferredTechnicianId: varchar("preferred_technician_id").references(() => users.id, { onDelete: "set null" }),
+  // preferred_technician_id dropped — PM jobs no longer pre-assign technicians
   jobType: text("job_type").notNull().default("maintenance"),
   priority: text("priority").notNull().default("medium"),
   // OpenSubStatus for generated jobs (null = backlog, "on_hold" = held jobs)
   // All generated jobs have status='open'; this controls the optional openSubStatus
-  openSubStatusDefault: text("open_sub_status_default"), // null | in_progress | on_hold | on_route | needs_review
+  openSubStatusDefault: text("open_sub_status_default"), // null | in_progress | on_hold | on_route
   holdReason: text("hold_reason"), // Required if openSubStatusDefault = 'on_hold'
   // Active/inactive toggle
   isActive: boolean("is_active").notNull().default(true),
@@ -4170,8 +4203,6 @@ export const recurringJobTemplates = pgTable("recurring_job_templates", {
   monthsOfYear: integer("months_of_year").array(), // 1..12; null = no month restriction
   generationMode: text("generation_mode").notNull().default("phase"), // phase | period_start | day_of_month
   generationDayOfMonth: integer("generation_day_of_month"), // 1..31, required when generationMode = 'day_of_month'
-  autoSchedule: boolean("auto_schedule").notNull().default(false), // false = unscheduled (PM default)
-  scheduledTimeLocal: text("scheduled_time_local"), // "HH:MM" 24h, required when autoSchedule = true
   includeLocationPmParts: boolean("include_location_pm_parts").notNull().default(false), // copy location PM parts into job_parts on generation
   // PM Phase 3: Service window — acceptable date range around ideal PM date
   serviceWindowDaysBefore: integer("service_window_days_before").notNull().default(7),
@@ -4208,8 +4239,6 @@ export const insertRecurringJobTemplateSchema = createInsertSchema(recurringJobT
   monthsOfYear: z.array(z.number().int().min(1).max(12)).nullable().optional(),
   generationMode: z.enum(generationModeEnum).default("phase"),
   generationDayOfMonth: z.number().int().min(1).max(31).nullable().optional(),
-  autoSchedule: z.boolean().default(false),
-  scheduledTimeLocal: z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
   includeLocationPmParts: z.boolean().default(false),
   // PM Phase 3: Service window fields
   serviceWindowDaysBefore: z.number().int().min(0).max(90).default(7),
@@ -4227,7 +4256,6 @@ export const updateRecurringJobTemplateSchema = z.object({
   description: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
   defaultDurationMinutes: z.number().int().min(0).nullable().optional(),
-  preferredTechnicianId: z.string().nullable().optional(),
   jobType: z.enum(jobTypeEnum).optional(),
   priority: z.enum(jobPriorityEnum).optional(),
   openSubStatusDefault: z.enum(openSubStatusEnum).nullable().optional(),
@@ -4244,8 +4272,6 @@ export const updateRecurringJobTemplateSchema = z.object({
   monthsOfYear: z.array(z.number().int().min(1).max(12)).nullable().optional(),
   generationMode: z.enum(generationModeEnum).optional(),
   generationDayOfMonth: z.number().int().min(1).max(31).nullable().optional(),
-  autoSchedule: z.boolean().optional(),
-  scheduledTimeLocal: z.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
   includeLocationPmParts: z.boolean().optional(),
   // PM Phase 3: Service window fields
   serviceWindowDaysBefore: z.number().int().min(0).max(90).optional(),
@@ -4631,3 +4657,63 @@ export const technicianLivePositions = pgTable("technician_live_positions", {
 }));
 
 export type TechnicianLivePosition = typeof technicianLivePositions.$inferSelect;
+
+// =============================================================================
+// JOB EXPENSES — Tracks additional job costs (parking, materials, mileage, etc.)
+// =============================================================================
+// Feeds into unified job costing: Parts + Labor + Expenses → Total Cost / Profit / Margin.
+// Billable expenses can be converted to invoice lines via invoiceCreationService.
+
+export const expenseCategoryEnum = [
+  "parking", "materials", "mileage", "travel", "equipment_rental",
+  "permit", "disposal", "subcontractor", "other",
+] as const;
+export type ExpenseCategory = typeof expenseCategoryEnum[number];
+
+export const expenseBillingStatusEnum = ["pending", "added_to_invoice"] as const;
+export type ExpenseBillingStatus = typeof expenseBillingStatusEnum[number];
+
+export const jobExpenses = pgTable("job_expenses", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }), // Denormalized for tenant isolation
+  jobId: varchar("job_id").notNull().references(() => jobs.id, { onDelete: "cascade" }),
+  amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
+  category: text("category").notNull(), // One of expenseCategoryEnum values
+  date: timestamp("date").notNull(),
+  notes: text("notes"),
+  createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  receiptFileId: varchar("receipt_file_id").references(() => files.id, { onDelete: "set null" }),
+  isBillable: boolean("is_billable").notNull().default(false),
+  billingStatus: text("billing_status").notNull().default("pending"), // One of expenseBillingStatusEnum
+  reimbursableToUserId: varchar("reimbursable_to_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+}, (table) => ({
+  jobCompanyIdx: index("job_expenses_job_company_idx").on(table.jobId, table.companyId),
+  companyCreatedAtIdx: index("job_expenses_company_created_at_idx").on(table.companyId, table.createdAt),
+}));
+
+export const insertJobExpenseSchema = createInsertSchema(jobExpenses).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  amount: z.string().or(z.number()),
+  category: z.enum(expenseCategoryEnum),
+  date: z.string().or(z.date()),
+  billingStatus: z.enum(expenseBillingStatusEnum).optional(),
+});
+
+export const updateJobExpenseSchema = z.object({
+  amount: z.string().or(z.number()).optional(),
+  category: z.enum(expenseCategoryEnum).optional(),
+  date: z.string().or(z.date()).optional(),
+  notes: z.string().nullable().optional(),
+  receiptFileId: z.string().nullable().optional(),
+  isBillable: z.boolean().optional(),
+  reimbursableToUserId: z.string().nullable().optional(),
+});
+
+export type InsertJobExpense = z.infer<typeof insertJobExpenseSchema>;
+export type UpdateJobExpense = z.infer<typeof updateJobExpenseSchema>;
+export type JobExpense = typeof jobExpenses.$inferSelect;

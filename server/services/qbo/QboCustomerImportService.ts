@@ -26,12 +26,18 @@ import {
   type QBOCustomerResponse,
   type ParsedQBOCustomer,
 } from "../../qbo/mappers";
+import {
+  normalizeForMatch,
+  normalizeBusinessName,
+  stripNonDigits,
+  normalizePostalForMatch,
+} from "@shared/normalizeForMatch";
 
 // ============================================================
 // TYPES
 // ============================================================
 
-export type CustomerImportMode = "merge" | "overwrite" | "wipe";
+export type CustomerImportMode = "merge" | "overwrite" | "wipe" | "link_only";
 
 export interface CustomerImportOptions {
   dryRun: boolean;
@@ -42,12 +48,19 @@ export interface CustomerImportOptions {
   resolutions?: Record<string, ImportResolution>;
 }
 
+/** Match signal types for preview display */
+export type MatchSignal = "NAME" | "EMAIL" | "PHONE" | "POSTAL" | "LOCATION_NAME";
+
 export interface ImportedRecord {
   qboCustomerId: string;
   displayName: string;
   type: "parent" | "child";
   action: "create" | "update" | "restore" | "skip" | "conflict";
   localId?: string;
+  /** Why this record was auto-linked (undefined if conflict/create/skip) */
+  matchBasis?: string;
+  /** Numeric score for ranking (0-100+) */
+  matchScore?: number;
   parentQboId?: string | null;
 }
 
@@ -67,10 +80,16 @@ export interface ImportConflict {
     name: string;
     sku?: string | null;
     email?: string | null;
+    phone?: string | null;
+    postalCode?: string | null;
     isActive?: boolean;
     lastActivityAt?: string | null;
     isLinked?: boolean;
     qboId?: string | null;
+    /** Reconciliation scoring metadata (populated for customer conflicts) */
+    score?: number;
+    signals?: MatchSignal[];
+    confidence?: "HIGH" | "MEDIUM" | "LOW";
   }>;
   defaultAction: "SKIP";
   message: string;
@@ -222,20 +241,38 @@ export class QboCustomerImportService {
           .where(and(eq(clientLocations.companyId, this.companyId), isNotNull(clientLocations.qboCustomerId), isNull(clientLocations.deletedAt)));
         result.totals.wiped = (ccCount?.count ?? 0) + (clCount?.count ?? 0);
       } else {
+        // 2026-03-20 F-03: Wrap both soft-deletes in a single transaction so
+        // locations and companies are wiped atomically (no partial state on failure).
         const now = new Date();
-        const wipedLocations = await db.update(clientLocations)
-          .set({ deletedAt: now, inactive: true, updatedAt: now })
-          .where(and(eq(clientLocations.companyId, this.companyId), isNotNull(clientLocations.qboCustomerId), isNull(clientLocations.deletedAt)))
-          .returning({ id: clientLocations.id });
-        const wipedCompanies = await db.update(customerCompanies)
-          .set({ deletedAt: now, isActive: false, updatedAt: now })
-          .where(and(eq(customerCompanies.companyId, this.companyId), isNotNull(customerCompanies.qboCustomerId), isNull(customerCompanies.deletedAt)))
-          .returning({ id: customerCompanies.id });
+        const { wipedLocations, wipedCompanies } = await db.transaction(async (tx) => {
+          const wipedLocs = await tx.update(clientLocations)
+            .set({ deletedAt: now, inactive: true, updatedAt: now })
+            .where(and(eq(clientLocations.companyId, this.companyId), isNotNull(clientLocations.qboCustomerId), isNull(clientLocations.deletedAt)))
+            .returning({ id: clientLocations.id });
+          const wipedComps = await tx.update(customerCompanies)
+            .set({ deletedAt: now, isActive: false, updatedAt: now })
+            .where(and(eq(customerCompanies.companyId, this.companyId), isNotNull(customerCompanies.qboCustomerId), isNull(customerCompanies.deletedAt)))
+            .returning({ id: customerCompanies.id });
+          return { wipedLocations: wipedLocs, wipedCompanies: wipedComps };
+        });
         result.totals.wiped = wipedLocations.length + wipedCompanies.length;
       }
     }
 
-    // Step 3: Load existing local mappings for upsert detection (includes extra fields for conflict display)
+    // Wipe warning: count unlinked records that will survive a wipe
+    if (mode === "wipe") {
+      const [unlinkedCc] = await db.select({ count: sql<number>`count(*)::int` }).from(customerCompanies)
+        .where(and(eq(customerCompanies.companyId, this.companyId), isNull(customerCompanies.qboCustomerId), isNull(customerCompanies.deletedAt)));
+      const [unlinkedCl] = await db.select({ count: sql<number>`count(*)::int` }).from(clientLocations)
+        .where(and(eq(clientLocations.companyId, this.companyId), isNull(clientLocations.qboCustomerId), isNull(clientLocations.deletedAt)));
+      const survivorCount = (unlinkedCc?.count ?? 0) + (unlinkedCl?.count ?? 0);
+      if (survivorCount > 0) {
+        warnings.push(`Wipe mode: ${survivorCount} local record(s) have no QBO link and will NOT be affected. These may duplicate freshly imported QBO customers.`);
+      }
+    }
+
+    // Step 3: Load existing local mappings for upsert detection
+    // Expanded field set supports multi-signal reconciliation matching
     const existingCompanies = await db
       .select({
         id: customerCompanies.id,
@@ -243,6 +280,8 @@ export class QboCustomerImportService {
         deletedAt: customerCompanies.deletedAt,
         name: customerCompanies.name,
         email: customerCompanies.email,
+        phone: customerCompanies.phone,
+        billingPostalCode: customerCompanies.billingPostalCode,
         isActive: customerCompanies.isActive,
       })
       .from(customerCompanies)
@@ -256,6 +295,8 @@ export class QboCustomerImportService {
         companyName: clientLocations.companyName,
         location: clientLocations.location,
         email: clientLocations.email,
+        phone: clientLocations.phone,
+        postalCode: clientLocations.postalCode,
         inactive: clientLocations.inactive,
       })
       .from(clientLocations)
@@ -268,11 +309,11 @@ export class QboCustomerImportService {
       existingLocations.filter(l => l.qboCustomerId).map(l => [l.qboCustomerId!, l])
     );
 
-    // Build name-based fallback indexes for unlinked records (used when qboCustomerId match fails)
+    // Build normalized name indexes for unlinked records (multi-signal fallback matching)
     const companyByName = new Map<string, typeof existingCompanies>();
     for (const c of existingCompanies) {
-      if (c.qboCustomerId || c.deletedAt) continue; // Only unlinked, non-deleted
-      const key = c.name.trim().toLowerCase();
+      if (c.qboCustomerId || c.deletedAt) continue;
+      const key = normalizeBusinessName(c.name);
       const arr = companyByName.get(key);
       if (arr) arr.push(c);
       else companyByName.set(key, [c]);
@@ -280,14 +321,18 @@ export class QboCustomerImportService {
 
     const locationByName = new Map<string, typeof existingLocations>();
     for (const l of existingLocations) {
-      if (l.qboCustomerId || l.deletedAt) continue; // Only unlinked, non-deleted
-      const key = l.companyName.trim().toLowerCase();
+      if (l.qboCustomerId || l.deletedAt) continue;
+      const key = normalizeBusinessName(l.companyName);
       const arr = locationByName.get(key);
       if (arr) arr.push(l);
       else locationByName.set(key, [l]);
     }
 
-    // Step 4: Process parents with name-based fallback matching + conflict detection
+    // Unlinked company pools for secondary signal matching (email, phone)
+    const unlinkedCompanies = existingCompanies.filter(c => !c.qboCustomerId && !c.deletedAt);
+    const unlinkedLocations = existingLocations.filter(l => !l.qboCustomerId && !l.deletedAt);
+
+    // Step 4: Process parents with multi-signal fallback matching + rule-gated auto-link
     const parentQboToLocalId = new Map<string, string>();
 
     // Preload existing parent ID map
@@ -300,80 +345,87 @@ export class QboCustomerImportService {
     for (const parent of parents) {
       let existing = companyByQboId.get(parent.qboCustomerId);
 
-      // Name-based fallback when no qboCustomerId match
+      // Multi-signal fallback matching when no qboCustomerId match (rule-gated auto-link)
+      let autoLinkBasis: string | undefined;
+      let autoLinkScore: number | undefined;
       if (!existing) {
-        const nameKey = (parent.companyName || parent.displayName).trim().toLowerCase();
-        const nameCandidates = companyByName.get(nameKey);
+        const scored = this.scoreCompanyCandidates(parent, unlinkedCompanies, companyByName);
 
-        if (nameCandidates && nameCandidates.length > 1) {
-          // CONFLICT: multiple unlinked local companies with the same name
+        if (scored.length === 1 && scored[0].autoLinkEligible) {
+          // Rule-gated auto-link: exactly 1 candidate passes a safe rule
+          existing = existingCompanies.find(c => c.id === scored[0].localId);
+          autoLinkBasis = scored[0].signals.join("+");
+          autoLinkScore = scored[0].score;
+        } else if (scored.length > 0) {
+          // Plausible candidates exist → CONFLICT for manual review
           const conflict: ImportConflict = {
             kind: "customer",
             qbo: { id: parent.qboCustomerId, name: parent.displayName, email: parent.email || null },
-            matchBasis: "NAME",
-            candidates: nameCandidates.map(c => ({
-              localId: c.id,
-              name: c.name,
-              email: c.email ?? null,
-              isActive: c.isActive,
-              isLinked: !!c.qboCustomerId,
-              qboId: c.qboCustomerId ?? null,
-            })),
+            matchBasis: scored[0].signals.length > 1 ? "MULTI_SIGNAL" : (scored[0].signals[0] === "NAME" ? "NAME_NORMALIZED" : scored[0].signals[0] as any),
+            candidates: scored.map(s => {
+              const c = existingCompanies.find(x => x.id === s.localId)!;
+              return {
+                localId: c.id, name: c.name, email: c.email ?? null, phone: c.phone ?? null,
+                postalCode: c.billingPostalCode ?? null, isActive: c.isActive,
+                isLinked: !!c.qboCustomerId, qboId: c.qboCustomerId ?? null,
+                score: s.score, signals: s.signals, confidence: s.confidence,
+              };
+            }),
             defaultAction: "SKIP",
-            message: `QBO customer "${parent.displayName}" matches ${nameCandidates.length} local companies by name.`,
+            message: scored.length === 1
+              ? `QBO customer "${parent.displayName}" has a plausible local match but needs confirmation.`
+              : `QBO customer "${parent.displayName}" matches ${scored.length} local companies.`,
           };
           result.conflicts.push(conflict);
 
+          // Apply user resolution if provided
           const resolution = resolutions?.[parent.qboCustomerId];
           if (resolution?.action === "MAP" && resolution.localId) {
-            const target = nameCandidates.find(c => c.id === resolution.localId);
+            const target = scored.find(s => s.localId === resolution.localId);
             if (!target) {
-              const record: ImportedRecord = {
-                qboCustomerId: parent.qboCustomerId, displayName: parent.displayName, type: "parent", action: "skip",
-              };
               warnings.push(`Resolution for "${parent.displayName}": localId not found among candidates`);
               result.totals.skipped++;
-              if (result.sample.length < 10) result.sample.push(record);
+              if (result.sample.length < 10) result.sample.push({ qboCustomerId: parent.qboCustomerId, displayName: parent.displayName, type: "parent", action: "skip" });
               continue;
             }
-            // H1 staleness: re-fetch target when actually writing to guard against changes since preview
+            // H1 staleness guard
             if (!dryRun) {
-              const fresh = await this.fetchCompanyForResolution(target.id);
+              const fresh = await this.fetchCompanyForResolution(target.localId);
               if (!fresh || fresh.deletedAt || fresh.isActive === false) {
-                const record: ImportedRecord = {
-                  qboCustomerId: parent.qboCustomerId, displayName: parent.displayName, type: "parent", action: "skip",
-                };
                 warnings.push(`Resolution for "${parent.displayName}": selected local record is no longer eligible (deleted or inactive).`);
                 result.totals.skipped++;
-                if (result.sample.length < 10) result.sample.push(record);
+                if (result.sample.length < 10) result.sample.push({ qboCustomerId: parent.qboCustomerId, displayName: parent.displayName, type: "parent", action: "skip" });
                 continue;
               }
               if (fresh.qboCustomerId && fresh.qboCustomerId !== parent.qboCustomerId) {
-                const record: ImportedRecord = {
-                  qboCustomerId: parent.qboCustomerId, displayName: parent.displayName, type: "parent", action: "skip",
-                };
                 warnings.push(`Resolution for "${parent.displayName}": local record now linked to QBO ${fresh.qboCustomerId}; cannot re-link.`);
                 result.totals.skipped++;
-                if (result.sample.length < 10) result.sample.push(record);
+                if (result.sample.length < 10) result.sample.push({ qboCustomerId: parent.qboCustomerId, displayName: parent.displayName, type: "parent", action: "skip" });
                 continue;
               }
             }
-            existing = target;
+            existing = existingCompanies.find(c => c.id === target.localId);
+            autoLinkBasis = "MAP_RESOLUTION";
           } else if (resolution?.action === "CREATE") {
-            // Fall through to create (existing stays undefined)
+            // Fall through to create
           } else {
-            // No resolution or SKIP → skip
-            const record: ImportedRecord = {
-              qboCustomerId: parent.qboCustomerId, displayName: parent.displayName, type: "parent", action: "conflict",
-            };
             result.totals.conflicts++;
-            if (result.sample.length < 10) result.sample.push(record);
+            if (result.sample.length < 10) result.sample.push({ qboCustomerId: parent.qboCustomerId, displayName: parent.displayName, type: "parent", action: "conflict" });
             continue;
           }
-        } else if (nameCandidates?.length === 1) {
-          // Single name match — use as fallback
-          existing = nameCandidates[0];
         }
+        // If scored.length === 0 → no match → existing stays undefined → CREATE (or SKIP in link_only)
+      }
+
+      // link_only mode: skip creation, only link existing records
+      if (!existing && mode === "link_only") {
+        const record: ImportedRecord = {
+          qboCustomerId: parent.qboCustomerId, displayName: parent.displayName, type: "parent", action: "skip",
+        };
+        warnings.push(`link_only: no local match for "${parent.displayName}" — skipped.`);
+        result.totals.skipped++;
+        if (result.sample.length < 10) result.sample.push(record);
+        continue;
       }
 
       const record: ImportedRecord = {
@@ -382,6 +434,8 @@ export class QboCustomerImportService {
         type: "parent",
         action: existing ? (existing.deletedAt ? "restore" : "update") : "create",
         localId: existing?.id,
+        matchBasis: autoLinkBasis,
+        matchScore: autoLinkScore,
       };
 
       if (record.action === "create") {
@@ -421,84 +475,82 @@ export class QboCustomerImportService {
       }
     }
 
-    // Step 5: Process children with name-based fallback matching + conflict detection
+    // Step 5: Process children with multi-signal fallback matching + rule-gated auto-link
     for (const child of children) {
       let existing = locationByQboId.get(child.qboCustomerId);
 
-      // Name-based fallback when no qboCustomerId match
+      let childAutoLinkBasis: string | undefined;
+      let childAutoLinkScore: number | undefined;
       if (!existing) {
-        const nameKey = (child.companyName || child.displayName).trim().toLowerCase();
-        const nameCandidates = locationByName.get(nameKey);
+        const scored = this.scoreLocationCandidates(child, unlinkedLocations, locationByName);
 
-        if (nameCandidates && nameCandidates.length > 1) {
-          // CONFLICT: multiple unlinked local locations with the same name
+        if (scored.length === 1 && scored[0].autoLinkEligible) {
+          existing = existingLocations.find(l => l.id === scored[0].localId);
+          childAutoLinkBasis = scored[0].signals.join("+");
+          childAutoLinkScore = scored[0].score;
+        } else if (scored.length > 0) {
           const conflict: ImportConflict = {
             kind: "customer",
             qbo: { id: child.qboCustomerId, name: child.displayName, email: child.email || null },
-            matchBasis: "NAME",
-            candidates: nameCandidates.map(l => ({
-              localId: l.id,
-              name: l.companyName,
-              email: l.email ?? null,
-              isActive: !l.inactive,
-              isLinked: !!l.qboCustomerId,
-              qboId: l.qboCustomerId ?? null,
-            })),
+            matchBasis: scored[0].signals.length > 1 ? "MULTI_SIGNAL" : (scored[0].signals[0] === "NAME" ? "NAME_NORMALIZED" : scored[0].signals[0] as any),
+            candidates: scored.map(s => {
+              const l = existingLocations.find(x => x.id === s.localId)!;
+              return {
+                localId: l.id, name: l.companyName, email: l.email ?? null, phone: l.phone ?? null,
+                postalCode: l.postalCode ?? null, isActive: !l.inactive,
+                isLinked: !!l.qboCustomerId, qboId: l.qboCustomerId ?? null,
+                score: s.score, signals: s.signals, confidence: s.confidence,
+              };
+            }),
             defaultAction: "SKIP",
-            message: `QBO sub-customer "${child.displayName}" matches ${nameCandidates.length} local locations by name.`,
+            message: scored.length === 1
+              ? `QBO sub-customer "${child.displayName}" has a plausible local match but needs confirmation.`
+              : `QBO sub-customer "${child.displayName}" matches ${scored.length} local locations.`,
           };
           result.conflicts.push(conflict);
 
           const resolution = resolutions?.[child.qboCustomerId];
           if (resolution?.action === "MAP" && resolution.localId) {
-            const target = nameCandidates.find(l => l.id === resolution.localId);
+            const target = scored.find(s => s.localId === resolution.localId);
             if (!target) {
-              const record: ImportedRecord = {
-                qboCustomerId: child.qboCustomerId, displayName: child.displayName, type: "child", action: "skip", parentQboId: child.parentQboId,
-              };
               warnings.push(`Resolution for "${child.displayName}": localId not found among candidates`);
               result.totals.skipped++;
-              if (result.sample.length < 10) result.sample.push(record);
+              if (result.sample.length < 10) result.sample.push({ qboCustomerId: child.qboCustomerId, displayName: child.displayName, type: "child", action: "skip", parentQboId: child.parentQboId });
               continue;
             }
-            // H1 staleness: re-fetch target when actually writing
             if (!dryRun) {
-              const fresh = await this.fetchLocationForResolution(target.id);
+              const fresh = await this.fetchLocationForResolution(target.localId);
               if (!fresh || fresh.deletedAt || fresh.inactive === true) {
-                const record: ImportedRecord = {
-                  qboCustomerId: child.qboCustomerId, displayName: child.displayName, type: "child", action: "skip", parentQboId: child.parentQboId,
-                };
                 warnings.push(`Resolution for "${child.displayName}": selected local record is no longer eligible (deleted or inactive).`);
                 result.totals.skipped++;
-                if (result.sample.length < 10) result.sample.push(record);
+                if (result.sample.length < 10) result.sample.push({ qboCustomerId: child.qboCustomerId, displayName: child.displayName, type: "child", action: "skip", parentQboId: child.parentQboId });
                 continue;
               }
               if (fresh.qboCustomerId && fresh.qboCustomerId !== child.qboCustomerId) {
-                const record: ImportedRecord = {
-                  qboCustomerId: child.qboCustomerId, displayName: child.displayName, type: "child", action: "skip", parentQboId: child.parentQboId,
-                };
                 warnings.push(`Resolution for "${child.displayName}": local record now linked to QBO ${fresh.qboCustomerId}; cannot re-link.`);
                 result.totals.skipped++;
-                if (result.sample.length < 10) result.sample.push(record);
+                if (result.sample.length < 10) result.sample.push({ qboCustomerId: child.qboCustomerId, displayName: child.displayName, type: "child", action: "skip", parentQboId: child.parentQboId });
                 continue;
               }
             }
-            existing = target;
+            existing = existingLocations.find(l => l.id === target.localId);
+            childAutoLinkBasis = "MAP_RESOLUTION";
           } else if (resolution?.action === "CREATE") {
-            // Fall through to create (existing stays undefined)
+            // Fall through to create
           } else {
-            // No resolution or SKIP → skip
-            const record: ImportedRecord = {
-              qboCustomerId: child.qboCustomerId, displayName: child.displayName, type: "child", action: "conflict", parentQboId: child.parentQboId,
-            };
             result.totals.conflicts++;
-            if (result.sample.length < 10) result.sample.push(record);
+            if (result.sample.length < 10) result.sample.push({ qboCustomerId: child.qboCustomerId, displayName: child.displayName, type: "child", action: "conflict", parentQboId: child.parentQboId });
             continue;
           }
-        } else if (nameCandidates?.length === 1) {
-          // Single name match — use as fallback
-          existing = nameCandidates[0];
         }
+      }
+
+      // link_only mode: skip creation
+      if (!existing && mode === "link_only") {
+        warnings.push(`link_only: no local match for "${child.displayName}" — skipped.`);
+        result.totals.skipped++;
+        if (result.sample.length < 10) result.sample.push({ qboCustomerId: child.qboCustomerId, displayName: child.displayName, type: "child", action: "skip", parentQboId: child.parentQboId });
+        continue;
       }
 
       const record: ImportedRecord = {
@@ -508,6 +560,8 @@ export class QboCustomerImportService {
         action: existing ? (existing.deletedAt ? "restore" : "update") : "create",
         localId: existing?.id,
         parentQboId: child.parentQboId,
+        matchBasis: childAutoLinkBasis,
+        matchScore: childAutoLinkScore,
       };
 
       if (record.action === "create") {
@@ -652,6 +706,7 @@ export class QboCustomerImportService {
       phone: parsed.phone,
       email: parsed.email,
       billingStreet: parsed.address.street,
+      billingStreet2: parsed.address.street2,
       billingCity: parsed.address.city,
       billingProvince: parsed.address.province,
       billingPostalCode: parsed.address.postalCode,
@@ -660,15 +715,20 @@ export class QboCustomerImportService {
       ...qboFields,
     };
 
-    if (existing && mode === "merge") {
-      // Merge: only fill missing fields, never overwrite existing values
+    if (existing && (mode === "merge" || mode === "link_only")) {
+      // Merge/link_only: only fill missing fields, never overwrite existing values
       const [current] = await db.select().from(customerCompanies)
         .where(eq(customerCompanies.id, existing.id)).limit(1);
       const mergeData: Record<string, unknown> = { ...qboFields, deletedAt: null };
-      if (!current?.name && fullData.name) mergeData.name = fullData.name;
+      if (!current?.name && fullData.name) {
+        mergeData.name = fullData.name;
+        // 2026-03-20: Recompute nameNormalized when name is written — matches repository behavior
+        mergeData.nameNormalized = normalizeForMatch(fullData.name);
+      }
       if (!current?.phone && fullData.phone) mergeData.phone = fullData.phone;
       if (!current?.email && fullData.email) mergeData.email = fullData.email;
       if (!current?.billingStreet && fullData.billingStreet) mergeData.billingStreet = fullData.billingStreet;
+      if (!current?.billingStreet2 && fullData.billingStreet2) mergeData.billingStreet2 = fullData.billingStreet2;
       if (!current?.billingCity && fullData.billingCity) mergeData.billingCity = fullData.billingCity;
       if (!current?.billingProvince && fullData.billingProvince) mergeData.billingProvince = fullData.billingProvince;
       if (!current?.billingPostalCode && fullData.billingPostalCode) mergeData.billingPostalCode = fullData.billingPostalCode;
@@ -680,15 +740,17 @@ export class QboCustomerImportService {
 
     if (existing) {
       // Overwrite or wipe: replace all fields
-      await db.update(customerCompanies).set({ ...fullData, deletedAt: null })
+      // 2026-03-20: Include nameNormalized — matches repository behavior for dedup integrity
+      await db.update(customerCompanies).set({ ...fullData, deletedAt: null, nameNormalized: normalizeForMatch(fullData.name) })
         .where(and(eq(customerCompanies.id, existing.id), eq(customerCompanies.companyId, this.companyId)));
       return existing.id;
     }
 
     // Create new
+    // 2026-03-20: Include nameNormalized — matches repository behavior for dedup integrity
     const [inserted] = await db
       .insert(customerCompanies)
-      .values({ companyId: this.companyId, ...fullData })
+      .values({ companyId: this.companyId, ...fullData, nameNormalized: normalizeForMatch(fullData.name) })
       .returning({ id: customerCompanies.id });
     return inserted.id;
   }
@@ -723,6 +785,7 @@ export class QboCustomerImportService {
       companyName,
       location: locationLabel,
       address: serviceAddr.street,
+      address2: serviceAddr.street2,
       city: serviceAddr.city,
       province: serviceAddr.province,
       postalCode: serviceAddr.postalCode,
@@ -734,14 +797,15 @@ export class QboCustomerImportService {
       ...qboFields,
     };
 
-    if (existing && mode === "merge") {
-      // Merge: only fill missing fields, never overwrite existing values
+    if (existing && (mode === "merge" || mode === "link_only")) {
+      // Merge/link_only: only fill missing fields, never overwrite existing values
       const [current] = await db.select().from(clientLocations)
         .where(eq(clientLocations.id, existing.id)).limit(1);
       const mergeData: Record<string, unknown> = { ...qboFields, deletedAt: null, parentCompanyId: parentLocalId };
       if (!current?.companyName && companyName) mergeData.companyName = companyName;
       if (!current?.location && locationLabel) mergeData.location = locationLabel;
       if (!current?.address && serviceAddr.street) mergeData.address = serviceAddr.street;
+      if (!current?.address2 && serviceAddr.street2) mergeData.address2 = serviceAddr.street2;
       if (!current?.city && serviceAddr.city) mergeData.city = serviceAddr.city;
       if (!current?.province && serviceAddr.province) mergeData.province = serviceAddr.province;
       if (!current?.postalCode && serviceAddr.postalCode) mergeData.postalCode = serviceAddr.postalCode;
@@ -822,6 +886,7 @@ export class QboCustomerImportService {
         companyName: parsed.companyName || parsed.displayName,
         location: "Main",
         address: addr.street,
+        address2: addr.street2,
         city: addr.city,
         province: addr.province,
         postalCode: addr.postalCode,
@@ -834,4 +899,144 @@ export class QboCustomerImportService {
     }
     return true;
   }
+
+  // ============================================================
+  // MULTI-SIGNAL SCORING + RULE-GATED AUTO-LINK
+  // ============================================================
+
+  /**
+   * Score unlinked customer_companies against a QBO parent customer.
+   * Returns candidates sorted by score descending, with autoLinkEligible flag.
+   */
+  private scoreCompanyCandidates(
+    qbo: ParsedQBOCustomer,
+    unlinked: Array<{ id: string; name: string; email: string | null; phone: string | null; billingPostalCode: string | null; isActive: boolean; deletedAt: Date | null }>,
+    nameIndex: Map<string, Array<{ id: string; name: string; email: string | null; phone: string | null; billingPostalCode: string | null; isActive: boolean; deletedAt: Date | null }>>,
+  ): ScoredCandidate[] {
+    const qboName = normalizeBusinessName(qbo.companyName || qbo.displayName);
+    const qboEmail = qbo.email?.trim().toLowerCase() || "";
+    const qboPhone = stripNonDigits(qbo.phone);
+    const qboPostal = normalizePostalForMatch(qbo.address.postalCode);
+
+    // Start with name-matched candidates from the index
+    const candidateIds = new Set<string>();
+    const candidates: ScoredCandidate[] = [];
+    const nameCandidates = qboName ? (nameIndex.get(qboName) ?? []) : [];
+    for (const c of nameCandidates) candidateIds.add(c.id);
+
+    // Also check secondary signals across ALL unlinked records
+    if (qboEmail) {
+      for (const c of unlinked) {
+        if (!candidateIds.has(c.id) && c.email?.trim().toLowerCase() === qboEmail) candidateIds.add(c.id);
+      }
+    }
+    if (qboPhone && qboPhone.length >= 7) {
+      for (const c of unlinked) {
+        if (!candidateIds.has(c.id) && stripNonDigits(c.phone) === qboPhone) candidateIds.add(c.id);
+      }
+    }
+
+    // Score each candidate
+    for (const id of Array.from(candidateIds)) {
+      const c = unlinked.find(x => x.id === id);
+      if (!c) continue;
+      let score = 0;
+      const signals: MatchSignal[] = [];
+
+      const localName = normalizeBusinessName(c.name);
+      if (qboName && localName === qboName) { score += 40; signals.push("NAME"); }
+      if (qboEmail && c.email?.trim().toLowerCase() === qboEmail) { score += 25; signals.push("EMAIL"); }
+      if (qboPhone && qboPhone.length >= 7 && stripNonDigits(c.phone) === qboPhone) { score += 20; signals.push("PHONE"); }
+      if (qboPostal && normalizePostalForMatch(c.billingPostalCode) === qboPostal) { score += 15; signals.push("POSTAL"); }
+
+      if (score < 40) continue; // Below minimum threshold — not plausible
+
+      const confidence: "HIGH" | "MEDIUM" | "LOW" = score >= 60 ? "HIGH" : score >= 40 ? "MEDIUM" : "LOW";
+
+      // Rule-gated auto-link for parents (only if EXACTLY 1 candidate — checked by caller)
+      const hasName = signals.includes("NAME");
+      const hasEmail = signals.includes("EMAIL");
+      const hasPhone = signals.includes("PHONE");
+      const hasPostal = signals.includes("POSTAL");
+      const autoLinkEligible =
+        (hasName && hasEmail) ||                    // name + email
+        (hasName && hasPostal) ||                   // name + postal
+        (hasName && hasPhone && hasPostal);          // name + phone + postal
+
+      candidates.push({ localId: id, score, signals, confidence, autoLinkEligible });
+    }
+
+    return candidates.sort((a, b) => b.score - a.score);
+  }
+
+  /**
+   * Score unlinked client_locations against a QBO sub-customer.
+   * Stricter rules: name alone is NEVER enough; name + phone alone is NEVER enough.
+   */
+  private scoreLocationCandidates(
+    qbo: ParsedQBOCustomer,
+    unlinked: Array<{ id: string; companyName: string; location: string | null; email: string | null; phone: string | null; postalCode: string | null; inactive: boolean; deletedAt: Date | null }>,
+    nameIndex: Map<string, Array<{ id: string; companyName: string; location: string | null; email: string | null; phone: string | null; postalCode: string | null; inactive: boolean; deletedAt: Date | null }>>,
+  ): ScoredCandidate[] {
+    const qboName = normalizeBusinessName(qbo.companyName || qbo.displayName);
+    const qboEmail = qbo.email?.trim().toLowerCase() || "";
+    const qboPhone = stripNonDigits(qbo.phone);
+    const qboPostal = normalizePostalForMatch(
+      (qbo.shipAddress.postalCode || qbo.address.postalCode)
+    );
+    const qboLocationName = normalizeBusinessName(qbo.locationName);
+
+    const candidateIds = new Set<string>();
+    const candidates: ScoredCandidate[] = [];
+    const nameCandidates = qboName ? (nameIndex.get(qboName) ?? []) : [];
+    for (const l of nameCandidates) candidateIds.add(l.id);
+
+    if (qboEmail) {
+      for (const l of unlinked) {
+        if (!candidateIds.has(l.id) && l.email?.trim().toLowerCase() === qboEmail) candidateIds.add(l.id);
+      }
+    }
+
+    for (const id of Array.from(candidateIds)) {
+      const l = unlinked.find(x => x.id === id);
+      if (!l) continue;
+      let score = 0;
+      const signals: MatchSignal[] = [];
+
+      const localName = normalizeBusinessName(l.companyName);
+      if (qboName && localName === qboName) { score += 40; signals.push("NAME"); }
+      if (qboEmail && l.email?.trim().toLowerCase() === qboEmail) { score += 25; signals.push("EMAIL"); }
+      if (qboPhone && qboPhone.length >= 7 && stripNonDigits(l.phone) === qboPhone) { score += 20; signals.push("PHONE"); }
+      if (qboPostal && normalizePostalForMatch(l.postalCode) === qboPostal) { score += 15; signals.push("POSTAL"); }
+      // Location/site name tiebreak for child records
+      if (qboLocationName && l.location && normalizeBusinessName(l.location) === qboLocationName) { score += 10; signals.push("LOCATION_NAME"); }
+
+      if (score < 40) continue;
+
+      const confidence: "HIGH" | "MEDIUM" | "LOW" = score >= 60 ? "HIGH" : score >= 40 ? "MEDIUM" : "LOW";
+
+      // Rule-gated auto-link for locations (stricter than parents)
+      // Name alone: NEVER. Name + phone alone: NEVER.
+      const hasName = signals.includes("NAME");
+      const hasEmail = signals.includes("EMAIL");
+      const hasPostal = signals.includes("POSTAL");
+      const autoLinkEligible =
+        (hasName && hasPostal) ||                    // name + postal
+        (hasName && hasEmail);                       // name + email
+
+      candidates.push({ localId: id, score, signals, confidence, autoLinkEligible });
+    }
+
+    return candidates.sort((a, b) => b.score - a.score);
+  }
+}
+
+/** Internal scored candidate type used by scoring methods */
+interface ScoredCandidate {
+  localId: string;
+  score: number;
+  signals: MatchSignal[];
+  confidence: "HIGH" | "MEDIUM" | "LOW";
+  /** Whether this candidate passes a rule gate for auto-linking (if it's the sole candidate) */
+  autoLinkEligible: boolean;
 }

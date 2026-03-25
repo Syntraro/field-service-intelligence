@@ -37,6 +37,7 @@ export function EditLocationDialog({
   const [formData, setFormData] = useState({
     name: location.name,
     address: location.address || "",
+    address2: location.address2 || "",
     city: location.city || "",
     province: location.province || "",
     postalCode: location.postalCode || "",
@@ -56,6 +57,7 @@ export function EditLocationDialog({
     setFormData({
       name: location.name,
       address: location.address || "",
+      address2: location.address2 || "",
       city: location.city || "",
       province: location.province || "",
       postalCode: location.postalCode || "",
@@ -152,6 +154,16 @@ export function EditLocationDialog({
                   }));
                 }}
                 placeholder="Street address"
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="edit-address2">Address Line 2</Label>
+              <Input
+                id="edit-address2"
+                value={formData.address2}
+                onChange={(e) => setFormData({ ...formData, address2: e.target.value })}
+                placeholder="Suite, Unit, Floor (optional)"
               />
             </div>
 

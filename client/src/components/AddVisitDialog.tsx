@@ -149,7 +149,9 @@ export function AddVisitDialog({
 
     // Build payload matching scheduleJobSchema field names exactly
     // Combine date and time into ISO datetime string
-    const startAt = `${scheduledDate}T${scheduledTime}:00.000Z`;
+    // Fix: Construct Date without Z suffix so JS interprets as local time,
+    // then toISOString() converts to correct UTC (matches EditVisitModal pattern)
+    const startAt = new Date(`${scheduledDate}T${scheduledTime}:00`).toISOString();
 
     createMutation.mutate({
       jobId,

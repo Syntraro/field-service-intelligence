@@ -6,13 +6,14 @@
  * Goal 2: Strengthened lane boundaries.
  * Goal 3: Occupancy rail for free-gap clarity.
  */
-import { useMemo, useCallback, useRef } from "react";
+import { memo, useMemo, useCallback, useRef } from "react";
 import { useDroppable } from "@dnd-kit/core";
 import type { DispatchVisit, DispatchTask, Technician } from "./dispatchPreviewTypes";
 import { UNASSIGNED_TECH_ID } from "./dispatchPreviewTypes";
 import type { DispatchDropData } from "./dispatchDndTypes";
 import { TIMELINE_HOURS, HOUR_WIDTH_PX, LANE_HEIGHT_PX, TIMELINE_START_HOUR, getVisitPosition } from "./dispatchPreviewUtils";
 import { getTaskPosition } from "./DispatchTaskBlock";
+import { checkOverlap } from "./dispatchOverlapUtils";
 import DispatchVisitBlock from "./DispatchVisitBlock";
 import DispatchTaskBlock from "./DispatchTaskBlock";
 
@@ -39,21 +40,11 @@ type Props = {
   timelineEndHour?: number;
   /** Item 6: Click empty slot handler */
   onEmptySlotClick?: (techId: string, minuteOfDay: number) => void;
-  /** Click-to-schedule: preview node to show at hover position */
-  clickPreview?: React.ReactNode;
-  /** Click-to-schedule: whether this lane is being hovered with a pending placement */
-  isClickHoverTarget?: boolean;
-  /** Click-to-schedule: commit handler — click on this lane to schedule */
-  onClickSchedule?: (techId: string, relativeX: number) => void;
-  /** Click-to-schedule: hover handler — mouse move updates preview */
-  onClickHover?: (techId: string, relativeX: number) => void;
-  /** Click-to-schedule: hover leave handler */
-  onClickHoverLeave?: () => void;
-  /** Whether click-to-schedule placement is active (a visit is selected for scheduling) */
-  isPlacementActive?: boolean;
 };
 
-export default function DispatchLaneRow({
+/** PERF-08: Memoized to skip re-renders for non-active lanes during drag
+ * (dragTick increments ~60Hz but only the active drop-target lane receives changed props). */
+export default memo(function DispatchLaneRow({
   tech, visits, tasks = [], isLast, savingIds,
   selectedVisitId, selectedTaskId, onSelectVisit, onSelectTask,
   onUnschedule, onResize, onResizeTask, dragPreview, hasOverlap,
@@ -61,8 +52,6 @@ export default function DispatchLaneRow({
   timelineStartHour: startHour = TIMELINE_START_HOUR,
   timelineEndHour: endHour,
   onEmptySlotClick,
-  clickPreview, isClickHoverTarget, onClickSchedule, onClickHover, onClickHoverLeave,
-  isPlacementActive,
 }: Props) {
   const isUnassigned = tech.id === UNASSIGNED_TECH_ID;
   const dropData: DispatchDropData = { technicianId: tech.id };
@@ -75,8 +64,26 @@ export default function DispatchLaneRow({
 
   const overBg = hasOverlap ? "bg-red-50/60" : "bg-blue-50/60";
 
-  // Item 2: Filter to timed visits only — any-time visits rendered in DispatchTimeline's fixed column
+  // Exclude allDay items from timeline — allDay scheduling removed from product UX
   const timedVisits = useMemo(() => visits.filter(v => !v.isAllDay), [visits]);
+  const timedTasks = useMemo(() => tasks.filter(t => !t.isAllDay), [tasks]);
+
+  // Compute set of IDs that overlap another item in this lane
+  const conflictIds = useMemo(() => {
+    const ids = new Set<string>();
+    const allItems = [...timedVisits, ...timedTasks];
+    for (const item of allItems) {
+      if (!item.scheduledStart) continue;
+      const s = new Date(item.scheduledStart);
+      const startMin = s.getHours() * 60 + s.getMinutes();
+      const endMin = startMin + item.durationMinutes;
+      // Check this item against all other items (exclude self)
+      if (checkOverlap(startMin, endMin, timedVisits, item.id, timedTasks)) {
+        ids.add(item.id);
+      }
+    }
+    return ids;
+  }, [timedVisits, timedTasks]);
 
   // Goal 3: Compute occupancy rail segments (thin bar at lane bottom showing occupied periods)
   const occupancySegments = useMemo(() => {
@@ -85,12 +92,12 @@ export default function DispatchLaneRow({
       const pos = getVisitPosition(v, startHour);
       if (pos) segments.push({ left: pos.left, width: pos.width, type: "visit" });
     }
-    for (const t of tasks) {
+    for (const t of timedTasks) {
       const tPos = getTaskPosition(t, startHour);
       if (tPos) segments.push({ left: tPos.left, width: tPos.width, type: "task" });
     }
     return segments;
-  }, [timedVisits, tasks, startHour]);
+  }, [timedVisits, timedTasks, startHour]);
 
   const totalWidth = hours.length * HOUR_WIDTH_PX;
 
@@ -98,46 +105,23 @@ export default function DispatchLaneRow({
   const lastBlockInteractionRef = useRef(0);
 
   // Item 6: Click empty slot — compute time from click position
-  // In click-to-schedule mode, this handler is bypassed in favor of onClickSchedule
   const handleLaneClick = useCallback((e: React.MouseEvent) => {
-    // Click-to-schedule: commit placement on click
-    if (isPlacementActive && onClickSchedule) {
-      const target = e.target as HTMLElement;
-      if (target.closest("[data-dispatch-block]")) return;
-      const rect = e.currentTarget.getBoundingClientRect();
-      const relativeX = e.clientX - rect.left;
-      onClickSchedule(tech.id, relativeX);
-      return;
-    }
     if (!onEmptySlotClick) return;
     // Only fire on clicks directly on the lane background (not on blocks)
     const target = e.target as HTMLElement;
     if (target.closest("[data-dispatch-block]")) return;
     // Suppress clicks that fire within 300ms of a resize/drag release
-    if (Date.now() - lastBlockInteractionRef.current < 300) return;
+    if (Date.now() - lastBlockInteractionRef.current < 1500) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const relativeX = e.clientX - rect.left;
     const minutesFromStart = (relativeX / HOUR_WIDTH_PX) * 60;
     const snapped = Math.round(minutesFromStart / 15) * 15;
     const minuteOfDay = startHour * 60 + Math.max(0, snapped);
     onEmptySlotClick(tech.id, minuteOfDay);
-  }, [onEmptySlotClick, startHour, tech.id, isPlacementActive, onClickSchedule]);
+  }, [onEmptySlotClick, startHour, tech.id]);
 
-  // Click-to-schedule: hover tracking for preview
-  const handleLaneMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!isPlacementActive || !onClickHover) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const relativeX = e.clientX - rect.left;
-    onClickHover(tech.id, relativeX);
-  }, [isPlacementActive, onClickHover, tech.id]);
-
-  const handleLaneMouseLeave = useCallback(() => {
-    if (!isPlacementActive || !onClickHoverLeave) return;
-    onClickHoverLeave();
-  }, [isPlacementActive, onClickHoverLeave]);
-
-  // Track pointerup on dispatch blocks to suppress subsequent click events from resize/drag
-  const handleLanePointerUp = useCallback((e: React.PointerEvent) => {
+  // Track pointerdown on dispatch blocks to suppress subsequent click events from resize/drag
+  const handleLanePointerDown = useCallback((e: React.PointerEvent) => {
     const target = e.target as HTMLElement;
     if (target.closest("[data-dispatch-block]")) {
       lastBlockInteractionRef.current = Date.now();
@@ -148,13 +132,10 @@ export default function DispatchLaneRow({
     <div
       ref={setNodeRef}
       onClick={handleLaneClick}
-      onPointerUp={handleLanePointerUp}
-      onMouseMove={handleLaneMouseMove}
-      onMouseLeave={handleLaneMouseLeave}
+      onPointerDownCapture={handleLanePointerDown}
       className={`group relative flex ${!isLast ? "border-b border-slate-200/80" : ""} ${
         isOver ? overBg : ""
-      } ${isClickHoverTarget ? "bg-emerald-50/30" : ""}
-      transition-colors ${isPlacementActive ? "cursor-crosshair" : onEmptySlotClick ? "cursor-pointer" : ""}`}
+      } transition-colors ${onEmptySlotClick ? "cursor-pointer" : ""}`}
       style={{ height: LANE_HEIGHT_PX, width: totalWidth }}
     >
       {/* Goal 2: Hour cell grid lines — alternating subtle fill for half-day rhythm */}
@@ -188,9 +169,6 @@ export default function DispatchLaneRow({
       {/* Drag preview indicator */}
       {isOver && dragPreview}
 
-      {/* Click-to-schedule preview indicator */}
-      {isClickHoverTarget && clickPreview}
-
       {/* Timed visit blocks — pass lane blocks for resize overlap clamping */}
       {timedVisits.map(v => {
         const pos = getVisitPosition(v, startHour);
@@ -204,11 +182,12 @@ export default function DispatchLaneRow({
             techColor={tech.color}
             isSaving={savingIds.has(v.id)}
             isSelected={selectedVisitId === v.id}
+            hasConflict={conflictIds.has(v.id)}
             onSelect={onSelectVisit}
             onUnschedule={onUnschedule}
             onResize={onResize}
             laneVisits={timedVisits}
-            laneTasks={tasks}
+            laneTasks={timedTasks}
             laneTechId={tech.id}
             timelineEndHour={endHour}
           />
@@ -216,16 +195,17 @@ export default function DispatchLaneRow({
       })}
 
       {/* Task blocks — pass lane blocks for resize overlap clamping */}
-      {tasks.map(t => (
+      {timedTasks.map(t => (
         <DispatchTaskBlock
           key={`task-${t.id}`}
           task={t}
           isSaving={savingIds.has(t.id)}
           isSelected={selectedTaskId === t.id}
+          hasConflict={conflictIds.has(t.id)}
           onSelect={onSelectTask}
           onResize={onResizeTask}
-          laneVisits={visits}
-          laneTasks={tasks}
+          laneVisits={timedVisits}
+          laneTasks={timedTasks}
           timelineStartHour={startHour}
           timelineEndHour={endHour}
         />
@@ -233,4 +213,4 @@ export default function DispatchLaneRow({
 
     </div>
   );
-}
+});

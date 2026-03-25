@@ -1,5 +1,5 @@
-import { useQuery, useMutation } from "@tanstack/react-query";
-import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useQuery } from "@tanstack/react-query";
+import { queryClient } from "@/lib/queryClient";
 import type { JobVisit } from "@shared/schema";
 import { useMemo } from "react";
 
@@ -142,24 +142,3 @@ export function useJobVisits(jobId: string, options: UseJobVisitsOptions = {}) {
   };
 }
 
-/**
- * Helper to determine if a visit is inactive (unscheduled via calendar)
- */
-export function isVisitInactive(visit: JobVisit): boolean {
-  return !visit.isActive;
-}
-
-/**
- * Helper to determine if a visit is ineligible (completed/cancelled)
- */
-export function isVisitIneligible(visit: JobVisit): boolean {
-  return EXCLUDED_STATUSES.includes(visit.status);
-}
-
-/**
- * Helper to get visit display status
- */
-export function getVisitDisplayStatus(visit: JobVisit): string {
-  if (!visit.isActive) return "Unscheduled";
-  return visit.status;
-}

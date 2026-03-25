@@ -119,7 +119,31 @@
       "Bash(npm run db:migrate:one -- migrations/2026_03_08_add_live_map_feature_flag.sql 2>&1)",
       "Bash(cat > /dev/null << 'EOF'\n# Comprehensive list of all QBO, OAuth, and environment configuration files\nEOF\necho \"Files found successfully\")",
       "Bash(npm run db:migrate:one -- migrations/2026_03_09_pm_service_windows.sql 2>&1)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(cat <<'SQLEOF' | npx tsx -e \"\nimport { db } from './server/db';\nimport { sql } from 'drizzle-orm';\n\nasync function verify\\(\\) {\n  // 1. Soft-deleted jobs that were hard-deleted by migration\n  //    \\(We can't count them post-facto since they're gone, but we can check\n  //     how many soft-deleted jobs remain\\)\n  const [remaining] = await db.execute\\(sql\\\\`\n    SELECT COUNT\\(*\\) AS soft_deleted_remaining\n    FROM jobs\n    WHERE deleted_at IS NOT NULL\n  \\\\`\\);\n  console.log\\('=== 1. Remaining soft-deleted jobs \\(preserved due to invoice linkage\\) ==='\\);\n  console.log\\(JSON.stringify\\(remaining\\)\\);\n\n  // 1b. Verify all remaining soft-deleted jobs have invoice linkage\n  const [noInvoiceSoftDeleted] = await db.execute\\(sql\\\\`\n    SELECT COUNT\\(*\\) AS orphan_soft_deleted\n    FROM jobs j\n    WHERE j.deleted_at IS NOT NULL\n      AND j.invoice_id IS NULL\n      AND NOT EXISTS \\(SELECT 1 FROM invoices i WHERE i.job_id = j.id\\)\n  \\\\`\\);\n  console.log\\('=== 1b. Soft-deleted jobs WITHOUT invoice \\(should be 0\\) ==='\\);\n  console.log\\(JSON.stringify\\(noInvoiceSoftDeleted\\)\\);\n\n  // 2. Jobs visible on main Jobs page \\(active, non-deleted\\)\n  const [activeJobs] = await db.execute\\(sql\\\\`\n    SELECT COUNT\\(*\\) AS active_jobs\n    FROM jobs\n    WHERE deleted_at IS NULL AND is_active = true\n  \\\\`\\);\n  console.log\\('=== 2. Active jobs \\(main Jobs page\\) ==='\\);\n  console.log\\(JSON.stringify\\(activeJobs\\)\\);\n\n  // 3. Pick an affected customer company and check its jobs\n  const companyCheck = await db.execute\\(sql\\\\`\n    SELECT cc.id, cc.name,\n      COUNT\\(j.id\\) FILTER \\(WHERE j.deleted_at IS NULL AND j.is_active = true\\) AS visible_jobs,\n      COUNT\\(j.id\\) FILTER \\(WHERE j.deleted_at IS NOT NULL\\) AS hidden_deleted_jobs\n    FROM customer_companies cc\n    JOIN client_locations cl ON cl.parent_company_id = cc.id\n    LEFT JOIN jobs j ON j.location_id = cl.id\n    GROUP BY cc.id, cc.name\n    HAVING COUNT\\(j.id\\) > 0\n    ORDER BY COUNT\\(j.id\\) DESC\n    LIMIT 3\n  \\\\`\\);\n  console.log\\('=== 3. Top customer companies — visible vs hidden deleted jobs ==='\\);\n  for \\(const row of companyCheck\\) {\n    console.log\\(JSON.stringify\\(row\\)\\);\n  }\n\n  // 4. Confirm no deleted jobs would appear in client/company overview\n  const [deletedInOverview] = await db.execute\\(sql\\\\`\n    SELECT COUNT\\(*\\) AS deleted_visible\n    FROM jobs j\n    JOIN client_locations cl ON cl.id = j.location_id\n    WHERE cl.parent_company_id IS NOT NULL\n      AND \\(j.deleted_at IS NOT NULL OR j.is_active = false\\)\n  \\\\`\\);\n  console.log\\('=== 4. Deleted/inactive jobs that WOULD have appeared in old overview \\(now filtered\\) ==='\\);\n  console.log\\(JSON.stringify\\(deletedInOverview\\)\\);\n\n  // 5. Orphaned job_visits \\(visits referencing non-existent jobs\\)\n  const [orphanVisits] = await db.execute\\(sql\\\\`\n    SELECT COUNT\\(*\\) AS orphaned_visits\n    FROM job_visits jv\n    LEFT JOIN jobs j ON j.id = jv.job_id\n    WHERE j.id IS NULL\n  \\\\`\\);\n  console.log\\('=== 5. Orphaned job_visits \\(should be 0\\) ==='\\);\n  console.log\\(JSON.stringify\\(orphanVisits\\)\\);\n\n  // 6. Invoices referencing missing jobs \\(financial preservation check\\)\n  const [danglingInvoices] = await db.execute\\(sql\\\\`\n    SELECT COUNT\\(*\\) AS dangling_invoices\n    FROM invoices i\n    WHERE i.job_id IS NOT NULL\n      AND NOT EXISTS \\(SELECT 1 FROM jobs j WHERE j.id = i.job_id\\)\n  \\\\`\\);\n  console.log\\('=== 6. Invoices referencing non-existent jobs \\(should be 0\\) ==='\\);\n  console.log\\(JSON.stringify\\(danglingInvoices\\)\\);\n\n  // 6b. Invoices referencing soft-deleted jobs \\(expected — financial preservation\\)\n  const [invoicesOnDeletedJobs] = await db.execute\\(sql\\\\`\n    SELECT COUNT\\(*\\) AS invoices_on_soft_deleted_jobs\n    FROM invoices i\n    JOIN jobs j ON j.id = i.job_id\n    WHERE j.deleted_at IS NOT NULL\n  \\\\`\\);\n  console.log\\('=== 6b. Invoices referencing soft-deleted jobs \\(expected, preserved\\) ==='\\);\n  console.log\\(JSON.stringify\\(invoicesOnDeletedJobs\\)\\);\n\n  process.exit\\(0\\);\n}\n\nverify\\(\\).catch\\(e => { console.error\\(e\\); process.exit\\(1\\); }\\);\n\"\nSQLEOF)",
+      "Bash(for f:*)",
+      "Bash(npm list:*)",
+      "Bash(git -C /home/runner/workspace status --short)",
+      "Bash(sed -i 's/priority: \"\"normal\"\", version: 1,$/priority: \"\"normal\"\", version: 1, kind: \"\"visit\"\",/' client/src/components/dispatch/dispatchPreviewMockData.ts)",
+      "Bash(sed -i 's/priority: \"\"high\"\", version: 1,$/priority: \"\"high\"\", version: 1, kind: \"\"visit\"\",/' client/src/components/dispatch/dispatchPreviewMockData.ts)",
+      "Bash(sed -i 's/priority: \"\"urgent\"\", version: 1,$/priority: \"\"urgent\"\", version: 1, kind: \"\"visit\"\",/' client/src/components/dispatch/dispatchPreviewMockData.ts)",
+      "Bash(grep -n 'visit.kind !== \"\"\"\"visit\"\"\"\"' client/src/pages/DispatchPreview.tsx)",
+      "Bash(grep -c 'visit.kind !== \"\"\"\"visit\"\"\"\"' client/src/pages/DispatchPreview.tsx)",
+      "Bash(/tmp/audit_analysis.txt:*)",
+      "Bash(/tmp/audit_summary.txt:*)",
+      "Bash(for svc:*)",
+      "Bash(do echo:*)",
+      "Bash(for file:*)",
+      "Bash(do wc:*)",
+      "Bash(sort -k2 -rn)",
+      "Bash(sort -t' ' -k2 -rn)",
+      "Bash(env)",
+      "Bash(node -e \"console.log\\(Intl.DateTimeFormat\\(\\).resolvedOptions\\(\\).timeZone\\)\")",
+      "Bash(git log:*)",
+      "Bash(git -C /home/runner/workspace log --oneline --all migrations/2026_03_24*.sql)",
+      "Bash(git:*)",
+      "Read(//home/runner/workspace/**)",
+      "Bash(find /home/runner/workspace/server -type f \\\\\\(-name *cron* -o -name *scheduler* -o -name *worker* -o -name *jobs.ts \\\\\\))"
     ]
   }
 }

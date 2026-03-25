@@ -34,7 +34,7 @@ router.get(
     const companyId = req.companyId;
     const query = (req.query.q as string) ?? "";
     const limitParam = parseInt(req.query.limit as string, 10);
-    const limit = Math.min(Math.max(limitParam || 20, 1), 50);
+    const limit = Math.min(Math.max(limitParam || 30, 1), 60);
 
     if (query.trim().length < 2) {
       return res.json({ results: [], query });

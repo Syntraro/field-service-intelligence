@@ -16,6 +16,8 @@ import Quotes from "@/pages/Quotes";
 import QuoteDetailPage from "@/pages/QuoteDetailPage";
 import Reports from "@/pages/Reports";
 import AccountsReceivablePage from "@/pages/AccountsReceivablePage";
+import FinancialDashboard from "@/pages/FinancialDashboard";
+import DashboardPreview from "@/pages/DashboardPreview";
 import Admin from "@/pages/Admin";
 import AdminTenants from "@/pages/AdminTenants";
 import AdminTenantDetail from "@/pages/AdminTenantDetail";
@@ -24,8 +26,7 @@ import AdminQboRuns from "@/pages/AdminQboRuns";
 import AdminQboRunDetail from "@/pages/AdminQboRunDetail";
 import AdminQboQueue from "@/pages/AdminQboQueue";
 import SupportConsole from "@/pages/SupportConsole";
-import AddClientPage from "@/pages/AddClientPage";
-import NewClientPage from "@/pages/NewClientPage";
+// 2026-03-21: AddClientPage and NewClientPage removed — replaced by canonical CreateClientModal
 import Clients from "@/pages/Clients";
 import ClientDetailPage from "@/pages/ClientDetailPage";
 import LocationDetailPage from "@/pages/LocationDetailPage";
@@ -35,8 +36,7 @@ import TechnicianManagementPage from "@/pages/TechnicianManagementPage";
 import ManageTeam from "@/pages/ManageTeam";
 import ManageRoles from "@/pages/ManageRoles";
 import TeamMemberDetail from "@/pages/TeamMemberDetail";
-import Technician from "@/pages/Technician";
-import DailyParts from "@/pages/DailyParts";
+// Technician and DailyParts imports removed — pages call non-existent endpoints (UI-001)
 import SettingsPage from "@/pages/SettingsPage";
 import CustomFieldsPage from "@/pages/CustomFieldsPage";
 import TaxBillingRulesPage from "@/pages/TaxBillingRulesPage";
@@ -56,6 +56,8 @@ import TimeBillingRulesPage from "@/pages/TimeBillingRulesPage";
 import RegionalSettingsPage from "@/pages/RegionalSettingsPage";
 import BusinessHoursSettingsPage from "@/pages/BusinessHoursSettingsPage";
 import ClientImportPage from "@/pages/ClientImportPage";
+import JobImportPage from "@/pages/JobImportPage";
+import ProductImportPage from "@/pages/ProductImportPage";
 import TagsSettingsPage from "@/pages/TagsSettingsPage";
 import { TimezoneSetupBanner } from "@/components/TimezoneSetupBanner";
 import { TimezoneSetupDialog } from "@/components/TimezoneSetupDialog";
@@ -80,7 +82,8 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { SubscriptionBanner } from "@/components/SubscriptionBanner";
 import { ImpersonationBanner } from "@/components/ImpersonationBanner";
-import QuickAddClientModal from "@/components/QuickAddClientModal";
+// 2026-03-21: QuickAddClientModal removed — replaced by canonical CreateClientModal
+import { CreateClientModal } from "@/components/CreateClientModal";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import UniversalSearch from "@/components/UniversalSearch";
 import { QuoteTemplateChooserModal } from "@/components/QuoteTemplateChooserModal";
@@ -209,6 +212,17 @@ function Router() {
           <AccountsReceivablePage />
         </ProtectedRoute>
       </Route>
+      <Route path="/financial-dashboard">
+        <ProtectedRoute requireAdmin>
+          <FinancialDashboard />
+        </ProtectedRoute>
+      </Route>
+      {/* Preview-only: revised dashboard layout for visual comparison (no sidebar link) */}
+      <Route path="/dashboard-preview">
+        <ProtectedRoute requireAdmin>
+          <DashboardPreview />
+        </ProtectedRoute>
+      </Route>
       <Route path="/admin">
         <ProtectedRoute requireAdmin>
           <Admin />
@@ -249,19 +263,11 @@ function Router() {
           <SupportConsole />
         </ProtectedRoute>
       </Route>
-      <Route path="/add-client">
-        <ProtectedRoute requireAdmin>
-          <AddClientPage />
-        </ProtectedRoute>
-      </Route>
+      {/* 2026-03-21: /add-client and /clients/new routes removed — client creation
+          is now handled by canonical CreateClientModal opened from any surface. */}
       <Route path="/clients">
         <ProtectedRoute requireAdmin>
           <Clients />
-        </ProtectedRoute>
-      </Route>
-      <Route path="/clients/new">
-        <ProtectedRoute requireAdmin>
-          <NewClientPage />
         </ProtectedRoute>
       </Route>
       <Route path="/settings">
@@ -375,6 +381,16 @@ function Router() {
           <ClientImportPage />
         </ProtectedRoute>
       </Route>
+      <Route path="/settings/import-jobs">
+        <ProtectedRoute requireAdmin>
+          <JobImportPage />
+        </ProtectedRoute>
+      </Route>
+      <Route path="/settings/import-products">
+        <ProtectedRoute requireAdmin>
+          <ProductImportPage />
+        </ProtectedRoute>
+      </Route>
       <Route path="/company-settings">
         <ProtectedRoute requireAdmin>
           <CompanySettingsPage />
@@ -400,16 +416,7 @@ function Router() {
           <ManageRoles />
         </ProtectedRoute>
       </Route>
-      <Route path="/technician">
-        <ProtectedRoute>
-          <Technician />
-        </ProtectedRoute>
-      </Route>
-      <Route path="/daily-parts">
-        <ProtectedRoute>
-          <DailyParts />
-        </ProtectedRoute>
-      </Route>
+      {/* /technician and /daily-parts routes removed — endpoints non-existent (UI-001) */}
       <Route path="/clients/:clientId">
         <ProtectedRoute requireAdmin>
           <ClientDetailPage />
@@ -533,7 +540,7 @@ function AppContent() {
 
   const isAuthPage = ['/login', '/signup', '/request-reset', '/reset-password'].includes(location);
   const isPortalPage = location.startsWith('/portal');
-  const isTechnicianPage = location === '/technician' || location === '/daily-parts';
+  const isTechnicianPage = false; // Technician pages removed (UI-001) — kept as const to avoid render tree changes
   // Portal pages use a completely separate layout and auth
   if (isPortalPage) {
     return (
@@ -558,13 +565,9 @@ function AppContent() {
     }
   };
 
+  // 2026-03-21: Opens canonical CreateClientModal instead of navigating to /clients/new
   const handleAddClient = () => {
-    setLocation('/clients/new');
-  };
-
-  const handleClientCreated = (clientId: string) => {
-    setAddClientModalOpen(false);
-    setLocation(`/clients/${clientId}`);
+    setAddClientModalOpen(true);
   };
 
   const style = {
@@ -653,10 +656,10 @@ function AppContent() {
           </div>
         </div>
       </div>
-      <QuickAddClientModal
+      {/* 2026-03-21: Canonical CreateClientModal — single surface for all client creation */}
+      <CreateClientModal
         open={addClientModalOpen}
         onOpenChange={setAddClientModalOpen}
-        onSuccess={handleClientCreated}
       />
       <QuickAddJobDialog
         open={addJobModalOpen}
@@ -666,6 +669,7 @@ function AppContent() {
         open={quickCreateOpen}
         onOpenChange={setQuickCreateOpen}
         onNewJob={() => { setQuickCreateOpen(false); setAddJobModalOpen(true); }}
+        onNewClient={() => { setQuickCreateOpen(false); setAddClientModalOpen(true); }}
       />
       <QuoteTemplateChooserModal
         open={quoteChooserOpen}

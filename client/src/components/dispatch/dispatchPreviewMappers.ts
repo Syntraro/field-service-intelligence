@@ -12,8 +12,9 @@ import type { DispatchVisit, DispatchTask, Technician, VisitStatus } from "./dis
 // Phase 1 Map Convergence: shared color palette
 import { TECHNICIAN_COLORS } from "@shared/colors";
 
+// 2026-03-18: Removed "open" (not a real visit status), added "on_hold" and "cancelled"
 const VALID_VISIT_STATUSES = new Set<VisitStatus>([
-  "open", "scheduled", "dispatched", "en_route", "on_site", "in_progress", "completed",
+  "scheduled", "dispatched", "en_route", "on_site", "in_progress", "on_hold", "completed", "cancelled",
 ]);
 
 function toVisitStatus(raw: string | undefined): VisitStatus {
@@ -34,14 +35,17 @@ const DEFAULT_COLORS = TECHNICIAN_COLORS;
 
 /** Map CalendarEventDto → DispatchVisit */
 export function mapEventToDispatchVisit(event: CalendarEventDto): DispatchVisit {
+  const resolvedVisitId = event.visitId ?? event.id;
   return {
     // Use visitId for visit-level mutations; event.id may equal jobId in current API
-    id: event.visitId ?? event.id,
+    id: resolvedVisitId,
     visitNumber: event.visitNumber ?? 1,
     jobNumber: event.jobNumber,
     jobId: event.jobId,
     summary: event.summary,
     status: toVisitStatus(event.visitStatus),
+    jobStatus: event.status,
+    jobOpenSubStatus: event.openSubStatus ?? null,
     locationName: event.locationName,
     customerName: event.customerCompanyName ?? event.locationName,
     technicianId: event.primaryTechnicianId ?? event.assignedTechnicianIds?.[0] ?? null,
@@ -52,6 +56,9 @@ export function mapEventToDispatchVisit(event: CalendarEventDto): DispatchVisit 
     isAllDay: event.allDay,
     priority: "normal",
     version: event.version,
+    kind: "visit",
+    // 2026-03-22: Explicit visit identity — always use this for EditVisitModal
+    visitId: resolvedVisitId,
     jobType: event.jobType,
     locationId: event.locationId,
     customerCompanyId: event.customerCompanyId,
@@ -62,6 +69,10 @@ export function mapEventToDispatchVisit(event: CalendarEventDto): DispatchVisit 
     locationNotes: event.locationNotes,
     visitNotes: event.visitNotes,
     technicianNames: event.technicians.map(t => t.name),
+    locationAddress: event.locationAddress,
+    locationCity: event.locationCity,
+    locationProvinceState: event.locationProvinceState,
+    locationPostalCode: event.locationPostalCode,
   };
 }
 
@@ -73,7 +84,9 @@ export function mapUnscheduledToDispatchVisit(job: UnscheduledJobDto): DispatchV
     jobNumber: job.jobNumber,
     jobId: job.jobId,
     summary: job.summary,
-    status: "open",
+    status: "scheduled",  // 2026-03-18: unscheduled backlog items display as "scheduled"
+    jobStatus: job.status,
+    jobOpenSubStatus: job.openSubStatus ?? null,
     locationName: job.locationName,
     customerName: job.customerCompanyName ?? job.locationName,
     technicianId: job.primaryTechnicianId ?? job.assignedTechnicianIds?.[0] ?? null,
@@ -85,10 +98,18 @@ export function mapUnscheduledToDispatchVisit(job: UnscheduledJobDto): DispatchV
     isAllDay: false,
     priority: "normal",
     version: job.version,
+    kind: "backlog",
+    // 2026-03-22: Real visit ID from server — enables canonical EditVisitModal opening.
+    // Null if no active visit exists (scheduleJob will create one on first schedule).
+    visitId: job.activeVisitId ?? null,
     jobType: job.jobType,
     locationId: job.locationId,
     customerCompanyId: job.customerCompanyId,
     technicianNames: job.technicians.map(t => t.name),
+    locationAddress: job.locationAddress,
+    locationCity: job.locationCity,
+    locationProvinceState: job.locationProvinceState,
+    locationPostalCode: job.locationPostalCode,
   };
 }
 

@@ -70,6 +70,10 @@ export interface JobScheduleFieldsProps {
   compact?: boolean;
   /** Disable all fields */
   disabled?: boolean;
+  /** When true, fields remain editable even when value.unscheduled is true.
+   *  Used by EditVisitModal so unscheduled visits show an interactive editor
+   *  instead of greyed-out disabled fields. Other consumers keep default (false). */
+  allowEditWhenUnscheduled?: boolean;
 }
 
 // ============================================================================
@@ -99,7 +103,7 @@ export function createDefaultScheduleValue(options?: {
     unscheduled: options?.unscheduled ?? true,
     isAllDay: options?.isAllDay ?? false,
     date,
-    time: options?.time ?? "",
+    time: options?.time ?? (options?.unscheduled === false ? "09:00" : ""),
     durationMinutes: options?.durationMinutes ?? 60,
     primaryTechnicianId: techIds[0] ?? "",
     assignedTechnicianIds: techIds,
@@ -200,6 +204,7 @@ export function JobScheduleFields({
   hideUnscheduledToggle = false,
   compact = false,
   disabled = false,
+  allowEditWhenUnscheduled = false,
 }: JobScheduleFieldsProps) {
   // Fetch technicians
   const { teamMembers: technicians } = useTechniciansDirectory();
@@ -251,10 +256,12 @@ export function JobScheduleFields({
         isAllDay: false,
       });
     } else {
-      // Default to today when scheduling
+      // Default to today at 9:00 AM when switching to scheduled
       update({
         unscheduled: false,
         date: format(new Date(), "yyyy-MM-dd"),
+        time: "09:00",
+        isAllDay: false,
       });
     }
   };
@@ -268,13 +275,10 @@ export function JobScheduleFields({
 
   // Handle time selection
   const handleTimeChange = (time: string) => {
-    update({
-      time: time === "all-day" ? "" : time,
-      isAllDay: time === "all-day",
-    });
+    update({ time, isAllDay: false });
   };
 
-  const isDisabled = disabled || value.unscheduled;
+  const isDisabled = disabled || (value.unscheduled && !allowEditWhenUnscheduled);
   const selectedDate = value.date ? parseISO(value.date) : undefined;
 
   return (
@@ -335,15 +339,9 @@ export function JobScheduleFields({
         <Label className="flex items-center gap-1.5">
           <Clock className="h-4 w-4" />
           Time
-          {isAllDay && (
-            <span className="ml-2 text-xs text-amber-600 flex items-center gap-1">
-              <Sun className="h-3 w-3" />
-              All Day
-            </span>
-          )}
         </Label>
         <Select
-          value={value.time || "all-day"}
+          value={value.time || "09:00"}
           onValueChange={handleTimeChange}
           disabled={isDisabled}
         >
@@ -351,12 +349,6 @@ export function JobScheduleFields({
             <SelectValue placeholder="Select time..." />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all-day">
-              <span className="flex items-center gap-2">
-                <Sun className="h-4 w-4 text-amber-500" />
-                All Day
-              </span>
-            </SelectItem>
             {TIME_OPTIONS.map((opt) => (
               <SelectItem key={opt.value} value={opt.value}>
                 {opt.label}
@@ -366,8 +358,8 @@ export function JobScheduleFields({
         </Select>
       </div>
 
-      {/* Duration (only for timed events) */}
-      {!isAllDay && !value.unscheduled && (
+      {/* Duration — hidden when unscheduled unless allowEditWhenUnscheduled is set */}
+      {(!value.unscheduled || allowEditWhenUnscheduled) && (
         <div className={cn("space-y-2", isDisabled && "opacity-50")}>
           <Label>Duration</Label>
           <Select

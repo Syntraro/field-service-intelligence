@@ -1,9 +1,11 @@
 import { db } from "../db";
-import { eq, and, desc, inArray, isNull, sql } from "drizzle-orm";
-import { customerCompanies, clients, jobs, invoices } from "@shared/schema";
+import { eq, and, desc, inArray, isNull, isNotNull, sql } from "drizzle-orm";
+import { customerCompanies, clients, jobs, invoices, quotes, clientContacts, clientParts, clientNotes } from "@shared/schema";
 import type { Client } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset } from "./base";
+import { activeJobFilter, notDeletedClientFilter, notDeletedCustomerCompanyFilter } from "./jobFilters";
 import { geocodeToLatLng } from "../utils/geocode";
+import { normalizeForMatch } from "@shared/normalizeForMatch";
 
 // Orphan location info for admin linking
 export interface OrphanLocation {
@@ -56,7 +58,8 @@ export class CustomerCompanyRepository extends BaseRepository {
       .where(
         and(
           eq(customerCompanies.companyId, companyId),
-          eq(customerCompanies.isActive, true)
+          eq(customerCompanies.isActive, true),
+          isNull(customerCompanies.deletedAt) // Exclude soft-deleted companies
         )
       )
       .orderBy(customerCompanies.name);
@@ -87,6 +90,31 @@ export class CustomerCompanyRepository extends BaseRepository {
   }
 
   /**
+   * Find customer company by normalized name (tenant-scoped, case-insensitive).
+   * Uses the indexed name_normalized column for fast dedup lookups.
+   */
+  async findCustomerCompanyByNormalizedName(
+    companyId: string,
+    normalizedName: string
+  ): Promise<typeof customerCompanies.$inferSelect | null> {
+    this.assertCompanyId(companyId);
+
+    const [company] = await db
+      .select()
+      .from(customerCompanies)
+      .where(
+        and(
+          eq(customerCompanies.companyId, companyId),
+          eq(customerCompanies.nameNormalized, normalizedName),
+          notDeletedCustomerCompanyFilter()
+        )
+      )
+      .limit(1);
+
+    return company ?? null;
+  }
+
+  /**
    * Find customer company by name (tenant-scoped)
    * Used for upsert/deduplication logic
    */
@@ -102,7 +130,8 @@ export class CustomerCompanyRepository extends BaseRepository {
       .where(
         and(
           eq(customerCompanies.companyId, companyId),
-          eq(customerCompanies.name, name)
+          eq(customerCompanies.name, name),
+          notDeletedCustomerCompanyFilter()
         )
       )
       .limit(1);
@@ -120,6 +149,7 @@ export class CustomerCompanyRepository extends BaseRepository {
       phone?: string | null;
       email?: string | null;
       billingStreet?: string | null;
+      billingStreet2?: string | null;
       billingCity?: string | null;
       billingProvince?: string | null;
       billingPostalCode?: string | null;
@@ -134,6 +164,49 @@ export class CustomerCompanyRepository extends BaseRepository {
       .values({
         companyId,
         name: data.name,
+        nameNormalized: normalizeForMatch(data.name),
+        phone: data.phone ?? null,
+        email: data.email ?? null,
+        billingStreet: data.billingStreet ?? null,
+        billingCity: data.billingCity ?? null,
+        billingProvince: data.billingProvince ?? null,
+        billingPostalCode: data.billingPostalCode ?? null,
+        billingCountry: data.billingCountry ?? null,
+        nameSource: data.nameSource ?? "company",
+      })
+      .returning();
+
+    return company;
+  }
+
+  /**
+   * Transaction-aware variant of createCustomerCompany.
+   * Auto-sets nameNormalized. Used by CSV import for row-level transactions.
+   */
+  async createCustomerCompanyTx(
+    tx: any,
+    companyId: string,
+    data: {
+      name: string;
+      phone?: string | null;
+      email?: string | null;
+      billingStreet?: string | null;
+      billingStreet2?: string | null;
+      billingCity?: string | null;
+      billingProvince?: string | null;
+      billingPostalCode?: string | null;
+      billingCountry?: string | null;
+      nameSource?: string | null;
+    }
+  ): Promise<typeof customerCompanies.$inferSelect> {
+    this.assertCompanyId(companyId);
+
+    const [company] = await tx
+      .insert(customerCompanies)
+      .values({
+        companyId,
+        name: data.name,
+        nameNormalized: normalizeForMatch(data.name),
         phone: data.phone ?? null,
         email: data.email ?? null,
         billingStreet: data.billingStreet ?? null,
@@ -160,6 +233,7 @@ export class CustomerCompanyRepository extends BaseRepository {
       phone?: string | null;
       email?: string | null;
       billingStreet?: string | null;
+      billingStreet2?: string | null;
       billingCity?: string | null;
       billingProvince?: string | null;
       billingPostalCode?: string | null;
@@ -169,14 +243,20 @@ export class CustomerCompanyRepository extends BaseRepository {
   ): Promise<typeof customerCompanies.$inferSelect | null> {
     this.assertCompanyId(companyId);
 
+    // Recompute nameNormalized when name changes
+    const updateData: Record<string, unknown> = { ...data };
+    if (data.name != null) {
+      updateData.nameNormalized = normalizeForMatch(data.name);
+    }
+
     const [updated] = await db
       .update(customerCompanies)
-      .set(data)
+      .set(updateData)
       .where(
         and(
           eq(customerCompanies.id, customerCompanyId),
           eq(customerCompanies.companyId, companyId),
-          isNull(customerCompanies.deletedAt),
+          notDeletedCustomerCompanyFilter(),
         )
       )
       .returning();
@@ -195,6 +275,7 @@ export class CustomerCompanyRepository extends BaseRepository {
       phone?: string | null;
       email?: string | null;
       billingStreet?: string | null;
+      billingStreet2?: string | null;
       billingCity?: string | null;
       billingProvince?: string | null;
       billingPostalCode?: string | null;
@@ -204,7 +285,9 @@ export class CustomerCompanyRepository extends BaseRepository {
   ): Promise<typeof customerCompanies.$inferSelect> {
     this.assertCompanyId(companyId);
 
-    const existing = await this.findCustomerCompanyByName(companyId, data.name);
+    // Use normalized matching for case-insensitive dedup
+    const normalized = normalizeForMatch(data.name);
+    const existing = await this.findCustomerCompanyByNormalizedName(companyId, normalized);
     if (existing) return existing;
 
     return await this.createCustomerCompany(companyId, data);
@@ -235,13 +318,15 @@ export class CustomerCompanyRepository extends BaseRepository {
     const offset = clampOffset(options.offset ?? 0);
 
     // Fetch LIMIT + 1 to determine hasMore
+    // Filter out soft-deleted locations
     const locations = await db
       .select()
       .from(clients)
       .where(
         and(
           eq(clients.companyId, companyId),
-          eq(clients.parentCompanyId, customerCompanyId)
+          eq(clients.parentCompanyId, customerCompanyId),
+          notDeletedClientFilter()
         )
       )
       .orderBy(desc(clients.createdAt))
@@ -275,7 +360,7 @@ export class CustomerCompanyRepository extends BaseRepository {
         and(
           eq(clients.companyId, companyId),
           eq(clients.parentCompanyId, customerCompanyId),
-          isNull(clients.deletedAt)
+          notDeletedClientFilter()
         )
       )
       .orderBy(desc(clients.createdAt));
@@ -297,7 +382,7 @@ export class CustomerCompanyRepository extends BaseRepository {
         and(
           eq(clients.companyId, companyId),
           eq(clients.companyName, companyName),
-          isNull(clients.deletedAt)
+          notDeletedClientFilter()
         )
       )
       .orderBy(desc(clients.createdAt));
@@ -325,7 +410,7 @@ export class CustomerCompanyRepository extends BaseRepository {
           eq(clients.companyName, companyName),
           // CRITICAL: Must use isNull() for NULL comparison, not eq(col, null)
           isNull(clients.parentCompanyId),
-          isNull(clients.deletedAt)
+          notDeletedClientFilter()
         )
       );
 
@@ -548,6 +633,7 @@ export class CustomerCompanyRepository extends BaseRepository {
     const locationIds = locations.map((l) => l.id).filter(Boolean);
 
     // Get jobs and invoices through locationIds (limited to 100 for performance)
+    // Bug fix: apply activeJobFilter() to exclude soft-deleted jobs (deletedAt IS NULL, isActive = true)
     const [jobsList, invoicesList] = await Promise.all([
       locationIds.length === 0
         ? []
@@ -557,7 +643,8 @@ export class CustomerCompanyRepository extends BaseRepository {
             .where(
               and(
                 eq(jobs.companyId, companyId),
-                inArray(jobs.locationId, locationIds)
+                inArray(jobs.locationId, locationIds),
+                activeJobFilter()
               )
             )
             .orderBy(desc(jobs.createdAt))
@@ -612,12 +699,13 @@ export class CustomerCompanyRepository extends BaseRepository {
       return { jobs: [], invoices: [] };
     }
 
+    // Bug fix: apply activeJobFilter() to exclude soft-deleted jobs
     const [jobsList, invoicesList] = await Promise.all([
       db
         .select()
         .from(jobs)
         .where(
-          and(eq(jobs.companyId, companyId), inArray(jobs.locationId, locationIds))
+          and(eq(jobs.companyId, companyId), inArray(jobs.locationId, locationIds), activeJobFilter())
         )
         .orderBy(desc(jobs.createdAt))
         .limit(limit),
@@ -680,7 +768,7 @@ export class CustomerCompanyRepository extends BaseRepository {
       .where(
         and(
           eq(customerCompanies.companyId, companyId),
-          isNull(customerCompanies.deletedAt)
+          notDeletedCustomerCompanyFilter()
         )
       );
 
@@ -795,6 +883,292 @@ export class CustomerCompanyRepository extends BaseRepository {
       );
 
     return Number(result?.count || 0);
+  }
+
+  // ========================================
+  // DELETION — eligibility checks and hard/soft delete
+  // ========================================
+
+  /**
+   * Check whether a customer company can be hard-deleted.
+   * Returns { canHardDelete, reasons[] } where reasons lists blocking dependencies.
+   */
+  async checkCompanyDeleteEligibility(
+    companyId: string,
+    customerCompanyId: string
+  ): Promise<{ canHardDelete: boolean; reasons: string[]; locationCount: number }> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(customerCompanyId, "customerCompanyId");
+
+    const company = await this.getCustomerCompany(companyId, customerCompanyId);
+    if (!company) throw this.notFoundError("Customer company");
+
+    // Get all location IDs (including soft-deleted) under this company
+    const locationRows = await db
+      .select({ id: clients.id })
+      .from(clients)
+      .where(and(eq(clients.companyId, companyId), eq(clients.parentCompanyId, customerCompanyId)));
+    const locationIds = locationRows.map(r => r.id);
+    const reasons: string[] = [];
+
+    if (locationIds.length > 0) {
+      // Check jobs (any status, including soft-deleted — history exists)
+      const [jobCount] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(jobs)
+        .where(and(eq(jobs.companyId, companyId), inArray(jobs.locationId, locationIds)));
+      if (Number(jobCount.count) > 0) reasons.push(`${jobCount.count} job(s) exist`);
+
+      // Check invoices
+      const [invCount] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(invoices)
+        .where(and(eq(invoices.companyId, companyId), inArray(invoices.locationId, locationIds)));
+      if (Number(invCount.count) > 0) reasons.push(`${invCount.count} invoice(s) exist`);
+
+      // Check quotes
+      const [quoteCount] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(quotes)
+        .where(and(eq(quotes.companyId, companyId), inArray(quotes.locationId, locationIds)));
+      if (Number(quoteCount.count) > 0) reasons.push(`${quoteCount.count} quote(s) exist`);
+    }
+
+    // Check QBO sync — synced companies should not be hard-deleted
+    if (company.qboCustomerId) {
+      reasons.push("Synced with QuickBooks Online");
+    }
+
+    return { canHardDelete: reasons.length === 0, reasons, locationCount: locationIds.length };
+  }
+
+  /**
+   * Hard-delete a customer company and all child records.
+   * ONLY call after checkCompanyDeleteEligibility confirms canHardDelete=true.
+   * Cascade FKs handle: clientContacts, clientTagAssignments, clientNotes (via customerCompanyId).
+   * Locations must be deleted first (they have RESTRICT FKs on jobs/invoices but we verified none exist).
+   */
+  async hardDeleteCustomerCompany(
+    companyId: string,
+    customerCompanyId: string
+  ): Promise<boolean> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(customerCompanyId, "customerCompanyId");
+
+    return await db.transaction(async (tx) => {
+      // Get all location IDs under this company
+      const locationRows = await tx
+        .select({ id: clients.id })
+        .from(clients)
+        .where(and(eq(clients.companyId, companyId), eq(clients.parentCompanyId, customerCompanyId)));
+
+      // Hard-delete clientParts for each location (no cascade FK, uses RESTRICT)
+      for (const loc of locationRows) {
+        await tx.delete(clientParts).where(
+          and(eq(clientParts.companyId, companyId), eq(clientParts.locationId, loc.id))
+        );
+      }
+
+      // Hard-delete client notes that reference these locations (RESTRICT FK)
+      for (const loc of locationRows) {
+        await tx.delete(clientNotes).where(
+          and(eq(clientNotes.companyId, companyId), eq(clientNotes.locationId, loc.id))
+        );
+      }
+
+      // Hard-delete all locations (CASCADE handles: locationEquipment, locationPMPlans,
+      // locationPMPartTemplates, locationTagAssignments, location-level clientContacts)
+      for (const loc of locationRows) {
+        await tx.delete(clients).where(
+          and(eq(clients.id, loc.id), eq(clients.companyId, companyId))
+        );
+      }
+
+      // Hard-delete customer company (CASCADE handles: company-level clientContacts,
+      // clientTagAssignments, company-level clientNotes)
+      const deleted = await tx
+        .delete(customerCompanies)
+        .where(and(eq(customerCompanies.id, customerCompanyId), eq(customerCompanies.companyId, companyId)))
+        .returning();
+
+      return deleted.length > 0;
+    });
+  }
+
+  /**
+   * Soft-delete (archive) a customer company.
+   * Sets isActive=false and deletedAt=now. Locations are also marked inactive.
+   */
+  async softDeleteCustomerCompany(
+    companyId: string,
+    customerCompanyId: string
+  ): Promise<typeof customerCompanies.$inferSelect | null> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(customerCompanyId, "customerCompanyId");
+
+    const now = new Date();
+    return await db.transaction(async (tx) => {
+      // Mark all active locations as inactive
+      await tx
+        .update(clients)
+        .set({ inactive: true, deletedAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(clients.companyId, companyId),
+            eq(clients.parentCompanyId, customerCompanyId),
+            notDeletedClientFilter()
+          )
+        );
+
+      // Soft-delete the company itself
+      const [updated] = await tx
+        .update(customerCompanies)
+        .set({ isActive: false, deletedAt: now })
+        .where(
+          and(eq(customerCompanies.id, customerCompanyId), eq(customerCompanies.companyId, companyId))
+        )
+        .returning();
+
+      return updated ?? null;
+    });
+  }
+
+  /**
+   * Restore a soft-deleted customer company.
+   * Clears deletedAt and sets isActive=true. Locations remain inactive (user can restore individually).
+   */
+  async restoreCustomerCompany(
+    companyId: string,
+    customerCompanyId: string
+  ): Promise<typeof customerCompanies.$inferSelect | null> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(customerCompanyId, "customerCompanyId");
+
+    const now = new Date();
+    return await db.transaction(async (tx) => {
+      // Restore the company
+      const [updated] = await tx
+        .update(customerCompanies)
+        .set({ isActive: true, deletedAt: null, updatedAt: now })
+        .where(
+          and(eq(customerCompanies.id, customerCompanyId), eq(customerCompanies.companyId, companyId))
+        )
+        .returning();
+
+      if (!updated) return null;
+
+      // Also restore all locations under this company
+      await tx
+        .update(clients)
+        .set({ inactive: false, deletedAt: null, updatedAt: now })
+        .where(
+          and(
+            eq(clients.companyId, companyId),
+            eq(clients.parentCompanyId, customerCompanyId),
+            isNotNull(clients.deletedAt)
+          )
+        );
+
+      return updated;
+    });
+  }
+
+  /**
+   * Check whether a single location can be hard-deleted.
+   */
+  async checkLocationDeleteEligibility(
+    companyId: string,
+    locationId: string
+  ): Promise<{ canHardDelete: boolean; reasons: string[]; isLastLocation: boolean; parentCompanyId: string | null }> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(locationId, "locationId");
+
+    const location = await db
+      .select()
+      .from(clients)
+      .where(and(eq(clients.id, locationId), eq(clients.companyId, companyId)))
+      .limit(1);
+    if (location.length === 0) throw this.notFoundError("Location");
+
+    const loc = location[0];
+    const reasons: string[] = [];
+
+    // Check jobs
+    const [jobCount] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(jobs)
+      .where(and(eq(jobs.companyId, companyId), eq(jobs.locationId, locationId)));
+    if (Number(jobCount.count) > 0) reasons.push(`${jobCount.count} job(s) exist`);
+
+    // Check invoices
+    const [invCount] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(invoices)
+      .where(and(eq(invoices.companyId, companyId), eq(invoices.locationId, locationId)));
+    if (Number(invCount.count) > 0) reasons.push(`${invCount.count} invoice(s) exist`);
+
+    // Check quotes
+    const [quoteCount] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(quotes)
+      .where(and(eq(quotes.companyId, companyId), eq(quotes.locationId, locationId)));
+    if (Number(quoteCount.count) > 0) reasons.push(`${quoteCount.count} quote(s) exist`);
+
+    // Check if QBO-synced
+    if (loc.qboCustomerId) {
+      reasons.push("Synced with QuickBooks Online");
+    }
+
+    // Check if this is the last location under its parent company
+    let isLastLocation = false;
+    if (loc.parentCompanyId) {
+      const [siblingCount] = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(clients)
+        .where(
+          and(
+            eq(clients.companyId, companyId),
+            eq(clients.parentCompanyId, loc.parentCompanyId),
+            notDeletedClientFilter()
+          )
+        );
+      isLastLocation = Number(siblingCount.count) <= 1;
+    }
+
+    return { canHardDelete: reasons.length === 0, reasons, isLastLocation, parentCompanyId: loc.parentCompanyId };
+  }
+
+  /**
+   * Hard-delete a single location.
+   * ONLY call after checkLocationDeleteEligibility confirms canHardDelete=true and !isLastLocation.
+   */
+  async hardDeleteLocation(
+    companyId: string,
+    locationId: string
+  ): Promise<boolean> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(locationId, "locationId");
+
+    return await db.transaction(async (tx) => {
+      // Delete clientParts (RESTRICT FK)
+      await tx.delete(clientParts).where(
+        and(eq(clientParts.companyId, companyId), eq(clientParts.locationId, locationId))
+      );
+
+      // Delete client notes referencing this location (RESTRICT FK)
+      await tx.delete(clientNotes).where(
+        and(eq(clientNotes.companyId, companyId), eq(clientNotes.locationId, locationId))
+      );
+
+      // Delete the location itself (CASCADE handles: locationEquipment, locationPMPlans,
+      // locationPMPartTemplates, locationTagAssignments, location-level clientContacts)
+      const deleted = await tx
+        .delete(clients)
+        .where(and(eq(clients.id, locationId), eq(clients.companyId, companyId)))
+        .returning();
+
+      return deleted.length > 0;
+    });
   }
 }
 

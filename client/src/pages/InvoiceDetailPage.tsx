@@ -3,6 +3,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { useRoute, useLocation, Link } from "wouter";
 import { format } from "date-fns";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { getInvoiceStatusBadge } from "@/lib/statusBadges";
 import { useToast } from "@/hooks/use-toast";
 import {
   Send, Plus, DollarSign,
@@ -119,22 +120,7 @@ function formatCurrency(amount: string | number): string {
   return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(num);
 }
 
-function getStatusBadge(status: string, isPastDue: boolean): {
-  label: string;
-  variant: "default" | "destructive" | "secondary" | "outline";
-} {
-  if (isPastDue) return { label: "Past Due", variant: "destructive" };
-  switch (status) {
-    case "draft": return { label: "Draft", variant: "outline" };
-    case "awaiting_payment": return { label: "Awaiting Payment", variant: "default" };
-    case "sent": return { label: "Sent", variant: "default" }; // Legacy
-    case "viewed": return { label: "Viewed", variant: "secondary" };
-    case "partial_paid": return { label: "Partial", variant: "secondary" };
-    case "paid": return { label: "Paid", variant: "default" };
-    case "voided": return { label: "Voided", variant: "outline" };
-    default: return { label: status, variant: "outline" };
-  }
-}
+// 2026-03-20: Local getInvoiceStatusBadge() removed — canonical owner is lib/statusBadges.ts:getInvoiceStatusBadge()
 
 function getBalanceColor(balance: string, isPastDue: boolean): string {
   const balanceNum = parseFloat(balance);
@@ -709,7 +695,7 @@ export default function InvoiceDetailPage() {
   const { invoice, lines, location, customerCompany, job, billingAddress, serviceAddress, primaryContact } = details;
   // Use API-derived isPastDue flag for consistent behavior
   const isPastDue = invoice.isPastDue ?? false;
-  const statusInfo = getStatusBadge(invoice.status, isPastDue);
+  const statusInfo = getInvoiceStatusBadge(invoice.status, isPastDue);
   const balanceColor = getBalanceColor(invoice.balance, isPastDue);
   const clientName = customerCompany?.name || location.companyName;
   const canEdit = invoice.status !== "paid" && invoice.status !== "voided";
@@ -836,12 +822,6 @@ export default function InvoiceDetailPage() {
                   <div className="flex flex-col gap-3">
                     <div className="flex items-center justify-between gap-2">
                       <CardTitle className="text-base font-medium">Products & Services</CardTitle>
-                      {isEditing && (
-                        <Button size="sm" variant="outline" data-testid="button-add-line-item">
-                          <Plus className="h-4 w-4 mr-1" />
-                          Add Item
-                        </Button>
-                      )}
                     </div>
                     {profitSummary.totalCost > 0 && (
                       <div className="flex items-center justify-between gap-4 px-4 py-3 rounded-lg bg-muted/50 border">
@@ -1073,10 +1053,11 @@ export default function InvoiceDetailPage() {
                   </CardHeader>
                   <CardContent className="pt-0">
                     {isEditing ? (
-                      <Textarea 
-                        placeholder="Add a message to the client (e.g., thank you, special instructions, payment terms)..."
+                      <Textarea
+                        placeholder="Client message editing not yet available"
                         defaultValue={invoice.clientMessage || ""}
-                        className="min-h-[80px] text-sm"
+                        className="min-h-[80px] text-sm opacity-60"
+                        readOnly
                         data-testid="textarea-client-message"
                       />
                     ) : (
@@ -1103,9 +1084,10 @@ export default function InvoiceDetailPage() {
                   <CardContent className="pt-0">
                     {isEditing ? (
                       <Textarea
-                        placeholder="Add internal notes (not visible to client)..."
+                        placeholder="Internal notes editing not yet available"
                         defaultValue={invoice.notesInternal || ""}
-                        className="min-h-[80px] text-sm"
+                        className="min-h-[80px] text-sm opacity-60"
+                        readOnly
                         data-testid="textarea-internal-notes"
                       />
                     ) : (
@@ -1137,41 +1119,46 @@ export default function InvoiceDetailPage() {
                         </p>
                         <div className="flex items-center justify-between">
                           <Label htmlFor="showLineItems" className="text-sm">Show line item breakdown</Label>
-                          <Switch 
-                            id="showLineItems" 
+                          <Switch
+                            id="showLineItems"
                             checked={invoice.showLineItems !== false}
+                            disabled
                             data-testid="switch-show-line-items"
                           />
                         </div>
                         <div className="flex items-center justify-between">
                           <Label htmlFor="showQuantity" className="text-sm">Show quantities</Label>
-                          <Switch 
-                            id="showQuantity" 
+                          <Switch
+                            id="showQuantity"
                             checked={invoice.showQuantity !== false}
+                            disabled
                             data-testid="switch-show-quantity"
                           />
                         </div>
                         <div className="flex items-center justify-between">
                           <Label htmlFor="showUnitPrice" className="text-sm">Show unit prices</Label>
-                          <Switch 
-                            id="showUnitPrice" 
+                          <Switch
+                            id="showUnitPrice"
                             checked={invoice.showUnitPrice !== false}
+                            disabled
                             data-testid="switch-show-unit-price"
                           />
                         </div>
                         <div className="flex items-center justify-between">
                           <Label htmlFor="showLineTotals" className="text-sm">Show line totals</Label>
-                          <Switch 
-                            id="showLineTotals" 
+                          <Switch
+                            id="showLineTotals"
                             checked={invoice.showLineTotals !== false}
+                            disabled
                             data-testid="switch-show-line-totals"
                           />
                         </div>
                         <div className="flex items-center justify-between">
                           <Label htmlFor="showBalance" className="text-sm">Show account balance</Label>
-                          <Switch 
-                            id="showBalance" 
+                          <Switch
+                            id="showBalance"
                             checked={invoice.showBalance !== false}
+                            disabled
                             data-testid="switch-show-balance"
                           />
                         </div>

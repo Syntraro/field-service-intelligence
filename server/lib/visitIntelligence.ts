@@ -16,8 +16,14 @@
 
 import { db } from "../db";
 import { sql } from "drizzle-orm";
-import type { AttentionRuleType, AttentionSeverity } from "@shared/schema";
+import type { AttentionSeverity } from "@shared/schema";
+import { getEffectiveEnd } from "@shared/schema";
 import { logEventAsync } from "./events";
+import { JOB_ACTIVE_SQL_J } from "../storage/jobFilters";
+// 2026-03-18: Import canonical constant for terminal visit statuses.
+// The raw SQL query below is a composition of scheduleEligibleVisitFilter
+// (from visitPredicates.ts) with intelligence-specific date bounds.
+import { TERMINAL_VISIT_STATUSES, VISIT_TERMINAL_STATUS_SQL } from "./visitPredicates";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -81,59 +87,25 @@ interface TechPositionRow {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Haversine distance in meters between two lat/lng points. */
-function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6_371_000;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLng = ((lng2 - lng1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-/** Cheap travel time estimate: 2 min per km (approx 30 km/h city driving). */
-function estimateTravelMinutes(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const distM = haversineMeters(lat1, lng1, lat2, lng2);
-  return Math.max(5, Math.round((distM / 1000) * 2));
-}
-
-/** Upsert an attention item with deduplication. */
-async function upsertAttention(
-  tenantId: string,
-  ruleType: AttentionRuleType,
-  severity: AttentionSeverity,
-  entityType: string,
-  entityId: string,
-  meta: Record<string, unknown>,
-): Promise<void> {
-  const dedupeKey = `${entityType}:${entityId}:${ruleType}`;
-  await db.execute(sql`
-    INSERT INTO attention_items (
-      id, tenant_id, entity_type, entity_id, rule_type, severity, status,
-      first_detected_at, last_detected_at, meta, dedupe_key
-    ) VALUES (
-      gen_random_uuid(), ${tenantId}, ${entityType}, ${entityId},
-      ${ruleType}, ${severity}, 'open',
-      CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ${JSON.stringify(meta)}::jsonb, ${dedupeKey}
-    )
-    ON CONFLICT (tenant_id, dedupe_key) DO UPDATE SET
-      last_detected_at = CURRENT_TIMESTAMP,
-      meta = ${JSON.stringify(meta)}::jsonb,
-      status = 'open',
-      resolved_at = NULL,
-      severity = ${severity}
-  `);
-}
+import { haversineMeters, estimateTravelMinutes } from "./distance";
+// Phase 5: Use canonical attention upsert from attentionRules.ts.
+// Previously this file owned a duplicate INSERT ON CONFLICT implementation.
+import { upsertAttentionItem } from "./attentionRules";
 
 // ---------------------------------------------------------------------------
 // Data fetchers
 // ---------------------------------------------------------------------------
 
-/** Fetch today's active visits with assignments and location coordinates. */
+/**
+ * Fetch today's active visits with assignments and location coordinates.
+ *
+ * 2026-03-18: Base predicate matches scheduleEligibleVisitFilter from
+ * visitPredicates.ts (isActive, !archived, scheduledStart NOT NULL, non-terminal),
+ * composed with intelligence-specific date bounds (today only).
+ */
 async function fetchScheduledVisits(tenantId: string): Promise<ScheduledVisitRow[]> {
+  // Use canonical raw SQL terminal status set from visitPredicates.ts
+
   const { rows } = await db.execute(sql`
     SELECT
       jv.id            AS "visitId",
@@ -151,6 +123,7 @@ async function fetchScheduledVisits(tenantId: string): Promise<ScheduledVisitRow
       j.job_number     AS "jobNumber"
     FROM job_visits jv
     JOIN jobs j ON j.id = jv.job_id AND j.company_id = ${tenantId}
+      AND ${sql.raw(JOB_ACTIVE_SQL_J)}
     LEFT JOIN client_locations cl ON cl.id = j.location_id
     WHERE jv.company_id = ${tenantId}
       AND jv.is_active = true
@@ -158,7 +131,7 @@ async function fetchScheduledVisits(tenantId: string): Promise<ScheduledVisitRow
       AND jv.scheduled_start IS NOT NULL
       AND jv.scheduled_start >= CURRENT_DATE
       AND jv.scheduled_start < CURRENT_DATE + INTERVAL '1 day'
-      AND jv.status NOT IN ('completed', 'cancelled')
+      AND jv.status NOT IN (${sql.raw(VISIT_TERMINAL_STATUS_SQL)})
   `);
   return rows as unknown as ScheduledVisitRow[];
 }
@@ -311,10 +284,9 @@ export async function computeVisitStatusSignals(
   for (const v of visits) {
     if (!v.scheduledStart) continue;
     const start = new Date(v.scheduledStart);
-    const durMin = v.estimatedDurationMinutes ?? 60;
-    const effectiveEnd = v.scheduledEnd
-      ? new Date(v.scheduledEnd)
-      : new Date(start.getTime() + durMin * 60_000);
+    // 2026-03-18: Uses canonical getEffectiveEnd() from shared/schema.ts.
+    // Previously inline computation was missing the scheduledStart-only fallback.
+    const effectiveEnd = getEffectiveEnd(v) ?? start;
 
     // visit.late: scheduledStart + 15min has passed and visit not started
     const lateThreshold = new Date(start.getTime() + 15 * 60_000);
@@ -330,10 +302,10 @@ export async function computeVisitStatusSignals(
         message: msg,
         severity: "high",
       });
-      await upsertAttention(tenantId, "visit.late", "high", "visit", v.visitId, {
-        jobNumber: v.jobNumber,
-        locationName: v.locationName,
-        scheduledStart: start.toISOString(),
+      await upsertAttentionItem(tenantId, "visit.late", "high", {
+        entityType: "visit",
+        entityId: v.visitId,
+        meta: { jobNumber: v.jobNumber, locationName: v.locationName, scheduledStart: start.toISOString() },
       });
     }
 
@@ -351,10 +323,10 @@ export async function computeVisitStatusSignals(
         message: msg,
         severity: "high",
       });
-      await upsertAttention(tenantId, "visit.overdue", "high", "visit", v.visitId, {
-        jobNumber: v.jobNumber,
-        locationName: v.locationName,
-        scheduledEnd: effectiveEnd.toISOString(),
+      await upsertAttentionItem(tenantId, "visit.overdue", "high", {
+        entityType: "visit",
+        entityId: v.visitId,
+        meta: { jobNumber: v.jobNumber, locationName: v.locationName, scheduledEnd: effectiveEnd.toISOString() },
       });
     }
 
@@ -393,7 +365,11 @@ export async function computeVisitStatusSignals(
           message: msg,
           severity,
         });
-        await upsertAttention(tenantId, "visit.running_long", severity, "visit", v.visitId, meta as unknown as Record<string, unknown>);
+        await upsertAttentionItem(tenantId, "visit.running_long", severity, {
+          entityType: "visit",
+          entityId: v.visitId,
+          meta: meta as unknown as Record<string, unknown>,
+        });
       }
     }
 
@@ -453,10 +429,10 @@ export async function computeVisitStatusSignals(
         severity: "medium",
       });
       if (techVisitMap.has(tp.technicianId)) {
-        await upsertAttention(tenantId, "tech.offline", "medium", "technician", tp.technicianId, {
-          techName: tp.techName,
-          lastSeenAt: lastSeen.toISOString(),
-          minutesAgo: Math.round(ageMin),
+        await upsertAttentionItem(tenantId, "tech.offline", "medium", {
+          entityType: "technician",
+          entityId: tp.technicianId,
+          meta: { techName: tp.techName, lastSeenAt: lastSeen.toISOString(), minutesAgo: Math.round(ageMin) },
         });
       }
     }
@@ -472,9 +448,10 @@ export async function computeVisitStatusSignals(
         severity: "low",
       });
       if (techVisitMap.has(tp.technicianId)) {
-        await upsertAttention(tenantId, "tech.idle", "low", "technician", tp.technicianId, {
-          techName: tp.techName,
-          idleMinutes: Math.round(ageMin),
+        await upsertAttentionItem(tenantId, "tech.idle", "low", {
+          entityType: "technician",
+          entityId: tp.technicianId,
+          meta: { techName: tp.techName, idleMinutes: Math.round(ageMin) },
         });
       }
     }
@@ -509,6 +486,7 @@ export async function fetchRemainderVisits(
       cl.company_name AS "locationName", j.job_number AS "jobNumber"
     FROM job_visits jv
     JOIN jobs j ON j.id = jv.job_id
+      AND ${sql.raw(JOB_ACTIVE_SQL_J)}
     LEFT JOIN client_locations cl ON cl.id = j.location_id
     WHERE jv.id = ${visitId} AND jv.company_id = ${tenantId}
   `);
@@ -532,11 +510,12 @@ export async function fetchRemainderVisits(
       cl.company_name AS "locationName", j.job_number AS "jobNumber"
     FROM job_visits jv
     JOIN jobs j ON j.id = jv.job_id
+      AND ${sql.raw(JOB_ACTIVE_SQL_J)}
     LEFT JOIN client_locations cl ON cl.id = j.location_id
     WHERE jv.company_id = ${tenantId}
       AND jv.is_active = true
       AND jv.archived_at IS NULL
-      AND jv.status NOT IN ('completed', 'cancelled')
+      AND jv.status NOT IN (${sql.raw(VISIT_TERMINAL_STATUS_SQL)})
       AND jv.scheduled_start IS NOT NULL
       AND jv.scheduled_start > ${new Date(sourceVisit.scheduledStart)}
       AND jv.scheduled_start < ${new Date(sourceVisit.scheduledStart).toISOString().split("T")[0]}::date + INTERVAL '1 day'

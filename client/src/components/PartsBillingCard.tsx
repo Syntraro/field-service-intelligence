@@ -58,6 +58,8 @@ const OFFICE_ROLES = ["owner", "admin", "manager", "dispatcher"];
 
 interface PartsBillingCardProps {
   jobId: string;
+  /** Report computed totals to parent (for displaying in section header) */
+  onTotalsChange?: (totals: { totalPrice: number; totalCost: number; profit: number }) => void;
 }
 
 interface LocalLineItem {
@@ -65,6 +67,8 @@ interface LocalLineItem {
   isNew?: boolean;
   isDraft?: boolean;
   productId?: string | null;
+  /** Resolved from catalog via server JOIN — "product" or "service", null for ad-hoc */
+  itemType?: string | null;
   description: string;
   notes: string;
   quantity: string;
@@ -91,7 +95,7 @@ function formatCurrency(value: number): string {
   }).format(value);
 }
 
-export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
+export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProps) {
   const { toast } = useToast();
   const { user } = useAuth();
   const isOfficeUser = Boolean(user?.role && OFFICE_ROLES.includes(user.role));
@@ -116,7 +120,7 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
   const [templateSearch, setTemplateSearch] = useState("");
   const lastSyncedPartsRef = useRef<string>("");
 
-  const { data: jobParts = [], isLoading: partsLoading } = useQuery<JobPart[]>({
+  const { data: jobParts = [], isLoading: partsLoading } = useQuery<(JobPart & { itemType?: string | null })[]>({
     queryKey: ["/api/jobs", jobId, "parts"],
     queryFn: async () => {
       const res = await fetch(`/api/jobs/${jobId}/parts`, { credentials: "include" });
@@ -192,9 +196,9 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
   };
 
   const { data: catalogData } = useQuery<{ items: Item[] }>({
-    queryKey: ["/api/items", { limit: 200 }],
+    queryKey: ["/api/items", { limit: 1000 }],
     queryFn: async () => {
-      const res = await fetch("/api/items?limit=200", { credentials: "include" });
+      const res = await fetch("/api/items?limit=1000", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch catalog");
       return res.json();
     },
@@ -220,6 +224,7 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
         isNew: false,
         isDraft: false,
         productId: jp.productId,
+        itemType: jp.itemType ?? null, // Server-resolved from catalog JOIN
         description: productName || jp.description,
         notes: productName ? jp.description : "",
         quantity: jp.quantity,
@@ -284,6 +289,11 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
     const margin = totalPrice > 0 ? (profit / totalPrice) * 100 : 0;
     return { totalPrice, totalCost, profit, margin };
   }, [items]);
+
+  // Report totals to parent for section header display
+  useEffect(() => {
+    onTotalsChange?.({ totalPrice, totalCost, profit });
+  }, [totalPrice, totalCost, profit, onTotalsChange]);
 
   const handleAddLineItem = () => {
     const id = `new_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -484,31 +494,7 @@ export function PartsBillingCard({ jobId }: PartsBillingCardProps) {
   return (
     <>
       <Card data-testid="card-parts-billing">
-        <CardHeader className="pb-3">
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center justify-between gap-4">
-              <CardTitle className="text-sm font-semibold">Parts & Billing</CardTitle>
-            </div>
-            <div className="flex items-center justify-between gap-4 px-4 py-3 rounded-lg bg-muted/50 border">
-              <div className="text-center">
-                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Total Price</div>
-                <div className="text-base font-bold">{formatCurrency(totalPrice)}</div>
-              </div>
-              <div className="text-center">
-                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Total Cost</div>
-                <div className="text-base font-bold">{formatCurrency(totalCost)}</div>
-              </div>
-              <div className="text-center">
-                <div className="text-[11px] uppercase tracking-wide text-muted-foreground">Profit</div>
-                <div className={`text-base font-bold ${profit >= 0 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-                  {formatCurrency(profit)}
-                  <span className="ml-1 text-xs font-medium text-muted-foreground">({margin.toFixed(1)}%)</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="pt-4 space-y-4">
           <div className="overflow-visible">
             <DndContext
               sensors={sensors}
@@ -866,8 +852,9 @@ function LineItemRow({
               </span>
             )}
           </div>
-          {item.notes && (
-            <div className="mt-0.5 text-[11px] text-muted-foreground">{item.notes}</div>
+          {/* Show notes only when they contain real secondary text (not a duplicate of the product name) */}
+          {item.notes && item.notes.trim() && item.notes.trim() !== productDisplay.trim() && (
+            <div className="mt-0.5 text-xs font-normal text-muted-foreground whitespace-pre-line">{item.notes}</div>
           )}
         </td>
         <td className="py-3 px-3 text-right align-top text-xs">{item.quantity}</td>
@@ -925,8 +912,9 @@ function LineItemRow({
             </div>
           )}
         </div>
-        <Input
-          className="mt-1.5 text-xs"
+        <Textarea
+          className="mt-1.5 text-xs min-h-[2.25rem] resize-y"
+          rows={2}
           placeholder="Description / notes..."
           value={item.notes}
           onChange={(e) => onChange({ notes: e.target.value })}
@@ -1088,8 +1076,9 @@ function SortableLineItemRow(props: LineItemRowProps) {
               </span>
             )}
           </div>
-          {props.item.notes && (
-            <div className="mt-0.5 text-[11px] text-muted-foreground">{props.item.notes}</div>
+          {/* Show notes only when they contain real secondary text (not a duplicate of the product name) */}
+          {props.item.notes && props.item.notes.trim() && props.item.notes.trim() !== productDisplay.trim() && (
+            <div className="mt-0.5 text-xs font-normal text-muted-foreground whitespace-pre-line">{props.item.notes}</div>
           )}
         </td>
         <td className="py-3 px-3 text-right align-top text-xs">{props.item.quantity}</td>
@@ -1165,8 +1154,9 @@ function SortableLineItemRow(props: LineItemRowProps) {
             </div>
           )}
         </div>
-        <Input
-          className="mt-1.5 text-xs"
+        <Textarea
+          className="mt-1.5 text-xs min-h-[2.25rem] resize-y"
+          rows={2}
           placeholder="Description / notes..."
           value={props.item.notes}
           onChange={(e) => props.onChange({ notes: e.target.value })}

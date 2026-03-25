@@ -311,16 +311,22 @@ interface ImportConflict {
     type?: string | null;
     email?: string | null;
   };
-  matchBasis: "SKU" | "NAME" | "EMAIL" | "QBO_ID";
+  matchBasis: "SKU" | "NAME" | "NAME_NORMALIZED" | "EMAIL" | "PHONE" | "MULTI_SIGNAL" | "QBO_ID";
   candidates: Array<{
     localId: string;
     name: string;
     sku?: string | null;
     email?: string | null;
+    phone?: string | null;
+    postalCode?: string | null;
     isActive?: boolean;
     lastActivityAt?: string | null;
     isLinked?: boolean;
     qboId?: string | null;
+    /** Reconciliation scoring metadata */
+    score?: number;
+    signals?: string[];
+    confidence?: "HIGH" | "MEDIUM" | "LOW";
   }>;
   defaultAction: "SKIP";
   message: string;
@@ -640,7 +646,7 @@ export default function QboConsolePage() {
   // --- State: Advanced Import Tools ---
   const [importToolsOpen, setImportToolsOpen] = useState(false);
   const [catalogImportMode, setCatalogImportMode] = useState<"merge" | "overwrite" | "wipe">("merge");
-  const [customerImportAdvMode, setCustomerImportAdvMode] = useState<"merge" | "overwrite" | "wipe">("merge");
+  const [customerImportAdvMode, setCustomerImportAdvMode] = useState<"merge" | "overwrite" | "wipe" | "link_only">("merge");
   const [catalogImportResult, setCatalogImportResult] = useState<any>(null);
   const [customerImportAdvResult, setCustomerImportAdvResult] = useState<any>(null);
   const [showCatalogWipeConfirm, setShowCatalogWipeConfirm] = useState(false);
@@ -2642,10 +2648,14 @@ export default function QboConsolePage() {
                         <SelectTrigger className="w-52 h-8 text-xs"><SelectValue /></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="merge">Safe Merge (fill missing)</SelectItem>
+                          <SelectItem value="link_only">Link Only (no new records)</SelectItem>
                           <SelectItem value="overwrite">Overwrite Local</SelectItem>
                           <SelectItem value="wipe"><span className="text-destructive font-semibold">Wipe & Re-import</span></SelectItem>
                         </SelectContent>
                       </Select>
+                      {customerImportAdvMode === "link_only" && (
+                        <span className="text-[10px] text-muted-foreground">Match QBO customers to existing local records only. Does not create new clients.</span>
+                      )}
                     </div>
                     <div className="flex gap-2">
                       <Button size="sm" variant="outline"
@@ -2698,6 +2708,12 @@ export default function QboConsolePage() {
                                     <Badge variant={item.action === "create" ? "default" : item.action === "skip" ? "secondary" : "outline"} className="text-[10px]">
                                       {item.action.toUpperCase()}
                                     </Badge>
+                                    {item.matchBasis && item.action === "update" && (
+                                      <span className="ml-1 text-[9px] text-muted-foreground">
+                                        Linked by {item.matchBasis.replace(/\+/g, " + ").replace(/NAME/, "name").replace(/EMAIL/, "email").replace(/PHONE/, "phone").replace(/POSTAL/, "postal")}
+                                        {item.matchScore ? ` (${item.matchScore})` : ""}
+                                      </span>
+                                    )}
                                   </TableCell>
                                   <TableCell className="text-muted-foreground">{item.qboCustomerId}</TableCell>
                                 </TableRow>
@@ -2716,6 +2732,17 @@ export default function QboConsolePage() {
                             </AlertDescription>
                           </Alert>
                         )}
+                        {/* Wipe mode survivor warning — shows when unlinked local records will survive the wipe */}
+                        {customerImportAdvResult.dryRun && customerImportAdvMode === "wipe" && (() => {
+                          const wipeWarning = (customerImportAdvResult.warnings ?? []).find((w: string) => w.startsWith("Wipe mode:"));
+                          return wipeWarning ? (
+                            <Alert variant="destructive" className="text-xs">
+                              <AlertTriangle className="h-3 w-3" />
+                              <AlertTitle>Wipe Mode Warning</AlertTitle>
+                              <AlertDescription>{wipeWarning}</AlertDescription>
+                            </Alert>
+                          ) : null;
+                        })()}
                         {/* Conflict resolution panel for customers */}
                         {customerImportAdvResult.conflicts?.length > 0 && (
                           <div className="border border-amber-300 bg-amber-50 dark:bg-amber-950/20 rounded-md p-3 space-y-3">
@@ -2730,7 +2757,7 @@ export default function QboConsolePage() {
                             })()}
                             {customerImportAdvResult.conflicts.map((conflict: ImportConflict, ci: number) => (
                               <div key={ci} className="border rounded p-2 bg-white dark:bg-gray-900 space-y-1">
-                                <div className="flex items-center gap-2 text-xs">
+                                <div className="flex items-center gap-2 text-xs flex-wrap">
                                   <span className="font-medium">{conflict.qbo.name}</span>
                                   {conflict.qbo.email && <Badge variant="outline" className="text-[10px]">{conflict.qbo.email}</Badge>}
                                   <Badge variant="secondary" className="text-[10px]">{conflict.matchBasis}</Badge>
@@ -2751,12 +2778,23 @@ export default function QboConsolePage() {
                                   className="space-y-1"
                                 >
                                   {conflict.candidates.map((c) => (
-                                    <div key={c.localId} className="flex items-center gap-2 text-[11px]">
+                                    <div key={c.localId} className="flex items-center gap-2 text-[11px] flex-wrap">
                                       <RadioGroupItem value={`map:${c.localId}`} id={`cust-${conflict.qbo.id}-${c.localId}`} />
-                                      <Label htmlFor={`cust-${conflict.qbo.id}-${c.localId}`} className="text-[11px] font-normal cursor-pointer">
+                                      <Label htmlFor={`cust-${conflict.qbo.id}-${c.localId}`} className="text-[11px] font-normal cursor-pointer flex items-center gap-1 flex-wrap">
                                         Map to: {c.name} {c.email ? `(${c.email})` : ""}
-                                        {c.isLinked && <Badge variant="outline" className="ml-1 text-[9px]">linked to QBO {c.qboId}</Badge>}
-                                        {c.isActive === false && <Badge variant="secondary" className="ml-1 text-[9px]">inactive</Badge>}
+                                        {c.isLinked && <Badge variant="outline" className="text-[9px]">linked to QBO {c.qboId}</Badge>}
+                                        {c.isActive === false && <Badge variant="secondary" className="text-[9px]">inactive</Badge>}
+                                        {/* Reconciliation signal badges */}
+                                        {c.signals && c.signals.length > 0 && c.signals.map((sig: string) => (
+                                          <Badge key={sig} variant="outline" className="text-[9px] bg-blue-50 text-blue-700 dark:bg-blue-950 dark:text-blue-300 border-blue-200">
+                                            {sig === "NAME" ? "Name" : sig === "EMAIL" ? "Email" : sig === "PHONE" ? "Phone" : sig === "POSTAL" ? "Postal" : sig === "LOCATION_NAME" ? "Location" : sig}
+                                          </Badge>
+                                        ))}
+                                        {c.confidence && (
+                                          <Badge variant="outline" className={`text-[9px] ${c.confidence === "HIGH" ? "bg-green-50 text-green-700 border-green-200" : c.confidence === "MEDIUM" ? "bg-amber-50 text-amber-700 border-amber-200" : "bg-gray-50 text-gray-500 border-gray-200"}`}>
+                                            {c.confidence} ({c.score ?? 0})
+                                          </Badge>
+                                        )}
                                       </Label>
                                     </div>
                                   ))}

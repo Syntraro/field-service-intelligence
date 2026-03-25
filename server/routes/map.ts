@@ -38,6 +38,7 @@ import { db } from "../db";
 import { sql } from "drizzle-orm";
 import { companyRepository } from "../storage/company";
 import { geocodeToLatLng } from "../utils/geocode";
+import { JOB_ACTIVE_SQL_J } from "../storage/jobFilters";
 
 const router = Router();
 
@@ -130,6 +131,7 @@ router.get(
           'visit' AS "source"
         FROM job_visits jv
         JOIN jobs j ON j.id = jv.job_id AND j.company_id = ${companyId}
+          AND ${sql.raw(JOB_ACTIVE_SQL_J)}
         LEFT JOIN client_locations cl ON cl.id = j.location_id
         WHERE jv.company_id = ${companyId}
           AND jv.is_active = true
@@ -156,6 +158,7 @@ router.get(
         FROM jobs j
         LEFT JOIN client_locations cl ON cl.id = j.location_id
         WHERE j.company_id = ${companyId}
+          AND ${sql.raw(JOB_ACTIVE_SQL_J)}
           AND j.scheduled_start >= ${start.toISOString()}::timestamptz
           AND j.scheduled_start < ${end.toISOString()}::timestamptz
           AND j.status NOT IN ('cancelled', 'voided')
@@ -282,7 +285,7 @@ router.get(
           AND jv.archived_at IS NULL
           AND jv.scheduled_start IS NULL
           AND jv.scheduled_date IS NOT NULL
-          AND j.deleted_at IS NULL
+          AND ${sql.raw(JOB_ACTIVE_SQL_J)}
           AND j.status NOT IN ('cancelled', 'voided')
           AND jv.status IN (${sql.join(ACTIVE_VISIT_STATUSES.map(s => sql`${s}`), sql`, `)})
       `);

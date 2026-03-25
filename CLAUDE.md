@@ -294,3 +294,27 @@ You are a Senior Systems Architect specializing in high-performance dispatching 
 ## Workflow
 - Before writing new code, check the existing codebase for a similar function.
 - If a proposed change increases line count significantly, explain why it is necessary or offer a more concise alternative.
+
+## Performance Regression Guardrail — 2026-03-18 Baseline
+
+A surgical performance hardening pass was completed and verified on 2026-03-18. The following baseline rules are mandatory. **Reject** any change that violates them.
+
+### 1. Invoice Tax Application Must Remain Batched
+- Do NOT reintroduce per-line `updateInvoiceLine()` loops during invoice creation.
+- Do NOT reintroduce repeated `recalculateInvoiceTotalsInTx()` calls per line during invoice creation.
+- Tax application for new invoices must use `batchApplyLineTax()` in `server/storage/invoices.ts` (single UPDATE + one recalculation).
+- The per-line `updateInvoiceLine()` method remains for single-line manual edits only.
+
+### 2. Background Polling Must Remain Guarded
+- All `refetchInterval` polling hooks must include `refetchIntervalInBackground: false` unless there is an explicit, documented safety-critical reason (e.g., `ImpersonationBanner.tsx` security timeout).
+- Do NOT introduce new polling queries that run in hidden/background tabs without documenting the exception.
+
+### 3. Visit Hot-Path Queries Must Preserve Indexed Access
+- Per-job visit lookups use `idx_job_visits_job_company_active ON job_visits(job_id, company_id) WHERE is_active = true`.
+- Do NOT rewrite canonical visit predicates (`scheduleEligibleVisitFilter`, `reconciliationActionableVisitFilter`, `uncompletedVisitFilter`) in ways that bypass this index without explicit performance review.
+- Any change to these query predicates is performance-sensitive and must be reviewed against this baseline.
+
+### Exceptions
+Any exception to these rules must: (a) be explicitly justified, (b) cite the affected path, (c) explain why the baseline is being intentionally overridden, and (d) be treated as a review blocker until acknowledged.
+
+**Reference:** See the completed performance hardening handoff record and `CHANGELOG.md` Performance section (2026-03-18) for full implementation details.

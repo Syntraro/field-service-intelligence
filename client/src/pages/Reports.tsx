@@ -2,7 +2,8 @@ import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { queryClient } from "@/lib/queryClient";
-import NewAddClientDialog from "@/components/NewAddClientDialog";
+// 2026-03-21: NewAddClientDialog replaced by canonical CreateClientModal
+import { CreateClientModal } from "@/components/CreateClientModal";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -548,12 +549,10 @@ export default function Reports() {
         </Tabs>
       </main>
 
-      <NewAddClientDialog 
+      {/* 2026-03-21: Canonical CreateClientModal replaces NewAddClientDialog */}
+      <CreateClientModal
         open={addClientDialogOpen}
         onOpenChange={setAddClientDialogOpen}
-        onSaved={() => {
-          queryClient.invalidateQueries({ queryKey: ['/api/clients'] });
-        }}
       />
 
       <style>{`

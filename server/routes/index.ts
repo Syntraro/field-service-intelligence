@@ -31,6 +31,7 @@ import { storage } from "../storage/index";
 import tasksRoutes from "./tasks.routes";
 import suppliersRouter from "./suppliers";
 import jobVisitsRoutes from "./jobVisits.routes";
+import jobExpensesRouter from "./jobExpenses";
 import clientNotesRouter from "./client-notes";
 import locationNotesRouter from "./location-notes";
 import companyNotesRouter from "./company-notes";
@@ -76,6 +77,10 @@ import equipmentCatalogItemsRouter from "./equipmentCatalogItems.routes";
 import mapRouter from "./map";
 // Client CSV import (v1)
 import clientImportRouter from "./clientImport";
+// Job CSV import (Jobber historical jobs)
+import jobImportRouter from "./jobImport";
+// Product/Service CSV import
+import productImportRouter from "./productImport";
 // PM Templates: reusable job content templates for maintenance plans
 import pmTemplatesRouter from "./pmTemplates";
 import pmBillingRouter from "./pmBilling";
@@ -188,6 +193,7 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/jobs", jobsRouter);
   app.use("/api/jobs", jobVisitsRoutes);
   app.use("/api/jobs", jobTimeRouter); // Time tracking: status updates + time summaries
+  app.use("/api/jobs", jobExpensesRouter); // Job expenses: CRUD + approval
   app.use("/api/invoices", invoicesRouter);
   app.use("/api", paymentsRouter); // Payment routes: /api/invoices/:id/payments, /api/payments/:id
   app.use("/api/team", teamRouter);
@@ -285,6 +291,10 @@ export function registerRoutes(app: Express): Server {
 
   // Client CSV import (v1): preview + execute
   app.use("/api/client-import", clientImportRouter);
+  // Job CSV import (Jobber historical jobs): preview + execute
+  app.use("/api/job-import", jobImportRouter);
+  // Product/Service CSV import: preview + execute
+  app.use("/api/product-import", productImportRouter);
 
   // Admin timesheets: day/week views, edit/delete time entries
   app.use("/api/admin/timesheets", adminTimesheetsRouter);

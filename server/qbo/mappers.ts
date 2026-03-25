@@ -3,6 +3,7 @@ import type { CustomerCompany, Client, Invoice, InvoiceLine, QboMappingConfig } 
 // QBO Customer/Sub-Customer JSON payload interfaces
 export interface QBOAddress {
   Line1?: string;
+  Line2?: string; // Address line 2 (suite, unit, PO box)
   City?: string;
   CountrySubDivisionCode?: string; // Province/State
   PostalCode?: string;
@@ -80,6 +81,7 @@ export function mapCustomerCompanyToQBO(
   if (company.billingStreet || company.billingCity || company.billingProvince || company.billingPostalCode) {
     payload.BillAddr = {
       Line1: company.billingStreet || undefined,
+      Line2: company.billingStreet2 || undefined, // Address line 2 (suite, unit, PO box)
       City: company.billingCity || undefined,
       CountrySubDivisionCode: company.billingProvince || undefined,
       PostalCode: company.billingPostalCode || undefined,
@@ -140,6 +142,7 @@ export function mapClientToQBOSubCustomer(
   if (client.address || client.city || client.province || client.postalCode) {
     payload.BillAddr = {
       Line1: client.address || undefined,
+      Line2: client.address2 || undefined,
       City: client.city || undefined,
       CountrySubDivisionCode: client.province || undefined,
       PostalCode: client.postalCode || undefined,
@@ -194,6 +197,7 @@ export function mapStandaloneClientToQBO(
   if (client.address || client.city || client.province || client.postalCode) {
     payload.BillAddr = {
       Line1: client.address || undefined,
+      Line2: client.address2 || undefined,
       City: client.city || undefined,
       CountrySubDivisionCode: client.province || undefined,
       PostalCode: client.postalCode || undefined,
@@ -224,6 +228,7 @@ export interface ParsedQBOCustomer {
   email: string | null;
   address: {
     street: string | null;
+    street2: string | null;
     city: string | null;
     province: string | null;
     postalCode: string | null;
@@ -231,6 +236,7 @@ export interface ParsedQBOCustomer {
   };
   shipAddress: {
     street: string | null;
+    street2: string | null;
     city: string | null;
     province: string | null;
     postalCode: string | null;
@@ -270,6 +276,7 @@ export function parseQBOCustomerResponse(qboCustomer: QBOCustomerResponse): Pars
     email: qboCustomer.PrimaryEmailAddr?.Address || null,
     address: {
       street: qboCustomer.BillAddr?.Line1 || null,
+      street2: qboCustomer.BillAddr?.Line2 || null,
       city: qboCustomer.BillAddr?.City || null,
       province: qboCustomer.BillAddr?.CountrySubDivisionCode || null,
       postalCode: qboCustomer.BillAddr?.PostalCode || null,
@@ -277,6 +284,7 @@ export function parseQBOCustomerResponse(qboCustomer: QBOCustomerResponse): Pars
     },
     shipAddress: {
       street: qboCustomer.ShipAddr?.Line1 || null,
+      street2: qboCustomer.ShipAddr?.Line2 || null,
       city: qboCustomer.ShipAddr?.City || null,
       province: qboCustomer.ShipAddr?.CountrySubDivisionCode || null,
       postalCode: qboCustomer.ShipAddr?.PostalCode || null,
@@ -464,6 +472,7 @@ export function toQboInvoicePayload(
     if (customerCompany.billingStreet || customerCompany.billingCity) {
       payload.BillAddr = {
         Line1: customerCompany.billingStreet || undefined,
+        Line2: customerCompany.billingStreet2 || undefined,
         City: customerCompany.billingCity || undefined,
         CountrySubDivisionCode: customerCompany.billingProvince || undefined,
         PostalCode: customerCompany.billingPostalCode || undefined,
@@ -474,6 +483,7 @@ export function toQboInvoicePayload(
     if (location.address || location.city) {
       payload.BillAddr = {
         Line1: location.address || undefined,
+        Line2: location.address2 || undefined,
         City: location.city || undefined,
         CountrySubDivisionCode: location.province || undefined,
         PostalCode: location.postalCode || undefined,
@@ -485,6 +495,7 @@ export function toQboInvoicePayload(
   if (location.address || location.city) {
     payload.ShipAddr = {
       Line1: location.address || undefined,
+      Line2: location.address2 || undefined,
       City: location.city || undefined,
       CountrySubDivisionCode: location.province || undefined,
       PostalCode: location.postalCode || undefined,

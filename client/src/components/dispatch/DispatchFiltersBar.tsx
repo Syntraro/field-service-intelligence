@@ -6,7 +6,8 @@ import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { ChevronDown, Check } from "lucide-react";
 import type { Technician, VisitStatus } from "./dispatchPreviewTypes";
-import { VISIT_STATUS_OPTIONS } from "./dispatchPreviewTypes";
+import { UNASSIGNED_TECH_ID } from "./dispatchPreviewTypes";
+import { VISIT_STATUS_OPTIONS } from "@/lib/visitStatusDisplay";
 import { visitStatusDot } from "./dispatchPreviewUtils";
 
 type Props = {
@@ -17,6 +18,8 @@ type Props = {
   onTechClearAll: () => void;
   selectedStatuses: Set<VisitStatus>;
   onStatusToggle: (s: VisitStatus) => void;
+  /** Show "Unassigned" as a filter option (when unassigned visits exist) */
+  includeUnassigned?: boolean;
   /** Week view only: hide weekends toggle */
   showHideWeekends?: boolean;
   hideWeekends?: boolean;
@@ -63,12 +66,16 @@ function MultiSelectDropdown({
 export default function DispatchFiltersBar({
   technicians, selectedTechIds, onTechToggle, onTechSelectAll, onTechClearAll,
   selectedStatuses, onStatusToggle,
+  includeUnassigned,
   showHideWeekends, hideWeekends, onToggleHideWeekends,
 }: Props) {
+  // 2026-03-23: Total includes Unassigned when present, for accurate badge count
+  const totalFilterable = technicians.length + (includeUnassigned ? 1 : 0);
+
   return (
     <div className="flex items-center gap-2 border-b bg-slate-50 px-5 py-2">
       {/* Technician multi-select */}
-      <MultiSelectDropdown label="Technicians" count={selectedTechIds.size} total={technicians.length}>
+      <MultiSelectDropdown label="Technicians" count={selectedTechIds.size} total={totalFilterable}>
         <div className="p-2">
           <div className="mb-2 flex gap-1">
             <button onClick={onTechSelectAll} className="text-[11px] text-primary hover:underline">Select All</button>
@@ -87,6 +94,22 @@ export default function DispatchFiltersBar({
               <span>{t.name}</span>
             </button>
           ))}
+          {/* 2026-03-23: Unassigned filter option — shown when unassigned visits exist */}
+          {includeUnassigned && (
+            <>
+              <div className="my-1.5 border-t border-slate-100" />
+              <button onClick={() => onTechToggle(UNASSIGNED_TECH_ID)}
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-slate-50">
+                <div className={`flex h-4 w-4 items-center justify-center rounded border ${
+                  selectedTechIds.has(UNASSIGNED_TECH_ID) ? "border-primary bg-primary" : "border-slate-300"
+                }`}>
+                  {selectedTechIds.has(UNASSIGNED_TECH_ID) && <Check className="h-3 w-3 text-white" />}
+                </div>
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "#94a3b8" }} />
+                <span className="italic text-slate-500">Unassigned</span>
+              </button>
+            </>
+          )}
         </div>
       </MultiSelectDropdown>
 

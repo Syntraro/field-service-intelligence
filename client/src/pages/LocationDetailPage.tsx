@@ -61,7 +61,7 @@ export default function LocationDetailPage() {
   const [equipmentOpen, setEquipmentOpen] = useState(false);
   const notesPanelRef = useRef<NotesPanelRef>(null);
 
-  type OverviewTab = "activeWork" | "jobs" | "invoices" | "quotes";
+  type OverviewTab = "activeWork" | "jobs" | "quotes";
   const [overviewTab, setOverviewTab] = useState<OverviewTab>("activeWork");
   const [deleteLocationDialogOpen, setDeleteLocationDialogOpen] = useState(false);
   const [editTagsOpen, setEditTagsOpen] = useState(false);
@@ -355,7 +355,7 @@ export default function LocationDetailPage() {
               </div>
               {/* Row 2: Address */}
               <p className="text-sm text-muted-foreground">
-                {location.address}, {location.city} {location.province} {location.postalCode}
+                {[location.address, location.address2, location.city, location.province, location.postalCode].filter(Boolean).join(", ")}
               </p>
               {/* Row 3: Status + Bill Parent */}
               <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -408,7 +408,6 @@ export default function LocationDetailPage() {
                   {[
                     { value: "activeWork", label: "Active Work" },
                     { value: "jobs", label: "Jobs" },
-                    { value: "invoices", label: "Invoices" },
                     { value: "quotes", label: "Quotes" },
                   ].map((tab) => (
                     <button
@@ -527,12 +526,6 @@ export default function LocationDetailPage() {
                         );
                       })
                     )}
-                  </div>
-                )}
-
-                {overviewTab === "invoices" && (
-                  <div className="space-y-2">
-                    <p className="text-sm text-muted-foreground">No invoices yet for this location.</p>
                   </div>
                 )}
 

@@ -23,7 +23,7 @@ import {
   getLifecycleRepairPatch,
   type LifecycleViolation,
 } from "../domain/jobLifecycle";
-import { TERMINAL_STATUSES } from "../statusRules";
+import { JOB_TERMINAL_STATUSES as TERMINAL_STATUSES } from "../domain/jobLifecycle";
 
 interface ViolationReport {
   companyId: string;

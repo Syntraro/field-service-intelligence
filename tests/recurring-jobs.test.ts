@@ -213,7 +213,6 @@ describe("Recurring Jobs Tests", () => {
       dayOfMonth: 31,
       openSubStatusDefault: null, // Phase 2 Step 6: null = normal backlog job
       isActive: true,
-      preferredTechnicianId: testUserId,
     });
 
     // Compute occurrences for a 3-month window
@@ -346,7 +345,6 @@ describe("Recurring Jobs Tests", () => {
       interval: 1,
       daysOfWeek: [today.getDay()],
       openSubStatusDefault: null, // Phase 2 Step 6: null = normal backlog job
-      preferredTechnicianId: testUserId,
       isActive: true,
     });
 

@@ -14,7 +14,7 @@
  */
 
 import { eq, inArray, sql } from "drizzle-orm";
-import { users, technicianProfiles, customerCompanies, clientLocations } from "@shared/schema";
+import { users, technicianProfiles, customerCompanies, clientLocations, jobs } from "@shared/schema";
 import { resolveTechnicianName } from "./resolveTechnicianName";
 import type { NeonDatabase } from "drizzle-orm/neon-serverless";
 
@@ -32,6 +32,38 @@ import type { NeonDatabase } from "drizzle-orm/neon-serverless";
  * Requires LEFT JOINs on clientLocations and customerCompanies.
  */
 export const locationDisplayNameExpr = sql<string>`COALESCE(${customerCompanies.name}, ${clientLocations.companyName})`;
+
+// ---------------------------------------------------------------------------
+// Effective End SQL Expression
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical SQL expression for job effective end time.
+ * Priority: scheduledEnd → scheduledStart + durationMinutes → scheduledStart.
+ *
+ * SCOPE: This expression operates on jobs-table columns only.
+ * JS getEffectiveEnd() in shared/schema.ts may be used with broader entity shapes
+ * (e.g., jobVisits) that include estimatedDurationMinutes. Do NOT expand this SQL
+ * expression to reference fields that do not exist on the jobs table unless the
+ * underlying jobs schema actually adds them.
+ *
+ * ZERO-DURATION: SQL treats durationMinutes = 0 as IS NOT NULL → computes
+ * start + 0 minutes = start. JS uses nullish check (!= null) so 0 is also
+ * treated as present. Both reach the same result through the same branch.
+ *
+ * 2026-03-18: Centralized from 3 duplicate definitions (dashboard.ts,
+ * attentionRules.ts, jobsFeed.ts). SQL mirror of getEffectiveEnd() in shared/schema.ts.
+ * Both must be kept in sync — any priority change must be applied to both.
+ * SYNC: tests/effective-end-sync.test.ts enforces parity for job-scoped fields only.
+ *
+ * Usage: `sql`${effectiveEndExpr} < NOW()`` for overdue detection.
+ */
+export const effectiveEndExpr = sql`CASE
+  WHEN ${jobs.scheduledEnd} IS NOT NULL THEN ${jobs.scheduledEnd}
+  WHEN ${jobs.durationMinutes} IS NOT NULL
+    THEN ${jobs.scheduledStart} + (${jobs.durationMinutes} || ' minutes')::interval
+  ELSE ${jobs.scheduledStart}
+END`;
 
 // ---------------------------------------------------------------------------
 // Bulk Technician Resolution

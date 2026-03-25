@@ -13,7 +13,6 @@ import {
   jobVisits,
   customerCompanies,
   clientLocations,
-  users,
   type RecurringJobTemplate,
   type RecurringJobInstance,
   type InsertRecurringJobTemplate,
@@ -135,7 +134,6 @@ export class RecurringJobsRepository extends BaseRepository {
       description?: string | null;
       notes?: string | null;
       defaultDurationMinutes?: number | null;
-      preferredTechnicianId?: string | null;
       jobType?: string;
       priority?: string;
       openSubStatusDefault?: string | null;
@@ -151,8 +149,6 @@ export class RecurringJobsRepository extends BaseRepository {
       monthsOfYear?: number[] | null;
       generationMode?: string;
       generationDayOfMonth?: number | null;
-      autoSchedule?: boolean;
-      scheduledTimeLocal?: string | null;
       includeLocationPmParts?: boolean;
       // PM Phase 3: Service window
       serviceWindowDaysBefore?: number;
@@ -173,7 +169,6 @@ export class RecurringJobsRepository extends BaseRepository {
         description: data.description ?? null,
         notes: data.notes ?? null,
         defaultDurationMinutes: data.defaultDurationMinutes ?? null,
-        preferredTechnicianId: data.preferredTechnicianId ?? null,
         jobType: data.jobType ?? "maintenance",
         priority: data.priority ?? "medium",
         openSubStatusDefault: data.openSubStatusDefault ?? null,
@@ -189,8 +184,6 @@ export class RecurringJobsRepository extends BaseRepository {
         monthsOfYear: data.monthsOfYear ?? null,
         generationMode: data.generationMode ?? "phase",
         generationDayOfMonth: data.generationDayOfMonth ?? null,
-        autoSchedule: data.autoSchedule ?? false,
-        scheduledTimeLocal: data.scheduledTimeLocal ?? null,
         includeLocationPmParts: data.includeLocationPmParts ?? false,
         // PM Phase 3: Service window defaults
         serviceWindowDaysBefore: data.serviceWindowDaysBefore ?? 7,
@@ -438,7 +431,8 @@ export class RecurringJobsRepository extends BaseRepository {
         jobStatus: jobs.status,
       })
       .from(recurringJobInstances)
-      .leftJoin(jobs, eq(recurringJobInstances.generatedJobId, jobs.id))
+      // Exclude soft-deleted jobs so they resolve to job: null (same as hard-deleted)
+      .leftJoin(jobs, and(eq(recurringJobInstances.generatedJobId, jobs.id), isNull(jobs.deletedAt)))
       .where(and(...conditions))
       .orderBy(asc(recurringJobInstances.instanceDate))
       .limit(options?.limit ?? 100);
@@ -539,8 +533,14 @@ export class RecurringJobsRepository extends BaseRepository {
 
     const conditions = [
       eq(recurringJobInstances.companyId, companyId),
-      // PM Due Queue boundary: only show instances not yet converted into jobs
-      isNull(recurringJobInstances.generatedJobId),
+      // PM Due Queue eligibility: instance lifecycle status is the authoritative gate.
+      // Only "pending" instances are legitimately queue-visible.
+      // "claiming" is a transitional state (mid-generation); stale claims are recovered
+      // back to "pending" by recoverStaleClaims() before any generation attempt.
+      // "generated" instances must stay hidden even if generatedJobId is later nulled
+      // by FK cascade when the linked job is deleted — the occurrence is consumed.
+      // "skipped" and "canceled" are terminal and must never reappear.
+      eq(recurringJobInstances.status, "pending"),
       // Only show instances from active contracts — archived/deactivated contracts
       // must not surface actionable due items on the Dashboard
       eq(recurringJobTemplates.isActive, true),
@@ -572,7 +572,6 @@ export class RecurringJobsRepository extends BaseRepository {
         serviceWindowDaysAfter: recurringJobTemplates.serviceWindowDaysAfter,
         locationId: recurringJobTemplates.locationId,
         clientId: recurringJobTemplates.clientId,
-        preferredTechnicianId: recurringJobTemplates.preferredTechnicianId,
         jobId: jobs.id,
         jobNumber: jobs.jobNumber,
         jobStatus: jobs.status,
@@ -586,15 +585,12 @@ export class RecurringJobsRepository extends BaseRepository {
         locationLng: clientLocations.lng,
         locationAddress: clientLocations.address,
         locationCity: clientLocations.city,
-        techFirstName: users.firstName,
-        techLastName: users.lastName,
       })
       .from(recurringJobInstances)
       .innerJoin(recurringJobTemplates, eq(recurringJobInstances.templateId, recurringJobTemplates.id))
       .leftJoin(jobs, eq(recurringJobInstances.generatedJobId, jobs.id))
       .leftJoin(customerCompanies, eq(recurringJobTemplates.clientId, customerCompanies.id))
       .leftJoin(clientLocations, eq(recurringJobTemplates.locationId, clientLocations.id))
-      .leftJoin(users, eq(recurringJobTemplates.preferredTechnicianId, users.id))
       .where(and(...conditions))
       .orderBy(asc(recurringJobInstances.instanceDate))
       .limit(options?.limit ?? 200)
@@ -653,7 +649,8 @@ export class RecurringJobsRepository extends BaseRepository {
     return rows.map((r) => {
       // Phase 5B: Use location label (site name) — avoid repeating company name
       const locationDisplay = r.locationLabel || r.locationName || "";
-      const techName = r.techFirstName ? `${r.techFirstName} ${r.techLastName ?? ""}`.trim() : null;
+      // Technician name no longer on template — derived from visit assignment
+      const techName: string | null = null;
 
       const windowBefore = r.serviceWindowDaysBefore ?? 7;
       const windowAfter = r.serviceWindowDaysAfter ?? 14;
@@ -737,7 +734,6 @@ export class RecurringJobsRepository extends BaseRepository {
         locationCity: r.locationCity ?? null,
         clientId: r.clientId,
         customerName: r.customerName ?? null,
-        preferredTechnicianId: r.preferredTechnicianId,
         technicianName: techName,
         generatedJobId: r.generatedJobId,
         job: r.jobId ? {
@@ -788,7 +784,6 @@ export interface UpcomingQueueItem {
   locationCity: string | null;
   clientId: string | null;
   customerName: string | null;
-  preferredTechnicianId: string | null;
   technicianName: string | null;
   generatedJobId: string | null;
   job: {

@@ -34,6 +34,7 @@ import {
 } from "@shared/schema";
 import type { QueryCtx } from "../lib/queryCtx";
 import { activeJobFilter } from "./jobFilters";
+import { effectiveEndExpr, locationDisplayNameExpr } from "../lib/queryHelpers";
 
 // ---------------------------------------------------------------------------
 // Step A1: JobFeedFilters — every WHERE clause across all 6 divergent queries
@@ -64,13 +65,13 @@ export interface JobFeedFilters {
 // Step A4: Canonical response types
 // ---------------------------------------------------------------------------
 
-/** Canonical job list item shape. All timestamps are ISO strings. */
+/** Canonical job list item shape. All timestamps are ISO strings.
+ * PERF-02: Trimmed to fields actually needed by list pages (Jobs, LocationDetail).
+ * Fields removed here are re-added in JobHeaderDetail for the detail view. */
 export interface JobFeedItem {
   id: string;
-  companyId: string;
   jobNumber: number;
   summary: string;
-  description: string | null;
   jobType: string;
   status: string;
   openSubStatus: string | null;
@@ -86,24 +87,26 @@ export interface JobFeedItem {
   locationCity: string | null;
   primaryTechnicianId: string | null;
   assignedTechnicianIds: string[] | null;
+  // Hold / action-required fields (needed by Jobs list page)
+  onHoldAt: string | null;
+}
+
+/** Canonical single-job detail header. Extends feed item with detail-only fields.
+ * PERF-02: Fields removed from JobFeedItem are declared here for the detail view. */
+export interface JobHeaderDetail extends JobFeedItem {
+  // PERF-02: Fields removed from feed, required for detail
+  companyId: string;
+  description: string | null;
   isActive: boolean;
   version: number;
   createdAt: string;
   updatedAt: string | null;
-  // Hold / action-required fields (needed by Jobs list page)
-  onHoldAt: string | null;
   holdReason: string | null;
   holdNotes: string | null;
   nextActionDate: string | null;
-  actionRequiredAt: string | null;
-  actionRequiredNotes: string | null;
-  actionRequiredEscalatedAt: string | null;
   invoiceId: string | null;
   closedAt: string | null;
-}
-
-/** Canonical single-job detail header. Extends feed item with detail-only fields. */
-export interface JobHeaderDetail extends JobFeedItem {
+  // Detail-only fields
   accessInstructions: string | null;
   billingNotes: string | null;
   actualStart: string | null;
@@ -122,7 +125,6 @@ export interface JobHeaderDetail extends JobFeedItem {
   deletedAt: string | null;
   previousStatus: string | null;
   closedBy: string | null;
-  actionRequiredReason: string | null;
   // Nested location object for detail page
   location: {
     id: string;
@@ -146,12 +148,13 @@ export interface JobHeaderDetail extends JobFeedItem {
 // ---------------------------------------------------------------------------
 
 /** Feed-level select fields (used by list queries). */
+/** Feed-level select fields — trimmed to only what list pages need.
+ * PERF-02: Removed 11 fields not used by Jobs list, LocationDetail, or ClientDetail
+ * feed consumers. Those fields are re-added in detailSelectFields for the detail view. */
 const feedSelectFields = {
   id: jobs.id,
-  companyId: jobs.companyId,
   jobNumber: jobs.jobNumber,
   summary: jobs.summary,
-  description: jobs.description,
   jobType: jobs.jobType,
   status: jobs.status,
   openSubStatus: jobs.openSubStatus,
@@ -161,31 +164,33 @@ const feedSelectFields = {
   isAllDay: jobs.isAllDay,
   durationMinutes: jobs.durationMinutes,
   locationId: jobs.locationId,
-  // Phase 4 fix: correct COALESCE for location name
-  locationDisplayName: sql<string>`COALESCE(${customerCompanies.name}, ${clients.companyName})`,
+  // Phase 4 fix: correct COALESCE for location name — uses canonical helper
+  locationDisplayName: locationDisplayNameExpr,
   locationName: clients.location,
   locationAddress: clients.address,
   locationCity: clients.city,
   primaryTechnicianId: jobs.primaryTechnicianId,
   assignedTechnicianIds: jobs.assignedTechnicianIds,
+  onHoldAt: jobs.onHoldAt,
+};
+
+/** Detail-level select fields (extends feed fields).
+ * PERF-02: Re-adds fields removed from feed for the detail view. */
+const detailSelectFields = {
+  ...feedSelectFields,
+  // Fields removed from feed but required for detail view
+  companyId: jobs.companyId,
+  description: jobs.description,
   isActive: jobs.isActive,
   version: jobs.version,
   createdAt: jobs.createdAt,
   updatedAt: jobs.updatedAt,
-  onHoldAt: jobs.onHoldAt,
   holdReason: jobs.holdReason,
   holdNotes: jobs.holdNotes,
   nextActionDate: jobs.nextActionDate,
-  actionRequiredAt: jobs.actionRequiredAt,
-  actionRequiredNotes: jobs.actionRequiredNotes,
-  actionRequiredEscalatedAt: jobs.actionRequiredEscalatedAt,
   invoiceId: jobs.invoiceId,
   closedAt: jobs.closedAt,
-};
-
-/** Detail-level select fields (extends feed fields). */
-const detailSelectFields = {
-  ...feedSelectFields,
+  // Detail-only fields
   accessInstructions: jobs.accessInstructions,
   billingNotes: jobs.billingNotes,
   actualStart: jobs.actualStart,
@@ -204,7 +209,6 @@ const detailSelectFields = {
   deletedAt: jobs.deletedAt,
   previousStatus: jobs.previousStatus,
   closedBy: jobs.closedBy,
-  actionRequiredReason: jobs.actionRequiredReason,
   // Nested location object
   location: {
     id: clients.id,
@@ -231,13 +235,12 @@ function toISOOrNull(val: Date | string | null | undefined): string | null {
   return val;
 }
 
+/** PERF-02: Maps only the fields present in feedSelectFields. */
 function mapFeedRow(row: any): JobFeedItem {
   return {
     id: row.id,
-    companyId: row.companyId,
     jobNumber: row.jobNumber,
     summary: row.summary,
-    description: row.description ?? null,
     jobType: row.jobType,
     status: row.status,
     openSubStatus: row.openSubStatus ?? null,
@@ -253,26 +256,28 @@ function mapFeedRow(row: any): JobFeedItem {
     locationCity: row.locationCity ?? null,
     primaryTechnicianId: row.primaryTechnicianId ?? null,
     assignedTechnicianIds: row.assignedTechnicianIds ?? null,
-    isActive: row.isActive,
-    version: row.version,
-    createdAt: toISOOrNull(row.createdAt) ?? new Date().toISOString(),
-    updatedAt: toISOOrNull(row.updatedAt),
     onHoldAt: toISOOrNull(row.onHoldAt),
-    holdReason: row.holdReason ?? null,
-    holdNotes: row.holdNotes ?? null,
-    nextActionDate: row.nextActionDate ?? null,
-    actionRequiredAt: toISOOrNull(row.actionRequiredAt),
-    actionRequiredNotes: row.actionRequiredNotes ?? null,
-    actionRequiredEscalatedAt: toISOOrNull(row.actionRequiredEscalatedAt),
-    invoiceId: row.invoiceId ?? null,
-    closedAt: toISOOrNull(row.closedAt),
   };
 }
 
+/** PERF-02: Maps feed base + the 11 fields re-added in detailSelectFields + detail-only fields. */
 function mapDetailRow(row: any): JobHeaderDetail {
   const base = mapFeedRow(row);
   return {
     ...base,
+    // PERF-02: Fields removed from feed, present in detail
+    companyId: row.companyId,
+    description: row.description ?? null,
+    isActive: row.isActive,
+    version: row.version,
+    createdAt: toISOOrNull(row.createdAt) ?? new Date().toISOString(),
+    updatedAt: toISOOrNull(row.updatedAt),
+    holdReason: row.holdReason ?? null,
+    holdNotes: row.holdNotes ?? null,
+    nextActionDate: row.nextActionDate ?? null,
+    invoiceId: row.invoiceId ?? null,
+    closedAt: toISOOrNull(row.closedAt),
+    // Detail-only fields
     accessInstructions: row.accessInstructions ?? null,
     billingNotes: row.billingNotes ?? null,
     actualStart: toISOOrNull(row.actualStart),
@@ -290,7 +295,6 @@ function mapDetailRow(row: any): JobHeaderDetail {
     deletedAt: toISOOrNull(row.deletedAt),
     previousStatus: row.previousStatus ?? null,
     closedBy: row.closedBy ?? null,
-    actionRequiredReason: row.actionRequiredReason ?? null,
     location: row.location?.id
       ? {
           id: row.location.id,
@@ -406,7 +410,8 @@ export async function getJobsFeed(
     }
   }
 
-  // Search (ILIKE on jobNumber, summary, location names)
+  // Search (ILIKE on jobNumber, summary, location names, address, city)
+  // Hybrid search: aligned with client-side Jobs.tsx local search fields
   if (filters.search?.trim()) {
     const term = `%${filters.search.trim()}%`;
     conditions.push(
@@ -415,7 +420,9 @@ export async function getJobsFeed(
         sql`CAST(${jobs.jobNumber} AS TEXT) LIKE ${term}`,
         ilike(clients.companyName, term),
         ilike(clients.location, term),
-        ilike(customerCompanies.name, term)
+        ilike(customerCompanies.name, term),
+        ilike(clients.address, term),
+        ilike(clients.city, term)
       )!
     );
   }
@@ -426,14 +433,7 @@ export async function getJobsFeed(
   // 4=Scheduled open, 5=Backlog, 6=Completed (invoiced/done), 7=Archived.
   // Secondary sort varies per bucket (see inline comments).
 
-  // Canonical effectiveEnd: matches isJobOverdue() in shared/schema.ts and
-  // overdue SQL in maintenance.ts / admin.ts.
-  // Priority: scheduledEnd → scheduledStart+duration → scheduledStart fallback.
-  const effectiveEndExpr = sql`CASE
-    WHEN ${jobs.scheduledEnd} IS NOT NULL THEN ${jobs.scheduledEnd}
-    WHEN ${jobs.durationMinutes} IS NOT NULL THEN ${jobs.scheduledStart} + (${jobs.durationMinutes} || ' minutes')::interval
-    ELSE ${jobs.scheduledStart}
-  END`;
+  // 2026-03-18: effectiveEndExpr centralized in server/lib/queryHelpers.ts (imported at top)
 
   const priorityBucket = sql<number>`CASE
     WHEN ${jobs.status} = 'open' AND ${jobs.scheduledStart} IS NOT NULL AND ${effectiveEndExpr} < NOW() THEN 1
@@ -481,6 +481,53 @@ export async function getJobsFeed(
   return {
     items: rows.map(mapFeedRow),
     total: rows.length,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// P3-05: getJobCounts — true aggregate counts (not capped by feed limit)
+// ---------------------------------------------------------------------------
+
+/** P3-05: True aggregate job counts shape */
+export interface JobCounts {
+  lifecycle: {
+    open: number;
+    completed: number;
+    invoiced: number;
+    archived: number;
+  };
+  openSubStatus: {
+    in_progress: number;
+    on_route: number;
+    on_hold: number;
+  };
+  total: number;
+}
+
+/**
+ * P3-05: Single aggregate query with FILTER clauses.
+ * Uses canonical activeJobFilter() — same visibility as getJobsFeed().
+ */
+export async function getJobCounts(ctx: QueryCtx): Promise<JobCounts> {
+  const rows = await ctx.db
+    .select({
+      total: sql<number>`COUNT(*)::int`,
+      open: sql<number>`COUNT(*) FILTER (WHERE ${jobs.status} = 'open')::int`,
+      completed: sql<number>`COUNT(*) FILTER (WHERE ${jobs.status} = 'completed')::int`,
+      invoiced: sql<number>`COUNT(*) FILTER (WHERE ${jobs.status} = 'invoiced')::int`,
+      archived: sql<number>`COUNT(*) FILTER (WHERE ${jobs.status} = 'archived')::int`,
+      subInProgress: sql<number>`COUNT(*) FILTER (WHERE ${jobs.status} = 'open' AND ${jobs.openSubStatus} = 'in_progress')::int`,
+      subOnRoute: sql<number>`COUNT(*) FILTER (WHERE ${jobs.status} = 'open' AND ${jobs.openSubStatus} = 'on_route')::int`,
+      subOnHold: sql<number>`COUNT(*) FILTER (WHERE ${jobs.status} = 'open' AND ${jobs.openSubStatus} = 'on_hold')::int`,
+    })
+    .from(jobs)
+    .where(and(eq(jobs.companyId, ctx.tenantId), activeJobFilter()));
+
+  const r = rows[0];
+  return {
+    lifecycle: { open: r.open, completed: r.completed, invoiced: r.invoiced, archived: r.archived },
+    openSubStatus: { in_progress: r.subInProgress, on_route: r.subOnRoute, on_hold: r.subOnHold },
+    total: r.total,
   };
 }
 

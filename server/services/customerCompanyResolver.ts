@@ -30,6 +30,7 @@ export async function resolveCustomerCompanyForLocation(
     phone?: string | null;
     email?: string | null;
     address?: string | null;
+    address2?: string | null;
     city?: string | null;
     province?: string | null;
     postalCode?: string | null;
@@ -48,6 +49,7 @@ export async function resolveCustomerCompanyForLocation(
       phone: location.phone ?? null,
       email: location.email ?? null,
       billingStreet: location.address ?? null,
+      billingStreet2: location.address2 ?? null,
       billingCity: location.city ?? null,
       billingProvince: location.province ?? null,
       billingPostalCode: location.postalCode ?? null,

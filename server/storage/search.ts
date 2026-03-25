@@ -13,12 +13,13 @@
  */
 
 import { pool } from "../db";
+import { JOB_ACTIVE_SQL_J } from "./jobFilters";
 
 // ========================================
 // TYPES
 // ========================================
 
-export type SearchResultType = "job" | "invoice" | "customerCompany" | "location" | "supplier";
+export type SearchResultType = "job" | "invoice" | "customerCompany" | "location" | "supplier" | "contact";
 
 export interface SearchResult {
   type: SearchResultType;
@@ -28,13 +29,14 @@ export interface SearchResult {
   match: string | null; // e.g., "job #", "invoice #", "phone", "email"
   customerCompanyId?: string; // For customerCompany results: customer_companies.id
   tenantCompanyId?: string;   // For customerCompany results: owning company (tenant) ID
+  /** Internal ranking: 0 = exact, 1 = prefix, 2 = contains. Not exposed to client. */
+  _rank?: number;
 }
 
 interface SearchOptions {
   query: string;
   companyId: string;
   limit?: number;
-  perTypeLimit?: number;
 }
 
 // ========================================
@@ -64,55 +66,43 @@ function parseInvoiceQuery(query: string): string | null {
 }
 
 /**
- * Round-robin interleave results by type.
- * Shows first result of each type, then second of each, etc.
- * This makes results feel smarter without full relevance ranking.
- *
- * @param results - The search results to interleave
- * @param typeOrder - Optional explicit type order for interleaving (for numeric queries: invoice first)
+ * Compute match rank: 0 = exact (case-insensitive), 1 = prefix, 2 = substring.
+ * Lower = better.
  */
-function interleaveResults(results: SearchResult[], typeOrder?: SearchResultType[]): SearchResult[] {
-  const byType: Record<string, SearchResult[]> = {};
-
-  for (const r of results) {
-    (byType[r.type] ??= []).push(r);
-  }
-
-  // Use explicit order if provided, otherwise use insertion order
-  const types = typeOrder
-    ? typeOrder.filter(t => byType[t]?.length > 0)
-    : Object.keys(byType);
-
-  // Add any types not in the explicit order
-  if (typeOrder) {
-    for (const t of Object.keys(byType)) {
-      if (!types.includes(t)) {
-        types.push(t);
-      }
-    }
-  }
-
-  const interleaved: SearchResult[] = [];
-  let index = 0;
-
-  while (interleaved.length < results.length) {
-    for (const type of types) {
-      if (byType[type]?.[index]) {
-        interleaved.push(byType[type][index]);
-      }
-    }
-    index++;
-  }
-
-  return interleaved;
+function matchRank(title: string, query: string): number {
+  const tLow = title.toLowerCase();
+  const qLow = query.toLowerCase();
+  if (tLow === qLow) return 0;
+  if (tLow.startsWith(qLow)) return 1;
+  return 2;
 }
+
+/**
+ * Global ranking: sort all results by match quality, then alphabetically within rank.
+ * The frontend re-groups by type for sectioned display, so ordering here
+ * only determines which results survive the overall limit.
+ */
+function rankResults(results: SearchResult[], query: string): SearchResult[] {
+  // Assign rank based on title vs query proximity
+  for (const r of results) {
+    r._rank = matchRank(r.title, query);
+  }
+  // Stable sort: rank ASC, then title ASC within same rank
+  return results.sort((a, b) => {
+    if ((a._rank ?? 2) !== (b._rank ?? 2)) return (a._rank ?? 2) - (b._rank ?? 2);
+    return a.title.localeCompare(b.title);
+  });
+}
+
+/** Safety-valve per-type SQL LIMIT. Generous enough that same-name matches are never hidden. */
+const PER_TYPE_SQL_CAP = 25;
 
 // ========================================
 // MAIN SEARCH FUNCTION
 // ========================================
 
 export async function universalSearch(options: SearchOptions): Promise<SearchResult[]> {
-  const { query, companyId, limit = 20, perTypeLimit = 6 } = options;
+  const { query, companyId, limit = 30 } = options;
   const trimmedQuery = query.trim();
 
   if (!trimmedQuery || trimmedQuery.length < 2) {
@@ -127,9 +117,17 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
   const phoneDigits = digits.length >= 3 ? `%${digits}%` : null;
 
   // ========================================
+  // PHASE 1: Queries 1-6 are independent — build and execute in parallel.
+  // Query 7 (job summary) depends on Query 2 results, so it runs in Phase 2.
+  // ========================================
+
+  // ========================================
   // 1. INVOICE NUMBER SEARCH (exact/prefix match)
   // Runs FIRST for numeric queries so invoices appear before jobs
   // ========================================
+
+  // Build invoice query promise (conditional)
+  let invoicePromise: Promise<{ rows: any[] }> = Promise.resolve({ rows: [] });
   if (invoiceNum || isNumeric) {
     const searchNum = invoiceNum || digits;
     // Exact match strings for priority ordering
@@ -147,6 +145,8 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
       LEFT JOIN client_locations cl ON i.location_id = cl.id
       LEFT JOIN customer_companies cc ON i.customer_company_id = cc.id
       WHERE i.company_id = $1
+        AND i.is_active = true
+        AND i.deleted_at IS NULL
         AND (
           i.invoice_number ILIKE $2
           OR i.invoice_number ILIKE $3
@@ -159,36 +159,28 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
         i.issue_date DESC
       LIMIT $4
     `;
-    const invoiceResults = await pool.query(invoiceQuery, [
+    invoicePromise = pool.query(invoiceQuery, [
       companyId,
       `${searchNum}%`,
       `INV-${searchNum}%`,
-      perTypeLimit,
+      PER_TYPE_SQL_CAP,
       exactPlain,
       exactInv
     ]);
-    results.push(...invoiceResults.rows.map(r => ({
-      type: r.type as SearchResultType,
-      id: r.id,
-      title: r.title,
-      subtitle: r.subtitle,
-      match: r.match,
-    })));
   }
 
   // ========================================
   // 2. JOB NUMBER SEARCH (index-friendly: exact or range match)
   // Updated for 6-digit job numbers (100000+)
   // ========================================
-  // For >=6 digits: exact match (fast index lookup)
-  // For 2-5 digits: range query for prefix matching (e.g., "100" matches 100000-100999)
+  // Build job number query promise (conditional)
+  let jobNumberPromise: Promise<{ rows: any[] }> = Promise.resolve({ rows: [] });
   if (isNumeric && digits.length >= 2) {
     const jobNum = parseInt(digits, 10);
     let jobNumberQuery: string;
     let jobParams: (string | number)[];
 
     if (digits.length >= 6) {
-      // Exact match for 6+ digit queries (full job number)
       jobNumberQuery = `
         SELECT 'job' as type, j.id,
           CONCAT('#', j.job_number, ' - ', j.summary) as title,
@@ -196,44 +188,41 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
         FROM jobs j
         LEFT JOIN client_locations cl ON j.location_id = cl.id
         WHERE j.company_id = $1 AND j.job_number = $2
+          AND ${JOB_ACTIVE_SQL_J}
         LIMIT $3
       `;
-      jobParams = [companyId, jobNum, perTypeLimit];
+      jobParams = [companyId, jobNum, PER_TYPE_SQL_CAP];
     } else {
-      // Range query for 2-5 digit prefixes (index-friendly)
-      // For 6-digit job numbers: "100" -> finds 100000-100999, "1001" -> finds 100100-100199
       const multiplier = Math.pow(10, 6 - digits.length);
       const lowerBound = jobNum * multiplier;
       const upperBound = (jobNum + 1) * multiplier;
+      // Match both 6-digit prefix range (e.g. "1070" → [107000,107100))
+      // AND exact literal job number (e.g. "7002" → job_number = 7002)
       jobNumberQuery = `
         SELECT 'job' as type, j.id,
           CONCAT('#', j.job_number, ' - ', j.summary) as title,
           COALESCE(cl.company_name, '') as subtitle, 'job #' as match
         FROM jobs j
         LEFT JOIN client_locations cl ON j.location_id = cl.id
-        WHERE j.company_id = $1 AND j.job_number >= $2 AND j.job_number < $3
+        WHERE j.company_id = $1
+          AND ((j.job_number >= $2 AND j.job_number < $3) OR j.job_number = $5)
+          AND ${JOB_ACTIVE_SQL_J}
         ORDER BY j.job_number ASC
         LIMIT $4
       `;
-      jobParams = [companyId, lowerBound, upperBound, perTypeLimit];
+      jobParams = [companyId, lowerBound, upperBound, PER_TYPE_SQL_CAP, jobNum];
     }
 
-    const jobResults = await pool.query(jobNumberQuery, jobParams);
-    results.push(...jobResults.rows.map(r => ({
-      type: r.type as SearchResultType,
-      id: r.id,
-      title: r.title,
-      subtitle: r.subtitle,
-      match: r.match,
-    })));
+    jobNumberPromise = pool.query(jobNumberQuery, jobParams);
   }
 
   // ========================================
-  // 3. CUSTOMER COMPANY SEARCH (name/email/phone)
+  // 3-6: Build query SQL (all use same phone/like params)
   // ========================================
-  // Use empty string instead of null for phone to allow type inference
   const phonePattern = phoneDigits || '';
   const hasPhone = phoneDigits !== null;
+  const sharedParams = [companyId, likePattern, phonePattern, hasPhone, PER_TYPE_SQL_CAP];
+
   const customerQuery = `
     SELECT
       'customerCompany' as type,
@@ -251,6 +240,7 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
     FROM customer_companies cc
     WHERE cc.company_id = $1
       AND cc.deleted_at IS NULL
+      AND cc.is_active = true
       AND (
         cc.name ILIKE $2
         OR cc.email ILIKE $2
@@ -259,24 +249,7 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
     ORDER BY cc.name
     LIMIT $5
   `;
-  const customerResults = await pool.query(customerQuery, [companyId, likePattern, phonePattern, hasPhone, perTypeLimit]);
-  // Dev assertion: customerCompany results use customer_companies.id (cc.id in query)
-  if (process.env.NODE_ENV === "development" && customerResults.rows.length > 0) {
-    console.log("[search] customerCompany IDs (from customer_companies.id):", customerResults.rows.map(r => r.customer_company_id));
-  }
-  results.push(...customerResults.rows.map(r => ({
-    type: r.type as SearchResultType,
-    id: r.id,
-    title: r.title,
-    subtitle: r.subtitle,
-    match: r.match,
-    customerCompanyId: r.customer_company_id,
-    tenantCompanyId: r.tenant_company_id,
-  })));
 
-  // ========================================
-  // 4. CLIENT LOCATION SEARCH (companyName/address/city/postal/email/phone)
-  // ========================================
   const locationQuery = `
     SELECT
       'location' as type,
@@ -296,6 +269,7 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
     FROM client_locations cl
     WHERE cl.company_id = $1
       AND cl.deleted_at IS NULL
+      AND (cl.inactive = false OR cl.inactive IS NULL)
       AND (
         cl.company_name ILIKE $2
         OR cl.address ILIKE $2
@@ -308,18 +282,7 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
     ORDER BY cl.company_name
     LIMIT $5
   `;
-  const locationResults = await pool.query(locationQuery, [companyId, likePattern, phonePattern, hasPhone, perTypeLimit]);
-  results.push(...locationResults.rows.map(r => ({
-    type: r.type as SearchResultType,
-    id: r.id,
-    title: r.title,
-    subtitle: r.subtitle,
-    match: r.match,
-  })));
 
-  // ========================================
-  // 5. SUPPLIER SEARCH (name/email/phone)
-  // ========================================
   const supplierQuery = `
     SELECT
       'supplier' as type,
@@ -343,21 +306,103 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
     ORDER BY s.name
     LIMIT $5
   `;
-  const supplierResults = await pool.query(supplierQuery, [companyId, likePattern, phonePattern, hasPhone, perTypeLimit]);
-  results.push(...supplierResults.rows.map(r => ({
+
+  const contactQuery = `
+    SELECT
+      'contact' as type,
+      ct.id,
+      ct.customer_company_id,
+      CONCAT_WS(' ', ct.first_name, ct.last_name) as title,
+      COALESCE(cc.name, '') as subtitle,
+      CASE
+        WHEN CONCAT_WS(' ', ct.first_name, ct.last_name) ILIKE $2 THEN 'name'
+        WHEN ct.email ILIKE $2 THEN 'email'
+        WHEN $4 AND regexp_replace(ct.phone, '\\D', '', 'g') ILIKE $3 THEN 'phone'
+        ELSE 'name'
+      END as match
+    FROM client_contacts ct
+    LEFT JOIN customer_companies cc ON ct.customer_company_id = cc.id
+    WHERE ct.company_id = $1
+      AND (
+        CONCAT_WS(' ', ct.first_name, ct.last_name) ILIKE $2
+        OR ct.first_name ILIKE $2
+        OR ct.last_name ILIKE $2
+        OR ct.email ILIKE $2
+        OR ($4 AND regexp_replace(ct.phone, '\\D', '', 'g') ILIKE $3)
+      )
+    ORDER BY ct.last_name, ct.first_name
+    LIMIT $5
+  `;
+
+  // ========================================
+  // Execute queries 1-6 in parallel (Phase 1)
+  // ========================================
+  const [invoiceRes, jobNumberRes, customerRes, locationRes, supplierRes, contactRes] = await Promise.all([
+    invoicePromise,
+    jobNumberPromise,
+    pool.query(customerQuery, sharedParams),
+    pool.query(locationQuery, sharedParams),
+    pool.query(supplierQuery, sharedParams),
+    pool.query(contactQuery, sharedParams),
+  ]);
+
+  // Push results in canonical order (same as previous sequential order)
+  results.push(...invoiceRes.rows.map((r: any) => ({
     type: r.type as SearchResultType,
     id: r.id,
     title: r.title,
     subtitle: r.subtitle,
     match: r.match,
   })));
+  results.push(...jobNumberRes.rows.map((r: any) => ({
+    type: r.type as SearchResultType,
+    id: r.id,
+    title: r.title,
+    subtitle: r.subtitle,
+    match: r.match,
+  })));
+  // Dev assertion: customerCompany results use customer_companies.id (cc.id in query)
+  if (process.env.NODE_ENV === "development" && customerRes.rows.length > 0) {
+    console.log("[search] customerCompany IDs (from customer_companies.id):", customerRes.rows.map((r: any) => r.customer_company_id));
+  }
+  results.push(...customerRes.rows.map((r: any) => ({
+    type: r.type as SearchResultType,
+    id: r.id,
+    title: r.title,
+    subtitle: r.subtitle,
+    match: r.match,
+    customerCompanyId: r.customer_company_id,
+    tenantCompanyId: r.tenant_company_id,
+  })));
+  results.push(...locationRes.rows.map((r: any) => ({
+    type: r.type as SearchResultType,
+    id: r.id,
+    title: r.title,
+    subtitle: r.subtitle,
+    match: r.match,
+  })));
+  results.push(...supplierRes.rows.map((r: any) => ({
+    type: r.type as SearchResultType,
+    id: r.id,
+    title: r.title,
+    subtitle: r.subtitle,
+    match: r.match,
+  })));
+  results.push(...contactRes.rows.map((r: any) => ({
+    type: r.type as SearchResultType,
+    id: r.id,
+    title: r.title,
+    subtitle: r.subtitle,
+    match: r.match,
+    customerCompanyId: r.customer_company_id,
+  })));
 
   // ========================================
-  // 6. JOB SUMMARY SEARCH (text match, lower priority)
+  // 7. JOB SUMMARY SEARCH (Phase 2 — depends on Query 2 results)
   // ========================================
   // Only search job summary if we don't have enough job results from number search
   const jobCountFromNumbers = results.filter(r => r.type === "job").length;
-  if (jobCountFromNumbers < perTypeLimit && !isNumeric) {
+  if (jobCountFromNumbers < PER_TYPE_SQL_CAP && !isNumeric) {
     const jobSummaryQuery = `
       SELECT
         'job' as type,
@@ -369,13 +414,14 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
       LEFT JOIN client_locations cl ON j.location_id = cl.id
       WHERE j.company_id = $1
         AND j.summary ILIKE $2
+        AND ${JOB_ACTIVE_SQL_J}
       ORDER BY j.created_at DESC
       LIMIT $3
     `;
     const jobSummaryResults = await pool.query(jobSummaryQuery, [
       companyId,
       likePattern,
-      perTypeLimit - jobCountFromNumbers
+      PER_TYPE_SQL_CAP - jobCountFromNumbers
     ]);
     results.push(...jobSummaryResults.rows.map(r => ({
       type: r.type as SearchResultType,
@@ -386,13 +432,14 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
     })));
   }
 
-  // Return interleaved results, capped at total limit
-  // For numeric queries, prioritize invoice results first
-  const typeOrder: SearchResultType[] | undefined = isNumeric
-    ? ["invoice", "job", "customerCompany", "location", "supplier"]
-    : undefined;
+  // Global ranking: sort by match quality (exact > prefix > contains), then alpha.
+  // The frontend re-groups by type for sectioned display.
+  const ranked = rankResults(results, trimmedQuery);
 
-  return interleaveResults(results, typeOrder).slice(0, limit);
+  // Strip internal _rank before returning
+  const capped = ranked.slice(0, limit);
+  for (const r of capped) delete r._rank;
+  return capped;
 }
 
 export const searchRepository = {

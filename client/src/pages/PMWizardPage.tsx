@@ -29,7 +29,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -37,6 +36,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { PmMonthPicker, MONTH_LABELS } from "@/components/pm/PmMonthPicker";
+import { PmGenerationModeSelector } from "@/components/pm/PmGenerationModeSelector";
+import { PmServiceWindowInputs } from "@/components/pm/PmServiceWindowInputs";
+import { PmBillingFields } from "@/components/pm/PmBillingFields";
 import {
   Command,
   CommandEmpty,
@@ -67,15 +70,6 @@ import type { Client, RecurringJobTemplate, PmTemplate } from "@shared/schema";
 // ============================================================================
 // Types & Constants
 // ============================================================================
-
-const MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
-
-const MONTH_PRESETS = [
-  { label: "Quarterly", months: [1, 4, 7, 10] },
-  { label: "Bi-Annual", months: [4, 10] },
-  { label: "Annual", months: [4] },
-  { label: "Monthly", months: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] },
-] as const;
 
 const STEPS = [
   { key: "target", label: "Location", icon: MapPin },
@@ -120,6 +114,10 @@ interface WizardState {
   // PM Phase 3: Service window
   serviceWindowDaysBefore: number;
   serviceWindowDaysAfter: number;
+  // PM Billing Disposition: Optional contract-level billing rules
+  pmBillingModel: string;
+  pmBillingLabel: string;
+  pmContractAmount: string;
 }
 
 /** Compute end date from contract term mode and start date */
@@ -162,6 +160,9 @@ function initialState(): WizardState {
     includeLocationPmParts: true,
     serviceWindowDaysBefore: 7,
     serviceWindowDaysAfter: 14,
+    pmBillingModel: "",
+    pmBillingLabel: "",
+    pmContractAmount: "",
   };
 }
 
@@ -529,13 +530,6 @@ function StepBasics({
   state: WizardState;
   onChange: (patch: Partial<WizardState>) => void;
 }) {
-  const toggleMonth = (m: number) => {
-    const newMonths = state.months.includes(m)
-      ? state.months.filter((v) => v !== m)
-      : [...state.months, m].sort((a, b) => a - b);
-    onChange({ months: newMonths });
-  };
-
   return (
     <div className="space-y-5">
       <div>
@@ -568,113 +562,40 @@ function StepBasics({
         />
       </div>
 
-      {/* Month Picker */}
-      <div className="space-y-2">
-        <Label>Which months should this run?</Label>
-        <div className="flex flex-wrap gap-1.5">
-          {MONTH_LABELS.map((label, idx) => {
-            const monthNum = idx + 1;
-            const selected = state.months.includes(monthNum);
-            return (
-              <button
-                key={monthNum}
-                type="button"
-                onClick={() => toggleMonth(monthNum)}
-                className={`rounded-full px-3 py-1 text-xs font-medium border transition-colors ${
-                  selected
-                    ? "bg-primary text-primary-foreground border-primary"
-                    : "bg-background text-muted-foreground border-border hover:border-primary/50"
-                }`}
-                data-testid={`pm-wizard-month-${monthNum}`}
-              >
-                {label}
-              </button>
-            );
-          })}
-        </div>
-        <div className="flex flex-wrap gap-2 mt-1">
-          {MONTH_PRESETS.map((preset) => (
-            <button
-              key={preset.label}
-              type="button"
-              onClick={() => onChange({ months: [...preset.months] })}
-              className="text-xs text-primary hover:underline"
-            >
-              {preset.label}
-            </button>
-          ))}
-        </div>
-      </div>
+      <PmMonthPicker
+        months={state.months}
+        onChange={(months) => onChange({ months })}
+        testIdPrefix="pm-wizard"
+      />
 
-      {/* Generation Mode */}
-      <div className="space-y-2">
-        <Label>When should jobs be created?</Label>
-        <div className="space-y-2">
-          <label className="flex items-center gap-2 text-sm cursor-pointer">
-            <input
-              type="radio"
-              name="generationMode"
-              checked={state.generationMode === "period_start"}
-              onChange={() => onChange({ generationMode: "period_start" })}
-              className="accent-primary"
-            />
-            Start of each scheduled month
-          </label>
-          <label className="flex items-center gap-2 text-sm cursor-pointer">
-            <input
-              type="radio"
-              name="generationMode"
-              checked={state.generationMode === "day_of_month"}
-              onChange={() => onChange({ generationMode: "day_of_month" })}
-              className="accent-primary"
-            />
-            <span>Specific day:</span>
-            <Input
-              type="number"
-              min={1}
-              max={31}
-              className="w-16 h-7 text-sm"
-              value={state.generationDayOfMonth}
-              onChange={(e) => onChange({ generationDayOfMonth: parseInt(e.target.value, 10) || 1 })}
-              disabled={state.generationMode !== "day_of_month"}
-              data-testid="pm-wizard-day-of-month"
-            />
-          </label>
-        </div>
-      </div>
+      <PmGenerationModeSelector
+        generationMode={state.generationMode}
+        generationDayOfMonth={state.generationDayOfMonth}
+        onModeChange={(generationMode) => onChange({ generationMode })}
+        onDayChange={(generationDayOfMonth) => onChange({ generationDayOfMonth })}
+        testIdPrefix="pm-wizard"
+      />
 
-      {/* PM Phase 3: Service Window */}
-      <div className="space-y-2">
-        <Label>Service window</Label>
-        <p className="text-xs text-muted-foreground">
-          How many days before/after the ideal date is acceptable for this PM?
-        </p>
-        <div className="flex items-center gap-3">
-          <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Days before</Label>
-            <Input
-              type="number"
-              min={0}
-              max={90}
-              className="w-20 h-7 text-sm"
-              value={state.serviceWindowDaysBefore}
-              onChange={(e) => onChange({ serviceWindowDaysBefore: parseInt(e.target.value, 10) || 0 })}
-              data-testid="pm-wizard-window-before"
-            />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs text-muted-foreground">Days after</Label>
-            <Input
-              type="number"
-              min={0}
-              max={90}
-              className="w-20 h-7 text-sm"
-              value={state.serviceWindowDaysAfter}
-              onChange={(e) => onChange({ serviceWindowDaysAfter: parseInt(e.target.value, 10) || 0 })}
-              data-testid="pm-wizard-window-after"
-            />
-          </div>
-        </div>
+      <PmServiceWindowInputs
+        daysBefore={state.serviceWindowDaysBefore}
+        daysAfter={state.serviceWindowDaysAfter}
+        onDaysBeforeChange={(serviceWindowDaysBefore) => onChange({ serviceWindowDaysBefore })}
+        onDaysAfterChange={(serviceWindowDaysAfter) => onChange({ serviceWindowDaysAfter })}
+        testIdPrefix="pm-wizard"
+      />
+
+      {/* PM Billing (optional) */}
+      <div className="space-y-3">
+        <Label>Billing (optional)</Label>
+        <PmBillingFields
+          billingModel={state.pmBillingModel}
+          billingLabel={state.pmBillingLabel}
+          contractAmount={state.pmContractAmount}
+          onBillingModelChange={(pmBillingModel) => onChange({ pmBillingModel })}
+          onBillingLabelChange={(pmBillingLabel) => onChange({ pmBillingLabel })}
+          onContractAmountChange={(pmContractAmount) => onChange({ pmContractAmount })}
+          testIdPrefix="pm-wizard"
+        />
       </div>
 
       {/* Start Date */}
@@ -872,6 +793,16 @@ function StepReview({ state, pmTemplate }: { state: WizardState; pmTemplate: PmT
         {effectiveEndDate && <Row label="End date" value={effectiveEndDate} />}
         <Row label="Service window" value={`${state.serviceWindowDaysBefore}d before — ${state.serviceWindowDaysAfter}d after`} />
         <Row label="Location PM parts" value={state.includeLocationPmParts ? "Included" : "Not included"} />
+        {state.pmBillingModel && (
+          <Row label="Billing model" value={{
+            per_visit: "Per Visit",
+            monthly_fixed: "Monthly Fixed",
+            annual_prepaid: "Annual Prepaid",
+            do_not_bill: "Do Not Bill",
+          }[state.pmBillingModel] ?? state.pmBillingModel} />
+        )}
+        {state.pmBillingLabel && <Row label="Billing label" value={state.pmBillingLabel} />}
+        {state.pmContractAmount && <Row label="Contract amount" value={`$${state.pmContractAmount}`} />}
         {pmTemplate && <Row label="From template" value={pmTemplate.name} />}
       </div>
 
@@ -1087,13 +1018,13 @@ export default function PMWizardPage() {
         monthsOfYear: state.months,
         generationMode: state.generationMode,
         generationDayOfMonth: state.generationMode === "day_of_month" ? state.generationDayOfMonth : null,
-        autoSchedule: false,
-        scheduledTimeLocal: null,
-        defaultDurationMinutes: null,
         includeLocationPmParts: state.includeLocationPmParts,
         serviceWindowDaysBefore: state.serviceWindowDaysBefore,
         serviceWindowDaysAfter: state.serviceWindowDaysAfter,
-        preferredTechnicianId: null,
+        // PM Billing Disposition: Optional contract-level billing rules
+        pmBillingModel: state.pmBillingModel || null,
+        pmBillingLabel: state.pmBillingLabel.trim() || null,
+        pmContractAmount: state.pmContractAmount || null,
         isActive: true,
       };
       return apiRequest<RecurringJobTemplate>("/api/recurring-templates", {

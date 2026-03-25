@@ -1,6 +1,7 @@
 import { db } from "./db";
-import { eq, and, isNull } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { users, companies, jobs } from "@shared/schema";
+import { activeJobFilter } from "./storage/jobFilters";
 
 /**
  * Legacy storage surface kept for backward compatibility.
@@ -63,13 +64,14 @@ export async function getCompanyById(id: string) {
 export async function getCalendarAssignments(companyId: string) {
   if (!companyId) return [];
   // Return scheduled jobs (scheduledStart IS NOT NULL)
+  // activeJobFilter: exclude soft-deleted and deactivated jobs
   const rows = await db
     .select()
     .from(jobs)
     .where(
       and(
         eq(jobs.companyId, companyId),
-        isNull(jobs.deletedAt)
+        activeJobFilter()
         // Note: Not filtering by scheduledStart here to return ALL jobs
         // Callers can filter as needed
       )

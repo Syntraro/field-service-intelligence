@@ -8,6 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 import { startOfWeek, endOfWeek, eachDayOfInterval, startOfDay, endOfDay, format } from "date-fns";
 import type { CalendarRangeResponseDto, UnscheduledJobDto } from "@shared/types/scheduling";
 import type { DispatchVisit, DispatchTask, Technician } from "./dispatchPreviewTypes";
+import { UNASSIGNED_TECH_ID } from "./dispatchPreviewTypes";
 import {
   mapEventToDispatchVisit,
   mapUnscheduledToDispatchVisit,
@@ -87,14 +88,23 @@ export function useDispatchWeekData(selectedDate: Date) {
     [weekStart.getTime(), weekEnd.getTime()],
   );
 
-  /** Multi-tech: visits grouped by each assigned technicianId -> "yyyy-MM-dd" -> DispatchVisit[] */
+  /** Multi-tech: visits grouped by each assigned technicianId -> "yyyy-MM-dd" -> DispatchVisit[]
+   *  Fix 2026-03-23: Unassigned visits (no technicianId) are bucketed under UNASSIGNED_TECH_ID
+   *  so they remain visible in the week grid instead of silently disappearing. */
   const visitsByTechByDay = useMemo(() => {
     const map = new Map<string, Map<string, DispatchVisit[]>>();
     for (const visit of scheduledVisits) {
       if (!visit.scheduledStart) continue;
       const techIds = visit.technicianIds.length > 0 ? visit.technicianIds : (visit.technicianId ? [visit.technicianId] : []);
-      if (techIds.length === 0) continue;
       const dayKey = getDispatchDayKey(visit.scheduledStart, visit.isAllDay);
+      if (techIds.length === 0) {
+        // Scheduled but unassigned — bucket under virtual Unassigned lane
+        if (!map.has(UNASSIGNED_TECH_ID)) map.set(UNASSIGNED_TECH_ID, new Map());
+        const uMap = map.get(UNASSIGNED_TECH_ID)!;
+        if (!uMap.has(dayKey)) uMap.set(dayKey, []);
+        uMap.get(dayKey)!.push(visit);
+        continue;
+      }
       for (const tid of techIds) {
         if (!map.has(tid)) map.set(tid, new Map());
         const techMap = map.get(tid)!;

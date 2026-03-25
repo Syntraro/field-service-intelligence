@@ -57,6 +57,7 @@ export default function LocationFormModal({
   const [name, setName] = useState("");
   const [siteCode, setSiteCode] = useState("");
   const [street, setStreet] = useState("");
+  const [street2, setStreet2] = useState(""); // Address line 2
   const [city, setCity] = useState("");
   const [province, setProvince] = useState("");
   const [postalCode, setPostalCode] = useState("");
@@ -111,6 +112,7 @@ export default function LocationFormModal({
       setName(activeLocation.location || "");
       setSiteCode(activeLocation.roofLadderCode || "");
       setStreet(activeLocation.address || "");
+      setStreet2(activeLocation.address2 || "");
       setCity(activeLocation.city || "");
       setProvince(activeLocation.province || "");
       setPostalCode(activeLocation.postalCode || "");
@@ -125,6 +127,7 @@ export default function LocationFormModal({
       setName("");
       setSiteCode("");
       setStreet("");
+      setStreet2("");
       setCity("");
       setProvince("");
       setPostalCode("");
@@ -201,6 +204,8 @@ export default function LocationFormModal({
 
     if (siteCode.trim()) payload.roofLadderCode = siteCode.trim();
     if (street.trim()) payload.address = street.trim();
+    // Address line 2: always include (even empty string) to allow clearing
+    payload.address2 = street2.trim() || null;
     if (city.trim()) payload.city = city.trim();
     if (province.trim()) payload.province = province.trim();
     if (postalCode.trim()) payload.postalCode = postalCode.trim();
@@ -274,6 +279,12 @@ export default function LocationFormModal({
                   setPlaceId(place.placeId || null);
                 }}
                 placeholder="Street address"
+                disabled={isResolving}
+              />
+              <Input
+                value={street2}
+                onChange={(e) => setStreet2(e.target.value)}
+                placeholder="Suite, Unit, Floor (optional)"
                 disabled={isResolving}
               />
               <div className="grid grid-cols-2 gap-3">

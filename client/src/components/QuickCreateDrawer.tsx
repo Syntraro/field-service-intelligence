@@ -9,12 +9,13 @@
  * - New Invoice: searchable client/location combobox
  * - New Quote: searchable client/location combobox
  */
-import { useState, useMemo } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { useSurfaceController } from "@/hooks/useSurfaceController";
 import {
   ClipboardList, Users, FileText, Receipt, ChevronRight, Loader2,
-  Check, ChevronsUpDown, AlertCircle,
+  Check, ChevronsUpDown,
 } from "lucide-react";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -28,129 +29,88 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useActivityStore } from "@/lib/activityStore";
 import { cn } from "@/lib/utils";
-import type { Client } from "@shared/schema";
-import AddressAutocomplete from "@/components/ui/AddressAutocomplete";
-import type { PlaceSelectPayload } from "@/components/ui/AddressAutocomplete";
+// 2026-03-21: Client type import removed — no longer needed after createClientMutation removal
+// 2026-03-21: AddressAutocomplete removed — client creation moved to CreateClientModal
 
 type DrawerMode = "menu" | "client" | "invoice" | "quote";
+
+/** Shape returned by GET /api/clients/search-locations */
+interface LocationSearchResult {
+  id: string;
+  company_name: string;
+  location: string | null;
+  address: string | null;
+  city: string | null;
+  parent_company_id: string | null;
+  parent_company_name: string | null;
+  needs_details: boolean;
+  match_rank?: number;
+}
 
 interface QuickCreateDrawerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onNewJob: () => void;
+  /** 2026-03-21: Callback to open canonical CreateClientModal */
+  onNewClient?: () => void;
 }
 
-/** Plan limit response from GET /api/subscriptions/can-add-location */
-interface CanAddLocationResult {
-  allowed: boolean;
-  reason?: string;
-  current?: number;
-  limit?: number;
-  unlimited?: boolean;
-}
-
-export function QuickCreateDrawer({ open, onOpenChange, onNewJob }: QuickCreateDrawerProps) {
+export function QuickCreateDrawer({ open, onOpenChange, onNewJob, onNewClient }: QuickCreateDrawerProps) {
+  // Surface controller: manages abort signals, stale guards, ephemeral cache cleanup
+  const surface = useSurfaceController(open, {
+    queryKeys: ["/api/clients/search-locations"],
+  });
   const { toast } = useToast();
   const { logActivity } = useActivityStore();
   const [, setLocation] = useLocation();
   const [mode, setMode] = useState<DrawerMode>("menu");
 
-  // ── Client form state ──────────────────────────────────────────────────
-  const [clientName, setClientName] = useState("");
-  const [clientAddress, setClientAddress] = useState("");
-  const [clientCity, setClientCity] = useState("");
-  const [clientProvince, setClientProvince] = useState("");
-  const [clientPostal, setClientPostal] = useState("");
-  const [clientContact, setClientContact] = useState("");
-  // Geocoding fields from Google Places
-  const [clientLat, setClientLat] = useState<string | null>(null);
-  const [clientLng, setClientLng] = useState<string | null>(null);
-  const [clientPlaceId, setClientPlaceId] = useState<string | null>(null);
-  const [clientCountry, setClientCountry] = useState<string | null>(null);
+  // 2026-03-21: Client form state removed — client creation now handled by
+  // canonical CreateClientModal opened via onNewClient callback.
 
-  // ── Invoice/Quote: searchable location picker ──────────────────────────
+  // ── Invoice/Quote: server-backed location search (same pattern as QuickAddJobDialog) ──
   const [selectedLocationId, setSelectedLocationId] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [locationSearch, setLocationSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
 
-  // Fetch clients for invoice/quote location picker
-  const { data: clientsData } = useQuery({
-    queryKey: ["/api/clients", "quick-create-picker"],
-    queryFn: () => apiRequest("/api/clients?limit=200"),
+  // Debounce via surface controller — auto-cancelled on close/unmount
+  useEffect(() => {
+    surface.debounce("location-search", () => setDebouncedSearch(locationSearch), 300);
+  }, [locationSearch, surface]);
+
+  // Server search query — tenant-scoped, punctuation-insensitive
+  const { data: searchResults = [], isFetching: isSearching } = useQuery<LocationSearchResult[]>({
+    queryKey: ["/api/clients/search-locations", debouncedSearch],
+    queryFn: async ({ signal }) => {
+      const q = encodeURIComponent(debouncedSearch);
+      const res = await fetch(`/api/clients/search-locations?q=${q}&limit=30`, {
+        credentials: "include",
+        signal,
+      });
+      if (!res.ok) throw new Error("Search failed");
+      return res.json();
+    },
     enabled: mode === "invoice" || mode === "quote",
+    staleTime: 10_000,
   });
-  const clients = ((clientsData as any)?.data || []) as Client[];
-  const activeClients = useMemo(() => clients.filter((c) => !c.inactive), [clients]);
-  const selectedClient = activeClients.find((c) => c.id === selectedLocationId);
 
-  // ── Plan limit check for client creation ───────────────────────────────
-  const { data: canAddLocation } = useQuery<CanAddLocationResult>({
-    queryKey: ["/api/subscriptions/can-add-location"],
-    queryFn: () => apiRequest("/api/subscriptions/can-add-location"),
-    enabled: mode === "client",
-    staleTime: 30_000,
-  });
-  const limitReached = canAddLocation && !canAddLocation.allowed;
+  // Resolve selected location display — may not be in current search results
+  const selectedLocation = searchResults.find((r) => r.id === selectedLocationId) ?? null;
+
+  // 2026-03-21: Plan limit check and createClientMutation removed — handled by CreateClientModal.
 
   // ── Reset helper ───────────────────────────────────────────────────────
   const resetAndClose = () => {
     setMode("menu");
-    setClientName("");
-    setClientAddress("");
-    setClientCity("");
-    setClientProvince("");
-    setClientPostal("");
-    setClientContact("");
-    setClientLat(null);
-    setClientLng(null);
-    setClientPlaceId(null);
-    setClientCountry(null);
     setSelectedLocationId("");
     setPickerOpen(false);
+    setLocationSearch("");
+    setDebouncedSearch("");
     onOpenChange(false);
   };
 
-  // ── Create client mutation ─────────────────────────────────────────────
-  const createClientMutation = useMutation({
-    mutationFn: async () => {
-      return apiRequest<{ client: Client }>("/api/clients/quick-create", {
-        method: "POST",
-        body: JSON.stringify({
-          companyName: clientName.trim(),
-          address: clientAddress.trim() || undefined,
-          city: clientCity.trim() || undefined,
-          province: clientProvince.trim() || undefined,
-          postalCode: clientPostal.trim() || undefined,
-          country: clientCountry || undefined,
-          lat: clientLat || undefined,
-          lng: clientLng || undefined,
-          placeId: clientPlaceId || undefined,
-          contactName: clientContact.trim() || undefined,
-        }),
-      });
-    },
-    onSuccess: (result) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/subscriptions/can-add-location"] });
-      const clientId = result.client?.id;
-      logActivity({
-        type: "created",
-        entityType: "client",
-        entityId: clientId || "",
-        label: "Created Client",
-        meta: clientName.trim(),
-      });
-      toast({ title: "Client Created", description: `${clientName.trim()} has been created.` });
-      resetAndClose();
-      if (clientId) setLocation(`/clients/${clientId}`);
-    },
-    onError: (error: Error) => {
-      // Defensive: if server returns limit error despite pre-check (race condition)
-      if (error.message?.includes("limit")) {
-        queryClient.invalidateQueries({ queryKey: ["/api/subscriptions/can-add-location"] });
-      }
-      toast({ title: "Error", description: error.message || "Failed to create client", variant: "destructive" });
-    },
-  });
+  // 2026-03-21: createClientMutation removed — client creation handled by CreateClientModal.
 
   // ── Create invoice mutation ────────────────────────────────────────────
   const createInvoiceMutation = useMutation({
@@ -158,9 +118,11 @@ export function QuickCreateDrawer({ open, onOpenChange, onNewJob }: QuickCreateD
       return apiRequest<any>("/api/invoices", {
         method: "POST",
         body: JSON.stringify({ locationId: selectedLocationId, status: "draft" }),
+        signal: surface.signal,
       });
     },
     onSuccess: (data) => {
+      if (surface.isStale()) return;
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
       logActivity({
         type: "created",
@@ -191,9 +153,11 @@ export function QuickCreateDrawer({ open, onOpenChange, onNewJob }: QuickCreateD
           expiryDate: expiry.toISOString().split("T")[0],
           lines: [],
         }),
+        signal: surface.signal,
       });
     },
     onSuccess: (data) => {
+      if (surface.isStale()) return;
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
       queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
       logActivity({
@@ -237,6 +201,7 @@ export function QuickCreateDrawer({ open, onOpenChange, onNewJob }: QuickCreateD
                   key={item.key}
                   onClick={() => {
                     if (item.key === "job") { resetAndClose(); onNewJob(); }
+                    else if (item.key === "client") { resetAndClose(); onNewClient?.(); }
                     else setMode(item.key);
                   }}
                   className="w-full flex items-center gap-3 px-3 py-3 rounded-md hover:bg-[#F3F4F6] dark:hover:bg-gray-800/50 transition-colors text-left"
@@ -255,133 +220,10 @@ export function QuickCreateDrawer({ open, onOpenChange, onNewJob }: QuickCreateD
             </div>
           )}
 
-          {/* ── New Client Form ───────────────────────────────────── */}
-          {mode === "client" && (
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (clientName.trim() && !limitReached) createClientMutation.mutate();
-              }}
-              className="space-y-3"
-            >
-              {/* Plan limit warning */}
-              {limitReached && (
-                <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-3 py-2.5">
-                  <AlertCircle className="h-4 w-4 text-amber-600 dark:text-amber-400 mt-0.5 flex-shrink-0" />
-                  <div className="text-sm">
-                    <p className="font-medium text-amber-800 dark:text-amber-300">Location limit reached</p>
-                    <p className="text-amber-700 dark:text-amber-400 text-xs mt-0.5">
-                      You've reached your plan limit of {canAddLocation?.unlimited ? "Unlimited" : (canAddLocation?.limit ?? "—")} locations
-                      {canAddLocation?.current != null && ` (${canAddLocation.current} used)`}.
-                      Delete a location or upgrade your plan to add more.
-                    </p>
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-auto p-0 mt-1 text-xs text-amber-800 dark:text-amber-300 underline"
-                      onClick={() => { resetAndClose(); setLocation("/clients"); }}
-                    >
-                      Manage Locations
-                    </Button>
-                  </div>
-                </div>
-              )}
-
-              <div>
-                <Label htmlFor="qc-company">Company Name *</Label>
-                <Input
-                  id="qc-company"
-                  value={clientName}
-                  onChange={(e) => setClientName(e.target.value)}
-                  placeholder="e.g. Acme HVAC"
-                  autoFocus
-                  data-testid="input-qc-company"
-                />
-              </div>
-
-              {/* Address fields */}
-              <div>
-                <Label htmlFor="qc-address">Street Address</Label>
-                <AddressAutocomplete
-                  id="qc-address"
-                  value={clientAddress}
-                  onChange={(val) => {
-                    setClientAddress(val);
-                    // Clear geo fields only when address is fully cleared
-                    if (!val.trim()) { setClientLat(null); setClientLng(null); setClientPlaceId(null); }
-                  }}
-                  onPlaceSelect={(p: PlaceSelectPayload) => {
-                    setClientAddress(p.street);
-                    if (p.city) setClientCity(p.city);
-                    if (p.province) setClientProvince(p.province);
-                    if (p.postalCode) setClientPostal(p.postalCode);
-                    setClientCountry(p.country || "Canada");
-                    setClientLat(p.lat != null ? String(p.lat) : null);
-                    setClientLng(p.lng != null ? String(p.lng) : null);
-                    setClientPlaceId(p.placeId || null);
-                  }}
-                  placeholder="123 Main St"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <Label htmlFor="qc-city">City</Label>
-                  <Input
-                    id="qc-city"
-                    value={clientCity}
-                    onChange={(e) => setClientCity(e.target.value)}
-                    placeholder="Toronto"
-                    data-testid="input-qc-city"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="qc-province">Province / State</Label>
-                  <Input
-                    id="qc-province"
-                    value={clientProvince}
-                    onChange={(e) => setClientProvince(e.target.value)}
-                    placeholder="ON"
-                    data-testid="input-qc-province"
-                  />
-                </div>
-              </div>
-              <div className="w-1/2">
-                <Label htmlFor="qc-postal">Postal / Zip</Label>
-                <Input
-                  id="qc-postal"
-                  value={clientPostal}
-                  onChange={(e) => setClientPostal(e.target.value)}
-                  placeholder="M5V 1A1"
-                  data-testid="input-qc-postal"
-                />
-              </div>
-
-              {/* Phase 3: Legacy contact summary — canonical management via Contacts tab */}
-              <div>
-                <Label htmlFor="qc-contact">Primary Site Contact <span className="text-muted-foreground font-normal">(summary)</span></Label>
-                <Input
-                  id="qc-contact"
-                  value={clientContact}
-                  onChange={(e) => setClientContact(e.target.value)}
-                  placeholder="Contact name"
-                  data-testid="input-qc-contact"
-                />
-              </div>
-
-              <div className="flex gap-2 pt-2">
-                <Button type="button" variant="outline" onClick={() => setMode("menu")} className="flex-1">Back</Button>
-                <Button
-                  type="submit"
-                  disabled={!clientName.trim() || !!limitReached || createClientMutation.isPending}
-                  className="flex-1"
-                >
-                  {createClientMutation.isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
-                  Create Client
-                </Button>
-              </div>
-            </form>
-          )}
+          {/* 2026-03-21: Inline client form removed — "New Client" menu item now
+              closes drawer and opens canonical CreateClientModal via onNewClient callback.
+              If mode somehow reaches "client" (shouldn't happen), redirect back to menu. */}
+          {mode === "client" && (() => { setMode("menu"); onNewClient?.(); return null; })()}
 
           {/* ── New Invoice / Quote Form (searchable picker) ──────── */}
           {(mode === "invoice" || mode === "quote") && (
@@ -405,10 +247,11 @@ export function QuickCreateDrawer({ open, onOpenChange, onNewJob }: QuickCreateD
                       className="w-full justify-between font-normal"
                       data-testid="select-qc-location"
                     >
-                      {selectedClient ? (
+                      {selectedLocation ? (
                         <span className="truncate">
-                          {selectedClient.companyName}
-                          {selectedClient.location ? ` — ${selectedClient.location}` : ""}
+                          {selectedLocation.company_name}
+                          {selectedLocation.location && selectedLocation.location !== selectedLocation.company_name
+                            ? ` — ${selectedLocation.location}` : ""}
                         </span>
                       ) : (
                         <span className="text-muted-foreground">Search clients…</span>
@@ -417,31 +260,40 @@ export function QuickCreateDrawer({ open, onOpenChange, onNewJob }: QuickCreateD
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent className="w-[360px] p-0" align="start">
-                    <Command>
-                      <CommandInput placeholder="Type to search…" />
+                    <Command shouldFilter={false}>
+                      <CommandInput
+                        placeholder="Type to search…"
+                        value={locationSearch}
+                        onValueChange={setLocationSearch}
+                      />
                       <CommandList>
-                        <CommandEmpty>No clients found.</CommandEmpty>
+                        <CommandEmpty>
+                          {isSearching ? "Searching…" : "No locations found."}
+                        </CommandEmpty>
                         <CommandGroup>
-                          {activeClients.map((c) => (
+                          {searchResults.map((loc) => (
                             <CommandItem
-                              key={c.id}
-                              value={`${c.companyName} ${c.location || ""} ${c.city || ""} ${c.address || ""}`}
+                              key={loc.id}
+                              value={loc.id}
                               onSelect={() => {
-                                setSelectedLocationId(c.id);
+                                setSelectedLocationId(loc.id);
                                 setPickerOpen(false);
                               }}
                             >
-                              <Check className={cn("mr-2 h-4 w-4", selectedLocationId === c.id ? "opacity-100" : "opacity-0")} />
+                              <Check className={cn("mr-2 h-4 w-4", selectedLocationId === loc.id ? "opacity-100" : "opacity-0")} />
                               <div className="flex flex-col min-w-0">
                                 <span className="truncate">
-                                  {c.companyName}
-                                  {c.location && c.location !== c.companyName && (
-                                    <span className="text-muted-foreground font-normal"> — {c.location}</span>
+                                  {loc.company_name}
+                                  {loc.location && loc.location !== loc.company_name && (
+                                    <span className="text-muted-foreground font-normal"> — {loc.location}</span>
                                   )}
                                 </span>
-                                {c.address && (
+                                {loc.parent_company_name && loc.parent_company_name !== loc.company_name && (
+                                  <span className="text-[10px] text-blue-600/70 truncate">{loc.parent_company_name}</span>
+                                )}
+                                {loc.address && (
                                   <span className="text-xs text-muted-foreground truncate">
-                                    {[c.address, c.city].filter(Boolean).join(", ")}
+                                    {[loc.address, loc.city].filter(Boolean).join(", ")}
                                   </span>
                                 )}
                               </div>
@@ -458,7 +310,7 @@ export function QuickCreateDrawer({ open, onOpenChange, onNewJob }: QuickCreateD
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => { setMode("menu"); setSelectedLocationId(""); setPickerOpen(false); }}
+                  onClick={() => { setMode("menu"); setSelectedLocationId(""); setPickerOpen(false); setLocationSearch(""); setDebouncedSearch(""); }}
                   className="flex-1"
                 >
                   Back

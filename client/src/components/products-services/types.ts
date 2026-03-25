@@ -11,6 +11,8 @@ export interface Part {
   taxCode?: string | null;
   category?: string | null;
   isActive?: boolean | null;
+  estimatedDurationMinutes?: number | null; // Service duration in minutes (internal, not synced to QBO)
+  trackInventory?: boolean | null; // Inventory tracking toggle (future use)
   qboItemId?: string | null;
   qboSyncToken?: string | null;
   updatedAt?: string | null;
@@ -28,6 +30,7 @@ export interface ProductFormData {
   taxCode: string;
   category: string;
   isActive: boolean;
+  estimatedDurationMinutes: string; // Stored as string in form, parsed to int on save
 }
 
 export interface PartsResponse {
@@ -40,7 +43,7 @@ export interface PartsResponse {
   };
 }
 
-export type SortField = "name" | "type" | "category" | "cost" | "unitPrice";
+export type SortField = "name" | "type" | "category" | "cost" | "unitPrice" | "estimatedDurationMinutes";
 export type SortDirection = "asc" | "desc";
 export type StatusFilter = "all" | "active" | "archived";
 export type TypeFilter = "all" | "product" | "service";
@@ -70,6 +73,7 @@ export const defaultFormData: ProductFormData = {
   taxCode: "",
   category: "",
   isActive: true,
+  estimatedDurationMinutes: "",
 };
 
 export function formatCurrency(value: string | null | undefined): string {
@@ -77,4 +81,13 @@ export function formatCurrency(value: string | null | undefined): string {
   const num = parseFloat(value);
   if (isNaN(num)) return "-";
   return `$${num.toFixed(2)}`;
+}
+
+/** Format duration in minutes to a compact display string */
+export function formatDuration(minutes: number | null | undefined): string {
+  if (minutes === null || minutes === undefined) return "-";
+  if (minutes < 60) return `${minutes}m`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }

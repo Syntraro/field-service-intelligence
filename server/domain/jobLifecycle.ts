@@ -18,7 +18,7 @@
  * - "in_progress"  - Work actively being performed
  * - "on_hold"      - Job is blocked (requires holdReason)
  * - "on_route"     - Technician traveling to job site
- * - "needs_review" - Needs supervisor/manager review
+ * - (needs_review: removed — migrated to on_hold)
  *
  * INVARIANT: openSubStatus must be NULL when status !== 'open'
  *
@@ -31,9 +31,102 @@
  * =============================================================================
  */
 
-import type { JobStatus, Job, OpenSubStatus } from "@shared/schema";
-import { normalizeJobStatus } from "@shared/schema";
-import { JOB_STATUS_FLOW, CLOSEABLE_STATUSES, TERMINAL_STATUSES } from "../statusRules";
+import type { JobStatus, Job, OpenSubStatus, InvoiceStatus } from "@shared/schema";
+
+// ============================================================================
+// Lifecycle Flow Maps (formerly in statusRules.ts — consolidated 2026-03-19)
+// ============================================================================
+
+/**
+ * Job Status Flow — valid transitions between lifecycle states.
+ * open → completed, invoiced, archived
+ * completed → invoiced, archived, open (reopen)
+ * invoiced → archived only (must void invoice to reopen)
+ * archived → open (reopen, rare)
+ */
+export const JOB_STATUS_FLOW: Record<JobStatus, JobStatus[]> = {
+  open: ["completed", "invoiced", "archived"],
+  completed: ["invoiced", "archived", "open"],
+  invoiced: ["archived"],
+  archived: ["open"],
+};
+
+/**
+ * Valid transitions for openSubStatus when status = 'open'.
+ * null represents no sub-status (default state).
+ */
+export const OPEN_SUB_STATUS_FLOW: Record<OpenSubStatus | "null", (OpenSubStatus | null)[]> = {
+  null: ["in_progress", "on_hold", "on_route"],
+  in_progress: [null, "on_hold"],
+  on_hold: [null, "in_progress"],
+  on_route: [null, "in_progress"],
+};
+
+/** States that can be "closed" (via /api/jobs/:id/close) */
+export const CLOSEABLE_STATUSES: JobStatus[] = ["open"];
+
+/** States that can be "reopened" — invoiced intentionally excluded */
+export const REOPENABLE_STATUSES: JobStatus[] = ["completed", "archived"];
+
+/** Terminal states — jobs considered "finished" */
+export const JOB_TERMINAL_STATUSES: JobStatus[] = ["invoiced", "archived"];
+
+/** Active states — jobs in progress */
+export const ACTIVE_STATUSES: JobStatus[] = ["open"];
+
+/**
+ * Invoice Status Flow — valid transitions between invoice statuses.
+ * Terminal states: paid, voided.
+ */
+export const INVOICE_STATUS_FLOW: Record<InvoiceStatus, InvoiceStatus[]> = {
+  draft: ["awaiting_payment", "sent", "voided"],
+  awaiting_payment: ["partial_paid", "paid", "voided"],
+  sent: ["partial_paid", "paid", "voided"],
+  partial_paid: ["paid", "voided"],
+  paid: [],
+  voided: [],
+};
+
+// ============================================================================
+// Lifecycle Assertions (formerly in statusRules.ts — consolidated 2026-03-19)
+// ============================================================================
+
+/**
+ * Assert that a job status transition is valid per the status flow.
+ * Throws on invalid transition.
+ */
+export function assertJobStatusTransition(from: JobStatus | string, to: JobStatus | string) {
+  const allowed = JOB_STATUS_FLOW[from as JobStatus] ?? [];
+  if (!allowed.includes(to as JobStatus)) {
+    throw new Error(`Invalid job status transition: ${from} -> ${to}`);
+  }
+}
+
+/**
+ * Assert that an openSubStatus transition is valid.
+ * Only valid when status = 'open'.
+ */
+export function assertOpenSubStatusTransition(
+  from: OpenSubStatus | null,
+  to: OpenSubStatus | null
+) {
+  const fromKey = from === null ? "null" : from;
+  const allowed = OPEN_SUB_STATUS_FLOW[fromKey] ?? [];
+  if (!allowed.includes(to)) {
+    throw new Error(`Invalid openSubStatus transition: ${from} -> ${to}`);
+  }
+}
+
+/**
+ * Assert that an invoice status transition is valid.
+ * Throws on invalid transition.
+ */
+export function assertInvoiceStatusTransition(from: InvoiceStatus, to: InvoiceStatus) {
+  const allowed = INVOICE_STATUS_FLOW[from] ?? [];
+  if (!allowed.includes(to)) {
+    throw new Error(`Invalid invoice status transition: ${from} -> ${to}`);
+  }
+}
 
 // ============================================================================
 // Types
@@ -47,7 +140,8 @@ export type LifecycleIntent =
   | { type: "CANCEL_JOB"; reason?: string }
   | { type: "ARCHIVE_JOB" }
   | { type: "REOPEN_JOB"; targetStatus?: JobStatus; targetOpenSubStatus?: OpenSubStatus }
-  | { type: "UNDO_CLOSE" };
+  | { type: "UNDO_CLOSE" }
+  | { type: "MARK_INVOICED"; invoiceId: string };
 
 /**
  * Actor performing the transition
@@ -100,9 +194,12 @@ export class LifecycleTransitionError extends Error {
 // ============================================================================
 
 /**
- * Roles allowed to perform lifecycle transitions (close/cancel/archive)
+ * Roles allowed to perform lifecycle transitions (close/cancel/archive).
+ * "system" is used by the orchestrator for automated transitions (e.g.,
+ * reconciliation auto-close after last visit completion). It is NOT a
+ * user-facing role — it can only be constructed server-side.
  */
-export const LIFECYCLE_ROLES = ["owner", "admin", "dispatcher", "manager"] as const;
+export const LIFECYCLE_ROLES = ["owner", "admin", "dispatcher", "manager", "system"] as const;
 
 /**
  * Undo window in milliseconds (20 seconds)
@@ -141,27 +238,22 @@ export function assertLifecyclePermission(actor: TransitionActor): void {
  * Check if a status transition is valid per the status flow rules
  */
 export function isValidTransition(from: JobStatus, to: JobStatus): boolean {
-  const normalizedFrom = normalizeJobStatus(from);
-  const normalizedTo = normalizeJobStatus(to);
-
-  const allowed = JOB_STATUS_FLOW[normalizedFrom] ?? [];
-  return allowed.includes(normalizedTo);
+  const allowed = JOB_STATUS_FLOW[from] ?? [];
+  return allowed.includes(to);
 }
 
 /**
  * Check if job can be closed (is in a closeable state)
  */
 export function canClose(status: JobStatus | string): boolean {
-  const normalized = normalizeJobStatus(status);
-  return CLOSEABLE_STATUSES.includes(normalized);
+  return CLOSEABLE_STATUSES.includes(status as JobStatus);
 }
 
 /**
  * Check if status is terminal
  */
 export function isTerminalStatus(status: JobStatus | string): boolean {
-  const normalized = normalizeJobStatus(status);
-  return TERMINAL_STATUSES.includes(normalized);
+  return JOB_TERMINAL_STATUSES.includes(status as JobStatus);
 }
 
 // ============================================================================
@@ -231,7 +323,7 @@ export function applyLifecycleTransition(
   // RBAC check first
   assertLifecyclePermission(actor);
 
-  const currentStatus = normalizeJobStatus(job.status);
+  const currentStatus = job.status as JobStatus;
 
   switch (intent.type) {
     case "CLOSE_JOB":
@@ -248,6 +340,9 @@ export function applyLifecycleTransition(
 
     case "UNDO_CLOSE":
       return applyUndoCloseTransition(job, currentStatus, actor);
+
+    case "MARK_INVOICED":
+      return applyMarkInvoicedTransition(job, currentStatus, intent, actor);
 
     default:
       throw new LifecycleTransitionError(
@@ -339,10 +434,16 @@ function applyCloseTransition(
         );
       }
       finalStatus = "invoiced";
+      // 2026-03-18: Harmonized terminal metadata with MARK_INVOICED —
+      // previousStatus, closedAt, closedBy were missing (accidental omission).
+      // These are required for undo-close window and audit trail consistency.
       patch = {
         ...schedulePatch,
         ...openSubStatusPatch,
         status: "invoiced",
+        previousStatus: currentStatus,
+        closedAt: new Date(),
+        closedBy: actor.userId,
         invoiceId: intent.invoiceId,
         // Part E: Update PM billing status when invoicing a PM job
         ...(job.pmBillingDisposition ? { pmBillingStatus: "invoiced" } : {}),
@@ -556,6 +657,77 @@ function applyUndoCloseTransition(
 }
 
 // ============================================================================
+// Mark Invoiced Transition
+// ============================================================================
+
+/**
+ * Mark a job as invoiced — standalone canonical lifecycle transition.
+ *
+ * Unlike CLOSE_JOB mode=invoice_now (which bundles invoice creation + close),
+ * this intent transitions a job to "invoiced" status AFTER an invoice has
+ * already been created and linked separately.
+ *
+ * Allowed source states: open, completed
+ * Idempotent: returns no-op if already invoiced
+ * Forbidden: archived (must reopen first)
+ * Requires: invoiceId
+ */
+function applyMarkInvoicedTransition(
+  job: Job,
+  currentStatus: JobStatus,
+  intent: Extract<LifecycleIntent, { type: "MARK_INVOICED" }>,
+  actor: TransitionActor
+): LifecycleTransitionResult {
+  // Idempotent: already invoiced → no-op
+  if (currentStatus === "invoiced") {
+    return {
+      patch: {},
+      auditEvents: [],
+      finalStatus: "invoiced",
+    };
+  }
+
+  // Forbidden: archived jobs cannot be invoiced directly
+  if (currentStatus === "archived") {
+    throw new LifecycleTransitionError(
+      "INVALID_STATE",
+      `Cannot mark archived job as invoiced. Reopen the job first.`
+    );
+  }
+
+  // Allowed: open or completed → invoiced
+  if (currentStatus !== "open" && currentStatus !== "completed") {
+    throw new LifecycleTransitionError(
+      "INVALID_STATE",
+      `Cannot mark job as invoiced from status '${currentStatus}'.`
+    );
+  }
+
+  const schedulePatch = getScheduleClearingPatch();
+  const openSubStatusPatch = getOpenSubStatusClearingPatch();
+
+  const patch: Partial<Job> = {
+    ...schedulePatch,
+    ...openSubStatusPatch,
+    status: "invoiced",
+    invoiceId: intent.invoiceId,
+    previousStatus: currentStatus,
+    closedAt: new Date(),
+    closedBy: actor.userId,
+    ...(job.pmBillingDisposition ? { pmBillingStatus: "invoiced" } : {}),
+  };
+
+  const auditEvents: LifecycleAuditEvent[] = [{
+    fromStatus: currentStatus,
+    toStatus: "invoiced",
+    action: "mark_invoiced",
+    meta: { invoiceId: intent.invoiceId },
+  }];
+
+  return { patch, auditEvents, finalStatus: "invoiced" };
+}
+
+// ============================================================================
 // Sanity Check Utilities
 // ============================================================================
 
@@ -580,7 +752,7 @@ export interface LifecycleViolation {
  */
 export function detectLifecycleViolations(job: Job): LifecycleViolation[] {
   const violations: LifecycleViolation[] = [];
-  const status = normalizeJobStatus(job.status);
+  const status = job.status as JobStatus;
 
   // Terminal jobs should not have scheduling fields
   if (isTerminalStatus(status) && hasScheduleFields(job)) {
@@ -619,7 +791,7 @@ export function detectLifecycleViolations(job: Job): LifecycleViolation[] {
  * Get repair patch for lifecycle violations
  */
 export function getLifecycleRepairPatch(job: Job): Partial<Job> | null {
-  const status = normalizeJobStatus(job.status);
+  const status = job.status as JobStatus;
   let patch: Partial<Job> = {};
   let needsRepair = false;
 

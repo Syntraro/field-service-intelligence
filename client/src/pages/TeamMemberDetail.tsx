@@ -312,6 +312,7 @@ export default function TeamMemberDetail() {
     onSuccess: () => {
       toast({ title: "Working hours updated successfully" });
       queryClient.invalidateQueries({ queryKey: [`/api/team/${userId}`] });
+      queryClient.invalidateQueries({ queryKey: ["/api/team/technicians/working-hours"] });
     },
     onError: (error: any) => {
       toast({ variant: "destructive", title: "Error", description: error.message });
@@ -346,6 +347,10 @@ export default function TeamMemberDetail() {
       setShowDeactivateDialog(false);
       queryClient.invalidateQueries({ queryKey: [`/api/team/${userId}`] });
       queryClient.invalidateQueries({ queryKey: ["/api/team"] });
+      // 2026-03-24: Invalidate schedulable technicians cache so dispatch board,
+      // task board, and scheduling dialogs immediately reflect the disabled state.
+      queryClient.invalidateQueries({ queryKey: ["/api/team/technicians"], exact: false });
+      queryClient.invalidateQueries({ queryKey: ["/api/team/technicians/working-hours"], exact: false });
     },
     onError: (error: any) => {
       toast({ variant: "destructive", title: "Error", description: error.message });
@@ -363,6 +368,10 @@ export default function TeamMemberDetail() {
       setShowActivateDialog(false);
       queryClient.invalidateQueries({ queryKey: [`/api/team/${userId}`] });
       queryClient.invalidateQueries({ queryKey: ["/api/team"] });
+      // 2026-03-24: Invalidate schedulable technicians cache so dispatch board,
+      // task board, and scheduling dialogs immediately reflect the re-enabled state.
+      queryClient.invalidateQueries({ queryKey: ["/api/team/technicians"], exact: false });
+      queryClient.invalidateQueries({ queryKey: ["/api/team/technicians/working-hours"], exact: false });
     },
     onError: (error: any) => {
       toast({ variant: "destructive", title: "Error", description: error.message });
@@ -701,17 +710,6 @@ export default function TeamMemberDetail() {
                     Reset Password
                   </Button>
                 </div>
-                <div className="flex items-center justify-between pt-4 border-t">
-                  <div>
-                    <p className="font-medium">Use Custom Schedule</p>
-                    <p className="text-sm text-muted-foreground">Override default company working hours for this member</p>
-                  </div>
-                  <Switch
-                    checked={useCustomSchedule}
-                    onCheckedChange={setUseCustomSchedule}
-                    data-testid="switch-custom-schedule"
-                  />
-                </div>
                 <div className="flex justify-end pt-4">
                   <Button
                     onClick={() => updateBasicMutation.mutate({ ...basicInfo, useCustomSchedule, isSchedulable })}
@@ -746,6 +744,20 @@ export default function TeamMemberDetail() {
                     data-testid="switch-is-schedulable"
                   />
                 </div>
+                <div className="flex items-center justify-between pt-4 border-t">
+                  <div className="space-y-0.5">
+                    <Label className="text-base font-medium">Use Custom Schedule</Label>
+                    <p className="text-sm text-muted-foreground">Override default company working hours for this member</p>
+                  </div>
+                  <Switch
+                    checked={useCustomSchedule}
+                    onCheckedChange={(checked) => {
+                      setUseCustomSchedule(checked);
+                      updateBasicMutation.mutate({ ...basicInfo, useCustomSchedule: checked, isSchedulable });
+                    }}
+                    data-testid="switch-custom-schedule"
+                  />
+                </div>
               </CardContent>
             </Card>
 
@@ -774,7 +786,7 @@ export default function TeamMemberDetail() {
                   <div className="p-4 bg-muted rounded-lg mb-4 flex items-start gap-3">
                     <Info className="h-5 w-5 text-muted-foreground mt-0.5" />
                     <p className="text-sm text-muted-foreground">
-                      This member is using the default company schedule. Enable "Use Custom Schedule" on the Basic Info tab to customize their hours.
+                      This member is using the default company schedule. Enable "Use Custom Schedule" above to customize their hours.
                     </p>
                   </div>
                 )}

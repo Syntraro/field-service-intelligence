@@ -49,12 +49,11 @@ export function useProductsServices(options: UseProductsServicesOptions = {}) {
 
   // Fetch items
   const { data: partsData, isLoading, refetch } = useQuery<Part[] | PartsResponse>({
-    queryKey: ["/api/items", { limit: 200 }],
+    queryKey: ["/api/items", { limit: 1000 }],
     queryFn: async () => {
-      const res = await fetch("/api/items?limit=200", { credentials: "include" });
+      const res = await fetch("/api/items?limit=1000", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch parts");
       const json = await res.json();
-      console.log("[ProductsServices] API response:", JSON.stringify(json).slice(0, 200));
       return json;
     },
   });
@@ -114,6 +113,10 @@ export function useProductsServices(options: UseProductsServicesOptions = {}) {
         case "unitPrice":
           aVal = parseFloat(a.unitPrice || "0");
           bVal = parseFloat(b.unitPrice || "0");
+          break;
+        case "estimatedDurationMinutes":
+          aVal = a.estimatedDurationMinutes ?? -1;
+          bVal = b.estimatedDurationMinutes ?? -1;
           break;
       }
 
@@ -319,7 +322,13 @@ export function useProductsServices(options: UseProductsServicesOptions = {}) {
   }, []);
 
   const handleInlineEditSave = useCallback((id: string, field: string) => {
-    updateMutation.mutate({ id, data: { [field]: inlineEditValue } });
+    let value: any = inlineEditValue;
+    // Parse duration as integer for API (nullable)
+    if (field === "estimatedDurationMinutes") {
+      const parsed = inlineEditValue.trim() ? parseInt(inlineEditValue, 10) : null;
+      value = (parsed !== null && !isNaN(parsed) && parsed >= 0) ? parsed : null;
+    }
+    updateMutation.mutate({ id, data: { [field]: value } });
   }, [updateMutation, inlineEditValue]);
 
   const handleInlineEditCancel = useCallback(() => {
@@ -358,6 +367,11 @@ export function useProductsServices(options: UseProductsServicesOptions = {}) {
       return false;
     }
 
+    // Parse duration: empty string → null, otherwise integer
+    const parsedDuration = formData.estimatedDurationMinutes.trim()
+      ? parseInt(formData.estimatedDurationMinutes, 10)
+      : null;
+
     const data = {
       type: formData.type,
       name: formData.name,
@@ -370,6 +384,7 @@ export function useProductsServices(options: UseProductsServicesOptions = {}) {
       taxCode: formData.taxCode || null,
       category: formData.category || null,
       isActive: formData.isActive,
+      estimatedDurationMinutes: (parsedDuration !== null && !isNaN(parsedDuration) && parsedDuration >= 0) ? parsedDuration : null,
     };
 
     if (editingProduct) {

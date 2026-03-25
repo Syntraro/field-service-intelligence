@@ -82,19 +82,38 @@ export function normalizeCompanyAddress(input: Record<string, unknown>): Record<
 }
 
 /**
- * Normalize Canadian postal code to uppercase with space (A1A 1A1).
- * Passes through US ZIP codes and other values unchanged.
+ * Normalize a postal/zip code:
+ *   1. Trim whitespace
+ *   2. Remove non-alphanumeric characters (dashes, dots, etc.)
+ *   3. Uppercase
+ *   4. If the 6-char result matches Canadian A1A1A1 pattern, insert space → A1A 1A1
+ *
+ * Examples:
+ *   "L4N6P1"  → "L4N 6P1"
+ *   "l4n6p1"  → "L4N 6P1"
+ *   "L4N-6P1" → "L4N 6P1"
+ *   "90210"   → "90210"
+ *   ""        → ""
  */
+const CA_STRIPPED_RE = /^[A-Z]\d[A-Z]\d[A-Z]\d$/;
+
 export function normalizePostalCode(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return trimmed;
 
-  // Canadian postal code: normalize to uppercase and insert space
+  // Already valid Canadian format with space — just uppercase
   if (CA_POSTAL_RE.test(trimmed)) {
     const upper = trimmed.toUpperCase().replace(/\s/g, "");
     return `${upper.slice(0, 3)} ${upper.slice(3)}`;
   }
 
+  // Strip non-alphanumeric, uppercase, and check if it's a Canadian code without space
+  const stripped = trimmed.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  if (stripped.length === 6 && CA_STRIPPED_RE.test(stripped)) {
+    return `${stripped.slice(0, 3)} ${stripped.slice(3)}`;
+  }
+
+  // US ZIP or other — return trimmed original
   return trimmed;
 }
 

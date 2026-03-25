@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ListToolbar } from "@/components/layout/ListToolbar";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
-import { FixedSizeList } from "react-window";
+// Removed FixedSizeList (react-window) — plain rendering eliminates double-scroll UX
 import { apiRequest } from "@/lib/queryClient";
 import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
 import { TablePageShell } from "@/components/ui/table-page-shell";
@@ -32,9 +32,8 @@ const MONTH_NAMES = [
   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
-// Virtualization constants — row height matches original table row padding
+// Row height for consistent styling (no virtualization — page scroll handles everything)
 const ROW_HEIGHT = 52;
-const MAX_LIST_HEIGHT = 700;
 const LOCATIONS_GRID_COLS = "40px repeat(6, minmax(0, 1fr))";
 
 export default function Locations() {
@@ -256,56 +255,51 @@ export default function Locations() {
             No locations found
           </div>
         ) : (
-          <FixedSizeList
-            height={Math.min(filteredLocations.length * ROW_HEIGHT, MAX_LIST_HEIGHT)}
-            itemCount={filteredLocations.length}
-            itemSize={ROW_HEIGHT}
-            width="100%"
-          >
-            {({ index, style }) => {
-              const loc = filteredLocations[index];
-              return (
-                <div
-                  style={{ ...style, gridTemplateColumns: LOCATIONS_GRID_COLS }}
-                  className={`grid items-center ${tableRowClass}`}
-                  onClick={() => setLocation(`/locations/${loc.id}`)}
-                  data-testid={`row-location-${loc.id}`}
-                >
-                  <div className="flex justify-center" onClick={(e) => e.stopPropagation()}>
-                    <Checkbox
-                      checked={selectedRows.has(loc.id)}
-                      onCheckedChange={() => toggleRow(loc.id)}
-                      aria-label={`Select ${loc.location || loc.companyName}`}
-                    />
-                  </div>
-                  <div className="px-4 font-medium truncate">{loc.companyName}</div>
-                  <div className="px-4 text-muted-foreground truncate">{loc.location || "—"}</div>
-                  <div className="px-4">
-                    <div className="flex flex-wrap gap-1">
-                      {(locationTagsList.get(loc.id) ?? []).map((t) => (
-                        <span
-                          key={t.tagId}
-                          className="inline-flex rounded-full px-1.5 py-0.5 text-[10px] font-medium text-white"
-                          style={{ backgroundColor: t.tagColor }}
-                        >
-                          {t.tagName}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="px-4 text-muted-foreground truncate">{loc.address || "—"}</div>
-                  <div className="px-4">
-                    <span className={`text-xs font-medium ${loc.inactive ? "text-muted-foreground" : "text-green-600"}`}>
-                      {loc.inactive ? "Inactive" : "Active"}
-                    </span>
-                  </div>
-                  <div className="px-4 text-sm truncate">
-                    {formatMonths((loc as any).selectedMonths ?? null)}
+          /* Fix: plain rendering instead of FixedSizeList eliminates double-scroll.
+             Page scroll handles everything; no internal scroll region. */
+          <div>
+            {filteredLocations.map((loc) => (
+              <div
+                key={loc.id}
+                style={{ height: ROW_HEIGHT, gridTemplateColumns: LOCATIONS_GRID_COLS }}
+                className={`grid items-center ${tableRowClass}`}
+                onClick={() => setLocation(`/locations/${loc.id}`)}
+                data-testid={`row-location-${loc.id}`}
+              >
+                <div className="flex justify-center" onClick={(e) => e.stopPropagation()}>
+                  <Checkbox
+                    checked={selectedRows.has(loc.id)}
+                    onCheckedChange={() => toggleRow(loc.id)}
+                    aria-label={`Select ${loc.location || loc.companyName}`}
+                  />
+                </div>
+                <div className="px-4 font-medium truncate">{loc.companyName}</div>
+                <div className="px-4 text-muted-foreground truncate">{loc.location || "—"}</div>
+                <div className="px-4">
+                  <div className="flex flex-wrap gap-1">
+                    {(locationTagsList.get(loc.id) ?? []).map((t) => (
+                      <span
+                        key={t.tagId}
+                        className="inline-flex rounded-full px-1.5 py-0.5 text-[10px] font-medium text-white"
+                        style={{ backgroundColor: t.tagColor }}
+                      >
+                        {t.tagName}
+                      </span>
+                    ))}
                   </div>
                 </div>
-              );
-            }}
-          </FixedSizeList>
+                <div className="px-4 text-muted-foreground truncate">{loc.address || "—"}</div>
+                <div className="px-4">
+                  <span className={`text-xs font-medium ${loc.inactive ? "text-muted-foreground" : "text-green-600"}`}>
+                    {loc.inactive ? "Inactive" : "Active"}
+                  </span>
+                </div>
+                <div className="px-4 text-sm truncate">
+                  {formatMonths((loc as any).selectedMonths ?? null)}
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </ListSurface>
 

@@ -1,10 +1,9 @@
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Plus, Building2, CheckCircle2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ListToolbar } from "@/components/layout/ListToolbar";
-import { Badge } from "@/components/ui/badge";
 import {
   Table,
   TableBody,
@@ -26,27 +25,10 @@ interface SuppliersResponse {
   total: number;
 }
 
-function getQboStatusBadge(qboVendorId: string | null, qboSyncStatus: string) {
-  if (!qboVendorId) {
-    return { label: "Not Synced", variant: "outline" as const };
-  }
-
-  switch (qboSyncStatus) {
-    case "SYNCED":
-      return { label: "Synced", variant: "default" as const };
-    case "PENDING":
-      return { label: "Pending", variant: "secondary" as const };
-    case "ERROR":
-      return { label: "Error", variant: "destructive" as const };
-    default:
-      return { label: "Not Synced", variant: "outline" as const };
-  }
-}
-
 export default function SuppliersListPage() {
   const [, setLocation] = useLocation();
   const [searchQuery, setSearchQuery] = useState("");
-  
+
   const { data, isLoading } = useQuery<SuppliersResponse>({
     queryKey: ["/api/suppliers", searchQuery],
     queryFn: async () => {
@@ -71,7 +53,6 @@ export default function SuppliersListPage() {
     return locations.find(loc => loc.isPrimary) || locations[0];
   };
 
-  
   return (
     <TablePageShell
       title="Suppliers"
@@ -82,14 +63,13 @@ export default function SuppliersListPage() {
         </Button>
       }
     >
-      {/* List Pages Refactor: Consolidated toolbar with search */}
       <ListToolbar
         searchValue={searchQuery}
         onSearchChange={setSearchQuery}
         searchPlaceholder="Search suppliers..."
       />
 
-      {/* Table */}
+      {/* Table — QBO Status column removed, typography standardized to match Jobs/Clients */}
       <ListSurface>
         <Table>
           <TableHeader>
@@ -98,20 +78,19 @@ export default function SuppliersListPage() {
               <TableHead>Primary Location</TableHead>
               <TableHead>Phone</TableHead>
               <TableHead>Email</TableHead>
-              <TableHead>QBO Status</TableHead>
               <TableHead className="text-center">Active</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                <TableCell colSpan={5} className="text-center text-sm text-muted-foreground py-8">
                   Loading suppliers...
                 </TableCell>
               </TableRow>
             ) : suppliers.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                <TableCell colSpan={5} className="text-center text-sm text-muted-foreground py-8">
                   {searchQuery.trim()
                     ? `No suppliers found matching "${searchQuery}"`
                     : "No suppliers yet. Click 'New Supplier' to get started."}
@@ -120,7 +99,6 @@ export default function SuppliersListPage() {
             ) : (
               suppliers.map((supplier) => {
                 const primaryLocation = getPrimaryLocation(supplier.locations);
-                const qboStatus = getQboStatusBadge(supplier.qboVendorId, supplier.qboSyncStatus);
 
                 return (
                   <TableRow
@@ -128,18 +106,18 @@ export default function SuppliersListPage() {
                     className="cursor-pointer"
                     onClick={() => setLocation(`/suppliers/${supplier.id}`)}
                   >
-                    <TableCell className="font-medium">
+                    <TableCell className="text-sm font-medium">
                       <div className="flex items-center gap-2">
                         <Building2 className="h-4 w-4 text-muted-foreground" />
                         {supplier.name}
                       </div>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="text-sm">
                       {primaryLocation ? (
-                        <div className="text-sm">
+                        <div>
                           <div>{primaryLocation.name}</div>
                           {primaryLocation.city && (
-                            <div className="text-muted-foreground">
+                            <div className="text-muted-foreground text-xs">
                               {primaryLocation.city}
                               {primaryLocation.province && `, ${primaryLocation.province}`}
                             </div>
@@ -149,20 +127,17 @@ export default function SuppliersListPage() {
                         <span className="text-muted-foreground">—</span>
                       )}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="text-sm">
                       {supplier.phone || <span className="text-muted-foreground">—</span>}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="text-sm">
                       {supplier.email || <span className="text-muted-foreground">—</span>}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant={qboStatus.variant}>{qboStatus.label}</Badge>
                     </TableCell>
                     <TableCell className="text-center">
                       {supplier.isActive ? (
-                        <CheckCircle2 className="h-5 w-5 text-green-500 mx-auto" />
+                        <CheckCircle2 className="h-4 w-4 text-green-500 mx-auto" />
                       ) : (
-                        <XCircle className="h-5 w-5 text-red-500 mx-auto" />
+                        <XCircle className="h-4 w-4 text-red-400 mx-auto" />
                       )}
                     </TableCell>
                   </TableRow>
@@ -173,7 +148,6 @@ export default function SuppliersListPage() {
         </Table>
       </ListSurface>
 
-      {/* Summary */}
       {!isLoading && suppliers.length > 0 && (
         <div className="text-sm text-muted-foreground">
           Showing {suppliers.length} {suppliers.length === 1 ? "supplier" : "suppliers"}

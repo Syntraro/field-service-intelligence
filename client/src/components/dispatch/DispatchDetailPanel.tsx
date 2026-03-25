@@ -13,7 +13,7 @@ import { useState, useCallback, useMemo, useRef } from "react";
 import { format, addMinutes } from "date-fns";
 import { Link } from "wouter";
 import {
-  X, Clock, MapPin, Phone, FileText,
+  X, Clock, MapPin, Phone, FileText, Pencil, Save,
   ExternalLink, CalendarDays, AlertTriangle, KeyRound,
   ClipboardList, Truck, Users, CheckCircle2,
   RotateCcw, Trash2, ChevronDown, Search,
@@ -22,12 +22,16 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Calendar } from "@/components/ui/calendar";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { DispatchVisit, DispatchTask, VisitStatus, Technician } from "./dispatchPreviewTypes";
-import { visitStatusColor, formatDuration, isCompletedStatus, SNAP_MINUTES, TIMELINE_START_HOUR, TIMELINE_END_HOUR } from "./dispatchPreviewUtils";
+import { visitStatusColor, formatDuration, isCompletedStatus, normalizeVisitStatusForDisplay, SNAP_MINUTES, TIMELINE_START_HOUR, TIMELINE_END_HOUR, jobStateColor, jobStateLabel } from "./dispatchPreviewUtils";
+import { visitStatusLabel } from "@/lib/visitStatusDisplay";
 import { clampResizeEnd, findNearestValidSlot } from "./dispatchOverlapUtils";
+// 2026-03-21: NeedsFollowUpModal removed — lifecycle actions now routed through
+// canonical EditVisitModal opened via onOpenVisitEditor callback.
 
 type VisitProps = {
   entityType: "visit";
@@ -41,12 +45,17 @@ type VisitProps = {
   onResize?: (visit: DispatchVisit, newEndTime: string) => void;
   onUpdateCrew?: (visit: DispatchVisit, technicianIds: string[]) => void;
   onUpdateStatus?: (visit: DispatchVisit, status: string) => void;
-  onDeleteVisit?: (visit: DispatchVisit) => void;
+  onUpdateVisitNotes?: (visit: DispatchVisit, notes: string) => void;
+  /** 2026-03-21: Opens canonical EditVisitModal for lifecycle actions (complete, reopen, delete).
+   *  Replaces former onCompleteVisitWithOutcome / onReopenVisit / onDeleteVisit props. */
+  onOpenVisitEditor?: (visit: DispatchVisit) => void;
   /** Item 4: Handler for scheduling an unscheduled visit from the detail panel.
    *  Item 2: Supports multi-tech — additionalTechIds for crew assignment after scheduling. */
   onScheduleFromPanel?: (visit: DispatchVisit, startAt: string, endAt: string, techId: string, additionalTechIds?: string[]) => void;
   /** Dispatch board's currently selected date — prefills scheduling form date */
   boardDate?: Date;
+  /** When "popover", renders as a compact overlay instead of a full-height sidebar */
+  mode?: "sidebar" | "popover";
 };
 
 type TaskProps = {
@@ -61,19 +70,14 @@ type TaskProps = {
   onCompleteTask?: (task: DispatchTask) => void;
   onReopenTask?: (task: DispatchTask) => void;
   onDeleteTask?: (task: DispatchTask) => void;
+  /** When "popover", renders as a compact overlay instead of a full-height sidebar */
+  mode?: "sidebar" | "popover";
 };
 
 type Props = VisitProps | TaskProps;
 
-const STATUS_LABELS: Record<VisitStatus, string> = {
-  open: "Open",
-  scheduled: "Scheduled",
-  dispatched: "Dispatched",
-  en_route: "En Route",
-  on_site: "On Site",
-  in_progress: "In Progress",
-  completed: "Completed",
-};
+// 2026-03-18: Local STATUS_LABELS removed — using canonical visitStatusLabel()
+// from visitStatusDisplay.ts. See that module for the authoritative label mapping.
 
 const TASK_TYPE_LABELS: Record<string, string> = {
   GENERAL: "General Task",
@@ -418,7 +422,7 @@ function UnscheduledScheduleForm({
 // VisitDetail — client-first hierarchy, inline date editing
 // ============================================================================
 
-function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onUpdateCrew, onUpdateStatus, onDeleteVisit, onScheduleFromPanel, technicians, laneVisits = [], laneTasks = [], boardDate }: Omit<VisitProps, "entityType">) {
+function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onUpdateCrew, onUpdateStatus, onUpdateVisitNotes, onOpenVisitEditor, onScheduleFromPanel, technicians, laneVisits = [], laneTasks = [], boardDate, mode = "sidebar" }: Omit<VisitProps, "entityType">) {
   const isScheduled = !!visit.scheduledStart;
   const isCompleted = isCompletedStatus(visit.status);
 
@@ -577,16 +581,33 @@ function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onU
     return Array.from(set).sort((a, b) => a - b);
   }, [visit.durationMinutes]);
 
-  // Delete confirmation
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  // Editable visit notes
+  const [editingNotes, setEditingNotes] = useState(false);
+  const [noteDraft, setNoteDraft] = useState(visit.visitNotes || "");
+  // Sync draft with visit prop when visit changes (e.g., after save + refetch)
+  const lastVisitIdRef = useRef(visit.id);
+  if (visit.id !== lastVisitIdRef.current) {
+    lastVisitIdRef.current = visit.id;
+    setNoteDraft(visit.visitNotes || "");
+    setEditingNotes(false);
+  }
+
+  const handleSaveNotes = useCallback(() => {
+    if (!onUpdateVisitNotes) return;
+    onUpdateVisitNotes(visit, noteDraft.trim());
+    setEditingNotes(false);
+  }, [visit, noteDraft, onUpdateVisitNotes]);
 
   return (
-    <div className="flex h-full w-80 flex-shrink-0 flex-col border-l-2 border-l-emerald-300 bg-white shadow-lg">
-      {/* ── Header: Client-first hierarchy ── */}
-      <div className={`border-b px-3 py-2.5 ${isCompleted ? "bg-slate-50" : "bg-emerald-50/60"}`}>
+    <div className={mode === "popover"
+      ? "flex w-[22rem] flex-col rounded-lg border bg-white shadow-xl"
+      : "flex h-full w-80 flex-shrink-0 flex-col border-l-2 border-l-emerald-300 bg-white shadow-lg"
+    }>
+      {/* ── Header: Client-first hierarchy (drag handle in popover mode) ── */}
+      <div data-panel-drag-handle className={`border-b px-3 py-2.5 ${mode === "popover" ? "rounded-t-lg cursor-move" : ""} ${isCompleted ? "bg-slate-50" : "bg-emerald-50/60"}`}>
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
-            {/* 1. Client / location name — primary title (Item 3: clickable link to client detail) */}
+            {/* 1. Client / company name — primary title */}
             <p className={`text-sm font-bold truncate leading-tight ${isCompleted ? "text-muted-foreground line-through" : "text-foreground"}`}>
               {isCompleted && <CheckCircle2 className="h-3.5 w-3.5 text-slate-400 inline mr-1 -mt-0.5" />}
               {visit.customerCompanyId ? (
@@ -597,11 +618,23 @@ function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onU
                 visit.customerName
               )}
             </p>
-            {/* 2. Summary / description */}
+            {/* 2. Location name — directly under client (if distinct) */}
+            {visit.locationName && visit.locationName !== visit.customerName && (
+              <p className="text-[11px] text-muted-foreground truncate mt-0.5 flex items-center gap-1">
+                <MapPin className="h-2.5 w-2.5 flex-shrink-0" />{visit.locationName}
+              </p>
+            )}
+            {/* 2b. Service address — formatted street, city, province */}
+            {visit.locationAddress && (
+              <p className="text-[10px] text-muted-foreground/70 truncate mt-0.5 pl-3.5">
+                {[visit.locationAddress, visit.locationCity, visit.locationProvinceState, visit.locationPostalCode].filter(Boolean).join(", ")}
+              </p>
+            )}
+            {/* 3. Summary / description */}
             {visit.summary && (
               <p className="text-[11px] text-muted-foreground truncate mt-0.5">{visit.summary}</p>
             )}
-            {/* 3. Job reference — clickable link */}
+            {/* 4. Job reference — clickable link */}
             <div className="flex items-center gap-2 mt-1">
               <Link
                 href={`/jobs/${visit.jobId}`}
@@ -609,9 +642,7 @@ function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onU
               >
                 Job #{visit.jobNumber}
               </Link>
-              {visit.visitNumber > 0 && (
-                <span className="text-[10px] text-muted-foreground">· Visit #{visit.visitNumber}</span>
-              )}
+              {/* Visit ordinal de-emphasized — job status is primary dispatch context */}
               {visit.technicianIds.length > 1 && (
                 <span className="flex items-center gap-0.5 rounded bg-blue-100 px-1 py-px text-[9px] font-semibold text-blue-700">
                   <Users className="h-2.5 w-2.5" />{visit.technicianIds.length}
@@ -629,12 +660,13 @@ function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onU
       </div>
 
       {/* ── Content ── */}
-      <div className="flex-1 overflow-y-auto px-3 py-2">
+      <div className={mode === "popover" ? "px-3 py-2 overflow-y-auto" : "flex-1 overflow-y-auto px-3 py-2"}>
         {/* 4. Compact status row — no Section wrapper */}
         <div className="flex items-center gap-2 mb-2 pb-2 border-b">
-          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${visitStatusColor(visit.status)}`}>
+          {/* Job-status-first: badge matches card color for dispatch consistency */}
+          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium border ${jobStateColor(visit.jobStatus, visit.jobOpenSubStatus ?? null)}`}>
             {isCompleted && <CheckCircle2 className="h-3 w-3 mr-1" />}
-            {STATUS_LABELS[visit.status]}
+            {jobStateLabel(visit.jobStatus, visit.jobOpenSubStatus ?? null)}
           </span>
           {visit.priority !== "normal" && (
             <span className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
@@ -673,88 +705,8 @@ function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onU
         <Section title="Schedule">
           {isScheduled && visit.scheduledStart ? (
             <>
-              {/* Any Time checkbox */}
-              {onReschedule && (
-                <div className="flex items-center gap-2 mb-2">
-                  <Checkbox
-                    id="any-time-toggle"
-                    checked={isAnyTime}
-                    onCheckedChange={(checked) => handleAnyTimeToggle(!!checked)}
-                  />
-                  <label htmlFor="any-time-toggle" className="text-xs font-medium text-foreground cursor-pointer select-none">
-                    Any Time
-                  </label>
-                </div>
-              )}
-
-              {isAnyTime ? (
-                /* Any-time mode: show date only, no time/duration controls */
-                <div className="flex items-center gap-2 py-0.5">
-                  <CalendarDays className="h-3.5 w-3.5 flex-shrink-0 text-amber-600" />
-                  {onReschedule ? (
-                    <Popover>
-                      <PopoverTrigger asChild>
-                        <button className="text-xs font-medium hover:text-blue-600 hover:underline transition-colors">
-                          {displayDateStr}
-                        </button>
-                      </PopoverTrigger>
-                      <PopoverContent className="w-auto p-0 z-[9999]" align="start">
-                        <Calendar
-                          mode="single"
-                          selected={selectedDate}
-                          onSelect={(d) => {
-                            if (!d || !onReschedule) return;
-                            const dateStr = format(d, "yyyy-MM-dd");
-                            onReschedule(visit, `${dateStr}T00:00:00.000Z`, `${dateStr}T23:59:59.000Z`, undefined, true);
-                          }}
-                          initialFocus
-                        />
-                      </PopoverContent>
-                    </Popover>
-                  ) : (
-                    <span className="text-xs font-medium">{displayDateStr}</span>
-                  )}
-                </div>
-              ) : pendingAnyTime === false && visit.isAllDay ? (
-                /* Conversion mode: Any Time → timed — show editable time/duration before save */
-                <div className="space-y-1.5">
-                  <div className="flex items-center gap-2 py-0.5">
-                    <CalendarDays className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
-                    <span className="text-xs font-medium">{displayDateStr}</span>
-                  </div>
-                  <div className="flex items-center gap-2 py-0.5">
-                    <Clock className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
-                    <Input
-                      type="time"
-                      value={conversionTime}
-                      onChange={e => setConversionTime(e.target.value)}
-                      step={SNAP_MINUTES * 60}
-                      className="h-7 w-28 text-xs"
-                    />
-                  </div>
-                  <div className="flex items-center gap-2 py-0.5">
-                    <Clock className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground opacity-0" />
-                    <Select value={String(conversionDuration)} onValueChange={v => setConversionDuration(parseInt(v, 10))}>
-                      <SelectTrigger className="h-7 w-28 text-xs">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {DURATION_OPTIONS.map(d => (
-                          <SelectItem key={d} value={String(d)} className="text-xs">{formatDuration(d)}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <button
-                    onClick={handleConversionSave}
-                    className="mt-1 w-full rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 transition-colors"
-                  >
-                    Schedule at {conversionTime} ({formatDuration(conversionDuration)})
-                  </button>
-                </div>
-              ) : (
-                /* Timed mode: date, time, duration controls */
-                <>
+              {/* Timed mode: date, time, duration controls */}
+              <>
               {/* Inline date picker */}
               <div className="flex items-center gap-2 py-0.5">
                 <CalendarDays className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
@@ -796,7 +748,7 @@ function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onU
                       className="h-7 w-28 text-xs"
                     />
                     {visit.scheduledEnd && (
-                      <span className="text-[10px] text-muted-foreground">
+                      <span className="text-xs text-muted-foreground">
                         – {format(new Date(visit.scheduledEnd), "h:mm a")}
                       </span>
                     )}
@@ -827,7 +779,6 @@ function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onU
                 )}
               </div>
                 </>
-              )}
             </>
           ) : (
             /* Item 4: Inline scheduling form for unscheduled visits */
@@ -840,15 +791,17 @@ function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onU
           )}
         </Section>
 
-        {/* 7. Location */}
-        <Section title="Location">
-          <InfoRow icon={MapPin}>
-            <p className="font-medium">{visit.locationName}</p>
-            {visit.customerName !== visit.locationName && (
-              <p className="text-muted-foreground">{visit.customerName}</p>
-            )}
-          </InfoRow>
-        </Section>
+        {/* 7. Location — only in sidebar mode; popover mode shows location in header */}
+        {mode !== "popover" && (
+          <Section title="Location">
+            <InfoRow icon={MapPin}>
+              <p className="font-medium">{visit.locationName}</p>
+              {visit.customerName !== visit.locationName && (
+                <p className="text-muted-foreground">{visit.customerName}</p>
+              )}
+            </InfoRow>
+          </Section>
+        )}
 
         {/* Contact */}
         {visit.contactName && (
@@ -862,71 +815,99 @@ function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onU
           </Section>
         )}
 
-        {/* Notes */}
-        {(visit.accessInstructions || visit.description || visit.visitNotes || visit.locationNotes) && (
-          <Section title="Notes">
-            {visit.accessInstructions && (
-              <InfoRow icon={KeyRound}><p className="whitespace-pre-wrap">{visit.accessInstructions}</p></InfoRow>
-            )}
-            {visit.description && (
-              <InfoRow icon={FileText}><p className="whitespace-pre-wrap">{visit.description}</p></InfoRow>
-            )}
-            {visit.visitNotes && (
-              <InfoRow icon={FileText}><p className="whitespace-pre-wrap">{visit.visitNotes}</p></InfoRow>
-            )}
-            {visit.locationNotes && (
-              <InfoRow icon={MapPin}><p className="whitespace-pre-wrap">{visit.locationNotes}</p></InfoRow>
-            )}
-          </Section>
-        )}
-      </div>
-
-      {/* ── Footer: visit-level actions ── */}
-      <div className="border-t bg-slate-50/50 px-3 py-2 space-y-1.5">
-        {isScheduled && onUpdateStatus && (
-          <div className="flex gap-1.5">
-            {isCompleted ? (
-              <button
-                onClick={() => onUpdateStatus(visit, "scheduled")}
-                className="flex flex-1 items-center justify-center gap-1.5 rounded bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-100 transition-colors"
-              >
-                <RotateCcw className="h-3 w-3" /> Reopen Visit
-              </button>
+        {/* Notes section — always visible, with editable visit notes */}
+        <Section title="Notes">
+          {visit.accessInstructions && (
+            <InfoRow icon={KeyRound}><p className="whitespace-pre-wrap text-xs leading-relaxed">{visit.accessInstructions}</p></InfoRow>
+          )}
+          {visit.description && (
+            <InfoRow icon={FileText}><p className="whitespace-pre-wrap text-xs leading-relaxed">{visit.description}</p></InfoRow>
+          )}
+          {visit.locationNotes && (
+            <InfoRow icon={MapPin}><p className="whitespace-pre-wrap text-xs leading-relaxed">{visit.locationNotes}</p></InfoRow>
+          )}
+          {/* Editable visit notes */}
+          <div className="mt-1">
+            <div className="flex items-center gap-1.5 mb-1">
+              <FileText className="h-3 w-3 text-muted-foreground shrink-0" />
+              <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Visit Notes</span>
+              {onUpdateVisitNotes && !editingNotes && (
+                <button
+                  type="button"
+                  onClick={() => { setNoteDraft(visit.visitNotes || ""); setEditingNotes(true); }}
+                  className="ml-auto p-0.5 text-muted-foreground hover:text-foreground"
+                >
+                  <Pencil className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+            {editingNotes ? (
+              <div className="space-y-1.5">
+                <Textarea
+                  value={noteDraft}
+                  onChange={(e) => setNoteDraft(e.target.value)}
+                  placeholder="Add visit notes..."
+                  rows={3}
+                  className="text-xs resize-none max-h-32"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    // Ctrl/Cmd+Enter to save
+                    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                      e.preventDefault();
+                      handleSaveNotes();
+                    }
+                    // Escape cancels editing
+                    if (e.key === "Escape") {
+                      e.stopPropagation();
+                      setEditingNotes(false);
+                    }
+                  }}
+                />
+                <div className="flex items-center gap-1.5 justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setEditingNotes(false)}
+                    className="px-2 py-1 text-[10px] text-muted-foreground hover:text-foreground rounded"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveNotes}
+                    className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-white bg-emerald-600 hover:bg-emerald-700 rounded"
+                  >
+                    <Save className="h-2.5 w-2.5" /> Save
+                  </button>
+                </div>
+              </div>
             ) : (
-              <button
-                onClick={() => onUpdateStatus(visit, "completed")}
-                className="flex flex-1 items-center justify-center gap-1.5 rounded bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 transition-colors"
+              <div
+                className="cursor-pointer rounded px-1 py-0.5 hover:bg-slate-50 min-h-[1.5rem]"
+                onClick={() => { if (onUpdateVisitNotes) { setNoteDraft(visit.visitNotes || ""); setEditingNotes(true); } }}
               >
-                <CheckCircle2 className="h-3 w-3" /> Complete Visit
-              </button>
+                {visit.visitNotes ? (
+                  <p className="whitespace-pre-wrap text-xs leading-relaxed max-h-24 overflow-y-auto">{visit.visitNotes}</p>
+                ) : (
+                  <p className="text-xs text-muted-foreground italic">No visit notes — click to add</p>
+                )}
+              </div>
             )}
           </div>
-        )}
+        </Section>
+      </div>
 
-        {isScheduled && onDeleteVisit && visit.visitNumber > 1 && (
-          confirmDelete ? (
-            <div className="flex gap-1.5">
-              <button
-                onClick={() => { onDeleteVisit(visit); setConfirmDelete(false); }}
-                className="flex flex-1 items-center justify-center gap-1.5 rounded bg-red-100 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-200 transition-colors"
-              >
-                Confirm Delete
-              </button>
-              <button
-                onClick={() => setConfirmDelete(false)}
-                className="flex items-center justify-center rounded px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-slate-100 transition-colors"
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={() => setConfirmDelete(true)}
-              className="flex w-full items-center justify-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors"
-            >
-              <Trash2 className="h-3 w-3" /> Delete Visit
-            </button>
-          )
+      {/* ── Footer: dispatch-specific + canonical visit editor ── */}
+      {/* 2026-03-21: Lifecycle actions (complete, reopen, delete) moved to canonical
+          EditVisitModal. Only dispatch-specific actions remain here. */}
+      <div className="border-t bg-slate-50/50 px-3 py-2 space-y-1.5">
+        {/* Open canonical visit editor for lifecycle actions */}
+        {onOpenVisitEditor && (
+          <button
+            onClick={() => onOpenVisitEditor(visit)}
+            className="flex w-full items-center justify-center gap-1.5 rounded bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 transition-colors"
+          >
+            <Pencil className="h-3 w-3" /> Edit / Complete Visit
+          </button>
         )}
 
         {isScheduled && onUnschedule && !isCompleted && (
@@ -946,7 +927,7 @@ function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onU
 // TaskDetail — unchanged structure
 // ============================================================================
 
-function TaskDetail({ task, onClose, technicians, laneVisits = [], laneTasks = [], onRescheduleTask, onCompleteTask, onReopenTask, onDeleteTask }: Omit<TaskProps, "entityType">) {
+function TaskDetail({ task, onClose, technicians, laneVisits = [], laneTasks = [], onRescheduleTask, onCompleteTask, onReopenTask, onDeleteTask, mode = "sidebar" }: Omit<TaskProps, "entityType">) {
   const typeLabel = TASK_TYPE_LABELS[task.type] ?? task.type;
   const isScheduled = !!task.scheduledStart;
 
@@ -1010,12 +991,15 @@ function TaskDetail({ task, onClose, technicians, laneVisits = [], laneTasks = [
   }, [task.durationMinutes]);
 
   // Item 8: Task lifecycle state
-  const isTaskCompleted = task.status === "completed" || task.status === "closed";
+  const isTaskCompleted = task.status === "completed" || task.status === "cancelled";
   const [confirmDeleteTask, setConfirmDeleteTask] = useState(false);
 
   return (
-    <div className="flex h-full w-80 flex-shrink-0 flex-col border-l-2 border-l-blue-300 bg-white shadow-lg">
-      <div className="flex items-center justify-between border-b bg-blue-50 px-3 py-2.5">
+    <div className={mode === "popover"
+      ? "flex w-[22rem] flex-col rounded-lg border bg-white shadow-xl"
+      : "flex h-full w-80 flex-shrink-0 flex-col border-l-2 border-l-blue-300 bg-white shadow-lg"
+    }>
+      <div data-panel-drag-handle className={`flex items-center justify-between border-b bg-blue-50 px-3 py-2.5 ${mode === "popover" ? "rounded-t-lg cursor-move" : ""}`}>
         <div className="min-w-0 flex items-center gap-2">
           {isSupplierType(task.type)
             ? <Truck className="h-4 w-4 text-blue-600 flex-shrink-0" />
@@ -1036,7 +1020,7 @@ function TaskDetail({ task, onClose, technicians, laneVisits = [], laneTasks = [
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-2">
+      <div className={mode === "popover" ? "px-3 py-2 overflow-y-auto" : "flex-1 overflow-y-auto px-3 py-2"}>
         <div className="flex items-center gap-2 mb-2 pb-2 border-b">
           <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 capitalize">
             {task.status.replace("_", " ")}
@@ -1101,7 +1085,7 @@ function TaskDetail({ task, onClose, technicians, laneVisits = [], laneTasks = [
                       className="h-7 w-28 text-xs"
                     />
                     {task.scheduledEnd && (
-                      <span className="text-[10px] text-muted-foreground">
+                      <span className="text-xs text-muted-foreground">
                         – {format(new Date(task.scheduledEnd), "h:mm a")}
                       </span>
                     )}
@@ -1224,6 +1208,7 @@ export default function DispatchDetailPanel(props: Props) {
         onCompleteTask={props.onCompleteTask}
         onReopenTask={props.onReopenTask}
         onDeleteTask={props.onDeleteTask}
+        mode={props.mode}
       />
     );
   }
@@ -1239,9 +1224,11 @@ export default function DispatchDetailPanel(props: Props) {
       onResize={props.onResize}
       onUpdateCrew={props.onUpdateCrew}
       onUpdateStatus={props.onUpdateStatus}
-      onDeleteVisit={props.onDeleteVisit}
+      onUpdateVisitNotes={props.onUpdateVisitNotes}
+      onOpenVisitEditor={props.onOpenVisitEditor}
       onScheduleFromPanel={props.onScheduleFromPanel}
       boardDate={props.boardDate}
+      mode={props.mode}
     />
   );
 }

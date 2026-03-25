@@ -7,8 +7,9 @@
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import type { DispatchVisit, DispatchTask } from "./dispatchPreviewTypes";
 import type { DispatchDragData, DispatchDropData } from "./dispatchDndTypes";
-import { visitStatusDot, formatDuration, isCompletedStatus } from "./dispatchPreviewUtils";
-import { ClipboardList, Truck, Users, CheckCircle2 } from "lucide-react";
+import { formatDuration, isCompletedStatus } from "./dispatchPreviewUtils";
+import { VisitCardContent } from "./VisitCardContent";
+import { ClipboardList, Truck } from "lucide-react";
 
 type Props = {
   visits: DispatchVisit[];
@@ -30,7 +31,6 @@ function WeekVisitItem({ visit, techId, dayKey, isSelected, onSelect }: {
   isSelected: boolean;
   onSelect: (v: DispatchVisit) => void;
 }) {
-  const isTeamVisit = visit.technicianIds.length > 1;
   const isCompleted = isCompletedStatus(visit.status);
   const dragData: DispatchDragData = {
     type: "scheduled-visit",
@@ -40,7 +40,7 @@ function WeekVisitItem({ visit, techId, dayKey, isSelected, onSelect }: {
     technicianId: visit.technicianId,
     durationMinutes: visit.durationMinutes,
     version: visit.version,
-    isMultiTech: isTeamVisit,
+    isMultiTech: visit.technicianIds.length > 1,
     originalStart: visit.scheduledStart,
   };
 
@@ -55,24 +55,13 @@ function WeekVisitItem({ visit, techId, dayKey, isSelected, onSelect }: {
       {...listeners}
       {...attributes}
       data-dispatch-block="week-visit"
+      data-visit-id={visit.id}
       onClick={(e) => { e.stopPropagation(); onSelect(visit); }}
-      className={`flex w-full items-center gap-1 rounded px-1 py-0.5 text-left transition-colors hover:bg-slate-100 cursor-grab active:cursor-grabbing ${
-        isSelected ? "ring-1 ring-emerald-500 bg-emerald-50" : ""
+      className={`flex w-full items-center gap-1 rounded border border-emerald-200/60 bg-emerald-50/40 px-1.5 py-0.5 text-left transition-colors hover:bg-emerald-50/60 hover:border-emerald-300 cursor-grab active:cursor-grabbing ${
+        isSelected ? "ring-2 ring-emerald-500 bg-emerald-50 border-emerald-200" : ""
       } ${isDragging ? "opacity-40" : ""} ${isCompleted ? "opacity-55" : ""}`}
     >
-      {isCompleted
-        ? <CheckCircle2 className="h-2.5 w-2.5 flex-shrink-0 text-slate-400" />
-        : <span className={`h-1.5 w-1.5 rounded-full flex-shrink-0 ${visitStatusDot(visit.status)}`} />
-      }
-      <span className={`truncate text-[10px] flex-1 ${isCompleted ? "line-through text-muted-foreground" : "text-foreground"}`}>{visit.customerName}</span>
-      {isTeamVisit && (
-        <span className="flex items-center gap-0.5 rounded bg-emerald-100 px-1 py-px text-[8px] font-semibold text-emerald-700 flex-shrink-0">
-          <Users className="h-2 w-2" />{visit.technicianIds.length}
-        </span>
-      )}
-      <span className="text-[9px] text-muted-foreground whitespace-nowrap flex-shrink-0">
-        {formatDuration(visit.durationMinutes)}
-      </span>
+      <VisitCardContent visit={visit} variant="week" />
     </button>
   );
 }
@@ -107,6 +96,7 @@ function WeekTaskItem({ task, techId, dayKey, isSelected, onSelect }: {
       {...listeners}
       {...attributes}
       data-dispatch-block="week-task"
+      data-task-id={task.id}
       onClick={(e) => { e.stopPropagation(); onSelect(task); }}
       className={`flex w-full items-center gap-1 rounded px-1 py-0.5 text-left transition-colors hover:bg-blue-50 cursor-grab active:cursor-grabbing ${
         isSelected ? "ring-1 ring-blue-500 bg-blue-50" : ""

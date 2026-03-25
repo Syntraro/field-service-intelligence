@@ -1,12 +1,13 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { useJobVisits } from "@/hooks/useJobVisits";
 import { useUnscheduleVisit } from "@/hooks/useSchedulingApi";
 import { useRoute, useLocation, Link, useSearch } from "wouter";
 import { format } from "date-fns";
-import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
+import { queryClient, apiRequest } from "@/lib/queryClient";
 import { getMemberDisplayName } from "@/lib/displayName";
+import { visitStatusLabel } from "@/lib/visitStatusDisplay";
 import { useToast } from "@/hooks/use-toast";
 import { useActivityStore } from "@/lib/activityStore";
 import {
@@ -44,8 +45,10 @@ import { AddVisitDialog } from "@/components/AddVisitDialog";
 import { EditVisitModal } from "@/components/visits/EditVisitModal";
 import JobNotesSection from "@/components/JobNotesSection";
 import { PartsBillingCard } from "@/components/PartsBillingCard";
+import { JobExpensesCard } from "@/components/JobExpensesCard";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
-import { JobHeaderCard } from "@/components/JobHeaderCard";
+import { JobHeaderCard, type JobHeaderCardHandle } from "@/components/JobHeaderCard";
+import { CreateInvoiceFromJobDialog } from "@/components/CreateInvoiceFromJobDialog";
 // JobAssignmentsCard + JobMetaCard replaced by unified top-section layout
 import { ActionRequiredModal, getHoldReasonLabel } from "@/components/ActionRequiredModal";
 import { JobStatusTimeline } from "@/components/job/JobStatusTimeline";
@@ -53,6 +56,7 @@ import { StatusProgressBar, getJobStatusDisplay, getPriorityDisplay, SchedulingH
 import { AddTimeEntryModal, EditTimeEntryModal, type TimeEntryForEdit } from "@/components/time";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { StatusPill, statusToVariant } from "@/components/ui/status-pill";
 import { Separator } from "@/components/ui/separator";
 import {
   AlertDialog,
@@ -64,21 +68,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+// Select imports removed (2026-03-24) — status dropdown eliminated
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -479,7 +469,8 @@ function LabourCardContent({
 }
 
 // ============================================================================
-// VISIT STATUS DISPLAY — Copied from JobVisitsSection (not exported there)
+// VISIT STATUS DISPLAY — Labels from canonical visitStatusDisplay.ts
+// Colors kept local (component-specific dark mode styling)
 // ============================================================================
 const VISIT_STATUS_COLORS: Record<string, string> = {
   scheduled: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
@@ -490,17 +481,6 @@ const VISIT_STATUS_COLORS: Record<string, string> = {
   on_hold: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200",
   completed: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200",
   cancelled: "bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300",
-};
-
-const VISIT_STATUS_LABELS: Record<string, string> = {
-  scheduled: "Scheduled",
-  dispatched: "Dispatched",
-  en_route: "En Route",
-  on_site: "On Site",
-  in_progress: "In Progress",
-  on_hold: "On Hold",
-  completed: "Completed",
-  cancelled: "Cancelled",
 };
 
 // ============================================================================
@@ -524,7 +504,7 @@ export default function JobDetailPage() {
   const [showEditDialog, setShowEditDialog] = useState(false);
   const [showActionRequiredModal, setShowActionRequiredModal] = useState(false);
   const [showScheduleVisitDialog, setShowScheduleVisitDialog] = useState(false);
-  const [notesOpen, setNotesOpen] = useState(true);
+  // notesOpen removed — notes always visible, no vertical collapse
   const [activityOpen, setActivityOpen] = useState(false);
   // Time entry modals
   const [showAddTimeEntry, setShowAddTimeEntry] = useState(false);
@@ -533,8 +513,23 @@ export default function JobDetailPage() {
   // Visit detail dialog — FIX A: single modal state, initialEdit for active visits
   const [selectedVisitId, setSelectedVisitId] = useState<string | null>(null);
   // visitEditMode removed — EditVisitModal always opens in edit mode
+  // Inline job number editing
+  const [editingJobNumber, setEditingJobNumber] = useState(false);
+  const [jobNumberDraft, setJobNumberDraft] = useState("");
+  const [jobNumberError, setJobNumberError] = useState<string | null>(null);
+  const jobNumberInputRef = useRef<HTMLInputElement>(null);
+  // Inline description editing
+  const [editingDescription, setEditingDescription] = useState(false);
+  const [descriptionDraft, setDescriptionDraft] = useState("");
+  const descInputRef = useRef<HTMLTextAreaElement>(null);
+  // 2026-03-24: Ref to JobHeaderCard for imperative lifecycle triggers (close/reopen/archive)
+  const headerCardRef = useRef<JobHeaderCardHandle>(null);
+  // Billing KPI totals reported by PartsBillingCard
+  const [billingTotals, setBillingTotals] = useState<{ totalPrice: number; totalCost: number; profit: number } | null>(null);
   // Parts & Billing collapse/expand — expanded by default
   const [billingExpanded, setBillingExpanded] = useState(true);
+  // Notes count for display
+  const [notesCount, setNotesCount] = useState(0);
   // Visits collapse: show first 2 by default, toggle to show all
   const [showAllVisits, setShowAllVisits] = useState(false);
   // Visit Reschedule Architecture: conflict resolution state
@@ -546,6 +541,22 @@ export default function JobDetailPage() {
     kind: 'empty' | 'actioned';
   } | null>(null);
   const jobId = params?.id;
+
+  // Expense totals — query directly so header always reflects latest data
+  // Shares query key with JobExpensesCard so mutations auto-invalidate both
+  const { data: expensesRaw = [] } = useQuery<{ amount: string }[]>({
+    queryKey: ["/api/jobs", jobId, "expenses"],
+    queryFn: async () => {
+      const res = await fetch(`/api/jobs/${jobId}/expenses`, { credentials: "include" });
+      if (!res.ok) return [];
+      return res.json();
+    },
+    enabled: !!jobId,
+  });
+  const expenseTotalAmount = useMemo(
+    () => expensesRaw.reduce((sum, e) => sum + parseFloat(e.amount || "0"), 0),
+    [expensesRaw],
+  );
 
   // Technicians directory for schedule visit dialog + visit tech name lookup
   const { teamMembers: allTechnicians } = useTechniciansDirectory();
@@ -567,7 +578,6 @@ export default function JobDetailPage() {
   const formatVisitDate = (visit: import("@shared/schema").JobVisit) => {
     if (!visit.scheduledStart) return "No date";
     const start = new Date(visit.scheduledStart);
-    if (visit.isAllDay) return `${format(start, "MMM d")} · All day`;
     return `${format(start, "MMM d")} · ${format(start, "h:mm a")}`;
   };
 
@@ -616,99 +626,87 @@ export default function JobDetailPage() {
     enabled: !!jobId,
   });
 
-  // Status update mutation - uses POST to match Time Tracking V1 backend
-  // FIXED: Include version for optimistic locking (required by server schema)
-  const updateStatusMutation = useMutation({
-    mutationFn: async ({ status, version }: { status: string; version: number }) => {
-      return apiRequest(`/api/jobs/${jobId}/status`, {
-        method: "POST",
-        body: JSON.stringify({ status, version, source: "web" })
-      });
-    },
-    onSuccess: (_data: unknown, variables: { status: string; version: number }) => {
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "time-summary"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      // 2026-03-05: Rule C — completing a job auto-completes visits; refetch visit list
-      if (variables.status === "completed") {
-        queryClient.invalidateQueries({ queryKey: ["visits"] });
-      }
-      const statusLabel = variables.status === "completed" ? "Marked Completed" :
-                          variables.status === "open" ? "Reopened" :
-                          variables.status === "invoiced" ? "Marked Invoiced" : "Updated Status";
-      logActivity({
-        type: variables.status === "completed" ? "completed" : "updated",
-        entityType: "job",
-        entityId: jobId || "",
-        label: `${statusLabel} — Job #${job?.jobNumber || ""}`,
-        meta: job?.locationDisplayName || undefined,
-      });
-      toast({ title: "Status Updated", description: "Job status has been updated." });
-    },
-    onError: (error: Error) => {
-      // Handle version conflict (409 VERSION_MISMATCH) — non-destructive recovery
-      const isVersionConflict =
-        (isApiError(error) && error.status === 409) ||
-        /version|expected version|optimistic/i.test(error.message);
-      if (isVersionConflict) {
-        toast({ title: "Conflict", description: "This job was updated elsewhere. Refreshing\u2026" });
-        queryClient.invalidateQueries({ queryKey: ["jobs"] });
-        queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/calendar/range"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-        return;
-      }
-      toast({
-        title: "Error",
-        description: error.message || "Failed to update status",
-        variant: "destructive",
-      });
-    },
-  });
+  // 2026-03-24: updateStatusMutation and clearHoldMutation REMOVED.
+  // Generic status mutations allowed invalid transitions (e.g. completed → open).
+  // All lifecycle transitions now use canonical endpoints:
+  // - Complete: POST /api/jobs/:id/close (via JobHeaderCard)
+  // - Reopen: POST /api/jobs/:id/reopen (via JobHeaderCard)
+  // - Put on Hold: ActionRequiredModal → POST /api/jobs/:id/status
+  // - Resume from Hold: Schedule Visit clears hold server-side
 
-  // Clear hold mutation - sets openSubStatus back to null (resumes normal workflow)
-  // FIXED: Include version for optimistic locking (required by server schema)
-  const clearHoldMutation = useMutation({
-    mutationFn: async (version: number) => {
-      return apiRequest(`/api/jobs/${jobId}/status`, {
-        method: "POST",
-        body: JSON.stringify({ status: "open", openSubStatus: null, version, source: "web" })
+  // Unschedule mutation — visit-centric (2026-03-06)
+  const unscheduleMutation = useUnscheduleVisit();
+
+  // Inline description update — uses existing PATCH /api/jobs/:id endpoint
+  const updateDescriptionMutation = useMutation({
+    mutationFn: async (description: string | null) => {
+      return apiRequest(`/api/jobs/${jobId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ description, version: job?.version }),
       });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      // Phase 5.1: clearing hold changes dashboard on_hold / needs-attention counts
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      toast({
-        title: "Hold Cleared",
-        description: "Job is no longer on hold.",
-      });
     },
     onError: (error: Error) => {
-      // Handle version conflict (409 VERSION_MISMATCH) — non-destructive recovery
-      const isVersionConflict =
-        (isApiError(error) && error.status === 409) ||
-        /version|expected version|optimistic/i.test(error.message);
-      if (isVersionConflict) {
-        toast({ title: "Conflict", description: "This job was updated elsewhere. Refreshing\u2026" });
-        queryClient.invalidateQueries({ queryKey: ["jobs"] });
-        queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-        return;
-      }
-      toast({
-        title: "Error",
-        description: error.message || "Failed to clear hold",
-        variant: "destructive",
-      });
+      toast({ title: "Error", description: error.message || "Failed to update description", variant: "destructive" });
     },
   });
 
-  // Unschedule mutation — visit-centric (2026-03-06)
-  const unscheduleMutation = useUnscheduleVisit();
+  const handleDescriptionSave = useCallback(() => {
+    if (!job) return;
+    const trimmed = descriptionDraft.trim();
+    const newVal = trimmed || null;
+    if (newVal !== (job.description || null)) {
+      updateDescriptionMutation.mutate(newVal);
+    }
+    setEditingDescription(false);
+  }, [descriptionDraft, job, updateDescriptionMutation]);
+
+  const handleDescriptionCancel = useCallback(() => {
+    setEditingDescription(false);
+    setDescriptionDraft(job?.description || "");
+  }, [job?.description]);
+
+  // Inline job number update — uses PATCH /api/jobs/:id with uniqueness validation
+  const updateJobNumberMutation = useMutation({
+    mutationFn: async (newJobNumber: number) => {
+      return apiRequest(`/api/jobs/${jobId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ jobNumber: newJobNumber, version: job?.version }),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      setJobNumberError(null);
+      setEditingJobNumber(false);
+    },
+    onError: (error: Error) => {
+      // Show inline error for duplicate job number
+      setJobNumberError(error.message || "Failed to update job number");
+    },
+  });
+
+  const handleJobNumberSave = useCallback(() => {
+    if (!job) return;
+    setJobNumberError(null);
+    const parsed = parseInt(jobNumberDraft, 10);
+    if (isNaN(parsed) || parsed <= 0 || !Number.isInteger(parsed)) {
+      setJobNumberError("Must be a positive whole number");
+      return;
+    }
+    if (parsed === job.jobNumber) {
+      setEditingJobNumber(false);
+      return;
+    }
+    updateJobNumberMutation.mutate(parsed);
+  }, [jobNumberDraft, job, updateJobNumberMutation]);
+
+  const handleJobNumberCancel = useCallback(() => {
+    setEditingJobNumber(false);
+    setJobNumberDraft(String(job?.jobNumber || ""));
+    setJobNumberError(null);
+  }, [job?.jobNumber]);
 
   const deleteJobMutation = useMutation({
     mutationFn: async () => {
@@ -742,85 +740,17 @@ export default function JobDetailPage() {
     },
   });
 
-  const createInvoiceMutation = useMutation({
-    mutationFn: async (markJobCompleted: boolean = false) => {
-      const response = await apiRequest(`/api/invoices/from-job/${jobId}`, {
-        method: "POST",
-        body: JSON.stringify({
-          includeLineItems: true,
-          includeNotes: true,
-          markJobCompleted,
-        })
-      });
-      return response;
-    },
-    onSuccess: (data: any) => {
-      queryClient.invalidateQueries({ queryKey: ["invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      logActivity({
-        type: "created",
-        entityType: "invoice",
-        entityId: data.id,
-        label: `Created Invoice${data.invoiceNumber ? ` #${data.invoiceNumber}` : ""}`,
-        meta: job?.locationDisplayName || undefined,
-      });
-      toast({ title: "Invoice Created", description: "Invoice has been created from this job." });
-      setShowCreateInvoiceDialog(false);
-      setLocation(`/invoices/${data.id}`);
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Error",
-        description: error.message || "Failed to create invoice",
-        variant: "destructive",
-      });
-    },
-  });
+  // createInvoiceMutation extracted to CreateInvoiceFromJobDialog (2026-03-22)
 
-  const handleStatusChange = (newStatus: string) => {
-    if (!job) return;
-    updateStatusMutation.mutate({ status: newStatus, version: job.version });
-  };
+  // handleStatusChange removed (2026-03-24) — no longer used, generic status mutation eliminated
 
   const handleDelete = () => {
     deleteJobMutation.mutate();
     setShowDeleteConfirm(false);
   };
 
-  // Inline status change handler for the top-section status dropdown
-  // Replicates JobMetaCard logic: intercepts "on_hold" to open modal
-  const handleMetaStatusChange = (newValue: string) => {
-    if (!job) return;
-    if (newValue.startsWith("open:")) {
-      const subStatus = newValue.split(":")[1];
-      if (subStatus === "on_hold") {
-        setShowActionRequiredModal(true);
-      } else {
-        // Sub-status changes need openSubStatus field, so use direct apiRequest
-        // instead of updateStatusMutation (which only sends {status, version})
-        apiRequest(`/api/jobs/${jobId}/status`, {
-          method: "POST",
-          body: JSON.stringify({ status: "open", openSubStatus: subStatus, version: job.version, source: "web" }),
-        }).then(() => {
-          queryClient.invalidateQueries({ queryKey: ["jobs"] });
-          // (covered by family-wide ["jobs"] invalidation)
-          toast({ title: "Status Updated", description: "Job status has been updated." });
-        }).catch((error: Error) => {
-          toast({ title: "Error", description: error.message || "Failed to update status", variant: "destructive" });
-        });
-      }
-    } else if (newValue === "completed" && job.status !== "completed") {
-      // 2026-03-05: Rule C — show confirmation before completing job
-      setShowCompleteJobConfirm(true);
-    } else {
-      updateStatusMutation.mutate({ status: newValue, version: job.version });
-    }
-  };
-
-  const handleCreateInvoice = (closeJob: boolean = false) => {
-    createInvoiceMutation.mutate(closeJob);
-  };
+  // handleMetaStatusChange removed (2026-03-24) — status dropdown eliminated.
+  // Lifecycle transitions now use dedicated buttons wired to canonical endpoints.
 
 
   if (isLoading) {
@@ -856,9 +786,8 @@ export default function JobDetailPage() {
 
   // Permission helpers for action bar — reuse MANAGER_ROLES from module scope
   const isOfficeUser = user?.role && (MANAGER_ROLES as readonly string[]).includes(user.role);
-  const canReopen = ["completed", "archived"].includes(job.status);
-  const isJobInvoiced = job.status === "invoiced";
-  const isTerminal = ["completed", "archived", "invoiced"].includes(job.status);
+  // canReopen, isJobInvoiced, isTerminal removed (2026-03-24) — lifecycle controls
+  // now use explicit status checks, not generic terminal/reopen flags
 
   return (
     <div className="p-4 max-w-7xl mx-auto" data-testid="job-detail-page">
@@ -896,12 +825,66 @@ export default function JobDetailPage() {
           })()}
         </div>
 
-        {/* Right: action buttons */}
+        {/* Right: lifecycle-aware action buttons
+            2026-03-24: Replaced generic action bar with status-conditional controls.
+            - OPEN: Schedule Visit, Put on Hold, Complete Job
+            - ON_HOLD: Schedule Visit (doubles as resume), Complete Job
+            - COMPLETED: Reopen Job, Create/View Invoice, Archive Job
+            - ARCHIVED: Restore Job
+            Technician execution states (in_progress, on_route) are NOT exposed. */}
         <div className="flex items-center gap-2">
-          <Button size="sm" onClick={() => handleScheduleVisit()} data-testid="button-schedule-visit-action">
-            <CalendarPlus className="h-4 w-4 mr-1" />
-            Schedule Visit
-          </Button>
+          {/* OPEN + ON_HOLD: Schedule Visit (also serves as resume path for on-hold jobs) */}
+          {job.status === "open" && (
+            <Button size="sm" onClick={() => handleScheduleVisit()} data-testid="button-schedule-visit-action">
+              <CalendarPlus className="h-4 w-4 mr-1" />
+              Schedule Visit
+            </Button>
+          )}
+          {/* OPEN (not on_hold): Put on Hold */}
+          {job.status === "open" && job.openSubStatus !== "on_hold" && isOfficeUser && (
+            <Button size="sm" variant="outline" onClick={() => setShowActionRequiredModal(true)} data-testid="button-put-on-hold">
+              <Pause className="h-4 w-4 mr-1" />
+              Put on Hold
+            </Button>
+          )}
+          {/* OPEN + ON_HOLD: Complete Job (via canonical close endpoint) */}
+          {job.status === "open" && isOfficeUser && (
+            <Button size="sm" variant="outline" onClick={() => setShowCompleteJobConfirm(true)} data-testid="button-complete-job">
+              Complete Job
+            </Button>
+          )}
+          {/* COMPLETED: Reopen Job — delegates to JobHeaderCard's canonical reopen mutation */}
+          {job.status === "completed" && isOfficeUser && (
+            <Button size="sm" variant="outline" onClick={() => headerCardRef.current?.triggerReopenJob()} data-testid="button-reopen-job">
+              Reopen Job
+            </Button>
+          )}
+          {/* COMPLETED: Create/View Invoice */}
+          {job.status === "completed" && isOfficeUser && (
+            <Button size="sm" onClick={() => {
+              if (jobInvoice) {
+                setLocation(`/invoices/${jobInvoice.id}`);
+              } else {
+                setShowCreateInvoiceDialog(true);
+              }
+            }} data-testid="button-invoice-action">
+              <Receipt className="h-4 w-4 mr-1" />
+              {jobInvoice ? "View Invoice" : "Create Invoice"}
+            </Button>
+          )}
+          {/* COMPLETED: Archive Job — delegates to JobHeaderCard's close dialog (archive mode) */}
+          {job.status === "completed" && isOfficeUser && (
+            <Button size="sm" variant="outline" onClick={() => headerCardRef.current?.openCloseJobDialog()} data-testid="button-archive-job">
+              Archive Job
+            </Button>
+          )}
+          {/* ARCHIVED: Restore Job — delegates to JobHeaderCard's canonical reopen mutation */}
+          {job.status === "archived" && isOfficeUser && (
+            <Button size="sm" onClick={() => headerCardRef.current?.triggerReopenJob()} data-testid="button-restore-job">
+              Restore Job
+            </Button>
+          )}
+
           <Button variant="outline" size="sm" onClick={() => setShowEditDialog(true)} data-testid="button-edit">
             <Pencil className="h-4 w-4 mr-1" />
             Edit Job
@@ -910,7 +893,7 @@ export default function JobDetailPage() {
             <DropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" data-testid="button-more-actions">
                 <MoreHorizontal className="h-4 w-4 mr-1" />
-                More Actions
+                More
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
@@ -922,22 +905,6 @@ export default function JobDetailPage() {
                 <Copy className="h-4 w-4 mr-2" />
                 Create Similar Job
               </DropdownMenuItem>
-              {/* Create/View Invoice */}
-              {isOfficeUser && (
-                <DropdownMenuItem
-                  onClick={() => {
-                    if (jobInvoice) {
-                      setLocation(`/invoices/${jobInvoice.id}`);
-                    } else {
-                      setShowCreateInvoiceDialog(true);
-                    }
-                  }}
-                  data-testid="menu-create-invoice"
-                >
-                  <Receipt className="h-4 w-4 mr-2" />
-                  {jobInvoice ? "View Invoice" : "Create Invoice"}
-                </DropdownMenuItem>
-              )}
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={() => toast({ title: "Coming Soon", description: "Signature collection will be available soon." })}
@@ -977,39 +944,105 @@ export default function JobDetailPage() {
       </div>
 
       {/* ================================================================
-          UNIFIED SURFACE — one bordered workspace: header + body
+          TOP CARD — Job summary: identity + metadata
           ================================================================ */}
-      <div className="rounded-lg border border-border/80 bg-card shadow-sm overflow-hidden" data-testid="unified-surface">
-
-        {/* ── HEADER SECTION: Identity (left) + Metadata (right) ── */}
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto] divide-y lg:divide-y-0 lg:divide-x">
+      <div className="rounded-lg border border-border/80 bg-primary/[0.09] shadow-[0_2px_8px_-2px_rgba(0,0,0,0.08)] overflow-hidden border-b-border" data-testid="job-summary-card">
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px]">
           {/* LEFT: Identity — JobHeaderCard renders without Card wrapper */}
           <div className="p-5">
             <JobHeaderCard
+              ref={headerCardRef}
               job={job}
               jobInvoice={jobInvoice ?? null}
               onEdit={() => setShowEditDialog(true)}
               onDelete={() => deleteJobMutation.mutate()}
               showActions={false}
             />
-            {/* Description inline below identity */}
-            {job.description && job.description.trim() !== "" && (
-              <p className="mt-2 text-sm text-muted-foreground/80 whitespace-pre-wrap" data-testid="text-job-description">
-                {job.description}
-              </p>
-            )}
+            {/* Description inline below identity — click to edit */}
+            <div className="mt-2" data-testid="text-job-description">
+              {editingDescription ? (
+                <textarea
+                  ref={descInputRef}
+                  value={descriptionDraft}
+                  onChange={e => setDescriptionDraft(e.target.value)}
+                  onBlur={handleDescriptionSave}
+                  onKeyDown={e => {
+                    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleDescriptionSave(); }
+                    if (e.key === "Escape") handleDescriptionCancel();
+                  }}
+                  rows={1}
+                  className="w-full text-sm text-muted-foreground/80 bg-transparent border-b border-primary/40 focus:border-primary outline-none resize-none py-0.5 placeholder:text-muted-foreground/40"
+                  placeholder="Add description"
+                  autoFocus
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => { setDescriptionDraft(job.description || ""); setEditingDescription(true); }}
+                  className="text-left w-full group cursor-text"
+                  data-testid="button-edit-description"
+                >
+                  {job.description && job.description.trim() !== "" ? (
+                    <p className="text-sm text-muted-foreground/80 whitespace-pre-wrap group-hover:text-muted-foreground transition-colors">
+                      {job.description}
+                      <Pencil className="inline ml-1.5 h-3 w-3 opacity-0 group-hover:opacity-50 transition-opacity -mt-0.5" />
+                    </p>
+                  ) : (
+                    <p className="text-sm text-muted-foreground/40 italic group-hover:text-muted-foreground/60 transition-colors">
+                      Add description
+                      <Pencil className="inline ml-1.5 h-3 w-3 opacity-0 group-hover:opacity-50 transition-opacity -mt-0.5" />
+                    </p>
+                  )}
+                </button>
+              )}
+            </div>
           </div>
 
           {/* RIGHT: Primary metadata — compact, aligned grid */}
-          <div className="p-5 lg:w-64 text-xs">
+          <div className="p-5 border-t lg:border-t-0 lg:border-l text-xs">
             <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 items-center">
               <span className="text-muted-foreground/70 flex items-center gap-1">
                 <Briefcase className="h-3 w-3" />
                 Job
               </span>
-              <span className="font-semibold text-foreground text-right" data-testid="text-job-number">
-                #{job.jobNumber}
-              </span>
+              {/* Inline-editable job number */}
+              {editingJobNumber ? (
+                <div className="flex flex-col items-end gap-1">
+                  <div className="flex items-center gap-1">
+                    <span className="text-muted-foreground">#</span>
+                    <input
+                      ref={jobNumberInputRef}
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={jobNumberDraft}
+                      onChange={(e) => { setJobNumberDraft(e.target.value); setJobNumberError(null); }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") handleJobNumberSave();
+                        if (e.key === "Escape") handleJobNumberCancel();
+                      }}
+                      className="w-24 h-6 px-1 text-xs font-semibold text-right border rounded bg-background focus:outline-none focus:ring-1 focus:ring-primary"
+                      autoFocus
+                      data-testid="input-job-number"
+                    />
+                    <button type="button" onClick={handleJobNumberSave} className="text-primary hover:text-primary/80 text-xs font-medium" disabled={updateJobNumberMutation.isPending}>
+                      {updateJobNumberMutation.isPending ? "…" : "✓"}
+                    </button>
+                    <button type="button" onClick={handleJobNumberCancel} className="text-muted-foreground hover:text-foreground text-xs">✕</button>
+                  </div>
+                  {jobNumberError && <span className="text-[10px] text-destructive max-w-[180px] text-right">{jobNumberError}</span>}
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => { setJobNumberDraft(String(job.jobNumber)); setJobNumberError(null); setEditingJobNumber(true); }}
+                  className="font-semibold text-foreground text-right group cursor-text inline-flex items-center gap-1"
+                  data-testid="text-job-number"
+                >
+                  #{job.jobNumber}
+                  <Pencil className="h-2.5 w-2.5 opacity-0 group-hover:opacity-40 transition-opacity" />
+                </button>
+              )}
 
               <span className="text-muted-foreground/70 flex items-center gap-1">
                 <Receipt className="h-3 w-3" />
@@ -1029,26 +1062,17 @@ export default function JobDetailPage() {
                 )}
               </span>
 
+              {/* 2026-03-24: Status dropdown removed — replaced with read-only StatusPill.
+                  Lifecycle transitions now use dedicated action buttons (Schedule Visit, Complete Job,
+                  Reopen, Archive, Restore) wired to canonical endpoints. */}
               <span className="text-muted-foreground/70">Status</span>
               <div className="flex justify-end">
-                <Select
-                  value={job.openSubStatus ? `open:${job.openSubStatus}` : job.status}
-                  onValueChange={handleMetaStatusChange}
-                  disabled={updateStatusMutation.isPending}
+                <StatusPill
+                  variant={statusToVariant(job.openSubStatus === "on_hold" ? "on_hold" : job.status)}
+                  data-testid="status-badge"
                 >
-                  <SelectTrigger className="h-6 w-auto min-w-[100px] text-[11px]" data-testid="select-status">
-                    <SelectValue placeholder="Change" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="open">Open (Backlog)</SelectItem>
-                    <SelectItem value="open:in_progress">In Progress</SelectItem>
-                    <SelectItem value="open:on_route">On Route</SelectItem>
-                    <SelectItem value="open:on_hold">On Hold</SelectItem>
-                    <SelectItem value="completed">Completed</SelectItem>
-                    <SelectItem value="invoiced">Invoiced</SelectItem>
-                    <SelectItem value="archived">Archived</SelectItem>
-                  </SelectContent>
-                </Select>
+                  {getJobStatusDisplay(job).label}
+                </StatusPill>
               </div>
 
               <span className="text-muted-foreground/70">Created</span>
@@ -1063,14 +1087,10 @@ export default function JobDetailPage() {
             </div>
 
             {/* On Hold info */}
-            {job.status === "open" && (job.openSubStatus === "on_hold" || job.openSubStatus === "needs_review") && (
+            {job.status === "open" && job.openSubStatus === "on_hold" && (
               <div className="pt-2 border-t mt-2 space-y-1.5">
                 <div className="flex items-center gap-1 text-[11px] text-destructive font-medium">
-                  {job.openSubStatus === "on_hold" ? (
-                    <><Pause className="h-3 w-3" /><span>On Hold</span></>
-                  ) : (
-                    <><AlertCircle className="h-3 w-3" /><span>Needs Review</span></>
-                  )}
+                  <><Pause className="h-3 w-3" /><span>On Hold</span></>
                 </div>
                 {job.holdReason && (
                   <div className="flex items-start justify-between gap-2">
@@ -1101,162 +1121,170 @@ export default function JobDetailPage() {
           </div>
         </div>
 
-        {/* ── BODY: 2-column — Main content (left) + Utility rail (right) ── */}
-        <div className="border-t grid gap-0 lg:grid-cols-[1fr_300px]">
+      </div>
 
-          {/* ════════════════════════════════════════════════════════════════
-              LEFT: Main working area — Billing → Notes → Visits → Activity
-              ════════════════════════════════════════════════════════════════ */}
-          <div className="lg:border-r min-w-0">
+      {/* ================================================================
+          BODY — Two-column: main card + combined right panel
+          ================================================================ */}
+      <div className="grid gap-3 mt-3 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]" data-testid="job-body-area">
 
-            {/* ┌─ BILLING SURFACE ─────────────────────────────────────────┐
-                │ Parts & Billing + Expenses as one unified work zone      │
-                └──────────────────────────────────────────────────────────┘ */}
-            <div className="bg-muted/15" data-testid="billing-surface">
-              {/* Parts & Billing — collapsible primary work surface */}
-              <Collapsible open={billingExpanded} onOpenChange={setBillingExpanded}>
-                <CollapsibleTrigger asChild>
-                  <button
-                    className={cn(
-                      "w-full flex items-center justify-between px-5 py-3.5 transition-colors",
-                      "hover:bg-muted/30",
-                      billingExpanded && "border-b border-border/40",
-                    )}
-                    data-testid="trigger-parts-billing"
-                  >
-                    <span className="text-[13px] font-semibold text-foreground flex items-center gap-2">
-                      <DollarSign className="h-4 w-4 text-muted-foreground/70" />
-                      Parts & Billing
-                    </span>
-                    {billingExpanded
-                      ? <ChevronDown className="h-4 w-4 text-muted-foreground/50" />
-                      : <ChevronRight className="h-4 w-4 text-muted-foreground/50" />
-                    }
-                  </button>
-                </CollapsibleTrigger>
-                <CollapsibleContent>
-                  <div className="[&>*]:border-0 [&>*]:rounded-none [&>*]:shadow-none [&>*]:bg-transparent" data-testid="parts-billing-wrapper">
-                    <PartsBillingCard jobId={jobId!} />
+        {/* ════════════════════════════════════════════════════════════════
+            LEFT: Main working area — Parts & Billing, Expenses, Visits+Activity
+            ════════════════════════════════════════════════════════════════ */}
+        <div className="flex flex-col gap-2.5 min-w-0">
+
+          {/* ── Card 1: Parts & Billing ──────────────────────────────── */}
+          <div className="rounded-lg border border-border/80 bg-card shadow-sm overflow-hidden" data-testid="job-main-card">
+            <Collapsible open={billingExpanded} onOpenChange={setBillingExpanded}>
+              <CollapsibleTrigger asChild>
+                <button
+                  className={cn(
+                    "w-full flex items-center justify-between px-5 py-4 transition-colors",
+                    "bg-primary/[0.09] hover:bg-primary/[0.13]",
+                    billingExpanded && "border-b border-border/40",
+                  )}
+                  data-testid="trigger-parts-billing"
+                >
+                  <div className="flex items-center gap-2">
+                    <DollarSign className="h-4 w-4 text-muted-foreground/70" />
+                    <span className="text-sm font-semibold text-foreground">Parts & Billing</span>
                   </div>
-                </CollapsibleContent>
-              </Collapsible>
 
-              {/* Expenses — part of the billing surface */}
-              <div className="border-t border-border/40 px-5 py-4" data-testid="section-expenses">
-                <div className="flex items-center justify-between mb-2">
-                  <h3 className="text-[13px] font-semibold text-foreground">Expenses</h3>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-xs h-auto p-0 text-primary"
-                    onClick={() => toast({ title: "Coming Soon", description: "Expense tracking coming soon." })}
-                    data-testid="button-new-expense"
-                  >
-                    New Expense
-                  </Button>
+                  <div className="flex items-center gap-4">
+                    {/* Inline financial summary: Revenue, Cost, Expenses, Profit */}
+                    {billingTotals && (() => {
+                      const rev = billingTotals.totalPrice;
+                      const cost = billingTotals.totalCost; // labour + parts cost only
+                      const expenses = expenseTotalAmount;  // job expenses (separate from cost)
+                      const profit = rev - cost - expenses;
+                      const pct = rev > 0 ? (profit / rev) * 100 : 0;
+                      return (
+                        <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                          <span>Revenue <strong className="text-foreground">${rev.toFixed(2)}</strong></span>
+                          <span>Cost <strong className="text-foreground">${cost.toFixed(2)}</strong></span>
+                          <span>Expenses <strong className="text-foreground">${expenses.toFixed(2)}</strong></span>
+                          <span>Profit <strong className={cn(profit >= 0 ? "text-green-600" : "text-red-600")}>${profit.toFixed(2)}</strong> <span className="text-muted-foreground/70">({pct.toFixed(0)}%)</span></span>
+                        </div>
+                      );
+                    })()}
+                    {billingExpanded
+                      ? <ChevronDown className="h-4 w-4 text-muted-foreground/50 shrink-0" />
+                      : <ChevronRight className="h-4 w-4 text-muted-foreground/50 shrink-0" />
+                    }
+                  </div>
+                </button>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="[&>*]:border-0 [&>*]:rounded-none [&>*]:shadow-none [&>*]:bg-transparent" data-testid="parts-billing-wrapper">
+                  <PartsBillingCard jobId={jobId!} onTotalsChange={setBillingTotals} />
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Track additional job costs (parking, materials, etc.) here.
-                </p>
-              </div>
+              </CollapsibleContent>
+            </Collapsible>
 
-              {/* PM Billing Disposition — guidance for PM-generated jobs */}
-              {job.pmBillingDisposition && (
-                <div className="border-t border-border/40 px-5 py-4" data-testid="section-pm-billing">
-                  <h3 className="text-[13px] font-semibold flex items-center gap-2 mb-3">
-                    <Briefcase className="h-4 w-4 text-muted-foreground/70" />
-                    PM Billing
-                  </h3>
-                  <div className="space-y-2 text-sm">
-                    {job.pmBillingLabel && (
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Contract</span>
-                        <span className="font-medium">{job.pmBillingLabel}</span>
-                      </div>
-                    )}
+            {/* PM Billing Disposition — guidance for PM-generated jobs */}
+            {job.pmBillingDisposition && (
+              <div className="border-t border-border/40 px-5 py-4" data-testid="section-pm-billing">
+                <h3 className="text-sm font-semibold flex items-center gap-2 mb-3">
+                  <Briefcase className="h-4 w-4 text-muted-foreground/70" />
+                  PM Billing
+                </h3>
+                <div className="space-y-2 text-sm">
+                  {job.pmBillingLabel && (
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">Billing model</span>
-                      <span className="font-medium">
-                        {job.pmBillingModel === "per_visit" ? "Per Visit" :
-                         job.pmBillingModel === "monthly_fixed" ? "Monthly Fixed" :
-                         job.pmBillingModel === "annual_prepaid" ? "Annual Prepaid" :
-                         job.pmBillingModel === "do_not_bill" ? "Do Not Bill" : "Not set"}
+                      <span className="text-muted-foreground">Contract</span>
+                      <span className="font-medium">{job.pmBillingLabel}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Billing model</span>
+                    <span className="font-medium">
+                      {job.pmBillingModel === "per_visit" ? "Per Visit" :
+                       job.pmBillingModel === "monthly_fixed" ? "Monthly Fixed" :
+                       job.pmBillingModel === "annual_prepaid" ? "Annual Prepaid" :
+                       job.pmBillingModel === "do_not_bill" ? "Do Not Bill" : "Not set"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-muted-foreground">Job billing action</span>
+                    <Badge variant="outline" className={cn(
+                      "text-xs",
+                      job.pmBillingDisposition === "invoice_on_completion"
+                        ? "border-blue-300 bg-blue-50 text-blue-700"
+                        : job.pmBillingDisposition === "covered_by_contract"
+                        ? "border-green-300 bg-green-50 text-green-700"
+                        : "border-gray-300 bg-gray-50 text-gray-600"
+                    )}>
+                      {job.pmBillingDisposition === "invoice_on_completion" ? "Invoice required on completion" :
+                       job.pmBillingDisposition === "covered_by_contract" ? "Covered by PM contract" :
+                       job.pmBillingDisposition === "archive_no_invoice" ? "No job invoice expected" :
+                       job.pmBillingDisposition}
+                    </Badge>
+                  </div>
+                  {job.status === "completed" && (
+                    <div className={cn(
+                      "mt-2 p-2.5 rounded-md text-xs",
+                      job.pmBillingDisposition === "invoice_on_completion"
+                        ? "bg-blue-50 text-blue-800 border border-blue-200"
+                        : "bg-green-50 text-green-800 border border-green-200"
+                    )}>
+                      {job.pmBillingDisposition === "invoice_on_completion"
+                        ? "This PM job should be invoiced. Create an invoice to close out this job."
+                        : job.pmBillingDisposition === "covered_by_contract"
+                        ? "This PM job is covered by the contract. No per-job invoice needed — mark as invoiced or archive."
+                        : "No invoice is expected for this job. You can archive it directly."}
+                    </div>
+                  )}
+                  {job.pmBillingStatus && (
+                    <div className="flex justify-between items-center pt-1">
+                      <span className="text-muted-foreground">Billing status</span>
+                      <span className={cn("text-xs font-medium",
+                        job.pmBillingStatus === "invoiced" ? "text-green-600" :
+                        job.pmBillingStatus === "pending_invoice" ? "text-blue-600" :
+                        job.pmBillingStatus === "no_invoice_expected" ? "text-gray-500" :
+                        job.pmBillingStatus === "billing_exception" ? "text-red-600" : ""
+                      )}>
+                        {job.pmBillingStatus === "invoiced" ? "Invoiced" :
+                         job.pmBillingStatus === "pending_invoice" ? "Pending invoice" :
+                         job.pmBillingStatus === "no_invoice_expected" ? "No invoice expected" :
+                         job.pmBillingStatus === "billing_exception" ? "Billing exception" :
+                         job.pmBillingStatus}
                       </span>
                     </div>
-                    <div className="flex justify-between items-center">
-                      <span className="text-muted-foreground">Job billing action</span>
-                      <Badge variant="outline" className={cn(
-                        "text-xs",
-                        job.pmBillingDisposition === "invoice_on_completion"
-                          ? "border-blue-300 bg-blue-50 text-blue-700"
-                          : job.pmBillingDisposition === "covered_by_contract"
-                          ? "border-green-300 bg-green-50 text-green-700"
-                          : "border-gray-300 bg-gray-50 text-gray-600"
-                      )}>
-                        {job.pmBillingDisposition === "invoice_on_completion" ? "Invoice required on completion" :
-                         job.pmBillingDisposition === "covered_by_contract" ? "Covered by PM contract" :
-                         job.pmBillingDisposition === "archive_no_invoice" ? "No job invoice expected" :
-                         job.pmBillingDisposition}
-                      </Badge>
-                    </div>
-                    {/* Closeout guidance */}
-                    {job.status === "completed" && (
-                      <div className={cn(
-                        "mt-2 p-2.5 rounded-md text-xs",
-                        job.pmBillingDisposition === "invoice_on_completion"
-                          ? "bg-blue-50 text-blue-800 border border-blue-200"
-                          : "bg-green-50 text-green-800 border border-green-200"
-                      )}>
-                        {job.pmBillingDisposition === "invoice_on_completion"
-                          ? "This PM job should be invoiced. Create an invoice to close out this job."
-                          : job.pmBillingDisposition === "covered_by_contract"
-                          ? "This PM job is covered by the contract. No per-job invoice needed — mark as invoiced or archive."
-                          : "No invoice is expected for this job. You can archive it directly."}
-                      </div>
-                    )}
-                    {/* PM billing status */}
-                    {job.pmBillingStatus && (
-                      <div className="flex justify-between items-center pt-1">
-                        <span className="text-muted-foreground">Billing status</span>
-                        <span className={cn("text-xs font-medium",
-                          job.pmBillingStatus === "invoiced" ? "text-green-600" :
-                          job.pmBillingStatus === "pending_invoice" ? "text-blue-600" :
-                          job.pmBillingStatus === "no_invoice_expected" ? "text-gray-500" :
-                          job.pmBillingStatus === "billing_exception" ? "text-red-600" : ""
-                        )}>
-                          {job.pmBillingStatus === "invoiced" ? "Invoiced" :
-                           job.pmBillingStatus === "pending_invoice" ? "Pending invoice" :
-                           job.pmBillingStatus === "no_invoice_expected" ? "No invoice expected" :
-                           job.pmBillingStatus === "billing_exception" ? "Billing exception" :
-                           job.pmBillingStatus}
-                        </span>
-                      </div>
-                    )}
-                  </div>
+                  )}
                 </div>
-              )}
+              </div>
+            )}
 
-              {/* Recurring series — part of the billing surface */}
-              {job.recurringSeries && (
-                <div className="border-t border-border/40 px-5 py-4" data-testid="section-recurring">
-                  <h3 className="text-[13px] font-semibold flex items-center gap-2 mb-2">
-                    <Repeat className="h-4 w-4 text-muted-foreground/70" />
-                    Recurring Series
-                  </h3>
-                  <p className="text-sm" data-testid="text-series-summary">{job.recurringSeries.baseSummary}</p>
-                </div>
-              )}
+            {/* Recurring series */}
+            {job.recurringSeries && (
+              <div className="border-t border-border/40 px-5 py-4" data-testid="section-recurring">
+                <h3 className="text-sm font-semibold flex items-center gap-2 mb-2">
+                  <Repeat className="h-4 w-4 text-muted-foreground/70" />
+                  Recurring Series
+                </h3>
+                <p className="text-sm" data-testid="text-series-summary">{job.recurringSeries.baseSummary}</p>
+              </div>
+            )}
+          </div>
+
+          {/* ── Card 2: Expenses ──────────────────────────────────────── */}
+          <div className="rounded-lg border border-border/80 bg-card shadow-sm overflow-hidden" data-testid="section-expenses">
+            <div className="px-5 py-4 border-b border-border/40 bg-primary/[0.09]">
+              <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <Receipt className="h-4 w-4 text-muted-foreground/70" />
+                Expenses
+              </h3>
             </div>
+            <JobExpensesCard jobId={jobId!} />
+          </div>
 
-            {/* ┌─ NOTES SURFACE ───────────────────────────────────────────┐ */}
-            <div className="border-t-2 border-border/50" data-testid="section-notes">
-              <JobNotesSection jobId={job.id} defaultOpen={notesOpen} embedded />
-            </div>
+          {/* ── Card 3: Visits + Activity (merged) ───────────────────── */}
+          <div className="rounded-lg border border-border/80 bg-card shadow-sm overflow-hidden" data-testid="section-visits-activity">
 
-            {/* ┌─ VISITS SURFACE ──────────────────────────────────────────┐ */}
-            <div className="border-t-2 border-border/50" id="visits-section" data-testid="section-visits">
-              <div className="flex items-center justify-between px-5 py-3.5">
-                <span className="text-[13px] font-semibold text-foreground flex items-center gap-2">
+            {/* Visits section */}
+            <div id="visits-section" data-testid="section-visits">
+              <div className="flex items-center justify-between px-5 py-4 bg-primary/[0.09]">
+                <span className="text-sm font-semibold text-foreground flex items-center gap-2">
                   <Calendar className="h-4 w-4 text-muted-foreground/70" />
                   Visits
                 </span>
@@ -1289,7 +1317,7 @@ export default function JobDetailPage() {
                         </span>
                         {visit.status !== "scheduled" && (
                           <Badge className={cn("text-[9px] px-1.5 py-0 shrink-0 leading-tight", VISIT_STATUS_COLORS[visit.status] || "")}>
-                            {VISIT_STATUS_LABELS[visit.status] || visit.status}
+                            {visitStatusLabel(visit.status)}
                           </Badge>
                         )}
                       </button>
@@ -1308,81 +1336,93 @@ export default function JobDetailPage() {
               </div>
             </div>
 
-            {/* ┌─ ACTIVITY ────────────────────────────────────────────────┐ */}
-            <div className="border-t border-border/30">
-              <Collapsible open={activityOpen} onOpenChange={setActivityOpen}>
-                <CollapsibleTrigger asChild>
-                  <button className="w-full flex items-center justify-between px-5 py-3 hover:bg-muted/20 transition-colors" data-testid="trigger-activity">
-                    <span className="text-[13px] font-semibold text-foreground">Activity</span>
-                    {activityOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground/50" /> : <ChevronRight className="h-4 w-4 text-muted-foreground/50" />}
-                  </button>
-                </CollapsibleTrigger>
-                <CollapsibleContent>
-                  <div className="px-5 pb-4 pt-1">
-                    <ul className="space-y-2 text-xs">
+            {/* Divider between Visits and Activity */}
+            <div className="mx-4 border-t border-border/40" />
+
+            {/* Activity section */}
+            <Collapsible open={activityOpen} onOpenChange={setActivityOpen}>
+              <CollapsibleTrigger asChild>
+                <button className="w-full flex items-center justify-between px-5 py-4 hover:bg-muted/20 transition-colors" data-testid="trigger-activity">
+                  <span className="text-sm font-semibold text-foreground">Activity</span>
+                  {activityOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground/50" /> : <ChevronRight className="h-4 w-4 text-muted-foreground/50" />}
+                </button>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <div className="px-5 pb-4 pt-1">
+                  <ul className="space-y-2 text-xs">
+                    <li className="flex items-start gap-2">
+                      <span className="mt-1 h-2 w-2 rounded-full bg-primary shrink-0" />
+                      <div>
+                        <div className="font-medium">Job created</div>
+                        <div className="text-muted-foreground">
+                          {job.createdAt ? format(new Date(job.createdAt), "MMMM do, yyyy") : "N/A"}
+                        </div>
+                      </div>
+                    </li>
+                    {job.scheduledStart && (
                       <li className="flex items-start gap-2">
-                        <span className="mt-1 h-2 w-2 rounded-full bg-primary shrink-0" />
+                        <span className="mt-1 h-2 w-2 rounded-full bg-blue-500 shrink-0" />
                         <div>
-                          <div className="font-medium">Job created</div>
-                          <div className="text-muted-foreground">
-                            {job.createdAt ? format(new Date(job.createdAt), "MMMM do, yyyy") : "N/A"}
-                          </div>
+                          <div className="font-medium">Scheduled</div>
+                          <div className="text-muted-foreground">{format(new Date(job.scheduledStart), "MMMM do, yyyy")}</div>
                         </div>
                       </li>
-                      {job.scheduledStart && (
-                        <li className="flex items-start gap-2">
-                          <span className="mt-1 h-2 w-2 rounded-full bg-blue-500 shrink-0" />
-                          <div>
-                            <div className="font-medium">Scheduled</div>
-                            <div className="text-muted-foreground">{format(new Date(job.scheduledStart), "MMMM do, yyyy")}</div>
-                          </div>
-                        </li>
-                      )}
-                      {job.actualStart && (
-                        <li className="flex items-start gap-2">
-                          <span className="mt-1 h-2 w-2 rounded-full bg-green-500 shrink-0" />
-                          <div>
-                            <div className="font-medium">Work started</div>
-                            <div className="text-muted-foreground">{format(new Date(job.actualStart), "MMMM do, yyyy")}</div>
-                          </div>
-                        </li>
-                      )}
-                      {job.actualEnd && (
-                        <li className="flex items-start gap-2">
-                          <span className="mt-1 h-2 w-2 rounded-full bg-green-600 shrink-0" />
-                          <div>
-                            <div className="font-medium">Work completed</div>
-                            <div className="text-muted-foreground">{format(new Date(job.actualEnd), "MMMM do, yyyy")}</div>
-                          </div>
-                        </li>
-                      )}
-                    </ul>
-                  </div>
-                </CollapsibleContent>
-              </Collapsible>
-            </div>
+                    )}
+                    {job.actualStart && (
+                      <li className="flex items-start gap-2">
+                        <span className="mt-1 h-2 w-2 rounded-full bg-green-500 shrink-0" />
+                        <div>
+                          <div className="font-medium">Work started</div>
+                          <div className="text-muted-foreground">{format(new Date(job.actualStart), "MMMM do, yyyy")}</div>
+                        </div>
+                      </li>
+                    )}
+                    {job.actualEnd && (
+                      <li className="flex items-start gap-2">
+                        <span className="mt-1 h-2 w-2 rounded-full bg-green-600 shrink-0" />
+                        <div>
+                          <div className="font-medium">Work completed</div>
+                          <div className="text-muted-foreground">{format(new Date(job.actualEnd), "MMMM do, yyyy")}</div>
+                        </div>
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
           </div>
 
-          {/* ════════════════════════════════════════════════════════════════
-              RIGHT: Utility rail — Labour, Equipment, Timeline, History
-              Unified sidebar with consistent module rhythm, no card-in-card
-              ════════════════════════════════════════════════════════════════ */}
-          <div>
-            {/* Labour — primary sidebar module */}
-            <div className="px-5 py-4" data-testid="section-labour">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[13px] font-semibold text-foreground">Labour</span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-xs h-auto p-0 text-primary"
-                  onClick={() => setShowAddTimeEntry(true)}
-                  data-testid="button-new-time-entry"
-                >
-                  <Plus className="h-3 w-3 mr-1" />
-                  New Time Entry
-                </Button>
-              </div>
+        </div>
+
+        {/* ════════════════════════════════════════════════════════════════
+            RIGHT: Notes, Labour, Equipment, Status Timeline, Scheduling History
+            ════════════════════════════════════════════════════════════════ */}
+        <div className="flex flex-col gap-2.5">
+
+          {/* 1. Notes — expanded by default, full width */}
+          <div className="rounded-lg border border-border/80 bg-card shadow-sm overflow-hidden" data-testid="section-notes">
+            <JobNotesSection jobId={job.id} embedded onCountChange={setNotesCount} />
+          </div>
+
+          {/* 2. Labour */}
+          <div className="rounded-lg border border-border/80 bg-card shadow-sm overflow-hidden" data-testid="section-labour">
+            <div className="flex items-center justify-between px-5 py-4 bg-primary/[0.09]">
+              <span className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <Clock className="h-4 w-4 text-muted-foreground/70" />
+                Labour
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs h-auto min-h-0 p-0 text-primary"
+                onClick={() => setShowAddTimeEntry(true)}
+                data-testid="button-new-time-entry"
+              >
+                <Plus className="h-3 w-3 mr-1" />
+                New Time Entry
+              </Button>
+            </div>
+            <div className="px-4 py-3">
               <LabourCardContent
                 jobId={jobId!}
                 onEditEntry={(entry) => {
@@ -1391,31 +1431,16 @@ export default function JobDetailPage() {
                 }}
               />
             </div>
-
-            {/* Sidebar divider */}
-            <div className="mx-5 border-t border-border/40" />
-
-            {/* Equipment */}
-            <div className="[&>*]:border-0 [&>*]:rounded-none [&>*]:shadow-none [&>*]:bg-transparent">
-              <JobEquipmentSection jobId={job.id} locationId={job.locationId} />
-            </div>
-
-            {/* Sidebar divider */}
-            <div className="mx-5 border-t border-border/40" />
-
-            {/* Status Timeline */}
-            <div className="[&>*]:border-0 [&>*]:rounded-none [&>*]:shadow-none [&>*]:bg-transparent">
-              <JobStatusTimeline jobId={job.id} defaultOpen={false} />
-            </div>
-
-            {/* Sidebar divider */}
-            <div className="mx-5 border-t border-border/40" />
-
-            {/* Scheduling History */}
-            <div className="[&>*]:border-0 [&>*]:rounded-none [&>*]:shadow-none [&>*]:bg-transparent">
-              <SchedulingHistory jobId={job.id} defaultOpen={false} />
-            </div>
           </div>
+
+          {/* 4. Equipment */}
+          <JobEquipmentSection jobId={job.id} locationId={job.locationId} />
+
+          {/* 5. Status Timeline */}
+          <JobStatusTimeline jobId={job.id} defaultOpen={false} />
+
+          {/* 6. Scheduling History */}
+          <SchedulingHistory jobId={job.id} defaultOpen={false} />
         </div>
       </div>
 
@@ -1473,14 +1498,20 @@ export default function JobDetailPage() {
         conflictVisitId={conflictVisitId}
       />
 
-      {/* Edit Visit Modal — canonical shared component (replaces VisitDetailDialog) */}
+      {/* Edit Visit Modal — canonical shared component (replaces VisitDetailDialog)
+          2026-03-23: Pass full location/company context so header is identical to dispatch entry point. */}
       {selectedVisitId && (
         <EditVisitModal
           open={true}
           onOpenChange={(open) => { if (!open) setSelectedVisitId(null); }}
           jobId={job.id}
           visitId={selectedVisitId}
-          jobStatus={job.status}
+          customerName={job.parentCompany?.name || job.locationDisplayName || undefined}
+          customerCompanyId={job.parentCompany?.id || job.location?.parentCompanyId || undefined}
+          jobNumber={job.jobNumber}
+          jobSummary={job.summary}
+          locationName={job.location?.companyName || job.locationName || undefined}
+          locationAddress={[job.location?.address || job.locationAddress, job.location?.city || job.locationCity].filter(Boolean).join(", ") || undefined}
         />
       )}
 
@@ -1515,72 +1546,52 @@ export default function JobDetailPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* 2026-03-05: Rule C — Confirmation dialog when completing a job */}
+      {/* 2026-03-24: Complete Job confirmation now delegates to canonical Close Job dialog
+          in JobHeaderCard, which handles invoice_now/later/archive options and visit guardrails. */}
       <AlertDialog open={showCompleteJobConfirm} onOpenChange={setShowCompleteJobConfirm}>
         <AlertDialogContent data-testid="dialog-complete-job-confirm">
           <AlertDialogHeader>
             <AlertDialogTitle>Complete Job</AlertDialogTitle>
             <AlertDialogDescription>
-              All uncompleted visits will be marked as completed. This action cannot be undone.
+              Choose how to close this job: create an invoice now, invoice later, or archive without billing.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel data-testid="button-cancel-complete-job">Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                if (job) {
-                  updateStatusMutation.mutate({ status: "completed", version: job.version });
-                }
                 setShowCompleteJobConfirm(false);
+                // Delegate to canonical Close Job dialog in JobHeaderCard
+                headerCardRef.current?.openCloseJobDialog();
               }}
               data-testid="button-confirm-complete-job"
             >
-              Yes, Complete Job
+              Continue
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      <Dialog open={showCreateInvoiceDialog} onOpenChange={setShowCreateInvoiceDialog}>
-        <DialogContent data-testid="dialog-create-invoice">
-          <DialogHeader>
-            <DialogTitle>Create Invoice from Job</DialogTitle>
-            <DialogDescription>
-              This will create a new draft invoice with line items from this job's parts and billing.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="py-4">
-            <p className="text-sm text-muted-foreground">
-              Job: #{job.jobNumber} - {job.summary || "No summary"}
-            </p>
-            <p className="text-sm text-muted-foreground">
-              Client: {job.parentCompany?.name || job.location?.companyName || "Unknown"}
-            </p>
-          </div>
-          <DialogFooter className="flex-col sm:flex-row gap-2">
-            <Button variant="outline" onClick={() => setShowCreateInvoiceDialog(false)}>
-              Cancel
-            </Button>
-            {job.status !== "completed" && (
-              <Button
-                variant="outline"
-                onClick={() => handleCreateInvoice(true)}
-                disabled={createInvoiceMutation.isPending}
-                data-testid="button-close-job-create-invoice"
-              >
-                {createInvoiceMutation.isPending ? "Creating..." : "Close Job & Create Invoice"}
-              </Button>
-            )}
-            <Button
-              onClick={() => handleCreateInvoice(false)}
-              disabled={createInvoiceMutation.isPending}
-              data-testid="button-confirm-create-invoice"
-            >
-              {createInvoiceMutation.isPending ? "Creating..." : "Create Invoice"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Create Invoice from Job — canonical component */}
+      <CreateInvoiceFromJobDialog
+        open={showCreateInvoiceDialog}
+        onOpenChange={setShowCreateInvoiceDialog}
+        jobId={job.id}
+        jobNumber={job.jobNumber}
+        jobSummary={job.summary}
+        jobStatus={job.status}
+        locationDisplayName={job.locationDisplayName || "Unknown"}
+        onCreated={(invoice) => {
+          logActivity({
+            type: "created",
+            entityType: "invoice",
+            entityId: invoice.id,
+            label: `Created Invoice${invoice.invoiceNumber ? ` #${invoice.invoiceNumber}` : ""}`,
+            meta: job?.locationDisplayName || undefined,
+          });
+          setLocation(`/invoices/${invoice.id}`);
+        }}
+      />
 
       {/* Time Entry Modals */}
       <AddTimeEntryModal

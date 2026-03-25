@@ -1,19 +1,30 @@
 /**
- * Clients page - Standalone list of all client companies/locations
- * Uses TablePageShell for consistent width/spacing with Jobs, Invoices, etc.
+ * Clients page — standardized list-surface UI.
+ * Columns: Name (company + contact), Address, Tags, Status.
+ * Sortable headers, dense Jobber-style row height.
  */
 
 import { useState, useMemo, useCallback } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { Plus, X, Tag, MapPin, Users } from "lucide-react";
+import { Plus, X, Tag, MapPin, Users, ChevronUp, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ListToolbar } from "@/components/layout/ListToolbar";
+// 2026-03-21: Canonical CreateClientModal replaces navigation to /clients/new
+import { CreateClientModal } from "@/components/CreateClientModal";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
-import { FixedSizeList } from "react-window";
+// Removed FixedSizeList (react-window) — plain rendering eliminates double-scroll UX
 import { apiRequest } from "@/lib/queryClient";
-import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
+import {
+  ListSurface,
+  tableRowClass,
+  listHeaderRowClass,
+  listPrimaryClass,
+  listSecondaryClass,
+  listBadgeClass,
+  listResultsClass,
+} from "@/components/ui/list-surface";
 import { TablePageShell } from "@/components/ui/table-page-shell";
 import { EmptyState } from "@/components/ui/empty-state";
 import BulkEditTagsModal from "@/components/BulkEditTagsModal";
@@ -27,50 +38,48 @@ interface TagAssignment {
   tagColor: string;
 }
 
-const MONTH_NAMES = [
-  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
-];
-
 interface CompanyGroup {
   companyId: string;
   companyName: string;
+  primaryContact: string;
   primaryLocationId: string;
-  location: string;
   address: string;
-  maintenanceMonths: string;
   locationCount: number;
   hasActiveLocation: boolean;
   allInactive: boolean;
 }
 
-// Virtualization constants — row height matches original table row padding
-const ROW_HEIGHT = 52;
-const MAX_LIST_HEIGHT = 700;
-const CLIENTS_GRID_COLS = "40px repeat(5, minmax(0, 1fr))";
+type SortField = "name" | "address" | "tags" | "status";
+type SortDir = "asc" | "desc";
+
+// Standardized dense row height (used for consistent row styling)
+const ROW_HEIGHT = 48;
+// 4-column layout: checkbox, Name (wider), Address, Tags, Status
+const CLIENTS_GRID_COLS = "40px 2fr 1.5fr 1fr 100px";
 
 export default function Clients() {
   const [, setLocation] = useLocation();
   const [search, setSearch] = useState("");
   const [activeTab, setActiveTab] = useState<"active" | "inactive">("active");
+  // 2026-03-21: Canonical client creation modal
+  const [createClientOpen, setCreateClientOpen] = useState(false);
   const [selectedTagIds, setSelectedTagIds] = useState<Set<string>>(new Set());
 
-  // Phase 2A: Row selection + bulk edit state
+  const [sortField, setSortField] = useState<SortField>("name");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
   const [bulkModalOpen, setBulkModalOpen] = useState(false);
 
-  // Fetch all tenant tags for filter chips
   const { data: allTags = [] } = useQuery<ClientTag[]>({
     queryKey: ["/api/tags"],
   });
 
-  // Fetch tag assignments to map tags → customer companies
   const { data: tagAssignments = [] } = useQuery<TagAssignment[]>({
     queryKey: ["/api/tags/assignments"],
     queryFn: () => apiRequest("/api/tags/assignments"),
   });
 
-  // Build maps for tag filtering and display
   const companyTagMap = useMemo(() => {
     const m = new Map<string, Set<string>>();
     tagAssignments.forEach((a) => {
@@ -80,7 +89,6 @@ export default function Clients() {
     return m;
   }, [tagAssignments]);
 
-  // companyId → TagAssignment[] for rendering tag pills in rows
   const companyTagsList = useMemo(() => {
     const m = new Map<string, TagAssignment[]>();
     tagAssignments.forEach((a) => {
@@ -90,6 +98,8 @@ export default function Clients() {
     return m;
   }, [tagAssignments]);
 
+  // Fix: placeholderData keeps previous results visible while new search fetches,
+  // preventing full-page "Loading clients..." flash on every keystroke
   const { data, isLoading } = useQuery({
     queryKey: ["/api/clients", search],
     queryFn: async () => {
@@ -99,51 +109,44 @@ export default function Clients() {
       });
       return await apiRequest(`/api/clients?${params}`);
     },
+    placeholderData: keepPreviousData,
   });
 
   const clients = (data?.data || []) as Client[];
-
-  const formatMonths = (selectedMonths: number[] | null) => {
-    if (!selectedMonths || selectedMonths.length === 0) return "—";
-    return selectedMonths.map((m) => MONTH_NAMES[m]).join(", ");
-  };
 
   const companyGroups = useMemo(() => {
     const groupMap = new Map<string, Client[]>();
 
     clients.forEach((client) => {
       const companyKey = client.parentCompanyId ?? client.id;
-      if (!groupMap.has(companyKey)) {
-        groupMap.set(companyKey, []);
-      }
+      if (!groupMap.has(companyKey)) groupMap.set(companyKey, []);
       groupMap.get(companyKey)!.push(client);
     });
 
     const groups: CompanyGroup[] = [];
 
     groupMap.forEach((locations, companyId) => {
-      const hasMultiple = locations.length > 1;
-      const primary =
-        locations.find((l) => (l as any).isPrimary) ??
-        locations[0];
-
+      const primary = locations.find((l) => (l as any).isPrimary) ?? locations[0];
       const hasActiveLocation = locations.some((l) => !l.inactive);
       const allInactive = locations.every((l) => l.inactive);
+
+      const address = locations.length > 1
+        ? `${locations.length} properties`
+        : (primary.address || "\u2014");
 
       groups.push({
         companyId,
         companyName: primary.companyName,
+        primaryContact: primary.contactName || "",
         primaryLocationId: primary.id,
-        location: hasMultiple ? "Multiple" : (primary.location || "—"),
-        address: hasMultiple ? "Multiple" : (primary.address || "—"),
-        maintenanceMonths: hasMultiple ? "Multiple" : formatMonths((primary as any).selectedMonths ?? null),
+        address,
         locationCount: locations.length,
         hasActiveLocation,
         allInactive,
       });
     });
 
-    return groups.sort((a, b) => a.companyName.localeCompare(b.companyName));
+    return groups;
   }, [clients]);
 
   const filteredGroups = useMemo(() => {
@@ -151,7 +154,6 @@ export default function Clients() {
       ? companyGroups.filter((g) => g.hasActiveLocation)
       : companyGroups.filter((g) => g.allInactive);
 
-    // Apply tag filter: company must have ALL selected tags
     if (selectedTagIds.size > 0) {
       groups = groups.filter((g) => {
         const tags = companyTagMap.get(g.companyId);
@@ -167,14 +169,52 @@ export default function Clients() {
     return groups;
   }, [companyGroups, activeTab, selectedTagIds, companyTagMap]);
 
-  // Phase 2A: Selection helpers
-  const allVisibleIds = useMemo(() => filteredGroups.map((g) => g.companyId), [filteredGroups]);
+  const sortedGroups = useMemo(() => {
+    const sorted = [...filteredGroups];
+    const dir = sortDir === "asc" ? 1 : -1;
+
+    sorted.sort((a, b) => {
+      switch (sortField) {
+        case "name":
+          return dir * a.companyName.localeCompare(b.companyName);
+        case "address":
+          return dir * a.address.localeCompare(b.address);
+        case "tags": {
+          const aCount = companyTagsList.get(a.companyId)?.length ?? 0;
+          const bCount = companyTagsList.get(b.companyId)?.length ?? 0;
+          return dir * (aCount - bCount);
+        }
+        case "status": {
+          const aStatus = a.allInactive ? 1 : 0;
+          const bStatus = b.allInactive ? 1 : 0;
+          return dir * (aStatus - bStatus);
+        }
+        default:
+          return 0;
+      }
+    });
+
+    return sorted;
+  }, [filteredGroups, sortField, sortDir, companyTagsList]);
+
+  const handleSort = useCallback((field: SortField) => {
+    setSortField((prev) => {
+      if (prev === field) {
+        setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+        return prev;
+      }
+      setSortDir("asc");
+      return field;
+    });
+  }, []);
+
+  const allVisibleIds = useMemo(() => sortedGroups.map((g) => g.companyId), [sortedGroups]);
   const allVisibleSelected = allVisibleIds.length > 0 && allVisibleIds.every((id) => selectedRows.has(id));
   const someSelected = selectedRows.size > 0;
 
   const toggleSelectAll = useCallback(() => {
     setSelectedRows((prev) => {
-      if (allVisibleIds.every((id) => prev.has(id))) return new Set(); // deselect all
+      if (allVisibleIds.every((id) => prev.has(id))) return new Set();
       return new Set(allVisibleIds);
     });
   }, [allVisibleIds]);
@@ -187,15 +227,32 @@ export default function Clients() {
     });
   }, []);
 
-  /** companyId → companyName map for the review step preview */
   const selectedNamesMap = useMemo(() => {
     const m = new Map<string, string>();
-    filteredGroups.forEach((g) => { if (selectedRows.has(g.companyId)) m.set(g.companyId, g.companyName); });
+    sortedGroups.forEach((g) => { if (selectedRows.has(g.companyId)) m.set(g.companyId, g.companyName); });
     return m;
-  }, [filteredGroups, selectedRows]);
+  }, [sortedGroups, selectedRows]);
 
   const handleRowClick = (primaryLocationId: string) => {
     setLocation(`/clients/${primaryLocationId}`);
+  };
+
+  /** Sortable column header with directional indicator */
+  const SortHeader = ({ field, children }: { field: SortField; children: React.ReactNode }) => {
+    const active = sortField === field;
+    return (
+      <button
+        type="button"
+        className="flex items-center gap-1 px-4 text-left hover:text-foreground transition-colors select-none"
+        onClick={() => handleSort(field)}
+      >
+        {children}
+        {active && (sortDir === "asc"
+          ? <ChevronUp className="h-3 w-3" />
+          : <ChevronDown className="h-3 w-3" />
+        )}
+      </button>
+    );
   };
 
   if (isLoading) {
@@ -217,7 +274,7 @@ export default function Clients() {
             <MapPin className="h-4 w-4 mr-2" />
             All Locations
           </Button>
-          <Button onClick={() => setLocation("/clients/new")} data-testid="button-new-client">
+          <Button onClick={() => setCreateClientOpen(true)} data-testid="button-new-client">
             <Plus className="h-4 w-4 mr-2" />
             New Client
           </Button>
@@ -225,7 +282,6 @@ export default function Clients() {
       }
       data-testid="clients-page"
     >
-      {/* List Pages Refactor: Consolidated toolbar with search + filters popover */}
       <ListToolbar
         searchValue={search}
         onSearchChange={setSearch}
@@ -297,7 +353,6 @@ export default function Clients() {
           )}
         </FiltersButton>
 
-        {/* Bulk actions when rows selected */}
         {someSelected && (
           <div className="flex items-center gap-2 ml-2 border-l pl-3">
             <span className="text-xs font-medium text-muted-foreground">{selectedRows.size} selected</span>
@@ -313,9 +368,9 @@ export default function Clients() {
       </ListToolbar>
 
       <ListSurface>
-        {/* Virtualized grid header */}
+        {/* Standardized header using shared listHeaderRowClass */}
         <div
-          className="grid items-center border-b border-gray-200 dark:border-gray-800 py-3 text-sm font-semibold text-[#6B7280] bg-[#FAFAFA] dark:bg-gray-900/50"
+          className={listHeaderRowClass}
           style={{ gridTemplateColumns: CLIENTS_GRID_COLS }}
         >
           <div className="flex justify-center">
@@ -325,35 +380,31 @@ export default function Clients() {
               aria-label="Select all visible rows"
             />
           </div>
-          <div className="px-4">Company</div>
-          <div className="px-4">Tags</div>
-          <div className="px-4">Location</div>
-          <div className="px-4">Address</div>
-          <div className="px-4">Maintenance Months</div>
+          <SortHeader field="name">Name</SortHeader>
+          <SortHeader field="address">Address</SortHeader>
+          <SortHeader field="tags">Tags</SortHeader>
+          <SortHeader field="status">Status</SortHeader>
         </div>
 
-        {filteredGroups.length === 0 ? (
+        {sortedGroups.length === 0 ? (
           <EmptyState
             icon={Users}
             message={`No ${activeTab} clients found`}
             className="py-8"
           />
         ) : (
-          <FixedSizeList
-            height={Math.min(filteredGroups.length * ROW_HEIGHT, MAX_LIST_HEIGHT)}
-            itemCount={filteredGroups.length}
-            itemSize={ROW_HEIGHT}
-            width="100%"
-          >
-            {({ index, style }) => {
-              const group = filteredGroups[index];
+          /* Fix: plain rendering instead of FixedSizeList eliminates double-scroll.
+             Page scroll handles everything; no internal scroll region. */
+          <div>
+            {sortedGroups.map((group) => {
+              const isActive = group.hasActiveLocation && !group.allInactive;
               return (
                 <div
-                  style={{ ...style, gridTemplateColumns: CLIENTS_GRID_COLS }}
+                  key={group.companyId}
+                  style={{ height: ROW_HEIGHT, gridTemplateColumns: CLIENTS_GRID_COLS }}
                   className={`grid items-center ${tableRowClass}`}
                   onClick={() => handleRowClick(group.primaryLocationId)}
                   data-testid={`row-client-${group.companyId}`}
-                  title={group.locationCount > 1 ? `${group.locationCount} locations` : undefined}
                 >
                   <div className="flex justify-center" onClick={(e) => e.stopPropagation()}>
                     <Checkbox
@@ -362,13 +413,25 @@ export default function Clients() {
                       aria-label={`Select ${group.companyName}`}
                     />
                   </div>
-                  <div className="px-4 font-medium truncate">{group.companyName}</div>
+
+                  {/* Name: company (primary) + contact (secondary) */}
+                  <div className="px-4 min-w-0">
+                    <div className={listPrimaryClass}>{group.companyName}</div>
+                    {group.primaryContact && (
+                      <div className={listSecondaryClass + " mt-0.5"}>{group.primaryContact}</div>
+                    )}
+                  </div>
+
+                  {/* Address */}
+                  <div className={"px-4 " + listSecondaryClass}>{group.address}</div>
+
+                  {/* Tags */}
                   <div className="px-4">
                     <div className="flex flex-wrap gap-1">
                       {(companyTagsList.get(group.companyId) ?? []).map((t) => (
                         <span
                           key={t.tagId}
-                          className="inline-flex rounded-full px-1.5 py-0.5 text-[10px] font-medium text-white"
+                          className={listBadgeClass + " text-white"}
                           style={{ backgroundColor: t.tagColor }}
                         >
                           {t.tagName}
@@ -376,27 +439,41 @@ export default function Clients() {
                       ))}
                     </div>
                   </div>
-                  <div className="px-4 text-muted-foreground truncate">{group.location}</div>
-                  <div className="px-4 text-muted-foreground truncate">{group.address}</div>
-                  <div className="px-4 text-sm truncate">{group.maintenanceMonths}</div>
+
+                  {/* Status badge */}
+                  <div className="px-4">
+                    <span
+                      className={`${listBadgeClass} ${
+                        isActive
+                          ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                          : "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400"
+                      }`}
+                    >
+                      {isActive ? "Active" : "Inactive"}
+                    </span>
+                  </div>
                 </div>
               );
-            }}
-          </FixedSizeList>
+            })}
+          </div>
         )}
       </ListSurface>
 
-      <div className="text-sm text-muted-foreground mt-4">
-        Showing {filteredGroups.length} companies
+      <div className={listResultsClass}>
+        Showing {sortedGroups.length} companies
       </div>
 
-      {/* Phase 2A: Bulk Edit Tags Modal */}
       <BulkEditTagsModal
         open={bulkModalOpen}
         onOpenChange={setBulkModalOpen}
         selectedIds={Array.from(selectedRows)}
         selectedNames={selectedNamesMap}
         onApplied={() => setSelectedRows(new Set())}
+      />
+      {/* 2026-03-21: Canonical client creation modal */}
+      <CreateClientModal
+        open={createClientOpen}
+        onOpenChange={setCreateClientOpen}
       />
     </TablePageShell>
   );

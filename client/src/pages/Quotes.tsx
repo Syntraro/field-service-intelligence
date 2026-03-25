@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ListToolbar } from "@/components/layout/ListToolbar";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
+import { getQuoteStatusBadge } from "@/lib/statusBadges";
 // Card, CardContent removed — unused after List Pages Refactor
 import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
 import { TablePageShell } from "@/components/ui/table-page-shell";
@@ -30,28 +31,6 @@ interface EnrichedQuote extends Quote {
 
 type QuoteStatusFilter = "all" | "draft" | "sent" | "approved" | "declined" | "expired" | "converted";
 
-function getStatusBadge(status: string): {
-  label: string;
-  variant: "default" | "destructive" | "secondary" | "outline";
-} {
-  switch (status) {
-    case "draft":
-      return { label: "Draft", variant: "outline" };
-    case "sent":
-      return { label: "Sent", variant: "default" };
-    case "approved":
-      return { label: "Approved", variant: "default" };
-    case "declined":
-      return { label: "Declined", variant: "destructive" };
-    case "expired":
-      return { label: "Expired", variant: "secondary" };
-    case "converted":
-      return { label: "Converted", variant: "secondary" };
-    default:
-      return { label: status, variant: "outline" };
-  }
-}
-
 function formatCurrency(amount: string | number): string {
   const num = typeof amount === "string" ? parseFloat(amount) : amount;
   return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(num);
@@ -60,7 +39,15 @@ function formatCurrency(amount: string | number): string {
 export default function Quotes() {
   const [, setLocation] = useLocation();
   const search = useSearch();
-  const [activeFilter, setActiveFilter] = useState<QuoteStatusFilter>("all");
+  // Initialize filter from URL params (e.g., ?status=approved from dashboard navigation)
+  const initialStatus = useMemo(() => {
+    const params = new URLSearchParams(search);
+    const v = params.get("status");
+    const valid: QuoteStatusFilter[] = ["all", "draft", "sent", "approved", "declined", "expired", "converted"];
+    if (v && valid.includes(v as QuoteStatusFilter)) return v as QuoteStatusFilter;
+    return "all";
+  }, []);
+  const [activeFilter, setActiveFilter] = useState<QuoteStatusFilter>(initialStatus);
   const [searchQuery, setSearchQuery] = useState("");
   const [newQuoteModalOpen, setNewQuoteModalOpen] = useState(false);
 
@@ -69,7 +56,6 @@ export default function Quotes() {
     const params = new URLSearchParams(search);
     if (params.get("create") === "true") {
       setNewQuoteModalOpen(true);
-      // Clear the param
       setLocation("/quotes", { replace: true });
     }
   }, [search, setLocation]);
@@ -97,7 +83,7 @@ export default function Quotes() {
 
   const filteredQuotes = useMemo(() => {
     let result = quotes.map(q => {
-      const statusInfo = getStatusBadge(q.status);
+      const statusInfo = getQuoteStatusBadge(q.status);
       return { ...q, statusInfo };
     });
 

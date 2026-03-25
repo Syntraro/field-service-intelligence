@@ -5,13 +5,12 @@
  * - Computing occurrence dates from templates (phase, period_start, day_of_month modes)
  * - Month-of-year restriction for PM contracts
  * - Generating job instances into the backlog (idempotent via unique constraint)
- * - Auto-scheduling when template.autoSchedule is true (scheduledStart/End from HH:MM + duration)
  * - PM parts copy: snapshots location PM part templates into job_parts on generation
  * - Concurrency-safe: atomic claim prevents duplicate jobs under race
  *
  * SCHEDULING:
- * - Default (autoSchedule=false): generated jobs are unscheduled (scheduledStart = NULL)
- * - PM auto-schedule (autoSchedule=true): scheduledStart = instanceDate + scheduledTimeLocal
+ * - Generated PM jobs are always unscheduled (scheduledStart = NULL, primaryTechnicianId = NULL)
+ * - Dispatchers assign technicians and schedule after generation
  *
  * CONSTRAINTS:
  * - Generated jobs have backlog-compatible status: open, on_hold
@@ -812,18 +811,8 @@ export async function generateFromInstances(
       continue; // Already claimed by another process
     }
 
-    // Compute scheduling fields
+    // PM jobs are always created unscheduled — dispatchers schedule after generation
     const occurrenceDate = parseLocalDate(instance.instanceDate);
-    let scheduledStart: Date | null = null;
-    let scheduledEnd: Date | null = null;
-
-    if (template.autoSchedule && template.scheduledTimeLocal) {
-      const [hh, mm] = template.scheduledTimeLocal.split(":").map(Number);
-      scheduledStart = new Date(occurrenceDate);
-      scheduledStart.setHours(hh, mm, 0, 0);
-      const durationMin = template.defaultDurationMinutes ?? 60;
-      scheduledEnd = new Date(scheduledStart.getTime() + durationMin * 60 * 1000);
-    }
 
     // PM Billing Disposition: Derive billing snapshot from contract
     const billing = deriveBillingDisposition(template.pmBillingModel);
@@ -835,12 +824,12 @@ export async function generateFromInstances(
         description: template.description,
         jobType: (template.jobType ?? "maintenance") as JobType,
         priority: (template.priority ?? "medium") as JobPriority,
-        primaryTechnicianId: template.preferredTechnicianId,
+        primaryTechnicianId: null, // PM jobs are unassigned — dispatchers assign after generation
         status: "open" as JobStatus,
         openSubStatus: template.openSubStatusDefault ?? null,
         holdReason: (template.openSubStatusDefault === "on_hold" ? template.holdReason : null) as HoldReason | null,
-        scheduledStart: scheduledStart ? scheduledStart.toISOString() : null,
-        scheduledEnd: scheduledEnd ? scheduledEnd.toISOString() : null,
+        scheduledStart: null,
+        scheduledEnd: null,
         isAllDay: false,
         // PM duration: forward template duration so visit gets correct estimate
         durationMinutes: template.defaultDurationMinutes ?? 60,

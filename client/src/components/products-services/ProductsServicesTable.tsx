@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { ChevronUp, ChevronDown, MoreHorizontal, Pencil, Archive, Trash2, Loader2 } from "lucide-react";
 import { ListSurface } from "@/components/ui/list-surface";
-import { Part, SortField, SortDirection, formatCurrency } from "./types";
+import { Part, SortField, SortDirection, formatCurrency, formatDuration } from "./types";
 
 interface ProductsServicesTableProps {
   parts: Part[];
@@ -89,19 +89,20 @@ export function ProductsServicesTable({
               <SortHeader field="category" label="Category" />
               <SortHeader field="cost" label="Cost" />
               <SortHeader field="unitPrice" label="Price" />
+              <SortHeader field="estimatedDurationMinutes" label="Duration" />
               <th className="px-3 py-2 text-left text-xs font-medium text-muted-foreground w-20">Actions</th>
             </tr>
           </thead>
           <tbody>
             {isLoading ? (
               <tr>
-                <td colSpan={8} className="py-12 text-center">
+                <td colSpan={9} className="py-12 text-center">
                   <Loader2 className="h-6 w-6 animate-spin mx-auto text-muted-foreground" />
                 </td>
               </tr>
             ) : parts.length === 0 ? (
               <tr>
-                <td colSpan={8} className="py-12 text-center text-muted-foreground">
+                <td colSpan={9} className="py-12 text-center text-muted-foreground">
                   {searchQuery ? `No results for "${searchQuery}"` : "No products or services found"}
                 </td>
               </tr>
@@ -221,6 +222,28 @@ export function ProductsServicesTable({
                         onClick={() => onInlineEdit(part.id, "unitPrice", part.unitPrice || "")}
                       >
                         {formatCurrency(part.unitPrice)}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-muted-foreground">
+                    {inlineEditId === part.id && inlineEditField === "estimatedDurationMinutes" ? (
+                      <Input
+                        type="number"
+                        step="1"
+                        min="0"
+                        value={inlineEditValue}
+                        onChange={(e) => onInlineEditValueChange(e.target.value)}
+                        onBlur={() => onInlineEditSave(part.id, "estimatedDurationMinutes")}
+                        onKeyDown={(e) => e.key === "Enter" && onInlineEditSave(part.id, "estimatedDurationMinutes")}
+                        autoFocus
+                        className="h-7 text-sm w-20"
+                      />
+                    ) : (
+                      <span
+                        className="cursor-pointer hover:underline"
+                        onClick={() => onInlineEdit(part.id, "estimatedDurationMinutes", part.estimatedDurationMinutes != null ? String(part.estimatedDurationMinutes) : "")}
+                      >
+                        {formatDuration(part.estimatedDurationMinutes)}
                       </span>
                     )}
                   </td>

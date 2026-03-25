@@ -12,13 +12,12 @@ import { useQuery } from "@tanstack/react-query";
 // Canonical types — mirror server/storage/jobsFeed.ts
 // ---------------------------------------------------------------------------
 
-/** Canonical job list item. All timestamps are ISO strings. */
+/** Canonical job list item. All timestamps are ISO strings.
+ * PERF-02: Fields not needed by list pages are optional (present in detail response only). */
 export interface JobFeedItem {
   id: string;
-  companyId: string;
   jobNumber: number;
   summary: string;
-  description: string | null;
   jobType: string;
   status: string;
   openSubStatus: string | null;
@@ -34,23 +33,37 @@ export interface JobFeedItem {
   locationCity: string | null;
   primaryTechnicianId: string | null;
   assignedTechnicianIds: string[] | null;
+  onHoldAt: string | null;
+  // Fields below are only present in detail response, not in feed
+  companyId?: string;
+  description?: string | null;
+  isActive?: boolean;
+  version?: number;
+  createdAt?: string;
+  updatedAt?: string | null;
+  holdReason?: string | null;
+  holdNotes?: string | null;
+  nextActionDate?: string | null;
+  invoiceId?: string | null;
+  closedAt?: string | null;
+}
+
+/** Canonical single-job detail header. Extends feed item with detail-only fields.
+ * PERF-02: Fields removed from feed are re-declared here as required. */
+export interface JobHeaderDetail extends JobFeedItem {
+  // PERF-02: Fields removed from feed, required for detail
+  companyId: string;
+  description: string | null;
   isActive: boolean;
   version: number;
   createdAt: string;
   updatedAt: string | null;
-  onHoldAt: string | null;
   holdReason: string | null;
   holdNotes: string | null;
   nextActionDate: string | null;
-  actionRequiredAt: string | null;
-  actionRequiredNotes: string | null;
-  actionRequiredEscalatedAt: string | null;
   invoiceId: string | null;
   closedAt: string | null;
-}
-
-/** Canonical single-job detail header. Extends feed item with detail-only fields. */
-export interface JobHeaderDetail extends JobFeedItem {
+  // Detail-only fields
   accessInstructions: string | null;
   billingNotes: string | null;
   actualStart: string | null;
@@ -69,12 +82,12 @@ export interface JobHeaderDetail extends JobFeedItem {
   deletedAt: string | null;
   previousStatus: string | null;
   closedBy: string | null;
-  actionRequiredReason: string | null;
   location: {
     id: string;
     companyName: string | null;
     location: string | null;
     address: string | null;
+    address2: string | null;
     city: string | null;
     province: string | null;
     postalCode: string | null;
@@ -100,6 +113,26 @@ export interface JobFeedParams {
   sortOrder?: "asc" | "desc";
   limit?: number;
   offset?: number;
+  /** Hybrid search: "history" searches all job history server-side */
+  searchMode?: "history";
+  /** P3-05: Request true aggregate counts alongside feed data */
+  includeCounts?: boolean;
+}
+
+/** P3-05: True aggregate job counts (mirrors server JobCounts) */
+export interface JobCounts {
+  lifecycle: {
+    open: number;
+    completed: number;
+    invoiced: number;
+    archived: number;
+  };
+  openSubStatus: {
+    in_progress: number;
+    on_route: number;
+    on_hold: number;
+  };
+  total: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +155,8 @@ function buildJobsFeedKey(params: JobFeedParams): unknown[] {
     params.sortOrder ?? null,
     params.limit ?? null,
     params.offset ?? null,
+    params.searchMode ?? null,
+    params.includeCounts ?? null, // P3-05: cache isolation for counts consumers
   ];
 }
 
@@ -134,6 +169,8 @@ function buildJobsFeedUrl(params: JobFeedParams): string {
   if (params.scheduledDate) sp.set("scheduledDate", params.scheduledDate);
   if (params.sortBy) sp.set("sortBy", params.sortBy);
   if (params.sortOrder) sp.set("sortOrder", params.sortOrder);
+  if (params.searchMode) sp.set("searchMode", params.searchMode);
+  if (params.includeCounts) sp.set("includeCounts", "true"); // P3-05
   sp.set("offset", String(params.offset ?? 0));
   sp.set("limit", String(params.limit ?? 200));
   const qs = sp.toString();
@@ -147,11 +184,16 @@ function buildJobsFeedUrl(params: JobFeedParams): string {
 interface JobsFeedResponse {
   data: JobFeedItem[];
   meta: { limit: number; hasMore: boolean; nextOffset?: number };
+  /** P3-05: Present only when includeCounts=true was requested */
+  counts?: JobCounts;
 }
 
 /**
  * Canonical hook for fetching a list of jobs.
  * Uses ['jobs', 'feed', ...] query key for family-wide invalidation.
+ *
+ * P3-05: When params.includeCounts is true, response includes a `counts`
+ * block with true aggregate counts (not capped by feed limit).
  */
 export function useJobsFeed(
   params: JobFeedParams = {},
@@ -160,19 +202,19 @@ export function useJobsFeed(
   const queryKey = buildJobsFeedKey(params);
   const url = buildJobsFeedUrl(params);
 
-  const query = useQuery<JobsFeedResponse, Error, JobFeedItem[]>({
+  const query = useQuery<JobsFeedResponse>({
     queryKey,
     queryFn: async () => {
       const res = await fetch(url, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch jobs");
       return res.json();
     },
-    select: (response) => response.data,
     enabled: options?.enabled ?? true,
   });
 
   return {
-    jobs: query.data ?? [],
+    jobs: query.data?.data ?? [],
+    counts: query.data?.counts ?? null,
     isLoading: query.isLoading,
     error: query.error,
     refetch: query.refetch,

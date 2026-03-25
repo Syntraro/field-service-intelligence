@@ -65,7 +65,7 @@ export function SchedulingHistory({ jobId, defaultOpen = false }: SchedulingHist
       <Card>
         <CollapsibleTrigger asChild>
           <button
-            className="w-full flex items-center justify-between px-4 py-3 hover-elevate"
+            className="w-full flex items-center justify-between px-5 py-4 bg-primary/[0.09] hover:bg-primary/[0.13] transition-colors"
             data-testid="trigger-scheduling-history"
           >
             <span className="text-sm font-semibold flex items-center gap-2">

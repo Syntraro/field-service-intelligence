@@ -19,6 +19,7 @@ import fs from "fs";
 import { randomUUID } from "crypto";
 import { filesRepository } from "../storage/files";
 import { extractNameplateFields } from "../services/nameplateOcr";
+import { computeNextDueDate } from "@shared/nextDue";
 
 const router = Router();
 
@@ -92,10 +93,11 @@ function deriveNextDueForClient(client: any, futureDueByClientId: Map<string, st
   const derived = futureDueByClientId.get(client.id);
   if (derived) return derived;
 
-  const selectedMonth = client.selectedMonth;
-  if (!selectedMonth) return "";
-  const year = new Date().getFullYear();
-  return formatDateOnly(new Date(year, selectedMonth - 1, 1));
+  // 2026-03-20 Phase 4D: Fixed — was using client.selectedMonth (singular, nonexistent field).
+  // Now uses client.selectedMonths (plural, integer[]) with canonical shared formula.
+  const nextDue = computeNextDueDate(client.selectedMonths ?? []);
+  if (!nextDue) return "";
+  return formatDateOnly(nextDue);
 }
 
 function buildFutureDueIndex(assignments: any[]): Map<string, string> {
@@ -123,6 +125,97 @@ function buildFutureDueIndex(assignments: any[]): Map<string, string> {
 // ROUTES
 // ========================================
 
+/**
+ * GET /api/clients/search-locations
+ *
+ * Server-backed location search for job creation dialogs.
+ * Replaces the old "fetch all locations + filter client-side" pattern
+ * that broke for tenants with >50 locations.
+ *
+ * Searches across: location companyName, parent company name, location name,
+ * address, and city. Punctuation-insensitive (apostrophes stripped) so
+ * "Moxie's", "Moxies", and "moxi" all match.
+ *
+ * Returns max 30 active, non-deleted locations with parent company name included.
+ */
+router.get("/search-locations", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  if (!companyId) {
+    return res.status(401).json({ message: "Missing company context" });
+  }
+
+  const rawQuery = ((req.query.q as string) ?? "").trim();
+  const limitParam = parseInt(req.query.limit as string, 10);
+  const limit = Math.min(Math.max(limitParam || 30, 1), 50);
+
+  // If no query, return most recent / alphabetical locations (initial load for empty search)
+  // This lets the dropdown show options before the user types anything
+  if (rawQuery.length === 0) {
+    const { rows } = await (await import("../db")).pool.query(
+      `SELECT cl.id, cl.company_name, cl.location, cl.address, cl.city,
+              cl.parent_company_id, cl.needs_details,
+              cc.name AS parent_company_name
+       FROM client_locations cl
+       LEFT JOIN customer_companies cc ON cl.parent_company_id = cc.id
+       WHERE cl.company_id = $1
+         AND cl.deleted_at IS NULL
+         AND (cl.inactive = false OR cl.inactive IS NULL)
+       ORDER BY cl.company_name ASC
+       LIMIT $2`,
+      [companyId, limit]
+    );
+    return res.json(rows);
+  }
+
+  if (rawQuery.length < 2) {
+    return res.json([]);
+  }
+
+  // Normalize: strip apostrophes/smart quotes for punctuation-insensitive matching
+  const normalized = rawQuery
+    .replace(/[''`\u2018\u2019\u201B\u2032]/g, "")
+    .replace(/[%_]/g, "\\$&"); // escape SQL LIKE wildcards
+
+  const likePattern = `%${normalized}%`;
+
+  // Characters to strip for punctuation-insensitive matching (apostrophes, smart quotes, backticks).
+  // Passed as $5 parameter to avoid template-literal escaping issues with backticks.
+  const stripChars = "'''`\u2018\u2019\u201B\u2032";
+
+  // Single query: join customer_companies for parent name,
+  // search across companyName, parent name, location, address, city
+  // using translate() to strip apostrophes on the DB side too
+  const { rows } = await (await import("../db")).pool.query(
+    `SELECT cl.id, cl.company_name, cl.location, cl.address, cl.city,
+            cl.parent_company_id, cl.needs_details,
+            cc.name AS parent_company_name,
+            -- Rank: 0=exact name, 1=prefix name, 2=parent match, 3=address/city
+            CASE
+              WHEN translate(lower(cl.company_name), $5, '') = lower($2) THEN 0
+              WHEN translate(lower(cl.company_name), $5, '') LIKE lower($2) || '%' THEN 1
+              WHEN translate(lower(COALESCE(cc.name, '')), $5, '') LIKE '%' || lower($2) || '%' THEN 2
+              ELSE 3
+            END AS match_rank
+     FROM client_locations cl
+     LEFT JOIN customer_companies cc ON cl.parent_company_id = cc.id
+     WHERE cl.company_id = $1
+       AND cl.deleted_at IS NULL
+       AND (cl.inactive = false OR cl.inactive IS NULL)
+       AND (
+         translate(lower(cl.company_name), $5, '') ILIKE $3
+         OR translate(lower(COALESCE(cc.name, '')), $5, '') ILIKE $3
+         OR translate(lower(COALESCE(cl.location, '')), $5, '') ILIKE $3
+         OR lower(COALESCE(cl.address, '')) ILIKE $3
+         OR lower(COALESCE(cl.city, '')) ILIKE $3
+       )
+     ORDER BY match_rank ASC, cl.company_name ASC
+     LIMIT $4`,
+    [companyId, normalized, likePattern, limit, stripChars]
+  );
+
+  return res.json(rows);
+}));
+
 // GET /api/clients - List all clients with pagination
 router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
@@ -132,7 +225,8 @@ if (!companyId) {
 
   // Parse pagination params from query
   const page = clampInt(req.query.page as string | undefined, 1, 1, 10_000);
-const limit = clampInt(req.query.limit as string | undefined, 50, 1, 100);
+// Fix: raised max from 100 to 500 so client list can fetch all locations in one page
+const limit = clampInt(req.query.limit as string | undefined, 50, 1, 500);
 
 
   const search = req.query.search as string;
@@ -236,26 +330,10 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
     throw createError(403, limitCheck.reason || "Subscription limit reached");
   }
 
-  // Helper to calculate next due date (kept for back-compat)
+  // 2026-03-20 Phase 4C: Uses canonical shared formula; converts to ISO/sentinel at call site
   const calculateNextDue = (selectedMonths: number[]): string => {
-    if (!selectedMonths || selectedMonths.length === 0) {
-      return new Date("9999-12-31").toISOString();
-    }
-    const today = new Date();
-    const currentMonth = today.getMonth();
-    const currentYear = today.getFullYear();
-    const currentDay = today.getDate();
-    const sorted = [...selectedMonths].sort((a, b) => a - b);
-
-    if (sorted.includes(currentMonth) && currentDay < 15) {
-      return new Date(currentYear, currentMonth, 15).toISOString();
-    }
-    let next = sorted.find((m) => m > currentMonth);
-    if (next === undefined) {
-      next = sorted[0];
-      return new Date(currentYear + 1, next, 15).toISOString();
-    }
-    return new Date(currentYear, next, 15).toISOString();
+    const date = computeNextDueDate(selectedMonths);
+    return date ? date.toISOString() : new Date("9999-12-31").toISOString();
   };
 
   // 1) Create (or reuse) customer company row
@@ -270,6 +348,7 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
       phone: company.phone?.trim() || null,
       email: company.email?.trim() || null,
       billingStreet: company.billingAddress?.street?.trim() || null,
+      billingStreet2: company.billingAddress?.street2?.trim() || null,
       billingCity: company.billingAddress?.city?.trim() || null,
       billingProvince: company.billingAddress?.stateOrProvince?.trim() || company.billingAddress?.province?.trim() || null,
       billingPostalCode: company.billingAddress?.postalCode?.trim() ? normalizePostalCode(company.billingAddress.postalCode.trim()) : null,
@@ -287,6 +366,7 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
     companyName,
     location: primaryLocationName,
     address: primaryLocation?.serviceAddress?.street?.trim() || null,
+    address2: primaryLocation?.serviceAddress?.street2?.trim() || null,
     city: primaryLocation?.serviceAddress?.city?.trim() || null,
     province: primaryLocation?.serviceAddress?.stateOrProvince?.trim() || primaryLocation?.serviceAddress?.province?.trim() || null,
     postalCode: primaryLocation?.serviceAddress?.postalCode?.trim() ? normalizePostalCode(primaryLocation.serviceAddress.postalCode.trim()) : null,
@@ -321,6 +401,7 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
       companyName,
       location: loc.name.trim(),
       address: loc.serviceAddress?.street?.trim() || null,
+      address2: loc.serviceAddress?.street2?.trim() || null,
       city: loc.serviceAddress?.city?.trim() || null,
       province: loc.serviceAddress?.stateOrProvince?.trim() || loc.serviceAddress?.province?.trim() || null,
       postalCode: loc.serviceAddress?.postalCode?.trim() ? normalizePostalCode(loc.serviceAddress.postalCode.trim()) : null,
@@ -674,18 +755,18 @@ router.get("/:id/overview", asyncHandler(async (req: AuthedRequest, res: Respons
 
       if (parentCompany) {
         company = parentCompany;
-        // Get all sibling locations - include both:
-        // 1. Siblings with same parentCompanyId (newly linked children)
-        // 2. Siblings with same companyName (legacy children and parent)
-        const allLocationsWithSameName = await customerCompanyRepository.getLocationsByCompanyName(
+        // Fix: use parentCompanyId (relational FK) instead of companyName (case-sensitive string match)
+        // Old approach used getLocationsByCompanyName which missed locations with variant casing
+        // (e.g., CSV import creating "Basil HVAC" and "basil hvac" under the same parent)
+        const allLinkedLocations = await customerCompanyRepository.getAllCustomerCompanyLocations(
           tenantCompanyId!,
-          client.companyName
+          parentCompany.id
         );
 
         // Put the current client first, then other locations
-        const currentClient = allLocationsWithSameName.find(loc => loc.id === client.id);
-        const otherLocations = allLocationsWithSameName.filter(loc => loc.id !== client.id);
-        locations = currentClient ? [currentClient, ...otherLocations] : allLocationsWithSameName;
+        const currentClient = allLinkedLocations.find(loc => loc.id === client.id);
+        const otherLocations = allLinkedLocations.filter(loc => loc.id !== client.id);
+        locations = currentClient ? [currentClient, ...otherLocations] : allLinkedLocations;
 
         const locationIds = locations.map((l) => l.id).filter(Boolean);
         if (locationIds.length > 0) {
@@ -1021,17 +1102,47 @@ router.post("/:id/set-primary", requireRole(MANAGER_ROLES), asyncHandler(async (
   res.json(updated);
 }));
 
-// DELETE /api/clients/:id - Delete client
+// GET /api/clients/:id/delete-check - Check location delete eligibility
+router.get("/:id/delete-check", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const result = await customerCompanyRepository.checkLocationDeleteEligibility(
+    req.companyId!,
+    req.params.id
+  );
+  res.json(result);
+}));
+
+// DELETE /api/clients/:id - Delete location (hard if eligible + confirm=DELETE, else soft-delete)
 router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
-  await storage.deleteAllClientParts(req.companyId, req.params.id);
-  const deleted = await storage.deleteClient(req.companyId, req.params.id);
+  const companyId = req.companyId!;
+  const locationId = req.params.id;
+
+  // If body has confirm=DELETE, attempt hard delete
+  if (req.body?.confirm === "DELETE") {
+    const eligibility = await customerCompanyRepository.checkLocationDeleteEligibility(companyId, locationId);
+
+    if (!eligibility.canHardDelete) {
+      throw createError(409, `Cannot hard-delete: ${eligibility.reasons.join(", ")}. Archive instead.`);
+    }
+    if (eligibility.isLastLocation) {
+      throw createError(409, "Cannot delete the only location. Delete the company instead.");
+    }
+
+    const deleted = await customerCompanyRepository.hardDeleteLocation(companyId, locationId);
+    if (!deleted) throw createError(404, "Location not found");
+
+    return res.json({ success: true, action: "hard_delete" });
+  }
+
+  // Default: soft-delete (backward compatible)
+  await storage.deleteAllClientParts(companyId, locationId);
+  const deleted = await storage.deleteClient(companyId, locationId);
   if (!deleted) {
     throw createError(404, "Client not found");
   }
-  res.json({ success: true });
+  res.json({ success: true, action: "soft_delete" });
 }));
 
-// POST /api/clients/bulk-delete - Bulk delete clients
+// POST /api/clients/bulk-delete - Bulk delete clients (soft delete)
 router.post("/bulk-delete", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const schema = z.object({
     ids: z.array(z.string().uuid()).min(1).max(200)

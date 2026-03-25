@@ -13,7 +13,10 @@ import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { paymentRepository } from "../storage/payments";
+import { invoiceRepository } from "../storage/invoices";
 import { paymentMethodEnum } from "@shared/schema";
+import { logEventAsync } from "../lib/events";
+import { getQueryCtx } from "../lib/queryCtx";
 
 const router = Router();
 
@@ -70,6 +73,18 @@ router.post(
         req.params.invoiceId,
         validated
       );
+
+      // 2026-03-20 Phase 4A: Emit invoice.paid event if payment caused fully-paid status
+      const postPaymentInvoice = await invoiceRepository.getInvoice(req.companyId!, req.params.invoiceId);
+      if (postPaymentInvoice?.status === "paid") {
+        logEventAsync(getQueryCtx(req), {
+          eventType: "invoice.paid",
+          entityType: "invoice",
+          entityId: req.params.invoiceId,
+          summary: `Invoice #${postPaymentInvoice.invoiceNumber} fully paid`,
+          meta: { invoiceNumber: postPaymentInvoice.invoiceNumber, paymentId: payment.id },
+        });
+      }
 
       res.status(201).json(payment);
     } catch (error: any) {

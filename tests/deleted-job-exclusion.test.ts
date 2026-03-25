@@ -15,6 +15,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { db } from "../server/db";
 import {
   jobs,
+  invoices,
   companies,
   users,
   clientLocations,
@@ -22,7 +23,6 @@ import {
 } from "@shared/schema";
 import { eq, sql } from "drizzle-orm";
 import { jobRepository } from "../server/storage/jobs";
-import { dashboardRepository } from "../server/storage/dashboard";
 import { maintenanceRepository } from "../server/storage/maintenance";
 import { universalSearch } from "../server/storage/search";
 import { customerCompanyRepository } from "../server/storage/customerCompanies";
@@ -80,7 +80,8 @@ async function createFixtures() {
   });
   activeJobId = activeJob.id;
 
-  // Create a job that will be soft-deleted
+  // Create a job that will be soft-deleted.
+  // Must have invoice linkage so deleteJob() soft-deletes instead of hard-deletes.
   const toDelete = await jobRepository.createJob(companyId, {
     companyId,
     locationId,
@@ -91,12 +92,29 @@ async function createFixtures() {
   });
   deletedJobId = toDelete.id;
 
-  // Soft-delete it
+  // Create an invoice referencing this job (triggers soft-delete path)
+  await db.insert(invoices).values({
+    id: uuidv4(),
+    companyId,
+    locationId,
+    invoiceNumber: `${TEST_PREFIX}INV-${Date.now()}`,
+    status: "draft",
+    issueDate: "2026-03-13",
+    subtotal: "0.00",
+    taxTotal: "0.00",
+    total: "0.00",
+    amountPaid: "0.00",
+    balance: "0.00",
+    jobId: deletedJobId,
+  });
+
+  // Soft-delete it (invoice linkage ensures soft-delete, not hard-delete)
   await jobRepository.deleteJob(companyId, deletedJobId);
 }
 
 async function cleanupFixtures() {
-  // Hard-delete test data
+  // Hard-delete test data (invoices before jobs due to FK)
+  await db.delete(invoices).where(eq(invoices.companyId, companyId));
   await db.delete(jobs).where(eq(jobs.companyId, companyId));
   await db.delete(clientLocations).where(eq(clientLocations.companyId, companyId));
   await db.delete(customerCompanies).where(eq(customerCompanies.companyId, companyId));
@@ -141,15 +159,12 @@ describe("Deleted Job Exclusion", () => {
     expect(job!.id).toBe(activeJobId);
   });
 
-  it("dashboard getJobCounts excludes deleted job", async () => {
-    const counts = await dashboardRepository.getJobCounts(companyId);
-    // Active count should only include the non-deleted job
-    // The deleted job should not inflate any counts
-    expect(counts.activeCount).toBeGreaterThanOrEqual(0);
-    // Verify by checking total: we created 2 jobs, deleted 1, so max 1 active
+  it("getJobs returns only 1 active open job (deleted job excluded)", async () => {
+    // We created 2 jobs, soft-deleted 1. Only 1 should be visible.
     const allJobs = await jobRepository.getJobs(companyId, {});
     const openJobs = allJobs.items.filter((j: { status: string }) => j.status === "open");
     expect(openJobs.length).toBe(1);
+    expect(openJobs[0].id).toBe(activeJobId);
   });
 
   it("maintenance getMaintenanceStatuses excludes deleted job", async () => {

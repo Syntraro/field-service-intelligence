@@ -1900,6 +1900,8 @@ router.post(
 // ============================================================
 
 const importModeSchema = z.enum(["merge", "overwrite", "wipe"]).default("merge");
+// Extended mode schema for customer import: adds link_only mode for reconciliation-only imports
+const customerImportModeSchema = z.enum(["merge", "overwrite", "wipe", "link_only"]).default("merge");
 
 /**
  * GET /api/qbo/catalog/import/preview
@@ -1986,7 +1988,7 @@ router.get(
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
-    const mode = importModeSchema.parse(req.query.mode);
+    const mode = customerImportModeSchema.parse(req.query.mode);
 
     const tokens = await getQboTokensForCompany(companyId);
     if (!tokens) {
@@ -2005,7 +2007,7 @@ router.get(
 /**
  * POST /api/qbo/customers/import/run
  * Run customer import from QBO (writes to DB).
- * Query param: mode=merge|overwrite|wipe
+ * Query param: mode=merge|overwrite|wipe|link_only
  * Wipe mode requires body { confirmToken: "WIPE" }
  */
 router.post(
@@ -2014,7 +2016,7 @@ router.post(
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const userId = req.user?.id;
-    const mode = importModeSchema.parse(req.query.mode);
+    const mode = customerImportModeSchema.parse(req.query.mode);
 
     // Wipe mode requires explicit confirmation — return 400, not 500
     if (mode === "wipe" && req.body?.confirmToken !== "WIPE") {

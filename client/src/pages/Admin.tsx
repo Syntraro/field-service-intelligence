@@ -9,7 +9,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { Trash2, ShieldCheck, ShieldOff, Package, KeyRound, MessageCircle, Archive, ArchiveRestore, Clock } from "lucide-react";
-import NewAddClientDialog from "@/components/NewAddClientDialog";
+// 2026-03-21: NewAddClientDialog replaced by canonical CreateClientModal
+import { CreateClientModal } from "@/components/CreateClientModal";
 import { UserSubscriptionDialog } from "@/components/UserSubscriptionDialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
@@ -770,12 +771,9 @@ export default function Admin() {
       </Tabs>
       </div>
 
-      <NewAddClientDialog 
+      <CreateClientModal
         open={addClientDialogOpen}
         onOpenChange={setAddClientDialogOpen}
-        onSaved={() => {
-          queryClient.invalidateQueries({ queryKey: ['/api/clients'] });
-        }}
       />
     </>
   );

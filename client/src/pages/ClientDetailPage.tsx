@@ -1,8 +1,9 @@
 /**
- * ClientDetailPage — Three-panel client workspace.
+ * ClientDetailPage — Card-based client workspace.
  *
  * Layout:
- *   Header → [Left Rail (scope selector) | Center Workspace (tabs) | Right Metadata Panel]
+ *   [Header Card — full width]
+ *   [Left Column: Rail + Workspace card | Right Column: Contacts/Notes/Activity cards]
  *
  * Scope model:
  *   scopeType = "company" | "location"
@@ -13,7 +14,7 @@
  * URL params: ?scope=company|location&location=<id>&tab=<workspaceTab>
  */
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
-import { useParams, useLocation, Link } from "wouter";
+import { useParams, useLocation, useSearch, Link } from "wouter";
 import { useQuery, useMutation, keepPreviousData } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -22,15 +23,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
 import {
   ArrowLeft, Plus, Briefcase, FileText, MapPin, MoreHorizontal, Search,
   Wrench, Receipt, Phone, Mail, Star, Trash2, Pencil,
-  Clock, Package, StickyNote, Tag, Building2,
+  Clock, Package, StickyNote, Tag, Building2, AlertTriangle, Archive,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+  DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import LocationFormModal from "@/components/LocationFormModal";
@@ -38,6 +40,8 @@ import NotesPanel, { type NotesPanelRef } from "@/components/NotesPanel";
 import PMScheduleCard from "@/components/PMScheduleCard";
 import { PartsSelectorModal } from "@/components/PartsSelectorModal";
 import EditTagsModal from "@/components/EditTagsModal";
+import { ContactFormDialog, STANDARD_CONTACT_ROLES, type ContactScope } from "@/components/ContactFormDialog";
+import { EditCompanyDialog } from "@/components/EditCompanyDialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { format } from "date-fns";
@@ -48,6 +52,7 @@ import type {
 import { isJobOverdue } from "@shared/schema";
 import { useJobsFeed } from "@/hooks/useJobsFeed";
 import { getJobStatusDisplay } from "@/components/job/jobUtils";
+import { getInvoiceStatusBadge } from "@/lib/statusBadges";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -57,14 +62,7 @@ type ScopeType = "company" | "location";
 /** Workspace tabs — company scope has fewer tabs (no equipment/pm/parts) */
 type WorkspaceTab = "overview" | "jobs" | "invoices" | "quotes" | "equipment" | "pm" | "parts";
 
-/** Contact scope — canonical values for association type */
-type ContactScope = "company" | "location";
-
-/** Standard contact roles — structured selection in ContactFormDialog */
-const STANDARD_CONTACT_ROLES = [
-  "billing", "scheduling", "operations", "site", "manager",
-  "owner", "primary", "after-hours", "maintenance",
-] as const;
+// ContactScope type and STANDARD_CONTACT_ROLES imported from @/components/ContactFormDialog
 
 /** Normalize a contact record into a consistent shape for rendering */
 function normalizeContact(c: ClientContact): {
@@ -141,7 +139,8 @@ function locationDisplayName(loc: Client): string {
 }
 
 function locationAddress(loc: Client): string {
-  return [loc.address, loc.city, loc.province, loc.postalCode].filter(Boolean).join(", ");
+  // Address line 2 shown after line 1 when present
+  return [loc.address, loc.address2, loc.city, loc.province, loc.postalCode].filter(Boolean).join(", ");
 }
 
 function EmptyState({ label }: { label: string }) {
@@ -195,8 +194,9 @@ export default function ClientDetailPage() {
   const [locationSearch, setLocationSearch] = useState("");
 
   // Read URL query params for deep-linking
+  const routerSearch = useSearch();
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(routerSearch);
     const locParam = params.get("location");
     const tabParam = params.get("tab");
     const scopeParam = params.get("scope");
@@ -209,7 +209,7 @@ export default function ClientDetailPage() {
     if (tabParam && WORKSPACE_TAB_KEYS.has(tabParam as WorkspaceTab)) {
       setWorkspaceTab(tabParam as WorkspaceTab);
     }
-  }, [window.location.search]);
+  }, [routerSearch]);
 
   // Push URL state when scope/tab changes
   const updateUrlParams = useCallback((scope: ScopeType, locId: string | null, tab: WorkspaceTab) => {
@@ -245,12 +245,8 @@ export default function ClientDetailPage() {
   const [jobDialogOpen, setJobDialogOpen] = useState(false);
   const [addLocationDialogOpen, setAddLocationDialogOpen] = useState(false);
   const [editClientDialogOpen, setEditClientDialogOpen] = useState(false);
-  const [editClientForm, setEditClientForm] = useState({
-    name: "", phone: "", email: "",
-    billingStreet: "", billingCity: "", billingProvince: "", billingPostalCode: "",
-  });
   const [newLocationForm, setNewLocationForm] = useState({
-    location: "", address: "", city: "", province: "", postalCode: "",
+    location: "", address: "", address2: "", city: "", province: "", postalCode: "",
     contactName: "", phone: "", email: "",
   });
 
@@ -262,6 +258,15 @@ export default function ClientDetailPage() {
   const [newEquipmentData, setNewEquipmentData] = useState({
     name: "", equipmentType: "", manufacturer: "", modelNumber: "", serialNumber: "",
   });
+
+  // Delete dialog state
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<"company" | "location">("company");
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [deleteEligibility, setDeleteEligibility] = useState<{
+    canHardDelete: boolean; reasons: string[]; isLastLocation?: boolean; locationCount?: number;
+  } | null>(null);
+  const [deleteCheckLoading, setDeleteCheckLoading] = useState(false);
 
   // ── Data queries ──
   const { data: client, isLoading: clientLoading, error: clientError } = useQuery<Client>({
@@ -296,21 +301,6 @@ export default function ClientDetailPage() {
   const parentCompany = overview?.company;
   const companyId = parentCompany?.id;
   const companyName = parentCompany?.name || client?.companyName || "Client";
-
-  // Initialize edit client form when company data loads
-  useEffect(() => {
-    if (parentCompany && !editClientDialogOpen) {
-      setEditClientForm({
-        name: parentCompany.name || "",
-        phone: parentCompany.phone || "",
-        email: parentCompany.email || "",
-        billingStreet: (parentCompany as any).billingStreet || "",
-        billingCity: (parentCompany as any).billingCity || "",
-        billingProvince: (parentCompany as any).billingProvince || "",
-        billingPostalCode: (parentCompany as any).billingPostalCode || "",
-      });
-    }
-  }, [parentCompany, editClientDialogOpen]);
 
   // Locations sorted: primary first, then by creation date
   const locations: Client[] = useMemo(() => {
@@ -404,27 +394,6 @@ export default function ClientDetailPage() {
   ).length;
 
   // ── Mutations ──
-  const editClientMutation = useMutation({
-    mutationFn: async (data: typeof editClientForm) => {
-      if (!companyId) throw new Error("Company not loaded yet.");
-      return await apiRequest(`/api/customer-companies/${companyId}`, {
-        method: "PATCH", body: JSON.stringify(data),
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/clients", clientId, "overview"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/clients", clientId] });
-      if (companyId) {
-        queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", companyId] });
-      }
-      setEditClientDialogOpen(false);
-      toast({ title: "Client updated", description: "Company details saved." });
-    },
-    onError: (error: any) => {
-      toast({ title: "Error", description: error?.message || "Failed to update client.", variant: "destructive" });
-    },
-  });
-
   const createLocationMutation = useMutation({
     mutationFn: async (locationData: typeof newLocationForm) => {
       if (!companyId) throw new Error("Company not loaded yet.");
@@ -440,7 +409,7 @@ export default function ClientDetailPage() {
       }
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
       setAddLocationDialogOpen(false);
-      setNewLocationForm({ location: "", address: "", city: "", province: "", postalCode: "", contactName: "", phone: "", email: "" });
+      setNewLocationForm({ location: "", address: "", address2: "", city: "", province: "", postalCode: "", contactName: "", phone: "", email: "" });
       toast({ title: "Location added", description: "The new location has been created." });
     },
     onError: (error: any) => {
@@ -479,6 +448,74 @@ export default function ClientDetailPage() {
       toast({ title: "Equipment removed" });
     },
     onError: () => toast({ title: "Error", description: "Failed to remove equipment.", variant: "destructive" }),
+  });
+
+  // ── Delete / Archive handlers ──
+  const openDeleteDialog = useCallback(async (target: "company" | "location") => {
+    setDeleteTarget(target);
+    setDeleteConfirmText("");
+    setDeleteEligibility(null);
+    setDeleteCheckLoading(true);
+    setDeleteDialogOpen(true);
+
+    try {
+      const targetId = target === "company" ? companyId : selectedLocationId;
+      if (!targetId) throw new Error("No entity selected");
+      const url = target === "company"
+        ? `/api/customer-companies/${targetId}/delete-check`
+        : `/api/clients/${targetId}/delete-check`;
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error || body?.message || `Server returned ${res.status}`);
+      }
+      setDeleteEligibility(await res.json());
+    } catch (err: any) {
+      setDeleteEligibility({ canHardDelete: false, reasons: [err?.message || "Failed to check eligibility"] });
+    } finally {
+      setDeleteCheckLoading(false);
+    }
+  }, [companyId, selectedLocationId]);
+
+  const executeDelete = useMutation({
+    mutationFn: async () => {
+      if (deleteTarget === "company") {
+        if (deleteEligibility?.canHardDelete) {
+          await apiRequest(`/api/customer-companies/${companyId}`, {
+            method: "DELETE", body: JSON.stringify({ confirm: "DELETE" }),
+          });
+        } else {
+          await apiRequest(`/api/customer-companies/${companyId}/archive`, { method: "POST" });
+        }
+      } else {
+        if (deleteEligibility?.canHardDelete && !deleteEligibility?.isLastLocation) {
+          await apiRequest(`/api/clients/${selectedLocationId}`, {
+            method: "DELETE", body: JSON.stringify({ confirm: "DELETE" }),
+          });
+        } else {
+          await apiRequest(`/api/clients/${selectedLocationId}`, { method: "DELETE" });
+        }
+      }
+    },
+    onSuccess: () => {
+      const isHard = deleteEligibility?.canHardDelete;
+      setDeleteDialogOpen(false);
+      if (deleteTarget === "company") {
+        toast({ title: isHard ? "Client deleted" : "Client archived" });
+        queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+        setLocation("/clients");
+      } else {
+        toast({ title: isHard ? "Location deleted" : "Location archived" });
+        queryClient.invalidateQueries({ queryKey: ["/api/clients", clientId, "overview"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", companyId, "overview"] });
+        // Switch to company scope after location deletion
+        setScopeType("company");
+        setSelectedLocationId(null);
+      }
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err?.message || "Delete failed", variant: "destructive" });
+    },
   });
 
   // ── Filtered locations for left rail ──
@@ -564,316 +601,351 @@ export default function ClientDetailPage() {
 
   return (
     <div className="flex h-full flex-col bg-slate-50">
-      {/* ── Client Header ── */}
-      <div className="border-b bg-white px-5 py-3">
-        <div className="flex items-center justify-between">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setLocation("/clients")}
-                className="text-muted-foreground hover:text-foreground transition-colors"
-                title="Back to Clients"
-              >
-                <ArrowLeft className="h-4 w-4" />
-              </button>
-              <h1 className="text-lg font-bold text-foreground truncate">{companyName}</h1>
-              {parentCompany?.isActive !== false && (
-                <Badge className="bg-emerald-100 text-emerald-700 text-[10px] hover:bg-emerald-100">Active</Badge>
-              )}
-            </div>
-            <div className="mt-1 flex flex-wrap items-center gap-3 text-xs ml-6">
-              <span className="flex items-center gap-1 text-muted-foreground">
-                <MapPin className="h-3 w-3" /><strong className="text-foreground">{locations.length}</strong> Locations
-              </span>
-              <span className="flex items-center gap-1 text-muted-foreground">
-                <Briefcase className="h-3 w-3" /><strong className="text-foreground">{activeJobsCount}</strong> Active Jobs
-              </span>
-              {overdueInvoicesCount > 0 && (
-                <span className="flex items-center gap-1 text-red-600">
-                  <Receipt className="h-3 w-3" /><strong>{overdueInvoicesCount}</strong> Overdue
-                </span>
-              )}
-              {pendingQuotesCount > 0 && (
-                <span className="flex items-center gap-1 text-blue-600">
-                  <FileText className="h-3 w-3" /><strong>{pendingQuotesCount}</strong> Quotes Pending
-                </span>
-              )}
-            </div>
-          </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <Button size="sm" className="h-7 text-xs" onClick={() => setJobDialogOpen(true)}>
-              <Plus className="mr-1 h-3 w-3" />Create Job
-            </Button>
-            <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setAddLocationDialogOpen(true)}>
-              <Plus className="mr-1 h-3 w-3" />Add Location
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-7 w-7">
-                  <MoreHorizontal className="h-3.5 w-3.5" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => setEditClientDialogOpen(true)}>
-                  <Pencil className="h-3.5 w-3.5 mr-2" /> Edit Client
-                </DropdownMenuItem>
-                {scopeType === "location" && selectedLoc && (
-                  <>
-                    <DropdownMenuItem onClick={() => setEditLocationModalOpen(true)}>
-                      <Pencil className="h-3.5 w-3.5 mr-2" /> Edit Location
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setEditLocationTagsOpen(true)}>
-                      <Tag className="h-3.5 w-3.5 mr-2" /> Edit Tags
-                    </DropdownMenuItem>
-                  </>
+      {/* ── Step 1: Top Header Card — full-width card container ── */}
+      <div className="p-4 pb-0">
+        <div className="rounded-lg border border-border/80 bg-primary/[0.09] px-5 py-4 mb-4 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.08)]">
+          <div className="flex items-center justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setLocation("/clients")}
+                  className="text-muted-foreground hover:text-foreground transition-colors"
+                  title="Back to Clients"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                </button>
+                <h1 className="text-lg font-bold text-foreground truncate">{companyName}</h1>
+                {parentCompany?.isActive !== false && (
+                  <Badge className="bg-emerald-100 text-emerald-700 text-[10px] hover:bg-emerald-100">Active</Badge>
                 )}
-              </DropdownMenuContent>
-            </DropdownMenu>
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-3 text-xs ml-6">
+                <span className="flex items-center gap-1 text-muted-foreground">
+                  <MapPin className="h-3 w-3" /><strong className="text-foreground">{locations.length}</strong> Locations
+                </span>
+                <span className="flex items-center gap-1 text-muted-foreground">
+                  <Briefcase className="h-3 w-3" /><strong className="text-foreground">{activeJobsCount}</strong> Active Jobs
+                </span>
+                {overdueInvoicesCount > 0 && (
+                  <span className="flex items-center gap-1 text-red-600">
+                    <Receipt className="h-3 w-3" /><strong>{overdueInvoicesCount}</strong> Overdue
+                  </span>
+                )}
+                {pendingQuotesCount > 0 && (
+                  <span className="flex items-center gap-1 text-blue-600">
+                    <FileText className="h-3 w-3" /><strong>{pendingQuotesCount}</strong> Quotes Pending
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <Button size="sm" className="h-7 text-xs" onClick={() => setJobDialogOpen(true)}>
+                <Plus className="mr-1 h-3 w-3" />Create Job
+              </Button>
+              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setAddLocationDialogOpen(true)}>
+                <Plus className="mr-1 h-3 w-3" />Add Location
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-7 w-7">
+                    <MoreHorizontal className="h-3.5 w-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => setEditClientDialogOpen(true)}>
+                    <Pencil className="h-3.5 w-3.5 mr-2" /> Edit Client
+                  </DropdownMenuItem>
+                  {scopeType === "location" && selectedLoc && (
+                    <>
+                      <DropdownMenuItem onClick={() => setEditLocationModalOpen(true)}>
+                        <Pencil className="h-3.5 w-3.5 mr-2" /> Edit Location
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setEditLocationTagsOpen(true)}>
+                        <Tag className="h-3.5 w-3.5 mr-2" /> Edit Tags
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                  <DropdownMenuSeparator />
+                  {scopeType === "location" && selectedLoc && (
+                    <DropdownMenuItem
+                      className="text-destructive focus:text-destructive"
+                      onClick={() => openDeleteDialog("location")}
+                    >
+                      <Trash2 className="h-3.5 w-3.5 mr-2" /> Delete Location
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuItem
+                    className="text-destructive focus:text-destructive"
+                    onClick={() => openDeleteDialog("company")}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 mr-2" /> Delete Client
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* ── Three-Panel Layout ── */}
-      <div className="flex flex-1 overflow-hidden">
-        {/* Left Rail — scope selector */}
-        <div className="flex w-56 flex-shrink-0 flex-col border-r bg-white">
-          {/* Company Overview row */}
-          <button
-            onClick={handleSelectCompany}
-            className={`w-full text-left px-3 py-2.5 border-b flex items-center gap-2 text-sm font-medium transition-colors ${
-              scopeType === "company"
-                ? "bg-blue-50/60 border-l-2 border-l-primary text-primary"
-                : "hover:bg-slate-50 border-l-2 border-l-transparent text-foreground"
-            }`}
-          >
-            <Building2 className="h-4 w-4 flex-shrink-0" />
-            <span className="truncate">Company Overview</span>
-          </button>
-
-          {/* Locations section label */}
-          <div className="px-3 pt-3 pb-1.5">
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Locations</p>
-          </div>
-
-          {/* Location search */}
-          {locations.length > 3 && (
-            <div className="px-3 pb-2">
-              <div className="relative">
-                <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  placeholder="Search..."
-                  value={locationSearch}
-                  onChange={e => setLocationSearch(e.target.value)}
-                  className="h-6 pl-7 text-[11px]"
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Location rows */}
-          <div className="flex-1 overflow-y-auto">
-            {filteredLocations.length > 0 ? filteredLocations.map(loc => (
-              <button
-                key={loc.id}
-                onClick={() => handleSelectLocation(loc.id)}
-                className={`w-full text-left px-3 py-2 border-b transition-colors ${
-                  scopeType === "location" && selectedLocationId === loc.id
-                    ? "bg-blue-50/60 border-l-2 border-l-primary"
-                    : "hover:bg-slate-50 border-l-2 border-l-transparent"
-                }`}
-              >
-                <div className="flex items-center gap-1.5">
-                  <MapPin className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-                  <span className="text-xs font-medium truncate">{locationDisplayName(loc)}</span>
-                  {loc.isPrimary && <Star className="h-3 w-3 text-yellow-500 fill-yellow-500 flex-shrink-0" />}
+      {/* ── Two-Column Layout: unified Locations+Workspace card | right sidebar ── */}
+      <div className="flex flex-1 overflow-hidden px-4 pb-4 gap-4">
+        {/* Unified card: Locations rail (left) + Active Work workspace (right), single border, vertical divider only */}
+        <div className="flex flex-1 flex-col overflow-hidden rounded-lg border bg-white shadow-sm">
+          {/* ── WORKSPACE HEADER: single control strip — title left | search + tabs right ── */}
+          <div className="border-b px-4 py-2.5">
+            <div className="flex items-start justify-between gap-4">
+              {/* Left: selected entity title + address */}
+              <div className="min-w-0 flex-shrink-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h2 className="text-sm font-semibold truncate">{scopeEntityName}</h2>
+                  <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
+                    {scopeType === "company" ? "Company" : "Location"}
+                  </span>
+                  {selectedLoc?.isPrimary && scopeType === "location" && (
+                    <Star className="h-3.5 w-3.5 text-yellow-500 fill-yellow-500 flex-shrink-0" />
+                  )}
+                  {scopeTags.length > 0 && scopeTags.map(tag => (
+                    <span
+                      key={tag.id}
+                      className="inline-flex items-center rounded-full px-1.5 py-0 text-[10px] font-medium text-white"
+                      style={{ backgroundColor: tag.color }}
+                    >
+                      {tag.name}
+                    </span>
+                  ))}
+                  {scopeType === "location" && selectedLoc && (
+                    <button
+                      onClick={() => setEditLocationTagsOpen(true)}
+                      className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                      title="Edit tags"
+                    >
+                      <Tag className="h-3 w-3" />
+                    </button>
+                  )}
                 </div>
-              </button>
-            )) : (
-              <div className="px-3 py-6 text-center text-[11px] text-muted-foreground">
-                {locationSearch ? "No match." : (
-                  <div className="space-y-2">
-                    <p>No locations yet.</p>
-                    <Button variant="outline" size="sm" className="h-5 text-[10px]" onClick={() => setAddLocationDialogOpen(true)}>
-                      <Plus className="mr-1 h-3 w-3" />Add Location
-                    </Button>
+                {scopeType === "location" && selectedLoc && (
+                  <div className="flex items-center gap-3 mt-0.5">
+                    <p className="text-[11px] text-muted-foreground">{locationAddress(selectedLoc)}</p>
+                    {selectedLoc.roofLadderCode && (
+                      <span className="text-[10px] text-muted-foreground font-medium">
+                        Site Code: <span className="text-foreground">{selectedLoc.roofLadderCode}</span>
+                      </span>
+                    )}
                   </div>
                 )}
               </div>
-            )}
-          </div>
-        </div>
 
-        {/* Center Workspace — tabs + content */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Workspace header: entity name + tags + tab bar */}
-          <div className="border-b bg-white">
-            <div className="px-4 pt-3 pb-1 flex items-center gap-2 flex-wrap">
-              <h2 className="text-base font-semibold truncate">{scopeEntityName}</h2>
-              {/* Item 7: Scope hint label — reinforces context when scrolled */}
-              <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
-                {scopeType === "company" ? "Company" : "Location"}
-              </span>
-              {selectedLoc?.isPrimary && scopeType === "location" && (
-                <Star className="h-3.5 w-3.5 text-yellow-500 fill-yellow-500 flex-shrink-0" />
-              )}
-              {scopeTags.length > 0 && scopeTags.map(tag => (
-                <span
-                  key={tag.id}
-                  className="inline-flex items-center rounded-full px-1.5 py-0 text-[10px] font-medium text-white"
-                  style={{ backgroundColor: tag.color }}
-                >
-                  {tag.name}
-                </span>
-              ))}
-              {scopeType === "location" && selectedLoc && (
-                <button
-                  onClick={() => setEditLocationTagsOpen(true)}
-                  className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
-                  title="Edit tags"
-                >
-                  <Tag className="h-3 w-3" />
-                </button>
-              )}
+              {/* Right: search + tabs in one horizontal strip */}
+              <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
+                {locations.length > 3 && (
+                  <div className="relative flex-shrink-0 w-40">
+                    <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      placeholder="Search locations..."
+                      value={locationSearch}
+                      onChange={e => setLocationSearch(e.target.value)}
+                      className="h-7 pl-7 text-[11px]"
+                    />
+                  </div>
+                )}
+                <div className="flex gap-0.5 overflow-x-auto whitespace-nowrap">
+                  {(scopeType === "company" ? COMPANY_TABS : LOCATION_TABS).map(t => (
+                    <button key={t.key} onClick={() => handleTabChange(t.key)}
+                      className={`whitespace-nowrap px-2.5 py-1.5 text-xs font-medium rounded transition-colors ${
+                        workspaceTab === t.key ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground hover:bg-slate-100"
+                      }`}>{t.label}</button>
+                  ))}
+                </div>
+              </div>
             </div>
-            {scopeType === "location" && selectedLoc && (
-              <div className="px-4 pb-1 flex items-center gap-3">
-                <p className="text-[11px] text-muted-foreground">{locationAddress(selectedLoc)}</p>
-                {/* Part F: Surface site code near location header */}
-                {selectedLoc.roofLadderCode && (
-                  <span className="text-[10px] text-muted-foreground font-medium">
-                    Site Code: <span className="text-foreground">{selectedLoc.roofLadderCode}</span>
-                  </span>
+          </div>
+
+          {/* ── WORKSPACE BODY: left nav column | right content area ── */}
+          <div className="flex flex-1 overflow-hidden">
+            {/* LEFT NAV: Overview row + Locations list */}
+            <div className="flex w-56 flex-shrink-0 flex-col border-r overflow-hidden">
+              {/* Overview nav row — styled as sibling to location rows */}
+              <button
+                onClick={handleSelectCompany}
+                className={`w-full text-left px-3 py-2 border-b flex items-center gap-1.5 transition-colors ${
+                  scopeType === "company"
+                    ? "bg-blue-50/60 border-l-2 border-l-primary text-primary"
+                    : "hover:bg-slate-50 border-l-2 border-l-transparent text-foreground"
+                }`}
+              >
+                <Building2 className="h-3 w-3 flex-shrink-0" />
+                <span className="text-xs font-medium truncate">Overview</span>
+              </button>
+
+              {/* Locations section label */}
+              <div className="px-3 pt-3 pb-1.5">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Locations</p>
+              </div>
+
+              {/* Location rows */}
+              <div className="flex-1 overflow-y-auto">
+                {filteredLocations.length > 0 ? filteredLocations.map(loc => (
+                  <button
+                    key={loc.id}
+                    onClick={() => handleSelectLocation(loc.id)}
+                    className={`w-full text-left px-3 py-2 border-b transition-colors ${
+                      scopeType === "location" && selectedLocationId === loc.id
+                        ? "bg-blue-50/60 border-l-2 border-l-primary"
+                        : "hover:bg-slate-50 border-l-2 border-l-transparent"
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <MapPin className="h-3 w-3 text-muted-foreground flex-shrink-0" />
+                      <span className="text-xs font-medium truncate">{locationDisplayName(loc)}</span>
+                      {loc.isPrimary && <Star className="h-3 w-3 text-yellow-500 fill-yellow-500 flex-shrink-0" />}
+                    </div>
+                  </button>
+                )) : (
+                  <div className="px-3 py-6 text-center text-[11px] text-muted-foreground">
+                    {locationSearch ? "No match." : (
+                      <div className="space-y-2">
+                        <p>No locations yet.</p>
+                        <Button variant="outline" size="sm" className="h-5 text-[10px]" onClick={() => setAddLocationDialogOpen(true)}>
+                          <Plus className="mr-1 h-3 w-3" />Add Location
+                        </Button>
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
-            )}
-            <div className="flex gap-0.5 px-4 overflow-x-auto">
-              {(scopeType === "company" ? COMPANY_TABS : LOCATION_TABS).map(t => (
-                <button key={t.key} onClick={() => handleTabChange(t.key)}
-                  className={`whitespace-nowrap px-2.5 py-2 text-xs font-medium border-b-2 transition-colors ${
-                    workspaceTab === t.key ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"
-                  }`}>{t.label}</button>
-              ))}
+            </div>
+
+            {/* RIGHT: Active tab content only */}
+            <div className="flex-1 overflow-y-auto p-4">
+              {scopeType === "company" ? (
+                <>
+                  {workspaceTab === "overview" && (
+                    <CompanyOverviewTab
+                      jobs={companyJobs}
+                      invoices={allInvoices}
+                      quotes={clientQuotes}
+                      locations={locations}
+                      onNavigate={setLocation}
+                    />
+                  )}
+                  {workspaceTab === "jobs" && <ClientAllJobsTab jobs={companyJobs} locations={locations} onNavigate={setLocation} />}
+                  {workspaceTab === "invoices" && <ClientAllInvoicesTab invoices={allInvoices} locations={locations} onNavigate={setLocation} />}
+                  {workspaceTab === "quotes" && <ClientAllQuotesTab quotes={clientQuotes} locations={locations} onNavigate={setLocation} />}
+                </>
+              ) : selectedLoc ? (
+                <>
+                  {workspaceTab === "overview" && (
+                    <LocOverviewTab
+                      activeJobs={locActiveJobs}
+                      overdueJobs={locOverdueJobs}
+                      equipment={locationEquipment}
+                      location={selectedLoc}
+                      onNavigate={setLocation}
+                    />
+                  )}
+                  {workspaceTab === "jobs" && <LocJobsTab jobs={locJobs} onNavigate={setLocation} />}
+                  {workspaceTab === "invoices" && <LocInvoicesTab invoices={locInvoices} onNavigate={setLocation} />}
+                  {workspaceTab === "quotes" && <LocQuotesTab quotes={locQuotes} onNavigate={setLocation} />}
+                  {workspaceTab === "equipment" && (
+                    <LocEquipmentTab
+                      equipment={locationEquipment}
+                      onAdd={() => setEquipmentModalOpen(true)}
+                      onDelete={(eqId) => deleteEquipmentMutation.mutate(eqId)}
+                    />
+                  )}
+                  {workspaceTab === "pm" && (
+                    <PMScheduleCard
+                      locationId={selectedLocationId!}
+                      locationName={locationDisplayName(selectedLoc)}
+                      companyId={client.companyId || ""}
+                      clientId={companyId || undefined}
+                      open={true}
+                      onOpenChange={() => {}}
+                    />
+                  )}
+                  {workspaceTab === "parts" && (
+                    <LocPartsTab pmParts={pmParts} onAdd={() => setPartsModalOpen(true)} />
+                  )}
+                </>
+              ) : (
+                <EmptyState label="Select a location from the left rail" />
+              )}
             </div>
           </div>
 
-          {/* Tab content */}
-          <div className="flex-1 overflow-y-auto p-4">
-            {scopeType === "company" ? (
-              <>
-                {workspaceTab === "overview" && (
-                  <CompanyOverviewTab
-                    jobs={companyJobs}
-                    invoices={allInvoices}
-                    quotes={clientQuotes}
-                    locations={locations}
-                    onNavigate={setLocation}
-                  />
-                )}
-                {workspaceTab === "jobs" && <ClientAllJobsTab jobs={companyJobs} locations={locations} onNavigate={setLocation} />}
-                {workspaceTab === "invoices" && <ClientAllInvoicesTab invoices={allInvoices} locations={locations} onNavigate={setLocation} />}
-                {workspaceTab === "quotes" && <ClientAllQuotesTab quotes={clientQuotes} locations={locations} onNavigate={setLocation} />}
-              </>
-            ) : selectedLoc ? (
-              <>
-                {workspaceTab === "overview" && (
-                  <LocOverviewTab
-                    activeJobs={locActiveJobs}
-                    overdueJobs={locOverdueJobs}
-                    equipment={locationEquipment}
-                    location={selectedLoc}
-                    onNavigate={setLocation}
-                  />
-                )}
-                {workspaceTab === "jobs" && <LocJobsTab jobs={locJobs} onNavigate={setLocation} />}
-                {workspaceTab === "invoices" && <LocInvoicesTab invoices={locInvoices} onNavigate={setLocation} />}
-                {workspaceTab === "quotes" && <LocQuotesTab quotes={locQuotes} onNavigate={setLocation} />}
-                {workspaceTab === "equipment" && (
-                  <LocEquipmentTab
-                    equipment={locationEquipment}
-                    onAdd={() => setEquipmentModalOpen(true)}
-                    onDelete={(eqId) => deleteEquipmentMutation.mutate(eqId)}
-                  />
-                )}
-                {workspaceTab === "pm" && (
-                  <PMScheduleCard
-                    locationId={selectedLocationId!}
-                    locationName={locationDisplayName(selectedLoc)}
-                    companyId={client.companyId || ""}
-                    clientId={companyId || undefined}
-                    open={true}
-                    onOpenChange={() => {}}
-                  />
-                )}
-                {workspaceTab === "parts" && (
-                  <LocPartsTab pmParts={pmParts} onAdd={() => setPartsModalOpen(true)} />
-                )}
-              </>
-            ) : (
-              <EmptyState label="Select a location from the left rail" />
-            )}
-          </div>
-        </div>
+        </div>{/* end unified Locations + Workspace card */}
 
-        {/* Right Metadata Panel */}
-        {/* Right Metadata Panel — compact spacing, no billing (billing belongs in Invoices tab) */}
-        <div className="w-72 flex-shrink-0 overflow-y-auto border-l bg-white p-3 space-y-3">
+        {/* Step 3: Right column — Contacts, Notes, Activity in separate cards */}
+        <div className="w-80 flex-shrink-0 overflow-y-auto space-y-4">
           {scopeType === "company" ? (
             <>
-              {/* Company contacts */}
-              <MetadataSection title="Contacts">
-                <CompanyContactsCompact
-                  companyContacts={clientLevelContacts}
-                  locationContacts={allLocationContacts}
-                  locations={locations}
-                  companyId={companyId}
-                />
-              </MetadataSection>
+              {/* Contacts card */}
+              <div className="rounded-lg border bg-white p-4 shadow-sm">
+                <MetadataSection title="Contacts">
+                  <CompanyContactsCompact
+                    companyContacts={clientLevelContacts}
+                    locationContacts={allLocationContacts}
+                    locations={locations}
+                    companyId={companyId}
+                  />
+                </MetadataSection>
+              </div>
 
-              {/* Notes */}
-              <MetadataSection title="Notes">
-                <NotesPanel scope="company" companyId={companyId || ""} hideAddButton={false} />
-              </MetadataSection>
+              {/* Notes card */}
+              <div className="rounded-lg border bg-white p-4 shadow-sm">
+                <MetadataSection title="Notes">
+                  <NotesPanel scope="company" companyId={companyId || ""} hideAddButton={false} />
+                </MetadataSection>
+              </div>
 
-              {/* Activity */}
-              <MetadataSection title="Activity">
-                <ClientActivityCompact companyId={companyId} />
-              </MetadataSection>
+              {/* Activity card */}
+              <div className="rounded-lg border bg-white p-4 shadow-sm">
+                <MetadataSection title="Activity">
+                  <ClientActivityCompact companyId={companyId} />
+                </MetadataSection>
+              </div>
             </>
           ) : selectedLoc && selectedLocationId ? (
             <>
-              {/* Location contacts only — no company-wide contacts at location scope */}
-              <MetadataSection title="Contacts">
-                <LocContactsCompact
-                  locationContacts={locContacts}
-                  companyContacts={locCompanyContacts}
-                  locationId={selectedLocationId}
-                  parentCompanyId={companyId}
-                />
-              </MetadataSection>
-
-              {/* Notes */}
-              <MetadataSection title="Notes">
-                <NotesPanel scope="location" companyId={client.companyId || ""} locationId={selectedLocationId} hideAddButton={false} />
-              </MetadataSection>
-
-              {/* Site Info — Part E: unified "Site Code" terminology */}
-              {(selectedLoc.roofLadderCode || selectedLoc.notes) && (
-                <MetadataSection title="Site Info">
-                  <div className="text-xs space-y-2">
-                    {selectedLoc.roofLadderCode && (
-                      <div>
-                        <p className="text-[10px] uppercase font-semibold text-muted-foreground">Site Code</p>
-                        <p>{selectedLoc.roofLadderCode}</p>
-                      </div>
-                    )}
-                    {selectedLoc.notes && (
-                      <div>
-                        <p className="text-[10px] uppercase font-semibold text-muted-foreground">Site Notes</p>
-                        <p>{selectedLoc.notes}</p>
-                      </div>
-                    )}
-                  </div>
+              {/* Contacts card */}
+              <div className="rounded-lg border bg-white p-4 shadow-sm">
+                <MetadataSection title="Contacts">
+                  <LocContactsCompact
+                    locationContacts={locContacts}
+                    companyContacts={locCompanyContacts}
+                    locationId={selectedLocationId}
+                    parentCompanyId={companyId}
+                  />
                 </MetadataSection>
+              </div>
+
+              {/* Notes card */}
+              <div className="rounded-lg border bg-white p-4 shadow-sm">
+                <MetadataSection title="Notes">
+                  <NotesPanel scope="location" companyId={client.companyId || ""} locationId={selectedLocationId} hideAddButton={false} />
+                </MetadataSection>
+              </div>
+
+              {/* Site Info card — Part E: unified "Site Code" terminology */}
+              {(selectedLoc.roofLadderCode || selectedLoc.notes) && (
+                <div className="rounded-lg border bg-white p-4 shadow-sm">
+                  <MetadataSection title="Site Info">
+                    <div className="text-xs space-y-2">
+                      {selectedLoc.roofLadderCode && (
+                        <div>
+                          <p className="text-[10px] uppercase font-semibold text-muted-foreground">Site Code</p>
+                          <p>{selectedLoc.roofLadderCode}</p>
+                        </div>
+                      )}
+                      {selectedLoc.notes && (
+                        <div>
+                          <p className="text-[10px] uppercase font-semibold text-muted-foreground">Site Notes</p>
+                          <p>{selectedLoc.notes}</p>
+                        </div>
+                      )}
+                    </div>
+                  </MetadataSection>
+                </div>
               )}
             </>
           ) : null}
@@ -887,64 +959,87 @@ export default function ClientDetailPage() {
         preselectedLocationId={scopeType === "location" ? selectedLocationId ?? undefined : undefined}
       />
 
-      {/* Edit Client Dialog */}
-      <Dialog open={editClientDialogOpen} onOpenChange={setEditClientDialogOpen}>
+      {/* Delete / Archive Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Edit Client</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              {deleteEligibility?.canHardDelete ? (
+                <><AlertTriangle className="h-5 w-5 text-destructive" /> Delete {deleteTarget === "company" ? "Client" : "Location"}</>
+              ) : (
+                <><Archive className="h-5 w-5 text-amber-500" /> Archive {deleteTarget === "company" ? "Client" : "Location"}</>
+              )}
+            </DialogTitle>
+            <DialogDescription>
+              {deleteCheckLoading ? "Checking dependencies..." :
+                deleteEligibility?.canHardDelete
+                  ? deleteTarget === "company"
+                    ? `This will permanently remove "${companyName}" and all associated locations and contacts. This cannot be undone.`
+                    : deleteEligibility?.isLastLocation
+                      ? "This is the only location for this client. Delete the client instead."
+                      : `This will permanently remove "${selectedLoc ? locationDisplayName(selectedLoc) : "this location"}". This cannot be undone.`
+                  : `Cannot permanently delete — ${(deleteEligibility?.reasons ?? []).join(", ")}. You can archive instead, which hides it from lists while preserving historical records.`
+              }
+            </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-2">
-            <div className="space-y-2">
-              <Label>Company Name *</Label>
-              <Input value={editClientForm.name}
-                onChange={e => setEditClientForm(f => ({ ...f, name: e.target.value }))} />
+
+          {!deleteCheckLoading && deleteEligibility && (
+            <div className="space-y-4 py-2">
+              {!deleteEligibility.canHardDelete && deleteEligibility.reasons.length > 0 && (
+                <div className="rounded-md bg-amber-50 border border-amber-200 p-3 text-sm">
+                  <p className="font-medium text-amber-800 mb-1">Blocking dependencies:</p>
+                  <ul className="list-disc pl-5 text-amber-700 space-y-0.5">
+                    {deleteEligibility.reasons.map((r, i) => <li key={i}>{r}</li>)}
+                  </ul>
+                </div>
+              )}
+
+              {deleteEligibility.canHardDelete && !(deleteTarget === "location" && deleteEligibility.isLastLocation) && (
+                <div className="space-y-2">
+                  <Label>Type <span className="font-mono font-bold">DELETE</span> to confirm</Label>
+                  <Input
+                    value={deleteConfirmText}
+                    onChange={e => setDeleteConfirmText(e.target.value)}
+                    placeholder="DELETE"
+                    autoFocus
+                  />
+                </div>
+              )}
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <Label>Phone</Label>
-                <Input value={editClientForm.phone}
-                  onChange={e => setEditClientForm(f => ({ ...f, phone: e.target.value }))} />
-              </div>
-              <div className="space-y-2">
-                <Label>Email</Label>
-                <Input value={editClientForm.email}
-                  onChange={e => setEditClientForm(f => ({ ...f, email: e.target.value }))} />
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label>Billing Street</Label>
-              <Input value={editClientForm.billingStreet}
-                onChange={e => setEditClientForm(f => ({ ...f, billingStreet: e.target.value }))} />
-            </div>
-            <div className="grid grid-cols-3 gap-3">
-              <div className="space-y-2">
-                <Label>City</Label>
-                <Input value={editClientForm.billingCity}
-                  onChange={e => setEditClientForm(f => ({ ...f, billingCity: e.target.value }))} />
-              </div>
-              <div className="space-y-2">
-                <Label>Province</Label>
-                <Input value={editClientForm.billingProvince}
-                  onChange={e => setEditClientForm(f => ({ ...f, billingProvince: e.target.value }))} />
-              </div>
-              <div className="space-y-2">
-                <Label>Postal Code</Label>
-                <Input value={editClientForm.billingPostalCode}
-                  onChange={e => setEditClientForm(f => ({ ...f, billingPostalCode: e.target.value }))} />
-              </div>
-            </div>
-          </div>
+          )}
+
           <DialogFooter>
-            <Button variant="outline" onClick={() => setEditClientDialogOpen(false)}>Cancel</Button>
-            <Button
-              onClick={() => editClientMutation.mutate(editClientForm)}
-              disabled={!editClientForm.name.trim() || editClientMutation.isPending}
-            >
-              {editClientMutation.isPending ? "Saving..." : "Save Changes"}
-            </Button>
+            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>Cancel</Button>
+            {deleteEligibility?.canHardDelete && !(deleteTarget === "location" && deleteEligibility.isLastLocation) ? (
+              <Button
+                variant="destructive"
+                onClick={() => executeDelete.mutate()}
+                disabled={deleteConfirmText !== "DELETE" || executeDelete.isPending}
+              >
+                {executeDelete.isPending ? "Deleting..." : "Permanently Delete"}
+              </Button>
+            ) : deleteEligibility && !(deleteTarget === "location" && deleteEligibility?.isLastLocation) ? (
+              <Button
+                variant="default"
+                className="bg-amber-600 hover:bg-amber-700"
+                onClick={() => executeDelete.mutate()}
+                disabled={executeDelete.isPending}
+              >
+                {executeDelete.isPending ? "Archiving..." : "Archive"}
+              </Button>
+            ) : null}
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Edit Client Dialog — canonical component */}
+      <EditCompanyDialog
+        open={editClientDialogOpen}
+        onOpenChange={setEditClientDialogOpen}
+        companyId={companyId}
+        parentCompany={parentCompany}
+        clientId={clientId}
+      />
 
       {/* Add Location Dialog */}
       <Dialog open={addLocationDialogOpen} onOpenChange={setAddLocationDialogOpen}>
@@ -962,6 +1057,11 @@ export default function ClientDetailPage() {
               <Label>Address</Label>
               <Input placeholder="Street address" value={newLocationForm.address}
                 onChange={e => setNewLocationForm(f => ({ ...f, address: e.target.value }))} />
+            </div>
+            <div className="space-y-2">
+              <Label>Address Line 2</Label>
+              <Input placeholder="Suite, Unit, Floor (optional)" value={newLocationForm.address2}
+                onChange={e => setNewLocationForm(f => ({ ...f, address2: e.target.value }))} />
             </div>
             <div className="grid grid-cols-3 gap-3">
               <div className="space-y-2">
@@ -1286,26 +1386,28 @@ function ClientActivityCompact({ companyId }: { companyId?: string }) {
 // Company-Scope Workspace Tabs
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Company overview — single Active list sorted by status priority (overdue first).
- *  Uses canonical getJobStatusDisplay().priority for ordering. */
+/** Company overview — Active list (excludes archived) sorted by status priority.
+ *  Uses canonical getJobStatusDisplay().priority for ordering.
+ *  Bug fix: archived jobs (status='archived') excluded from Active list. */
 function CompanyOverviewTab({
   jobs, invoices, quotes, locations, onNavigate,
 }: {
   jobs: Job[]; invoices: Invoice[]; quotes: EnrichedQuote[];
   locations: Client[]; onNavigate: (p: string) => void;
 }) {
+  // Filter out archived jobs from Active display
+  const activeJobs = useMemo(() => jobs.filter(j => j.status !== "archived"), [jobs]);
   // Single sorted list: overdue (priority 0) → in-progress (1) → scheduled (2) → open (3) → completed (4+)
   const sortedJobs = useMemo(() => {
-    return [...jobs]
+    return [...activeJobs]
       .sort((a, b) => {
         const pa = getJobStatusDisplay(a).priority;
         const pb = getJobStatusDisplay(b).priority;
         if (pa !== pb) return pa - pb;
-        // Secondary sort: most recently updated first within same priority
         return new Date(b.updatedAt ?? b.createdAt).getTime() - new Date(a.updatedAt ?? a.createdAt).getTime();
       })
       .slice(0, 25);
-  }, [jobs]);
+  }, [activeJobs]);
   const locMap = useMemo(() => new Map(locations.map(l => [l.id, locationDisplayName(l)])), [locations]);
 
   return (
@@ -1315,7 +1417,7 @@ function CompanyOverviewTab({
         {sortedJobs.length === 0 ? (
           <p className="text-xs text-muted-foreground">No jobs across locations.</p>
         ) : (
-          <div className="rounded-lg border bg-white divide-y">
+          <div className="divide-y border-t">
             {sortedJobs.map(j => (
               <JobRow key={j.id} job={j} locationLabel={locMap.get(j.locationId)} onNavigate={onNavigate} />
             ))}
@@ -1345,7 +1447,7 @@ function LocOverviewTab({
         {activeJobs.length === 0 && overdueJobs.length === 0 ? (
           <p className="text-xs text-muted-foreground">No active work</p>
         ) : (
-          <div className="rounded-lg border bg-white divide-y">
+          <div className="divide-y border-t">
             {overdueJobs.map(j => (
               <JobRow key={j.id} job={j} onNavigate={onNavigate} />
             ))}
@@ -1380,7 +1482,7 @@ function LocJobsTab({ jobs, onNavigate }: { jobs: Job[]; onNavigate: (p: string)
   return (
     <div>
       <p className="text-xs text-muted-foreground mb-2">Total: {jobs.length}</p>
-      <div className="rounded-lg border bg-white divide-y">
+      <div className="divide-y border-t">
         {jobs.map(j => (
           <JobRow key={j.id} job={j} onNavigate={onNavigate} />
         ))}
@@ -1423,11 +1525,11 @@ function LocQuotesTab({ quotes, onNavigate }: { quotes: EnrichedQuote[]; onNavig
   if (quotes.length === 0) return <EmptyState label="No quotes for this location" />;
   const statusCls = (s: string) => {
     const map: Record<string, string> = {
-      accepted: "bg-emerald-100 text-emerald-700",
       approved: "bg-emerald-100 text-emerald-700",
       sent: "bg-blue-100 text-blue-700",
       draft: "bg-slate-100 text-slate-700",
-      rejected: "bg-red-100 text-red-700",
+      declined: "bg-red-100 text-red-700",
+      converted: "bg-purple-100 text-purple-700",
     };
     return map[s] ?? "bg-slate-100 text-slate-600";
   };
@@ -1468,7 +1570,7 @@ function LocEquipmentTab({
       {equipment.length === 0 ? <EmptyState label="No equipment" /> : (
         <div className="space-y-2">
           {equipment.map(eq => (
-            <div key={eq.id} className="rounded-lg border p-2.5 text-xs">
+            <div key={eq.id} className="border-b last:border-0 p-2.5 text-xs">
               <div className="flex items-center justify-between">
                 <div>
                   <div className="font-medium text-sm">{eq.name}</div>
@@ -1523,14 +1625,36 @@ function LocPartsTab({ pmParts, onAdd }: { pmParts: PMPartWithItem[]; onAdd: () 
 // ═══════════════════════════════════════════════════════════════════════════════
 
 {/* Part C: Unified job rows via shared JobRow component */}
+/** Bug fix: split jobs into Active and Archived groups on company Jobs tab */
 function ClientAllJobsTab({ jobs, locations, onNavigate }: { jobs: Job[]; locations: Client[]; onNavigate: (p: string) => void }) {
   const locMap = useMemo(() => new Map(locations.map(l => [l.id, locationDisplayName(l)])), [locations]);
+  const activeJobs = useMemo(() => jobs.filter(j => j.status !== "archived"), [jobs]);
+  const archivedJobs = useMemo(() => jobs.filter(j => j.status === "archived"), [jobs]);
   if (jobs.length === 0) return <EmptyState label="No jobs for this client" />;
   return (
-    <div className="rounded-lg border bg-white divide-y">
-      {jobs.map(j => (
-        <JobRow key={j.id} job={j} locationLabel={locMap.get(j.locationId)} onNavigate={onNavigate} />
-      ))}
+    <div className="space-y-4">
+      <div>
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">Active ({activeJobs.length})</h3>
+        {activeJobs.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No active jobs.</p>
+        ) : (
+          <div className="divide-y border-t">
+            {activeJobs.map(j => (
+              <JobRow key={j.id} job={j} locationLabel={locMap.get(j.locationId)} onNavigate={onNavigate} />
+            ))}
+          </div>
+        )}
+      </div>
+      {archivedJobs.length > 0 && (
+        <div>
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">Archived ({archivedJobs.length})</h3>
+          <div className="divide-y border-t">
+            {archivedJobs.map(j => (
+              <JobRow key={j.id} job={j} locationLabel={locMap.get(j.locationId)} onNavigate={onNavigate} />
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1539,7 +1663,7 @@ function ClientAllInvoicesTab({ invoices, locations, onNavigate }: { invoices: I
   const locMap = useMemo(() => new Map(locations.map(l => [l.id, locationDisplayName(l)])), [locations]);
   if (invoices.length === 0) return <EmptyState label="No invoices for this client" />;
   return (
-    <div className="rounded-lg border bg-white divide-y">
+    <div className="divide-y">
       {invoices.map(inv => (
         <div key={inv.id} className="flex items-center justify-between px-3 py-2.5 text-xs cursor-pointer hover:bg-slate-50"
           onClick={() => onNavigate(`/invoices/${inv.id}`)}>
@@ -1548,9 +1672,10 @@ function ClientAllInvoicesTab({ invoices, locations, onNavigate }: { invoices: I
             <span className="text-muted-foreground ml-2">{fmt.format(Number(inv.total ?? 0))}</span>
             <p className="text-muted-foreground mt-0.5">{locMap.get(inv.locationId) || ""}</p>
           </div>
-          <Badge variant={inv.status === "paid" ? "default" : inv.status === "voided" ? "secondary" : "outline"} className="text-[10px] capitalize flex-shrink-0">
-            {inv.status}
-          </Badge>
+          {(() => {
+            const badge = getInvoiceStatusBadge(inv.status, false);
+            return <Badge variant={badge.variant} className="text-[10px] flex-shrink-0">{badge.label}</Badge>;
+          })()}
         </div>
       ))}
     </div>
@@ -1561,7 +1686,7 @@ function ClientAllQuotesTab({ quotes, locations, onNavigate }: { quotes: Enriche
   const locMap = useMemo(() => new Map(locations.map(l => [l.id, locationDisplayName(l)])), [locations]);
   if (quotes.length === 0) return <EmptyState label="No quotes for this client" />;
   return (
-    <div className="rounded-lg border bg-white divide-y">
+    <div className="divide-y">
       {quotes.map(q => (
         <div key={q.id} className="flex items-center justify-between px-3 py-2.5 text-xs cursor-pointer hover:bg-slate-50"
           onClick={() => onNavigate(`/quotes/${q.id}`)}>
@@ -1644,181 +1769,7 @@ function ContactCard({
   );
 }
 
-/** Contact add/edit form dialog — reusable for both company-level and location-level */
-function ContactFormDialog({
-  open, onOpenChange, companyId, contact, associationType, locationId, onSuccess,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  companyId?: string;
-  contact?: ClientContact | null;
-  associationType: ContactScope;
-  locationId?: string;
-  onSuccess: () => void;
-}) {
-  const { toast } = useToast();
-  const [form, setForm] = useState({
-    firstName: "", lastName: "", phone: "", email: "", isPrimary: false,
-  });
-  const [selectedRoles, setSelectedRoles] = useState<Set<string>>(new Set());
-  const [customRole, setCustomRole] = useState("");
-
-  const effectiveScope: ContactScope = contact
-    ? (contact.locationId ? "location" : "company")
-    : associationType;
-  const effectiveLocationId = contact?.locationId ?? locationId;
-
-  useEffect(() => {
-    if (open && contact) {
-      setForm({
-        firstName: contact.firstName || "",
-        lastName: contact.lastName || "",
-        phone: contact.phone || "",
-        email: contact.email || "",
-        isPrimary: contact.isPrimary || false,
-      });
-      const roles = Array.isArray(contact.roles) ? contact.roles : [];
-      const known = new Set(roles.filter(r => (STANDARD_CONTACT_ROLES as readonly string[]).includes(r)));
-      const unknown = roles.filter(r => !(STANDARD_CONTACT_ROLES as readonly string[]).includes(r));
-      setSelectedRoles(known);
-      setCustomRole(unknown.join(", "));
-    } else if (open) {
-      setForm({ firstName: "", lastName: "", phone: "", email: "", isPrimary: false });
-      setSelectedRoles(new Set());
-      setCustomRole("");
-    }
-  }, [open, contact]);
-
-  const toggleRole = useCallback((role: string) => {
-    setSelectedRoles(prev => {
-      const next = new Set(prev);
-      next.has(role) ? next.delete(role) : next.add(role);
-      return next;
-    });
-  }, []);
-
-  const computeRoles = (): string[] => {
-    const roles = Array.from(selectedRoles);
-    const custom = customRole.split(",").map(r => r.trim()).filter(Boolean);
-    return [...roles, ...custom];
-  };
-
-  const mutation = useMutation({
-    mutationFn: async (data: typeof form) => {
-      if (!companyId) throw new Error("Company not loaded");
-      const roles = computeRoles();
-      const body: any = {
-        firstName: data.firstName,
-        lastName: data.lastName,
-        phone: data.phone || null,
-        email: data.email || null,
-        roles,
-        isPrimary: data.isPrimary,
-      };
-
-      if (contact) {
-        if (effectiveScope === "location" && effectiveLocationId) {
-          body.locationId = effectiveLocationId;
-        }
-        return apiRequest(`/api/customer-companies/${companyId}/contacts/${contact.id}`, {
-          method: "PATCH", body: JSON.stringify(body),
-        });
-      } else {
-        if (effectiveScope === "company") {
-          body.association = { type: "company" };
-        } else if (effectiveLocationId) {
-          body.association = { type: "locations", locationIds: [effectiveLocationId] };
-        }
-        return apiRequest(`/api/customer-companies/${companyId}/contacts`, {
-          method: "POST", body: JSON.stringify(body),
-        });
-      }
-    },
-    onSuccess: () => {
-      onSuccess();
-      onOpenChange(false);
-      toast({ title: contact ? "Contact updated" : "Contact added" });
-    },
-    onError: (err: any) => {
-      toast({ title: "Error", description: err?.message || "Failed to save contact.", variant: "destructive" });
-    },
-  });
-
-  const canSave = (form.firstName.trim() || form.lastName.trim()) && (form.phone.trim() || form.email.trim());
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{contact ? "Edit Contact" : "Add Contact"}</DialogTitle>
-          <p className="text-xs text-muted-foreground">
-            {effectiveScope === "company" ? "Company-wide contact" : "Location-specific contact"}
-          </p>
-        </DialogHeader>
-        <div className="space-y-4 py-2">
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-2">
-              <Label>First Name</Label>
-              <Input value={form.firstName} onChange={e => setForm(f => ({ ...f, firstName: e.target.value }))} />
-            </div>
-            <div className="space-y-2">
-              <Label>Last Name</Label>
-              <Input value={form.lastName} onChange={e => setForm(f => ({ ...f, lastName: e.target.value }))} />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-2">
-              <Label>Phone</Label>
-              <Input value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} />
-            </div>
-            <div className="space-y-2">
-              <Label>Email</Label>
-              <Input value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} />
-            </div>
-          </div>
-          <div className="space-y-2">
-            <Label>Roles</Label>
-            <div className="flex flex-wrap gap-1.5">
-              {STANDARD_CONTACT_ROLES.map(role => (
-                <button
-                  key={role}
-                  type="button"
-                  onClick={() => toggleRole(role)}
-                  className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
-                    selectedRoles.has(role)
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "bg-white text-muted-foreground border-slate-200 hover:border-slate-400"
-                  }`}
-                >
-                  {role}
-                </button>
-              ))}
-            </div>
-            <Input
-              placeholder="Other roles (comma-separated)"
-              value={customRole}
-              onChange={e => setCustomRole(e.target.value)}
-              className="mt-1.5 h-8 text-xs"
-            />
-          </div>
-          <label className="flex items-center gap-2 cursor-pointer">
-            <Checkbox
-              checked={form.isPrimary}
-              onCheckedChange={(checked) => setForm(f => ({ ...f, isPrimary: !!checked }))}
-            />
-            <span className="text-xs">Primary contact</span>
-          </label>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={() => mutation.mutate(form)} disabled={!canSave || mutation.isPending}>
-            {mutation.isPending ? "Saving..." : contact ? "Save Changes" : "Add Contact"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
+// ContactFormDialog extracted to @/components/ContactFormDialog.tsx (2026-03-22)
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

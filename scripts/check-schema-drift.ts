@@ -76,11 +76,8 @@ const expectedSchemas: ExpectedSchemas = {
     actual_start: { nullable: true },
     actual_end: { nullable: true },
     invoice_id: { nullable: true },
-    action_required_reason: { nullable: true },
-    action_required_notes: { nullable: true },
+    // 2026-03-18: action_required_* columns DROPPED
     next_action_date: { nullable: true },
-    action_required_at: { nullable: true },
-    action_required_escalated_at: { nullable: true },
     previous_status: { nullable: true },
     closed_at: { nullable: true },
     closed_by: { nullable: true },

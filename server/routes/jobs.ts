@@ -8,11 +8,10 @@ import {
   updateJobSchema,
   insertRecurringJobSeriesSchema,
   insertRecurringJobPhaseSchema,
-  normalizeJobStatus,
   jobVisits,
 } from "@shared/schema";
-import { assertJobStatusTransition } from "../statusRules";
-import { jobStatusEnum, holdReasonEnum, openSubStatusEnum, legacyJobStatusEnum } from "../schemas";
+import { assertJobStatusTransition } from "../domain/jobLifecycle";
+import { jobStatusEnum, holdReasonEnum, openSubStatusEnum } from "../schemas";
 import type { JobStatus, OpenSubStatus } from "../schemas";
 import { requireRole } from "../auth/requireRole";
 import { requireAuth } from "../auth/requireAuth";
@@ -35,14 +34,19 @@ import {
   type LifecycleIntent,
   type TransitionActor,
 } from "../domain/jobLifecycle";
-import * as visitService from "../services/jobVisits.service";
+// 2026-03-18: Deprecated service wrapper removed — import canonical repository directly
+import { jobVisitsRepository } from "../storage/jobVisits";
+// Phase 2: Canonical lifecycle orchestrator — all lifecycle mutations route through here
+import * as lifecycle from "../services/jobLifecycleOrchestrator";
+// 2026-03-19: Canonical invoice creation service (used by close+invoice_now)
+import { createInvoiceFromJob as createInvoiceFromJobService } from "../services/invoiceCreationService";
 // Phase 1 Architecture: Event Log + Attention Queue
 import { logEventAsync } from "../lib/events";
 import { recomputeAttentionForEntity } from "../lib/attentionRules";
 // Phase 4 Step A5: Canonical jobs feed module
 import { getQueryCtx } from "../lib/queryCtx";
 import { emitDispatch } from "../lib/dispatchBus";
-import { getJobsFeed, getJobHeader } from "../storage/jobsFeed";
+import { getJobsFeed, getJobHeader, getJobCounts } from "../storage/jobsFeed";
 import type { JobFeedFilters } from "../storage/jobsFeed";
 
 const router = Router();
@@ -81,29 +85,64 @@ router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const sortOrder = req.query.sortOrder === "asc" || req.query.sortOrder === "desc"
     ? req.query.sortOrder : undefined;
 
+  // Hybrid search: searchMode=history searches all job history server-side
+  const searchMode = req.query.searchMode ? String(req.query.searchMode) : undefined;
+  const isHistoryMode = searchMode === "history";
+
+  if (isHistoryMode) {
+    // History mode requires a search term
+    if (!search || search.trim().length < 2) {
+      res.status(400).json({ error: "Search term required (min 2 characters) for history search" });
+      return;
+    }
+  }
+
+  // Default mode: 1000-row cap for client-side filtering/counts.
+  // History mode: honor client-requested limit (default 50).
+  const JOBS_LIST_LIMIT = 1000;
+  const HISTORY_DEFAULT_LIMIT = 50;
+  const effectiveLimit = isHistoryMode
+    ? (pagination.limit ?? HISTORY_DEFAULT_LIMIT)
+    : JOBS_LIST_LIMIT;
+
   const filters: JobFeedFilters = {
-    status,
-    technicianId,
+    status: isHistoryMode ? undefined : status, // History searches all statuses
+    technicianId: isHistoryMode ? undefined : technicianId,
     search,
-    locationId,
-    dateRange,
+    locationId: isHistoryMode ? undefined : locationId,
+    dateRange: isHistoryMode ? undefined : dateRange,
     sortBy,
     sortOrder,
-    limit: pagination.limit ?? 200,
+    limit: effectiveLimit,
     offset: pagination.offset ?? 0,
   };
 
-  const result = await getJobsFeed(ctx, filters);
+  // P3-05: includeCounts=true runs a parallel aggregate for true badge counts
+  const includeCounts = req.query.includeCounts === "true";
 
-  // Return in paginated envelope for backward compatibility
-  res.json(paginated(result.items, {
-    limit: filters.limit!,
-    hasMore: result.items.length >= filters.limit!,
-  }));
+  if (includeCounts) {
+    const [result, counts] = await Promise.all([
+      getJobsFeed(ctx, filters),
+      getJobCounts(ctx),
+    ]);
+    res.json({
+      ...paginated(result.items, {
+        limit: effectiveLimit,
+        hasMore: result.items.length >= effectiveLimit,
+      }),
+      counts,
+    });
+  } else {
+    const result = await getJobsFeed(ctx, filters);
+    res.json(paginated(result.items, {
+      limit: effectiveLimit,
+      hasMore: result.items.length >= effectiveLimit,
+    }));
+  }
 }));
 
 // GET /api/jobs/action-required - Get action required jobs queue
-// Prioritized by nextActionDate ASC, then by actionRequiredAt ASC (oldest first)
+// Prioritized by nextActionDate ASC, then by onHoldAt ASC (oldest first)
 // Bounded: uses lenient pagination (default offset=0, limit=50, max 200)
 router.get("/action-required", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
@@ -180,9 +219,8 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
     // and forwarded to the initial visit's estimatedDurationMinutes
     jobData.durationMinutes = schedulingResult.durationMinutes;
   } else {
-    // No scheduling fields - just normalize status
-    const rawStatus = parsed.status || "open";
-    jobData.status = normalizeJobStatus(rawStatus);
+    // No scheduling fields - use status directly (canonical values enforced by Zod + DB constraint)
+    jobData.status = parsed.status || "open";
   }
 
   const job = await storage.createJob(companyId, jobData as any);
@@ -222,8 +260,29 @@ router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authed
   const { version, ...data } = req.body;
   const parsed = validateSchema(updateJobSchema, data);
 
+  // Editable job number: handle separately with uniqueness check + counter bump
+  if (parsed.jobNumber !== undefined) {
+    try {
+      // Load current job to check if number actually changed
+      const currentJob = await storage.getJob(companyId, jobId);
+      if (!currentJob) throw createError(404, "Job not found");
+
+      if (parsed.jobNumber !== currentJob.jobNumber) {
+        await storage.updateJobNumber(companyId, jobId, parsed.jobNumber);
+      }
+    } catch (err: any) {
+      if (err.code === "JOB_NUMBER_DUPLICATE") {
+        return res.status(409).json({ error: err.message, code: "JOB_NUMBER_DUPLICATE" });
+      }
+      throw err;
+    }
+  }
+
+  // Remove jobNumber from general patch — already handled above
+  const { jobNumber: _jn, ...remaining } = parsed;
+
   // Convert date strings to Date objects for storage
-  const updates: Record<string, unknown> = { ...parsed };
+  const updates: Record<string, unknown> = { ...remaining };
 
   // Handle non-scheduling date fields
   if (parsed.actualStart !== undefined) {
@@ -266,10 +325,8 @@ router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authed
     if (parsed.durationMinutes !== undefined) {
       patchIntent.durationMinutes = parsed.durationMinutes;
     }
-    // If status is explicitly provided, include it (will be normalized)
-    if (parsed.status !== undefined) {
-      patchIntent.status = parsed.status;
-    }
+    // 2026-03-18: status removed from updateJobSchema — lifecycle writes go through orchestrator.
+    // Scheduling patch uses existing job status for immutability checks.
     // Include expected version for optimistic locking
     if (version !== undefined) {
       patchIntent.expectedVersion = version;
@@ -291,10 +348,7 @@ router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authed
     // Remove durationMinutes from updates (it's a derived/computed field, not stored directly)
     delete updates.durationMinutes;
   } else {
-    // No scheduling fields - just normalize status if provided
-    if (parsed.status !== undefined) {
-      updates.status = normalizeJobStatus(parsed.status);
-    }
+    // No scheduling fields — status is managed by orchestrator, not generic PATCH
   }
 
   try {
@@ -346,8 +400,9 @@ router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authe
  */
 
 const statusUpdateSchema = z.object({
-  // Accept both new lifecycle status and legacy status values
-  status: legacyJobStatusEnum,
+  // 2026-03-18: Canonical-only job statuses. No legacy/convenience aliases accepted.
+  // Sub-status changes (in_progress, on_hold) must use the openSubStatus field with status="open".
+  status: z.enum(["open", "completed", "invoiced", "archived"]),
   // Workflow sub-status (only valid when status = 'open')
   openSubStatus: openSubStatusEnum.nullable().optional(),
   // Hold state fields (required when openSubStatus === "on_hold")
@@ -382,26 +437,12 @@ router.post("/:id/status", requireAuth, asyncHandler(async (req: AuthedRequest, 
   const parsed = validateSchema(statusUpdateSchema, req.body);
   const { holdReason, holdNotes, nextActionDate } = parsed;
 
-  // Map legacy status values to new model:
-  // - "in_progress" -> status="open", openSubStatus="in_progress"
-  // - "on_hold" -> status="open", openSubStatus="on_hold"
-  // - Other values -> normalize to 4-value lifecycle
-  let status: JobStatus;
+  // Status is canonical (enforced by Zod + DB CHECK constraint)
+  const status: JobStatus = parsed.status as JobStatus;
+  // Clear openSubStatus when transitioning away from 'open'
   let openSubStatus: OpenSubStatus | null = parsed.openSubStatus ?? null;
-
-  const rawStatus = parsed.status;
-  if (rawStatus === "in_progress") {
-    status = "open";
-    openSubStatus = "in_progress";
-  } else if (rawStatus === "on_hold") {
-    status = "open";
-    openSubStatus = "on_hold";
-  } else {
-    status = normalizeJobStatus(rawStatus);
-    // Clear openSubStatus when transitioning away from 'open'
-    if (status !== "open") {
-      openSubStatus = null;
-    }
+  if (status !== "open") {
+    openSubStatus = null;
   }
 
   // Restrict technicians to allowed operations
@@ -436,8 +477,8 @@ router.post("/:id/status", requireAuth, asyncHandler(async (req: AuthedRequest, 
     });
   }
 
-  // Normalize existing status for comparison
-  const fromStatus = normalizeJobStatus(existing.status);
+  // DB CHECK constraint guarantees canonical status — use directly
+  const fromStatus = existing.status as JobStatus;
   // openSubStatus may not be in the type yet (schema migration pending), so use type assertion
   const fromOpenSubStatus = (existing as { openSubStatus?: string | null }).openSubStatus as OpenSubStatus | null ?? null;
 
@@ -463,51 +504,96 @@ router.post("/:id/status", requireAuth, asyncHandler(async (req: AuthedRequest, 
     assertJobStatusTransition(fromStatus as JobStatus, status);
   }
 
-  // Build update payload based on target state
-  const additionalUpdates: Record<string, unknown> = {
-    openSubStatus,
-  };
+  // 2026-03-18: Route lifecycle mutations through canonical orchestrator
 
-  if (openSubStatus === "on_hold") {
-    // Require holdReason when transitioning to on_hold
+  const actor = { userId: userId || "unknown", role: userRole || "unknown" };
+  let updated: any;
+  let autoCompletedVisitCount = 0;
+
+  // CASE 1: Job completion → orchestrator forceCloseJob with invoice_later
+  if (status === "completed" && fromStatus !== "completed") {
+    const result = await lifecycle.forceCloseJob({
+      type: "FORCE_CLOSE_JOB",
+      companyId,
+      jobId: req.params.id,
+      version: parsed.version,
+      mode: "invoice_later",
+      actor,
+      autoCompleteOpenVisits: true,
+    });
+    updated = result.job;
+    autoCompletedVisitCount = result.autoCompletedVisitCount;
+
+  // CASE 2: Placing on hold → orchestrator placeJobOnHold
+  } else if (openSubStatus === "on_hold" && fromOpenSubStatus !== "on_hold") {
     if (!holdReason) {
       throw createError(400, "holdReason is required when setting openSubStatus to on_hold");
     }
-    additionalUpdates.holdReason = holdReason;
-    additionalUpdates.holdNotes = holdNotes?.trim() || null;
-    additionalUpdates.nextActionDate = nextActionDate || null;
-    // Set onHoldAt timestamp for aging (only if transitioning INTO on_hold)
-    if (fromOpenSubStatus !== "on_hold") {
-      additionalUpdates.onHoldAt = new Date();
-    }
+    const result = await lifecycle.placeJobOnHold({
+      type: "PLACE_JOB_ON_HOLD",
+      companyId,
+      jobId: req.params.id,
+      holdReason: holdReason as any,
+      holdNotes: holdNotes?.trim() || null,
+      nextActionDate: nextActionDate ? new Date(nextActionDate) : null,
+      changedBy: userId || "unknown",
+    });
+    updated = result.job;
+
+  // CASE 3: Resuming from hold → orchestrator resumeJob
+  } else if (fromOpenSubStatus === "on_hold" && openSubStatus !== "on_hold") {
+    const result = await lifecycle.resumeJob({
+      type: "RESUME_JOB",
+      companyId,
+      jobId: req.params.id,
+      targetSubStatus: openSubStatus as OpenSubStatus | null,
+      changedBy: userId || "unknown",
+    });
+    updated = result.job;
+
+  // CASE 4: Sub-status change (on_route, in_progress) → orchestrator setJobSubstatus
+  } else if (status === "open" && fromStatus === "open" && openSubStatus && openSubStatus !== "on_hold") {
+    const result = await lifecycle.setJobSubstatus({
+      type: "SET_JOB_SUBSTATUS",
+      companyId,
+      jobId: req.params.id,
+      openSubStatus: openSubStatus as OpenSubStatus,
+      changedBy: userId || "unknown",
+    });
+    updated = result.job;
+
+  // CASE 5: On-hold metadata update (already on_hold, staying on_hold)
+  } else if (openSubStatus === "on_hold" && fromOpenSubStatus === "on_hold") {
+    const result = await lifecycle.updateHoldMetadata({
+      type: "UPDATE_HOLD_METADATA",
+      companyId,
+      jobId: req.params.id,
+      holdReason: holdReason as any,
+      holdNotes: holdNotes?.trim() || null,
+      nextActionDate: nextActionDate ? new Date(nextActionDate) : undefined,
+      changedBy: userId || "unknown",
+    });
+    updated = result.job;
+
+  // CASE 6: Clearing sub-status (e.g., going from in_progress/on_route back to plain open)
+  } else if (status === "open" && fromStatus === "open" && openSubStatus === null && fromOpenSubStatus !== null && fromOpenSubStatus !== "on_hold") {
+    const result = await lifecycle.setJobSubstatus({
+      type: "SET_JOB_SUBSTATUS",
+      companyId,
+      jobId: req.params.id,
+      openSubStatus: null,
+      changedBy: userId || "unknown",
+    });
+    updated = result.job;
+
+  // NO FALLBACK — reject unrecognized lifecycle mutations
   } else {
-    // Clear on_hold fields when transitioning away from on_hold
-    additionalUpdates.holdReason = null;
-    additionalUpdates.holdNotes = null;
-    additionalUpdates.nextActionDate = null;
-    additionalUpdates.onHoldAt = null;
+    throw createError(400,
+      `Unsupported lifecycle transition: status=${status}, openSubStatus=${openSubStatus} ` +
+      `(from status=${fromStatus}, openSubStatus=${fromOpenSubStatus}). ` +
+      `Use specific lifecycle endpoints (/close, /reopen) for terminal transitions.`
+    );
   }
-
-  // 2026-03-05: Rule C — When transitioning to 'completed', auto-complete all
-  // uncompleted visits so the job's visit history is clean.
-  let autoCompletedVisitCount = 0;
-  if (status === "completed" && fromStatus !== "completed") {
-    const completedVisits = await visitService.bulkCompleteVisits(companyId, req.params.id);
-    autoCompletedVisitCount = completedVisits.length;
-    // Also set closedAt/closedBy for consistency with close-job route
-    additionalUpdates.closedAt = new Date();
-    additionalUpdates.closedBy = userId || null;
-  }
-
-  // Atomically update job status and create event in a single transaction
-  const updated = await storage.updateJobStatusWithEvent(companyId, req.params.id, {
-    fromStatus,
-    toStatus: status,
-    changedBy: userId || null,
-    note: openSubStatus === "on_hold" ? `On hold: ${holdReason}` : null,
-    meta: openSubStatus === "on_hold" ? { holdReason, holdNotes, nextActionDate, openSubStatus } : { openSubStatus },
-    additionalUpdates,
-  });
 
   // Phase 1: Log event + recompute attention
   const statusLabel = status === "completed" ? "Completed" : status === "open" ? (openSubStatus || "Reopened") : status;
@@ -536,8 +622,6 @@ router.post("/:id/status", requireAuth, asyncHandler(async (req: AuthedRequest, 
  * which provides SELECT FOR UPDATE locking and idempotency guarantees.
  */
 
-import { CLOSEABLE_STATES } from "../statusRules";
-
 const closeJobSchema = z.object({
   mode: z.enum(["archive", "invoice_later", "invoice_now"]),
   version: z.number().int().nonnegative(),
@@ -557,7 +641,7 @@ router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
   const { mode, version, autoCompleteOpenVisits } = validateSchema(closeJobSchema, req.body);
 
   // Visit guardrail: check for uncompleted visits before closing
-  const uncompletedVisits = await visitService.getUncompletedVisits(companyId, jobId);
+  const uncompletedVisits = await jobVisitsRepository.getUncompletedVisits(companyId, jobId);
 
   if (uncompletedVisits.length > 0 && !autoCompleteOpenVisits) {
     // Return 409 with visit details so UI can show guardrail modal
@@ -569,13 +653,7 @@ router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
     });
   }
 
-  // If auto-completing, bulk-complete visits before proceeding
-  // 2026-03-05: Track count for response (Rule C)
-  let autoCompletedVisitCount = 0;
-  if (uncompletedVisits.length > 0 && autoCompleteOpenVisits) {
-    const completed = await visitService.bulkCompleteVisits(companyId, jobId);
-    autoCompletedVisitCount = completed.length;
-  }
+  // 2026-03-18: Route through canonical lifecycle orchestrator
 
   // Build actor for RBAC check
   const actor: TransitionActor = {
@@ -583,19 +661,19 @@ router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
     role: userRole,
   };
 
-  // For invoice_now mode, create invoice BEFORE lifecycle transition
+  // For invoice_now mode, create invoice BEFORE lifecycle transition.
+  // 2026-03-19: Routes through canonical invoice service so tax application
+  // and tax snapshots match the hardened POST /api/invoices/from-job/:jobId path.
   let createdInvoice = null;
   if (mode === "invoice_now") {
     try {
-      // PHASE A.1: Pass creation source to satisfy invoice creation guard
-      const invoiceResult = await storage.createInvoiceFromJob(
+      const invoiceResult = await createInvoiceFromJobService(
         companyId,
         jobId,
         { markJobCompleted: false },
         "JOB_CLOSE_ROUTE"
       );
       createdInvoice = invoiceResult.invoice;
-      await storage.refreshInvoiceFromJob(companyId, createdInvoice.id);
     } catch (error: any) {
       if (error.message?.includes("already has an invoice")) {
         throw createError(400, "Job already has an invoice linked");
@@ -604,23 +682,21 @@ router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
     }
   }
 
-  // Build lifecycle intent based on mode
-  const intent: LifecycleIntent = {
-    type: "CLOSE_JOB",
-    mode,
-    invoiceId: createdInvoice?.id,
-  };
-
   try {
-    // Execute lifecycle transition via domain + storage layer
-    // This enforces: RBAC, version checking, audit logging, schedule clearing
-    const updatedJob = await storage.transitionJobStatus(
+    // Execute lifecycle transition via orchestrator
+    // Orchestrator handles: visit bulk-completion, RBAC, version check, audit, schedule clearing
+    const result = await lifecycle.forceCloseJob({
+      type: "FORCE_CLOSE_JOB",
       companyId,
       jobId,
       version,
-      intent,
-      actor
-    );
+      mode,
+      actor,
+      invoiceId: createdInvoice?.id,
+      autoCompleteOpenVisits: uncompletedVisits.length > 0 && autoCompleteOpenVisits,
+    });
+    const updatedJob = result.job;
+    const autoCompletedVisitCount = result.autoCompletedVisitCount;
 
     // Phase 1: Log close event
     const closeLabel = mode === "archive" ? "Archived" : mode === "invoice_now" ? "Closed & Invoiced" : "Completed (invoice later)";
@@ -678,8 +754,6 @@ router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
  * Blocks reopening invoiced jobs - must void/credit invoice first
  */
 
-import { REOPENABLE_STATES } from "../statusRules";
-
 const reopenJobSchema = z.object({
   // Target openSubStatus when reopening (status always becomes "open")
   targetOpenSubStatus: openSubStatusEnum.nullable().optional(),
@@ -704,21 +778,17 @@ router.post("/:id/reopen", requireRole(MANAGER_ROLES), asyncHandler(async (req: 
     role: userRole,
   };
 
-  // Build lifecycle intent - target is always "open" in the new 4-value model
-  const intent: LifecycleIntent = {
-    type: "REOPEN_JOB",
-    targetOpenSubStatus: targetOpenSubStatus as OpenSubStatus | undefined,
-  };
-
   try {
-    // Execute lifecycle transition via domain + storage layer
-    const updatedJob = await storage.transitionJobStatus(
+    // 2026-03-18: Route through canonical lifecycle orchestrator
+    const result = await lifecycle.reopenJob({
+      type: "REOPEN_JOB",
       companyId,
       jobId,
-      validated.version,
-      intent,
-      actor
-    );
+      version: validated.version,
+      actor,
+      targetOpenSubStatus: targetOpenSubStatus as OpenSubStatus | undefined,
+    });
+    const updatedJob = result.job;
 
     // Phase 1: Log event + recompute attention
     logEventAsync(getQueryCtx(req), {
@@ -780,23 +850,17 @@ router.post("/:id/undo-close", requireRole(MANAGER_ROLES), asyncHandler(async (r
     role: userRole,
   };
 
-  // Build lifecycle intent
-  const intent: LifecycleIntent = {
-    type: "UNDO_CLOSE",
-  };
-
   try {
-    // Execute lifecycle transition via domain + storage layer
-    // Domain module checks undo window, previous status, and invoiced state
-    const updatedJob = await storage.transitionJobStatus(
+    // 2026-03-18: Route through canonical lifecycle orchestrator
+    const result = await lifecycle.undoCloseJob({
+      type: "UNDO_CLOSE_JOB",
       companyId,
       jobId,
       version,
-      intent,
-      actor
-    );
+      actor,
+    });
 
-    res.json({ job: updatedJob });
+    res.json({ job: result.job });
   } catch (error: any) {
     // Handle lifecycle errors
     if (error instanceof LifecycleTransitionError) {
@@ -846,20 +910,17 @@ router.post("/:id/start-travel", requireAuth, asyncHandler(async (req: AuthedReq
     throw createError(400, "Travel has already been started for this job.");
   }
 
-  // Record travel start time and set openSubStatus to "on_route"
-  const updatedJob = await storage.updateJobStatusWithEvent(companyId, jobId, {
-    fromStatus: "open",
-    toStatus: "open",
-    changedBy: userId,
-    note: "Started travel to job",
-    meta: { action: "start_travel", openSubStatus: "on_route" },
-    additionalUpdates: {
-      travelStartedAt: new Date(),
-      openSubStatus: "on_route",
-    },
+  // 2026-03-18: Route through canonical lifecycle orchestrator
+  const result = await lifecycle.setJobSubstatus({
+    type: "SET_JOB_SUBSTATUS",
+    companyId,
+    jobId,
+    openSubStatus: "on_route",
+    additionalUpdates: { travelStartedAt: new Date() },
+    changedBy: userId || "unknown",
   });
 
-  res.json({ job: updatedJob });
+  res.json({ job: result.job });
 }));
 
 // POST /api/jobs/:id/arrive-on-site - Record when technician arrives at job site
@@ -882,24 +943,23 @@ router.post("/:id/arrive-on-site", requireAuth, asyncHandler(async (req: AuthedR
     throw createError(400, "Already marked as arrived on site.");
   }
 
-  // Record arrival and transition to in_progress sub-status
+  // 2026-03-18: Route through canonical lifecycle orchestrator
   const now = new Date();
-  const updatedJob = await storage.updateJobStatusWithEvent(companyId, jobId, {
-    fromStatus: "open",
-    toStatus: "open", // Status stays "open", workflow tracked via openSubStatus
-    changedBy: userId,
-    note: "Arrived on site",
-    meta: { action: "arrive_on_site", openSubStatus: "in_progress" },
+  const result = await lifecycle.setJobSubstatus({
+    type: "SET_JOB_SUBSTATUS",
+    companyId,
+    jobId,
+    openSubStatus: "in_progress",
     additionalUpdates: {
       arrivedOnSiteAt: now,
-      openSubStatus: "in_progress",
-      actualStart: now, // Also set actual start time
+      actualStart: now,
       // If travel wasn't started, set it to arrival time (tech drove without clicking start)
       travelStartedAt: existing.travelStartedAt || now,
     },
+    changedBy: userId || "unknown",
   });
 
-  res.json({ job: updatedJob });
+  res.json({ job: result.job });
 }));
 
 /**
@@ -935,39 +995,23 @@ router.patch("/:id/on-hold", requireRole(MANAGER_ROLES), asyncHandler(async (req
     throw createError(400, "Job must have openSubStatus='on_hold' to update hold fields.");
   }
 
-  // Build the updates object
-  const additionalUpdates: Record<string, unknown> = {};
-  const changedFields: string[] = [];
-
-  if (payload.holdReason !== undefined) {
-    additionalUpdates.holdReason = payload.holdReason;
-    changedFields.push("reason");
-  }
-  if (payload.holdNotes !== undefined) {
-    additionalUpdates.holdNotes = payload.holdNotes;
-    changedFields.push("notes");
-  }
-  if (payload.nextActionDate !== undefined) {
-    additionalUpdates.nextActionDate = payload.nextActionDate;
-    changedFields.push("nextActionDate");
-  }
-
   // Nothing to update
-  if (Object.keys(additionalUpdates).length === 0) {
+  if (payload.holdReason === undefined && payload.holdNotes === undefined && payload.nextActionDate === undefined) {
     return res.json({ job: existing });
   }
 
-  // Atomically update fields and log event (status stays "open", openSubStatus stays "on_hold")
-  const updatedJob = await storage.updateJobStatusWithEvent(companyId, jobId, {
-    fromStatus: "open",
-    toStatus: "open",
-    changedBy: userId,
-    note: `Updated hold fields: ${changedFields.join(", ")}`,
-    meta: { action: "update_hold_fields", changedFields, openSubStatus: "on_hold", ...payload },
-    additionalUpdates,
+  // 2026-03-18: Route through canonical lifecycle orchestrator
+  const result = await lifecycle.updateHoldMetadata({
+    type: "UPDATE_HOLD_METADATA",
+    companyId,
+    jobId,
+    holdReason: payload.holdReason as any,
+    holdNotes: payload.holdNotes,
+    nextActionDate: payload.nextActionDate ? new Date(payload.nextActionDate) : undefined,
+    changedBy: userId || "unknown",
   });
 
-  res.json({ job: updatedJob });
+  res.json({ job: result.job });
 }));
 
 /**
@@ -1245,12 +1289,12 @@ router.get("/:jobId/notes", asyncHandler(async (req: AuthedRequest, res: Respons
   res.json(notes);
 }));
 
-// POST /api/jobs/:jobId/notes - Create job note
+// POST /api/jobs/:jobId/notes - Create job note (with optional attachmentFileIds)
 router.post("/:jobId/notes", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
   const userId = req.user!.id;
 
-  const { noteText } = req.body;
+  const { noteText, attachmentFileIds } = req.body;
 
   if (!noteText || typeof noteText !== 'string' || noteText.trim().length === 0) {
     throw createError(400, "noteText is required and must be a non-empty string");
@@ -1262,6 +1306,16 @@ router.post("/:jobId/notes", requireRole(MANAGER_ROLES), asyncHandler(async (req
     userId,
     noteText.trim()
   );
+
+  // Attach files if provided
+  if (Array.isArray(attachmentFileIds) && attachmentFileIds.length > 0 && note) {
+    const { jobNoteAttachmentRepository } = await import("../storage/jobNoteAttachments");
+    for (const fileId of attachmentFileIds) {
+      if (typeof fileId === "string" && fileId.length > 0) {
+        await jobNoteAttachmentRepository.attach(companyId, userId, note.id, fileId);
+      }
+    }
+  }
 
   res.status(201).json(note);
 }));

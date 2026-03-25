@@ -22,6 +22,8 @@ interface FiltersButtonProps {
   activeCount?: number;
   /** Callback to clear all filters */
   onClear?: () => void;
+  /** Custom button label (defaults to "Filters") */
+  label?: string;
   /** Filter sections (use FilterSection for labelled groups) */
   children: React.ReactNode;
   className?: string;
@@ -32,6 +34,7 @@ interface FiltersButtonProps {
 export function FiltersButton({
   activeCount = 0,
   onClear,
+  label = "Filters",
   children,
   className,
   align = "start",
@@ -46,7 +49,7 @@ export function FiltersButton({
           data-testid="filters-button"
         >
           <Filter className="h-3.5 w-3.5" />
-          Filters
+          {label}
           {activeCount > 0 && (
             <Badge variant="secondary" className="h-5 px-1.5 text-[10px] ml-0.5">
               {activeCount}

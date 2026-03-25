@@ -10,10 +10,14 @@ import {
   jobVisits,
 } from "@shared/schema";
 import { BaseRepository } from "./base";
+import { createError } from "../middleware/errorHandler";
+import { activeJobFilter, JOB_ACTIVE_SQL_J } from "./jobFilters";
+import { TERMINAL_VISIT_STATUSES, VISIT_TERMINAL_STATUS_SQL } from "../lib/visitPredicates";
 import { jobVisitsRepository, isVisitActioned, isVisitEmpty } from "./jobVisits";
 import { resolveTechnicianName } from "../lib/resolveTechnicianName";
 // Phase 5 Step C2: shared query helpers for bulk resolution
 import { bulkResolveTechnicians, bulkResolveCustomerCompanies } from "../lib/queryHelpers";
+import { haversineMeters, estimateTravelMinutes } from "../lib/distance";
 // ============================================================================
 // ARCHITECTURE NOTE: Calendar vs Visit Feed (Phase 3 Step E, updated Phase 5)
 // ============================================================================
@@ -47,7 +51,7 @@ import { bulkResolveTechnicians, bulkResolveCustomerCompanies } from "../lib/que
 import {
   // Domain helpers - SINGLE SOURCE OF TRUTH for scheduling logic
   BACKLOG_STATUS,
-  TERMINAL_STATUSES,
+  JOB_TERMINAL_STATUSES,
   deriveScheduleFields,
   hasTechnicianAssigned,
   assertSchedulingInvariants,
@@ -123,6 +127,10 @@ export interface ScheduledJobWithDetails {
   summary: string;
   /** Job-level status (open, completed, invoiced, archived) */
   status: string;
+  /** Job workflow sub-status (null, in_progress, on_hold, on_route) — only valid when status='open' */
+  openSubStatus: string | null;
+  /** Hold reason (parts, customer, access, approval, weather, other) — set when openSubStatus='on_hold' */
+  holdReason: string | null;
   locationId: string;
   locationName: string;
   customerCompanyId: string | null;
@@ -163,6 +171,11 @@ export interface ScheduledJobWithDetails {
   contactPhone?: string | null;
   /** Location notes (site-specific context) */
   locationNotes?: string | null;
+  /** Location address fields for display in dispatch detail panel */
+  locationAddress?: string | null;
+  locationCity?: string | null;
+  locationProvinceState?: string | null;
+  locationPostalCode?: string | null;
 }
 
 /**
@@ -270,13 +283,19 @@ export class SchedulingRepository extends BaseRepository {
         j.job_type,
         j.summary,
         j.status,
+        j.open_sub_status,
+        j.hold_reason,
         j.location_id,
         j.version,
         cl.company_name as location_name,
         cl.parent_company_id as customer_company_id,
         cl.contact_name,
         cl.phone as contact_phone,
-        cl.notes as location_notes
+        cl.notes as location_notes,
+        cl.address as location_address,
+        cl.city as location_city,
+        cl.province as location_province_state,
+        cl.postal_code as location_postal_code
       FROM job_visits jv
       JOIN jobs j ON jv.job_id = j.id
       LEFT JOIN client_locations cl ON j.location_id = cl.id
@@ -287,7 +306,7 @@ export class SchedulingRepository extends BaseRepository {
         AND jv.status != 'cancelled'
         AND jv.scheduled_start >= ${startDate}
         AND jv.scheduled_start < ${endDate}
-        AND j.deleted_at IS NULL AND j.is_active = true
+        AND ${sql.raw(JOB_ACTIVE_SQL_J)}
         AND j.status != 'archived'
       ORDER BY jv.scheduled_start
     `);
@@ -315,6 +334,8 @@ export class SchedulingRepository extends BaseRepository {
       job_type: string;
       summary: string;
       status: string;
+      open_sub_status: string | null;
+      hold_reason: string | null;
       location_id: string;
       version: number;
       location_name: string | null;
@@ -322,6 +343,10 @@ export class SchedulingRepository extends BaseRepository {
       contact_name: string | null;
       contact_phone: string | null;
       location_notes: string | null;
+      location_address: string | null;
+      location_city: string | null;
+      location_province_state: string | null;
+      location_postal_code: string | null;
     }>;
 
     // DEV-only debug log
@@ -389,6 +414,8 @@ export class SchedulingRepository extends BaseRepository {
         jobType: row.job_type,
         summary: row.summary,
         status: row.status,
+        openSubStatus: row.open_sub_status ?? null,
+        holdReason: row.hold_reason ?? null,
         locationId: row.location_id,
         locationName: row.location_name || "Unknown Location",
         customerCompanyId: row.customer_company_id,
@@ -416,6 +443,10 @@ export class SchedulingRepository extends BaseRepository {
         contactName: row.contact_name,
         contactPhone: row.contact_phone,
         locationNotes: row.location_notes,
+        locationAddress: row.location_address,
+        locationCity: row.location_city,
+        locationProvinceState: row.location_province_state,
+        locationPostalCode: row.location_postal_code,
       };
     });
 
@@ -484,6 +515,19 @@ export class SchedulingRepository extends BaseRepository {
    * @param companyId - Tenant ID
    */
   async getUnscheduledJobs(companyId: string): Promise<ScheduledJobWithDetails[]> {
+    // 2026-03-22: Added activeVisitId subquery so unscheduled items carry
+    // the real visit identity for canonical EditVisitModal opening.
+    const activeVisitIdSubquery = sql<string | null>`(
+      SELECT jv.id FROM job_visits jv
+      WHERE jv.job_id = ${jobs.id}
+        AND jv.company_id = ${jobs.companyId}
+        AND jv.is_active = true
+        AND jv.archived_at IS NULL
+        AND jv.status NOT IN (${sql.raw(TERMINAL_VISIT_STATUSES.map(s => `'${s}'`).join(','))})
+      ORDER BY jv.visit_number ASC
+      LIMIT 1
+    )`.as("active_visit_id");
+
     const jobRows = await db
       .select({
         id: jobs.id,
@@ -492,6 +536,8 @@ export class SchedulingRepository extends BaseRepository {
         jobType: jobs.jobType,
         summary: jobs.summary,
         status: jobs.status,
+        openSubStatus: jobs.openSubStatus,
+        holdReason: jobs.holdReason,
         locationId: jobs.locationId,
         scheduledStart: jobs.scheduledStart,
         scheduledEnd: jobs.scheduledEnd,
@@ -502,19 +548,27 @@ export class SchedulingRepository extends BaseRepository {
         locationName: clientLocations.companyName,
         customerCompanyId: clientLocations.parentCompanyId,
         version: jobs.version,
+        locationAddress: clientLocations.address,
+        locationCity: clientLocations.city,
+        locationProvinceState: clientLocations.province,
+        locationPostalCode: clientLocations.postalCode,
+        activeVisitId: activeVisitIdSubquery,
       })
       .from(jobs)
       .leftJoin(clientLocations, eq(jobs.locationId, clientLocations.id))
       .where(
         and(
           eq(jobs.companyId, companyId),
-          // Exclude soft-deleted/deactivated jobs
-          isNull(jobs.deletedAt),
-          eq(jobs.isActive, true),
+          // 2026-03-18: Centralized — uses canonical activeJobFilter() from jobFilters.ts
+          activeJobFilter(),
           // CANONICAL BACKLOG: scheduledStart IS NULL means unscheduled
           isNull(jobs.scheduledStart),
           // Only 'open' status jobs can be in backlog
           eq(jobs.status, BACKLOG_STATUS),
+          // 2026-03-17: Exclude on_hold jobs from generic unscheduled backlog.
+          // Jobs placed on_hold (e.g., after visit follow-up) are deliberately parked
+          // and should not appear as actionable unscheduled work.
+          sql`(${jobs.openSubStatus} IS NULL OR ${jobs.openSubStatus} != 'on_hold')`,
           // Phase B: Exclude jobs needing follow-up (they go in the follow-up section)
           // A job needs follow-up if it has a completed visit with is_follow_up_needed = true
           // and no pending visit already scheduled
@@ -578,6 +632,8 @@ export class SchedulingRepository extends BaseRepository {
         jobType: job.jobType,
         summary: job.summary,
         status: job.status,
+        openSubStatus: job.openSubStatus ?? null,
+        holdReason: job.holdReason ?? null,
         locationId: job.locationId,
         locationName: job.locationName || "Unknown Location",
         customerCompanyId: job.customerCompanyId,
@@ -592,6 +648,12 @@ export class SchedulingRepository extends BaseRepository {
         primaryTechnicianId: job.primaryTechnicianId,
         technicians,
         version: job.version,
+        locationAddress: job.locationAddress,
+        locationCity: job.locationCity,
+        locationProvinceState: job.locationProvinceState,
+        locationPostalCode: job.locationPostalCode,
+        // 2026-03-22: Real visit ID for canonical EditVisitModal opening
+        activeVisitId: job.activeVisitId ?? null,
       };
     });
 
@@ -628,6 +690,8 @@ export class SchedulingRepository extends BaseRepository {
         j.job_type,
         j.summary,
         j.status,
+        j.open_sub_status,
+        j.hold_reason,
         j.location_id,
         j.version,
         j.assigned_technician_ids,
@@ -642,9 +706,11 @@ export class SchedulingRepository extends BaseRepository {
       FROM jobs j
       LEFT JOIN client_locations cl ON j.location_id = cl.id
       -- Join to the most recent completed visit that needs follow-up
+      -- 2026-03-18: Added archived_at IS NULL to prevent archived visits leaking into follow-up list
       INNER JOIN job_visits fv ON fv.job_id = j.id
         AND fv.company_id = j.company_id
         AND fv.is_active = true
+        AND fv.archived_at IS NULL
         AND fv.status = 'completed'
         AND fv.is_follow_up_needed = true
       WHERE j.company_id = ${companyId}
@@ -657,7 +723,7 @@ export class SchedulingRepository extends BaseRepository {
           WHERE pv.job_id = j.id
             AND pv.company_id = j.company_id
             AND pv.is_active = true
-            AND pv.status NOT IN ('completed', 'cancelled')
+            AND pv.status NOT IN (${sql.raw(VISIT_TERMINAL_STATUS_SQL)})
             AND pv.scheduled_start IS NOT NULL
         )
       ORDER BY j.id, fv.completed_at DESC NULLS LAST
@@ -694,6 +760,8 @@ export class SchedulingRepository extends BaseRepository {
         jobType: row.job_type,
         summary: row.summary,
         status: row.status,
+        openSubStatus: row.open_sub_status ?? null,
+        holdReason: row.hold_reason ?? null,
         locationId: row.location_id,
         locationName: row.location_name || "Unknown Location",
         customerCompanyId: row.customer_company_id,
@@ -728,8 +796,8 @@ export class SchedulingRepository extends BaseRepository {
       .where(and(
         eq(jobs.id, jobId),
         eq(jobs.companyId, companyId),
-        isNull(jobs.deletedAt),
-        eq(jobs.isActive, true),
+        // 2026-03-18: Centralized — uses canonical activeJobFilter() from jobFilters.ts
+        activeJobFilter(),
       ))
       .limit(1);
 
@@ -825,8 +893,12 @@ export class SchedulingRepository extends BaseRepository {
       throw new Error('Job not found');
     }
 
-    // Terminal status check
-    if (TERMINAL_STATUSES.includes(existingJob.status as any)) {
+    // Terminal status check — blocks all non-open jobs before any visit mutations.
+    // Covers invoiced/archived (via JOB_TERMINAL_STATUSES) and completed.
+    // 2026-03-20: Merged late completed-job guard (formerly at post-mutation position,
+    // legacy residue from removed Rule D reopen semantics) into this early guard so
+    // completed jobs are rejected before visit creation/update, not after.
+    if (JOB_TERMINAL_STATUSES.includes(existingJob.status as any) || existingJob.status === 'completed') {
       throw new TerminalJobImmutableError(data.jobId, existingJob.status);
     }
 
@@ -842,7 +914,7 @@ export class SchedulingRepository extends BaseRepository {
 
     // Visit Reschedule Architecture: 2-case model for single active visit per job.
     // Find the open active non-terminal visit (broader than old placeholder-only check).
-    const VISIT_TERMINAL_STATUSES = ['completed', 'cancelled'];
+    // 2026-03-20: Uses canonical TERMINAL_VISIT_STATUSES from visitPredicates.ts
     const [openVisit] = await db
       .select()
       .from(jobVisits)
@@ -852,7 +924,7 @@ export class SchedulingRepository extends BaseRepository {
           eq(jobVisits.companyId, companyId),
           eq(jobVisits.isActive, true),
           isNull(jobVisits.archivedAt), // Exclude archived visits (2026-03-05)
-          notInArray(jobVisits.status, VISIT_TERMINAL_STATUSES),
+          notInArray(jobVisits.status, TERMINAL_VISIT_STATUSES),
         )
       )
       .orderBy(asc(jobVisits.visitNumber))
@@ -900,6 +972,9 @@ export class SchedulingRepository extends BaseRepository {
         openVisit.version,
         {
           status: 'completed',
+          outcome: 'completed',
+          completedAt: now,
+          isFollowUpNeeded: false,
           checkedOutAt: now,
           ...(actualDuration !== null && { actualDurationMinutes: actualDuration }),
         }
@@ -923,10 +998,13 @@ export class SchedulingRepository extends BaseRepository {
       throw err;
     }
 
-    // 2026-03-05: Archive leftover placeholder visits (scheduledStart IS NULL)
-    // for this job. When a real visit is scheduled, placeholders from prior
-    // unschedule/reschedule cycles are no longer needed and clutter the
-    // Job Detail visits list with "No date" rows.
+    // 2026-03-20 BUG FIX: Archive ALL non-terminal, non-current visits for this job.
+    // Previously only archived placeholders (scheduledStart IS NULL). Visits that
+    // acquired scheduledStart from a prior scheduling cycle but were superseded by
+    // a new schedule action retained scheduledStart IS NOT NULL, were NOT archived,
+    // and matched the reconciliationActionableVisitFilter — blocking job closure
+    // after visit completion (reconciliation saw "remaining actionable visits").
+    // Terminal visits (completed, cancelled) are preserved for history.
     if (visit) {
       await db
         .update(jobVisits)
@@ -935,35 +1013,31 @@ export class SchedulingRepository extends BaseRepository {
           and(
             eq(jobVisits.jobId, data.jobId),
             eq(jobVisits.companyId, companyId),
-            isNull(jobVisits.scheduledStart),
+            notInArray(jobVisits.status, TERMINAL_VISIT_STATUSES),
             isNull(jobVisits.archivedAt),
             sql`${jobVisits.id} != ${visit.id}`
           )
         );
     }
 
-    // JOBBER-LIKE BEHAVIOR: Reopen completed jobs when scheduling a follow-up visit.
-    // Rationale: A completed job means "the work is done". Scheduling another visit
-    // means "more work is needed", so the job should return to 'open' status.
-    // This is a valid status transition per JOB_STATUS_FLOW: completed -> open.
-    // syncJobScheduleFromVisits only mirrors schedule fields, not status.
-    if (existingJob.status === 'completed') {
-      // 2026-03-05: Rule D — Scheduling a visit on a completed job reopens it.
-      // Clear closedAt/closedBy so the job is fully active again.
+    // 2026-03-24: Clear openSubStatus (and hold fields) when scheduling a visit.
+    // Two cases:
+    // 1. on_hold jobs: Scheduling a visit is the canonical resume path — clear hold
+    //    state (openSubStatus, holdReason, holdNotes, nextActionDate, onHoldAt).
+    // 2. Stale sub-status on backlog jobs: Jobs returning from completed visits may
+    //    retain openSubStatus="in_progress". Clear so dispatch renders correctly.
+    if (existingJob.openSubStatus) {
+      const clearPatch: Record<string, any> = { openSubStatus: null };
+      if (existingJob.openSubStatus === 'on_hold') {
+        clearPatch.holdReason = null;
+        clearPatch.holdNotes = null;
+        clearPatch.nextActionDate = null;
+        clearPatch.onHoldAt = null;
+      }
       await db
         .update(jobs)
-        .set({
-          status: 'open',
-          openSubStatus: null,
-          closedAt: null,
-          closedBy: null,
-          updatedAt: new Date(),
-        })
+        .set(clearPatch)
         .where(and(eq(jobs.id, data.jobId), eq(jobs.companyId, companyId)));
-
-      if (IS_DEV) {
-        console.log(`[Calendar] scheduleJob: Reopened completed job ${data.jobId} to 'open' status`);
-      }
     }
 
     // syncJobScheduleFromVisits is called inside createJobVisit, which updates jobs table
@@ -1022,124 +1096,6 @@ export class SchedulingRepository extends BaseRepository {
   // ============================================================================
 
   /**
-   * Phase 4: Reschedule an existing visit by visitId.
-   * Directly updates the specified visit — no eligible-visit lookup needed.
-   * Handles spawn-on-action if visit has been actioned.
-   */
-  async rescheduleVisit(
-    companyId: string,
-    visitId: string,
-    data: {
-      technicianUserId?: string | null;
-      startAt?: Date;
-      endAt?: Date;
-      notes?: string;
-      allDay?: boolean;
-      expectedVersion?: number;
-      mode?: 'replace' | 'complete_and_new';
-    }
-  ) {
-    // Fetch the visit directly
-    const visit = await jobVisitsRepository.getJobVisit(companyId, visitId);
-    if (!visit) {
-      throw new Error('Visit not found');
-    }
-
-    // Look up the parent job for terminal-status check and version locking
-    const existingJob = await this.getJobById(companyId, visit.jobId);
-    if (!existingJob) {
-      throw new Error('Parent job not found');
-    }
-
-    if (TERMINAL_STATUSES.includes(existingJob.status as any)) {
-      throw new TerminalJobImmutableError(visit.jobId, existingJob.status);
-    }
-
-    // Version check — use visit version for visit-centric mutations
-    if (data.expectedVersion !== undefined && visit.version !== data.expectedVersion) {
-      throw new VersionMismatchError(data.expectedVersion, visit.version);
-    }
-
-    // All-day → timed conversion guard
-    const wasAllDay = visit.isAllDay === true;
-    const isNowTimed = data.allDay === false && data.startAt != null;
-    if (wasAllDay && isNowTimed) {
-      const duration = (existingJob.durationMinutes && existingJob.durationMinutes > 0 && existingJob.durationMinutes <= 480)
-        ? existingJob.durationMinutes
-        : DEFAULT_VISIT_DURATION_MINUTES;
-      data.endAt = new Date(data.startAt!.getTime() + duration * 60_000);
-    }
-
-    // Spawn-on-action check
-    const visitIsActioned = isVisitActioned(visit);
-    const shouldSpawn = data.mode === 'complete_and_new' || (visitIsActioned && data.mode !== 'replace');
-
-    if (shouldSpawn) {
-      // Handle old visit
-      if (data.mode === 'complete_and_new') {
-        const now = new Date();
-        const actualDuration = visit.checkedInAt
-          ? Math.round((now.getTime() - new Date(visit.checkedInAt).getTime()) / 60000)
-          : null;
-        await jobVisitsRepository.updateJobVisit(companyId, visit.id, visit.version, {
-          status: 'completed',
-          checkedOutAt: now,
-          ...(actualDuration !== null && { actualDurationMinutes: actualDuration }),
-        });
-      } else {
-        await jobVisitsRepository.updateJobVisit(companyId, visit.id, visit.version, {
-          isActive: false,
-        });
-      }
-
-      // Create new visit
-      const normalized = normalizeScheduleTimes({ allDay: data.allDay, startAt: data.startAt, endAt: data.endAt });
-      const techAssignment = data.technicianUserId !== undefined
-        ? normalizeTechnicianAssignment(data.technicianUserId || null)
-        : normalizeTechnicianAssignment(visit.assignedTechnicianId || null);
-
-      await jobVisitsRepository.createJobVisit(companyId, visit.jobId, {
-        scheduledStart: normalized.scheduledStart,
-        scheduledEnd: normalized.scheduledEnd,
-        isAllDay: normalized.isAllDay,
-        assignedTechnicianId: techAssignment.primaryTechnicianId,
-        assignedTechnicianIds: techAssignment.assignedTechnicianIds,
-        status: 'scheduled',
-        visitNotes: data.notes,
-      });
-    } else {
-      // Not actioned: update in place
-      const visitUpdate: any = {};
-      if (data.startAt !== undefined || data.allDay !== undefined) {
-        const normalized = normalizeScheduleTimes({ allDay: data.allDay, startAt: data.startAt, endAt: data.endAt });
-        visitUpdate.scheduledStart = normalized.scheduledStart;
-        visitUpdate.scheduledEnd = normalized.scheduledEnd;
-        visitUpdate.isAllDay = normalized.isAllDay;
-      }
-      if (data.technicianUserId !== undefined) {
-        const techAssignment = normalizeTechnicianAssignment(data.technicianUserId || null);
-        visitUpdate.assignedTechnicianId = techAssignment.primaryTechnicianId;
-        visitUpdate.assignedTechnicianIds = techAssignment.assignedTechnicianIds;
-      }
-      if (data.notes !== undefined) visitUpdate.visitNotes = data.notes;
-      if (Object.keys(visitUpdate).length > 0) {
-        await jobVisitsRepository.updateJobVisit(companyId, visit.id, visit.version, visitUpdate);
-      }
-    }
-
-    // Re-fetch job (synced via updateJobVisit/createJobVisit)
-    const result = await this.getJobById(companyId, visit.jobId);
-    // Re-fetch visit to get updated visit version (job version != visit version)
-    const updatedVisit = await jobVisitsRepository.getJobVisit(companyId, visitId);
-
-    if (IS_DEV) {
-      console.log(`[Calendar] rescheduleVisit (PHASE 4): visitId=${visitId} jobId=${visit.jobId} actioned=${visitIsActioned}`);
-    }
-
-    return { ...result, visitId, visitVersion: updatedVisit?.version ?? result?.version };
-  }
-
-  /**
    * Phase 4: Unschedule an existing visit by visitId.
    * Converts the visit to a placeholder (clears scheduledStart/End).
    */
@@ -1154,8 +1110,14 @@ export class SchedulingRepository extends BaseRepository {
       throw new Error('Parent job not found');
     }
 
-    if (TERMINAL_STATUSES.includes(existingJob.status as any)) {
+    if (JOB_TERMINAL_STATUSES.includes(existingJob.status as any)) {
       throw new TerminalJobImmutableError(visit.jobId, existingJob.status);
+    }
+
+    // 2026-03-24: Block unschedule of terminal visits (completed/cancelled).
+    // Uses canonical TERMINAL_VISIT_STATUSES from visitPredicates.ts.
+    if (TERMINAL_VISIT_STATUSES.includes(visit.status as string)) {
+      throw createError(400, "Cannot unschedule a completed or cancelled visit");
     }
 
     // Version check using visit version
@@ -1163,12 +1125,15 @@ export class SchedulingRepository extends BaseRepository {
       throw new VersionMismatchError(expectedVersion, visit.version);
     }
 
-    // Convert to placeholder
+    // 2026-03-23: Convert to placeholder — clear all schedule AND technician fields.
+    // Unscheduled = no date, no time, no technician assignment.
     await jobVisitsRepository.updateJobVisit(companyId, visit.id, visit.version, {
       scheduledStart: null,
       scheduledEnd: null,
       scheduledDate: new Date(),
       isAllDay: false,
+      assignedTechnicianId: null,
+      assignedTechnicianIds: [],
     });
 
     if (IS_DEV) {
@@ -1243,157 +1208,14 @@ export class SchedulingRepository extends BaseRepository {
     return { jobId: visit.jobId, version: updatedVisit?.version ?? visit.version };
   }
 
-  /**
-   * Validate that a technician belongs to the tenant
-   */
-  async validateTechnicianBelongsToTenant(
-    companyId: string,
-    technicianUserId: string
-  ): Promise<boolean> {
-    const rows = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(and(eq(users.id, technicianUserId), eq(users.companyId, companyId)))
-      .limit(1);
-
-    return rows.length > 0;
-  }
-
-  /**
-   * Validate that a job belongs to the tenant
-   */
-  async validateJobBelongsToTenant(
-    companyId: string,
-    jobId: string
-  ): Promise<boolean> {
-    const rows = await db
-      .select({ id: jobs.id })
-      .from(jobs)
-      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
-      .limit(1);
-
-    return rows.length > 0;
-  }
+  // 2026-03-20: validateTechnicianBelongsToTenant() and validateJobBelongsToTenant()
+  // DELETED — dead code with zero callers. Tenant isolation enforced by middleware + FK constraints.
 
   // ============================================================================
   // BYPASS FUNCTIONS - NO WORKING HOURS VALIDATION
   // ============================================================================
-  // These functions perform the same DB writes as normal functions but
-  // NEVER call validateSchedule() or any working hours checks.
-  // Use when OUTSIDE_WORKING_HOURS must be bypassed.
-  // ============================================================================
-
-  /**
-   * Schedule job WITHOUT working hours validation.
-   *
-   * GUARANTEES:
-   * - NO validateSchedule() call
-   * - NO working hours checks
-   * - Enforces MODEL A: all-day gets midnight timestamps (NOT null)
-   * - Enforces same-day clamp for timed events
-   * - Handles version increment
-   */
-  async scheduleJobBypassWorkingHours(
-    companyId: string,
-    data: {
-      jobId: string;
-      // 2026-01-30: Accept null for explicit unassignment
-      technicianUserId?: string | null;
-      startAt: Date;
-      endAt: Date;
-      notes?: string;
-      allDay?: boolean;
-      expectedVersion?: number;
-    }
-  ) {
-    // Fetch existing job for version check
-    const existingJob = await this.getJobById(companyId, data.jobId);
-
-    // VERSION CHECK (if provided)
-    // TASK 1: Reject VERSION_NOT_INITIALIZED instead of defaulting to 0
-    if (data.expectedVersion !== undefined && existingJob) {
-      const { VersionMismatchError, VersionNotInitializedError } = await import("../domain/scheduling");
-      if (existingJob.version === null || existingJob.version === undefined) {
-        throw new VersionNotInitializedError(data.jobId);
-      }
-      if (existingJob.version !== data.expectedVersion) {
-        throw new VersionMismatchError(data.expectedVersion, existingJob.version);
-      }
-    }
-
-    // TASK 1: For jobs with null version (pre-migration), start at 1
-    const currentVersion = existingJob?.version ?? 0;
-    const newVersion = currentVersion + 1;
-    const isAllDay = data.allDay === true;
-
-    // COMPUTE FINAL TIMES via canonical normalizeScheduleTimes helper
-    const normalized = normalizeScheduleTimes({
-      allDay: isAllDay,
-      startAt: data.startAt,
-      endAt: data.endAt,
-    });
-    let finalStart: Date | null = normalized.scheduledStart;
-    let finalEnd: Date | null = normalized.scheduledEnd;
-
-    if (!isAllDay && finalStart && finalEnd) {
-      // TIMED: Clamp to same day (never throw, just adjust)
-      const startDay = finalStart.toISOString().split('T')[0];
-      const endDay = finalEnd.toISOString().split('T')[0];
-      if (startDay !== endDay) {
-        finalEnd = new Date(startDay + 'T23:59:59.000Z');
-      }
-    }
-
-    // Status is always "open" - scheduling/assignment are derived states
-    // A job is "scheduled" when it has scheduledStart IS NOT NULL (derived, not status)
-    // A job is "assigned" when it has technicians (derived, not status)
-    const status = 'open';
-
-    const updateData: any = {
-      scheduledStart: finalStart,
-      scheduledEnd: finalEnd,
-      isAllDay: isAllDay,
-      status,
-      updatedAt: new Date(),
-      version: newVersion,
-    };
-
-    // CANONICAL: Use normalizeTechnicianAssignment for consistent invariant enforcement
-    const techAssignment = normalizeTechnicianAssignment(data.technicianUserId || null);
-    updateData.primaryTechnicianId = techAssignment.primaryTechnicianId;
-    updateData.assignedTechnicianIds = techAssignment.assignedTechnicianIds;
-
-    if (data.notes) {
-      updateData.description = data.notes;
-    }
-
-    // Sanitize all-day timestamps for UTC-safe DB write
-    sanitizeAllDayTimestamps(updateData, data.jobId);
-
-    // DIRECT DB WRITE - NO VALIDATION
-    const rows = await db
-      .update(jobs)
-      .set(updateData)
-      .where(and(eq(jobs.id, data.jobId), eq(jobs.companyId, companyId)))
-      .returning();
-
-    const result = rows[0] ?? null;
-
-    // Assert technician invariant after write
-    if (result) {
-      assertTechnicianAssignmentInvariant(result, "storage:scheduleJobBypassWorkingHours");
-    }
-
-    if (IS_DEV) {
-      console.log(
-        `[Calendar] scheduleJobBypassWorkingHours: job=${data.jobId} ` +
-        `scheduledStart=${finalStart?.toISOString() ?? 'null'} isAllDay=${isAllDay} ` +
-        `status=${status} version=${newVersion} [BYPASS]`
-      );
-    }
-
-    return result;
-  }
+  // 2026-03-18: scheduleJobBypassWorkingHours() DELETED — dead code with zero callers.
+  // See docs/REFACTORING_LOG.md for details.
 
   /**
    * STATE SNAPSHOT: Get job counts for diagnostics
@@ -1432,11 +1254,11 @@ export class SchedulingRepository extends BaseRepository {
       allDayEndNot2359Result,
       endBeforeStartResult,
     ] = await Promise.all([
-      // Total jobs (excluding soft-deleted)
+      // Total jobs (excluding soft-deleted and deactivated — canonical activeJobFilter)
       db
         .select({ count: sql<number>`count(*)::int` })
         .from(jobs)
-        .where(and(eq(jobs.companyId, companyId), isNull(jobs.deletedAt))),
+        .where(and(eq(jobs.companyId, companyId), activeJobFilter())),
 
       // Jobs by status
       db
@@ -1445,7 +1267,7 @@ export class SchedulingRepository extends BaseRepository {
           count: sql<number>`count(*)::int`,
         })
         .from(jobs)
-        .where(and(eq(jobs.companyId, companyId), isNull(jobs.deletedAt)))
+        .where(and(eq(jobs.companyId, companyId), activeJobFilter()))
         .groupBy(jobs.status),
 
       // Scheduled jobs (scheduledStart IS NOT NULL) by status
@@ -1458,7 +1280,7 @@ export class SchedulingRepository extends BaseRepository {
         .where(
           and(
             eq(jobs.companyId, companyId),
-            isNull(jobs.deletedAt),
+            activeJobFilter(),
             sql`${jobs.scheduledStart} IS NOT NULL`
           )
         )
@@ -1471,7 +1293,7 @@ export class SchedulingRepository extends BaseRepository {
         .where(
           and(
             eq(jobs.companyId, companyId),
-            isNull(jobs.deletedAt),
+            activeJobFilter(),
             isNull(jobs.scheduledStart),
             eq(jobs.status, BACKLOG_STATUS)
           )
@@ -1484,7 +1306,7 @@ export class SchedulingRepository extends BaseRepository {
         .where(
           and(
             eq(jobs.companyId, companyId),
-            isNull(jobs.deletedAt),
+            activeJobFilter(),
             sql`${jobs.status} NOT IN ('open', 'completed', 'invoiced', 'archived')`
           )
         )
@@ -1497,7 +1319,7 @@ export class SchedulingRepository extends BaseRepository {
         .where(
           and(
             eq(jobs.companyId, companyId),
-            isNull(jobs.deletedAt),
+            activeJobFilter(),
             sql`${jobs.openSubStatus} IS NOT NULL`,
             sql`${jobs.status} <> 'open'`
           )
@@ -1511,7 +1333,7 @@ export class SchedulingRepository extends BaseRepository {
         .where(
           and(
             eq(jobs.companyId, companyId),
-            isNull(jobs.deletedAt),
+            activeJobFilter(),
             sql`${jobs.scheduledEnd} IS NOT NULL`,
             isNull(jobs.scheduledStart)
           )
@@ -1525,7 +1347,7 @@ export class SchedulingRepository extends BaseRepository {
         .where(
           and(
             eq(jobs.companyId, companyId),
-            isNull(jobs.deletedAt),
+            activeJobFilter(),
             eq(jobs.isAllDay, true),
             sql`${jobs.scheduledStart} IS NOT NULL`,
             sql`EXTRACT(HOUR FROM ${jobs.scheduledStart}) <> 0
@@ -1542,7 +1364,7 @@ export class SchedulingRepository extends BaseRepository {
         .where(
           and(
             eq(jobs.companyId, companyId),
-            isNull(jobs.deletedAt),
+            activeJobFilter(),
             eq(jobs.isAllDay, true),
             sql`${jobs.scheduledEnd} IS NOT NULL`,
             sql`NOT (EXTRACT(HOUR FROM ${jobs.scheduledEnd}) = 23
@@ -1559,7 +1381,7 @@ export class SchedulingRepository extends BaseRepository {
         .where(
           and(
             eq(jobs.companyId, companyId),
-            isNull(jobs.deletedAt),
+            activeJobFilter(),
             sql`${jobs.scheduledStart} IS NOT NULL`,
             sql`${jobs.scheduledEnd} IS NOT NULL`,
             sql`${jobs.scheduledEnd} < ${jobs.scheduledStart}`
@@ -1622,6 +1444,182 @@ export class SchedulingRepository extends BaseRepository {
 }
 
 export const schedulingRepository = new SchedulingRepository();
+
+// ============================================================================
+// Day Summary (Phase 2: extracted verbatim from routes/scheduling.ts)
+// ============================================================================
+
+interface DaySummaryVisitRow {
+  visitId: string;
+  scheduledStart: Date;
+  scheduledEnd: Date | null;
+  estimatedDurationMinutes: number | null;
+  status: string;
+  technicianId: string | null;
+  technicianIds: string[] | null;
+  locationLat: string | null;
+  locationLng: string | null;
+}
+
+export async function getDaySummary(companyId: string, dateStr: string) {
+  // 1) Fetch all active visits for the date
+  const { rows: visitRows } = await db.execute(sql`
+    SELECT
+      jv.id AS "visitId",
+      jv.scheduled_start AS "scheduledStart",
+      jv.scheduled_end AS "scheduledEnd",
+      jv.estimated_duration_minutes AS "estimatedDurationMinutes",
+      jv.status,
+      jv.assigned_technician_id AS "technicianId",
+      jv.assigned_technician_ids AS "technicianIds",
+      cl.lat AS "locationLat",
+      cl.lng AS "locationLng"
+    FROM job_visits jv
+    JOIN jobs j ON j.id = jv.job_id AND j.company_id = ${companyId}
+      AND ${sql.raw(JOB_ACTIVE_SQL_J)}
+    LEFT JOIN client_locations cl ON cl.id = j.location_id
+    WHERE jv.company_id = ${companyId}
+      AND jv.is_active = true
+      AND jv.archived_at IS NULL
+      AND jv.scheduled_start IS NOT NULL
+      AND jv.scheduled_start >= ${dateStr}::date
+      AND jv.scheduled_start < ${dateStr}::date + INTERVAL '1 day'
+      AND jv.status NOT IN ('cancelled')
+    ORDER BY jv.scheduled_start ASC
+  `);
+  const visits = visitRows as unknown as DaySummaryVisitRow[];
+
+  // 2) Fetch live positions
+  const { rows: liveRows } = await db.execute(sql`
+    SELECT
+      lp.technician_id AS "technicianId",
+      lp.last_seen_at AS "lastSeenAt",
+      lp.speed
+    FROM technician_live_positions lp
+    WHERE lp.company_id = ${companyId}
+  `);
+  const liveMap = new Map<string, { lastSeenAt: Date; speed: string | null }>();
+  for (const r of liveRows as any[]) {
+    liveMap.set(r.technicianId, { lastSeenAt: r.lastSeenAt, speed: r.speed });
+  }
+
+  // 3) Fetch open attention items for operational rule types
+  const { rows: attRows } = await db.execute(sql`
+    SELECT rule_type AS "ruleType", entity_type AS "entityType", entity_id AS "entityId",
+           meta
+    FROM attention_items
+    WHERE tenant_id = ${companyId}
+      AND status = 'open'
+      AND rule_type IN ('visit.late', 'visit.overdue', 'visit.running_long', 'tech.offline', 'tech.idle')
+  `);
+
+  // Build riskCounts per technician
+  // For visit-level rules, map visitId → technicianId via visits
+  const visitTechMap = new Map<string, string>();
+  for (const v of visits) {
+    const tid = v.technicianId || (v.technicianIds?.[0] ?? null);
+    if (tid) visitTechMap.set(v.visitId, tid);
+  }
+
+  const techRisks = new Map<string, Record<string, number>>();
+  for (const att of attRows as any[]) {
+    let techId: string | null = null;
+    if (att.entityType === "technician") {
+      techId = att.entityId;
+    } else if (att.entityType === "visit") {
+      techId = visitTechMap.get(att.entityId) ||
+        (att.meta?.technicianId as string) || null;
+    }
+    if (!techId) continue;
+    if (!techRisks.has(techId)) techRisks.set(techId, {});
+    const counts = techRisks.get(techId)!;
+    const key = att.ruleType.replace("visit.", "").replace("tech.", "");
+    counts[key] = (counts[key] || 0) + 1;
+  }
+
+  // 4) Fetch technician names
+  const { rows: techRows } = await db.execute(sql`
+    SELECT id, full_name AS "fullName"
+    FROM users
+    WHERE company_id = ${companyId}
+      AND role IN ('owner', 'admin', 'manager', 'dispatcher', 'technician')
+      AND is_active = true
+  `);
+  const techNames = new Map<string, string>();
+  for (const t of techRows as any[]) {
+    techNames.set(t.id, t.fullName);
+  }
+
+  // 5) Group visits by technician and compute stats
+  const techVisitsMap = new Map<string, DaySummaryVisitRow[]>();
+  for (const v of visits) {
+    const tids = v.technicianIds?.length ? v.technicianIds : v.technicianId ? [v.technicianId] : [];
+    for (const tid of tids) {
+      if (!techVisitsMap.has(tid)) techVisitsMap.set(tid, []);
+      techVisitsMap.get(tid)!.push(v);
+    }
+  }
+
+  const now = new Date();
+  const summaries = [];
+
+  for (const [techId, techVisits] of Array.from(techVisitsMap.entries())) {
+    // scheduledMinutes: sum of each visit's duration
+    let scheduledMinutes = 0;
+    for (const v of techVisits) {
+      if (v.scheduledEnd && v.scheduledStart) {
+        scheduledMinutes += Math.round((new Date(v.scheduledEnd).getTime() - new Date(v.scheduledStart).getTime()) / 60_000);
+      } else {
+        scheduledMinutes += v.estimatedDurationMinutes ?? 60;
+      }
+    }
+
+    // driveMinutesEstimated: haversine-based 30km/h between consecutive visits
+    let driveMinutes = 0;
+    const sorted = [...techVisits].sort((a, b) => new Date(a.scheduledStart).getTime() - new Date(b.scheduledStart).getTime());
+    for (let i = 1; i < sorted.length; i++) {
+      const prev = sorted[i - 1];
+      const curr = sorted[i];
+      if (prev.locationLat && prev.locationLng && curr.locationLat && curr.locationLng) {
+        driveMinutes += estimateTravelMinutes(
+          parseFloat(prev.locationLat), parseFloat(prev.locationLng),
+          parseFloat(curr.locationLat), parseFloat(curr.locationLng),
+        );
+      }
+    }
+
+    // Risk
+    const riskCounts = techRisks.get(techId) || {};
+    const hasHigh = (riskCounts.running_long || 0) > 0 || (riskCounts.overdue || 0) > 0;
+    const hasWarn = (riskCounts.late || 0) > 0 || (riskCounts.offline || 0) > 0;
+    const risk = hasHigh ? "high" : hasWarn ? "warn" : "ok";
+
+    // Presence
+    const live = liveMap.get(techId);
+    const online = live ? (now.getTime() - new Date(live.lastSeenAt).getTime()) < 5 * 60_000 : false;
+
+    // Next visit
+    const nextVisit = sorted.find((v) => new Date(v.scheduledStart).getTime() > now.getTime());
+
+    summaries.push({
+      technicianId: techId,
+      name: techNames.get(techId) || techId,
+      scheduledMinutes,
+      driveMinutesEstimated: driveMinutes,
+      visitCount: techVisits.length,
+      risk,
+      riskCounts,
+      online,
+      lastSeenAt: live?.lastSeenAt ? new Date(live.lastSeenAt).toISOString() : undefined,
+      nextVisit: nextVisit ? {
+        visitId: nextVisit.visitId,
+        plannedStart: new Date(nextVisit.scheduledStart).toISOString(),
+      } : undefined,
+    });
+  }
+
+  return summaries;
+}
 
 // ============================================================================
 // DATA CLEANUP REFERENCE (DO NOT AUTO-RUN)

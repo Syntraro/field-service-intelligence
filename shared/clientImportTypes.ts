@@ -24,6 +24,7 @@ export interface ClientImportRow {
 
   // Billing address
   billingStreet?: string | null;
+  billingStreet2?: string | null; // Address line 2 (suite, unit, PO box)
   billingCity?: string | null;
   billingProvince?: string | null;
   billingPostalCode?: string | null;
@@ -32,6 +33,7 @@ export interface ClientImportRow {
   // Primary location
   locationName?: string | null;
   serviceStreet?: string | null;
+  serviceStreet2?: string | null; // Address line 2 (suite, unit, floor, bay)
   serviceCity?: string | null;
   serviceProvince?: string | null;
   servicePostalCode?: string | null;
@@ -67,6 +69,7 @@ export const IMPORT_FIELD_DEFS: ImportFieldDef[] = [
   { key: "isActive", label: "Active", group: "company", required: false },
   // Billing
   { key: "billingStreet", label: "Billing Street", group: "billing", required: false },
+  { key: "billingStreet2", label: "Billing Street 2", group: "billing", required: false },
   { key: "billingCity", label: "Billing City", group: "billing", required: false },
   { key: "billingProvince", label: "Billing Province/State", group: "billing", required: false },
   { key: "billingPostalCode", label: "Billing Postal Code", group: "billing", required: false },
@@ -74,6 +77,7 @@ export const IMPORT_FIELD_DEFS: ImportFieldDef[] = [
   // Location
   { key: "locationName", label: "Location Name", group: "location", required: false },
   { key: "serviceStreet", label: "Service Street", group: "location", required: false },
+  { key: "serviceStreet2", label: "Service Street 2", group: "location", required: false },
   { key: "serviceCity", label: "Service City", group: "location", required: false },
   { key: "serviceProvince", label: "Service Province/State", group: "location", required: false },
   { key: "servicePostalCode", label: "Service Postal Code", group: "location", required: false },
@@ -115,17 +119,35 @@ export const HEADER_ALIASES: Record<string, keyof ClientImportRow> = {
   "is_active": "isActive",
   "is active": "isActive",
   "status": "isActive",
+  // Jobber-specific: E-mails header maps to companyEmail
+  "e-mails": "companyEmail",
+  "emails": "companyEmail",
   // Billing
   "billing street": "billingStreet",
   "billing_street": "billingStreet",
   "billing address": "billingStreet",
   "billing_address": "billingStreet",
+  "billing address 1": "billingStreet",
+  "billing address line 1": "billingStreet",
+  "billing street 1": "billingStreet",
+  "billing_street1": "billingStreet",
+  // Billing address line 2
+  "billing street 2": "billingStreet2",
+  "billing_street2": "billingStreet2",
+  "billing street2": "billingStreet2",
+  "billing address 2": "billingStreet2",
+  "billing_address2": "billingStreet2",
+  "billing address line 2": "billingStreet2",
+  "billing_address_line_2": "billingStreet2",
+  "billing suite": "billingStreet2",
+  "billing unit": "billingStreet2",
   "billing city": "billingCity",
   "billing_city": "billingCity",
   "billing province": "billingProvince",
   "billing_province": "billingProvince",
   "billing state": "billingProvince",
   "billing_state": "billingProvince",
+  "billing province/state": "billingProvince",
   "billing postal code": "billingPostalCode",
   "billing_postal_code": "billingPostalCode",
   "billing zip": "billingPostalCode",
@@ -138,33 +160,78 @@ export const HEADER_ALIASES: Record<string, keyof ClientImportRow> = {
   "site name": "locationName",
   "site_name": "locationName",
   "location": "locationName",
+  // Jobber-specific: "Property" / "Property Name" columns map to location name
+  "property": "locationName",
+  "property name": "locationName",
+  "property_name": "locationName",
   "service street": "serviceStreet",
   "service_street": "serviceStreet",
   "service address": "serviceStreet",
   "service_address": "serviceStreet",
   "street": "serviceStreet",
   "address": "serviceStreet",
+  "address 1": "serviceStreet",
+  "address line 1": "serviceStreet",
+  "street 1": "serviceStreet",
+  "street1": "serviceStreet",
+  "addr1": "serviceStreet",
+  "service street 1": "serviceStreet",
+  "service_street1": "serviceStreet",
+  // Jobber-specific: "Property Address" columns map to service address
+  "property address": "serviceStreet",
+  "property address 1": "serviceStreet",
+  "property street": "serviceStreet",
+  "property street 1": "serviceStreet",
+  // Service address line 2
+  "service street 2": "serviceStreet2",
+  "service_street2": "serviceStreet2",
+  "service address 2": "serviceStreet2",
+  "service_address2": "serviceStreet2",
+  "service address line 2": "serviceStreet2",
+  "service_address_line_2": "serviceStreet2",
+  "street 2": "serviceStreet2",
+  "street2": "serviceStreet2",
+  "address 2": "serviceStreet2",
+  "address line 2": "serviceStreet2",
+  "addr2": "serviceStreet2",
+  "suite": "serviceStreet2",
+  "unit": "serviceStreet2",
+  "apt": "serviceStreet2",
+  "po box": "serviceStreet2",
+  "property address 2": "serviceStreet2",
+  "property street 2": "serviceStreet2",
   "service city": "serviceCity",
   "service_city": "serviceCity",
   "city": "serviceCity",
+  "property city": "serviceCity",
   "service province": "serviceProvince",
   "service_province": "serviceProvince",
+  "service province/state": "serviceProvince",
   "province": "serviceProvince",
+  "province/state": "serviceProvince",
   "state": "serviceProvince",
+  "property province": "serviceProvince",
+  "property state": "serviceProvince",
+  "property province/state": "serviceProvince",
   "service postal code": "servicePostalCode",
   "service_postal_code": "servicePostalCode",
   "postal code": "servicePostalCode",
   "postal_code": "servicePostalCode",
   "zip": "servicePostalCode",
   "zip code": "servicePostalCode",
+  "property postal code": "servicePostalCode",
+  "property zip": "servicePostalCode",
+  "property zip code": "servicePostalCode",
   "service country": "serviceCountry",
   "service_country": "serviceCountry",
   "country": "serviceCountry",
+  "property country": "serviceCountry",
   "site code": "siteCode",
   "site_code": "siteCode",
   "access code": "siteCode",
   "access_code": "siteCode",
   "roof ladder code": "siteCode",
+  "roof/ladder code": "siteCode",
   "location notes": "locationNotes",
   "location_notes": "locationNotes",
   "notes": "locationNotes",
@@ -173,6 +240,8 @@ export const HEADER_ALIASES: Record<string, keyof ClientImportRow> = {
   // Contact
   "contact first name": "contactFirstName",
   "contact_first_name": "contactFirstName",
+  "contact name": "contactFirstName",
+  "contact_name": "contactFirstName",
   "first name": "contactFirstName",
   "first_name": "contactFirstName",
   "contact last name": "contactLastName",
@@ -207,16 +276,34 @@ export interface RowValidationError {
   message: string;
 }
 
+/** Action taken for an entity during import */
+export type ImportEntityAction = "create" | "match" | "skip";
+
+/** Billing address conflict detected during preview */
+export interface BillingConflict {
+  field: string;
+  existing: string;
+  incoming: string;
+}
+
 export interface ValidatedRow {
   rowIndex: number;
   status: RowStatus;
   errors: RowValidationError[];
   warnings: string[];
+  /** Compact warning codes for indexed legend display (e.g. [1, 3, 5]) */
+  warningCodes?: number[];
   normalized: ClientImportRow;
   /** Whether this row matches an existing customer company */
   matchesExisting: boolean;
   /** Name of existing company if matched */
   existingCompanyName?: string;
+  /** Action for each entity: create, match, or skip */
+  companyAction: ImportEntityAction;
+  locationAction: ImportEntityAction;
+  contactAction: ImportEntityAction;
+  /** Billing address conflicts (warning, not blocking) */
+  conflicts: BillingConflict[];
 }
 
 // ============================================================================
@@ -226,7 +313,16 @@ export interface ValidatedRow {
 export interface ImportPreviewResponse {
   headers: string[];
   suggestedMappings: ColumnMapping[];
+  /** First few properly-parsed raw data rows for the mapping UI sample display.
+   *  Parsed server-side with quote-aware CSV parser to avoid client-side column shift
+   *  from unquoted commas in fields like E-mails or Maintenance Months. */
+  sampleData: string[][];
   rows: ValidatedRow[];
+  /** Per-row column count warnings (e.g. rows with more columns than headers) */
+  columnCountWarnings?: string[];
+  /** Warning legend: maps numeric codes to human-readable warning messages.
+   *  Rows reference codes via warningCodes[] for compact display. */
+  warningLegend?: Record<number, string>;
   summary: {
     totalRows: number;
     validRows: number;
@@ -234,6 +330,9 @@ export interface ImportPreviewResponse {
     blockedRows: number;
     matchedExistingCompanies: number;
     newCompanies: number;
+    locationsMatched: number;
+    contactsMatched: number;
+    withinCsvDuplicates: number;
   };
 }
 
@@ -253,6 +352,7 @@ export interface ImportRowResult {
   companyName?: string;
   companyCreated: boolean;
   locationId?: string;
+  locationCreated: boolean;
   contactId?: string;
   contactCreated: boolean;
 }
@@ -266,6 +366,8 @@ export interface ImportExecuteResponse {
     companiesCreated: number;
     companiesMatched: number;
     locationsCreated: number;
+    locationsMatched: number;
     contactsCreated: number;
+    contactsMatched: number;
   };
 }

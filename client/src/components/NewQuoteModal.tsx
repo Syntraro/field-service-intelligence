@@ -2,6 +2,8 @@ import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { queryClient, apiRequest } from "@/lib/queryClient";
+import { useSurfaceController } from "@/hooks/useSurfaceController";
+import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useActivityStore } from "@/lib/activityStore";
 import {
@@ -16,14 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Loader2, FileText, Search } from "lucide-react";
+import { Loader2, FileText, Search, Check } from "lucide-react";
 import {
   Command,
   CommandEmpty,
@@ -46,14 +41,24 @@ interface NewQuoteModalProps {
   templateId?: string | null;
 }
 
-interface LocationOption {
+/** Shape returned by GET /api/clients/search-locations */
+interface LocationSearchResult {
   id: string;
-  companyName: string;
-  parentCompanyId?: string;
-  parentCompanyName?: string;
+  company_name: string;
+  location: string | null;
+  address: string | null;
+  city: string | null;
+  parent_company_id: string | null;
+  parent_company_name: string | null;
+  needs_details: boolean;
+  match_rank?: number;
 }
 
 export function NewQuoteModal({ open, onOpenChange, templateId }: NewQuoteModalProps) {
+  // Surface controller: abort signals, stale guards, ephemeral cache cleanup
+  const surface = useSurfaceController(open, {
+    queryKeys: ["/api/clients/search-locations"],
+  });
   const { toast } = useToast();
   const { logActivity } = useActivityStore();
   const [, setLocation] = useLocation();
@@ -62,25 +67,31 @@ export function NewQuoteModal({ open, onOpenChange, templateId }: NewQuoteModalP
   const [notes, setNotes] = useState("");
   const [locationSearchOpen, setLocationSearchOpen] = useState(false);
   const [locationSearch, setLocationSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
 
-  // Fetch locations
-  const { data: locationsResponse, isLoading: locationsLoading } = useQuery<{ data: LocationOption[] }>({
-    queryKey: ["/api/clients"],
+  // Debounce via surface controller — auto-cancelled on close/unmount
+  useEffect(() => {
+    surface.debounce("location-search", () => setDebouncedSearch(locationSearch), 300);
+  }, [locationSearch, surface]);
+
+  // Server-backed location search — tenant-scoped, punctuation-insensitive
+  const { data: searchResults = [], isFetching: isSearching } = useQuery<LocationSearchResult[]>({
+    queryKey: ["/api/clients/search-locations", debouncedSearch],
+    queryFn: async ({ signal }) => {
+      const q = encodeURIComponent(debouncedSearch);
+      const res = await fetch(`/api/clients/search-locations?q=${q}&limit=30`, {
+        credentials: "include",
+        signal,
+      });
+      if (!res.ok) throw new Error("Search failed");
+      return res.json();
+    },
     enabled: open,
+    staleTime: 10_000,
   });
 
-  const locations = locationsResponse?.data ?? [];
-
-  const filteredLocations = locations.filter((loc) => {
-    if (!locationSearch) return true;
-    const search = locationSearch.toLowerCase();
-    return (
-      loc.companyName?.toLowerCase().includes(search) ||
-      loc.parentCompanyName?.toLowerCase().includes(search)
-    );
-  });
-
-  const selectedLocation = locations.find((l) => l.id === selectedLocationId);
+  // Resolve selected location display — may not be in current search results
+  const selectedLocation = searchResults.find((r) => r.id === selectedLocationId) ?? null;
 
   const createMutation = useMutation({
     mutationFn: async () => {
@@ -98,22 +109,28 @@ export function NewQuoteModal({ open, onOpenChange, templateId }: NewQuoteModalP
           notesInternal: notes || undefined,
           lines: [],
         }),
+        signal: surface.signal,
       });
     },
     onSuccess: async (quote) => {
+      if (surface.isStale()) return; // Surface closed before mutation resolved
+
       // Auto-apply template if one was selected in the chooser
       if (templateId) {
         try {
           await apiRequest(`/api/quote-templates/${templateId}/apply`, {
             method: "POST",
             body: JSON.stringify({ quoteId: quote.id, mode: "replace" }),
+            signal: surface.signal,
           });
         } catch (err) {
+          if (surface.isStale()) return; // Aborted on close — not a real error
           console.error("Failed to apply quote template:", err);
           // Non-blocking — quote is already created, user can apply template manually
         }
       }
 
+      if (surface.isStale()) return; // Re-check after async template apply
       queryClient.invalidateQueries({ queryKey: ["/api/quotes"] });
       queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
       logActivity({
@@ -143,6 +160,7 @@ export function NewQuoteModal({ open, onOpenChange, templateId }: NewQuoteModalP
     setTitle("");
     setNotes("");
     setLocationSearch("");
+    setDebouncedSearch("");
   };
 
   const handleClose = () => {
@@ -178,71 +196,76 @@ export function NewQuoteModal({ open, onOpenChange, templateId }: NewQuoteModalP
         </DialogHeader>
 
         <div className="space-y-4 py-4">
-          {/* Location Selection */}
+          {/* Location Selection — server-backed search (same pattern as QuickAddJobDialog) */}
           <div className="space-y-2">
             <Label>Client Location *</Label>
-            {locationsLoading ? (
-              <div className="flex items-center justify-center py-4">
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-              </div>
-            ) : (
-              <Popover open={locationSearchOpen} onOpenChange={setLocationSearchOpen}>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    role="combobox"
-                    aria-expanded={locationSearchOpen}
-                    className="w-full justify-between"
-                    disabled={createMutation.isPending}
-                    data-testid="select-location"
-                  >
-                    {selectedLocation ? (
-                      <span className="truncate">
-                        {selectedLocation.parentCompanyName
-                          ? `${selectedLocation.parentCompanyName} - ${selectedLocation.companyName}`
-                          : selectedLocation.companyName}
-                      </span>
-                    ) : (
-                      <span className="text-muted-foreground">Select location...</span>
-                    )}
-                    <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-[400px] p-0" align="start">
-                  <Command>
-                    <CommandInput
-                      placeholder="Search locations..."
-                      value={locationSearch}
-                      onValueChange={setLocationSearch}
-                    />
-                    <CommandList>
-                      <CommandEmpty>No locations found</CommandEmpty>
-                      <CommandGroup>
-                        {filteredLocations.slice(0, 50).map((loc) => (
-                          <CommandItem
-                            key={loc.id}
-                            value={loc.id}
-                            onSelect={() => {
-                              setSelectedLocationId(loc.id);
-                              setLocationSearchOpen(false);
-                            }}
-                          >
-                            <div className="flex flex-col">
-                              <span className="font-medium">{loc.companyName}</span>
-                              {loc.parentCompanyName && (
-                                <span className="text-xs text-muted-foreground">
-                                  {loc.parentCompanyName}
-                                </span>
+            <Popover open={locationSearchOpen} onOpenChange={setLocationSearchOpen}>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  role="combobox"
+                  aria-expanded={locationSearchOpen}
+                  className="w-full justify-between"
+                  disabled={createMutation.isPending}
+                  data-testid="select-location"
+                >
+                  {selectedLocation ? (
+                    <span className="truncate">
+                      {selectedLocation.company_name}
+                      {selectedLocation.location && selectedLocation.location !== selectedLocation.company_name
+                        ? ` — ${selectedLocation.location}` : ""}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground">Search locations...</span>
+                  )}
+                  <Search className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-[400px] p-0" align="start">
+                <Command shouldFilter={false}>
+                  <CommandInput
+                    placeholder="Search locations..."
+                    value={locationSearch}
+                    onValueChange={setLocationSearch}
+                  />
+                  <CommandList>
+                    <CommandEmpty>
+                      {isSearching ? "Searching..." : "No locations found."}
+                    </CommandEmpty>
+                    <CommandGroup>
+                      {searchResults.map((loc) => (
+                        <CommandItem
+                          key={loc.id}
+                          value={loc.id}
+                          onSelect={() => {
+                            setSelectedLocationId(loc.id);
+                            setLocationSearchOpen(false);
+                          }}
+                        >
+                          <Check className={cn("mr-2 h-4 w-4", selectedLocationId === loc.id ? "opacity-100" : "opacity-0")} />
+                          <div className="flex flex-col min-w-0">
+                            <span className="truncate">
+                              {loc.company_name}
+                              {loc.location && loc.location !== loc.company_name && (
+                                <span className="text-muted-foreground font-normal"> — {loc.location}</span>
                               )}
-                            </div>
-                          </CommandItem>
-                        ))}
-                      </CommandGroup>
-                    </CommandList>
-                  </Command>
-                </PopoverContent>
-              </Popover>
-            )}
+                            </span>
+                            {loc.parent_company_name && loc.parent_company_name !== loc.company_name && (
+                              <span className="text-[10px] text-blue-600/70 truncate">{loc.parent_company_name}</span>
+                            )}
+                            {loc.address && (
+                              <span className="text-xs text-muted-foreground truncate">
+                                {[loc.address, loc.city].filter(Boolean).join(", ")}
+                              </span>
+                            )}
+                          </div>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </CommandList>
+                </Command>
+              </PopoverContent>
+            </Popover>
           </div>
 
           {/* Title (optional) */}

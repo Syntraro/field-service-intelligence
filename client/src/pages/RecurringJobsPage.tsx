@@ -137,15 +137,17 @@ export default function RecurringJobsPage() {
     queryKey: ["/api/recurring-templates"],
   });
 
-  // Fetch locations for dropdown
-  const { data: locations = [] } = useQuery<Location[]>({
+  // Fetch locations for dropdown — server returns { data: Location[], pagination }
+  const { data: locationsResponse } = useQuery<{ data: Location[] }>({
     queryKey: ["/api/clients"],
   });
+  const locations = locationsResponse?.data ?? [];
 
   // Fetch preview counts (what would be generated)
   const { data: previewData } = useQuery<PreviewResult>({
     queryKey: ["/api/recurring-templates/preview"],
     refetchInterval: 60000, // Refresh every minute
+    refetchIntervalInBackground: false,
   });
 
   // Create template mutation

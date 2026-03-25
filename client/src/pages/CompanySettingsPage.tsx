@@ -13,7 +13,8 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { insertCompanySettingsSchema, type CompanySettings } from "@shared/schema";
 import type { z } from "zod";
-import NewAddClientDialog from "@/components/NewAddClientDialog";
+// 2026-03-21: NewAddClientDialog replaced by canonical CreateClientModal
+import { CreateClientModal } from "@/components/CreateClientModal";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import AddressAutocompleteField from "@/components/ui/AddressAutocompleteField";
 
@@ -394,12 +395,9 @@ export default function CompanySettingsPage() {
         </Card>
       </div>
 
-      <NewAddClientDialog 
+      <CreateClientModal
         open={addClientDialogOpen}
         onOpenChange={setAddClientDialogOpen}
-        onSaved={() => {
-          queryClient.invalidateQueries({ queryKey: ['/api/clients'] });
-        }}
       />
     </>
   );

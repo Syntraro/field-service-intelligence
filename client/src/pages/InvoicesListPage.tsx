@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { ListToolbar } from "@/components/layout/ListToolbar";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
 import { Card, CardContent } from "@/components/ui/card";
-import { ListSurface, tableRowClass } from "@/components/ui/list-surface";
+import { ListSurface, tableRowClass, listPrimaryClass, listSecondaryClass, listResultsClass } from "@/components/ui/list-surface";
 import { TablePageShell } from "@/components/ui/table-page-shell";
 import { EmptyState } from "@/components/ui/empty-state";
 import { cn } from "@/lib/utils";
@@ -20,11 +20,14 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { Invoice } from "@shared/schema";
+import { getInvoiceStatusBadge } from "@/lib/statusBadges";
 
 interface EnrichedInvoice extends Invoice {
   locationName?: string;
   customerCompanyName?: string;
   locationDisplayName?: string;
+  /** Server-computed overdue flag from invoicesFeed mapper */
+  isPastDue?: boolean;
 }
 
 interface InvoiceStats {
@@ -36,37 +39,7 @@ interface InvoiceStats {
 
 type InvoiceStatusFilter = "all" | "draft" | "awaiting_payment" | "sent" | "viewed" | "partial_paid" | "paid" | "voided" | "overdue" | "qbo_synced" | "qbo_out_of_sync";
 
-function getStatusBadge(status: string, dueDate: string | null, balance: string): {
-  label: string;
-  variant: "default" | "destructive" | "secondary" | "outline";
-  isOverdue?: boolean;
-} {
-  const balanceNum = parseFloat(balance);
-  const isOverdue = dueDate && new Date(dueDate) < new Date() && balanceNum > 0 && status !== "paid" && status !== "voided";
-
-  if (isOverdue) {
-    return { label: "Past Due", variant: "destructive", isOverdue: true };
-  }
-
-  switch (status) {
-    case "draft":
-      return { label: "Draft", variant: "outline" };
-    case "awaiting_payment":
-      return { label: "Awaiting Payment", variant: "default" };
-    case "sent":
-      return { label: "Sent", variant: "default" }; // Legacy
-    case "viewed":
-      return { label: "Viewed", variant: "secondary" };
-    case "partial_paid":
-      return { label: "Partial", variant: "secondary" };
-    case "paid":
-      return { label: "Paid", variant: "default" };
-    case "voided":
-      return { label: "Voided", variant: "outline" };
-    default:
-      return { label: status, variant: "outline" };
-  }
-}
+// 2026-03-20: Local getInvoiceStatusBadge() removed — canonical owner is lib/statusBadges.ts:getInvoiceStatusBadge()
 
 function formatCurrency(amount: string | number): string {
   const num = typeof amount === "string" ? parseFloat(amount) : amount;
@@ -135,7 +108,7 @@ export default function InvoicesListPage() {
   const enrichedInvoices = useMemo(() => {
     return invoices.map(inv => ({
       ...inv,
-      statusInfo: getStatusBadge(inv.status, inv.dueDate, inv.balance),
+      statusInfo: getInvoiceStatusBadge(inv.status, inv.isPastDue ?? false),
     }));
   }, [invoices]);
 
@@ -356,9 +329,9 @@ export default function InvoicesListPage() {
             />
           ) : (
             <>
-              {/* Grid header */}
+              {/* Standardized grid header */}
               <div
-                className="grid items-center border-b border-gray-200 dark:border-gray-800 py-3 text-sm font-medium text-muted-foreground"
+                className="grid items-center border-b border-gray-200 dark:border-gray-800 py-2 text-xs font-medium text-muted-foreground bg-[#FAFAFA] dark:bg-gray-900/50"
                 style={{ gridTemplateColumns: INVOICES_GRID_COLS }}
               >
                 <div className="px-4">Client</div>
@@ -381,28 +354,28 @@ export default function InvoicesListPage() {
                   data-testid={`row-invoice-${invoice.id}`}
                 >
                   {/* Client: 2-line identity block — company name + location */}
-                  <div className={cn("px-4 min-w-0", "py-3")}>
-                    <p className="text-sm font-medium truncate" data-testid={`text-invoice-client-${invoice.id}`}>
+                  <div className={cn("px-4 min-w-0", "py-2.5")}>
+                    <p className={listPrimaryClass} data-testid={`text-invoice-client-${invoice.id}`}>
                       {invoice.locationDisplayName || invoice.locationName || "Unknown"}
                     </p>
                     {invoice.locationName && invoice.locationDisplayName && (
-                      <p className="text-xs text-muted-foreground truncate">{invoice.locationName}</p>
+                      <p className={listSecondaryClass}>{invoice.locationName}</p>
                     )}
                   </div>
-                  <div className={cn("px-4 min-w-0", "py-3")}>
-                    <p className="truncate text-sm text-muted-foreground">
+                  <div className={cn("px-4 min-w-0", "py-2.5")}>
+                    <p className={listSecondaryClass}>
                       {invoice.workDescription || "-"}
                     </p>
                   </div>
-                  <div className={cn("px-4", "py-3")}>
+                  <div className={cn("px-4", "py-2.5")}>
                     <span className="font-mono text-sm" data-testid={`text-invoice-number-${invoice.id}`}>
                       {invoice.invoiceNumber || `INV-${invoice.id.slice(0, 8)}`}
                     </span>
                   </div>
-                  <div className={cn("px-4 text-sm", "py-3")}>
+                  <div className={cn("px-4 text-sm", "py-2.5")}>
                     {safeFormatDate(invoice.dueDate)}
                   </div>
-                  <div className={cn("px-4", "py-3")}>
+                  <div className={cn("px-4", "py-2.5")}>
                     <div className="flex items-center gap-2 flex-wrap">
                       <Badge variant={invoice.statusInfo.variant}>
                         {invoice.statusInfo.label}
@@ -410,15 +383,15 @@ export default function InvoicesListPage() {
                       <QboSyncBadge invoice={invoice} />
                     </div>
                   </div>
-                  <div className={cn("px-4 text-right whitespace-nowrap tabular-nums text-sm", "py-3")}>
+                  <div className={cn("px-4 text-right whitespace-nowrap tabular-nums text-sm", "py-2.5")}>
                     {formatCurrency(invoice.total)}
                   </div>
-                  <div className={cn("px-4 text-right whitespace-nowrap tabular-nums text-sm", "py-3")}>
+                  <div className={cn("px-4 text-right whitespace-nowrap tabular-nums text-sm", "py-2.5")}>
                     <span className={parseFloat(invoice.balance) > 0 ? "font-medium" : "text-muted-foreground"}>
                       {formatCurrency(invoice.balance)}
                     </span>
                   </div>
-                  <div className={cn("py-3")} onClick={(e) => e.stopPropagation()}>
+                  <div className={cn("py-2.5")} onClick={(e) => e.stopPropagation()}>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="ghost" size="icon" data-testid={`button-invoice-menu-${invoice.id}`}>
@@ -443,6 +416,12 @@ export default function InvoicesListPage() {
             </>
           )}
       </ListSurface>
+
+      {!isLoading && filteredInvoices.length > 0 && (
+        <div className={listResultsClass}>
+          Showing {filteredInvoices.length} invoice{filteredInvoices.length !== 1 ? 's' : ''}
+        </div>
+      )}
     </TablePageShell>
   );
 }

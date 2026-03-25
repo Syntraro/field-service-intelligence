@@ -69,6 +69,14 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       },
       testId: "nav-dashboard"
     });
+    // Temporary preview link — remove when dashboard migration is complete
+    menuItems.push({
+      title: "Dashboard Preview",
+      icon: LayoutDashboard,
+      href: "/dashboard-preview",
+      isActive: location === "/dashboard-preview",
+      testId: "nav-dashboard-preview"
+    });
     menuItems.push({
       title: "Dispatch",
       icon: LayoutGrid,

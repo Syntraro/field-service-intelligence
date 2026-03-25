@@ -1,8 +1,9 @@
 import { db } from "../db";
-import { and, eq, desc, isNull } from "drizzle-orm";
-import { jobNotes, jobs, users } from "@shared/schema";
+import { and, eq, desc, inArray } from "drizzle-orm";
+import { jobNotes, jobs, users, jobNoteAttachments, files } from "@shared/schema";
 import { BaseRepository, clampLimit } from "./base";
 import { resolveTechnicianName } from "../lib/resolveTechnicianName";
+import { activeJobFilter } from "./jobFilters";
 
 /**
  * Job Notes repository - handles all job note database operations.
@@ -21,7 +22,7 @@ export class JobNotesRepository extends BaseRepository {
     const [job] = await db
       .select()
       .from(jobs)
-      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), isNull(jobs.deletedAt), eq(jobs.isActive, true)));
+      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), activeJobFilter()));
 
     if (!job) {
       throw this.notFoundError("Job");
@@ -49,10 +50,39 @@ export class JobNotesRepository extends BaseRepository {
       .orderBy(desc(jobNotes.createdAt))
       .limit(safeLimit);
 
+    // Load attachments for all notes in one query
+    const noteIds = rows.map((r) => r.id);
+    const allAttachments = noteIds.length > 0
+      ? await db
+          .select({
+            id: jobNoteAttachments.id,
+            noteId: jobNoteAttachments.noteId,
+            fileId: jobNoteAttachments.fileId,
+            originalName: files.originalName,
+            mimeType: files.mimeType,
+            size: files.size,
+          })
+          .from(jobNoteAttachments)
+          .innerJoin(files, eq(jobNoteAttachments.fileId, files.id))
+          .where(and(
+            eq(jobNoteAttachments.companyId, companyId),
+            inArray(jobNoteAttachments.noteId, noteIds),
+          ))
+      : [];
+
+    // Group attachments by noteId
+    const attachmentsByNote = new Map<string, typeof allAttachments>();
+    for (const att of allAttachments) {
+      const list = attachmentsByNote.get(att.noteId) ?? [];
+      list.push(att);
+      attachmentsByNote.set(att.noteId, list);
+    }
+
     // Phase 4 Step B4: add pre-resolved userName from canonical utility
     return rows.map((row) => ({
       ...row,
       userName: row.user ? resolveTechnicianName(row.user) : "Unknown",
+      attachments: attachmentsByNote.get(row.id) ?? [],
     }));
   }
 
@@ -73,7 +103,7 @@ export class JobNotesRepository extends BaseRepository {
     const [job] = await db
       .select()
       .from(jobs)
-      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), isNull(jobs.deletedAt), eq(jobs.isActive, true)));
+      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), activeJobFilter()));
 
     if (!job) {
       throw this.notFoundError("Job");

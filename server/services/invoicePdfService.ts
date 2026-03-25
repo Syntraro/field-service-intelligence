@@ -9,6 +9,7 @@ interface InvoicePdfData {
   location: {
     companyName: string;
     address?: string | null;
+    address2?: string | null; // Address line 2 (suite, unit, floor)
     city?: string | null;
     provinceState?: string | null;
     postalCode?: string | null;
@@ -142,6 +143,10 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       doc.font("Helvetica");
       if (location.address) {
         doc.text(location.address, leftCol, clientInfoY);
+        clientInfoY += 14;
+      }
+      if (location.address2) {
+        doc.text(location.address2, leftCol, clientInfoY);
         clientInfoY += 14;
       }
       const locCityLine = [location.city, location.provinceState, location.postalCode].filter(Boolean).join(", ");

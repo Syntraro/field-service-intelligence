@@ -6,6 +6,2400 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+#### Dashboard Layout Preview Page (2026-03-25)
+
+Added `/dashboard-preview` route for visual comparison of a revised dashboard hierarchy. Preview-only — production dashboard at `/` is completely untouched. Key layout differences: "Today's Operations" promoted to full-width top position with dispatch alerts integrated inline; top summary cards row removed (data redistributed into domain cards); Jobs/Quotes/Invoices/PM Health as dedicated domain cards in a 2x2 grid; each metric appears once (no duplication). Reuses all existing dashboard API queries — no backend changes. Tasks panel identical to production.
+
+**Files created:** `client/src/pages/DashboardPreview.tsx`
+**Files modified:** `client/src/App.tsx` (route registration only)
+
+### Fixed
+
+#### Parts & Billing: Remove Duplicate Name in Line Item Description Slot (2026-03-25)
+
+Line items linked to a catalog product displayed the product name twice — once as the primary name and again as the description text below it. Root cause: the save path stores the product name in the DB `description` field when notes are empty, then the reload mapping copies that back into `notes`, creating a visual duplicate. Fixed by adding a trim-compared guard in both `LineItemRow` and `SortableLineItemRow` render paths — `notes` only renders when it contains real secondary text distinct from the display name.
+
+**File changed:** `client/src/components/PartsBillingCard.tsx` (lines 855, 1077)
+
+#### Parts & Billing: Multi-Line Description Support & Font Size Parity (2026-03-25)
+
+Description field in line item edit mode used `<Input>` (single-line) — Enter key could not insert newlines. Changed to `<Textarea>` with `rows={2}` and `resize-y` in both `LineItemRow` and `SortableLineItemRow` edit paths. Display mode description changed from `text-[11px]` to `text-xs font-normal` (matching item name size) with `whitespace-pre-line` to preserve line breaks. No changes to save path, mapping, or data model — DB `description` column is `text` type which already supports newlines.
+
+**File changed:** `client/src/components/PartsBillingCard.tsx` (edit: lines 915, 1156; display: lines 857, 1080)
+
+#### Job Detail Page: Right-Column Header Height Parity & Financial Summary Split (2026-03-25)
+
+**Header height fix:** Right-column card headers (Notes, Labour, Equipment, Status Timeline, Scheduling History) rendered ~12px taller than Parts & Billing. Root cause: action Buttons used `size="sm"` which applies `min-h-8` (32px min-height) — `h-auto` only overrides `height`, not `min-height`. Added `min-h-0` to all inline action Buttons in headers. Also normalized horizontal padding from `px-4` to `px-5` for visual consistency with left-column cards.
+
+**Files changed:**
+- `client/src/components/JobNotesSection.tsx` — `px-4`→`px-5`, added `min-h-0` to Add Note button
+- `client/src/pages/JobDetailPage.tsx` — Labour header `px-4`→`px-5`, added `min-h-0` to New Time Entry button; updated financial summary
+- `client/src/components/JobEquipmentSection.tsx` — `px-4`→`px-5`, added `min-h-0` to Add Equipment button
+- `client/src/components/job/JobStatusTimeline.tsx` — `px-4`→`px-5`
+- `client/src/components/job/SchedulingHistory.tsx` — `px-4`→`px-5`
+
+**Financial summary split:** Parts & Billing header now shows four distinct values:
+- Revenue = total line item prices
+- Cost = labour + parts cost (from `billingTotals.totalCost`)
+- Expenses = job expenses total (from `expenseTotalAmount`, no longer folded into Cost)
+- Profit = Revenue - Cost - Expenses (no double counting)
+
+### Changed
+
+#### Job Detail Page: 2-Column Layout, Billing Summary Removal, Green Section Headers (2026-03-25)
+
+Consolidated the Job Detail body from a 3-column layout into a 2-column layout (`2fr` left, `1fr` right). Removed standalone Billing Summary card — financial KPIs now live inline in the Parts & Billing header. Standardized all section headers with green treatment matching the top summary card (`bg-primary/[0.09]`).
+
+**Layout (before):**
+- Left: Parts & Billing, Expenses, Visits+Activity
+- Middle (280px): Billing Summary, Labour
+- Right (260px, collapsible): Notes, Equipment, Timeline, History
+
+**Layout (after):**
+- Left (`2fr`, ~67%): Parts & Billing, Expenses, Visits+Activity
+- Right (`1fr`, ~33%): Notes → Labour → Equipment → Status Timeline → Scheduling History
+
+**Grid:** `lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]`
+
+**Billing Summary card removed.** Financial KPIs (Revenue, Cost, Profit, Profit %) now display inline in the Parts & Billing collapsible header row. Formula: Profit = Revenue - Parts Cost - Expenses.
+
+**Green section headers:** All section card headers now use `bg-primary/[0.09]` matching the top summary card:
+- Parts & Billing, Expenses, Visits (in `JobDetailPage.tsx`)
+- Notes (in `JobNotesSection.tsx`)
+- Labour (in `JobDetailPage.tsx`)
+- Equipment (in `JobEquipmentSection.tsx`)
+- Status Timeline (in `job/JobStatusTimeline.tsx`)
+- Scheduling History (in `job/SchedulingHistory.tsx`)
+
+**Removed:**
+- Standalone Billing Summary card (entire card + `billingSummaryExpanded` state)
+- `sidebarOpen` / `setSidebarOpen` state and sidebar collapse/expand toggle
+- Collapsed sidebar vertical tab with Notes count
+- Duplicate mobile sidebar rendering (now single responsive column)
+- Unused `MessageSquare` icon import
+
+**No changes to:** billing calculations, query keys/invalidations, Notes CRUD, Labour tracking, visit logic, any API endpoints
+
+**Files affected:** `client/src/pages/JobDetailPage.tsx`, `client/src/components/JobNotesSection.tsx`, `client/src/components/JobEquipmentSection.tsx`, `client/src/components/job/JobStatusTimeline.tsx`, `client/src/components/job/SchedulingHistory.tsx`
+
+### Fixed
+
+#### Expense Totals Not Reflected in Parts & Billing Header (2026-03-25)
+
+Parts & Billing header KPIs (Revenue/Cost/Profit/%) now update in real-time when expenses are added, edited, or deleted.
+
+**Root cause:** Header relied on child→parent `useEffect` callback chain (`JobExpensesCard.onTotalsChange` → `setExpenseTotals`). This was fragile — the effect could miss updates due to React render timing when the expense query invalidated.
+
+**Fix:** Replaced callback pattern with a direct `useQuery` in `JobDetailPage` using the same query key (`["/api/jobs", jobId, "expenses"]`). When `JobExpensesCard` mutations call `invalidateQueries`, both the card's query and the parent's query refetch from the same cache entry. A `useMemo` derives the total from the query data.
+
+**Formula:** Cost = Parts Cost + Expenses. Profit = Revenue - Cost. Profit % = Profit / Revenue.
+
+**Files affected:** `client/src/pages/JobDetailPage.tsx`
+
+#### Strict Item Type Resolution for Job Line Items (2026-03-25)
+
+Fixed job line items not carrying catalog item type, causing invoice lines to always default to "service" regardless of actual item type, and catalog fetches capped at 200 items silently dropping overflow items.
+
+**Root causes addressed:**
+1. `getJobParts()` did a plain SELECT with no JOIN to items — no type info delivered
+2. `refreshInvoiceFromJob()` never set `lineItemType`, so DB default "service" applied to all lines
+3. Client catalog fetches hardcoded `?limit=200`, hiding items beyond that cap
+4. Inactive/deleted catalog items excluded from type resolution for existing job parts
+
+**Changes:**
+- `server/storage/jobs.ts`: `getJobParts()` now LEFT JOINs `items` on `productId` (no active/deleted filter) and returns `itemType` field
+- `server/storage/invoices.ts`: `refreshInvoiceFromJob()` LEFT JOINs `items` to resolve `lineItemType` — product→"material", service→"service". Logs warning for orphaned productId references.
+- `client/src/components/PartsBillingCard.tsx`: Catalog fetch raised from `limit=200` to `limit=1000`. `LocalLineItem` now carries server-delivered `itemType`. Query type updated for enriched response.
+- `client/src/hooks/useProductsServices.ts`: Catalog fetch raised from `limit=200` to `limit=1000`
+
+**Files affected:** `server/storage/jobs.ts`, `server/storage/invoices.ts`, `client/src/components/PartsBillingCard.tsx`, `client/src/hooks/useProductsServices.ts`
+
+### Changed
+
+#### PM System: Drop preferred_technician_id Column (2026-03-25)
+
+Completed cleanup of the recurring PM technician assignment removal.
+
+**Removed:**
+- `preferred_technician_id` column from `recurringJobTemplates` table definition in `shared/schema.ts`
+- `preferredTechnicianId` from update Zod schema (`updateRecurringJobTemplateSchema`)
+- All storage layer references: createTemplate param, insert value, queue select/join/mapping
+- `users` LEFT JOIN from `getUpcomingQueue` (was only used for template-level tech name)
+- `preferredTechnicianId: null` from PMEditPage save payload
+- `preferredTechnicianId` from PMWorkspacePage queue item type
+- `preferredTechnicianId` from test fixtures (`recurring-jobs.test.ts`, `pm-window-start.test.ts`)
+
+**Migration:** `migrations/2026_03_25_drop_preferred_technician_id.sql`
+
+**Files affected:**
+- `shared/schema.ts`, `server/storage/recurringJobs.ts`, `client/src/pages/PMEditPage.tsx`
+- `client/src/pages/PMWorkspacePage.tsx`, `tests/recurring-jobs.test.ts`, `tests/pm-window-start.test.ts`
+
+#### PM System Refactor: Unify Create/Edit, Remove Auto-Schedule, Add Billing to Create (2026-03-24)
+
+Unified PM recurring setup behavior across Create and Edit flows.
+
+**Removed (Phase 1):**
+- Auto-schedule checkbox, scheduled time input, default duration (auto-schedule), and preferred technician selector from PM Edit UI
+- Auto-schedule and preferred technician display rows from PM Detail page
+- Auto-schedule scheduling label from PMScheduleCard (location detail)
+- `auto_schedule` and `scheduled_time_local` columns from `recurring_job_templates` schema and Zod schemas
+- Auto-schedule/scheduledTimeLocal cross-field validation from server routes (POST and PATCH)
+- PM job generation now always creates unscheduled jobs (scheduledStart=null, scheduledEnd=null, primaryTechnicianId=null)
+- Migration: `2026_03_24_drop_pm_auto_schedule_fields.sql`
+
+**Added (Phase 2):**
+- Optional billing fields to PM Create wizard: pmBillingModel, pmBillingLabel, pmContractAmount
+- Billing fields shown in wizard Step 3 (PM Details) and in Review step
+- Create payload now sends billing fields to API
+
+**Extracted (Phase 3):**
+- `PmMonthPicker` — shared month selector with presets (`client/src/components/pm/PmMonthPicker.tsx`)
+- `PmGenerationModeSelector` — shared generation mode radio group (`client/src/components/pm/PmGenerationModeSelector.tsx`)
+- `PmServiceWindowInputs` — shared service window day inputs (`client/src/components/pm/PmServiceWindowInputs.tsx`)
+- `PmBillingFields` — shared optional billing section (`client/src/components/pm/PmBillingFields.tsx`)
+- Both PMWizardPage and PMEditPage now use these shared components
+
+**Cleaned (Phase 4):**
+- Dead imports: useTechniciansDirectory, Badge, Select (from PMEditPage)
+- Dead state: autoSchedule, scheduledTimeLocal, defaultDurationMinutes, preferredTechnicianId from EditFormState
+- Dead code: toggleMonth in PMEditPage, MONTH_LABELS/MONTH_PRESETS locals (replaced by shared imports)
+- Dead validation: autoSchedule HH:MM validation in PMEditPage
+
+**Files affected:**
+- `client/src/pages/PMEditPage.tsx`
+- `client/src/pages/PMWizardPage.tsx`
+- `client/src/pages/PMDetailPage.tsx`
+- `client/src/components/PMScheduleCard.tsx`
+- `client/src/components/pm/PmMonthPicker.tsx` (new)
+- `client/src/components/pm/PmGenerationModeSelector.tsx` (new)
+- `client/src/components/pm/PmServiceWindowInputs.tsx` (new)
+- `client/src/components/pm/PmBillingFields.tsx` (new)
+- `server/domain/recurrence.ts`
+- `server/routes/recurringJobs.ts`
+- `server/storage/recurringJobs.ts`
+- `shared/schema.ts`
+- `migrations/2026_03_24_drop_pm_auto_schedule_fields.sql` (new)
+
+**Data note:** `preferred_technician_id` column retained in DB — no longer surfaced in UI or used in generation. Safe for future cleanup.
+
+#### Billing Summary: Include Expenses in Profit Calculation (2026-03-24)
+
+Wired job expense totals into the Billing Summary card so profit reflects true job profitability.
+
+**Changed:**
+- `JobDetailPage.tsx`: Added `expenseTotals` state; passed `onTotalsChange` to `JobExpensesCard`
+- Billing Summary KPIs: Revenue (parts only), Cost (parts cost + expenses), Profit = Revenue - Cost
+- Added "Total Cost" breakdown section showing parts cost and expenses separately
+- Renamed top KPI label from "Price" to "Revenue" for clarity
+- Margin % recomputed using corrected profit
+
+**Files affected:** `client/src/pages/JobDetailPage.tsx`
+
+#### Job Expenses: Remove Approval Workflow, Add Edit + Receipt Upload (2026-03-24)
+
+Simplified expense lifecycle from approve/reject workflow to direct edit/delete/billable model.
+
+**Removed:**
+- `approvalStatus` column from `job_expenses` table (migration: `2026_03_24_drop_expense_approval_status.sql`)
+- `expenseApprovalStatusEnum` type and all references
+- `setApprovalStatus()` service function
+- `POST /:id/approve` and `POST /:id/reject` route endpoints
+- Approve/Reject buttons, Approved/Rejected/Pending badges from UI
+
+**Added:**
+- Edit expense flow: single modal supports both create and edit modes via PATCH endpoint
+- Receipt upload: uses existing `/api/uploads` endpoint + `receiptFileId` FK; image/PDF supported
+- Receipt view: clickable receipt icon opens `/api/files/:fileId` in new tab
+- Receipt remove: clear receipt from edit dialog
+- Internal/Billable badges replace approval badges
+- Invoiced badge for expenses already added to invoice
+- All mutations invalidate both expense list and cost-summary queries
+
+**Invoice eligibility rule:** `isBillable = true AND billingStatus = "pending"` (no approval gate)
+
+**Edge case:** Invoiced expenses (`billingStatus = "added_to_invoice"`) block edit and delete at the service layer.
+
+**Orphaned permission key:** `expenses.approve` in `roles.ts:44` — left in catalog (safe, no runtime usage)
+
+**Files changed:** `shared/schema.ts`, `server/storage/jobExpenses.ts`, `server/services/jobExpenseService.ts`, `server/routes/jobExpenses.ts`, `client/src/components/JobExpensesCard.tsx`
+**Migration:** `migrations/2026_03_24_drop_expense_approval_status.sql`
+
+### Added
+
+#### Job Expenses System — Greenfield Build (2026-03-24)
+
+New job expenses tracking system. Enables unified job costing: Parts + Labor + Expenses → Total Cost / Profit / Margin.
+
+**Data model:**
+- New `job_expenses` table with: amount, category (9 categories), date, notes, receipt file reference, billable flag, billing status (pending/added_to_invoice), approval status (pending/approved/rejected), reimbursable-to user
+- Indexes on (jobId, companyId) and (companyId, createdAt)
+- Migration: `migrations/2026_03_24_job_expenses.sql`
+
+**Backend:**
+- Storage: `server/storage/jobExpenses.ts` — CRUD + billable expense queries (persistence only, no business logic)
+- Service: `server/services/jobExpenseService.ts` — canonical orchestrator for create/update/delete/approve/reject + billing integration
+- Routes: `server/routes/jobExpenses.ts` — GET/POST/PATCH/DELETE + approve/reject endpoints, mounted on `/api/jobs`
+
+**Frontend:**
+- New `JobExpensesCard` component replaces "Coming Soon" placeholder on Job Detail page
+- Inline expense list with add dialog, delete confirmation, approve/reject actions
+- Reports `totalExpenses` to parent for unified cost display
+- Category badges, billable indicator, approval status badges
+
+**Architecture compliance:**
+- Write Path Law: Route → Service → Storage (no domain logic in routes)
+- Tenant isolation: all queries scoped by companyId
+- Existing expense permissions (`expenses.own.edit`, etc.) now enforceable against real routes
+- Invoice pipeline integration: `getBillableExpensesForInvoice()` + `markExpensesAsInvoiced()` ready for use
+
+**Files created:** `shared/schema.ts` (table definition), `migrations/2026_03_24_job_expenses.sql`, `server/storage/jobExpenses.ts`, `server/services/jobExpenseService.ts`, `server/routes/jobExpenses.ts`, `client/src/components/JobExpensesCard.tsx`
+**Files modified:** `server/routes/index.ts` (route registration), `client/src/pages/JobDetailPage.tsx` (placeholder replaced)
+
+### Changed
+
+#### Dispatch Tiles: Remove Saving Spinner Indicator (2026-03-24)
+
+Removed the small `Loader2` spinner that appeared on dispatch visit/task tiles during move/resize save operations. The underlying `isSaving` state and all interaction protections (click-block, unschedule-button hiding, mutation sequencing) remain fully intact — only the visible spinner icon is removed.
+
+**Files changed:** `DispatchVisitBlock.tsx`, `DispatchTaskBlock.tsx`
+
+#### Dispatch Unscheduled Cards: Remove Saving Spinner Indicator (2026-03-24)
+
+Removed the `Loader2` spinner that replaced the grip icon on unscheduled visit cards during save operations. The grip icon now always displays. The `isSaving` prop is still accepted and passed from the parent panel for future use.
+
+**Files changed:** `DispatchUnscheduledCard.tsx`
+
+#### Edit Visit Modal: Improve Action Discoverability (2026-03-24)
+
+Moved "Mark Unscheduled" from the Schedule section header into the Quick Actions card for better discoverability. Applied visual hierarchy to action buttons: Complete Visit uses primary/success emphasis (emerald), Mark Unscheduled uses destructive emphasis, Open Full Job uses neutral outline. All existing handlers, mutations, and permissions unchanged.
+
+**Files changed:** `EditVisitModal.tsx`
+
+#### Edit Visit Modal: Layout Refinement and Visual Hierarchy (2026-03-24)
+
+Streamlined modal layout for better scanability:
+- Removed redundant "Job Details" panel from right column (info consolidated in header)
+- Header simplified: company name is now primary and clickable (navigates to Company Detail page), job summary shown as secondary line, Job # shown as muted inline link
+- Added `customerCompanyId` prop to wire company name navigation from both dispatch and job-detail entry points
+- Softened action button colors: Complete Visit uses lighter emerald (`bg-emerald-500/90`), Mark Unscheduled uses amber/warning tone (not destructive red), Open Full Job uses ghost variant
+- Removed unused `Badge` import
+
+**Files changed:** `EditVisitModal.tsx`, `DispatchPreview.tsx`, `JobDetailPage.tsx`
+
+### Fixed
+
+#### Dispatch Board: First-Click Loading Race + Completed Visit Unschedule Guard (2026-03-24)
+
+Two dispatch board bugs fixed in a single surgical pass:
+
+**Issue A — First click after scheduling opens permanently loading modal:**
+- **Root cause:** Race between schedule mutation in-flight state and modal detail query. User could click the newly-scheduled tile before the mutation completed, opening the modal against an unpopulated cache. The modal treated `!visit` as a loading condition, producing an infinite spinner.
+- **Fix 1:** After successful schedule POST, deterministically seed `["visit-detail", visitId]` cache via `setQueryData` using schedule response + mutation params. Guarantees synchronous data availability on first modal open. (`useDispatchPreviewMutations.ts`)
+- **Fix 2:** Block click/select on visit tiles while `isSaving` is true, preventing modal open during transient mutation state. (`DispatchVisitBlock.tsx`)
+- **Fix 3:** Replace `isLoading || !visit` infinite-spinner gate with three-state rendering: loading → spinner, error/missing → explicit "Failed to load" + Retry button, data → normal form. (`EditVisitModal.tsx`)
+
+**Issue B — Completed/grayed-out visit still shows X unschedule control:**
+- **Root cause:** `DispatchVisitBlock.tsx` rendered the X button without checking `isCompleted`. The server `unscheduleVisit()` only checked job-level terminal status, not visit-level.
+- **Fix 4:** Added `!isCompleted` to X button visibility condition, matching the existing guard in `DispatchDetailPanel.tsx`. (`DispatchVisitBlock.tsx`)
+- **Fix 5:** Disabled drag/reschedule for completed visits (`disabled: isResizing || isCompleted`). (`DispatchVisitBlock.tsx`)
+- **Fix 6:** Added visit-level terminal status guard in `unscheduleVisit()` using canonical `TERMINAL_VISIT_STATUSES` from `visitPredicates.ts`. Returns structured HTTP 400 via `createError()` for completed/cancelled visits. (`server/storage/scheduling.ts`)
+
+**Files changed:** `useDispatchPreviewMutations.ts`, `DispatchVisitBlock.tsx`, `EditVisitModal.tsx`, `server/storage/scheduling.ts`
+
+#### Delete-Last-Visit → On Hold Instead of Unscheduled Backlog (2026-03-24)
+
+Deleting the last/only visit on a job previously either blocked (409 "Cannot delete placeholder visit #1") or silently dropped the job into the unscheduled backlog — confusing for dispatchers. Now, when deleting a visit leaves zero remaining actionable visits on an open job, the job is moved to `on_hold` (holdReason="other") via the canonical `placeJobOnHold()` orchestrator. This surfaces the job for dispatcher review through existing on-hold/needs-attention surfaces instead of polluting the scheduling backlog.
+
+- **Removed:** Placeholder visit #1 deletion guard (409 error). Any visit can now be deleted.
+- **Added:** Post-delete check: if `getUncompletedVisits()` returns zero AND job is open AND not already on_hold → `placeJobOnHold()`.
+- **Unchanged:** Normal unschedule path, non-last-visit deletes, terminal job behavior.
+
+**Files changed:** `server/routes/jobVisits.routes.ts`, `client/src/components/visits/EditVisitModal.tsx` (stale comment cleanup)
+
+#### Hold-State Guard Correctness — Use Canonical `openSubStatus` (2026-03-24)
+
+Fixed the delete-last-visit on_hold guard to check the canonical lifecycle field (`job.openSubStatus !== "on_hold"`) instead of using `holdReason` as a proxy. Added `openSubStatus` to `storage.getJob()` select list (was missing). Eliminates drift risk from treating metadata as state.
+
+**Files changed:** `server/routes/jobVisits.routes.ts`, `server/storage/jobs.ts`
+
+#### Ghost Technician — Missing Cache Invalidation on Deactivate/Activate (2026-03-24)
+
+Disabled technicians remained visible in dispatch board, task board, and scheduling dialogs because `deactivateMutation` and `activateMutation` in `TeamMemberDetail.tsx` did not invalidate the `["/api/team/technicians"]` cache. The server-side filtering was correct (disabled users excluded by `filterSchedulableTechnicians()`), but the 5-minute stale React Query cache was never busted.
+
+**Fix:** Added `queryClient.invalidateQueries({ queryKey: ["/api/team/technicians"], exact: false })` and the corresponding working-hours invalidation to both `deactivateMutation.onSuccess` and `activateMutation.onSuccess`.
+
+**File changed:** `client/src/pages/TeamMemberDetail.tsx`
+
+### Changed
+
+#### Job Detail Lifecycle Controls Refactor (2026-03-24)
+
+Replaced generic status dropdown with lifecycle-aware action buttons to enforce canonical job lifecycle transitions and prevent invalid status mutations (e.g., completed → open via dropdown).
+
+1. **Status dropdown removed:** Replaced editable Select component with read-only StatusPill badge. Job status is now display-only on the detail page.
+2. **Lifecycle-aware action bar:** Action buttons are now conditional on job status:
+   - **Open:** Schedule Visit, Put on Hold, Complete Job
+   - **On Hold:** Schedule Visit (doubles as resume path), Complete Job
+   - **Completed:** Reopen Job, Create/View Invoice (contextual), Archive Job
+   - **Archived:** Restore Job
+3. **Schedule Visit clears hold state server-side:** Scheduling a visit for an on-hold job now clears openSubStatus, holdReason, holdNotes, nextActionDate, and onHoldAt in the scheduling repository. This makes Schedule Visit the canonical resume path — no separate Resume button needed.
+4. **Technician execution states removed from UI:** `in_progress`, `on_route`, `dispatched` are no longer exposed as dispatcher-editable job statuses.
+5. **Generic status mutations eliminated:** `updateStatusMutation`, `clearHoldMutation`, `handleMetaStatusChange`, and `handleStatusChange` removed. All lifecycle transitions now use canonical endpoints (`/close`, `/reopen`, `/status` via ActionRequiredModal).
+6. **JobHeaderCard imperative handle:** Added `forwardRef` + `useImperativeHandle` to expose `openCloseJobDialog()` and `triggerReopenJob()` to parent, avoiding mutation duplication.
+
+**Files changed:** `client/src/pages/JobDetailPage.tsx`, `client/src/components/JobHeaderCard.tsx`, `server/storage/scheduling.ts`
+
+### Fixed
+
+#### Dispatch/Visit UI Safe Fixes (2026-03-23)
+
+1. **Non-links restyled:** Client and Location in EditVisitModal Job details card were styled `text-emerald-700` (green, link-like) but were not clickable. Restyled to `text-slate-900` (emphasized non-link text). Job # remains a real navigation link.
+2. **Delete button restored for unscheduled visits:** Removed `isPlaceholderVisit` guard that hid the Delete button for unscheduled visit #1. Delete is now available for all visits (backend uses soft-delete).
+3. **Unassigned added to technician filter:** The dispatch board technician filter dropdown now includes an "Unassigned" option (with separator and italic styling) when unassigned visits exist. The Unassigned lane visibility now respects filter state instead of auto-appending.
+4. **PM Test technician:** Investigated — this is a real database user record (not hardcoded). The backend already filters out `disabled` and `isSchedulable=false` users. Resolution: set `disabled=true` on the user record via admin panel or SQL, not a code change.
+
+**Files changed:** `EditVisitModal.tsx`, `DispatchFiltersBar.tsx`, `DispatchPreview.tsx`
+
+#### Dispatch/Visit State-Sync & Completion Fixes (2026-03-23)
+
+Root-cause fixes for visit modal stale data, unschedule field clearing, and completion path.
+
+1. **Fix A — Visit-detail cache invalidation:** `["visit-detail"]` query key now invalidated in all three dispatch mutation invalidation paths (`backgroundInvalidate`, `forceRefresh`, `invalidateAfterCompletion`). Previously, board mutations (reschedule, unschedule, crew update) never invalidated this key, causing the EditVisitModal to show stale data from a 5-minute cache.
+2. **Fix B — Unschedule clears technician assignment:** Backend `unscheduleVisit()` now clears `assignedTechnicianId` and `assignedTechnicianIds` alongside `scheduledStart/End`. Canonical rule: unscheduled = no technician, no date, no time.
+3. **Fix C — Canonical completion path:** "Complete visit" button in EditVisitModal now calls `POST /api/jobs/:jobId/visits/:visitId/complete` with `{ outcome: "completed" }` instead of `PATCH { status: "completed" }`. This triggers `lifecycle.completeVisit()` orchestrator: sets outcome, creates audit note, reconciles parent job (closes if last visit, on_hold if needs follow-up). Toast now says "Visit Completed" instead of "Visit Updated". Handles 409 (already completed) as idempotent success.
+
+**Files changed:** `useDispatchPreviewMutations.ts`, `server/storage/scheduling.ts`, `EditVisitModal.tsx`
+
+### Changed
+
+#### Visit Modal Refinement Pass (2026-03-23)
+
+Refinements to match approved preview more closely:
+
+- **Header:** Removed "Visit editor" label, "Visit #N", and status chip. Primary line is now `Client — Job Summary` (e.g., "Basil Box — Ice Machine Not Producing"). Secondary line shows location with MapPin icon. Tertiary line is Job # link only. Subtle `bg-slate-50/60` tint on header.
+- **Time inputs:** Replaced `<Select>` dropdowns with native `<input type="time">` for keyboard-friendly direct entry. Separate hour/minute/AM-PM entry. Start time change auto-adjusts end time to preserve duration.
+- **Right rail:** Stronger card styling with `shadow-sm`, `bg-slate-50` tint on Job details card, consistent `rounded-xl` borders. Clickable links for Job #, Client, and Location in emerald-700 with hover underlines.
+- **Quick actions:** Restored "Complete visit" as a visit-scoped action (PATCH `status=completed` only — does NOT call `/complete` endpoint, does NOT reconcile job substatus). "Open full job" kept with ExternalLink icon.
+- **Job summary:** Added `jobSummary` prop. Both Dispatch and Job Detail pass it. Displayed as part of the primary title line for clear work context.
+- **Visual polish:** Shadow-sm on section cards, slate-100 section borders, tighter label spacing, pill-style tech chips matching preview.
+- **Files:** `EditVisitModal.tsx`, `DispatchPreview.tsx` (pass `jobSummary`), `JobDetailPage.tsx` (pass `jobSummary`)
+
+#### Visit Modal Redesign: Two-Column Layout + Substatus Detachment (2026-03-23)
+
+Complete redesign of the canonical `EditVisitModal` to match the approved preview layout and enforce architectural separation between visit execution and job business-state.
+
+**UI Redesign:**
+- **Header:** "Visit editor" label + composite title (client — Job #N). Job #, Visit #, status badge are secondary metadata row.
+- **Left column:** Visit details section (instructions textarea) + Schedule section (date picker, start/end time selects, technician chips). Replaces `JobScheduleFields` component with inline start/end time UX per approved preview.
+- **Right column:** Job details card (Job #, Client, Location) + Quick actions card ("Open full job" link).
+- **Footer:** Delete (destructive left) / Cancel + Save changes (emerald right). Clean two-side layout.
+- **Modal width:** Widened to `sm:max-w-4xl` for two-column grid. Padding and density match approved preview.
+
+**Substatus Detachment — Removed from Visit Modal:**
+- `completeWithOutcomeMutation` — completed visit with outcome (needs_parts/needs_followup), patched job substatus, hold reason, hold notes. **Removed.** This was a disguised job-state mutation.
+- `reopenMutation` — reopened completed visit, auto-reopened parent job if terminal. **Removed.** Job lifecycle decision.
+- `NeedsFollowUpModal` import + render — collected hold reason/notes before completing with follow-up. **Removed.**
+- "Complete" button, "Follow-Up" button, "Reopen" button — all removed from modal UI.
+- `showFollowUp` state, `showCompleteAction` derived state, `isCompleted`/`isJobClosed` guards — dead code removed.
+- `jobStatus` prop — no longer needed (guarded removed buttons). Removed from interface and all callers.
+- `VISIT_STATUS_COLORS` map — removed (no longer rendered as colored badges).
+- Imports removed: `NeedsFollowUpModal`, `AlertTriangle`, `CalendarMinus`, `Check`, `MoreVertical`, `RotateCcw`, `Trash2` (most), `DropdownMenu*`, `Badge` (status), `Label`, `format` (check-in display), `JobScheduleFields`, `parseJobToScheduleValue`.
+
+**What Remains (visit-scoped only):**
+- Schedule editing (date, start time, end time, technicians)
+- Visit notes / instructions
+- Unschedule action
+- Delete visit (with confirmation)
+- Save via canonical dispatch mutations or PATCH fallback
+- "Open full job" link
+
+**Architectural rule enforced:** Visit modal can no longer mutate job substatus. Completion, reopen, and follow-up controls belong in Job Detail page.
+
+- **Files:** `client/src/components/visits/EditVisitModal.tsx` (rewritten), `client/src/pages/JobDetailPage.tsx` (removed `jobStatus` prop)
+
+### Fixed
+
+#### Canonical Visit Modal: Unified Header Contract Across All Entry Points (2026-03-23)
+
+- **Problem:** EditVisitModal showed company name, location, and address when opened from Dispatch, but only "Job # · Visit #N · Scheduled" when opened from Job Detail. Same component, divergent props.
+- **Root cause:** JobDetailPage passed only `jobId`, `visitId`, `jobStatus` — no display context. The modal header fell through to the `DialogTitle` tertiary line with no company/location info.
+- **Fix:** (a) JobDetailPage now passes `customerName` (from `job.parentCompany?.name`), `locationName`, `locationAddress`, and `jobNumber` — same contract as Dispatch. (b) Modal header restructured: `DialogTitle` is now the company name (primary). Location/address is secondary. Job # link and status badge are minimal tertiary. "Visit #N" removed from header entirely. Status badge shrunk to `text-[9px]` outline variant.
+- **Verification:** Both Dispatch and Job Detail open the exact same `EditVisitModal` component at `client/src/components/visits/EditVisitModal.tsx`. No duplicate modal components exist.
+- **Files:** `client/src/pages/JobDetailPage.tsx`, `client/src/components/visits/EditVisitModal.tsx`
+
+#### Dispatch Board: Unified Modal/Drag Scheduling + Multi-Tech + Header (2026-03-23)
+
+Six dispatch-board inconsistencies fixed in a single canonical pass:
+
+1. **Unscheduled → Save "Updated" but visit doesn't move (Fix A+E):**
+   - **Root cause (layer 1):** EditVisitModal used a bespoke PATCH path without optimistic dispatch cache updates. The visit moved in the DB but the UI waited for refetch.
+   - **Root cause (layer 2, fixed 2026-03-23 hardening):** `optimisticSchedule()` looked up unscheduled items by `j.id === visitId`, but unscheduled cache keys are **job IDs** while EditVisitModal passes the actual **visit UUID** via `activeVisitId`. The lookup silently failed, so the optimistic move never happened.
+   - **Fix:** (a) `resolveVisitFromCache`, `patchCachedVersion`, and `optimisticSchedule` now match unscheduled items by both `id` (job ID) and `activeVisitId` (visit UUID). (b) Dispatch callbacks route modal scheduling through canonical `scheduleVisit`/`rescheduleVisit`.
+   - **Root cause (layer 3):** EditVisitModal fired a separate PATCH request (for notes/multi-tech) in parallel with the schedule POST, causing version-mismatch 409 errors. The PATCH raced with the schedule call and incremented version.
+   - **Fix:** Notes are now passed through the schedule/reschedule API calls (`visitNotes` param → server `notes` field). Multi-tech is persisted via the chained `assign-crew` endpoint (serialized via `chainForVisit`). No separate PATCH fires from the dispatch path.
+   - **Files:** `useDispatchPreviewMutations.ts`, `EditVisitModal.tsx`, `DispatchPreview.tsx`
+
+2. **Drag/schedule shows "In Progress" instead of "Active" (Fix B):**
+   - **Root cause (client):** `optimisticSchedule()` inherited `openSubStatus` from unscheduled job data (could be stale `"in_progress"` from a prior lifecycle).
+   - **Root cause (server):** `scheduleJob()` did not clear the job's `openSubStatus` when scheduling a backlog job, so the refetched calendar data brought back the stale value.
+   - **Fix (client):** `optimisticSchedule()` explicitly sets `openSubStatus: null`.
+   - **Fix (server):** `scheduleJob()` now clears `openSubStatus` when the job was previously unscheduled (no `scheduledStart`). Ensures server-returned data matches the optimistic patch.
+   - **Files:** `useDispatchPreviewMutations.ts`, `server/storage/scheduling.ts`
+
+3. **Secondary technician not persisted (Fix D):**
+   - **Root cause:** `handleSave()` sent only `assignedTechnicianId` (singular). The multi-tech array from `JobScheduleFields` was silently dropped. The server schema also didn't accept `assignedTechnicianIds`.
+   - **Fix:** (a) `handleSave()` now includes `assignedTechnicianIds` in the PATCH payload (non-dispatch path). (b) `updateVisitSchema` extended with `assignedTechnicianIds: z.array(z.string().uuid()).optional()`. (c) When dispatch callbacks are available, `onDispatchUpdateCrew` is called for multi-tech visits (chained serialization ensures correct version). (d) Form initialization passes `assignedTechnicianIds` from visit data.
+   - **Files:** `EditVisitModal.tsx`, `jobVisits.routes.ts`
+
+4. **"Unassigned" shown immediately after schedule, correct after page re-entry (Fix E):**
+   - Shared root cause with Fix A — solved by fixing `activeVisitId` lookup + routing through canonical dispatch mutations with optimistic updates.
+
+5. **Modal header shows "Visit #1 · Scheduled" instead of location context (Fix F):**
+   - **Root cause:** Header template emphasized visit ordinal and status badge. No location/address data was passed or rendered.
+   - **Fix:** (a) DispatchPreview now passes `locationName` and `locationAddress` to EditVisitModal. (b) Header restructured: company name (bold) → location — address (secondary) → Job # · Visit # (tertiary, smaller). Status badge shrunk.
+   - **Files:** `EditVisitModal.tsx`, `DispatchPreview.tsx`
+
+6. **Date/time population (Fix C):**
+   - **Verified:** `parseJobToScheduleValue()` correctly uses `parseISO()` + `format()` which handles UTC→local conversion. "Blank date" only occurs during loading spinner (already guarded by existing loader). No code change needed — existing implementation is correct.
+
+- **Architectural note:** Modal save and drag-drop now converge on the same dispatch mutation machinery when used from DispatchPreview. Notes flow through schedule/reschedule API calls. Multi-tech flows through the chained `assign-crew` endpoint. No separate PATCH fires from the dispatch path, eliminating the version-mismatch race condition. When EditVisitModal is opened from JobDetailPage (no dispatch callbacks), it falls back to the PATCH path which still syncs correctly via `syncJobScheduleFromVisits()` on the server.
+
+#### New Visit Time Shift — 9 AM Renders as 5 AM on Dispatch Board (2026-03-23)
+
+- **Bug:** Creating a new visit via AddVisitDialog (especially adding a second visit to a job) with 9:00 AM selected caused it to render at 5:00 AM on the dispatch board — a consistent 4-hour shift matching EDT→UTC offset.
+- **Root cause:** `AddVisitDialog.tsx:152` hardcoded a `Z` (UTC) suffix onto the raw local-time string: `` `${scheduledDate}T${scheduledTime}:00.000Z` ``. This declared 9:00 AM local as 9:00 AM UTC. The server stored 09:00 UTC, and the client's `getHours()` converted to local time yielding 5:00 AM EDT.
+- **Fix:** Replaced string concatenation with `new Date(...).toISOString()` — the same correct pattern used by EditVisitModal and jobScheduling.ts. `new Date("2026-03-20T09:00:00")` (no Z) interprets as local time; `.toISOString()` converts to correct UTC.
+- **Scope:** AddVisitDialog only. Edit (PATCH) and initial schedule (QuickAddJobDialog) paths were already correct.
+- Files: `client/src/components/AddVisitDialog.tsx`
+
+#### Deleted Visit Ghost — Visit Remains Visible After Deletion (2026-03-23)
+
+- **Bug:** Deleting a visit from the dispatch board showed "Visit Deleted" toast but the visit remained visible. A second delete attempt returned "Visit not found" (404).
+- **Root cause:** `deleteMutation.onSuccess` in EditVisitModal called `invalidateVisitQueries()` which marks caches stale but does NOT remove data. The modal closed before async refetch completed, leaving stale visit data in the React Query cache. The dispatch board re-rendered from stale cache. Second delete failed because server soft-delete (isActive=false) made the visit invisible to `activeVisitGuard()`.
+- **Fix:** Added optimistic cache removal before invalidation — `queryClient.setQueriesData()` strips the deleted visit from both `/api/calendar` (events array) and `/api/calendar/unscheduled` (bare array) caches immediately. The visit disappears on the current render frame, before the async refetch.
+- Files: `client/src/components/visits/EditVisitModal.tsx`
+
+### Fixed
+
+#### Dispatch Board: Unassigned Visits No Longer Disappear in Week View (2026-03-23)
+
+- **Bug:** Scheduled visits with no assigned technician silently disappeared from the week view grid. They were excluded at the bucketing layer (`useDispatchWeekData.ts:96`) and had no fallback rendering path. The day view correctly handled this with a virtual "Unassigned" lane, but the week view did not.
+- **Root cause:** `if (techIds.length === 0) continue;` in `visitsByTechByDay` grouping skipped unassigned visits entirely.
+- **Fix:** Unassigned visits now bucket under `UNASSIGNED_TECH_ID` in the week data hook, and a virtual "Unassigned" technician lane is added to the week grid on-demand (matching day view behavior).
+- Files: `client/src/components/dispatch/useDispatchWeekData.ts`, `client/src/pages/DispatchPreview.tsx`
+
+#### Dispatch Cards Now Show Location Context for Multi-Location Clients (2026-03-23)
+
+- **Problem:** Timeline and week cards only showed client name, making it impossible to distinguish same-client visits at different locations (e.g., two Basil Box jobs).
+- **Fix:** Cards now show a concise location line (site name or street + city) after the client name on timeline-wide and week card variants. Location data was already in the DTO but not rendered.
+- Files: `client/src/components/dispatch/VisitCardContent.tsx`
+
+#### Dispatch Detail Panel: Job Status Replaces Visit Ordinal as Primary Display (2026-03-23)
+
+- **Problem:** Detail panel header showed "Visit #1" (low dispatch value) and the status badge showed visit-level status (could diverge from the card's job-level color).
+- **Fix:** Removed "Visit #1" from header. Status badge now uses `jobStateColor()`/`jobStateLabel()` (Active, In Progress, On Hold, Completed, Invoiced, Archived) — matching the card's color model for visual consistency.
+- Files: `client/src/components/dispatch/DispatchDetailPanel.tsx`, `client/src/components/dispatch/dispatchPreviewUtils.ts`
+
+#### PM Instance History Excludes Soft-Deleted Jobs (2026-03-23)
+
+- **Bug:** `getInstancesWithJobs()` LEFT JOINed to `jobs` without excluding soft-deleted rows. Soft-deleted jobs (with `deletedAt` set) leaked stale metadata into PM template instance/history results, making deleted jobs appear present.
+- **Root cause:** The LEFT JOIN condition `eq(recurringJobInstances.generatedJobId, jobs.id)` had no `isNull(jobs.deletedAt)` predicate, so soft-deleted job rows still matched.
+- **Fix:** Added `isNull(jobs.deletedAt)` to the LEFT JOIN condition so soft-deleted jobs resolve to `job: null` — same as hard-deleted jobs. No API contract change, no UI change, no lifecycle mutation.
+- Files changed: `server/storage/recurringJobs.ts` (`getInstancesWithJobs()`)
+- Tests added: `tests/pm-instance-history-softdelete.test.ts`
+
+#### Visit Reopen Now Clears Parent Job On-Hold State (2026-03-23)
+
+- **Bug:** Reopening a visit from the dispatch board reset the visit to "scheduled" but left the parent job stuck in `openSubStatus = "on_hold"` with `holdReason` intact. The job detail page still showed "On Hold / Needs Parts" after reopening.
+- **Root cause:** `reopenVisit()` only auto-reopened terminal jobs (`completed`/`invoiced`/`archived`). Jobs in `status = "open"` with `openSubStatus = "on_hold"` were silently skipped — the hold state was never cleared.
+- **Fix:** Extended `reopenVisit()` to detect `open + on_hold` and delegate to canonical `resumeJob()`, which clears `openSubStatus`, `holdReason`, `holdNotes`, and `onHoldAt`. Sets `jobWasReopened = true` so the client patches both dispatch board and job detail caches.
+- **Client:** `optimisticReopenVisit()` now also patches `openSubStatus → null` on the calendar event for immediate UI reflection.
+- Files: `server/services/jobLifecycleOrchestrator.ts` (`reopenVisit()`), `client/src/components/dispatch/useDispatchPreviewMutations.ts` (`optimisticReopenVisit()`)
+
+### Changed
+
+#### Dispatch Card Colors Strengthened to Solid Fills (2026-03-23)
+
+- **Problem:** Card fills used `-50` Tailwind tints (e.g., `bg-emerald-50`) which appeared nearly white with a colored outline rather than solid fills.
+- **Fix:** Strengthened to `-100` tints with `-400` borders and `-900` text for clear, readable solid fills:
+  - Active/dispatched: `bg-green-100 text-green-900 border-green-400`
+  - In progress: `bg-blue-100 text-blue-900 border-blue-400`
+  - On hold / needs action: `bg-orange-100 text-orange-900 border-orange-400`
+  - Completed/closed: `bg-slate-100 text-slate-500 border-slate-300`
+- Files: `client/src/components/dispatch/dispatchPreviewUtils.ts` (`jobStateColor()`)
+
+### Fixed
+
+#### PM Dashboard Reappearance Bug — Generated Instances No Longer Resurface After Job Deletion (2026-03-23)
+
+- **Bug:** Deleting a PM-generated job caused the source PM instance to reappear in the PM dashboard (Due Now / Needs Generation / Overdue) as if it were never generated.
+- **Root cause:** `getUpcomingQueue()` used `generatedJobId IS NULL` as the sole eligibility gate. When a generated job was hard-deleted, the FK cascade (`onDelete: "set null"`) nulled `generatedJobId`, and the instance passed the filter despite having `status = "generated"`.
+- **Fix:** Replaced the nullable-FK-driven eligibility gate with an authoritative lifecycle status filter: `eq(recurringJobInstances.status, "pending")`. Only legitimately pending instances now appear in the PM dashboard. Generated, skipped, canceled, and claiming instances are excluded regardless of `generatedJobId` state.
+- **Claiming status:** Excluded from queue visibility. `claiming` is a transitional lock state during job creation; stale claims are recovered to `pending` by `recoverStaleClaims()` before any generation attempt.
+- Files: `server/storage/recurringJobs.ts` (`getUpcomingQueue()`)
+- Tests: `tests/pm-instance-eligibility.test.ts` (13 scenarios)
+
+### Changed
+
+#### Dispatch Card Color System — Job-State Accent Model (2026-03-23)
+
+- **Color now derives from parent JOB status**, not visit status. 4-state accent model:
+  - Green accent: dispatched/scheduled (open, no sub-status)
+  - Blue accent: in progress (open + `in_progress` sub-status)
+  - Orange accent: needs action (open + `on_hold` sub-status)
+  - Gray accent: completed/closed (completed, invoiced, archived)
+- **Card styling:** Full solid fill derived from job state. Green (dispatched/scheduled), blue (in progress), orange (needs action/on hold), gray (completed/closed). Replaces the previous visit-status-driven fill.
+- **Completed visit on active job:** No longer appears gray/struck-through. Only grays out when the parent job is closed.
+- **Data pipeline:** Added `openSubStatus` and `holdReason` fields through the full stack: SQL query → `ScheduledJobWithDetails` → `CalendarEventDto`/`UnscheduledJobDto` → `DispatchVisit`.
+- Files: `dispatchPreviewUtils.ts`, `DispatchVisitBlock.tsx`, `VisitCardContent.tsx`, `dispatchPreviewTypes.ts`, `dispatchPreviewMappers.ts`, `dispatchPreviewMockData.ts`, `server/storage/scheduling.ts`, `server/routes/scheduling.ts`, `shared/types/scheduling.ts`
+
+#### Hold Reasons — Consolidated to Shared Schema (2026-03-23)
+
+- **Source of truth moved** from hardcoded `HOLD_REASONS` array in `ActionRequiredModal.tsx` to `shared/schema.ts` (`holdReasonEnum`, `HOLD_REASON_LABELS`, `HOLD_REASON_OPTIONS`, `getHoldReasonLabel`).
+- **DB values confirmed:** `parts`, `customer`, `access`, `approval`, `weather`, `other` — enforced by CHECK constraint + Zod validation.
+- **UI labels map exactly:** parts→"Waiting for Parts", customer→"Customer Approval", access→"Access Issue", approval→"Internal Approval", weather→"Weather Delay", other→"Other".
+- `ActionRequiredModal.tsx` now re-exports from shared schema. All existing imports (`NeedsFollowUpModal`, `JobDetailPage`) continue to work unchanged.
+- Files: `shared/schema.ts`, `client/src/components/ActionRequiredModal.tsx`
+
+#### Day View Timeline — Tighter Hour Columns (2026-03-23)
+
+- **`HOUR_WIDTH_PX`:** Reduced from 120px to 104px (~13% tighter) in `dispatchPreviewUtils.ts`.
+- **Derived `PX_PER_MINUTE`** auto-updates from 2.0 to ~1.733 — no other constants changed.
+- Default 17-hour timeline total width: 2040px → 1768px (recovers ~272px of horizontal scroll).
+- 15-minute snap grid: 30px → 26px — still comfortably clickable/draggable.
+- Week view unaffected (uses flexible columns, does not import `HOUR_WIDTH_PX`).
+- No font, row height, or card styling changes.
+- Files: `client/src/components/dispatch/dispatchPreviewUtils.ts`
+
+### Removed
+
+#### Click-to-Move Scheduling Mode — Complete Removal (2026-03-22)
+
+- **Removed:** The Drag/Click toggle from the dispatch board header. Drag is now the sole implicit scheduling mode.
+- **Dead code removed across 7 files:** `SchedulingMode` type, `schedulingMode` state, `pendingClickVisit`/`clickPlacement`/`clickHoverTechId` state, `handleClickSelectVisit`/`handleClickHover`/`handleClickSchedule`/`handleClickHoverLeave`/`cancelClickPlacement` handlers, `clickPreviewNode` memo, click-mode placement instruction banner, `MousePointer` icon usage, `isClickMode` branching in cards/panels, `isPlacementActive`/`clickPreview`/`isClickHoverTarget` lane props, click-mode cursor (`cursor-crosshair`), `disabled: isClickMode` on drag hooks.
+- **Drag behavior unchanged:** All drag-and-drop scheduling, resize, and empty-slot quick-create preserved exactly.
+- Files: `DispatchBoardHeader.tsx`, `DispatchPreview.tsx`, `DispatchTimeline.tsx`, `DispatchLaneRow.tsx`, `DispatchUnscheduledPanel.tsx`, `DispatchUnscheduledCard.tsx`
+
+### Fixed
+
+#### Dispatch Board UI Consistency Pass (2026-03-22)
+
+- **Technician font size (Week → Day parity):** Week view tech names changed from `text-xs` (12px) to `text-[13px]` with `leading-tight` to match Day view sidebar exactly.
+- **Unscheduled filter chip label:** "All Types" renamed to "All" for brevity. Filter semantics unchanged.
+- Files: `WeekDispatchGrid.tsx`, `DispatchUnscheduledPanel.tsx`
+
+#### Week View Visit Items — Container Affordance + Color Alignment (2026-03-22)
+
+- **Problem:** Week view visit items rendered as bare text with a status dot and no visual container, making them appear as floating labels rather than interactive elements.
+- **Fix (affordance):** Added subtle container styling to `WeekVisitItem`. Increased horizontal padding from `px-1` to `px-1.5`. Selected state adds `border-emerald-200`.
+- **Fix (color alignment):** Replaced gray container (`bg-slate-50/50 border-slate-200/70`) with green-tinted styling (`bg-emerald-50/40 border-emerald-200/60`) to visually tie week items to scheduled visits on the timeline. Hover: `hover:bg-emerald-50/60 hover:border-emerald-300`.
+- **Density preserved:** Single-line layout unchanged. `py-0.5` vertical padding unchanged. No height increase. `MAX_VISIBLE = 4` items per cell unaffected.
+- Files: `client/src/components/dispatch/WeekDispatchCell.tsx`
+
+#### Unified Visit Editor UX — Unscheduled Visits No Longer Show Degraded Modal (2026-03-22)
+
+- **Root cause:** `EditVisitModal` opens the same modal for scheduled and unscheduled visits, but `JobScheduleFields` gated Duration visibility on `!value.unscheduled` and disabled all fields (Date, Time, Technician) via `isDisabled = disabled || value.unscheduled`. Unscheduled visits rendered with greyed-out empty fields, missing Duration, and no Unschedule button — appearing like a broken editor rather than a legitimate state.
+- **Fix (JobScheduleFields):** Added `allowEditWhenUnscheduled` prop (default `false`). When `true`, fields remain editable even when `value.unscheduled` is true, and Duration is always shown. Scoped to `EditVisitModal` only — `QuickAddJobDialog` and other consumers preserve existing behavior unchanged.
+- **Fix (EditVisitModal):** Added info banner ("This visit is not yet scheduled. Set a date and time below to schedule it.") when `!visit.scheduledStart`. Passes `allowEditWhenUnscheduled={true}` to `JobScheduleFields`.
+- **Footer unchanged:** Unschedule button still correctly hidden for already-unscheduled visits. Complete/Follow-Up/Save/Delete all unchanged.
+- **No auto-clear logic:** `unscheduled` flag is NOT mutated on date entry — save logic determines scheduling vs unscheduled per existing `handleSave` behavior.
+- Files: `client/src/components/jobs/JobScheduleFields.tsx`, `client/src/components/visits/EditVisitModal.tsx`
+
+### Refactored
+
+#### Visit Card Design System — Shared VisitCardContent Component (2026-03-22)
+
+- **Classification:** Design System Standardization — shared content renderer for all dispatch visit card surfaces.
+- **New component:** `VisitCardContent.tsx` — pure presentation, `React.memo`-wrapped, no hooks/state/side effects. Renders canonical visit content rows with 4 variants: `timeline-wide`, `timeline-narrow`, `unscheduled`, `week`.
+- **Typography normalized:** Customer name is `text-[11px] font-semibold` on timeline + unscheduled; `text-[10px] font-semibold` on week (was missing `font-semibold`). Duration is `text-[10px]` consistently.
+- **Completion state unified:** `CheckCircle2` icon + `line-through` + `opacity` on ALL surfaces (unscheduled previously used dot-only for completed visits).
+- **Selected ring normalized:** Week view changed from `ring-1` to `ring-2 ring-emerald-500` to match timeline + unscheduled.
+- **Team badge identical:** Same emerald `text-[8px]` badge with Users icon across timeline + week variants.
+- **Variant-specific rules preserved:** Timeline keeps border-based status encoding (no dot added). Unscheduled keeps dot + priority badge. Week keeps compressed single-row. No priority forced into week view. Job number stays tooltip-only on timeline, visible on unscheduled, omitted on week.
+- **Wrappers unchanged:** Container styling, drag/resize interaction, absolute positioning, hover actions, mode switching — all remain in their respective wrapper components.
+- Files changed: `client/src/components/dispatch/VisitCardContent.tsx` (new), `client/src/components/dispatch/DispatchVisitBlock.tsx` (replaced inner content), `client/src/components/dispatch/DispatchUnscheduledCard.tsx` (replaced inner content), `client/src/components/dispatch/WeekDispatchCell.tsx` (replaced WeekVisitItem inner content)
+- No backend changes.
+
+#### Create Invoice from Job — Canonical Extraction + Dead Code Removal (2026-03-22)
+
+- **Classification:** Canonical Extraction + Dead Code Cleanup.
+- **New component:** `CreateInvoiceFromJobDialog.tsx` — canonical dialog for creating draft invoices from jobs.
+- **Props:** `open`, `onOpenChange`, `jobId`, `jobNumber`, `jobSummary`, `jobStatus`, `locationDisplayName`, `onCreated`.
+- **Component owns:** Mutation (`POST /api/invoices/from-job/:jobId`), cache invalidation (`["invoices"]`, `["jobs"]`, `["dashboard"]`), toast, dialog close.
+- **Parent owns (via `onCreated` callback):** Activity logging, navigation to `/invoices/:id`.
+- **Two-button behavior preserved:** "Create Invoice" (`markJobCompleted: false`) and "Close Job & Create Invoice" (`markJobCompleted: true`, hidden when job already completed).
+- **Dead code removed from `JobHeaderCard.tsx`:** `createInvoiceMutation` (~20 lines), `handleCreateInvoice` (~7 lines), "Create Invoice" menu item (~8 lines) — all inside `showActions` block that was always `false` in the only usage.
+- Files changed: `client/src/components/CreateInvoiceFromJobDialog.tsx` (new), `client/src/pages/JobDetailPage.tsx` (removed inline dialog + mutation + handler, added import), `client/src/components/JobHeaderCard.tsx` (removed dead code)
+- No backend changes.
+
+#### Contact CRUD Canonicalization — Extracted ContactFormDialog (2026-03-22)
+
+- **Classification:** Canonical Extraction — moved page-local ContactFormDialog into a shared component for reusability.
+- **New component:** `ContactFormDialog.tsx` — canonical contact create/edit modal supporting both company-level and location-level contacts via scope props.
+- **Exports:** `ContactFormDialog` (named), `ContactScope` (type), `STANDARD_CONTACT_ROLES` (constant).
+- **Behavior:** Zero runtime changes — identical props, mutation logic, validation, scope handling, and cache invalidation.
+- **Parent wrappers unchanged:** `CompanyContactsCompact` and `LocContactsCompact` remain page-local in ClientDetailPage (layout-specific, not reusable).
+- Files: `client/src/components/ContactFormDialog.tsx` (new), `client/src/pages/ClientDetailPage.tsx` (removed inline definition, added import)
+
+#### Edit Client Extraction + Dead Code Removal (2026-03-22)
+
+- **Classification:** Canonical Extraction + Dead Code Cleanup.
+- **New component:** `EditCompanyDialog.tsx` — canonical company billing info editor. Owns its own mutation, form state, and cache invalidation.
+- **Props:** `open`, `onOpenChange`, `companyId`, `parentCompany`, `clientId`.
+- **Behavior:** Zero runtime changes — identical fields (name, phone, email, billing address), identical PATCH endpoint, identical 3-key cache invalidation.
+- **Dead code removed:** `EditClientDialog.tsx` (499 lines) — legacy component targeting old flat `Client` model with `PUT /api/clients/:id`. Had zero importers. Superseded when data model split into `CustomerCompany` + `ClientLocation`.
+- Files changed: `client/src/components/EditCompanyDialog.tsx` (new), `client/src/pages/ClientDetailPage.tsx` (removed inline dialog + mutation + form state, added import)
+- Files removed: `client/src/components/EditClientDialog.tsx`
+
+### Fixed
+
+#### Unscheduled Visits Now Clickable — Canonical Visit Identity Fix (2026-03-22)
+
+- **Root cause:** `getUnscheduledJobs()` queried only the `jobs` table and never joined `job_visits`. Unscheduled items carried `jobId` as their `id` but no `visitId`. The click handler correctly guarded against using a job ID as a visit ID (`kind === "backlog"` branch), making unscheduled cards a dead end — clicking did nothing.
+- **Server fix:** Added a correlated subquery in `getUnscheduledJobs()` (`server/storage/scheduling.ts`) to select the first active non-terminal visit ID from `job_visits`. Added `activeVisitId` field to the API response (`server/routes/scheduling.ts`).
+- **Type contract fix:** Added `activeVisitId` to `UnscheduledJobDto` (`shared/types/scheduling.ts`). Added `visitId` field to `DispatchVisit` type (`dispatchPreviewTypes.ts`) — scheduled visits set it from `event.visitId`, unscheduled items set it from `job.activeVisitId`.
+- **Click handler fix:** `handleSelectVisit` now checks `visit.visitId` (not `visit.kind`) to decide whether to open EditVisitModal. Both scheduled and unscheduled visits with a real visitId open the same canonical modal.
+- **Optimistic unschedule fix:** `optimisticUnschedule()` now preserves `activeVisitId` in the synthetic `UnscheduledJobDto`, so the visit remains clickable after unschedule.
+- Files: `server/storage/scheduling.ts`, `server/routes/scheduling.ts`, `shared/types/scheduling.ts`, `client/src/components/dispatch/dispatchPreviewTypes.ts`, `client/src/components/dispatch/dispatchPreviewMappers.ts`, `client/src/components/dispatch/useDispatchPreviewMutations.ts`, `client/src/pages/DispatchPreview.tsx`, `client/src/components/dispatch/dispatchPreviewMockData.ts`
+
+#### EditVisitModal Layout and Header Fixes (2026-03-22)
+
+- **Layout overflow fix:** Widened modal from `sm:max-w-md` to `sm:max-w-lg` with `overflow-hidden` to prevent schedule field controls from overflowing. Footer uses `flex-wrap` to handle narrow viewports.
+- **Job number clickable:** Job number in modal header is now a `<Link>` to `/jobs/{jobId}` with blue link styling and external-link icon. Clicking closes modal and navigates to job detail.
+- **Header hierarchy:** Customer name shown as primary (semibold, full-size), job number as a clickable link, visit number and status badge follow. Balanced hierarchy instead of job number dominating.
+- **Button label:** "Reopen Visit" shortened to "Reopen" for footer space.
+- Files: `client/src/components/visits/EditVisitModal.tsx`
+
+### Refactored
+
+#### Dispatch Visit UX Simplification — Direct EditVisitModal Open (2026-03-22)
+
+- **Problem:** Clicking a real visit on Dispatch opened an intermediate DispatchDetailPanel first, requiring a second click ("Edit / Complete Visit") to reach the canonical EditVisitModal. The intermediate panel no longer added unique value for real visits.
+- **Solution:** Clicking a real visit on the dispatch board now opens EditVisitModal directly — one click, no intermediate panel.
+- **EditVisitModal design updates:**
+  - Added `customerName` and `jobNumber` optional display props shown in the header (for dispatch context)
+  - Renamed "Completed" button to "Complete" with neutral `variant="outline"` styling (not green/primary before action)
+  - Promoted "Unschedule" from overflow menu to a visible `variant="ghost"` button in the footer
+  - Delete remains in overflow menu (lower emphasis)
+- **DispatchDetailPanel:** No longer rendered for real visits. Still used for tasks (TaskDetail sub-component). Backlog items are not selectable.
+- **handleOpenVisitEditor callback removed** — no longer needed since handleSelectVisit opens EditVisitModal directly.
+- Files: `client/src/components/visits/EditVisitModal.tsx`, `client/src/pages/DispatchPreview.tsx`
+- No backend changes.
+
+#### Canonical Create Client Modal — Replaces All Client Creation Flows (2026-03-21)
+
+- **Classification:** Canonical Reuse — consolidating 4 duplicate client creation surfaces into one canonical modal.
+- **New component:** `CreateClientModal.tsx` — lightweight modal for minimal client/company creation. Fields: company name (required), optional primary contact (first/last/phone/email), optional billing address. On success: navigates to Client Detail page for all further setup.
+- **API:** Uses `POST /api/clients/full-create` which atomically creates customer company + primary location + optional contacts.
+- **Entry points rewired:** (1) Clients.tsx "New Client" button, (2) App.tsx header add-client action, (3) QuickCreateDrawer "New Client" menu item, (4) Reports.tsx add-client dialog, (5) CompanySettingsPage add-client dialog, (6) Admin.tsx add-client dialog.
+- **Pages removed:** `NewClientPage.tsx` (full-page creation form), `AddClientPage.tsx` (legacy tabbed creation).
+- **Components removed:** `QuickAddClientModal.tsx`, `NewAddClientDialog.tsx`, `AddClientDialog.tsx`, `AddClientWithCompanyDialog.tsx` — all had zero importers after rewiring.
+- **Routes removed:** `/clients/new`, `/add-client` — no longer needed.
+- **QuickCreateDrawer:** Inline client form and createClientMutation removed. "New Client" menu item now closes drawer and opens canonical CreateClientModal via `onNewClient` callback.
+- Files changed: `client/src/components/CreateClientModal.tsx` (new), `client/src/App.tsx`, `client/src/pages/Clients.tsx`, `client/src/components/QuickCreateDrawer.tsx`, `client/src/pages/Reports.tsx`, `client/src/pages/CompanySettingsPage.tsx`, `client/src/pages/Admin.tsx`
+- Files removed: `client/src/pages/NewClientPage.tsx`, `client/src/pages/AddClientPage.tsx`, `client/src/components/QuickAddClientModal.tsx`, `client/src/components/NewAddClientDialog.tsx`, `client/src/components/AddClientDialog.tsx`, `client/src/components/AddClientWithCompanyDialog.tsx`
+- No backend changes.
+
+#### Visit Modal Unification — Canonical EditVisitModal for All Surfaces (2026-03-21)
+
+- **Classification:** Canonical Reuse — replacing duplicated visit lifecycle UI in DispatchDetailPanel with the canonical EditVisitModal.
+- **Root cause of duplication:** Two separate UI surfaces (Job Detail via `EditVisitModal`, Dispatch via `DispatchDetailPanel`) each independently implemented visit lifecycle actions (complete, follow-up, reopen, delete). This caused drift — fixes to one surface didn't propagate to the other (documented in the 2026-03-21 Phase 0 fix).
+- **Solution:** `EditVisitModal.tsx` is now the single canonical visit-lifecycle modal for all surfaces.
+  - **EditVisitModal gains:** Reopen Visit mutation + button (previously only in dispatch path), `onAfterMutation` callback for external cache coordination.
+  - **DispatchDetailPanel loses:** Complete/Follow-Up buttons, NeedsFollowUpModal integration, Reopen Visit button, Delete Visit button/confirmation. Gains `onOpenVisitEditor` callback that opens EditVisitModal.
+  - **DispatchPreview.tsx:** Renders EditVisitModal when `onOpenVisitEditor` is triggered. Removed `handleCompleteVisitWithOutcome`, `handleReopenVisit`, `handleDeleteVisit` callbacks.
+- **What remains dispatch-specific:** Inline scheduling (crew picker, date/time/duration with overlap clamping), Unschedule, Schedule from panel, Visit notes inline editing, context display (client, location, contact).
+- Files: `client/src/components/visits/EditVisitModal.tsx`, `client/src/components/dispatch/DispatchDetailPanel.tsx`, `client/src/pages/DispatchPreview.tsx`
+- No backend, schema, or mutation path changes.
+
+### Fixed
+
+#### Job Detail Page — Needs Follow-Up / Needs Parts Shows "Open (Backlog)" Instead of "On Hold" (2026-03-21)
+
+- **Root cause:** Job Detail page uses `EditVisitModal.tsx` for visit completion, NOT the dispatch board's `DispatchDetailPanel.tsx`. The `completeWithOutcomeMutation` in `EditVisitModal` had two defects: (1) `onSuccess` callback took zero parameters — the API response containing `reconciliation.newOpenSubStatus: "on_hold"` was silently discarded; no optimistic cache patch occurred for the job detail query `["jobs", "detail", jobId]`. (2) `NeedsFollowUpModal.onConfirm` called `completeWithOutcomeMutation.mutate()` then immediately `setShowFollowUp(false)` — the modal closed before the mutation settled, masking any error.
+- **Backend confirmed correct:** `POST /api/jobs/:jobId/visits/:visitId/complete` correctly persists `openSubStatus: "on_hold"` with `holdReason` and returns `reconciliation.jobUpdated: true`. The defect was purely frontend.
+- **Fix:** (1) Typed `mutationFn` return to capture `{ visit, reconciliation }` response. `onSuccess` now receives `(result, variables)` and immediately patches the job detail cache (`queryClient.setQueryData(["jobs", "detail", jobId])`) with `openSubStatus`, `holdReason`, `holdNotes`, and `onHoldAt` from the reconciliation result — same pattern as the dispatch path. (2) Changed `NeedsFollowUpModal.onConfirm` to use `mutateAsync().then()` — modal closes only on success; on error, `useMutation.onError` shows the toast and the modal stays open for retry.
+- **Existing invalidation preserved:** `invalidateVisitQueries()` still fires after success as a safety net for all query families.
+- **Completed Fully path unaffected:** Both outcomes use the same `completeWithOutcomeMutation` — the fix applies uniformly.
+- Files: `client/src/components/visits/EditVisitModal.tsx`
+- Temporary instrumentation added and removed: `client/src/components/dispatch/DispatchDetailPanel.tsx`, `client/src/pages/DispatchPreview.tsx`, `client/src/components/dispatch/useDispatchPreviewMutations.ts` (all `[FOLLOWUP-TRACE]` console.warn lines removed)
+
+#### Reopen Visit Auto-Reopens Parent Job (2026-03-20)
+
+- **Root cause:** "Reopen Visit" on a visit whose parent job was auto-closed by reconciliation (status="completed") failed with 409 "Reopen job to uncomplete a visit." because the visit status endpoint (`POST /status`) only targeted the visit — it never attempted to reopen the parent job. The business rule requires that reopening a completed visit must also reopen the parent job as part of the same lifecycle sequence.
+- **Fix:** Added canonical `reopenVisit()` orchestrator method (`jobLifecycleOrchestrator.ts`) that: (1) loads the parent job, (2) if terminal, delegates to the existing `reopenJob()` lifecycle method (no logic duplication), (3) resets the visit to `status="scheduled"` with completion fields cleared. New thin route `POST /api/jobs/:jobId/visits/:visitId/reopen` in `jobVisits.routes.ts`. Frontend "Reopen Visit" button now calls the dedicated endpoint via `reopenVisit()` mutation instead of the generic `updateVisitStatus()`. The generic `/status` terminal-job guard is preserved for non-reopen status changes.
+- Files: `server/services/jobLifecycleOrchestrator.ts`, `server/routes/jobVisits.routes.ts`, `client/src/components/dispatch/useDispatchPreviewMutations.ts`, `client/src/components/dispatch/DispatchDetailPanel.tsx`, `client/src/pages/DispatchPreview.tsx`
+
+#### Reopen Visit Shows "Schedule Conflict" Instead of Actual Error (2026-03-20)
+
+- **Root cause:** Two-part error transport failure. (1) `createError()` in `jobVisits.routes.ts` did not set a `code` property on the 409 error for terminal-job reopen rejection. (2) The global error handler in `server/index.ts` did not include `err.code` in its response body. The frontend `isVersionConflict()` in `useDispatchPreviewMutations.ts` treated all codeless 409 responses as version conflicts (legacy fallback at line 44: `return true`), showing "Schedule conflict" toast instead of the actual message "Reopen job to uncomplete a visit."
+- **Fix:** (1) Added `code: "JOB_TERMINAL"` to the terminal-job 409 rejection in `jobVisits.routes.ts`. (2) Added `...(err?.code && { code: err.code })` to both prod and dev response paths in the global error handler in `server/index.ts`. The existing `isVersionConflict()` logic already handles this correctly — it only returns true for `code === "VERSION_MISMATCH"` when a code is present.
+- **Backend business rule unchanged:** Reopening a visit on a completed/invoiced/archived job is still correctly refused with 409. The user must reopen the parent job first.
+- Files: `server/index.ts`, `server/routes/jobVisits.routes.ts`
+
+#### Needs Follow-Up / Place on Hold — Job Page Shows "Open (Backlog)" Instead of "On Hold" (2026-03-20)
+
+- **Root cause:** Frontend fire-and-forget pattern. `completeVisitWithOutcome` in `useDispatchPreviewMutations.ts` discarded the API response from `POST /complete`. The `optimisticCompleteVisit()` helper only patched the **visit** in the calendar cache (`visitStatus`, `visitOutcome`), not the **job's** `openSubStatus`/`holdReason`. The job page relied entirely on the 200ms invalidation + refetch cycle to show the updated sub-status. During the refetch window, the cached job data still showed `openSubStatus: null` → "Open (Backlog)".
+- **Backend confirmed correct:** Hard-refresh verification proved `GET /api/jobs/:id` returns `openSubStatus: "on_hold"` with correct holdReason immediately after completion — the issue was purely frontend cache staleness.
+- **Fix:** Captured the `POST /complete` response and used `reconciliation.newOpenSubStatus` to immediately patch the job detail cache via `queryClient.setQueryData(["jobs", "detail", jobId])`. When `reconciliation.jobUpdated` is true and `newOpenSubStatus` is `"on_hold"`, the cached job is patched with `openSubStatus`, `holdReason`, `holdNotes`, and `onHoldAt`. The existing visit optimistic patch and 200ms invalidation strategy are preserved unchanged.
+- Files: `client/src/components/dispatch/useDispatchPreviewMutations.ts`
+
+#### Quick Create Client Search Broken for All Typed Queries (2026-03-20)
+
+- **Root cause:** SQL syntax error in `GET /api/clients/search-locations` when query length >= 2 characters. The `translate()` function's `from` argument contained a backtick character inlined in a JavaScript template literal. Since template literals are delimited by backticks, `\`` inside the SQL string was interpreted as an escaped backtick by JavaScript, producing a bare `` ` `` character that broke the PostgreSQL string literal. Empty queries (initial dropdown load) used a separate code path without `translate()` and worked fine.
+- **Fix:** Moved the `translate()` strip-characters string into a parameterized `$5` binding (`stripChars` constant) instead of inlining it in the SQL template literal. This eliminates all JS/SQL escaping ambiguity and is also safer against injection.
+- **Impact:** All typed searches in Quick Create → New Job, New Invoice, and New Quote were returning HTTP 500 instead of results. Only the initial empty-query dropdown (alphabetical, first 30 locations) was working.
+- Files: `server/routes/clients.ts`
+
+#### Visit Completion Stale Board State (2026-03-20)
+
+- **Root cause:** `completeVisitWithOutcome` in `useDispatchPreviewMutations.ts` had no optimistic cache patch — the visit's `visitStatus` remained stale in the calendar cache until `backgroundInvalidate()` fired 800ms+ later. During that window, the detail panel derived `isCompleted = false` from stale data and showed "Completed Fully" / "Needs Follow-Up" buttons instead of "Reopen Visit". Additionally, `backgroundInvalidate()` could skip entirely if another dispatch mutation was in-flight (debounce guard: `inflightRef > 0 && elapsed < 10s`).
+- **Fix 1 (optimistic patch):** Added `optimisticCompleteVisit()` helper — patches `visitStatus: "completed"` and `visitOutcome` on the calendar cache event immediately after API success, same pattern as `optimisticReschedule()` and `optimisticResize()`. The detail panel's `isCompleted` flips instantly.
+- **Fix 2 (unconditional invalidation):** Added `invalidateAfterCompletion()` — bypasses the debounce/in-flight guard used by `backgroundInvalidate()`. Completion is a discrete lifecycle event that must always trigger a full refetch of calendar, unscheduled, jobs, dashboard, and visits caches. Uses 200ms delay (vs 800ms for drag mutations) to let the optimistic patch render before server data arrives.
+- **Backend confirmed correct:** `POST /api/jobs/:jobId/visits/:visitId/complete` correctly persists visit.status="completed", visit.outcome, visit.isFollowUpNeeded, and job.openSubStatus="on_hold" with holdReason — verified through static code trace of orchestrator, storage, and DB constraints.
+- Files: `client/src/components/dispatch/useDispatchPreviewMutations.ts`
+
+#### Reopen Visit False "Schedule Conflict" Toast (2026-03-20)
+
+- **Root cause:** `ApiError` class (`queryClient.ts`) did not carry the `code` field from backend error responses. All 409 errors without a `code` on the error object were misidentified as version conflicts by `isVersionConflict()`, which fell through to `return true` (legacy fallback). This caused the actual error message (e.g., "Reopen job to uncomplete a visit.") to be replaced with a misleading "Schedule conflict" toast.
+- **Fix:** Added optional `code` field to `ApiError`. Both throw sites in `apiRequest()` now extract `errorData.code` from the parsed response body and pass it to the `ApiError` constructor. `isVersionConflict()` already correctly checks `e.code === "VERSION_MISMATCH"` — it now receives the actual code instead of `undefined`.
+- **Effect:** Non-version-conflict 409 errors (codes: `CONFLICT`, `VISIT_CONFLICT`, `VISIT_ALREADY_TERMINAL`, etc.) now surface their real error message in the toast instead of being mislabeled as "Schedule conflict". Version-mismatch 409s (`VERSION_MISMATCH`) continue to show the stale-edit recovery toast as before.
+- Files: `client/src/lib/queryClient.ts`
+
+#### Visit→Job Lifecycle Propagation — Complete Fix (2026-03-20)
+
+- **Phase 1 root cause (transaction isolation):** `reconcileJobAfterVisitCompletion()` was called INSIDE the visit-update transaction but queried via `db` (pool), not `tx`. Moved outside transaction so reconciliation reads committed visit status.
+- **Phase 2 root cause (phantom actionable visits):** The scheduling archive predicate in `scheduleJob()` only archived visits where `scheduledStart IS NULL` (placeholders). Visits from prior scheduling cycles that retained `scheduledStart IS NOT NULL` were not archived, remained active, and matched `reconciliationActionableVisitFilter` — causing `hasRemainingVisits === true` and preventing job auto-close via the fallthrough return at line 1046.
+- **Backend fix (archive predicate):** Widened the archive predicate in `scheduleJob()` from `isNull(scheduledStart)` to `notInArray(status, TERMINAL_VISIT_STATUSES)`. Now archives ALL non-terminal, non-current visits for the job when scheduling. Terminal visits (completed/cancelled) are preserved for history. The current visit is excluded by ID.
+- **Backend fix (error contract):** Terminal-status error in `completeVisit()` now throws with `status: 409` and `code: "VISIT_ALREADY_TERMINAL"`. Added 409 handling to Express error middleware so the original error message is preserved (previously sanitized to "Operation failed" by the 500 catch-all).
+- **Backend fix (diagnostics):** Added `console.warn` logging in `reconcileJobAfterVisitCompletion()` when remaining actionable visits block job closure — logs visit IDs, statuses, and scheduledStart for runtime verification.
+- **Frontend fix (visits invalidation):** Added `["visits"]` to `backgroundInvalidate()` invalidation list. The Job Detail visits section (`["visits", jobId, "all"]`) is now refreshed after dispatch mutations.
+- **Frontend fix (error recovery):** Terminal-status detection now checks `err.status === 409` (structured HTTP status) instead of `err.message.includes("already in terminal status")` (was broken by Express error sanitization).
+- Files: `server/storage/scheduling.ts`, `server/services/jobLifecycleOrchestrator.ts`, `server/middleware/errorHandler.ts`, `client/src/components/dispatch/useDispatchPreviewMutations.ts`
+
+#### Frontend Integrity — Final Narrow Pass (2026-03-20)
+
+- **UI-009:** Wired orphaned `clearHoldMutation` in `JobDetailPage.tsx` to a new "Resume" button that appears when a job is on hold. Button calls `POST /api/jobs/:id/status` with `{ status: "open", openSubStatus: null }` to clear hold — the mutation already existed and had correct cache invalidation.
+- **UI-012:** Made `NeedsFollowUpModal.tsx` import canonical `HOLD_REASONS` from `ActionRequiredModal.tsx` instead of defining a divergent local copy (4 of 6 labels differed).
+- **UI-022:** Removed unreachable "Needs Review" branch in `JobDetailPage.tsx` on-hold indicator — outer guard already ensures `openSubStatus === "on_hold"`, making the else branch permanently dead.
+- **UI-026:** Replaced raw `inv.status` string rendering in `ClientDetailPage.tsx` `ClientAllInvoicesTab` with canonical `getInvoiceStatusBadge()` from `lib/statusBadges.ts`. Statuses like `"awaiting_payment"` now show as "Awaiting Payment" instead of underscore-delimited raw strings.
+- **UI-027:** Replaced stale `"closed"` job status check in `EditVisitModal.tsx` with canonical terminal statuses (`"completed" || "invoiced" || "archived"`). Replaced stale `"closed"` task status check in `DispatchDetailPanel.tsx` with `"cancelled"`.
+- Files: `client/src/pages/JobDetailPage.tsx`, `client/src/components/dispatch/NeedsFollowUpModal.tsx`, `client/src/pages/ClientDetailPage.tsx`, `client/src/components/visits/EditVisitModal.tsx`, `client/src/components/dispatch/DispatchDetailPanel.tsx`
+
+#### Frontend Runtime-Hygiene + Dead-Code Cleanup (2026-03-20)
+
+- **UI-003:** Removed 3 unguarded `console.log` statements from `queryClient.ts` — CSRF token init log (fired on every app mount), CSRF refresh log, and CSRF token injection log (fired on every POST/PATCH/PUT/DELETE request in production).
+- **UI-004:** Removed `console.log` from `useProductsServices.ts:57` — `JSON.stringify` of API response fired on every items list load.
+- **UI-016:** Removed debug `useEffect` block from `LiveMapPage.tsx` — `console.log` of map data fired on every 15-second poll cycle in production.
+- **Dead code deleted in `Jobs.tsx`:** Removed `ActionRequiredNotePopover` component (64 lines, never rendered), `SLA_ESCALATE_HOURS` constant (never referenced), `needsEscalation`/`isEscalated` always-false variables + unreachable `Escalated` pill branch, `_backlog`/`_assigned` enrichment fields (computed but never read). Cleaned 7 dead imports (`useMutation`, `Popover*`, `Textarea`, `Label`, `AlertCircle`, `isJobAssigned`, `isBacklogEligible`).
+- **Dead code deleted in `useJobVisits.ts`:** Removed `isVisitInactive()`, `isVisitIneligible()`, `getVisitDisplayStatus()` — zero external importers. Cleaned dead `useMutation` and `apiRequest` imports.
+- **Dead code deleted in `useMutationWithToast.ts`:** Removed `useApiMutation()` export (zero callers) and `ApiMutationOptions` interface. Cleaned dead `apiRequest` import.
+- **Deleted `client/src/lib/devFlags.ts`** — entire file, zero imports anywhere in client source.
+- **Deleted `client/src/pages/Technician.tsx`** — all route/nav/redirect references removed in prior batch; zero remaining imports.
+- **Deleted `client/src/pages/DailyParts.tsx`** — same; zero remaining imports.
+- Files changed: `client/src/lib/queryClient.ts`, `client/src/hooks/useProductsServices.ts`, `client/src/pages/LiveMapPage.tsx`, `client/src/pages/Jobs.tsx`, `client/src/hooks/useJobVisits.ts`, `client/src/hooks/useMutationWithToast.ts`
+- Files deleted: `client/src/lib/devFlags.ts`, `client/src/pages/Technician.tsx`, `client/src/pages/DailyParts.tsx`
+
+#### Frontend Integrity Remediation — Batch A/B (2026-03-20)
+
+- **UI-001:** Removed broken `/technician` and `/daily-parts` routes from App.tsx — both pages called non-existent API endpoints (`/api/technician/*` instead of canonical `/api/tech/*`). Removed sidebar links for technician-role users. Redirects (ProtectedRoute, Signup) now point to `/` instead of `/technician`.
+- **UI-002:** Fixed `JobTemplateModal.tsx` PM job type from `"pm"` to canonical `"maintenance"` — templates now match DB value and `PMScheduleCard.isPmTemplate()` detection.
+- **UI-005:** Disabled 5 visibility toggle `Switch` components in `InvoiceDetailPage.tsx` — were visibly interactive but had no `onCheckedChange` handlers (edits silently discarded).
+- **UI-006:** Removed misleading "Add Item" button from `InvoiceDetailPage.tsx` — had no `onClick` handler; no add-line dialog exists on this page.
+- **UI-007:** Made Client Message and Internal Notes textareas `readOnly` in `InvoiceDetailPage.tsx` edit mode — were uncontrolled `defaultValue` inputs whose values were never persisted by any mutation.
+- **UI-008:** Removed non-functional Invoices tab from `LocationDetailPage.tsx` — tab rendered a static "No invoices" message with no invoice data query. Tab button and content removed; `OverviewTab` type updated.
+- **UI-010:** Fixed legacy field access in `JobDetailPage.tsx` invoice creation dialog — replaced `job.parentCompany?.name || job.location?.companyName` (non-existent fields, always fell to "Unknown") with canonical `job.locationDisplayName`.
+- **UI-011:** Fixed stale quote status strings in `ClientDetailPage.tsx` `LocQuotesTab` — replaced `"accepted"` → `"approved"`, `"rejected"` → `"declined"`, added `"converted"`. Old keys never matched canonical statuses.
+- **UI-014:** Fixed `RecurringJobsPage.tsx` location dropdown — query typed response as `Location[]` but server returns `{ data: Location[], pagination }`. Location dropdown was always empty.
+- **UI-015:** Fixed `ClientDetailPage.tsx` deep-linking — replaced `window.location.search` (stale closure, doesn't re-trigger on navigation) with wouter's `useSearch()` hook.
+- Files: `client/src/App.tsx`, `client/src/components/AppSidebar.tsx`, `client/src/components/ProtectedRoute.tsx`, `client/src/pages/Signup.tsx`, `client/src/components/JobTemplateModal.tsx`, `client/src/pages/InvoiceDetailPage.tsx`, `client/src/pages/LocationDetailPage.tsx`, `client/src/pages/JobDetailPage.tsx`, `client/src/pages/ClientDetailPage.tsx`, `client/src/pages/RecurringJobsPage.tsx`
+
+### Architecture
+
+#### Phase 5 — Eliminate Duplicate Attention Items Upsert Write Path (2026-03-20)
+
+- Exported `upsertAttentionItem()` from `server/lib/attentionRules.ts` — the canonical attention_items writer.
+- Deleted duplicate `upsertAttention()` from `server/lib/visitIntelligence.ts` (26 lines of identical INSERT ON CONFLICT SQL).
+- Rewired all 5 call sites in `visitIntelligence.ts` (`visit.late`, `visit.overdue`, `visit.running_long`, `tech.offline`, `tech.idle`) to construct `AttentionMatch` objects and call the canonical function.
+- Removed unused `AttentionRuleType` import from `visitIntelligence.ts`.
+- Zero SQL semantic changes — identical dedupeKey construction, identical INSERT/ON CONFLICT/SET clause, identical meta payloads.
+- `INSERT INTO attention_items` now exists in exactly one file (`attentionRules.ts`).
+- Files: `server/lib/attentionRules.ts`, `server/lib/visitIntelligence.ts`
+
+#### Phase 4D — Fix deriveNextDueForClient() Fallback Bug (2026-03-20)
+
+- Fixed `deriveNextDueForClient()` in `server/routes/clients.ts` — was reading `client.selectedMonth` (singular, nonexistent field), causing the fallback to always return `""`.
+- Now reads `client.selectedMonths` (plural, integer array — the actual schema field) and calls `computeNextDueDate()` from the shared formula.
+- **Observable correction:** Clients with PM months but no calendar assignments now return a computed `nextDue` date (YYYY-MM-DD) instead of always returning `""`.
+- Calendar assignment priority path unchanged — assignments still win over the computed fallback.
+- File: `server/routes/clients.ts`
+
+#### Phase 4C — Extract Shared Next-Due Date Formula (2026-03-20)
+
+- Created `shared/nextDue.ts` with `computeNextDueDate(selectedMonths): Date | null` — pure function shared between server and client.
+- Replaced 3 duplicated local implementations:
+  - `calculateNextDue()` in `server/routes/clients.ts` — now wraps shared function with ISO/sentinel conversion
+  - `calculateNextDueDate()` in `client/src/components/NewAddClientDialog.tsx` — now wraps shared function with inactive check
+  - `calculateNextDueDate()` in `client/src/pages/AddClientPage.tsx` — same
+- Zero behavioral changes — identical date math (0-indexed months, 15th-of-month convention, wrap-to-next-year).
+- `deriveNextDueForClient()` bug intentionally NOT fixed in this phase (deferred).
+- Files: `shared/nextDue.ts` (new), `server/routes/clients.ts`, `client/src/components/NewAddClientDialog.tsx`, `client/src/pages/AddClientPage.tsx`
+
+#### Phase 4B — Route TechField Note Creation Through Storage (2026-03-20)
+
+- Replaced direct `db.insert(jobNotes)` in `server/routes/techField.ts` with `jobNotesRepository.createJobNote()`.
+- The canonical storage method already existed with proper tenant scoping and active-job guard.
+- Removed unused `jobNotes` schema import from techField.ts.
+- Orchestrator and import direct inserts (tx-dependent) intentionally not changed.
+- File: `server/routes/techField.ts`
+
+#### Phase 4A — Invoice Audit Event Coverage (2026-03-20)
+
+- Added `invoice.voided` event emission in `server/routes/invoices.ts` after void handler succeeds. Captures `fromStatus` in meta for audit trail.
+- Added `invoice.paid` event emission in `server/routes/payments.ts` after `createPayment()` succeeds, conditioned on post-payment invoice fetch confirming `status === "paid"`. Only fires when payment fully satisfies the invoice balance.
+- Both events use the existing `logEventAsync()` pattern (fire-and-forget, non-blocking). No invoice business logic changed.
+- Deferred: `invoice.unsent`, `invoice.partial_paid`, payment update/delete events, `invoice.status_changed` (not introduced).
+- Files: `server/routes/invoices.ts`, `server/routes/payments.ts`
+
+#### Phase 3D — Centralize Invoice Status Badge Helper (2026-03-20)
+
+- Added `getInvoiceStatusBadge(status, isPastDue)` to `client/src/lib/statusBadges.ts` alongside existing `getQuoteStatusBadge()`.
+- Removed duplicate local `getStatusBadge()` from `InvoicesListPage.tsx` and `InvoiceDetailPage.tsx`. Both now import from canonical source.
+- Exact same labels, variants, and isPastDue override behavior preserved.
+- Files: `client/src/lib/statusBadges.ts`, `client/src/pages/InvoicesListPage.tsx`, `client/src/pages/InvoiceDetailPage.tsx`
+
+#### Phase 3C — Centralize Unpaid Invoice Statuses Constant (2026-03-20)
+
+- Exported canonical `UNPAID_INVOICE_STATUSES` (`["awaiting_payment", "sent", "partial_paid"]`) and derived `UNPAID_INVOICE_STATUS_SQL` from `server/storage/invoicesFeed.ts`.
+- Replaced 6 local/inline definitions of the same status set across `storage/invoices.ts` (2 sites), `storage/dashboard.ts` (3 sites — 1 constant + 2 inline SQL), `routes/invoices.ts` (1 site).
+- Internal usages in `invoicesFeed.ts` updated to use the renamed export.
+- Zero financial logic changes — exact same status set at every site.
+- Files: `server/storage/invoicesFeed.ts`, `server/storage/invoices.ts`, `server/storage/dashboard.ts`, `server/routes/invoices.ts`
+
+#### Phase 3B — Centralize Location Display Name COALESCE (2026-03-20)
+
+- Replaced 8 inline `sql\`COALESCE(customerCompanies.name, clientLocations.companyName)\`` expressions with the existing canonical `locationDisplayNameExpr` from `server/lib/queryHelpers.ts`.
+- The canonical helper already existed but had zero consumers — all 8 query sites inlined the same COALESCE. Now all 7 storage files import and use the single helper.
+- `queryHelpers.ts` was NOT modified — the helper was already correctly defined.
+- Zero behavioral changes — exact same SQL output.
+- Files: `server/storage/jobsFeed.ts`, `server/storage/jobs.ts`, `server/storage/visits.ts`, `server/storage/invoicesFeed.ts`, `server/storage/invoices.ts`, `server/storage/dashboard.ts`, `server/storage/reports.ts`
+
+#### Phase 3A — Canonical Filter Helpers for Clients, Companies, Visits (2026-03-20)
+
+- Added `activeVisitGuard()` to `server/lib/visitPredicates.ts` — canonical `eq(jobVisits.isActive, true) AND isNull(jobVisits.archivedAt)` without status filtering. Replaced 12 inline occurrences across `storage/jobVisits.ts` (7 sites) and `storage/visits.ts` (5 sites).
+- Added `notDeletedClientFilter()` to `server/storage/jobFilters.ts` — canonical `isNull(clients.deletedAt)`. Replaced 9 inline occurrences across `storage/customerCompanies.ts` (6 sites), `services/jobImport.ts` (1), `services/clientImport.ts` (1), `storage/adminQbo.ts` (1).
+- Added `notDeletedCustomerCompanyFilter()` to `server/storage/jobFilters.ts` — canonical `isNull(customerCompanies.deletedAt)`. Replaced 6 inline occurrences across `storage/customerCompanies.ts` (4 sites), `services/jobImport.ts` (2).
+- Deferred: route-level raw SQL patterns (`routes/adminTimesheets.ts`, `routes/equipmentCatalogItems.routes.ts`, `routes/clients.ts`), `subscriptions.ts` missing `deletedAt` bug, `QboSyncOrchestrator.ts` missing `deletedAt` bug.
+- Zero behavioral changes — exact same SQL conditions, just imported instead of inline.
+- Files: `server/lib/visitPredicates.ts`, `server/storage/jobFilters.ts`, `server/storage/jobVisits.ts`, `server/storage/visits.ts`, `server/storage/customerCompanies.ts`, `server/services/jobImport.ts`, `server/services/clientImport.ts`, `server/storage/adminQbo.ts`
+
+### Fixed
+
+#### Phase 2A — QBO Customer Company nameNormalized Integrity (2026-03-20)
+
+- Fixed data integrity defect: QBO customer import was creating and updating `customerCompanies` records without computing `nameNormalized`, causing `findCustomerCompanyByNormalizedName()` dedup lookups to miss QBO-imported records.
+- U5 (insert): Added `nameNormalized: normalizeForMatch(name)` to the insert values.
+- U4 (overwrite update): Added `nameNormalized: normalizeForMatch(name)` to the overwrite payload.
+- U3 (merge update): Added `nameNormalized` recomputation only when `name` is actually written (conditional — merge only fills empty fields).
+- Repository `createCustomerCompany()` was evaluated but cannot be used: it uses explicit field mapping that excludes QBO link fields (`qboCustomerId`, `qboSyncToken`, etc.). Inline normalization matches repository behavior without requiring repository extension.
+- File: `server/services/qbo/QboCustomerImportService.ts`
+
+### Removed
+
+#### Phase 1C — Remove Unreachable Completed-Status Auto-Timestamp (2026-03-20)
+
+- Removed the unreachable `if (status === "completed")` branch from `updateJobVisitStatus()` in `server/storage/jobVisits.ts`.
+- **Why unreachable:** The only route caller (`jobVisits.routes.ts:224`) rejects `status === "completed"` with a 400 error before reaching this method. The only other caller (`cancelVisit()`) passes `"cancelled"`. No current path can trigger the completed branch.
+- **Retained:** The `on_site` auto-timestamp for `checkedInAt` — this is live and canonical for the office manual status flow.
+- Visit completion remains owned by the orchestrator (`COMPLETE_VISIT` intent).
+- File: `server/storage/jobVisits.ts`
+
+### Fixed
+
+#### Phase 1B — Merge Misplaced Completed-Job Terminal Guard (2026-03-20)
+
+- Merged the late completed-job guard in `scheduleJob()` into the early pre-write terminal guard.
+- **Before:** `scheduleJob()` had two terminal guards — guard #1 (line 862) blocked invoiced/archived before visit mutations; guard #2 (line 985) blocked completed AFTER visit mutations. Guard #2 was legacy residue from removed Rule D reopen semantics (2026-03-18). A completed job would get visits created/updated, then error — wasted work and partial mutations.
+- **After:** Single early guard blocks invoiced, archived, AND completed before any visit mutations. Completed jobs now fail cleanly before any persistence work.
+- File: `server/storage/scheduling.ts`
+
+### Architecture
+
+#### Phase 1A — Extract Reschedule Orchestration from Storage (2026-03-20)
+
+- Extracted `rescheduleVisit()` workflow orchestration from `server/storage/scheduling.ts` into `server/services/jobLifecycleOrchestrator.ts`.
+- **Before:** Storage layer owned spawn-on-action decision (choose between in-place update vs complete-and-spawn), terminal status guard, and visit completion during reschedule.
+- **After:** Orchestrator owns all workflow branching. Storage retains only primitive CRUD methods (`updateJobVisit`, `createJobVisit`, `getJobById`).
+- Route `PATCH /api/calendar/visit/:visitId/reschedule` now calls `lifecycle.rescheduleVisit()` instead of `schedulingRepository.rescheduleVisit()`.
+- Added `RescheduleVisitIntent` type to orchestrator intent union.
+- Zero behavioral changes: terminal guard, version check, all-day conversion, spawn decision, in-place update, return shape — all preserved exactly.
+- Files: `server/services/jobLifecycleOrchestrator.ts`, `server/routes/scheduling.ts`, `server/storage/scheduling.ts`
+
+### Removed
+
+#### Phase 0 Dead Code Deletion — Forensic Audit (2026-03-20)
+
+- **Deleted** `server/services/calendarValidation.ts` (354 lines) — zero imports across entire codebase. Schedule validation is handled elsewhere.
+- **Deleted** `shared/calendarRules.ts` (8 lines) — exports `CALENDAR_RULES` constant, zero imports anywhere.
+- **Deleted** `validateTechnicianBelongsToTenant()` and `validateJobBelongsToTenant()` from `server/storage/scheduling.ts` — zero callers. Tenant isolation enforced by middleware + FK constraints. Also removed barrel exports (`validateCalendarTechnician`, `validateCalendarJob`) from `server/storage/index.ts`.
+- **Deleted** 8 orphaned page files (zero imports, zero route registrations in App.tsx):
+  - `TechHomePage.tsx`, `TechSchedulePage.tsx`, `TechTimesheetPage.tsx`, `TechVisitDetailPage.tsx` — tech field app pages with no `/tech/*` routes registered
+  - `TechLoginPage.tsx`, `TechMorePage.tsx` — tech field supporting pages
+  - `TechnicianDashboard.tsx` — old dashboard, import already cleaned from App.tsx in prior pass
+  - `AdminTimesheetsPage.tsx` — admin timesheet page, no `/settings/timesheets` route registered
+- **Retained** `isVisitEmpty()` in `server/storage/jobVisits.ts` — audit initially flagged as dead, but verification found 2 active callers: `scheduling.ts:906` (server) and `JobDetailPage.tsx:92` (client via `visitUtils.ts` mirror).
+- Zero TypeScript errors. Zero behavioral changes.
+- Files deleted: 10 files. Files modified: `server/storage/scheduling.ts`, `server/storage/index.ts`
+
+### Architecture
+
+#### Surgical Compliance Cleanup — Import/QBO Audit Findings (2026-03-20)
+
+- **F-03:** Wrapped QBO customer import wipe mode (`QboCustomerImportService.ts`) in a single `db.transaction()` — two sequential `db.update()` calls on `clientLocations` and `customerCompanies` now execute atomically. Prevents partial soft-delete state on failure.
+- **F-01:** Routed job import creation through canonical `jobRepository.createJobWithExplicitNumber()` instead of direct `tx.insert(jobs)`. Added optional `txHandle` parameter to `createJobWithExplicitNumber()` so the import service's multi-entity transaction (location + job + note) still executes atomically. Storage layer now owns the job insert; import service owns the transaction boundary.
+- **F-02:** Routed product import creation through canonical `itemRepository.createItem()` instead of direct `db.insert(items)`. Storage layer now owns item insertion for both normal and import paths.
+- **F-04:** Replaced 2 inline `isNull(jobs.deletedAt), eq(jobs.isActive, true)` filters in `routes/jobImport.ts` (preview + execute endpoints) with canonical `activeJobFilter()` from `storage/jobFilters.ts`.
+- **F-05:** Removed orphaned `JOB_TERMINAL_STATUSES` constant and `isTerminalStatus()` function from `client/src/components/job/jobUtils.ts` — zero client consumers (canonical owner: `server/domain/jobLifecycle.ts`).
+- Zero TypeScript errors. No lifecycle, orchestrator, or route behavior changes.
+- Files: `server/services/qbo/QboCustomerImportService.ts`, `server/storage/jobs.ts`, `server/services/jobImport.ts`, `server/services/productImport.ts`, `server/routes/jobImport.ts`, `client/src/components/job/jobUtils.ts`
+
+#### Hardening Completion Verification & Final Dedup (2026-03-20)
+
+- **Verified** all 4 critical bypasses (BP-1 through BP-4) are already eliminated in current tree:
+  - BP-1: `reconcileJobAfterVisitCompletion()` Rule 1 routes through `jobRepository.transitionJobStatus()` with `CLOSE_JOB` intent (canonical lifecycle)
+  - BP-2: Rules 2-4 route through `jobRepository.updateJobStatusWithEvent()` (version increment + audit trail)
+  - BP-3/BP-4: `techField.ts` en-route/start delegates to `lifecycle.setVisitEnRoute()`/`lifecycle.startVisit()` orchestrator methods
+- **Verified** visit eligibility predicates fully centralized: `jobVisits.ts` imports `scheduleEligibleVisitFilter` and `uncompletedVisitFilter` from canonical `visitPredicates.ts`
+- **Verified** dead code candidates already removed: `scheduleJobBypassWorkingHours`, `updateJobStatusWithMultipleEvents`, duplicate `isTerminalStatus` — all deleted with tombstone comments
+- **Fixed** last remaining visit status display duplicate: removed `VISIT_STATUS_OPTIONS` from `dispatchPreviewTypes.ts`, rewired 2 consumers (`DispatchFiltersBar.tsx`, `DispatchPreview.tsx`) to import from canonical `lib/visitStatusDisplay.ts`
+- Zero TypeScript errors. Zero remaining duplicate visit status option definitions.
+- Files changed: `client/src/components/dispatch/dispatchPreviewTypes.ts`, `client/src/components/dispatch/DispatchFiltersBar.tsx`, `client/src/pages/DispatchPreview.tsx`
+
+#### TypeScript Baseline Cleanup — Zero Errors (2026-03-20)
+
+- Fixed 3 pre-existing TypeScript errors that persisted through all prior hardening passes:
+  1. `InvoicesListPage.tsx:141` — added `isPastDue?: boolean` to `EnrichedInvoice` interface (server feed returns this computed field, type was missing).
+  2. `adminTimesheets.ts:377` (2 errors) — added `jobId: z.string().nullable().optional()` to `managerUpdateTimeEntrySchema` in `shared/schema.ts` (route reads `validated.jobId` for job reassignment, schema was missing the field).
+- TypeScript now compiles with zero errors.
+- Files: `client/src/pages/InvoicesListPage.tsx`, `shared/schema.ts`
+
+#### Dead Storage Export Cleanup (2026-03-20)
+
+- Removed 5 dead items from `server/storage/index.ts` IStorage interface and implementation:
+  - `storage.getInvoiceStats` — zero callers; canonical version in `invoicesFeed.ts`
+  - `storage.getDashboardInvoices` — zero callers; dashboard uses `invoicesFeed.ts`
+  - `storage.createJobStatusEvent` — zero callers via barrel; events created internally by `transitionJobStatus`/`updateJobStatusWithEvent`
+  - `storage.getAllCalendarAssignments` — zero callers; replaced by `getCalendarAssignmentsInRange`
+  - `createCompany` inline function — zero callers
+- Underlying repository methods retained (may be used internally); only the barrel export surface was cleaned.
+- `getInvitationByToken` and `updateInvitation` confirmed live (used in `routes/auth.ts`) — NOT deleted.
+- File: `server/storage/index.ts`
+
+#### Canonical Filter and Predicate Cleanup (2026-03-20)
+
+- Replaced 3 inline `isNull(jobs.deletedAt), eq(jobs.isActive, true)` conditions with `activeJobFilter()` in:
+  `storage/jobs.ts` (update guard), `storage/jobNotes.ts` (2 sites: list + create guards), `storage/invoicesFeed.ts` (LEFT JOIN guard).
+- Replaced local `VISIT_TERMINAL_STATUSES` definition in `storage/scheduling.ts` with import from `lib/visitPredicates.ts`.
+- Added `VISIT_TERMINAL_STATUS_SQL` raw SQL constant to `lib/visitPredicates.ts` — derived from `TERMINAL_VISIT_STATUSES` to prevent drift in raw SQL queries.
+- Replaced 3 hardcoded `NOT IN ('completed', 'cancelled')` raw SQL sites with `VISIT_TERMINAL_STATUS_SQL` in: `lib/autoGapScheduling.ts`, `lib/visitIntelligence.ts` (2 sites), `storage/scheduling.ts`.
+- Zero remaining inline active-job duplications at audited sites. Zero remaining local terminal visit status definitions on server side. Zero remaining hardcoded raw SQL terminal-status strings.
+- Files: `server/lib/visitPredicates.ts`, `server/storage/jobs.ts`, `server/storage/jobNotes.ts`, `server/storage/invoicesFeed.ts`, `server/storage/scheduling.ts`, `server/lib/visitIntelligence.ts`, `server/lib/autoGapScheduling.ts`
+
+#### Invoice Path Consistency — Close+Invoice_Now Unified (2026-03-19)
+
+- Fixed `POST /api/jobs/:id/close` with `mode=invoice_now` to route through the canonical `createInvoiceFromJobService()` instead of calling `storage.createInvoiceFromJob()` + `storage.refreshInvoiceFromJob()` directly.
+- **Bug fixed:** Previously, `invoice_now` created invoices with populated lines but **no tax applied and no tax snapshots**. Now produces the same fully-enriched invoice as `POST /api/invoices/from-job/:jobId`.
+- Zero direct `storage.createInvoiceFromJob` or `storage.refreshInvoiceFromJob` calls remain in `routes/jobs.ts`.
+- File: `server/routes/jobs.ts`
+
+#### Invoice Create-From-Job Retry Safety (2026-03-19)
+
+- Fixed partial-state recovery: if Phase A (invoice creation) commits but Phase B (enrichment) fails and rolls back, retrying now detects the empty draft and re-runs enrichment instead of returning the $0 invoice as-is.
+- Made tax snapshot insertion idempotent: added delete-before-insert for `invoice_tax_lines` rows so re-enrichment cannot create duplicate snapshots.
+- PM billing invoice creation (`createInvoiceFromBillingEvent`) confirmed unaffected — uses a completely separate path.
+- File: `server/services/invoiceCreationService.ts`
+
+#### Invoice Create-From-Job Full Transaction Atomicity (2026-03-19)
+
+- Made invoice create-from-job workflow fully atomic: steps 2–5 (refresh lines, set tax group, batch apply tax, snapshot) now all execute inside one `db.transaction()` using a shared `tx` handle.
+- Added optional `txHandle` parameter to `refreshInvoiceFromJob()`, `batchApplyLineTax()`, and `updateInvoice()` in `server/storage/invoices.ts`. When provided, methods participate in the caller's transaction instead of creating independent committed transactions. When omitted, existing standalone behavior is preserved.
+- Step 1 (`storage.createInvoiceFromJob()`) retains its own SELECT FOR UPDATE transaction — this is intentional (idempotency + locking must commit before lines are populated).
+- Non-job invoice creation flows are unchanged (no `txHandle` passed).
+- Files: `server/storage/invoices.ts`, `server/services/invoiceCreationService.ts`
+
+#### Invoice Authority Hardening — Service Extraction + Due Date Dedup (2026-03-19)
+
+- Created `server/services/invoiceCreationService.ts` with canonical `createInvoiceFromJob()` workflow:
+  create → refresh lines → resolve tax → batch apply → snapshot, with steps 2–5 inside a single `db.transaction()`.
+- Extracted `calculateDueDate(issuedAt, paymentTermsDays)` shared helper — replaced 3 inline due date calculations in `routes/invoices.ts` (PATCH handler, send handler, re-send handler).
+- Route `POST /api/invoices/from-job/:jobId` is now a thin controller: validate → call service → log event → optional lifecycle → respond.
+- Batched tax application preserved (`batchApplyLineTax()` — no per-line loops).
+- Files: `server/services/invoiceCreationService.ts` (new), `server/routes/invoices.ts`
+
+#### Visit Completion Transaction Boundary (2026-03-19)
+
+- Wrapped visit terminal update, job note insert, and reconciliation in a single `db.transaction()` in `jobLifecycleOrchestrator.ts:completeVisit()`.
+- Visit update + job note + reconciliation are now fully atomic — if any step fails, all are rolled back.
+- Inner repository transactions (`transitionJobStatus`, `updateJobStatusWithEvent`) become SAVEPOINTs inside the outer transaction.
+- Schedule sync (`syncJobToVisits`) intentionally remains outside the transaction — it's a denormalization sync that reads committed state.
+- File: `server/services/jobLifecycleOrchestrator.ts`
+
+#### Visit Completion Atomicity Hardening (2026-03-19)
+
+- Extended `CompleteVisitIntent` with optional `outcomeNote` and `visitNumber` fields.
+- Moved visit notes write (append outcome to `visitNotes`) from `server/routes/techField.ts` into `jobLifecycleOrchestrator.ts:completeVisit()` — now written atomically with the visit terminal update.
+- Moved auto-generated job note creation from `server/routes/techField.ts` into `jobLifecycleOrchestrator.ts:completeVisit()` — now created as part of the canonical completion workflow.
+- Removed direct `db.update(jobVisits)` and `db.insert(jobNotes)` from the completion route.
+- Route is now a thin controller: validate → authorize → call orchestrator → time tracking side-effect → respond.
+- Files: `server/services/jobLifecycleOrchestrator.ts`, `server/routes/techField.ts`
+
+#### Lifecycle Authority Hardening — Single Owner (2026-03-19)
+
+- Consolidated `server/statusRules.ts` into `server/domain/jobLifecycle.ts` — single lifecycle authority.
+- Moved all lifecycle constants (`JOB_STATUS_FLOW`, `OPEN_SUB_STATUS_FLOW`, `CLOSEABLE_STATUSES`, `REOPENABLE_STATUSES`, `JOB_TERMINAL_STATUSES`, `ACTIVE_STATUSES`), invoice flow map (`INVOICE_STATUS_FLOW`), and assertion functions (`assertJobStatusTransition`, `assertOpenSubStatusTransition`, `assertInvoiceStatusTransition`) into `jobLifecycle.ts`.
+- Deleted `server/statusRules.ts` — zero remaining imports.
+- Fixed 2 broken imports (`CLOSEABLE_STATES`, `REOPENABLE_STATES`) in `server/routes/jobs.ts` that referenced deleted aliases (TS2724 errors resolved).
+- Fixed duplicate `import type { JobStatus }` in `server/domain/scheduling.ts` (TS2300 error resolved).
+- Updated 6 import sites: `routes/jobs.ts`, `routes/invoices.ts`, `domain/scheduling.ts`, `scripts/sanity-check-lifecycle.ts`, `scripts/schedulingSanityCheck.ts`.
+- TypeScript errors reduced from 7 to 3 (all remaining are pre-existing in unrelated files).
+- No lifecycle behavior changes. All close/reopen/transition flows still route through canonical `applyLifecycleTransition()` → `jobLifecycleOrchestrator` → `transitionJobStatus()`.
+
+### Removed
+
+#### Dead Client Code Deletion Pass (2026-03-19)
+
+- Deleted 15 unused client files (zero imports, zero route registrations) identified by forensic audit:
+  - 7 components: `JobDetailDialog`, `ClientReportDialog`, `JobVisitsSection`, `LocationPMSection`, `RouteOptimizationDialog`, `PartsDialog`, `TechnicianLayout`
+  - 2 hooks: `useCompanyRegionalSettings`, `useDispatchStream`
+  - 3 lib files: `dndPerformance`, `csrf` (functionality in queryClient.ts), `schedulingPermissions`
+  - 3 preview/mock files: `PreviewOperationsQueue`, `previewOperationsQueueMockData`, `previewClientWorkspaceMockData`
+- Removed 2 dead `QUERY_GROUPS` entries (`/api/calendar/all`, `/api/calendar/overdue`) — endpoints do not exist on server.
+- No server code changed. No route registrations changed. No import cleanup required (all files had zero consumers).
+
+### Fixed
+
+#### P3-05 — Jobs True Counts via includeCounts=true (2026-03-19)
+
+- Extended `GET /api/jobs` with optional `includeCounts=true` query param.
+- When set, server runs a parallel `COUNT(*) FILTER` aggregate query using canonical `activeJobFilter()` semantics and returns a `counts` block alongside the existing `{ data, meta }` envelope.
+- Jobs page now displays true aggregate counts for status/workflow filter badges instead of deriving counts from the capped feed dataset.
+- Cache-safe: `includeCounts` is part of both the URL and TanStack Query key — no collision with feed-only consumers.
+- No new endpoint, no new hook, no feed logic changes.
+- Files: `server/storage/jobsFeed.ts`, `server/routes/jobs.ts`, `client/src/hooks/useJobsFeed.ts`, `client/src/pages/Jobs.tsx`
+
+#### Universal Search — Legacy Short Job Number Matching (2026-03-19)
+
+- Fixed universal search not finding legacy short job numbers (e.g., job #7002) when searching by number.
+- Root cause: the `< 6 digits` numeric branch computed a 6-digit prefix range (e.g., "7002" → `[700200, 700300)`) but did not also check for exact literal match on the parsed number.
+- Added `OR j.job_number = $parsedJobNum` to the short-numeric branch so both legacy short jobs and modern 6-digit prefix-series jobs are returned.
+- No changes to the `>= 6 digits` exact-match branch, invoice search, text search, ranking, or any other search entity.
+- File: `server/storage/search.ts`
+
+### Performance
+
+#### Hybrid Jobs Search — History Mode (2026-03-19)
+
+- Added `searchMode=history` parameter to `GET /api/jobs` for server-backed full-history search.
+- History mode requires a search term (min 2 chars), searches all statuses including archived, uses client-requested limit (default 50).
+- Aligned server search fields with client-side Jobs page: added `clients.address` and `clients.city` ILIKE to `getJobsFeed()` search clause.
+- Jobs page gains explicit history search mode: user clicks "Search all job history" footer CTA, history results replace the local list, "Back to recent jobs" exits.
+- Search text preserved when entering and exiting history mode.
+- Files: `server/storage/jobsFeed.ts`, `server/routes/jobs.ts`, `client/src/hooks/useJobsFeed.ts`, `client/src/pages/Jobs.tsx`
+- No changes to default feed cap, tab counts, local filtering, or response shape.
+
+#### P3-04 — Remove Redundant Job Re-Query in Invoice Validation (2026-03-19)
+
+- `validateJobForInvoice()` in `server/storage/invoices.ts` now accepts optional `preloadedJob` parameter to skip its internal job fetch when the caller already has the job.
+- `createInvoiceFromJob()` passes its pre-fetched `jobPreCheck` into the validator, eliminating one redundant `SELECT * FROM jobs` per invoice creation.
+- Backward compatible: omitting `preloadedJob` preserves the original fetch behavior.
+- File: `server/storage/invoices.ts`
+
+#### P3-03 — Invoice Detail Query Parallelization (2026-03-19)
+
+- `GET /api/invoices/:id/details` in `server/routes/invoices.ts` now runs `getInvoiceLines`, `getClient`, and `getJob` in parallel (Phase 2) after `getInvoice` completes (Phase 1). `getCustomerCompany` remains sequential (Phase 3, depends on location result).
+- Reduces 5 sequential queries to 3 phases. No response shape, guard, or storage function changes.
+- File: `server/routes/invoices.ts`
+
+#### P3-02 — Labor Invoice Line Batch INSERT + Excluded Entry Batch UPDATE (2026-03-19)
+
+- `addLaborLinesFromTimeEntries()` in `server/storage/invoices.ts` now batch-INSERTs all labor invoice lines in a single statement with RETURNING, instead of N per-group INSERTs.
+- Excluded time entry UPDATEs consolidated into a single `WHERE id IN (...)` statement instead of K per-entry UPDATEs.
+- Included time entry UPDATEs remain per-entry (each has unique billedMinutesSnapshot/billedRateSnapshot).
+- `invoiceLineId` back-reference preserved via `lineNumber`-keyed Map from RETURNING results.
+- No grouping, billing, locking, or transaction semantics changed.
+- File: `server/storage/invoices.ts`
+
+#### P3-01 — Financial Dashboard Query Parallelization (2026-03-19)
+
+- `getFinancialSummary()` in `server/storage/dashboard.ts` now dispatches all 10 independent reads concurrently via a single `Promise.all()` instead of 4 parallel + 6 sequential.
+- Queries parallelized: 4 revenue-by-period, monthly trend, AR stats, past-due, sent-this-month, quote pipeline, PM contracts.
+- No query logic, filter, aggregation, or response shape changes. Post-query derivation logic unchanged.
+- File: `server/storage/dashboard.ts`
+
+#### PERF-08 — Dispatch Render Efficiency (2026-03-19)
+
+- Wrapped `DispatchLaneRow` in `React.memo` to skip re-renders for non-active lanes during drag (~60Hz `dragTick` state updates).
+- Stabilized empty-array fallback props in `DispatchTimeline.tsx` (`|| []` → stable module-level constants) so shallow comparison hits for empty lanes.
+- Files: `client/src/components/dispatch/DispatchLaneRow.tsx`, `client/src/components/dispatch/DispatchTimeline.tsx`
+- No behavior changes. No other components memoized.
+
+#### PERF-02 — Jobs Feed Payload Trimming (2026-03-19)
+
+- Removed 11 unused fields from `feedSelectFields` and `mapFeedRow()` in `server/storage/jobsFeed.ts`: `companyId`, `description`, `isActive`, `version`, `createdAt`, `updatedAt`, `holdReason`, `holdNotes`, `nextActionDate`, `invoiceId`, `closedAt`.
+- Fields preserved in `detailSelectFields` and `mapDetailRow()` — detail response unchanged.
+- Server `JobFeedItem` and client `JobFeedItem` types updated to remove the 11 fields from the feed contract.
+- Client `JobHeaderDetail` re-declares the 11 fields as required (fixes 5 pre-existing TS errors on `JobDetailPage.tsx`).
+- Files: `server/storage/jobsFeed.ts`, `client/src/hooks/useJobsFeed.ts`
+- No route, query, filter, sort, or client behavior changes.
+
+#### Surgical Performance Hardening (2026-03-18)
+
+**Invoice creation tax loop (QRY-01):**
+- Replaced N individual `updateInvoiceLine()` calls (each with its own transaction + `recalculateInvoiceTotalsInTx()`) with a single-statement batch UPDATE + one final recalculation.
+- Impact: Invoice with 10 lines reduced from ~40 DB operations to ~4 DB operations.
+- New storage method `batchApplyLineTax()` in `server/storage/invoices.ts`. Route loop in `server/routes/invoices.ts` replaced with single call.
+- Tax math, API response, and invoice totals correctness preserved.
+
+**Frontend background polling (FE-01):**
+- Added `refetchIntervalInBackground: false` to 8 polling hooks to stop polling when tab is hidden.
+- Files: `useLiveTechnicians.ts`, `TechHomePage.tsx`, `TechSchedulePage.tsx`, `LiveMapPage.tsx`, `TechTimesheetPage.tsx`, `NotificationsPage.tsx`, `RecurringJobsPage.tsx`, `SupportConsole.tsx`
+- ImpersonationBanner excluded (security timeout enforcement requires background polling).
+
+**Composite index on job_visits (IDX-01):**
+- Added `idx_job_visits_job_company_active ON job_visits(job_id, company_id) WHERE is_active = true`.
+- Covers the most common visit access pattern (per-job lookups with soft-delete filter).
+- Existing queries benefit automatically — no code changes needed.
+- Migration: `migrations/2026_03_18_job_visits_job_company_index.sql`
+
+#### Performance Pass 2 (2026-03-19)
+
+**PERF-09 — Dashboard parallel attention queries:**
+- `getNeedsAttentionJobs()` in `server/storage/dashboard.ts` now executes overdue and attention queries via `Promise.all()` instead of sequentially.
+
+**PERF-01 — Universal search parallelization:**
+- `universalSearch()` in `server/storage/search.ts` now executes queries 1-6 (invoices, jobs, companies, locations, suppliers, contacts) in parallel via `Promise.all()`. Query 7 (job summary) remains conditional and sequential (depends on Query 2 results).
+
+**PERF-05 — Force-close visit bulk-complete transaction wrap:**
+- `bulkCompleteVisitsInternal()` in `server/services/jobLifecycleOrchestrator.ts` now wraps the per-visit update loop in a single `db.transaction()`. Per-visit semantics (version, checkedOutAt, actualDurationMinutes) preserved. `syncJobToVisits()` remains in same position outside transaction.
+
+**PERF-03 — Dispatch invalidation narrowing (rescheduleVisit + resizeVisit):**
+- `backgroundInvalidate()` in `useDispatchPreviewMutations.ts` now accepts optional `{ calendarOnly: true }` to skip non-calendar invalidations. Applied to rescheduleVisit and resizeVisit only — all other 10 mutations unchanged.
+
+### Fixed
+
+#### Phase 2 Structural Cleanup (2026-03-18)
+
+**F-08 — Deprecated alias deletion:**
+- Deleted `TERMINAL_STATUSES` deprecated alias from `client/src/components/job/jobUtils.ts`. Zero consumers.
+
+**F-03 — Haversine/travel consolidation:**
+- Created `server/lib/distance.ts` with canonical `haversineMeters()` and `estimateTravelMinutes()`.
+- Deleted duplicate implementations from `server/lib/visitIntelligence.ts`, `server/lib/autoGapScheduling.ts`, `server/routes/scheduling.ts`.
+- Files: `server/lib/distance.ts`, `server/lib/visitIntelligence.ts`, `server/lib/autoGapScheduling.ts`, `server/routes/scheduling.ts`
+
+**F-04 — Dashboard financial extraction:**
+- Extracted `getFinancialSummary()` from `server/routes/dashboard.ts` to `server/storage/dashboard.ts`. Route is now 3 lines.
+- Files: `server/routes/dashboard.ts`, `server/storage/dashboard.ts`
+
+**F-05 — Day-summary extraction:**
+- Extracted `getDaySummary()` from `server/routes/scheduling.ts` to `server/storage/scheduling.ts`. Route is now 4 lines.
+- Files: `server/routes/scheduling.ts`, `server/storage/scheduling.ts`
+
+**F-09 — Visit status color consolidation:**
+- Created `visitStatusColorTech()` in `client/src/lib/visitStatusDisplay.ts` using TechHomePage palette (light + dark mode classes).
+- Deleted local `STATUS_COLORS` from `TechHomePage.tsx`, `TechSchedulePage.tsx`, `TechVisitDetailPage.tsx`.
+- Visual behavior preserved: TechHomePage and TechSchedulePage retain their dark mode classes. TechVisitDetailPage gains inert dark mode classes (no effect unless dark mode is activated).
+- Files: `client/src/lib/visitStatusDisplay.ts`, 3 tech pages
+
+**F-11 — Quote badge consolidation:**
+- Created `client/src/lib/statusBadges.ts` with `getQuoteStatusBadge()`.
+- Deleted duplicate `getStatusBadge()` from `Quotes.tsx` and `QuoteDetailPage.tsx`.
+- Files: `client/src/lib/statusBadges.ts`, `client/src/pages/Quotes.tsx`, `client/src/pages/QuoteDetailPage.tsx`
+
+**F-12 — parsePaginationLenient verified active (22 consumers). No change.**
+
+#### Phase 1 Hardening: Filter Canonicalization + Effective-End Sync (2026-03-18)
+
+**F-01/F-07 — Invoice filter canonicalization:**
+- Replaced 8 inline `eq(invoices.isActive, true), isNull(invoices.deletedAt)` sites in `server/storage/invoices.ts` with canonical `activeInvoiceFilter()` from `server/storage/invoicesFeed.ts`.
+- **Bug fix:** Idempotent invoice creation guard (createInvoiceFromJob) was missing `deletedAt IS NULL` check — soft-deleted invoices could block recreation. Now uses canonical filter.
+- Files: `server/storage/invoices.ts`
+
+**F-10 — Diagnostic filter alignment:**
+- Replaced 10 `isNull(jobs.deletedAt)` sites in scheduling diagnostic block with canonical `activeJobFilter()`. Diagnostics now match production query semantics (exclude deactivated jobs).
+- Files: `server/storage/scheduling.ts`
+
+**F-02 — Effective-end SQL/JS sync enforcement:**
+- Added sync comments cross-referencing `server/lib/queryHelpers.ts` effectiveEndExpr and `shared/schema.ts` getEffectiveEnd().
+- Documented that `estimatedDurationMinutes` exists on jobVisits (not jobs), so the SQL expression operating on jobs correctly omits it.
+- Created `tests/effective-end-sync.test.ts` (7 tests) proving SQL and JS implementations produce identical results for all precedence branches.
+- Files: `server/lib/queryHelpers.ts`, `shared/schema.ts`, `tests/effective-end-sync.test.ts`
+
+**F-02 follow-up — Guardrails + zero-duration alignment:**
+- Aligned JS `getEffectiveEnd()` zero-duration handling: changed from truthiness check (`duration && duration > 0`) to nullish check (`duration != null`). `durationMinutes = 0` now selects branch 2 in both SQL and JS, not merely producing the same value through different branches.
+- Strengthened scope comments in both `queryHelpers.ts` and `shared/schema.ts` to explicitly state: SQL operates on jobs-table fields only; do not expand SQL to reference fields absent from the jobs table. Future SQL/JS dual derivations must declare scope and be protected by parity tests.
+- Files: `server/lib/queryHelpers.ts`, `shared/schema.ts`, `tests/effective-end-sync.test.ts`
+
+#### Centralize Inline Job Active Filters in Scheduling (2026-03-18)
+- **Consistency pass:** Replaced 3 inline job active filter sites in `server/storage/scheduling.ts` with canonical `activeJobFilter()` / `JOB_ACTIVE_SQL_J` from `server/storage/jobFilters.ts`. No behavior change — pure deduplication to prevent future drift.
+- Methods centralized: `getScheduledJobsInRange()` (raw SQL), `getUnscheduledJobs()`, `getJobById()`
+- Sanity-check queries intentionally left with `deletedAt`-only filter (category D — broader validation scope).
+- Files: `server/storage/scheduling.ts`
+
+#### Visit Write SQL-Level Soft-Delete Guards (2026-03-18)
+- **Defense-in-depth hardening:** Added `isActive = true AND archivedAt IS NULL` guards to SQL UPDATE WHERE clauses in `updateJobVisit()`, `updateJobVisitStatus()`, and `checkInJobVisit()`. Previously these methods relied solely on application-level prefetch via `getJobVisit()`, leaving a concurrency gap where a visit archived between prefetch and write could still be mutated.
+- **9 behavioral tests** in `tests/visit-write-softdelete-guard.test.ts` proving: archived visits reject updates, inactive visits reject updates, and active visits still update normally for all three methods.
+- Files: `server/storage/jobVisits.ts`, `tests/visit-write-softdelete-guard.test.ts`
+
+#### Cross-System Soft-Delete Consistency Pass (2026-03-18)
+- **Fixed archived visit leak in follow-up query:** `scheduling.ts:getJobsNeedingFollowUp()` INNER JOIN to `job_visits` was missing `AND fv.archived_at IS NULL`. Archived visits with `is_follow_up_needed=true` could leak into the follow-up job list.
+- **Fixed invoice search soft-delete gap:** `search.ts` universal search invoice query had no `is_active = true AND deleted_at IS NULL` filter. Soft-deleted invoices could appear in search results.
+- **Audit findings:** Jobs table queries are canonical and consistent (category A). Visit queries are consistent via `visitPredicates.ts` (category A). Visit update methods have application-level guards via `getJobVisit()` pre-fetch (category B — duplicated but consistent). Scheduling sanity-check queries intentionally use `deletedAt`-only filter for validation scope (category D — intentionally table-specific).
+- Files: `server/storage/scheduling.ts`, `server/storage/search.ts`
+
+#### Invoice DB Constraint + NULL isActive Cleanup (2026-03-18)
+- **Part A — DB status constraint added:** `invoices_status_check` CHECK constraint enforces `status IN ('draft', 'awaiting_payment', 'sent', 'partial_paid', 'paid', 'voided')` at the PostgreSQL level. Migration: `migrations/2026_03_18_add_invoice_status_check.sql`.
+- **Part B — NULL isActive compatibility removed:** All 10 invoice filter sites across `invoices.ts`, `invoicesFeed.ts`, `reports.ts` changed from `or(eq(isActive, true), isNull(isActive))` to `eq(isActive, true)`. Live DB verified zero NULL isActive rows exist.
+- **`activeInvoiceFilter()`** now uses canonical `isActive = true AND deletedAt IS NULL` (no NULL compat).
+- Files: `migrations/2026_03_18_add_invoice_status_check.sql` (new), `server/storage/invoices.ts`, `server/storage/invoicesFeed.ts`, `server/storage/reports.ts`
+
+#### Invoice Overdue Predicate Alignment (2026-03-18)
+- **Fixed client/server overdue mismatch:** Dashboard pastDueCount, server `computeIsPastDue()`, and client `getStatusBadge()` now all agree: only `awaiting_payment`, `sent`, `partial_paid` invoices with past dueDate and balance > 0 are overdue. Draft invoices are no longer misclassified as overdue.
+- **Server fix:** Removed `"draft"` from `unpaidStatuses` in both `invoicesFeed.ts:computeIsPastDue()` and `invoices.ts:computeIsPastDue()`.
+- **Client fix:** `InvoicesListPage.tsx:getStatusBadge()` now reads server-computed `isPastDue` flag instead of recomputing locally with divergent logic.
+- **11 predicate tests** in `tests/invoice-overdue-predicate.test.ts` proving: draft exclusion, payment-eligible inclusion, terminal exclusion, edge cases, and dashboard/list status-set match.
+- Files: `server/storage/invoicesFeed.ts`, `server/storage/invoices.ts`, `client/src/pages/InvoicesListPage.tsx`, `tests/invoice-overdue-predicate.test.ts`
+
+#### Invoice Status Contract Alignment (2026-03-18)
+- **Fixed `shared/schema.ts` invoiceStatusEnum:** Added `awaiting_payment` — was previously missing from the shared type system despite being written by the server and read by the frontend. The shared `InvoiceStatus` type now represents all runtime values.
+- **Fixed `updateInvoiceSchema` in `routes/invoices.ts`:** Replaced hardcoded status array with reference to canonical `invoiceStatusEnum` from `shared/schema.ts`. Previously the PATCH endpoint could not accept `awaiting_payment`.
+- **`sent` preserved as explicit legacy:** Kept in the enum with documentation as a legacy alias for `awaiting_payment`. Existing persisted data may contain it; the codebase consistently treats it as equivalent to `awaiting_payment` in filters and transitions.
+- **Soft-delete test completeness:** Added missing `invoice feed does not leak soft-deleted joined job data` test to `tests/invoice-soft-delete-integrity.test.ts`.
+- **10 contract tests** in `tests/invoice-status-contract.test.ts` proving: awaiting_payment in shared enum, type representability, server validation alignment, transition rules, sent legacy parity.
+- Files: `shared/schema.ts`, `server/routes/invoices.ts`, `tests/invoice-status-contract.test.ts`, `tests/invoice-soft-delete-integrity.test.ts`
+
+#### Invoice Soft-Delete Integrity Fix (2026-03-18)
+- **Part A — Core reads:** Added `isNull(invoices.deletedAt)` to `getInvoices()`, `getInvoice()`, `getInvoiceByJobId()`, `getInvoiceStats()` in `server/storage/invoices.ts`. Previously soft-deleted invoices could be returned to users.
+- **Part B — Mutation guard:** Added soft-delete guard (`isActive + deletedAt IS NULL`) to both `updateInvoice()` code paths (with and without version check). Previously soft-deleted invoices could be mutated.
+- **Part C — Feed join leak:** Fixed `invoicesFeed.ts` LEFT JOIN to jobs: added `isNull(jobs.deletedAt), eq(jobs.isActive, true)` to join predicate. Previously soft-deleted job data could leak into invoice feed responses.
+- **8 integration tests** in `tests/invoice-soft-delete-integrity.test.ts` proving: read exclusion (4 methods), mutation guard (2 paths), active invoice preservation (2 tests).
+- Files: `server/storage/invoices.ts`, `server/storage/invoicesFeed.ts`, `tests/invoice-soft-delete-integrity.test.ts`
+
+#### Final Job Status Canonical Enforcement (2026-03-18)
+- **Part A — Removed last compatibility inputs:** `statusUpdateSchema` in `server/routes/jobs.ts` now accepts ONLY canonical values (`open`, `completed`, `invoiced`, `archived`). The convenience aliases `in_progress` and `on_hold` (which were silently mapped to `status=open + openSubStatus`) have been removed. Zero first-party callers used them — the frontend already sends `{ status: "open", openSubStatus: "on_hold" }` directly.
+- **Part B — Removed duplicate DB constraint:** Dropped `jobs_status_lifecycle_check` (redundant duplicate of `jobs_status_check`). One canonical CHECK constraint remains: `status IN ('open', 'completed', 'invoiced', 'archived')`.
+- **Migration:** `migrations/2026_03_18_drop_duplicate_status_constraint.sql`
+- Files: `server/routes/jobs.ts`, `migrations/2026_03_18_drop_duplicate_status_constraint.sql`
+
+#### normalizeJobStatus() Removed (2026-03-18)
+- **Deleted `normalizeJobStatus()`** from `shared/schema.ts` — proven unnecessary by live DB verification: zero legacy rows, CHECK constraint `jobs_status_check` enforces canonical-only values (`open`, `completed`, `invoiced`, `archived`) at PostgreSQL level.
+- **~30 call sites removed** across `jobLifecycle.ts`, `scheduling.ts`, `statusRules.ts`, `routes/jobs.ts`. All now operate directly on canonical status values with `as JobStatus` assertions where needed.
+- **Zero behavior change** — the function was a guaranteed no-op since all inputs were already canonical.
+- Files: `shared/schema.ts`, `server/domain/jobLifecycle.ts`, `server/domain/scheduling.ts`, `server/statusRules.ts`, `server/routes/jobs.ts`
+
+#### Legacy Compatibility Cleanup (2026-03-18)
+- **Deleted `jobVisits.service.ts`** — deprecated passthrough wrapper (109 lines). All 2 route consumers (`jobVisits.routes.ts`, `jobs.ts`) updated to import `jobVisitsRepository` directly.
+- **Removed 4 deprecated aliases** from `statusRules.ts`: `TERMINAL_STATUSES`, `CLOSEABLE_STATES`, `REOPENABLE_STATES`, `ACTIVE_STATES`. All consumers updated to canonical names (`JOB_TERMINAL_STATUSES`, etc.).
+- **Removed `legacyJobStatusEnum`** from both `server/schemas.ts` and `shared/schema.ts` — zero consumers. Route status validation narrowed from 14 legacy values to 6: 4 canonical + 2 convenience aliases (`in_progress`, `on_hold`). Legacy DB values still handled by `normalizeJobStatus()` at runtime.
+- Files: `server/services/jobVisits.service.ts` (deleted), `server/routes/jobVisits.routes.ts`, `server/routes/jobs.ts`, `server/statusRules.ts`, `server/schemas.ts`, `shared/schema.ts`, `server/domain/jobLifecycle.ts`, `server/domain/scheduling.ts`, `server/scripts/schedulingSanityCheck.ts`, `server/scripts/sanity-check-lifecycle.ts`
+
+#### Proof-Backed Safe Deletions (2026-03-18)
+- **Deleted `scheduleJobBypassWorkingHours()`** from `server/storage/scheduling.ts` — dead code with zero callers (~105 lines).
+- **Deleted `updateJobStatusWithMultipleEvents()`** from `server/storage/jobs.ts` — dead code with zero callers (~75 lines). Removed from `server/storage/index.ts` type + binding.
+- **Deleted duplicate `isTerminalStatus()`** from `server/domain/scheduling.ts` — identical to `jobLifecycle.ts` version. `jobLifecycle.ts` is now the sole owner. Internal `scheduling.ts` uses import directly; no re-export retained (zero external consumers verified).
+- Files: `server/storage/scheduling.ts`, `server/storage/jobs.ts`, `server/storage/index.ts`, `server/domain/scheduling.ts`
+
+#### Visit Status Display Label Centralization (2026-03-18)
+- **New canonical module** `client/src/lib/visitStatusDisplay.ts` — single source of truth for visit status display labels, colors, dots, and dropdown options. Re-exports from `dispatchPreviewUtils.ts`.
+- **Contradiction eliminated:** `on_site` now consistently displays as **"In Progress"** on all surfaces. Previously showed "On Site" on 6 visit-status surfaces and "In Progress" on 3.
+- **6 local label maps removed** from: `DispatchDetailPanel.tsx`, `EditVisitModal.tsx`, `JobVisitsSection.tsx`, `JobDetailPage.tsx`, `TechHomePage.tsx`, `TechVisitDetailPage.tsx`. `TechSchedulePage.tsx` uses canonical with a justified local override (`completed → "Done"` for compact mobile display).
+- **Time entry type labels intentionally NOT changed** — `UnassignedTimePage.tsx`, `TimeAnalyticsPage.tsx`, `AddTimeEntryModal.tsx`, `EditTimeEntryModal.tsx` use "On Site" as a **time entry type** label (different domain concept from visit status).
+- **18 unit tests** in `tests/visit-status-display.test.ts` proving: on_site→"In Progress", all status mappings, normalization, color consistency, dropdown options.
+- Files: `client/src/lib/visitStatusDisplay.ts` (new), 7 consumer files updated, `tests/visit-status-display.test.ts`
+
+#### Effective-End Computation Centralization (2026-03-18)
+- **New canonical helper** `getEffectiveEnd()` in `shared/schema.ts` — single source of truth for JS-side effective-end computation. Priority: `scheduledEnd → scheduledStart + duration → scheduledStart → null`.
+- **Contradiction eliminated:** `visitIntelligence.ts` was missing the `scheduledStart`-only fallback, fabricating a 60-minute default duration. Now uses the canonical helper.
+- **`isJobOverdue()` refactored** to call `getEffectiveEnd()` internally instead of inline logic.
+- **SQL `effectiveEndExpr`** unchanged — documented as mirror of `getEffectiveEnd()`.
+- **19 unit tests** in `tests/effective-end.test.ts` proving: priority rules, null safety, estimatedDurationMinutes support, isJobOverdue preservation, contradiction elimination.
+- Files: `shared/schema.ts`, `server/lib/visitIntelligence.ts`, `server/lib/queryHelpers.ts` (comment only), `tests/effective-end.test.ts`
+
+#### Visit Predicate Centralization (2026-03-18)
+- **New canonical module** `server/lib/visitPredicates.ts` — single source of truth for visit eligibility/actionability predicates.
+- **Three named predicates**: `scheduleEligibleVisitFilter()` (schedule sync), `reconciliationActionableVisitFilter()` (auto-close gating), `uncompletedVisitFilter()` (force-close/bulk-complete). Plus `TERMINAL_VISIT_STATUSES` constant.
+- **5 consumers updated** to import from canonical module instead of inline predicates: `getCurrentEligibleVisit()`, `syncJobScheduleFromVisits()`, `getUncompletedVisits()` in `jobVisits.ts`; `reconcileJobAfterVisitCompletion()` in orchestrator; `fetchScheduledVisits()` in `visitIntelligence.ts`.
+- **16 integration tests** in `tests/visit-predicates.test.ts` proving: predicate inclusion/exclusion, distinct semantics (same visit can fail one predicate but pass another), consumer preservation.
+- Files: `server/lib/visitPredicates.ts` (new), `server/storage/jobVisits.ts`, `server/services/jobLifecycleOrchestrator.ts`, `server/lib/visitIntelligence.ts`, `tests/visit-predicates.test.ts`
+
+#### BP-3/BP-4: Tech-Field Visit Workflow Ownership Hardened (2026-03-18)
+- **Fix:** `POST /api/tech/visits/:visitId/en-route` and `POST /api/tech/visits/:visitId/start` no longer perform direct `db.update(jobVisits)` in the route layer. Visit workflow mutations are now owned by two new orchestrator methods: `setVisitEnRoute()` and `startVisit()` in `jobLifecycleOrchestrator.ts`.
+- **Validation centralized:** Terminal-state guard (reject completed/cancelled) now lives in the orchestrator, not the route.
+- **Route retains:** Tech assignment auth (`getAssignedVisit`), request parsing, and app-specific time-tracking side effects (`timeTrackingRepository.recordJobStatus`).
+- **10 integration tests** in `tests/bp3-bp4-visit-workflow-ownership.test.ts` proving: status writes, version increments, checkedInAt preservation, terminal rejection, timestamp overrides, and schedule sync.
+- Files: `server/services/jobLifecycleOrchestrator.ts`, `server/routes/techField.ts`, `tests/bp3-bp4-visit-workflow-ownership.test.ts`
+
+#### BP-2: Reconciliation Non-Terminal Version/Audit Bypasses Eliminated (2026-03-18)
+- **Fix:** Rules 2, 3, 4 in `reconcileJobAfterVisitCompletion()` no longer write job workflow state directly via `db.update(jobs)`. Now routed through `jobRepository.updateJobStatusWithEvent()` — the same canonical helper used by `placeJobOnHold()`, `resumeJob()`, etc.
+- **Version increment restored:** All three reconciliation branches now atomically increment `jobs.version`.
+- **Audit trail restored:** All three branches now create `jobStatusEvent` rows with truthful same-status semantics (`open→open`) and distinguishing `meta.action` values: `reconcile_hold`, `reconcile_hold_partial`, `reconcile_resume`.
+- **4 integration tests** proving version increment, audit events, truthful event semantics, and no fake terminal fields for Rules 2/3/4.
+- Files: `server/services/jobLifecycleOrchestrator.ts`, `tests/bp1-reconciliation-canonical-close.test.ts`
+
+#### BP-1: Reconciliation Terminal Status Bypass Eliminated (2026-03-18)
+- **Critical fix:** `reconcileJobAfterVisitCompletion()` Rule 1 in `jobLifecycleOrchestrator.ts` no longer writes `status: "completed"` directly via `db.update(jobs)`. Now calls `jobRepository.transitionJobStatus()` with `CLOSE_JOB(mode=invoice_later)` intent — the same canonical lifecycle path used by office close.
+- **8 fields restored:** Auto-completed jobs now have: `previousStatus`, `closedBy` (completing user), `closedAt`, schedule clearing (`scheduledStart/End/isAllDay`), hold clearing, `pmBillingStatus` handling, version increment, `jobStatusEvent` audit trail.
+- **RBAC:** Added `"system"` to `LIFECYCLE_ROLES` for orchestrator-initiated transitions (not user-facing).
+- **Race handling:** Graceful no-op if job is concurrently closed; single retry on version mismatch if job is still open.
+- **7 integration tests** in `tests/bp1-reconciliation-canonical-close.test.ts` proving persisted state, schedule clearing, audit event, PM billing, undo-close prerequisites, race safety, and non-terminal regression.
+- **5 domain tests** in `tests/job-lifecycle.test.ts` proving CLOSE_JOB(invoice_later) patch shape, system role RBAC, terminal rejection, and undo-close prerequisites.
+- Files: `server/services/jobLifecycleOrchestrator.ts`, `server/domain/jobLifecycle.ts`, `tests/bp1-reconciliation-canonical-close.test.ts`, `tests/job-lifecycle.test.ts`
+
+### Added
+
+#### Surgical Fix Plan (2026-03-18)
+- **Implementation-ready plan** at `docs/SURGICAL_FIX_PLAN_2026_03_18.md` — covers all 4 proven bypasses (BP-1 through BP-4), 3 semantic centralizations, 4 safe deletions, and 31-item regression checklist.
+- Phase 1: BP-1 reconciliation terminal bypass → reroute through `CLOSE_JOB(mode=invoice_later)` intent; BP-2 reconciliation sub-lifecycle → reroute through `updateJobStatusWithEvent()`; BP-3/BP-4 techField → new orchestrator methods `setVisitEnRoute()` / `startVisit()`.
+- Phase 2: Visit eligibility (3 named predicates in `visitPredicates.ts`), effective end (`getEffectiveEnd()` in shared/schema.ts), visit labels (centralize 12 constants into `visitStatusDisplay.ts`).
+- Phase 3: Delete 4 dead code items after centralization.
+
+#### Canonical Ownership Proof & Bypass Inventory (2026-03-18)
+- **Proof document** at `docs/CANONICAL_OWNERSHIP_PROOF_2026_03_18.md` — exhaustive trace of every write to 12 critical fields and every derivation of 6 semantic concepts.
+- **Write matrix**: 12 fields × every write site with exact file/line/function, call chain traces, and canonical vs bypass classification.
+- **4 critical bypasses proven**: reconciliation direct-writes (BP-1/BP-2), techField route-level visit mutations (BP-3/BP-4).
+- **4 contradiction proofs**: reconciliation missing 8 fields vs canonical, visit eligibility predicate mismatch, on_site label split (3 vs 9 surfaces), effectiveEnd fallback gap.
+- **2 dead code deletions identified**: `scheduleJobBypassWorkingHours()`, `updateJobStatusWithMultipleEvents()`.
+- **7-phase remediation order**: reconciliation fix → version/audit fix → eligibility centralization → visit labels → effectiveEnd → tech field → dead code.
+
+#### Full-System Forensic Architectural Audit (2026-03-18)
+- **Comprehensive audit document** at `docs/FORENSIC_AUDIT_2026_03_18.md` covering all backend routes, storage, services, domain, shared code, frontend pages, hooks, and components (200+ files).
+- **4 Critical findings**: orchestrator reconciliation bypassing domain lifecycle, invoice status enum mismatch, visit "on_site" label inconsistency across 11 surfaces, visit eligibility predicate drift.
+- **10 High findings**: soft-delete drift, duplicate functions (isTerminalStatus, haversineMeters, upsertAttention), deprecated service still imported, effectiveEnd inconsistency, client-side status derivation, legacy enum in API, route-level visit mutations.
+- **10 Medium findings**: dead CSRF file, technician name fallback diff, duplicate status constants, debug logging, deprecated aliases.
+- **Deliverables**: Dead code inventory, legacy compatibility inventory, duplicate authority matrix, query drift matrix, write-path violations, read-path drift, schema risk inventory, top 20 deletions, top 20 contradictions, phased remediation plan.
+
+### Fixed
+
+#### CLOSE_JOB(mode=invoice_now) Terminal Metadata Harmonization (2026-03-18)
+- **Bug:** `CLOSE_JOB(mode=invoice_now)` reached status="invoiced" but did NOT set `previousStatus`, `closedAt`, or `closedBy` — the only close mode missing these terminal metadata fields. This broke undo-close (no `closedAt` means `UNDO_CLOSE` fails with `NO_CLOSE_DATA`) and left incomplete audit trail.
+- **Fix:** Added `previousStatus: currentStatus`, `closedAt: new Date()`, `closedBy: actor.userId` to the `invoice_now` case in `applyCloseTransition()`.
+- **Tests:** Added 2 tests: direct field verification + side-by-side comparison proving `invoice_now` and `MARK_INVOICED` now produce consistent terminal metadata.
+- Files: `server/domain/jobLifecycle.ts`, `tests/job-lifecycle.test.ts`
+
+### Added
+
+#### MARK_INVOICED Test Coverage + Canonicalization Audit (2026-03-18)
+- **7 tests added** to `tests/job-lifecycle.test.ts`: open→invoiced, completed→invoiced, idempotent (already invoiced), rejects archived, RBAC enforcement, PM billing status, full field patch validation.
+- **Canonicalization audit:** `CLOSE_JOB` mode=invoice_now and `MARK_INVOICED` share the same domain engine but have different source-state rules. NOT duplicate authority — different intents, different source contexts, same canonical `applyLifecycleTransition` pipeline.
+
+#### MARK_INVOICED Lifecycle Intent (2026-03-18)
+- **New domain intent** `MARK_INVOICED` in `jobLifecycle.ts`: standalone lifecycle transition that marks a job as invoiced after an invoice has been created/linked. Allowed from `open` or `completed` states; idempotent if already invoiced; forbidden from `archived`.
+- **New orchestrator function** `markInvoiced()` in `jobLifecycleOrchestrator.ts` with `MarkInvoicedIntent` / `MarkInvoicedResult` types, added to `OrchestratorIntent` union.
+- **Wired invoice route** in `invoices.ts`: when `markJobCompleted=true` and invoice is newly created, calls `lifecycle.markInvoiced()` to transition job status through the canonical domain engine.
+- Files: `server/domain/jobLifecycle.ts`, `server/services/jobLifecycleOrchestrator.ts`, `server/routes/invoices.ts`
+
+### Changed
+
+#### Script Utility needs_review Write-Path Cleanup (2026-03-18)
+- **Fixed `schedulingSanityCheck.ts`:** `action_required` legacy status now maps to `on_hold` (was `needs_review`). Both the JS mapping constant (line 53) and the SQL repair query (line 176) updated.
+- File: `server/scripts/schedulingSanityCheck.ts`
+
+#### Transitional Legacy Residue Cleanup (2026-03-18)
+- **Removed `needs_review` from TypeScript type** (`shared/schema.ts` `openSubStatusEnum`). Zero live rows, data migrated, type safely narrowed.
+- **Removed transitional display mapping** from `jobUtils.ts` (`needs_review → "On Hold"` branch + SUB_STATUS_INFO entry). No longer needed post-migration.
+- **Removed `needs_review` case** from `status-pill.tsx` variant mapping.
+- **Cleaned 7 stale comments** across `jobLifecycle.ts`, `scheduling.ts`, `schemas.ts`, `statusRules.ts`, `dashboard.ts`, `reports.ts`, `shared/schema.ts` that still described `needs_review` as a current supported state.
+- Files: `shared/schema.ts`, `client/src/components/job/jobUtils.ts`, `client/src/components/ui/status-pill.tsx`, `server/domain/jobLifecycle.ts`, `server/domain/scheduling.ts`, `server/schemas.ts`, `server/statusRules.ts`, `server/storage/dashboard.ts`, `server/routes/reports.ts`
+
+#### Drop Deprecated actionRequired* Columns (2026-03-18)
+- **Physical column drop:** `action_required_reason`, `action_required_notes`, `action_required_at`, `action_required_escalated_at` dropped from jobs table via `migrations/2026_03_18_drop_deprecated_action_required_columns.sql`.
+- **`previousStatus` NOT dropped** — still actively used by CLOSE/UNDO_CLOSE lifecycle transitions and DB CHECK constraint.
+- **Schema updated:** `shared/schema.ts` column definitions removed. `scripts/check-schema-drift.ts` updated. Comments cleaned in `server/schemas.ts` and `server/routes/jobs.ts`.
+- Files: `shared/schema.ts`, `server/schemas.ts`, `server/routes/jobs.ts`, `scripts/check-schema-drift.ts`, migration file
+
+#### needs_review Data Migration to on_hold (2026-03-18)
+- **Created `migrations/2026_03_18_migrate_needs_review_to_on_hold.sql`** — migrates all live `open_sub_status='needs_review'` rows to `on_hold`. Sets `holdReason='other'` and `onHoldAt=updated_at` as fallback where canonical fields are still NULL. Only targets `status='open'` rows. Historical events untouched.
+- After migration, zero live rows should have `needs_review` as their substatus. Operational queries (`getActionRequiredJobs`, reports Part A) already use `on_hold` only.
+
+#### needs_review Ghost-Surface Removal (2026-03-18)
+
+- **Removed `needs_review` from all live UI surfaces** — filter tabs, count badges, URL param validation, SLA display condition in `Jobs.tsx`; attention banner in `JobDetailPage.tsx`.
+- **Mapped historical `needs_review` to "On Hold" display** in `jobUtils.ts` (`SUB_STATUS_INFO` and `getJobStatusDisplay`) so legacy DB rows render correctly.
+- **Updated `status-pill.tsx`** — added comment noting `needs_review` case is historical-only (already mapped to same "warning" variant as `on_hold`).
+- **Simplified server queries** — `getActionRequiredJobs` in `server/storage/jobs.ts` now uses `eq(openSubStatus, "on_hold")` instead of `IN ('on_hold', 'needs_review')`; `server/routes/reports.ts` action-required KPIs query changed from `needs_review` to `on_hold`.
+- **Annotated `shared/schema.ts`** — `needs_review` enum value marked as HISTORICAL ONLY, kept for DB/type compatibility.
+- Files affected: `client/src/pages/Jobs.tsx`, `client/src/pages/JobDetailPage.tsx`, `client/src/components/job/jobUtils.ts`, `client/src/components/ui/status-pill.tsx`, `server/storage/jobs.ts`, `server/routes/reports.ts`, `shared/schema.ts`
+
+#### Hold/Action-Required Truth Consolidation (2026-03-18)
+
+- **Created backfill migration** to populate canonical hold fields (`on_hold_at`, `hold_reason`, `hold_notes`) from deprecated `action_required_*` columns for jobs in on_hold/needs_review status.
+- **Removed runtime fallback chains** in `Jobs.tsx` — `holdTime` now reads only from `job.onHoldAt`; escalation tracking removed (no canonical replacement for `actionRequiredEscalatedAt`).
+- **Switched reports.ts** from deprecated `actionRequired*` columns to canonical `onHoldAt`/`holdReason` fields; escalation count hardcoded to 0 for API compat.
+- **Removed deprecated fields from jobsFeed.ts** — `actionRequiredAt`, `actionRequiredNotes`, `actionRequiredEscalatedAt`, `actionRequiredReason` removed from interface, SELECT, and mapping.
+- **Removed deprecated fields from jobs.ts storage** — `actionRequired*` columns removed from both `getJob()` and `getActionRequiredJobs()` SELECT lists.
+- **Cleaned type/DTO surfaces** — removed `actionRequired*` fields from `JobFeedItem`, `JobHeaderDetail` (server), and client `useJobsFeed.ts` types.
+- **Removed deprecated Zod fields** from `server/schemas.ts` — `actionRequiredReason` and `actionRequiredNotes` no longer accepted in job write schema.
+- Migration: `migrations/2026_03_18_backfill_canonical_hold_fields.sql`
+- Files: `client/src/pages/Jobs.tsx`, `server/routes/reports.ts`, `server/storage/jobsFeed.ts`, `server/storage/jobs.ts`, `client/src/hooks/useJobsFeed.ts`, `server/schemas.ts`
+
+### Fixed
+
+#### Correction Pass — 5 Defects from Hardening Pass (2026-03-18)
+
+1. **Issue 1+5: Removed incorrect `forceCloseJob()` from invoice route.** Invoice creation must not mutate job lifecycle. No canonical "mark invoiced" intent exists; the close-job route with `mode=invoice_now` is the only correct path. Removed the try/catch fallback wrapper around the incorrect call.
+2. **Issue 2: Completed dispatch mutation gating.** Added `kind !== "visit"` runtime guards to all 8 dispatch mutation handlers in `DispatchPreview.tsx` (updateStatus, completeVisit, unschedule, delete, resize, reschedule, updateCrew, updateVisitNotes). Backlog items cannot trigger visit APIs.
+3. **Issue 3: Finished `effectiveEndExpr` centralization.** `maintenance.ts` now imports and uses the shared helper from `queryHelpers.ts`. Zero inline duplicate definitions remain.
+4. **Issue 4: Fixed backfill timestamp.** Migration no longer uses `created_at` as completion timestamp fallback. Uses `COALESCE(checked_out_at, updated_at)` only.
+- Files: `server/routes/invoices.ts`, `client/src/pages/DispatchPreview.tsx`, `server/storage/maintenance.ts`, `migrations/2026_03_18_visit_completion_constraints.sql`
+
+### Changed
+
+#### Hardening Pass Task 7: Query Standardization (2026-03-18)
+
+- **Centralized `effectiveEndExpr`** SQL expression into `server/lib/queryHelpers.ts`. Removed 3 duplicate definitions from `dashboard.ts`, `attentionRules.ts`, `jobsFeed.ts`. All now import from the single canonical source.
+- **Aligned dashboard unscheduled count** with canonical `isBacklogEligible()` predicate. Removed the `isAllDay` exclusion that caused count drift between dashboard and dispatch rail/attention rules.
+- Files: `server/lib/queryHelpers.ts`, `server/storage/dashboard.ts`, `server/lib/attentionRules.ts`, `server/storage/jobsFeed.ts`
+
+#### Hardening Pass Tasks 4-6 (2026-03-18)
+
+**Task 4: Fix Job Import**
+- `server/services/jobImport.ts`: Removed `closedAt` and `previousStatus` from archived job insert — these are lifecycle fields managed by the domain engine. Imported archived jobs don't need undo-close support.
+- `server/routes/jobImport.ts`: Both collision-check queries (preview + execute) now use canonical active filter (`isNull(deletedAt)` + `isActive = true`) so soft-deleted job numbers can be reused.
+
+**Task 5: Fix Dispatch Domain Corruption**
+- `client/src/components/dispatch/dispatchPreviewTypes.ts`: Added `kind: "visit" | "backlog"` discriminant field to `DispatchVisit` type. Mutations that use `id` as a visitId MUST check `kind === "visit"` first.
+- `client/src/components/dispatch/dispatchPreviewMappers.ts`: `mapEventToDispatchVisit` now sets `kind: "visit"`, `mapUnscheduledToDispatchVisit` sets `kind: "backlog"`.
+- `client/src/components/dispatch/useDispatchPreviewMutations.ts`: Added defense-in-depth comments to `updateVisitStatus`, `completeVisitWithOutcome`, `deleteVisit` requiring callers to check `kind === "visit"`.
+
+**Task 6: Delete Dead Code**
+- `server/services/calendarValidation.ts`: Deleted `validateScheduleSafe` (unused wrapper) and `verifyConflictSemantics` (DEV-only console logger, never called).
+- `client/src/pages/Jobs.tsx`: Deleted `escalateMutation`, `handleEscalate`, `updateActionRequiredMutation` and all JSX references — they called non-existent API endpoints (`/api/jobs/:id/mark-action-required-escalated`, `PATCH /api/jobs/:id/action-required`).
+- `server/statusRules.ts`: Removed `TERMINAL_STATES` alias (dead, use `JOB_TERMINAL_STATUSES` instead).
+
+#### Hardening Pass Tasks 1-3 (2026-03-18)
+
+**Task 1: Remove Invoice Lifecycle Write**
+- `server/storage/invoices.ts`: Removed autonomous `status = "invoiced"` write from `createInvoiceFromJob()`. Invoice creation now ONLY links invoice to job (sets `invoiceId`). Lifecycle transition is caller's responsibility.
+- `server/routes/invoices.ts`: Added canonical `lifecycle.forceCloseJob()` call after invoice creation in `POST /api/invoices/from-job/:jobId`. Reads job version for optimistic locking. Failure is non-fatal (invoice still created).
+
+**Task 2: Fix Spawn-on-Action Visit Completion**
+- `server/storage/scheduling.ts`: Added missing `outcome`, `completedAt`, and `isFollowUpNeeded` fields to both `scheduleJob` and `rescheduleVisit` spawn-on-action (`complete_and_new`) paths. Previously these wrote `status: 'completed'` without structured completion fields.
+
+**Task 3: DB Invariant Hardening**
+- Created `migrations/2026_03_18_visit_completion_constraints.sql`: Backfills historical completed visits missing outcome fields, then adds CHECK constraints enforcing completion invariants (`outcome NOT NULL`, `completed_at NOT NULL`, follow-up consistency, scheduled_end requires start).
+- `server/storage/jobVisits.ts`: Removed Phase A auto-default that silently set `outcome = "completed"` on status transitions. Completion fields must now be set explicitly by the orchestrator.
+
+#### Final Lifecycle Hardening Pass (2026-03-18)
+
+**Escape hatch removed:**
+- `POST /api/jobs/:id/status` CASE 6 fallback replaced. Sub-status clearing now routes through orchestrator (`setJobSubstatus` accepts null). All unrecognized transitions rejected with 400. Zero direct `storage.updateJobStatusWithEvent` calls remain in routes.
+- `POST /api/jobs/:id/undo-close` now routes through `lifecycle.undoCloseJob()` instead of direct `storage.transitionJobStatus`.
+
+**Dead lifecycle code deleted:**
+- `server/services/visitReconciliation.ts` — **DELETED**. Logic absorbed into orchestrator.
+- `storage/jobVisits.ts: checkOutJobVisit()` — **DELETED**. Check-out is metadata-only; completion goes through orchestrator.
+- `storage/jobVisits.ts: bulkCompleteVisits()` — **DELETED**. Orchestrator owns bulk completion with proper outcome fields.
+- `storage/jobs.ts: updateJobStatus()` — **DELETED**. No active callers.
+- `storage/index.ts: updateJobStatus` — **REMOVED** from storage facade.
+- `services/jobVisits.service.ts: checkOutJobVisit, bulkCompleteVisits` — **DELETED** wrappers.
+
+**`needs_review` resolved — removed from writable paths:**
+- Removed from `server/schemas.ts` `openSubStatusEnum` (Zod writable validation).
+- Removed from `server/statusRules.ts` `OPEN_SUB_STATUS_FLOW` transition map.
+- Kept in `shared/schema.ts` `openSubStatusEnum` for TypeScript type (read/display compatibility).
+- Historical DB data preserved. Reports still read it. No orchestrator intent writes it.
+
+- Files: `server/routes/jobs.ts`, `server/services/visitReconciliation.ts` (deleted), `server/storage/jobVisits.ts`, `server/storage/jobs.ts`, `server/storage/index.ts`, `server/services/jobVisits.service.ts`, `server/schemas.ts`, `server/statusRules.ts`, `server/services/jobLifecycleOrchestrator.ts`
+
+### Added
+
+#### Job Lifecycle Orchestrator (2026-03-18)
+- **Created `server/services/jobLifecycleOrchestrator.ts`** — SINGLE CANONICAL ENTRY POINT for all job and visit lifecycle mutations. All lifecycle state changes must route through this orchestrator.
+- Supports 10 intents: COMPLETE_VISIT, FORCE_CLOSE_JOB, REOPEN_JOB, UNDO_CLOSE_JOB, PLACE_JOB_ON_HOLD, RESUME_JOB, UPDATE_HOLD_METADATA, SET_JOB_SUBSTATUS, CANCEL_VISIT, BULK_COMPLETE_VISITS.
+- Absorbs reconciliation logic from `visitReconciliation.ts` inline — no separate service call.
+- Delegates to existing domain engine (`jobLifecycle.ts`) and storage layer (`jobRepository.transitionJobStatus`, `jobRepository.updateJobStatusWithEvent`) for persistence and audit events.
+- Files: `server/services/jobLifecycleOrchestrator.ts`
+
+#### Route Redirect to Orchestrator (2026-03-18)
+- **Redirected all lifecycle-mutating endpoints in `server/routes/jobVisits.routes.ts`** to use the canonical orchestrator instead of direct DB/reconciliation calls.
+- `POST /:jobId/visits/:visitId/status` — now rejects `status=completed` with 400, directing callers to `/complete` endpoint. Non-terminal statuses still use `service.updateJobVisitStatus()` directly.
+- `POST /:jobId/visits/:visitId/complete` — delegates entirely to `lifecycle.completeVisit()` orchestrator. Removed direct DB patch, reconciliation, and sync calls.
+- `POST /:jobId/visits/:visitId/check-out` — now records checkout metadata only (checkedOutAt, actualDurationMinutes). No longer completes the visit or triggers reconciliation. Completion is a separate action via `/complete`.
+- Removed imports: `reconcileJobAfterVisitCompletion`, `db`, `drizzle-orm` operators, `jobVisitsTable`.
+- Files: `server/routes/jobVisits.routes.ts`
+
+#### Jobs Route Redirect to Orchestrator (2026-03-18)
+- **Redirected all lifecycle-mutating endpoints in `server/routes/jobs.ts`** to use the canonical orchestrator instead of direct storage/visitService calls.
+- `POST /:id/status` — routes to `lifecycle.forceCloseJob` (completed), `lifecycle.placeJobOnHold` (on_hold), `lifecycle.resumeJob` (clearing hold), `lifecycle.setJobSubstatus` (sub-status changes), `lifecycle.updateHoldMetadata` (hold field edits). Removed inline `bulkCompleteVisits`, `closedAt`/`closedBy` management, and hold field assembly.
+- `POST /:id/close` — routes to `lifecycle.forceCloseJob` with `autoCompleteOpenVisits` flag. Removed separate `visitService.bulkCompleteVisits` call and direct `storage.transitionJobStatus`.
+- `POST /:id/reopen` — routes to `lifecycle.reopenJob`. Removed direct `storage.transitionJobStatus`.
+- `POST /:id/start-travel` — routes to `lifecycle.setJobSubstatus` with `on_route` + `travelStartedAt`. Removed direct `storage.updateJobStatusWithEvent`.
+- `POST /:id/arrive-on-site` — routes to `lifecycle.setJobSubstatus` with `in_progress` + arrival timestamps. Removed direct `storage.updateJobStatusWithEvent`.
+- `PATCH /:id/on-hold` — routes to `lifecycle.updateHoldMetadata`. Removed manual field assembly and direct `storage.updateJobStatusWithEvent`.
+- Files: `server/routes/jobs.ts`
+
+#### Schema & Validation Hardening (2026-03-18)
+- **Removed lifecycle fields from `updateJobSchema`:** `status`, `holdReason`, `holdNotes`, `nextActionDate`, `onHoldAt`, `previousStatus`, `closedAt`, `closedBy` can no longer be written through the generic PATCH endpoint. All lifecycle writes must go through the orchestrator.
+- **Removed deprecated `actionRequired*` fields from `updateJobSchema`:** `actionRequiredReason`, `actionRequiredNotes`, `actionRequiredAt`, `actionRequiredEscalatedAt` are no longer writable. DB columns preserved for historical reads.
+- **PATCH `/api/jobs/:id`** no longer accepts `status` in the request body. Scheduling patches derive status from scheduling fields via `applyJobSchedulingPatch`.
+- **Scheduling Rule D removed.** `scheduleJob()` no longer implicitly reopens completed jobs. Scheduling a visit on a completed job now throws `TerminalJobImmutableError` — the office must explicitly reopen first via the REOPEN_JOB intent.
+- Files: `shared/schema.ts`, `server/routes/jobs.ts`, `server/storage/scheduling.ts`
+
+#### Frontend: Mandatory Outcome Completion (2026-03-18)
+- **`DispatchDetailPanel.onCompleteVisitWithOutcome` is now required** (not optional). Removed the fallback branch that called `onUpdateStatus(visit, "completed")` — completion without outcome is no longer possible from the dispatch UI.
+- **`EditVisitModal` legacy `updateStatusMutation` removed.** The simple status-only "Complete" button has been replaced by the outcome-aware `completeWithOutcomeMutation` since earlier in this session. The dead mutation code is now deleted.
+- Files: `client/src/components/dispatch/DispatchDetailPanel.tsx`, `client/src/components/visits/EditVisitModal.tsx`
+
+### Fixed
+
+#### Job/Visit Lifecycle Reconciliation — Surgical Fix (2026-03-18)
+
+**Root cause:** `syncJobScheduleFromVisits` ran BEFORE `reconcileJobAfterVisitCompletion` in all three completion endpoints, clearing job schedule fields before the reconciliation could evaluate or set job status. This caused completed/on_hold jobs to appear as unscheduled backlog.
+
+**Backend fixes:**
+- **Order of operations reversed.** All completion paths (`/status`, `/complete`, `/check-out`, tech field) now: (1) set visit status, (2) reconcile parent job, (3) sync schedule. Added `skipSync` option to `updateJobVisitStatus` and `checkOutJobVisit`.
+- **syncJobScheduleFromVisits guard.** When no eligible visits remain, the sync now checks the job's current status — skips clearing schedule for completed/invoiced/archived jobs and on_hold jobs.
+- **Tech field endpoint** (`/api/tech/visits/:visitId/complete`) reordered to reconcile before sync.
+- **Reconciliation actionable-visit definition aligned with sync.** Placeholder visits (`scheduledStart IS NULL`, no `checkedInAt`) are excluded from the actionable count. These are artifacts of prior unschedule cycles — they don't represent pending work and were incorrectly preventing job completion, causing the job to appear as unscheduled backlog.
+- **Mid-series completion clears on_hold.** When a visit completes fully and other actionable visits remain, if the job was on_hold from a prior visit's follow-up, the hold is now cleared (progress resumed).
+- Files: `server/services/visitReconciliation.ts`, `server/storage/jobVisits.ts`, `server/services/jobVisits.service.ts`, `server/routes/jobVisits.routes.ts`, `server/routes/techField.ts`
+- Files: `server/storage/jobVisits.ts`, `server/services/jobVisits.service.ts`, `server/routes/jobVisits.routes.ts`, `server/routes/techField.ts`
+
+**Frontend — Dispatch Detail Panel:**
+- **Replaced blind "Complete Visit" with two actions:** "Completed Fully" (outcome=completed, reconciles to job.status=completed) and "Needs Follow-Up" (opens NeedsFollowUpModal, collects holdReason, reconciles to job.status=open+on_hold). Falls back to legacy single-button if new prop not provided.
+- Wired `completeVisitWithOutcome` from `useDispatchPreviewMutations` through `DispatchPreview.tsx` to `DispatchDetailPanel`.
+- Files: `DispatchDetailPanel.tsx`, `DispatchPreview.tsx`
+
+**Frontend — EditVisitModal:**
+- **Replaced simple "Complete" button with outcome-based completion.** New `completeWithOutcomeMutation` calls `POST /api/jobs/:jobId/visits/:visitId/complete`. Two buttons: "Completed" and "Follow-Up" (opens NeedsFollowUpModal). Same reconciliation behavior as dispatch.
+- Files: `EditVisitModal.tsx`
+
+**Frontend — Type normalization:**
+- Removed `"open"` from `VisitStatus` union (not a real visit status; was causing type errors).
+- Updated `dispatchPreviewMappers.ts`: removed "open" from valid statuses, added "on_hold"/"cancelled", unscheduled backlog items use "scheduled" status.
+- Updated `dispatchPreviewMockData.ts`: all mock unscheduled visits use "scheduled" instead of "open".
+- `on_site` → "In Progress" normalization in `EditVisitModal.tsx` status labels.
+- Files: `dispatchPreviewTypes.ts`, `dispatchPreviewMappers.ts`, `dispatchPreviewMockData.ts`, `dispatchPreviewUtils.ts`, `EditVisitModal.tsx`
+
+**Query invalidation expanded:**
+- `useDispatchPreviewMutations.backgroundInvalidate` now also invalidates `["jobs"]` and `["dashboard"]`.
+- `EditVisitModal.invalidateVisitQueries` now includes `["/api/calendar/unscheduled"]` and `["dashboard"]`.
+
+### Changed
+
+#### Client Detail: Header Styling Aligned with Job Detail (2026-03-17)
+
+- **Matched top header card to Job Detail header.** Changed Client Detail header container from `rounded-lg border bg-white px-5 py-4 mb-4 shadow-sm` to `rounded-lg border border-border/80 bg-primary/[0.09] px-5 py-4 mb-4 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.08)]`. This applies the same tinted background (`bg-primary/[0.09]`), refined border (`border-border/80`), and subtle shadow as the Job Detail summary card.
+- Files changed: `client/src/pages/ClientDetailPage.tsx`
+
+#### Client Detail: Unified Locations + Workspace Card (2026-03-17)
+
+- **Collapsed workspace header into single control strip.** Tabs physically moved from a separate second full-width row into the right-side control area inline with the search input. Header wrapper changed from two-row (`border-b px-4 pt-3 pb-0` with separate tabs div) to single-row (`border-b px-4 py-2.5` with tabs inside right-side flex container). Tabs now use pill-style `rounded bg-primary/10` for selected state instead of `border-b-2` underline.
+- **Search + tabs now share one horizontal strip** on the right side of the header, using `flex min-w-0 flex-1 items-center justify-end gap-3`.
+- **Title block tightened:** `text-base` reduced to `text-sm` for the entity name heading.
+- **Overview nav row refined** to match location row styling: icon `h-3 w-3` (was `h-4 w-4`), text `text-xs` (was `text-sm`), gap `gap-1.5` (was `gap-2`), padding `py-2` (was `py-2.5`).
+- **Removed inset-card styling** from inner tab content: `rounded-lg border bg-white` replaced with flat `divide-y` separators.
+- Files changed: `client/src/pages/ClientDetailPage.tsx`
+
+#### Location Picker: Server-Backed Search Rollout (2026-03-17)
+
+- **QuickCreateDrawer.tsx: replaced fetch-all-clients with server-backed search.** Old pattern fetched `GET /api/clients?limit=200` and filtered client-side. New pattern uses `GET /api/clients/search-locations?q=<term>&limit=30` with 300ms debounce via useSurfaceController, `shouldFilter={false}` on Command, and tenant-scoped punctuation-insensitive matching. Results now show parent company name and address/city context.
+- **NewQuoteModal.tsx: replaced fetch-all-clients with server-backed search.** Same old pattern (`GET /api/clients` with client-side `.filter()`). Now uses identical server-backed search. Removed unused Select component imports. Added Check icon for selection indicator consistent with QuickAddJobDialog.
+- **No endpoint changes needed.** Both components now consume `GET /api/clients/search-locations` which already returns all required fields: `id`, `company_name`, `location`, `address`, `city`, `parent_company_name`, `parent_company_id`.
+- **Ephemeral cache cleanup.** Both components configure `useSurfaceController` with `queryKeys: ["/api/clients/search-locations"]` so search cache is cleaned on close.
+- Files changed: `client/src/components/QuickCreateDrawer.tsx`, `client/src/components/NewQuoteModal.tsx`
+
+#### Client Detail Page: Card Layout Structure (2026-03-17)
+
+- **Step 1: Top header card.** Wrapped existing client header (name, status badge, meta counts, action buttons) in a full-width `rounded-lg border bg-white shadow-sm` card container with `p-4` outer padding and `mb-4` spacing. No internal content changed.
+- **Step 2: Two-column layout.** Content below the header is now in a `flex gap-4` two-column structure. Left column wraps the existing left rail (scope selector) + center workspace in a single card container. Right column (w-80) is a separate scrollable column.
+- **Step 3: Right column cards.** Contacts, Notes, and Activity (company scope) / Contacts, Notes, and Site Info (location scope) are each wrapped in individual `rounded-lg border bg-white p-4 shadow-sm` card containers with `space-y-4` vertical spacing.
+- **Step 4: Left column unchanged.** All existing components, props, data flow, and logic remain identical — only container wrappers added.
+- Files changed: `client/src/pages/ClientDetailPage.tsx`
+
+#### Transient Surface Architecture: useSurfaceController Rollout (2026-03-17)
+
+- **QuickCreateDrawer.tsx: migrated to useSurfaceController.** All three mutations (client, invoice, quote) now use `surface.signal` for fetch abort and `surface.isStale()` guards in onSuccess callbacks. Ephemeral query key `["/api/clients", "quick-create-picker"]` is removed from cache on close.
+- **NewQuoteModal.tsx: migrated to useSurfaceController.** Create mutation and template-apply follow-up both use `surface.signal` + stale guards. Re-checks stale state after async template apply to prevent setState after close.
+- **DispatchPreview.tsx: hardened timer and listener lifecycle.**
+  - Crew-update 800ms setTimeout now tracked in `crewUpdateTimerRef` with unmount cleanup (prevents orphaned mutations on navigation).
+  - Panel drag `mousemove`/`mouseup` listeners now tracked in `panelDragCleanupRef`. Cleanup fires on unmount AND before re-drag (prevents listener accumulation). Defensive call to prior cleanup on rapid re-drags.
+- **Removed unused `useEffect` import** from NewQuoteModal.tsx (no longer needed after useSurfaceController handles lifecycle).
+- Files changed: `client/src/components/QuickCreateDrawer.tsx`, `client/src/components/NewQuoteModal.tsx`, `client/src/pages/DispatchPreview.tsx`
+
+#### Dashboard: Actionable Metrics + Overdue Logic Fix (2026-03-17)
+
+- **Architecture: Dashboard navigation mapping layer.** New `client/src/lib/dashboardNavigation.ts` defines a typed `DashboardAction` enum and `resolveDashboardNav()` resolver. All dashboard metrics consume this single mapping instead of inline hardcoded URLs. Future metrics can be added by adding an entry to `DESTINATIONS`.
+- **All summary card metrics now navigate with correct filters:** Quotes Approved → `/quotes?status=approved`, Quotes Draft → `/quotes?status=draft`, Jobs Unscheduled → `/jobs?lifecycle=open&scheduling=unscheduled`, Jobs Needs Invoicing → `/jobs?lifecycle=completed`, Invoices Outstanding → `/invoices?filter=awaiting_payment` (was `?filter=outstanding` which didn't match InvoicesListPage allowlist), Invoices Past Due → `/invoices?filter=overdue` (was `?filter=pastDue`), PM Overdue → `/pm?tab=upcoming&urgency=overdue`, PM Coming Due → `/pm?tab=upcoming&urgency=coming_due`, PM Upcoming → `/pm?tab=upcoming&urgency=upcoming`.
+- **Today's Operations tiles are now clickable.** Changed from static `<div>` to `<button>` with navigation: Active Jobs → Dispatch, On Hold → Jobs filtered to on_hold, Needs Invoicing → Jobs completed, Overdue → Jobs filtered to overdue.
+- **Dispatch Alerts now route through the navigation mapping.** Overdue jobs alert → `/jobs?lifecycle=open&subStatus=overdue`, unassigned → `/jobs?lifecycle=open&scheduling=unscheduled`.
+- **Work Pipeline label corrected.** "Approved quotes not scheduled" renamed to "Approved quotes not converted" (quotes are converted to jobs, not scheduled). Quotes awaiting approval now routes to `/quotes?status=sent` (sent quotes are the ones awaiting customer approval, not drafts).
+- **Quotes page: URL-driven filter initialization.** Added `?status=` param reading on mount with validation against allowed values. Previously only `?create=true` was read.
+- **Jobs page: dashboard virtual filters.** Added `?scheduling=unscheduled` and `?subStatus=overdue` URL param support. These apply post-filters on the job list for unscheduled jobs (`!isJobScheduled`) and overdue jobs (`isJobOverdue`).
+- **PM page: urgency param.** Added `?urgency=overdue|coming_due|upcoming` URL param support. Maps to sub-view: overdue/coming_due → "Due Now", upcoming → "Upcoming Planning".
+- **Overdue logic fix.** Jobs with `openSubStatus` of `in_progress` or `on_route` are now excluded from overdue-attention counts. A job actively being worked is in progress, not overdue. Fixed in: `shared/schema.ts` `isJobOverdue()`, `server/lib/attentionRules.ts` job.overdue rule, `server/storage/dashboard.ts` `getNeedsAttentionJobs()`.
+- Files changed: `client/src/lib/dashboardNavigation.ts` (new), `client/src/pages/Dashboard.tsx`, `client/src/pages/Quotes.tsx`, `client/src/pages/Jobs.tsx`, `client/src/pages/PMWorkspacePage.tsx`, `server/lib/attentionRules.ts`, `server/storage/dashboard.ts`, `shared/schema.ts`
+
+#### Dispatch Board: Floating Detail Card Polish (2026-03-17)
+
+- **Fix: Panel recenters on selection change.** `handleCloseDetail` now resets `panelDragOffset` to `{x: 0, y: 0}`, so the next open always starts centered. Previously, dragged position persisted across close/reopen cycles.
+- **Fix: Notes section restored with inline editing.** Notes section is now always visible (not conditionally hidden when empty). Visit notes are editable via click-to-edit with a pencil icon. Saves via existing `PATCH /api/jobs/:jobId/visits/:visitId` endpoint with `visitNotes` field. Ctrl/Cmd+Enter to save, Escape cancels (stopPropagation prevents closing the panel). Access instructions, job description, and location notes remain read-only context.
+- **Fix: Notes text size increased.** Changed from `text-[11px]` to `text-xs` (12px) for notes content. Still visually smaller than header/title text. Long notes scroll internally (`max-h-24 overflow-y-auto`) rather than growing the panel. Whitespace/line breaks preserved via `whitespace-pre-wrap`.
+- **New prop: `onUpdateVisitNotes`** added to `DispatchDetailPanel` `VisitProps`. Wired from `DispatchPreview.tsx` through the existing visit PATCH endpoint.
+- Files changed: `client/src/pages/DispatchPreview.tsx`, `client/src/components/dispatch/DispatchDetailPanel.tsx`
+
+#### Architecture: Transient Surface Lifecycle Controller (2026-03-17)
+
+- **Root cause fix**: Runtime crash when opening global search after closing QuickAddJobDialog. Caused by stale async callbacks mutating state on closed surfaces, uncleared debounce timers firing after unmount, Cmd+K capture-phase listener intercepting keyboard events inside modal dialogs, and click-outside handlers interfering across unrelated surfaces.
+- **New hook: `useSurfaceController`** — reusable lifecycle controller for transient UI surfaces (dialogs, popovers, command palettes). Provides: AbortController (abort in-flight fetches on close), named debounce/timeout timers (auto-cancelled on close/unmount), stale guard (`isStale()`) for async callbacks, React Query cache cleanup on close, session counter for forced child remount.
+- **QuickAddJobDialog**: Replaced manual `useRef` debounce timer with `surface.debounce()`. All async fetches use `signal` parameter for abort. Untracked `setTimeout` for needs-details reminder replaced with `surface.timeout()`. Full ephemeral state reset on close (locationSearch, debouncedSearch, locationOpen, showQuickCreate, quickCreateName, showConflictAlert). Removed `placeholderData: (prev) => prev` which caused stale data to persist across close/reopen cycles. Query cache for `/api/clients/search-locations` removed on close.
+- **UniversalSearch**: Cmd+K capture-phase listener now checks for `[role="dialog"][data-state="open"]` before firing — suppresses when any Radix modal dialog is open. Click-outside handler ignores clicks that land inside `[role="dialog"]`. Debounced search uses `surface.debounce()` instead of manual `setTimeout`. API fetch uses `surface.signal` for abort. Stale guard (`surface.isStale()`) prevents `setResults`/`setLoading` after close. `closePalette` now also resets `loading` state.
+- **Test coverage**: 14 unit tests for the surface controller lifecycle: debounce fire/cancel, abort signal, stale guard, rapid open/close cycles, cross-surface isolation, session counter, query cache cleanup.
+- Files changed: `client/src/hooks/useSurfaceController.ts` (new), `client/src/components/QuickAddJobDialog.tsx`, `client/src/components/UniversalSearch.tsx`, `tests/surface-controller-lifecycle.test.ts` (new)
+
+#### Dispatch Board UX: Clickable Unscheduled Cards + Draggable Detail Panel (2026-03-17)
+
+- **Feature: Unscheduled visit cards now open the detail panel on click**. Previously, clicking an unscheduled card in the sidebar did nothing (the floating editor required an anchor element on the timeline which unscheduled cards lacked). Now uses the same `handleSelectVisit` pathway as scheduled cards.
+- **Feature: Detail panel is now a centered draggable overlay** instead of anchoring next to the clicked card. Opens centered on screen, can be dragged by its header area, stays above all board content with z-index 50, and supports scrolling within `85vh` max-height.
+- **Feature: Service address displayed in detail panel header**. Shows formatted address (street, city, province, postal code) below the location name. Address data threaded from `client_locations` through the calendar API → DTO → mapper → component.
+- **Improvement: Notes font reduced to `text-[11px]`** with `leading-relaxed` for better density without sacrificing readability.
+- Root cause: The old floating editor used `editorAnchor` computed by querying `[data-visit-id="..."]` in the DOM. Unscheduled cards don't have this attribute, so the anchor was null and the panel never appeared. Replaced with centered fixed positioning that doesn't depend on element anchoring.
+- Files changed: `shared/types/scheduling.ts`, `server/storage/scheduling.ts`, `server/routes/scheduling.ts`, `client/src/components/dispatch/dispatchPreviewTypes.ts`, `client/src/components/dispatch/dispatchPreviewMappers.ts`, `client/src/components/dispatch/DispatchDetailPanel.tsx`, `client/src/pages/DispatchPreview.tsx`
+
+#### Fix: Universal Search — Global Ranking + Contact Search (2026-03-17)
+
+- **Fix: Company results no longer truncated by per-type hard cap**. Replaced fragile `perTypeLimit=6` with global ranking. All entity types now use a generous SQL safety-valve cap (25 per type), results are globally ranked by match quality (exact > prefix > contains), and the top 30 results are returned regardless of type distribution. Previously "Moxie's (Toronto)" was hidden because it fell after position 6 in the alphabetically-ordered company query.
+- **Validated against real data**: Searching "Moxie's" now returns all 8 company matches and all 8 location matches. "Moxie's (Toronto)" appears at position 7 in the company section. "YRCC" returns 2 results (company + location). Contact search tested with "Tony" returning 2 contacts.
+- **Feature: Contacts are now searchable** in universal search. SQL query searches `client_contacts` by first name, last name, email, and phone with LEFT JOIN to `customer_companies` for company name subtitle. Results appear in "Contacts" section with UserCircle icon. Clicking a contact navigates to the parent company page (no standalone contact detail route exists — documented as temporary behavior).
+- **Ranking logic**: `matchRank(title, query)` scores 0 (exact), 1 (prefix), 2 (contains). Global sort by rank ASC then title ASC. Round-robin interleaver removed.
+- Files changed: `server/storage/search.ts`, `server/routes/search.ts`, `client/src/components/UniversalSearch.tsx`
+
+#### Fix: Create Job Location Search — Server-Backed Search (2026-03-17)
+
+- **Architecture fix**: Replaced "fetch all locations + filter client-side" pattern in Create Job dialog with a proper server-backed search endpoint. The old approach fetched up to 50 (later patched to 500) locations into a cmdk dropdown and filtered in the browser — fundamentally broken for large tenants and incapable of searching parent company names stored in a separate table.
+- **New endpoint**: `GET /api/clients/search-locations?q=<term>&limit=30`. Performs tenant-scoped search across location `company_name`, parent `customer_companies.name`, `location` field, `address`, and `city`. Uses `translate()` on the DB side to strip apostrophes/smart quotes for punctuation-insensitive matching. Results ranked: exact name > prefix > parent match > address/city.
+- **Frontend**: cmdk `shouldFilter={false}` — all filtering done server-side. Input debounced at 300ms. Empty query returns top 30 alphabetical locations (initial dropdown state). Selected location fetched individually if not in search results (edit mode / preselection).
+- **Punctuation insensitive**: "Moxie's", "Moxies", "moxi" all match. Both DB-side `translate()` and client-side normalization strip `' ' \` \u2018 \u2019`.
+- **Parent company searchable**: Searching "YRCC" finds locations whose parent company is "YRCC" even if the location itself is named differently.
+- **No hardcoded limit ceiling**: Result set is controlled by the search query, not by fetching N records and hoping all are included.
+- Files changed: `server/routes/clients.ts`, `client/src/components/QuickAddJobDialog.tsx`
+
+#### Fix: Job Equipment Crash — Missing Join in getJobEquipment (2026-03-17)
+
+- **Bug fix**: `GET /api/jobs/:id/equipment` returned flat `job_equipment` junction rows without joining `location_equipment`, so the frontend's `je.equipment.name` access crashed with `Cannot read properties of undefined (reading 'name')`. Added `innerJoin(locationEquipment)` to `getJobEquipment()` to hydrate the nested `equipment` object matching the `JobEquipmentWithDetails` contract.
+- Root cause: `storage.getJobEquipment()` used `db.select().from(jobEquipment)` with no join. The frontend (`JobEquipmentSection.tsx`) expected each row to carry `equipment: LocationEquipment`. The client/location equipment path worked because it queries `location_equipment` directly (flat objects, no nesting needed).
+- **UI hardening**: All 8 `je.equipment.*` accesses in `JobEquipmentSection.tsx` now use safe optional chaining (`eq?.name`, `eq?.equipmentType`, etc.) with sensible fallbacks: "Unknown equipment" for name, em dash for missing type/serial, conditional render for manufacturer/model. Malformed rows degrade gracefully instead of crashing.
+- Files changed: `server/storage/jobs.ts`, `client/src/components/JobEquipmentSection.tsx`
+
+#### Self-Healing Job Number Allocator (2026-03-17)
+
+- **Hardened `getNextJobNumber()`**: Allocator now computes `GREATEST(storedNext, MAX(existing jobNumber) + 1, 100000)` within the same transaction, then persists `allocated + 1` as the new counter. Previously it blindly trusted `companyCounters.nextJobNumber`, which could go stale from imports, scripts, backfills, restores, or manual edits — producing duplicate numbers caught only by the DB unique index.
+- **Serialized allocation via `SELECT ... FOR UPDATE`**: Counter row is now locked per-company within the transaction so concurrent job creates block rather than racing. Previously used `READ COMMITTED` without row locking — two concurrent creates could read the same counter value, both allocate the same number, and one would fail on the unique index. Now the second transaction waits for the first to commit before reading. Insert race for new companies handled with `ON CONFLICT DO NOTHING` + re-read fallback.
+- Files changed: `server/storage/jobs.ts`
+
+#### Editable Job Numbers (2026-03-17)
+
+- **Feature: Inline-editable job number** on Job Detail page. Click the job number to edit it; Enter to save, Escape to cancel.
+- **Backend validation**: Job number must be a positive integer, unique within the company scope. Duplicate returns 409 with clear error message.
+- **Counter auto-advance**: When a job number is manually set higher than the current counter, `companyCounters.nextJobNumber` is advanced via `GREATEST()` so future auto-generated jobs continue from the new high-water mark.
+- **Transaction safety**: Job number update runs in a single DB transaction (uniqueness check + row update + counter bump) to prevent race conditions.
+- **No migration needed**: Existing unique index `jobs_company_job_number_uq` on `(companyId, jobNumber)` already enforces the correct constraint.
+- Files changed: `shared/schema.ts`, `server/storage/jobs.ts`, `server/storage/index.ts`, `server/routes/jobs.ts`, `client/src/pages/JobDetailPage.tsx`
+
+#### Dashboard Metrics Alignment — Canonical Counts (2026-03-17)
+
+- **Fix: Jobs Unscheduled = 0 bug**: Dashboard "Unscheduled" count was reading from the `attention_items` table (event-driven, stale after PM job generation). Now computed live via `getJobCounts()` SQL `FILTER` clause in the same query as Active/On Hold/Needs Invoicing. Definition: `status='open' AND scheduledStart IS NULL AND isAllDay != true AND activeJobFilter()`.
+- **Fix: PM Health placeholder replaced**: "Due This Week" / "Overdue" (hardcoded `"—"`) replaced with 3 non-overlapping urgency tiers computed from `recurringJobInstances`:
+  - **Overdue**: `instanceDate < today` (pending, not converted)
+  - **Coming Due (0–7d)**: `today <= instanceDate <= today+7` (pending, not converted)
+  - **Upcoming (7–30d)**: `today+7 < instanceDate <= today+30` (pending, not converted)
+- **Unified PM query**: Merged `getPMAwaitingGenerationCount()` into `getPMCounts()` — single SQL pass with FILTER clauses for all 4 PM metrics (awaiting generation + 3 health tiers).
+- **Work Pipeline aligned**: "Jobs awaiting scheduling" now uses canonical `unscheduledCount` from workflow API instead of stale attention summary.
+- **Data flow enforced**: PM Health only counts `status='pending'` + `generatedJobId IS NULL` instances. Once converted to a job, instances exit PM Health.
+- Files changed: `server/storage/dashboard.ts`, `client/src/pages/Dashboard.tsx`
+
+#### PM Job Generation Modal — Remove Date Fields (2026-03-17)
+
+- **Simplified confirmation modal**: Removed "Earliest due" and "Latest due" date fields from the Generate PM Jobs confirmation dialog to keep the modal focused on actionable information (job count, customers, locations).
+- Files changed: `client/src/pages/PMWorkspacePage.tsx`
+
+#### Dashboard — PM Instances Awaiting Generation in Work Pipeline (2026-03-17)
+
+- **New pipeline row**: Added "PM instances awaiting generation" as the first row in the Dashboard Work Pipeline card. Count sourced from a new lightweight SQL query in `getWorkflowSummary()`.
+- **Backend**: New `getPMAwaitingGenerationCount()` function in `server/storage/dashboard.ts`. Counts `recurring_job_instances` where `generatedJobId IS NULL`, `status = 'pending'`, template `isActive = true`, and instance is within or past its service window (`instanceDate - serviceWindowDaysBefore <= today`). Mirrors the client-side `isGenerationEligible()` logic from PMWorkspacePage.
+- **Interface change**: `WorkflowSummary` now includes `pm: { awaitingGenerationCount: number }` (both backend and frontend types).
+- **Deep-link**: Clicking the row navigates to `/pm?tab=upcoming` — the PM workspace "Due Now" tab which shows actionable instances needing generation.
+- **Skeleton**: Loading skeleton updated from 4 to 5 rows to match new pipeline item count.
+- Files changed: `server/storage/dashboard.ts`, `client/src/pages/Dashboard.tsx`
+
+#### Location Parts Modal — Inline Part Creation (2026-03-17)
+
+- **Creatable part picker**: Users can now create new parts inline within the Location Parts modal without leaving the dialog. When typing a part name that has no exact match, a `+ Create new part "X"` action row appears at the bottom of the search results dropdown.
+- **How it works**: Clicking the create action calls `POST /api/items` (existing canonical endpoint) with `{ type: "product", name: "<trimmed value>" }`, then auto-selects the newly created part in the current row. Quantity is preserved. The items query cache is invalidated so future searches include the new part.
+- **Empty state replaced**: "No parts found." → "No matching parts found" + the create action row.
+- **Guardrails**: Empty/whitespace-only names blocked. Double-click prevention via per-row `creatingByRow` loading state (button disabled + spinner shown while creating). Soft duplicate protection: create option only appears when no exact name match exists in results.
+- **No backend changes**: Reuses existing `POST /api/items` endpoint and `createItem` storage method. No schema or API contract changes.
+- Files changed: `client/src/components/PartsSelectorModal.tsx`
+
+#### Job Detail Page — Summary Card Visual Hierarchy (2026-03-17)
+
+- **Background tint**: Increased from `bg-primary/[0.06]` to `bg-primary/[0.09]` (~9% brand color). Clearly distinguishable from white cards while staying subtle.
+- **Bottom separation**: Added soft shadow `shadow-[0_2px_8px_-2px_rgba(0,0,0,0.08)]` for gentle lift off the body content below.
+- **Company name weight**: `font-bold` → `font-extrabold` for stronger presence on the tinted surface.
+- **Job summary weight**: Added `font-medium` to the job summary subtitle for better readability against the tinted background.
+- Files changed: `client/src/pages/JobDetailPage.tsx`, `client/src/components/JobHeaderCard.tsx`
+
+#### Job Detail Page — Notes Collapse Cleanup (2026-03-17)
+
+- **Removed vertical collapse from Notes**: Eliminated `Collapsible`/`CollapsibleTrigger`/`CollapsibleContent` wrapping, `isOpen` state, `defaultOpen` prop, and chevron up/down icons from `JobNotesSection`. Notes list is now always visible — no vertical expand/collapse.
+- **Clean header layout**: `"Notes (X)"  "+ Add Note"  [→]` — MessageSquare icon + count on left, Add Note button in middle, sidebar collapse arrow (from parent) on right edge. Parent adds `pr-8` to header via `[&_[data-testid=trigger-notes]]:pr-8` to prevent overlap with the absolute-positioned collapse arrow.
+- **Sidebar collapse preserved**: `ChevronRight` arrow on Notes card header triggers horizontal slide-collapse. Collapsed tab shows `MessageSquare` icon + "Notes (X)" vertically.
+- **Removed `notesOpen` state** from `JobDetailPage.tsx` — no longer needed.
+- Files changed: `client/src/components/JobNotesSection.tsx`, `client/src/pages/JobDetailPage.tsx`
+
+#### Job Detail Page — Billing Summary, Sidebar Slide-Collapse & Cleanup (2026-03-17)
+
+- **Billing Summary restructured**: Replaced "Parts Revenue" with clear breakdown: Price/Cost/Profit KPIs at top, then "Total Revenue" with indented "Parts" and "Labour" lines, then "Total Profit" with margin percentage. No collapse — always visible.
+- **Removed compact mode**: Eliminated `middleCompact` state, `Minimize2`/`Maximize2` toggle, and compact Labour variant. Middle column always shows full content.
+- **Sidebar slide-collapse redesigned**: Replaced top "Collapse" button with a subtle `ChevronRight` arrow icon positioned on the right edge of the Notes card. Collapsed tab now shows `MessageSquare` icon + "Notes (X)" with live count via `onCountChange` callback from `JobNotesSection`.
+- **Notes count callback**: Added `onCountChange` prop to `JobNotesSection` component, fires `useEffect` on `notes.length` changes. Used in collapsed sidebar tab label.
+- Files changed: `client/src/pages/JobDetailPage.tsx`, `client/src/components/JobNotesSection.tsx`
+
+#### Job Detail Page — Section Restructure, Sidebar Collapse & Middle Compact Mode (2026-03-17)
+
+- **Left column restructure**: Split from single card into flex column of individual cards:
+  - Card 1: Parts & Billing (with PM Billing + Recurring inside)
+  - Card 2: Expenses (now its own separate card with Receipt icon)
+  - Card 3: Visits + Activity (merged into one card with divider between them)
+- **Right sidebar collapse**: Sidebar slides off-screen to a thin 36px vertical tab labeled "Sidebar" with `PanelRightOpen` icon. Click to restore. Grid dynamically switches between `[1fr_280px_260px]` (open) and `[1fr_280px_36px]` (collapsed). State: `sidebarOpen`.
+- **Middle column compact mode**: Toggle via `Minimize2`/`Maximize2` button on Billing Summary header.
+  - Expanded: Full KPI grid (Price/Cost/Profit large), margin, breakdown, full Labour card
+  - Compact: Single-row summary (Price | Cost | Profit inline), Labour header-only (no entries). State: `middleCompact`.
+- Files changed: `client/src/pages/JobDetailPage.tsx`
+
+#### Job Detail Page — 3-Column Layout with Billing Summary (2026-03-17)
+
+- **3-column layout**: Refactored from 2-column (`[1fr_300px]`) to 3-column (`[1fr_280px_260px]`) grid:
+  - **Left column**: Parts & Billing (line items table), Expenses, Visits, Activity
+  - **Middle column**: Billing Summary (always-visible KPIs) + Labour (time entries)
+  - **Right sidebar**: Notes, Equipment, Status Timeline, Scheduling History
+- **Billing Summary card**: New always-visible card in middle column showing Price, Cost, Profit (large `text-base font-bold`), margin percentage, and parts revenue breakdown. Replaces inline totals that were in the Parts & Billing collapsible trigger.
+- **Labour moved**: From right sidebar to middle column, giving financial data a dedicated space.
+- **Top summary tint increased**: From `bg-primary/[0.04]` to `bg-primary/[0.06]` for slightly stronger visual distinction.
+- **Visits separator strengthened**: `border-t-2 border-border/60 mt-1` for clearer section break.
+- Files changed: `client/src/pages/JobDetailPage.tsx`
+
+#### Job Detail Page — Visual Hierarchy, Card Structure & Notes Attachments (2026-03-17)
+
+- **Top summary card tint**: Applied `bg-primary/[0.06]` (6% brand color) to the top summary card only. All other cards remain pure white `bg-card`. This is the only tinted surface on the page.
+- **Card architecture**: Replaced single "unified surface" with three-tier structure:
+  - Top summary card (tinted, identity + metadata)
+  - Main working card (white, billing + visits + activity)
+  - Sidebar: 5 individual cards (Notes, Labour, Equipment, Timeline, History) each with own border/radius/shadow
+- **Sidebar card separation**: Each sidebar section is now its own `rounded-lg border bg-card shadow-sm` container with `gap-2.5` (10px) vertical spacing. Equipment, Timeline, and History render their own Card components natively.
+- **Removed billing surface tint**: Removed `bg-muted/15` from billing surface — no tinted subsections in main content.
+- **Header padding**: Increased section header padding from `py-3`/`py-3.5` to `py-3.5`/`py-4` across all sections for clearer breathing room.
+- **Layout**: Moved Notes section from left main column to right sidebar, positioned above Labour (sidebar order: Notes → Labour → Equipment → Status Timeline → Scheduling History)
+- **Visual hierarchy**: Standardized all section headers to `text-sm font-semibold` (14px) to match Equipment/Timeline style.
+- **Note attachments**: Added image & PDF attachment support for job notes.
+  - New `job_note_attachments` table (migration: `2026_03_17_job_note_attachments.sql`)
+  - New `JobNoteAttachmentRepository` (`server/storage/jobNoteAttachments.ts`)
+  - Schema table `jobNoteAttachments` added to `shared/schema.ts`
+  - `POST /api/jobs/:jobId/notes` now accepts `attachmentFileIds` array
+  - `GET /api/jobs/:jobId/notes` returns `attachments[]` with file metadata per note
+  - Add Note dialog supports file picker (images + PDFs, max 10 MB each)
+  - Notes display shows attachment thumbnails (images) or file icons (PDFs) with download links
+- **Notes typography**: Reduced note body text from `text-sm` (14px) to `text-[13px]` with `leading-relaxed` for comfortable sidebar readability without crowding.
+- Files changed: `client/src/pages/JobDetailPage.tsx`, `client/src/components/JobNotesSection.tsx`, `client/src/components/AddJobNoteDialog.tsx`, `client/src/components/JobEquipmentSection.tsx`, `client/src/components/job/JobStatusTimeline.tsx`, `client/src/components/job/SchedulingHistory.tsx`, `server/storage/jobNotes.ts`, `server/storage/jobNoteAttachments.ts` (new), `server/storage/index.ts`, `server/routes/jobs.ts`, `shared/schema.ts`
+- Migration: `migrations/2026_03_17_job_note_attachments.sql`
+
+### Added
+
+#### Products & Services — Duration Field + Import Dedup Upgrade (2026-03-17)
+
+- **Feature**: Estimated duration (minutes) is now visible and editable in the Products & Services UI.
+  - Create/edit dialog: new "Duration (minutes)" input field with helper text
+  - Table: new sortable "Duration" column with inline editing, compact display (e.g. "1h 30m")
+  - Fully round-trips through create, edit, inline edit, and API
+- **Import dedup upgrade**: SKU-first matching for product import.
+  - When SKU is present, dedup matches by normalized SKU within tenant first
+  - Falls back to normalized name + type if no SKU match
+  - Within-CSV duplicate detection also checks SKU
+- **QBO compatibility**: Confirmed `estimatedDurationMinutes` and `trackInventory` are excluded from all QBO sync payloads. No QBO code changes needed.
+- **Type vs category clarification**: `type` = system enum (product/service, maps to QBO Item.Type). `category` = user-defined grouping (internal only). Already cleanly separated — no change needed.
+- No migration required (fields added in V1 migration).
+- Files changed: `client/src/components/products-services/types.ts`, `client/src/components/products-services/ProductServiceFormDialog.tsx`, `client/src/components/products-services/ProductsServicesTable.tsx`, `client/src/hooks/useProductsServices.ts`, `client/src/components/ProductsServicesManager.tsx`, `server/services/productImport.ts`
+
+#### Products & Services CSV Import (2026-03-17)
+
+- **Feature**: CSV import wizard for bulk-importing products and services into the catalog.
+- **Schema changes**: Added `estimated_duration_minutes` (integer, nullable) and `track_inventory` (boolean, default false) to `items` table for future-proofing.
+- **Import flow**: 5-step wizard (Upload → Map → Preview → Execute → Results) matching existing Client/Job import UX.
+- **Dedup strategy**: Normalized name + type within tenant. Duplicates are detected during preview and skipped during execution.
+- **Field support**: name, description, type (product/service), unit price, unit cost, taxable, active, estimated duration minutes, track inventory, sku.
+- **Normalization**: Category values normalized (Product/PRODUCT/material → product, Service/SERVICE/labor → service). Boolean coercion from true/false/yes/no/1/0. Currency symbols stripped from numeric fields.
+- **Defaults**: taxable=true, active=true, trackInventory=false when omitted from CSV.
+- **Header aliases**: 60+ common CSV header aliases for auto-mapping (supports Jobber exports and generic CSV formats).
+- **Safety**: Within-CSV duplicate detection, per-row execution with DB dedup, column count mismatch warnings.
+- Migration: `migrations/2026_03_17_items_add_duration_inventory.sql`
+- Files created: `shared/productImportTypes.ts`, `server/services/productImport.ts`, `server/routes/productImport.ts`, `client/src/pages/ProductImportPage.tsx`
+- Files changed: `shared/schema.ts`, `server/routes/index.ts`, `server/routes/items.ts`, `client/src/App.tsx`, `client/src/components/SettingsShell.tsx`
+
+### Fixed
+
+#### Jobs Page — Archived Filter Showed 0 Jobs After Pagination Fix (2026-03-17)
+
+- **Bug**: Jobs page Archived filter showed 0 jobs despite 714 archived jobs in the DB.
+- **Root cause (two-part)**:
+  1. Original issue: Jobs page fetched all statuses in one request with `limit: 200` (client-side). The global `MAX_LIMIT=200` in the Zod pagination schema capped server responses to 200 rows, truncating 714 archived jobs.
+  2. Regression: First fix raised the client limit to 1000, but the Zod schema `MAX_LIMIT` (server-side) was only picked up after server restart. Vite HMR updated the client instantly while the running server still had `MAX_LIMIT=200`, causing the Zod validator to reject `limit=1000` with a 400 error → 0 jobs returned.
+- **Fix**: Override the limit server-side in the jobs list route handler (`JOBS_LIST_LIMIT = 1000`) instead of relying on the client-sent limit. The client keeps `limit: 200` (within original MAX_LIMIT), but the server ignores it for the list endpoint and fetches up to 1000 rows. Also raised `MAX_LIMIT` from 200 to 1000 for future use by other endpoints.
+- **DB verification**: All 714 imported jobs confirmed present with `status='archived'`, `deleted_at IS NULL`, `is_active=true`.
+- Files changed: `server/routes/jobs.ts`, `server/utils/pagination.ts`, `client/src/pages/Jobs.tsx`
+
+#### Company Page — Archived Jobs Shown in Active List (2026-03-17)
+
+- **Bug**: On the company detail page, jobs with `status='archived'` appeared in the Active jobs list (both Overview and Jobs tabs). Location pages correctly excluded them.
+- **Root cause**: `CompanyOverviewTab` and `ClientAllJobsTab` displayed all jobs returned by the API without filtering by status. The API uses `activeJobFilter()` which excludes soft-deleted jobs but intentionally returns archived-status jobs (needed for the Archived section). The company-scope components lacked the client-side `status !== 'archived'` filter that location-scope components already had.
+- **Fix**: Added `status !== 'archived'` filter in `CompanyOverviewTab` (Active list) and split `ClientAllJobsTab` into Active/Archived groups with correct counts.
+- Files changed: `client/src/pages/ClientDetailPage.tsx`
+
+#### Job Import — Field-Swap Detection for Client-Import Locations (2026-03-16)
+
+- **Bug**: Job import preview showed "create new" for locations that visibly exist in the app (e.g., Almanahre Inc / Tim Horton's #3623 / 1060 Finch Ave W, North York)
+- **Root cause**: During the earlier client CSV import, some locations had their property name stored in the DB `address` field and the company name stored in the `location` field (field mapping swap). The job import matcher compared the import's `locationName` against `loc.location` and `loc.companyName`, but never against `loc.address`. Since the property name was in `address`, no strategy matched.
+- **DB row**: `location="Almanahre Inc"`, `address="Tim Horton's #3623"` — swapped vs expected
+- **Fix**: Added Strategy 3b in `validateJobRow()`: when both address and name strategies find zero matches, check if the import's `locationName` matches the DB `address` field (exact normalized comparison). Only activates as a last resort within same-company scope.
+- **Safety**: Only fires when all other strategies found nothing; uses exact string match (not fuzzy); scoped to same parent company
+- Files changed: `server/services/jobImport.ts`
+
+#### Job Import — Ambiguous Location Tie-Break for Holding Companies (2026-03-16)
+
+- **Bug**: 6 rows blocked with "Ambiguous location match: address and name point to different locations" for company "2117392 Ontario Inc." (Tim Horton's franchise holding company)
+- **Root cause**: All 5 locations under the holding company share `companyName = "2117392 Ontario Inc."`. When Jobber CSV exports the corporate name as `Service Property Name`, name matching returns all 5 locations (via `companyName` field), while address matching correctly resolves to exactly 1. The resolver treated `nameMatchIds.size > 1` as a conflict even though the address-matched location was included in the name matches (non-discriminating name, not contradicting)
+- **Fix**: Added a narrow tie-break rule in `validateJobRow()`: when `addressMatchIds.size === 1` AND the address-matched ID is contained in `nameMatchIds`, trust address as authoritative. Genuine conflicts (name points to location B, address points to location A, A not in name matches) remain blocked
+- Files changed: `server/services/jobImport.ts`
+
+#### Job Import — Location Matching False-Creates (2026-03-16)
+
+- **Bug**: Job import preview was incorrectly classifying many existing locations as "create new" even though matching locations already existed in the database under the correct company
+- **Root causes identified and fixed**:
+  1. `buildAddressCompositeKey()` used `normalizeForMatch()` for postal codes, which only lowercases/collapses whitespace — Canadian postal codes with different spacing ("L3X 2Y4" vs "L3X2Y4") would not match
+  2. Full 4-field composite key (address+city+province+postal) was too strict — if any single field was missing or formatted differently, the entire comparison failed with no fallback
+  3. Location name matching only checked `loc.location` field, not `loc.companyName` — locations whose name was set to the company name during client import would not be found by name strategy
+- **Fix**: Improved `buildAddressCompositeKey` to use `normalizePostalForMatch` for postal component; added `normalizeStreetAddress` helper for street suffix normalization (Street→St, Avenue→Ave, etc.); added street+city fallback strategy when full composite key fails; broadened location name matching to check both `location` and `companyName` fields; added multi-signal resolution that blocks ambiguous matches instead of silently choosing
+- **Safety**: All matching remains scoped to the already-matched company; multiple candidates produce a conflict error instead of a false match
+- Files changed: `shared/normalizeForMatch.ts`, `server/services/jobImport.ts`
+
+### Added
+
+#### Jobber Jobs CSV Import — Frontend Wizard (2026-03-16)
+
+- **New page**: `client/src/pages/JobImportPage.tsx` — 5-step import wizard (Upload → Map → Preview → Execute → Results)
+- **Upload step**: Drag-drop CSV upload with archive notice and "import clients first" guidance
+- **Map step**: Auto-suggested column mappings from 120+ Jobber header aliases, manual override per field, grouped by Job/Client/Billing/Location/Dates/Metadata/Financial
+- **Preview step**: Summary cards (total/importable/warnings/blocked/companies matched/locations matched), location creation badges, duplicate job # warnings, filterable row table with status/company/location badges and error details
+- **Execute step**: Loading state with archive messaging, double-submit prevention
+- **Results step**: Import counts, location creation counts, counter reset info, per-row result table
+- **Navigation**: Added "Import Jobs" to Settings sidebar under "Import Clients"
+- **Route**: `/settings/import-jobs` (admin-only, ProtectedRoute)
+- Files added: `client/src/pages/JobImportPage.tsx`
+- Files changed: `client/src/App.tsx` (route), `client/src/components/SettingsShell.tsx` (nav entry), `CHANGELOG.md`
+
+#### Jobber Jobs CSV Import — Backend MVP (2026-03-16)
+
+- **New feature**: Historical job import from Jobber CSV export
+- **Shared types** (`shared/jobImportTypes.ts`):
+  - `JobImportRow` interface (36 fields covering job, client, location, dates, metadata, financial)
+  - `JOB_IMPORT_FIELD_DEFS` (36 field definitions with groups: job, client, billing, location, dates, metadata, financial)
+  - `JOB_HEADER_ALIASES` (120+ Jobber CSV header aliases)
+  - `normalizeProvinceState()` — generalized province/state normalization for all Canadian provinces, territories, and US states
+  - `JobColumnMapping` type
+- **Import service** (`server/services/jobImport.ts`):
+  - `suggestJobMappings()` — auto-map CSV headers to job fields
+  - `normalizeJobRow()` — normalize raw CSV values (handles "-" as blank, whitespace trimming)
+  - `validateJobRow()` — company matching (required, no auto-create), location matching (address composite key, property name fallback, controlled auto-creation), job number validation (integer, within-CSV dedup, existing DB dedup), date parsing
+  - `executeJobRow()` — transactional row execution: create location if needed, create archived job with explicit number, create preservation job_note
+- **Routes** (`server/routes/jobImport.ts`):
+  - `POST /api/job-import/preview` — parse, map, validate, return preview with summary
+  - `POST /api/job-import/execute` — execute import with per-row transactions, counter reset after
+- **Storage** (`server/storage/jobs.ts`):
+  - `createJobWithExplicitNumber()` — create job with provided job number, no visit creation (archived jobs)
+  - `resetJobNumberCounter()` — set counter to MAX(job_number) + 1 using GREATEST to never regress
+- **Product rules enforced**:
+  - All imported jobs created with `status: "archived"`
+  - Companies must pre-exist (blocked if not found)
+  - Locations auto-created only under matched companies with sufficient address data
+  - No fabrication of invoices, quotes, visits, time entries, or job_parts
+  - Unmapped data preserved in `jobs.description` (import summary), `jobs.billing_notes` (financial), `job_notes` (full preservation block)
+  - Jobber Job # becomes real `jobs.job_number`
+- Files added: `shared/jobImportTypes.ts`, `server/services/jobImport.ts`, `server/routes/jobImport.ts`
+- Files changed: `server/storage/jobs.ts`, `server/storage/index.ts`, `server/routes/index.ts`, `CHANGELOG.md`
+
+### Fixed
+
+#### Clients Page Inactive Tab + Locations Page Double-Scroll (2026-03-16)
+
+**7. Inactive tab on Clients page always showed 0 companies**
+- **Root cause**: `getPaginatedClients()` in `server/storage/clients.ts` defaulted to active-only rows when the `inactive` query param was not provided. The frontend Clients page never sends this param — it fetches all locations and derives active/inactive company groups client-side. Because the backend pre-filtered to active-only, every location had `inactive=false`, so `allInactive` was always false for every group, and the Inactive tab was permanently empty.
+- **Fix**: When `options.inactive` is `undefined` (param not sent), the query now returns ALL locations (both active and inactive). Explicit `inactive=true` and `inactive=false` still work as before for any caller that needs them.
+- Files: `server/storage/clients.ts`
+
+**8. Locations page double-scroll**
+- **Root cause**: Same issue previously fixed on Clients page — `FixedSizeList` (react-window) with `MAX_LIST_HEIGHT=700` created an internal scroll region competing with the page `<main overflow-auto>`.
+- **Fix**: Replaced `FixedSizeList` with plain `.map()` rendering, consistent with the Clients page fix.
+- Files: `client/src/pages/Locations.tsx`
+
+### Added
+
+#### QBO Customer Import Reconciliation — Multi-Signal Matching (2026-03-16)
+
+- **Purpose**: Reduce duplicates when CSV-imported local clients are later matched against QBO customers during QBO customer import.
+- **Shared normalization primitives** (`shared/normalizeForMatch.ts`):
+  - `normalizeBusinessName()` — strips legal suffixes (Inc, Ltd, LLC, Corp, etc.), replaces & with "and", collapses whitespace, lowercases
+  - `stripNonDigits()` — extracts digits from phone numbers for comparison
+  - `normalizePostalForMatch()` — uppercase, strip spaces/hyphens
+- **Multi-signal candidate scoring** in `QboCustomerImportService`:
+  - Scoring: +40 normalized name, +25 email, +20 phone, +15 postal, +10 location name (children only)
+  - Rule-gated auto-link (parents): name+email, name+postal, or name+phone+postal — exactly 1 candidate required
+  - Rule-gated auto-link (locations): name+postal or name+email — exactly 1 candidate required
+  - Name-only is NEVER enough for auto-link; name+phone-only is NEVER enough for locations
+  - Any ambiguity → CONFLICT for manual review via existing UI
+- **`link_only` import mode**: matches QBO customers to existing local records only; never creates new records
+- **Wipe-mode warning**: warns when unlinked local records will survive a wipe operation
+- **Preview metadata**: conflicts now include score, signals, confidence for each candidate
+- **QBO Console UI enhancements** (`client/src/pages/QboConsolePage.tsx`):
+  - "Link Only" mode added to customer import mode selector with descriptive tooltip
+  - Conflict candidates now show signal badges (Name, Email, Phone, Postal, Location), confidence label (HIGH/MEDIUM/LOW), and numeric score
+  - Auto-linked preview rows show match basis explanation (e.g., "Linked by name + email (65)")
+  - Wipe mode shows prominent survivor warning when unlinked local records exist
+  - Existing MAP/CREATE/SKIP conflict actions preserved unchanged
+- Files: `shared/normalizeForMatch.ts`, `server/services/qbo/QboCustomerImportService.ts`, `server/routes/qbo.ts`, `client/src/pages/QboConsolePage.tsx`
+- Tests: `tests/normalize-business-name.test.ts` (17 tests)
+
+### Operations
+
+#### Pre-Production Database Reset (2026-03-16)
+
+- **Purpose**: Clean slate before re-importing clients from Jobber using corrected importer (property address aliases, location name fallback).
+- **Cleared**: 54 business data tables (customer_companies, client_locations, client_contacts, jobs, job_visits, invoices, quotes, events, notifications, recurring templates/instances, suppliers, tasks, files, time tracking, QBO sync logs, etc.)
+- **Preserved**: companies (9), users (15), roles/permissions/role_permissions (198), items (2), pm_templates (1), technician_profiles (6), working_hours (21), company_counters (5, values reset), company_settings (1), company_tax_rates (1), tenant_features (2), subscription_plans (4), audit_events (6), sessions (2)
+- **Counter reset**: next_job_number → 100000, next_invoice_number → 1000
+- **QBO**: Cleared qbo_onboarding_customers_imported_at so fresh import triggers correctly
+- No schema changes. No migration history affected.
+
+### Fixed
+
+#### Post-Import Client Module — 3 Bug Fixes (2026-03-16)
+
+**1. Client list only showing 68 of 249 companies**
+- **Root cause**: Server route clamped `limit` param to max 100 (`clampInt(..., 100)`). Frontend sent `limit=500` but only got 100 location rows, which grouped into 68 companies.
+- **Fix**: Raised server-side limit cap from 100→500 in route handler and from 200→500 in storage layer. Also raised `MAX_LIST_HEIGHT` from 700→2400 so the virtual list can display all rows.
+- Files: `server/routes/clients.ts`, `server/storage/clients.ts`, `client/src/pages/Clients.tsx`
+
+**2. Client search causes full-screen refresh on first keystroke**
+- **Root cause**: Query key `["/api/clients", search]` changes on every keystroke. Without `placeholderData`, React Query treats the new key as a fresh query — `isLoading` becomes true, triggering the full-page loading skeleton and replacing all visible data.
+- **Fix**: Added `placeholderData: keepPreviousData` to the clients query so old data stays visible while new search results load.
+- Files: `client/src/pages/Clients.tsx`
+
+**3. Imported street addresses not showing in Edit Location**
+- **Root cause**: CSV import (Jobber/QBO) had "Billing Address 1" columns but no separate "Service Address" columns. Import correctly stored billing addresses on `customer_companies.billing_street` (188 companies), but location `address` field was left NULL (294 of 300 locations). Plain "City" column mapped to `serviceCity` so cities appeared on locations but streets didn't.
+- **Fix (code)**: Import `executeRow` now falls back to billing address fields when service address fields are empty: `serviceStreet ?? billingStreet`.
+- **Fix (data)**: Migration backfills existing NULL location addresses from parent company billing addresses.
+- Files: `server/services/clientImport.ts`, `migrations/2026_03_16_backfill_location_address_from_billing.sql`
+
+#### Post-Import Client Module — 3 Remaining Bug Fixes (2026-03-16)
+
+**4. Multi-location client detail pages still missing street addresses**
+- **Root cause**: Jobber CSV exports use "Property Address 1", "Property City", etc. column names for service addresses. These were not in the `HEADER_ALIASES` map, so the auto-mapper couldn't match them. The billing→service fallback from fix #3 only helped when billing columns were present; when neither "Property Address" nor "Service Address" columns mapped, the street field stayed NULL.
+- **Fix**: Added 20 Jobber-specific "property" header aliases for all service address fields (street, street2, city, province, postal code, country).
+- Files: `shared/clientImportTypes.ts`
+
+**5. Distinct location names not carrying over from CSV**
+- **Root cause**: In `executeRow()`, the location name fallback was `row.locationName || canonicalCompanyName` — defaulting to the parent company name when `locationName` was blank. For Jobber exports, the location name lives in a "Property" or "Property Name" column that was not in the alias map, so `row.locationName` was always null. All child locations got the same company name, making them indistinguishable.
+- **Fix (mapping)**: Added "property", "property name", "property_name" as aliases for `locationName` in `HEADER_ALIASES`.
+- **Fix (fallback)**: Changed location name fallback chain from `row.locationName || companyName` to `row.locationName || addressBasedName || companyName`. When no distinct name exists, the address (e.g., "123 Main St, Toronto") is used instead of repeating the company name.
+- Files: `shared/clientImportTypes.ts`, `server/services/clientImport.ts`
+
+**5b. Backfill repair for existing location names (data migration)**
+- **Context**: Fix #5 only applies to future imports. Existing multi-location records where every child location was named after the parent company are not auto-repaired by code changes.
+- **Fix**: Migration replaces location name with address-based label (`"address, city"`) for multi-location companies where `client_locations.location = customer_companies.name` and a street address exists. Single-location companies are left unchanged.
+- Run: `npm run db:migrate:one -- migrations/2026_03_16_backfill_location_names_from_address.sql`
+- Files: `migrations/2026_03_16_backfill_location_names_from_address.sql`
+
+**6. Clients page double-scroll UX**
+- **Root cause**: `FixedSizeList` (react-window) with `MAX_LIST_HEIGHT=2400` created an internal scrollable region inside `<main overflow-auto>`. When the list exceeded viewport height, both the page and the list had independent scrollbars, confusing scroll input.
+- **Fix**: Replaced `FixedSizeList` virtualized rendering with plain `.map()` rendering. The page `<main>` scroll handles everything; no internal scroll region. With the 500-row query limit, plain DOM rendering is performant.
+- Files: `client/src/pages/Clients.tsx`
+
+### Improved
+
+#### CSV Import — Postal Code Optional + Safe Normalization (2026-03-16)
+
+- **Postal code normalization upgraded**: `normalizePostalCode()` now strips non-alphanumeric characters and uppercases before pattern matching. Handles `L4N6P1`, `l4n6p1`, `L4N-6P1` → `L4N 6P1`. US ZIPs and other formats pass through unchanged.
+- **Postal codes no longer block rows**: Invalid or missing postal codes now produce warnings instead of blocking errors. Rows import successfully with a warning code.
+- **New warning types**: "Billing/Service postal code format not recognized — will import as-is" and "Billing/Service postal code missing" added to the warning legend.
+- **Applies to both address types**: Billing and service postal codes use the same normalization and non-blocking validation.
+- Files changed:
+  - `server/lib/addressNormalize.ts` — Enhanced `normalizePostalCode()` to strip non-alphanumeric chars before Canadian pattern matching
+  - `server/services/clientImport.ts` — Changed postal code validation from blocking errors to warnings; added missing-postal-code warnings when street is present
+  - `tests/csv-import-preview-ux.test.ts` — Added 13 tests: postal code normalization (7) and non-blocking validation (6)
+
+#### CSV Import Preview UX + Multi-Email Handling (2026-03-16)
+
+- **Multi-email extraction**: Email fields containing multiple addresses (comma, semicolon, pipe, or space-separated) now extract the first valid email instead of blocking the row. Applied to both `companyEmail` and `contactEmail` during normalization.
+- **Warning legend**: Repetitive warning text compressed into a numbered legend (W1, W2, ...) displayed once at the top of the preview. Each row shows compact codes (e.g. `W1 W3`) instead of full paragraphs.
+- **Preview filtering**: Added filter buttons (All, Errors, Warnings, Clean) above the preview table. Counts shown inline. Summary cards still reflect full totals.
+- **Export actions**: Added Export Errors CSV, Export Warnings CSV, and Export All CSV buttons in the preview step. Each includes row number, status, company, location, contact, error messages, and warning codes.
+- **Scrollable preview table**: Fixed-height (500px) scrollable table body with sticky header. Compact row height for reviewing large imports.
+- **Errors remain explicit**: Row-level error messages (invalid email, missing company name, etc.) are shown inline without compression. Only warnings use the indexed legend.
+- Files changed:
+  - `server/services/clientImport.ts` — Added `extractFirstEmail()` function; applied to companyEmail and contactEmail in `normalizeRow()`
+  - `server/routes/clientImport.ts` — Added warning legend generation + warningCodes assignment after validation
+  - `shared/clientImportTypes.ts` — Added `warningCodes`, `warningLegend` to response types
+  - `client/src/pages/ClientImportPage.tsx` — Rebuilt PreviewStep with filter buttons, warning legend, export buttons, compact rows, sticky header, scrollable body
+  - `tests/csv-import-preview-ux.test.ts` — NEW: 24 tests for multi-email extraction, warning legend, filtering, export format
+
+### Fixed
+
+#### CSV Import — Sample Values Regression Fix (2026-03-16)
+
+- **Root cause**: The mapping UI showed "—" for all sample values because `data.sampleData` from the server was the sole source of sample rows. If the field was missing, undefined, or the response was cached from a prior server version, `sampleRows` would be empty and all values would render as "—".
+- **Fix**: Extracted `parseCSV` to a shared module (`shared/csvParser.ts`) usable by both server and client. Client now uses `data.sampleData` if available from the server response, with a **client-side fallback** using the same quote-aware `parseCSV` function. This eliminates both the naive `split(",")` bug AND the single-point-of-failure on the server response field.
+- **No regression**: The old column-shift bug from naive `split(",")` cannot recur — the shared parser handles quoted fields correctly on both sides.
+- Files changed:
+  - `shared/csvParser.ts` — NEW: shared quote-aware CSV parser (extracted from server)
+  - `server/services/clientImport.ts` — Re-exports `parseCSV` from shared module (backward compatible)
+  - `client/src/pages/ClientImportPage.tsx` — Uses shared `parseCSV` as fallback for sample data
+  - `tests/csv-import-column-safety.test.ts` — Added 5 sample data pipeline tests; imports from shared module
+
+#### CSV Import — Jobber Column-Shift Fix + Street 2 Mapping (2026-03-16)
+
+- **Root cause**: The mapping UI sample display used naive `l.split(",")` to show preview values. This doesn't respect quoted CSV fields, so values like `"Jan, May, Sep"` or `"a@b.com, c@d.com"` got split into separate columns, shifting all subsequent fields in the sample display and causing wrong user mappings.
+- **Fix**: Server now returns properly-parsed `sampleData` in the preview response (parsed by the quote-aware `parseCSV` engine). Client uses `data.sampleData` instead of re-parsing with naive split.
+- **Column count guardrail**: Server detects rows with more columns than the header and returns `columnCountWarnings`. The mapping UI shows an amber warning banner explaining that unquoted commas may have shifted columns.
+- **Jobber header aliases**: Added `e-mails`, `emails`, `province/state`, `billing province/state`, `service province/state`, `contact name`, `contact_name`, `roof/ladder code` to header alias map.
+- **Street 2 mapping**: `billingStreet2` and `serviceStreet2` confirmed present in `IMPORT_FIELD_DEFS` and visible in the mapping dropdown UI.
+- Files changed:
+  - `shared/clientImportTypes.ts` — Added `sampleData` + `columnCountWarnings` to preview response type; added header aliases
+  - `server/routes/clientImport.ts` — Added column count mismatch detection + sampleData to preview response
+  - `client/src/pages/ClientImportPage.tsx` — Use server-parsed sampleData; show column count warning banner
+  - `tests/csv-import-column-safety.test.ts` — NEW: 20 tests covering parser, column shift detection, aliases, field defs
+
+### Added
+
+#### Address Line 2 — Full System-Wide Completion Audit (2026-03-16)
+
+- **Invoice/Quote PDFs**: Added `address2` to PDF data interfaces and rendering for both invoice and quote PDF generation. Address line 2 now prints on its own line between street and city.
+- **QBO Customer Import**: Added `billingStreet2` and `address2` mapping to `QboCustomerImportService` — upsertCustomerCompany, upsertClientLocation, and ensurePrimaryLocation now persist Line2 from QBO sync.
+- **Supplier locations**: Added `address2` column to `supplier_locations` table + migration. Added Street 2 input fields to both AddLocationDialog and EditLocationDialog.
+- **Client CRUD forms**: Added `address2` field to AddClientDialog, EditClientDialog, and NewAddClientDialog (all actively used across multiple pages).
+- **Display surfaces**: Added `address2` to JobHeaderCard address display, QuoteDetailPage location address, and useJobsFeed location type.
+- Migration: `migrations/2026_03_16_add_address_line2_supplier.sql`
+- Files changed:
+  - `server/services/invoicePdfService.ts` — Added address2 to interface + PDF rendering
+  - `server/services/quotePdfService.ts` — Added address2 to interface + PDF rendering
+  - `server/routes/invoices.ts` — Pass address2 to PDF generator
+  - `server/routes/quotes.ts` — Pass address2 to PDF generator (download + preview)
+  - `server/services/qbo/QboCustomerImportService.ts` — Map street2 in all 3 upsert methods
+  - `shared/schema.ts` — Added address2 to supplier_locations table
+  - `client/src/components/suppliers/AddLocationDialog.tsx` — Added address2 form field
+  - `client/src/components/suppliers/EditLocationDialog.tsx` — Added address2 form field
+  - `client/src/components/AddClientDialog.tsx` — Added address2 to interface, form state, input
+  - `client/src/components/EditClientDialog.tsx` — Added address2 to form state, input
+  - `client/src/components/NewAddClientDialog.tsx` — Added address2 to form state, input
+  - `client/src/components/JobHeaderCard.tsx` — Added address2 to fullAddress display
+  - `client/src/pages/QuoteDetailPage.tsx` — Added address2 to location address display
+  - `client/src/hooks/useJobsFeed.ts` — Added address2 to location type
+
+#### Address Line 2 Support for Billing and Service Addresses (2026-03-16)
+
+- **Schema**: Added `billing_street2` column to `customer_companies` table and `address2` column to `client_locations` table. Both nullable text, fully additive — no existing data affected.
+- **Migration**: `migrations/2026_03_16_add_address_line2.sql`
+- **UI forms**: Street 2 input fields added to all address forms (AddClientWithCompanyDialog, QuickAddClientModal, NewClientPage, ClientDetailPage, LocationFormModal)
+- **Display**: Address line 2 shown in location detail, client detail, invoice header (billing + service addresses), client report dialog
+- **CSV import**: New import fields `billingStreet2` and `serviceStreet2` with 25+ header aliases (street 2, address 2, addr2, suite, unit, apt, po box, etc.)
+- **QBO sync**: Line2 mapped to/from QBO BillAddr.Line2 and ShipAddr.Line2 for both customer companies and locations
+- **Copy-to-service**: "Same as billing" checkbox copies street2 correctly
+- **Backward compatible**: All existing single-line addresses continue to work unchanged
+- Files changed:
+  - `shared/schema.ts` — Added `billingStreet2` and `address2` columns
+  - `shared/clientImportTypes.ts` — Added import field defs + header aliases
+  - `server/routes/customer-companies.ts` — Added `billingStreet2` to update schema
+  - `server/routes/clients.ts` — Added `billingStreet2`/`address2` to full-create
+  - `server/routes/clientImport.ts` — Added to execute schema
+  - `server/routes/invoices.ts` — Added `street2` to billing/service address DTOs
+  - `server/services/clientImport.ts` — Added to normalization, conflict detection, execution
+  - `server/services/customerCompanyResolver.ts` — Added `billingStreet2` fallback
+  - `server/storage/customerCompanies.ts` — Added to all CRUD method signatures
+  - `server/qbo/mappers.ts` — Added `Line2` to QBOAddress interface + all address mappings
+  - `client/src/components/AddClientWithCompanyDialog.tsx` — Added form fields + type updates
+  - `client/src/components/QuickAddClientModal.tsx` — Added form fields + type updates
+  - `client/src/components/LocationFormModal.tsx` — Added street2 input + persist
+  - `client/src/components/InvoiceHeaderCard.tsx` — Added `street2` to formatAddress
+  - `client/src/components/ClientReportDialog.tsx` — Added address2 display
+  - `client/src/pages/NewClientPage.tsx` — Added street2 to AddressForm + UI
+  - `client/src/pages/ClientDetailPage.tsx` — Added to edit form, add location form, display helper
+  - `client/src/pages/LocationDetailPage.tsx` — Added address2 to address display
+
+### Fixed
+
+#### Dispatch Board Drag/Drop Scroll-Sync Alignment Bug (2026-03-16)
+
+- **Bug**: When dragging a visit near the timeline edge, auto-scroll changed `scrollLeft` immediately but the drag preview position was still based on stale pointer state (React state only updated on the next `DragMove` event). This caused the drop highlight/preview to drift away from the cursor, with a growing gap that only caught up after additional pointer movement.
+- **Root cause**: `dragPointerX` was React state in the `useMemo` dependency array. Auto-scroll mutated `scrollLeft` synchronously, but placement recomputation waited for the next state update — creating a mixed frame of reference (old pointer + new scroll).
+- **Fix**: Replaced `dragPointerX` state with a ref (`dragPointerXRef`) for instant writes, and introduced a `dragTick` counter that bumps on every `DragMove` event. The `dragPlacement` useMemo depends on `dragTick` so it recomputes in the same React batch, reading both the live pointer ref and the freshly-mutated `scrollLeft` from the DOM in a single synchronized frame.
+- Files changed:
+  - `client/src/pages/DispatchPreview.tsx` — Replaced `dragPointerX` state with `dragPointerXRef` ref + `dragTick` counter; updated `handleDragStart`, `handleDragMove`, and `dragPlacement` useMemo
+
+### Added
+
+#### Safe Company & Location Deletion System (2026-03-16)
+
+- **Hard delete**: Permanently removes companies/locations that have zero operational history (no jobs, invoices, or quotes). Removes all child records (locations, contacts, parts, notes) in a single transaction.
+- **Soft delete / archive**: For companies/locations with historical records, archives them (sets `isActive=false` + `deletedAt`). All child locations are also archived.
+- **Restore**: Archived companies and their locations can be fully restored.
+- **Eligibility check**: `GET /api/customer-companies/:id/delete-check` and `GET /api/clients/:id/delete-check` return `canHardDelete`, blocking reasons, and `isLastLocation` flag.
+- **Last-location guard**: Cannot delete the only location of a company — must delete the company instead.
+- **QBO guard**: Companies/locations synced with QuickBooks Online are blocked from hard delete.
+- **Typed confirmation**: Hard delete requires typing "DELETE" in a confirmation dialog.
+- **UI**: Delete/Archive actions added to the client detail page dropdown menu (three-dot menu), with a smart dialog that shows eligibility, blocking reasons, and the appropriate action.
+- **Search filter fixes**: Global search (`universalSearch`) now excludes inactive companies (`is_active = true`) and inactive locations (`inactive = false`). Fixed `listCustomerCompanies` to also filter `deletedAt IS NULL`. Fixed `getCustomerCompanyLocations` to filter `deletedAt IS NULL`. Fixed `findCustomerCompanyByName` to filter `deletedAt IS NULL`.
+- **Tests**: 12 tests covering hard delete eligibility, blocking, execution, soft delete, search hiding, historical preservation, and restore.
+- Files changed:
+  - `server/storage/customerCompanies.ts` — Added: `checkCompanyDeleteEligibility`, `hardDeleteCustomerCompany`, `softDeleteCustomerCompany`, `restoreCustomerCompany`, `checkLocationDeleteEligibility`, `hardDeleteLocation`. Fixed filters on `listCustomerCompanies`, `getCustomerCompanyLocations`, `findCustomerCompanyByName`.
+  - `server/routes/customer-companies.ts` — Added: `DELETE /:companyId`, `GET /:companyId/delete-check`, `POST /:companyId/archive`, `POST /:companyId/restore`
+  - `server/routes/clients.ts` — Added: `GET /:id/delete-check`. Modified `DELETE /:id` to support hard delete with `confirm=DELETE`.
+  - `server/storage/search.ts` — Added `is_active = true` filter for customer companies, `inactive = false` filter for locations
+  - `client/src/pages/ClientDetailPage.tsx` — Added delete/archive UI dialog with eligibility check, typed confirmation, and smart action (hard delete vs archive)
+  - `tests/client-deletion.test.ts` — NEW: 12 test cases
+
+#### Fix: Delete eligibility check error handling (2026-03-16)
+
+- **Root cause**: The delete eligibility check UI swallowed all errors with a generic "Failed to check eligibility" message, providing no actionable information. The server-side `delete-check` routes (`GET /api/customer-companies/:id/delete-check`, `GET /api/clients/:id/delete-check`) were correctly implemented but required a server restart to take effect (tsx does not auto-reload).
+- **Fix**: Improved frontend error handling to parse and display the actual server error message (e.g., 401 Unauthorized, 403 Forbidden, 404 Not Found). Added guard for undefined entity IDs before making the API call.
+- Files changed:
+  - `client/src/pages/ClientDetailPage.tsx` — `openDeleteDialog` now extracts error messages from server response and guards against undefined IDs
+
+### Fixed
+
+#### Imported locations not appearing in client detail sidebar (2026-03-16)
+
+- **Root cause**: CSV import stored the raw `companyName` from each CSV row on the location record. When rows had different casing (e.g., "Basil HVAC" vs "basil hvac"), the client detail overview endpoint used a case-sensitive `companyName` match (`getLocationsByCompanyName`) to find sibling locations, missing those with variant casing.
+- **Fix 1 — Query**: Changed `GET /api/clients/:id/overview` to use `getAllCustomerCompanyLocations()` (filters by `parentCompanyId` FK) instead of `getLocationsByCompanyName()` (case-sensitive string match). This is the correct relational approach.
+- **Fix 2 — Importer**: Changed location creation to use `resolvedCompany.name` (canonical name from customer_companies) instead of `row.companyName.trim()` (raw CSV value). Prevents future casing mismatches.
+- **Data repair**: Updated the existing mismatched record in `client_locations` for Basil HVAC.
+- Files changed:
+  - `server/routes/clients.ts` — Overview endpoint uses `parentCompanyId` instead of `companyName` match
+  - `server/services/clientImport.ts` — Location `companyName` uses canonical company name
+
+### Added
+
+#### CSV Import Production Hardening (2026-03-15)
+
+- **Normalized company matching**: Company dedup is now case-insensitive and whitespace-collapsed via indexed `name_normalized` column on `customer_companies`. "ACME Corp" and "acme corp" now match correctly.
+- **Location address dedup**: Locations are deduped by address composite key (street|city|province|postal) under the same company. Re-importing the same CSV creates zero duplicate locations.
+- **Contact dedup**: Contacts are deduped by normalized email (primary), name+phone (fallback), or name-only within same company (last resort). Re-importing skips existing contacts.
+- **Softened contact validation**: Name-only contacts (e.g., "Joe", "Manager", "Front Desk") are now allowed with a warning instead of blocking the row. Garbage/placeholder values (n/a, -, unknown) are skipped. Last-name-only without first name is skipped. Email and phone are optional.
+- **Row-level transactions**: Each import row executes in its own DB transaction for atomicity — a failed row doesn't affect others.
+- **Fix: FK violation on location create during import** (2026-03-15): `storage.createClient()` used the global `db` handle instead of the active transaction `tx`, so newly-created customer companies were invisible to the location INSERT — causing FK constraint failures on `client_locations.parent_company_id`. Fixed by inserting locations directly via `tx.insert(clientLocations)` within the same transaction. File: `server/services/clientImport.ts`.
+- **Fill-only billing policy**: When a matched company has empty billing fields, incoming values fill them. Existing non-blank values are never overwritten; conflicts are flagged as warnings.
+- **Within-CSV entity classification**: Preview classifies company/location/contact actions across all CSV rows (including blocked rows). Same normalized company name across rows is correctly identified as one company. Same company+address across rows is detected as duplicate location. Same contact email or name+phone across rows is detected as duplicate contact.
+- **Idempotent re-import**: Importing the same CSV twice produces zero new entities on the second import.
+- **Action badges in preview**: Each row shows create/match/skip badges for company, location, and contact entities. Badges reflect both DB matches and within-CSV matches.
+- **Enhanced summary cards**: Preview and results show locations matched, contacts matched, and within-CSV duplicates.
+- Files changed:
+  - `migrations/2026_03_15_customer_companies_name_normalized.sql` — NEW: migration adding `name_normalized` column with backfill + index
+  - `shared/normalizeForMatch.ts` — NEW: shared `normalizeForMatch()` and `buildAddressCompositeKey()` helpers
+  - `shared/schema.ts` — Added `nameNormalized` column to `customerCompanies`
+  - `shared/clientImportTypes.ts` — Added action fields, conflicts, `locationCreated`, enhanced summaries
+  - `server/services/clientImport.ts` — Major: normalized matching, address/contact dedup, row-level transactions
+  - `server/routes/clientImport.ts` — Within-CSV dedup pass, updated summary computation
+  - `server/storage/customerCompanies.ts` — `findCustomerCompanyByNormalizedName()`, `createCustomerCompanyTx()`, `nameNormalized` on create/update
+  - `server/storage/clientContacts.ts` — `findContactByEmail()`, `findContactByNamePhone()` for dedup
+  - `client/src/pages/ClientImportPage.tsx` — Action badges, conflict display, enhanced summaries
+  - `tests/csv-import-hardening.test.ts` — NEW: test coverage for normalization, dedup, within-CSV detection
+
+#### Phase 1A Pilot Data Setup (2026-03-15)
+
+- **HST 13% tax configuration**: Seeded `company_tax_rates` (HST 13%) and `company_tax_groups` (default HST group) for production tenant. Invoices will now correctly apply 13% HST via the v1 tax group system.
+- **Technician profiles**: Created `technician_profiles` for Mikel Elias (#10b981 green) and Solomon Rahimi (#f59e0b amber) — the 2 production tenant schedulable users missing profiles. Dispatch board lanes now render with colors; labor cost/billable rate calculations are functional.
+- Migration files:
+  - `migrations/2026_03_15_seed_pilot_tax_config.sql` — HST rate + default group + junction
+  - `migrations/2026_03_15_seed_pilot_technician_profiles.sql` — 2 technician profiles
+- No runtime code changes.
+
+#### Phase 1 Pilot Data Validation Queries (2026-03-15)
+
+- **Pilot readiness audit**: Added diagnostic SQL queries for data integrity validation before controlled pilot rollout.
+- Queries detect: duplicate customer names, customers without locations, orphan locations/contacts/equipment/jobs/visits.
+- Migration file: `migrations/2026_03_15_pilot_data_validation_queries.sql` (read-only, no destructive operations)
+- No runtime behavior changes.
+
+### Changed
+
+#### Job Detail Page UI Polish (2026-03-14)
+
+- **Inline-editable job description**: Click the description text (or "Add description" placeholder) below the customer name to edit in place. Saves on blur/Enter, cancels on Escape. Uses existing `PATCH /api/jobs/:id` endpoint.
+- **Border alignment fix**: Header and body sections now use matching `lg:grid-cols-[1fr_300px]` grid layout with consistent `lg:border-l` on the right column, eliminating the 1px misalignment at the header/body junction.
+- **Parts & Billing heading deduplication**: Removed the inner "Parts & Billing" `CardTitle` and KPI summary cards from `PartsBillingCard`. Financial summary (Price, Cost, Profit) now displays inline in the collapsible section header row. New `onTotalsChange` callback prop reports computed totals to the parent.
+- Files changed: `client/src/pages/JobDetailPage.tsx`, `client/src/components/PartsBillingCard.tsx`, `client/src/components/JobHeaderCard.tsx` (no changes)
+
+### Fixed
+
+#### Orphaned Job Attention Items Cleanup (2026-03-15)
+
+- **One-time data cleanup migration**: Removes `attention_items` rows where `entity_type = 'job'` but the referenced `entity_id` no longer exists in `jobs`. These orphans were left behind by a bug that has since been fixed at the application level.
+- Migration file: `migrations/2026_03_15_cleanup_orphaned_job_attention_items.sql`
+- No runtime behavior changes.
+
+#### Dispatch Board Drag & Drop Bug Fixes (2026-03-14)
+
+- **Fix 1 — Resize releases no longer trigger Quick-Create dialog**: Replaced `onPointerUp` with `onPointerDown` on the lane div in `DispatchLaneRow.tsx`. The resize handle attaches its `pointerup` to `document` directly, so the React `onPointerUp` never fired on the lane. Using `onPointerDown` captures block interactions before resize begins. Suppression window expanded from 300ms to 1500ms.
+- **Fix 2 — Drag drops now land at correct time**: The scroll container's `getBoundingClientRect().left` starts at the Any Time column (80px wide), not at the hour timeline. Both `relativeX` computations (in `dragPlacement` useMemo and `handleDragEnd`) now subtract `ANY_TIME_COL_WIDTH` (80px) to align coordinates with the actual hour grid. `ANY_TIME_COL_WIDTH` exported from `DispatchTimeline.tsx`.
+- **Fix 3 — Silent drop failures now show toast feedback**: When `placement.isValid` is false in `handleDragEnd`, a toast notification ("Could not place visit — Try dropping in an open time slot.") is shown instead of silently discarding the drop.
+- Files changed: `client/src/components/dispatch/DispatchLaneRow.tsx`, `client/src/components/dispatch/DispatchTimeline.tsx`, `client/src/pages/DispatchPreview.tsx`
+
+### Added
+
+#### Delete Job Regression Tests (2026-03-13)
+
+- **New test file**: `tests/delete-job-regression.test.ts` — 30 targeted regression tests proving conditional deletion and active visibility behavior.
+- **deleteJob conditional logic (7 tests)**: Hard delete when no invoice linkage (row removed), soft delete when `jobs.invoiceId` set, soft delete when `invoices.jobId` references job (fallback guard), soft delete when both directions linked, double-delete returns false (no-op).
+- **Active visibility exclusion (12 tests)**: `getJobs`, `getJob`, `getCustomerCompanyOverview`, `getJobsAndInvoicesForLocations`, `universalSearch` all exclude soft-deleted and inactive jobs. Active control job remains visible in all surfaces.
+- **Invoice reference integrity (3 tests)**: Invoices preserved after soft delete, `invoices.jobId` references not nulled, no dangling references from hard delete.
+- **Existing test fix**: Updated `tests/deleted-job-exclusion.test.ts` to match new conditional delete behavior — fixture now creates invoice linkage so `deleteJob()` soft-deletes (previously assumed unconditional soft delete). Replaced non-existent `dashboardRepository.getJobCounts` call with direct `getJobs` cross-check.
+- Files changed: `tests/delete-job-regression.test.ts` (new), `tests/deleted-job-exclusion.test.ts` (fixed)
+
+#### Active Visibility Route-Level QA Tests (2026-03-13)
+
+- **New test file**: `tests/active-visibility-qa.test.ts` — 31 route-level QA tests exercising every audited active-job surface through real storage/service functions.
+- **Surfaces covered**: Jobs page (getJobs, getJob), client/company overview (getCustomerCompanyOverview, getJobsAndInvoicesForLocations, stats.openJobs), search (universalSearch), scheduling (getScheduledJobsInRange, getUnscheduledJobs), map (raw SQL JOB_ACTIVE_SQL_J pattern), maintenance statuses, delete flow validation.
+- **Scenarios tested**: Active job visible, inactive job excluded, soft-deleted job excluded, hard-deleted job removed, fallback-linked job (invoices.jobId only) soft-deleted, scheduled visit disappears after soft-deleting its job, double-delete no-op, post-deletion cross-surface consistency, raw SQL and ORM filter equivalence.
+- **QA seed data**: 7 realistic records — active control, inactive, soft-deleted with invoice, hard-deletable, jobs.invoiceId-linked, invoices.jobId-only linked, job with scheduled visit.
+- Files added: `tests/active-visibility-qa.test.ts`
+
+### Changed
+
+#### Suppliers Page UI Consistency + Dispatch Board Typography Cleanup (2026-03-13)
+
+- **Suppliers page — QBO Status column removed**: Removed the QBO Status column and associated `getQboStatusBadge` helper. Final columns: Name | Primary Location | Phone | Email | Active. Removed unused `Badge`, `useMemo` imports.
+- **Suppliers page — Typography standardized**: Body cells use explicit `text-sm`, location sub-text uses `text-xs text-muted-foreground`, active/inactive icons reduced from `h-5 w-5` to `h-4 w-4` for consistency with other list pages. Empty state uses `text-sm text-muted-foreground`. `colSpan` updated from 6 to 5.
+- **Dispatch board — Technician name typography refined**: Names changed from `text-sm` to `text-[13px] leading-tight` — slightly more compact while remaining highly readable for dispatch scanning. Gap between avatar and name tightened from `gap-2.5` to `gap-2`.
+- **Dispatch board — Avatar proportions adjusted**: Avatar circles reduced from `h-8 w-8` with `text-[11px]` initials to `h-7 w-7` with `text-[10px]` initials, maintaining proportional balance with the refined name text.
+- **Preserved**: Row heights (`LANE_HEIGHT_PX`), drag/drop hit areas, lane alignment, off-shift divider, all dispatch board functionality unchanged.
+- Files changed: `client/src/pages/SuppliersListPage.tsx`, `client/src/components/dispatch/DispatchTechnicianSidebar.tsx`
+
+### Fixed
+
+#### Right-Edge Sticky Preview + Redundant Ghost Card — Dispatch Board Drag (2026-03-13)
+
+- **Issue 1 — Right-edge sticky preview**: During internal drag near the right edge, auto-scroll could over-scroll past the end of the timeline. Since `pxToSnappedMinutes` clamps to the last valid slot, the preview appeared "stuck" at the far right while the scroll continued, requiring excessive leftward dragging to recover.
+- **Fix**: Capped rightward auto-scroll at the timeline boundary. When `scrollLeft + clientWidth >= totalTimelinePx`, no further rightward scroll is applied. Uses `(endHour - startHour) * HOUR_WIDTH_PX` to compute the total timeline width dynamically.
+- **Issue 2 — Redundant ghost card**: During board placement, both a floating pale-blue `DragOverlay` ghost (following the cursor) and a green in-grid placement preview were shown simultaneously, creating visual confusion about where the visit would actually land.
+- **Fix**: `DragOverlay` children are suppressed when `dragPlacement` is non-null (i.e., when the in-grid preview is active and showing the authoritative placement). The ghost still appears while dragging outside the board or before a lane is detected, providing feedback during the transition.
+- **Preserved**: All previous external drag protections (disabled horizontal auto-scroll, bounds guards, preview suppression outside board, zero grab offset), internal drag behavior, click-to-schedule mode.
+- File changed: `client/src/pages/DispatchPreview.tsx`
+
+#### External Drag Stability — Unscheduled Panel → Dispatch Board (2026-03-13)
+
+- **Root cause**: When dragging from the Unscheduled panel (right sidebar), the pointer starts outside the timeline scroll container's right boundary. The auto-scroll edge formula `(1 - (rect.right - pointerX) / EDGE_PX)` produces unbounded velocity when `pointerX > rect.right` (negative denominator), causing the board to aggressively auto-scroll rightward. This cascaded: `relativeX` grew rapidly with scroll, `pxToSnappedMinutes` clamped to `timelineMax - snapMinutes` (end-of-day), and the preview jumped to the last visible slot.
+- **Fix 1 — Separate external/internal drag lifecycles**: Added `isExternalDragRef` to track drag source. External drag (`type === "unscheduled-visit"`) follows different auto-scroll and preview rules than internal drag (already-on-board blocks).
+- **Fix 2 — Disable horizontal auto-scroll for external drag**: External drag from the sidebar should target the currently visible time slots. Horizontal auto-scroll is disabled entirely for external drag. Users scroll the board to the desired time window first, then drag. Internal drag retains full horizontal auto-scroll.
+- **Fix 3 — Clamp auto-scroll to container bounds**: Added `insideH`/`insideV` guards so auto-scroll only fires when the pointer is within the scroll container rect. Prevents unbounded velocity for any drag where the pointer exits the container edge (also fixes a latent bug for internal drag near the container boundary).
+- **Fix 4 — Suppress preview until pointer enters board**: For external drag, `dragPlacement` returns null when `dragPointerX` is outside the timeline container's horizontal bounds. No preview renders during the sidebar→board transition zone. Preview activates only when the pointer is truly inside the valid placement area.
+- **Fix 5 — Zero grab offset for external drag**: Sidebar card position has no relationship to timeline placement. `dragGrabBlockXRef` is zeroed for external drag so drop/preview resolve to the pointer's actual board-local position, not offset by the card's grab point.
+- **Fix 6 — Negative relativeX guard**: If `relativeX < 0` (pointer before timeline start), `dragPlacement` returns null instead of clamping to minute 0 (which would produce a misleading first-slot snap).
+- **Preserved**: Internal on-board drag behavior (auto-scroll, grab offset, preview), click-to-schedule mode, resize, overlap detection, off-shift confirmation — all unchanged.
+- File changed: `client/src/pages/DispatchPreview.tsx`
+
+### Changed
+
+#### Active Job Filter Standardization — Centralized Filter Constants (2026-03-13)
+
+- **Goal**: Replace remaining ad hoc inline active-job conditions with the canonical shared `activeJobFilter()` (Drizzle ORM) or `JOB_ACTIVE_SQL_J` (raw SQL) constants from `server/storage/jobFilters.ts`, reducing future filter drift.
+- **Drizzle ORM contexts**: `calendarValidation.ts` and `storage.ts` now import and use `activeJobFilter()` instead of inline `isNull(jobs.deletedAt)` + `eq(jobs.isActive, true)`. Removed unused `isNull` imports.
+- **Raw SQL (`pool.query`) context**: `search.ts` now uses `${JOB_ACTIVE_SQL_J}` string interpolation in all 3 job queries (exact match, range match, summary text).
+- **Raw SQL (`db.execute(sql`...`)`) contexts**: `map.ts` (3 queries), `visitIntelligence.ts` (5 queries), `autoGapScheduling.ts` (1 query), `routes/scheduling.ts` (1 query), `routes/intelligence.ts` (1 query) now use `${sql.raw(JOB_ACTIVE_SQL_J)}` instead of inline SQL.
+- **Behavior**: No behavior change — identical SQL output. This is a consistency refactor only.
+- **Left unchanged**: `attentionRules.ts` already uses `activeJobFilter()` from the prior audit.
+- Files changed: `server/services/calendarValidation.ts`, `server/storage.ts`, `server/storage/search.ts`, `server/routes/map.ts`, `server/lib/visitIntelligence.ts`, `server/lib/autoGapScheduling.ts`, `server/routes/scheduling.ts`, `server/routes/intelligence.ts`
+
+### Fixed
+
+#### Canonical activeJobFilter() Audit — Deleted Jobs Leaking into Active Surfaces (2026-03-13)
+
+- **Root cause**: 22 job query paths across 9 files were missing the canonical `activeJobFilter()` logic (`deletedAt IS NULL AND isActive = true`). Most had partial filtering (only `deletedAt IS NULL`) but were missing the `isActive = true` check, meaning deactivated jobs could still appear in attention items, conflict detection, search results, map views, and scheduling surfaces.
+- **attentionRules.ts**: All 9 attention rule queries (requires_invoicing, overdue, unassigned, unscheduled — detect + detectForEntity) now use `activeJobFilter()` instead of bare `isNull(jobs.deletedAt)`. Deactivated jobs no longer generate false attention items.
+- **calendarValidation.ts**: Conflict/overlap detection now includes `eq(jobs.isActive, true)`. Deactivated jobs no longer block scheduling.
+- **search.ts**: All 3 search queries (exact job number, range job number, summary text) now include `j.deleted_at IS NULL AND j.is_active = true`. Deleted jobs no longer appear in search results.
+- **map.ts**: All 3 map queries (visit layer, job fallback, gap diagnostic) now filter deleted/deactivated jobs. Deleted jobs no longer render as map markers.
+- **visitIntelligence.ts**: All 3 visit intelligence queries (today's visits, source visit, downstream visits) now include job active filter in JOIN. ETA drift and cascade analysis exclude deleted jobs.
+- **autoGapScheduling.ts**: Gap scheduling visit query now filters deleted jobs in JOIN. Gap analysis no longer considers deleted job visits.
+- **routes/scheduling.ts**: Day summary query now filters deleted jobs in JOIN.
+- **routes/intelligence.ts**: ETA drift location lookup now filters deleted jobs.
+- **storage.ts**: Legacy `getCalendarAssignments()` now includes `eq(jobs.isActive, true)`.
+- Files changed: `server/lib/attentionRules.ts`, `server/services/calendarValidation.ts`, `server/storage/search.ts`, `server/routes/map.ts`, `server/lib/visitIntelligence.ts`, `server/lib/autoGapScheduling.ts`, `server/routes/scheduling.ts`, `server/routes/intelligence.ts`, `server/storage.ts`
+
+#### Job Deletion Data Consistency Bug (2026-03-13)
+
+- **Bug**: Deleted jobs still appeared on Client/Company detail page > Jobs tab and inflated active job counts. The overview endpoints (`/api/clients/:id/overview`, `/api/customer-companies/:id/overview`) queried jobs without applying `activeJobFilter()`, so soft-deleted jobs were included in the response.
+- **Root cause**: `getCustomerCompanyOverview()` and `getJobsAndInvoicesForLocations()` in `server/storage/customerCompanies.ts` queried jobs with only `companyId + locationId` filters — missing `deletedAt IS NULL AND isActive = true`.
+- **Fix 1 — Query consistency**: Added `activeJobFilter()` to both `getCustomerCompanyOverview()` inline query (line 558) and `getJobsAndInvoicesForLocations()` (line 620). Client/company job counts (`stats.openJobs`) now automatically exclude deleted jobs.
+- **Fix 2 — Conditional delete**: Rewrote `storage.deleteJob()` to check for invoice linkage before deciding delete strategy. Uses belt-and-suspenders guard: checks BOTH `jobs.invoiceId` (canonical FK) AND queries `invoices` table for any row where `invoices.jobId` matches (denormalized, no FK constraint — could be out of sync):
+  - **No invoice from either source**: Hard delete the job row. FK cascades handle `job_visits`, `job_parts`, `job_equipment`, `job_status_events`, `job_schedule_audit`. Work sessions/timesheets get `jobId` set to null (preserving payroll data).
+  - **Invoice exists from either source**: Soft delete (sets `deletedAt` + `isActive = false`) to preserve financial integrity and invoice references.
+- **Fix 3 — Orphan cleanup**: Added migration `2026_03_13_cleanup_soft_deleted_jobs.sql` to hard-delete previously soft-deleted jobs that have no invoice from either direction (`jobs.invoice_id IS NULL AND NOT EXISTS invoices.job_id`), cleaning up ghost data.
+- Files changed: `server/storage/customerCompanies.ts`, `server/storage/jobs.ts`
+- Migration: `migrations/2026_03_13_cleanup_soft_deleted_jobs.sql`
+
+### Changed
+
+#### List-Surface UI Standardization (2026-03-13)
+
+- **Standardized**: Unified visual system across Clients, Jobs, and Invoices list pages
+- Added shared typography tokens to `list-surface.tsx`: `listHeaderRowClass`, `listPrimaryClass`, `listSecondaryClass`, `listBadgeClass`, `listResultsClass`
+- Standardized table header: `text-xs font-medium text-muted-foreground` on `bg-[#FAFAFA]` with `py-2` across all 3 pages
+- Standardized primary text: `text-sm font-medium truncate` across all 3 pages
+- Standardized secondary text: `text-xs text-muted-foreground truncate` across all 3 pages
+- Standardized badge/pill: `text-[11px] rounded-full px-2 py-0.5` across all 3 pages
+- Standardized results count: `text-xs text-muted-foreground mt-2` across all 3 pages (added to Invoices)
+- Standardized row density: denser Jobber-style layout (Clients 48px, Invoices py-2.5, Jobs inherits table)
+- Standardized row hover/click: consistent `tableRowClass` across all 3 pages
+- Added `label` prop to `FiltersButton` component for descriptive filter button labels
+- Files changed: `client/src/components/ui/list-surface.tsx`, `client/src/components/filters/FiltersButton.tsx`, `client/src/pages/Clients.tsx`, `client/src/pages/Jobs.tsx`, `client/src/pages/InvoicesListPage.tsx`
+
+#### PM Module — List Standardization (2026-03-13)
+
+- **Standardized**: Extended shared list/table design system to PM Workspace (Dashboard, Contracts, Billing, Templates)
+- **PM Dashboard**: Simplified queue table from 9 columns to 4 (Customer, PM Contract, Window, Status)
+- **Removed**: Sub-filter dropdowns from both Due Now (6 options) and Upcoming views — all items shown directly
+- **Removed**: Compliance and Scheduling badge columns, Visit column, Job column, Job Status column from queue rows
+- **Removed**: `SchedulingBadge` component, `DUE_NOW_FILTER_OPTIONS`, `UPCOMING_FILTER_OPTIONS`, `applyFilter` function
+- **PM Contracts tab**: Replaced manual Search/Input with `ListToolbar`, Card wrapper with `ListSurface`, applied shared tokens
+- **PM Templates tab**: Replaced Card wrapper with `ListSurface`, applied shared header/row tokens
+- **PM Billing tab**: Applied standardized table header styling (`text-xs font-medium bg-[#FAFAFA]`) and row tokens (`tableRowClass`, `listPrimaryClass`, `listSecondaryClass`) to all 6 sub-tables
+- **Page title**: Changed from `font-bold` to `font-semibold` (matches `TablePageShell` convention)
+- **Summary badges**: Made non-interactive (removed filter onClick handlers that referenced deleted state)
+- **Dead code cleanup**: Removed `CalendarCheck`, `CalendarX2` icon imports
+- Files changed: `client/src/pages/PMWorkspacePage.tsx`
+
+#### Jobs Page Cleanup (2026-03-13)
+
+- **Removed**: "Optimize Route" button from Jobs toolbar
+- **Removed**: Dev-only "Show Reconciliation Panel" toggle and panel
+- **Redesigned**: Split single filter popover into two separate buttons: "Status" and "Workflow"
+- Status filter contains: All, Open, Completed, Invoiced, Archived (canonical `jobStatusEnum`)
+- Workflow filter contains: In Progress, On Route, On Hold, Needs Review (canonical `openSubStatusEnum`)
+- Workflow button auto-hides when lifecycle filter is set to Completed/Invoiced/Archived (sub-status only applies to open jobs)
+- **Removed filters**: Assigned, Unassigned, All-day only, Schedule (Scheduled/Backlog), Overdue checkbox
+- Removed related state: `DerivedFilters` interface, `toggleDerivedFilter`, derived count computation
+- Removed dead imports: `RouteOptimizationDialog`, `Route` icon, `Bug` icon, `Checkbox`, `User` icon, `Card`/`CardContent`
+- Files changed: `client/src/pages/Jobs.tsx`
+
 ### Fixed
 
 #### Dispatch Board — False Version Conflicts + Slow Saving UX (2026-03-12)

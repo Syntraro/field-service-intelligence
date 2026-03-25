@@ -52,7 +52,6 @@ function makePmTemplate(overrides: Partial<RecurringJobTemplate> = {}): Recurrin
     description: null,
     notes: null,
     defaultDurationMinutes: null,
-    preferredTechnicianId: null,
     jobType: "maintenance",
     priority: "medium",
     openSubStatusDefault: null,

@@ -211,6 +211,7 @@ const updateCustomerCompanySchema = z.object({
   phone: z.string().max(50).nullable().optional(),
   email: z.string().max(200).nullable().optional(),
   billingStreet: z.string().max(200).nullable().optional(),
+  billingStreet2: z.string().max(200).nullable().optional(), // Address line 2 (suite, unit, PO box)
   billingCity: z.string().max(100).nullable().optional(),
   billingProvince: z.string().max(100).nullable().optional(),
   billingPostalCode: z.string().max(20).nullable().optional(),
@@ -470,6 +471,94 @@ router.delete("/:companyId/contacts/:contactId", requireRole(MANAGER_ROLES), asy
   if (!deleted) throw createError(404, "Contact not found");
 
   res.json({ success: true });
+}));
+
+// ============================================================================
+// Deletion — eligibility check, hard delete, soft delete/archive
+// ============================================================================
+
+/**
+ * GET /api/customer-companies/:companyId/delete-check
+ * Returns eligibility info for deleting a customer company.
+ */
+router.get("/:companyId/delete-check", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId: tenantCompanyId } = req;
+  const { companyId: customerCompanyId } = req.params;
+
+  const result = await customerCompanyRepository.checkCompanyDeleteEligibility(
+    tenantCompanyId!,
+    customerCompanyId
+  );
+
+  res.json(result);
+}));
+
+/**
+ * DELETE /api/customer-companies/:companyId
+ * Hard-delete a customer company (only if no operational history exists).
+ * Requires typed confirmation: body.confirm === "DELETE"
+ */
+router.delete("/:companyId", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId: tenantCompanyId } = req;
+  const { companyId: customerCompanyId } = req.params;
+
+  const confirmSchema = z.object({ confirm: z.literal("DELETE") }).strict();
+  validateSchema(confirmSchema, req.body);
+
+  // Re-check eligibility at delete time (race condition safety)
+  const eligibility = await customerCompanyRepository.checkCompanyDeleteEligibility(
+    tenantCompanyId!,
+    customerCompanyId
+  );
+
+  if (!eligibility.canHardDelete) {
+    throw createError(409, `Cannot hard-delete: ${eligibility.reasons.join(", ")}. Archive instead.`);
+  }
+
+  const deleted = await customerCompanyRepository.hardDeleteCustomerCompany(
+    tenantCompanyId!,
+    customerCompanyId
+  );
+
+  if (!deleted) throw createError(404, "Customer company not found");
+
+  res.json({ success: true, action: "hard_delete" });
+}));
+
+/**
+ * POST /api/customer-companies/:companyId/archive
+ * Soft-delete (archive) a customer company and all its locations.
+ */
+router.post("/:companyId/archive", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId: tenantCompanyId } = req;
+  const { companyId: customerCompanyId } = req.params;
+
+  const archived = await customerCompanyRepository.softDeleteCustomerCompany(
+    tenantCompanyId!,
+    customerCompanyId
+  );
+
+  if (!archived) throw createError(404, "Customer company not found");
+
+  res.json({ success: true, action: "archived", company: archived });
+}));
+
+/**
+ * POST /api/customer-companies/:companyId/restore
+ * Restore a soft-deleted customer company and its locations.
+ */
+router.post("/:companyId/restore", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId: tenantCompanyId } = req;
+  const { companyId: customerCompanyId } = req.params;
+
+  const restored = await customerCompanyRepository.restoreCustomerCompany(
+    tenantCompanyId!,
+    customerCompanyId
+  );
+
+  if (!restored) throw createError(404, "Customer company not found");
+
+  res.json({ success: true, action: "restored", company: restored });
 }));
 
 // ============================================================================

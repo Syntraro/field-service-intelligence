@@ -34,8 +34,14 @@ type SavingSet = Set<string>;
  *  false-positived on unrelated errors that happened to contain those words. */
 function isVersionConflict(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
-  const status = (err as any).status ?? 0;
-  return status === 409;
+  const e = err as any;
+  if ((e.status ?? 0) !== 409) return false;
+  // If a code is present, only treat VERSION_MISMATCH as a version conflict.
+  // VISIT_CONFLICT (also 409) is a different error and must not trigger the stale-edit toast.
+  const code = e.code ?? e.body?.code ?? "";
+  if (code) return code === "VERSION_MISMATCH";
+  // No code present — fall back to treating all 409s as version conflict (legacy endpoints)
+  return true;
 }
 
 /** Detect "Not found" errors — stale client state after a prior mutation changed the item */
@@ -56,6 +62,10 @@ interface ScheduleParams {
   technicianUserId: string;
   startAt: string;
   endAt: string;
+  /** When true, schedule as all-day/any-time visit (UTC midnight→23:59:59) */
+  allDay?: boolean;
+  /** 2026-03-23: Visit notes — passed through to server so modal save doesn't need a separate PATCH */
+  visitNotes?: string | null;
 }
 
 interface RescheduleParams {
@@ -66,6 +76,8 @@ interface RescheduleParams {
   endAt: string;
   /** When true, reschedule as all-day/any-time visit (UTC midnight→23:59:59) */
   allDay?: boolean;
+  /** 2026-03-23: Visit notes — passed through to server so modal save doesn't need a separate PATCH */
+  visitNotes?: string | null;
 }
 
 interface UnscheduleParams {
@@ -119,11 +131,13 @@ function resolveVisitFromCache(
   }
 
   // Check unscheduled backlog cache
+  // 2026-03-23: Also match by activeVisitId — unscheduled items are keyed by jobId
+  // but EditVisitModal passes the actual visit UUID. Both must resolve.
   const unscheduledEntries = qc.getQueriesData<UnscheduledJobDto[]>({ queryKey: ["/api/calendar/unscheduled"] });
   for (const [, data] of unscheduledEntries) {
     if (!data) continue;
     for (const job of data) {
-      if (job.id === visitId && job.version != null) {
+      if ((job.id === visitId || job.activeVisitId === visitId) && job.version != null) {
         return { version: job.version, jobId: job.jobId };
       }
     }
@@ -155,11 +169,12 @@ function patchCachedVersion(
   );
 
   // Patch unscheduled cache
+  // 2026-03-23: Also match by activeVisitId (see resolveVisitFromCache comment)
   qc.setQueriesData<UnscheduledJobDto[]>(
     { queryKey: ["/api/calendar/unscheduled"] },
     (old) => {
       if (!old) return old;
-      const idx = old.findIndex(j => j.id === visitId);
+      const idx = old.findIndex(j => j.id === visitId || j.activeVisitId === visitId);
       if (idx === -1) return old;
       const next = [...old];
       next[idx] = { ...next[idx], version: newVersion };
@@ -267,11 +282,13 @@ function optimisticSchedule(
   const date = startAt.slice(0, 10);
 
   // Find the unscheduled job to get display data
+  // 2026-03-23: Also match by activeVisitId — EditVisitModal passes the actual visit UUID
+  // but unscheduled cache items are keyed by job ID with activeVisitId as a separate field.
   let jobData: UnscheduledJobDto | null = null;
   const unscheduledEntries = qc.getQueriesData<UnscheduledJobDto[]>({ queryKey: ["/api/calendar/unscheduled"] });
   for (const [, data] of unscheduledEntries) {
     if (!data) continue;
-    const found = data.find(j => j.id === visitId);
+    const found = data.find(j => j.id === visitId || j.activeVisitId === visitId);
     if (found) { jobData = found; break; }
   }
 
@@ -280,7 +297,7 @@ function optimisticSchedule(
     { queryKey: ["/api/calendar/unscheduled"] },
     (old) => {
       if (!old) return old;
-      return old.filter(j => j.id !== visitId);
+      return old.filter(j => j.id !== visitId && j.activeVisitId !== visitId);
     },
   );
 
@@ -294,6 +311,10 @@ function optimisticSchedule(
       summary: jobData.summary,
       jobType: jobData.jobType,
       status: "open",
+      // 2026-03-23: Scheduling does NOT set job openSubStatus — clear any pre-existing
+      // value from the unscheduled job data so the card renders as "Active" (green),
+      // not "In Progress" (blue). The server never sets openSubStatus during scheduling.
+      openSubStatus: null,
       visitStatus: "scheduled",
       locationId: jobData.locationId,
       locationName: jobData.locationName,
@@ -308,6 +329,11 @@ function optimisticSchedule(
       assignedTechnicianIds: [technicianUserId],
       primaryTechnicianId: technicianUserId,
       technicians: [{ id: technicianUserId, name: technicianUserId, color: null }],
+      // 2026-03-23: Carry through location context for display
+      locationAddress: jobData.locationAddress,
+      locationCity: jobData.locationCity,
+      locationProvinceState: jobData.locationProvinceState,
+      locationPostalCode: jobData.locationPostalCode,
     };
 
     qc.setQueriesData<CalendarRangeResponseDto>(
@@ -363,6 +389,8 @@ function optimisticUnschedule(
       primaryTechnicianId: null,
       assignedTechnicianIds: [],
       technicians: [],
+      // 2026-03-22: Preserve real visit identity so unscheduled card remains clickable
+      activeVisitId: eventData.visitId ?? visitId,
     };
 
     qc.setQueriesData<UnscheduledJobDto[]>(
@@ -395,6 +423,49 @@ function optimisticResize(
       const durationMinutes = startMs ? Math.round((endMs - startMs) / 60000) : event.durationMinutes;
       const events = [...old.events];
       events[idx] = { ...event, endAt: newEndTime, durationMinutes };
+      return { ...old, events };
+    },
+  );
+}
+
+/**
+ * Optimistic visit completion: patch visitStatus and visitOutcome in calendar cache.
+ * 2026-03-20: Ensures detail panel immediately flips to completed state (Reopen button)
+ * instead of showing stale "Completed Fully" / "Needs Follow-Up" actions.
+ */
+function optimisticCompleteVisit(
+  qc: QueryClient,
+  visitId: string,
+  outcome: string,
+): void {
+  qc.setQueriesData<CalendarRangeResponseDto>(
+    { queryKey: ["/api/calendar"] },
+    (old) => {
+      if (!old?.events) return old;
+      const idx = old.events.findIndex(e => (e.visitId ?? e.id) === visitId);
+      if (idx === -1) return old;
+      const events = [...old.events];
+      events[idx] = { ...events[idx], visitStatus: "completed", visitOutcome: outcome };
+      return { ...old, events };
+    },
+  );
+}
+
+/**
+ * 2026-03-20: Optimistic reopen — revert visitStatus to "scheduled" in calendar cache.
+ */
+function optimisticReopenVisit(
+  qc: QueryClient,
+  visitId: string,
+): void {
+  qc.setQueriesData<CalendarRangeResponseDto>(
+    { queryKey: ["/api/calendar"] },
+    (old) => {
+      if (!old?.events) return old;
+      const idx = old.events.findIndex(e => (e.visitId ?? e.id) === visitId);
+      if (idx === -1) return old;
+      const events = [...old.events];
+      events[idx] = { ...events[idx], visitStatus: "scheduled", visitOutcome: null, openSubStatus: null };
       return { ...old, events };
     },
   );
@@ -481,16 +552,24 @@ export function useDispatchPreviewMutations() {
    * Starvation prevention: if >10s since last invalidation, force it regardless of in-flight count.
    * Delay increased to 800ms to prevent refetch-overwrites-optimistic-patch races.
    */
-  const backgroundInvalidate = useCallback(() => {
+  const backgroundInvalidate = useCallback((options?: { calendarOnly?: boolean }) => {
     setTimeout(() => {
       const elapsed = Date.now() - lastInvalidateRef.current;
       // Skip if mutations in-flight AND last invalidation was recent (< 10s)
       if (inflightRef.current > 0 && elapsed < 10000) return;
       lastInvalidateRef.current = Date.now();
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      // 2026-03-23: Invalidate visit-detail so EditVisitModal shows fresh data after board mutations
+      queryClient.invalidateQueries({ queryKey: ["visit-detail"] });
+      if (options?.calendarOnly) return;
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
       queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
       queryClient.invalidateQueries({ queryKey: ["/api/team/technicians/working-hours"] });
+      // 2026-03-18: Visit completion reconciles parent job — refresh job lists, dashboard, attention
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      // 2026-03-20: Invalidate Job Detail visits section so it reflects completed/resolved visits
+      queryClient.invalidateQueries({ queryKey: ["visits"] });
     }, 800);
   }, [queryClient]);
 
@@ -503,6 +582,28 @@ export function useDispatchPreviewMutations() {
     queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
     queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
     queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
+    // 2026-03-23: Invalidate visit-detail so EditVisitModal reflects server truth after conflict recovery
+    queryClient.invalidateQueries({ queryKey: ["visit-detail"] });
+  }, [queryClient]);
+
+  /**
+   * 2026-03-20: Unconditional full invalidation for visit completion actions.
+   * Unlike backgroundInvalidate, this bypasses the debounce/in-flight guard because
+   * completion is a discrete high-importance lifecycle event that must always trigger
+   * a full refetch. Uses a short delay (200ms) only to let the optimistic patch render
+   * before the server response overwrites it.
+   */
+  const invalidateAfterCompletion = useCallback(() => {
+    setTimeout(() => {
+      lastInvalidateRef.current = Date.now();
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["visits"] });
+      // 2026-03-23: Invalidate visit-detail so modal reflects completion state
+      queryClient.invalidateQueries({ queryKey: ["visit-detail"] });
+    }, 200);
   }, [queryClient]);
 
   /**
@@ -566,7 +667,10 @@ export function useDispatchPreviewMutations() {
 
   /** Schedule an unscheduled job (first visit). POST /api/calendar/schedule */
   const scheduleVisit = useCallback(async (params: ScheduleParams) => {
-    const { jobId, visitId, technicianUserId, startAt, endAt } = params;
+    const { jobId, visitId, technicianUserId, startAt, endAt, allDay, visitNotes } = params;
+
+    // Snapshot before optimistic patch so rollback restores true pre-mutation state
+    const snapshot = snapshotDispatchCache(queryClient);
 
     // Optimistic: move from unscheduled → scheduled immediately (outside chain for instant feedback)
     optimisticSchedule(queryClient, visitId, jobId, startAt, endAt, technicianUserId);
@@ -574,17 +678,22 @@ export function useDispatchPreviewMutations() {
     // Chain per-visit: version resolved after any prior mutation completes
     return chainForVisit(visitId, async () => {
       const version = freshVersion(visitId);
-      const snapshot = snapshotDispatchCache(queryClient);
 
       markSaving(visitId);
       inflightRef.current++;
       try {
         const resp = await apiRequest<{ version?: number }>("/api/calendar/schedule", {
           method: "POST",
-          body: JSON.stringify({ jobId, technicianUserId, startAt, endAt, version }),
+          body: JSON.stringify({ jobId, technicianUserId, startAt, endAt, version, allDay: allDay ?? false, ...(visitNotes != null && { notes: visitNotes }) }),
         });
         // Cancel pending refetches then patch version to prevent stale-refetch overwrites
         if (resp?.version != null) await cancelAndPatchVersion(visitId, resp.version);
+        // 2026-03-24: Seed visit-detail cache with server-authoritative visit data
+        // only if the schedule response includes a real visit object.
+        const scheduleResp = resp as any;
+        if (scheduleResp?.visit) {
+          queryClient.setQueryData(["visit-detail", visitId], scheduleResp.visit);
+        }
         backgroundInvalidate();
       } catch (err: any) {
         restoreDispatchCache(queryClient, snapshot);
@@ -598,7 +707,10 @@ export function useDispatchPreviewMutations() {
 
   /** Reschedule an existing scheduled visit. Fallback routing: new then old. */
   const rescheduleVisit = useCallback(async (params: RescheduleParams) => {
-    const { visitId, jobId, technicianUserId, startAt, endAt, allDay } = params;
+    const { visitId, jobId, technicianUserId, startAt, endAt, allDay, visitNotes } = params;
+
+    // Snapshot before optimistic patch so rollback restores true pre-mutation state
+    const snapshot = snapshotDispatchCache(queryClient);
 
     // Optimistic: update position/lane immediately (outside chain for instant feedback)
     optimisticReschedule(queryClient, visitId, startAt, endAt, technicianUserId, allDay);
@@ -606,7 +718,6 @@ export function useDispatchPreviewMutations() {
     // Chain per-visit: version resolved after any prior mutation completes
     return chainForVisit(visitId, async () => {
       const version = freshVersion(visitId);
-      const snapshot = snapshotDispatchCache(queryClient);
 
       if (process.env.NODE_ENV !== "production") {
         console.log(`[DISPATCH] rescheduleVisit visitId=${visitId} jobId=${jobId} version=${version} allDay=${allDay}`);
@@ -620,7 +731,7 @@ export function useDispatchPreviewMutations() {
           // Pass allDay through; defaults to false for timed drag-reschedules
           resp = await apiRequest(`/api/calendar/visit/${visitId}/reschedule`, {
             method: "PATCH",
-            body: JSON.stringify({ technicianUserId, startAt, endAt, version, allDay: allDay ?? false }),
+            body: JSON.stringify({ technicianUserId, startAt, endAt, version, allDay: allDay ?? false, ...(visitNotes != null && { notes: visitNotes }) }),
           });
         } catch (newErr: any) {
           // Graceful recovery: not-found means stale state — refetch instead of fallback cascade
@@ -638,7 +749,7 @@ export function useDispatchPreviewMutations() {
           throw newErr;
         }
         if (resp?.version != null) await cancelAndPatchVersion(visitId, resp.version);
-        backgroundInvalidate();
+        backgroundInvalidate({ calendarOnly: true });
       } catch (err: any) {
         restoreDispatchCache(queryClient, snapshot);
         handleMutationError(err, "Reschedule failed");
@@ -653,13 +764,15 @@ export function useDispatchPreviewMutations() {
   const unscheduleVisit = useCallback(async (params: UnscheduleParams) => {
     const { visitId, jobId } = params;
 
+    // Snapshot before optimistic patch so rollback restores true pre-mutation state
+    const snapshot = snapshotDispatchCache(queryClient);
+
     // Optimistic: move from scheduled → unscheduled immediately (outside chain for instant feedback)
     optimisticUnschedule(queryClient, visitId, jobId);
 
     // Chain per-visit: version resolved after any prior mutation completes
     return chainForVisit(visitId, async () => {
       const version = freshVersion(visitId);
-      const snapshot = snapshotDispatchCache(queryClient);
 
       markSaving(visitId);
       inflightRef.current++;
@@ -703,13 +816,15 @@ export function useDispatchPreviewMutations() {
   const resizeVisit = useCallback(async (params: ResizeParams) => {
     const { visitId, jobId, scheduledStart, scheduledEnd, newEndTime } = params;
 
+    // Snapshot before optimistic patch so rollback restores true pre-mutation state
+    const snapshot = snapshotDispatchCache(queryClient);
+
     // Optimistic: patch endAt/duration immediately (outside chain for instant feedback)
     optimisticResize(queryClient, visitId, newEndTime);
 
     // Chain per-visit: version resolved after any prior mutation completes
     return chainForVisit(visitId, async () => {
       const version = freshVersion(visitId);
-      const snapshot = snapshotDispatchCache(queryClient);
 
       markSaving(visitId);
       inflightRef.current++;
@@ -743,7 +858,7 @@ export function useDispatchPreviewMutations() {
         // Cancel pending refetches then patch version to prevent stale-refetch overwrites
         const patchVer = resp?.version ?? resp?.visitVersion;
         if (patchVer != null) await cancelAndPatchVersion(visitId, patchVer);
-        backgroundInvalidate();
+        backgroundInvalidate({ calendarOnly: true });
       } catch (err: any) {
         restoreDispatchCache(queryClient, snapshot);
         handleMutationError(err, "Resize failed");
@@ -809,7 +924,8 @@ export function useDispatchPreviewMutations() {
     });
   }, [markSaving, clearSaving, backgroundInvalidate, handleMutationError, freshVersion, queryClient, chainForVisit, cancelAndPatchVersion]);
 
-  /** Update visit status. POST /api/jobs/:jobId/visits/:visitId/status */
+  /** Update visit status. POST /api/jobs/:jobId/visits/:visitId/status
+   * 2026-03-18: Callers MUST ensure item.kind === "visit" — backlog placeholders have no real visitId. */
   const updateVisitStatus = useCallback(async (params: { visitId: string; jobId: string; status: string }) => {
     const { visitId, jobId, status } = params;
     markSaving(visitId);
@@ -828,7 +944,108 @@ export function useDispatchPreviewMutations() {
     }
   }, [markSaving, clearSaving, backgroundInvalidate, handleMutationError]);
 
-  /** Soft-delete a visit. DELETE /api/jobs/:jobId/visits/:visitId */
+  /**
+   * 2026-03-17: Complete visit with explicit outcome + parent job reconciliation.
+   * POST /api/jobs/:jobId/visits/:visitId/complete
+   * 2026-03-18: Callers MUST ensure item.kind === "visit" — backlog placeholders have no real visitId.
+   */
+  const completeVisitWithOutcome = useCallback(async (params: {
+    visitId: string;
+    jobId: string;
+    outcome: "completed" | "needs_parts" | "needs_followup";
+    holdReason?: string | null;
+    holdNotes?: string | null;
+  }) => {
+    const { visitId, jobId, outcome, holdReason, holdNotes } = params;
+    markSaving(visitId);
+    inflightRef.current++;
+    try {
+      const result = await apiRequest<{
+        visit: { id: string; status: string; outcome: string };
+        reconciliation: { jobUpdated: boolean; newJobStatus: string; newOpenSubStatus: string | null };
+      }>(`/api/jobs/${jobId}/visits/${visitId}/complete`, {
+        method: "POST",
+        body: JSON.stringify({ outcome, holdReason, holdNotes }),
+      });
+      // 2026-03-20: Optimistic patch — immediately flip visitStatus/visitOutcome in
+      // calendar cache so the detail panel shows "Reopen Visit" instead of stale
+      // "Completed Fully" / "Needs Follow-Up" buttons.
+      optimisticCompleteVisit(queryClient, visitId, outcome);
+      // 2026-03-20: Optimistic job patch — use reconciliation result to immediately
+      // update the job detail cache so the Job page shows correct status/sub-status
+      // without waiting for the 200ms invalidation refetch.
+      if (result?.reconciliation?.jobUpdated) {
+        const recon = result.reconciliation;
+        queryClient.setQueryData<any>(["jobs", "detail", jobId], (old: any) => {
+          if (!old) return old;
+          return {
+            ...old,
+            status: recon.newJobStatus,
+            openSubStatus: recon.newOpenSubStatus,
+            ...(recon.newOpenSubStatus === "on_hold" && {
+              holdReason: holdReason || old.holdReason,
+              holdNotes: holdNotes || old.holdNotes,
+              onHoldAt: new Date().toISOString(),
+            }),
+          };
+        });
+      }
+      // 2026-03-20: Unconditional invalidation — completion is a lifecycle event that
+      // must always trigger refetch regardless of in-flight mutation count.
+      invalidateAfterCompletion();
+    } catch (err: any) {
+      // 2026-03-20: If the visit is already terminal (409 from server), a prior
+      // request succeeded but the UI may not have refreshed. Invalidate queries
+      // so the board reflects the true committed state. Uses structured status
+      // code — Express error handler preserves the original message for 409s.
+      if (err?.status === 409) {
+        invalidateAfterCompletion();
+        return; // No error toast — prior completion succeeded
+      }
+      handleMutationError(err, "Visit completion failed");
+    } finally {
+      inflightRef.current--;
+      clearSaving(visitId);
+    }
+  }, [markSaving, clearSaving, invalidateAfterCompletion, handleMutationError, queryClient]);
+
+  /**
+   * 2026-03-20: Reopen a completed visit. POST /api/jobs/:jobId/visits/:visitId/reopen
+   * Auto-reopens parent job if terminal. Uses dedicated orchestrator endpoint
+   * instead of generic updateVisitStatus to handle the lifecycle correctly.
+   */
+  const reopenVisit = useCallback(async (params: { visitId: string; jobId: string }) => {
+    const { visitId, jobId } = params;
+    markSaving(visitId);
+    inflightRef.current++;
+    try {
+      const result = await apiRequest<{
+        visit: { id: string; status: string };
+        job: { id: string; status: string; version: number };
+        jobWasReopened: boolean;
+      }>(`/api/jobs/${jobId}/visits/${visitId}/reopen`, {
+        method: "POST",
+      });
+      // Optimistic patch: revert visit to scheduled in calendar cache
+      optimisticReopenVisit(queryClient, visitId);
+      // If job was reopened, patch job detail cache
+      if (result?.jobWasReopened) {
+        queryClient.setQueryData<any>(["jobs", "detail", jobId], (old: any) => {
+          if (!old) return old;
+          return { ...old, status: "open", openSubStatus: null };
+        });
+      }
+      invalidateAfterCompletion();
+    } catch (err: any) {
+      handleMutationError(err, "Reopen failed");
+    } finally {
+      inflightRef.current--;
+      clearSaving(visitId);
+    }
+  }, [markSaving, clearSaving, invalidateAfterCompletion, handleMutationError, queryClient]);
+
+  /** Soft-delete a visit. DELETE /api/jobs/:jobId/visits/:visitId
+   * 2026-03-18: Callers MUST ensure item.kind === "visit" — backlog placeholders have no real visitId. */
   const deleteVisit = useCallback(async (params: { visitId: string; jobId: string }) => {
     const { visitId, jobId } = params;
     const snapshot = snapshotDispatchCache(queryClient);
@@ -903,6 +1120,8 @@ export function useDispatchPreviewMutations() {
     deleteTask,
     updateVisitCrew,
     updateVisitStatus,
+    reopenVisit,
+    completeVisitWithOutcome,
     deleteVisit,
     savingIds,
     isSaving: savingIds.size > 0,

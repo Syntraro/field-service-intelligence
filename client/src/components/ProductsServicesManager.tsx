@@ -132,6 +132,7 @@ export default function ProductsServicesManager() {
       taxCode: product.taxCode || "",
       category: product.category || "",
       isActive: product.isActive ?? true,
+      estimatedDurationMinutes: product.estimatedDurationMinutes != null ? String(product.estimatedDurationMinutes) : "",
     });
     setProductDialogOpen(true);
   };

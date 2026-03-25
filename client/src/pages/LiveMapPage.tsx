@@ -89,6 +89,7 @@ function useMapDay(date?: string) {
       return res.json();
     },
     refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
     staleTime: 10_000,
   });
 }
@@ -611,19 +612,6 @@ function RoutePolyline({
 export default function LiveMapPage() {
   const { data, isLoading, error } = useMapDay();
   const { data: unscheduledJobs = [], error: unscheduledError } = useUnscheduledJobs();
-
-  // Debug: log query state to help trace data wiring issues
-  useEffect(() => {
-    if (error) console.error("[LiveMapPage] useMapDay error:", error);
-    if (unscheduledError) console.error("[LiveMapPage] useUnscheduledJobs error:", unscheduledError);
-    if (data) {
-      console.log("[LiveMapPage] useMapDay data:", {
-        technicians: data.technicians?.length,
-        visits: data.visits?.length,
-        meta: data.meta,
-      });
-    }
-  }, [data, error, unscheduledError]);
 
   const technicians = data?.technicians || [];
   const visits = data?.visits || [];

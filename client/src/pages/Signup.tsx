@@ -88,12 +88,8 @@ toast({
           : "Welcome! Your free trial has started.",
       });
 
-      // Redirect based on role
-      if (userData.role === 'technician') {
-        setLocation("/technician");
-      } else {
-        setLocation("/");
-      }
+      // Redirect to dashboard (technician-specific page removed — UI-001)
+      setLocation("/");
     } catch (error: any) {
       toast({
         variant: "destructive",

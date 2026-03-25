@@ -22,30 +22,20 @@ import { Label } from "@/components/ui/label";
 import { Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import {
+  HOLD_REASON_OPTIONS,
+  getHoldReasonLabel,
+  type HoldReason,
+} from "@shared/schema";
 
-// Hold reason options - mapped to normalized holdReason enum
-export const HOLD_REASONS = [
-  { value: "parts", label: "Waiting for Parts" },
-  { value: "customer", label: "Customer Approval" },
-  { value: "approval", label: "Internal Approval" },
-  { value: "access", label: "Access Issue" },
-  { value: "weather", label: "Weather Delay" },
-  { value: "other", label: "Other" },
-] as const;
+// Re-export from shared schema for backward compatibility with existing imports
+export const HOLD_REASONS = HOLD_REASON_OPTIONS;
+export type { HoldReason };
+export { getHoldReasonLabel };
 
-export type HoldReason = typeof HOLD_REASONS[number]["value"];
-
-// Legacy exports for backward compatibility
-export const ACTION_REQUIRED_REASONS = HOLD_REASONS;
+// Legacy aliases
+export const ACTION_REQUIRED_REASONS = HOLD_REASON_OPTIONS;
 export type ActionRequiredReason = HoldReason;
-
-// Helper to get reason label from value
-export function getHoldReasonLabel(value: string): string {
-  const reason = HOLD_REASONS.find((r) => r.value === value);
-  return reason?.label || value;
-}
-
-// Legacy alias
 export const getActionRequiredReasonLabel = getHoldReasonLabel;
 
 interface ActionRequiredModalProps {

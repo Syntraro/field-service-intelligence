@@ -154,13 +154,13 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
       <Card data-testid="card-job-equipment">
         <CollapsibleTrigger asChild>
-          <button className="w-full flex items-center justify-between px-4 py-3 hover-elevate" data-testid="trigger-equipment">
+          <button className="w-full flex items-center justify-between px-5 py-4 bg-primary/[0.09] hover:bg-primary/[0.13] transition-colors" data-testid="trigger-equipment">
             <span className="text-sm font-semibold">Equipment</span>
             <div className="flex items-center gap-2">
-              <Button 
+              <Button
                 variant="ghost"
-                size="sm" 
-                className="text-xs h-auto p-0 text-primary"
+                size="sm"
+                className="text-xs h-auto min-h-0 p-0 text-primary"
                 disabled={!locationId || availableEquipment.length === 0}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -207,28 +207,35 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {jobEquipment.map(je => (
+                    {jobEquipment.map(je => {
+                      // Defensive: guard against malformed rows where equipment hydration is missing
+                      const eq = je.equipment;
+                      return (
                       <React.Fragment key={je.id}>
                         <TableRow data-testid={`row-job-equipment-${je.id}`}>
-                          <TableCell className="font-medium">{je.equipment.name}</TableCell>
+                          <TableCell className="font-medium">{eq?.name ?? "Unknown equipment"}</TableCell>
                           <TableCell>
-                            <Badge variant="secondary">
-                              {getEquipmentTypeLabel(je.equipment.equipmentType)}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>
-                            {je.equipment.manufacturer || je.equipment.modelNumber ? (
-                              <span className="text-sm">
-                                {je.equipment.manufacturer}
-                                {je.equipment.manufacturer && je.equipment.modelNumber ? " - " : ""}
-                                {je.equipment.modelNumber}
-                              </span>
+                            {eq?.equipmentType ? (
+                              <Badge variant="secondary">
+                                {getEquipmentTypeLabel(eq.equipmentType)}
+                              </Badge>
                             ) : (
-                              <span className="text-muted-foreground">-</span>
+                              <span className="text-muted-foreground">—</span>
                             )}
                           </TableCell>
                           <TableCell>
-                            {je.equipment.serialNumber || <span className="text-muted-foreground">-</span>}
+                            {eq?.manufacturer || eq?.modelNumber ? (
+                              <span className="text-sm">
+                                {eq.manufacturer}
+                                {eq.manufacturer && eq.modelNumber ? " - " : ""}
+                                {eq.modelNumber}
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {eq?.serialNumber || <span className="text-muted-foreground">—</span>}
                           </TableCell>
                           <TableCell>
                             {je.notes ? (
@@ -256,7 +263,7 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
                           </TableCell>
                         </TableRow>
                       </React.Fragment>
-                    ))}
+                    ); })}
                   </TableBody>
                 </Table>
               </div>

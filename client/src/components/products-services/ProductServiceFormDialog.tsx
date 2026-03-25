@@ -167,6 +167,22 @@ export function ProductServiceFormDialog({
             </div>
           </div>
 
+          {/* Duration — most useful for services but available on both */}
+          <div className="space-y-2">
+            <Label>Duration (minutes)</Label>
+            <Input
+              type="number"
+              step="1"
+              min="0"
+              value={formData.estimatedDurationMinutes}
+              onChange={(e) => setFormField("estimatedDurationMinutes", e.target.value)}
+              placeholder="e.g. 60"
+              className="w-32"
+              data-testid="input-duration"
+            />
+            <p className="text-xs text-muted-foreground">Estimated time to complete this service or task.</p>
+          </div>
+
           <div className="border-t pt-3">
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2">

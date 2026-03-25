@@ -33,7 +33,7 @@ export default function ProtectedRoute({ children, requireAdmin = false, require
     
     // Regular admin check
     if (requireAdmin && user.role !== "owner" && user.role !== "admin" && user.role !== "platform_admin") {
-      setLocation("/technician");
+      setLocation("/");
       return;
     }
   }, [user, isLoading, requireAdmin, requirePlatformAdmin, setLocation]);

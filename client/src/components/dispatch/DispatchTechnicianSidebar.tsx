@@ -33,20 +33,20 @@ export default function DispatchTechnicianSidebar({ technicians }: Props) {
         <span className="text-[11px] font-medium text-muted-foreground">Technicians</span>
       </div>
 
-      {/* Working technicians */}
+      {/* Working technicians — typography refined for visual consistency */}
       {working.map((t, i) => (
         <div
           key={t.id}
-          className={`flex items-center gap-2.5 px-3 ${i < working.length - 1 || offShift.length > 0 ? "border-b border-slate-200/80" : ""}`}
+          className={`flex items-center gap-2 px-3 ${i < working.length - 1 || offShift.length > 0 ? "border-b border-slate-200/80" : ""}`}
           style={{ height: LANE_HEIGHT_PX }}
         >
           <div
-            className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white"
+            className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
             style={{ backgroundColor: t.color }}
           >
             {t.initials}
           </div>
-          <p className="truncate text-sm font-medium text-foreground">{t.name}</p>
+          <p className="truncate text-[13px] font-medium leading-tight text-foreground">{t.name}</p>
         </div>
       ))}
 
@@ -57,16 +57,16 @@ export default function DispatchTechnicianSidebar({ technicians }: Props) {
           {offShift.map((t, i) => (
             <div
               key={t.id}
-              className={`flex items-center gap-2.5 px-3 ${i < offShift.length - 1 ? "border-b border-slate-200/80" : ""}`}
+              className={`flex items-center gap-2 px-3 ${i < offShift.length - 1 ? "border-b border-slate-200/80" : ""}`}
               style={{ height: LANE_HEIGHT_PX }}
             >
               <div
-                className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white opacity-50"
+                className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white opacity-50"
                 style={{ backgroundColor: t.color }}
               >
                 {t.initials}
               </div>
-              <p className="truncate text-sm font-medium text-slate-400">{t.name}</p>
+              <p className="truncate text-[13px] font-medium leading-tight text-slate-400">{t.name}</p>
             </div>
           ))}
         </>

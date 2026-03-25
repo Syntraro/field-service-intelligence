@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useImperativeHandle, forwardRef } from "react";
 import { format } from "date-fns";
 import { useLocation } from "wouter";
 import { useMutation } from "@tanstack/react-query";
@@ -60,16 +60,22 @@ interface JobHeaderCardProps {
   showActions?: boolean;
 }
 
+/** 2026-03-24: Imperative handle for parent to trigger lifecycle actions without duplicating mutations */
+export interface JobHeaderCardHandle {
+  openCloseJobDialog: () => void;
+  triggerReopenJob: () => void;
+}
+
 // Office roles that can perform billing/admin actions
 const OFFICE_ROLES = ["owner", "admin", "manager", "dispatcher"];
 
-export function JobHeaderCard({
+export const JobHeaderCard = forwardRef<JobHeaderCardHandle, JobHeaderCardProps>(function JobHeaderCard({
   job,
   jobInvoice,
   onEdit,
   onDelete,
   showActions = true,
-}: JobHeaderCardProps) {
+}, ref) {
   const [, setLocation] = useLocation();
   const { user } = useAuth();
   const { toast } = useToast();
@@ -89,6 +95,12 @@ export function JobHeaderCard({
     showArchiveAction?: boolean;
   } | null>(null);
 
+  // 2026-03-24: Expose lifecycle triggers to parent via imperative handle
+  useImperativeHandle(ref, () => ({
+    openCloseJobDialog: () => setShowCloseJobDialog(true),
+    triggerReopenJob: () => handleReopenJob(),
+  }));
+
   // Role-based permissions
   const isOfficeUser = user?.role && OFFICE_ROLES.includes(user.role);
 
@@ -100,31 +112,12 @@ export function JobHeaderCard({
   const locationName = job.location?.location || job.location?.companyName || "Location";
   const clientName = job.parentCompany?.name || job.location?.companyName || "Client";
   const fullAddress = job.location ?
-    [job.location.address, job.location.city, job.location.province, job.location.postalCode].filter(Boolean).join(", ") : "";
+    [job.location.address, job.location.address2, job.location.city, job.location.province, job.location.postalCode].filter(Boolean).join(", ") : "";
 
   const existingInvoice = jobInvoice;
 
-  const createInvoiceMutation = useMutation({
-    mutationFn: async (markJobCompleted: boolean = false) => {
-      return await apiRequest(`/api/invoices/from-job/${job.id}`, { method: "POST", body: JSON.stringify({
-        includeLineItems: true,
-        includeNotes: true,
-        markJobCompleted,
-      }) });
-    },
-    onSuccess: (data: any) => {
-      // Phase 5 Step A7: canonical family key invalidation
-      queryClient.invalidateQueries({ queryKey: ["invoices"] });
-      queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      // Phase 5.3 G2: dashboard invoice widget stale after creating invoice from job
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      toast({ title: "Invoice Created", description: "Invoice has been created from this job." });
-      setLocation(`/invoices/${data.id}`);
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message || "Failed to create invoice", variant: "destructive" });
-    },
-  });
+  // createInvoiceMutation removed (2026-03-22) — dead code, showActions always false.
+  // Invoice creation canonicalized in CreateInvoiceFromJobDialog.
 
   // Ref to track active undo timeout
   const undoTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -297,13 +290,7 @@ export function JobHeaderCard({
     }
   };
 
-  const handleCreateInvoice = () => {
-    if (existingInvoice) {
-      setLocation(`/invoices/${existingInvoice.id}`);
-    } else {
-      createInvoiceMutation.mutate(false);
-    }
-  };
+  // handleCreateInvoice removed (2026-03-22) — dead code, showActions always false.
 
   const handleCreateSimilarJob = () => {
     setLocation(`/jobs/new?cloneFrom=${job.id}`);
@@ -337,13 +324,13 @@ export function JobHeaderCard({
                 className="text-left"
                 data-testid="link-client-title"
               >
-                <h1 className="text-2xl font-bold tracking-tight text-foreground hover:text-primary transition-colors" data-testid="text-client-title">
+                <h1 className="text-2xl font-extrabold tracking-tight text-foreground hover:text-primary transition-colors" data-testid="text-client-title">
                   {clientName}
                 </h1>
               </button>
 
               {job.summary && (
-                <p className="mt-0.5 text-sm text-muted-foreground/90" data-testid="text-job-summary">
+                <p className="mt-0.5 text-sm font-medium text-muted-foreground/90" data-testid="text-job-summary">
                   {job.summary}
                 </p>
               )}
@@ -406,16 +393,7 @@ export function JobHeaderCard({
                       <Copy className="h-4 w-4 mr-2" />
                       Create Similar Job
                     </DropdownMenuItem>
-                    {/* Office-only: Create/View Invoice */}
-                    {isOfficeUser && (
-                      <DropdownMenuItem
-                        onClick={handleCreateInvoice}
-                        data-testid="menu-create-invoice"
-                      >
-                        <Receipt className="h-4 w-4 mr-2" />
-                        {existingInvoice ? "View Invoice" : "Create Invoice"}
-                      </DropdownMenuItem>
-                    )}
+                    {/* Create/View Invoice menu item removed (2026-03-22) — dead code */}
                     <DropdownMenuSeparator />
                     <DropdownMenuItem
                       onClick={handleCollectSignature}
@@ -698,4 +676,4 @@ export function JobHeaderCard({
       </Dialog>
     </>
   );
-}
+});

@@ -38,6 +38,14 @@ export const handleApiError = (err: any, res: Response, defaultMessage = "Operat
     return res.status(401).json({ error: err.message || "Unauthorized" });
   }
 
+  // 2026-03-20: 409 Conflict — structured code for client-side detection
+  if (err?.status === 409 || err?.statusCode === 409) {
+    return res.status(409).json({
+      error: err.message || "Conflict",
+      code: err.code || "CONFLICT",
+    });
+  }
+
   console.error("API Error:", err);
   return res.status(500).json({ error: defaultMessage });
 };

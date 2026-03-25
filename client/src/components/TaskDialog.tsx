@@ -2,8 +2,14 @@ import { useMemo, useState, useEffect } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+import { detectScheduleConflict } from "@/lib/scheduleOverlapCheck";
 import { useAuth } from "@/lib/auth";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -76,6 +82,7 @@ interface TaskDialogProps {
 
 export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData }: TaskDialogProps) {
   const { user } = useAuth();
+  const { toast } = useToast();
   const isEditMode = !!taskId;
 
   // Form state
@@ -84,14 +91,14 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
   const [type, setType] = useState<TaskType>("GENERAL");
   const [assignedToUserId, setAssignedToUserId] = useState("");
   const [startDate, setStartDate] = useState("");
-  const [startTime, setStartTime] = useState("");
-  const [allDay, setAllDay] = useState(false);
+  const [startTime, setStartTime] = useState("08:00");
   const [jobId, setJobId] = useState("");
   const [supplierId, setSupplierId] = useState<string | undefined>();
   const [supplierLocationId, setSupplierLocationId] = useState<string | undefined>();
   const [poNumber, setPoNumber] = useState("");
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [showConflictAlert, setShowConflictAlert] = useState(false);
 
   // ─── Data Queries ──────────────────────────────────────────────────────────
 
@@ -169,15 +176,12 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
       setType(task.type || "GENERAL");
       setAssignedToUserId(task.assignedToUserId || "");
       setJobId(task.jobId || "");
-      setAllDay(task.allDay || false);
       if (task.scheduledStartAt) {
         const dateStr = extractDateString(task.scheduledStartAt);
         if (dateStr) {
           setStartDate(dateStr);
-          if (!task.allDay) {
-            const d = new Date(task.scheduledStartAt);
-            if (!isNaN(d.getTime())) setStartTime(d.toTimeString().slice(0, 5));
-          }
+          const d = new Date(task.scheduledStartAt);
+          if (!isNaN(d.getTime())) setStartTime(d.toTimeString().slice(0, 5));
         }
       }
     } else if (!isEditMode) {
@@ -207,8 +211,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
     setType("GENERAL");
     setAssignedToUserId("");
     setStartDate("");
-    setStartTime("");
-    setAllDay(false);
+    setStartTime("08:00");
     setJobId("");
     setSupplierId(undefined);
     setSupplierLocationId(undefined);
@@ -232,14 +235,21 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
       let scheduledStartAt: string | undefined;
       let scheduledEndAt: string | undefined;
 
+      let hasConflict = false;
       if (startDate && startDate.trim()) {
-        if (allDay) {
-          scheduledStartAt = safeToISOString(startDate + "T00:00:00") ?? undefined;
-          scheduledEndAt = safeToISOString(startDate + "T23:59:59") ?? undefined;
-        } else if (startTime && startTime.trim()) {
-          scheduledStartAt = safeToISOString(startDate + "T" + startTime) ?? undefined;
-        } else {
-          scheduledStartAt = safeToISOString(startDate + "T00:00:00") ?? undefined;
+        const time = startTime && startTime.trim() ? startTime : "08:00";
+        scheduledStartAt = safeToISOString(startDate + "T" + time) ?? undefined;
+
+        // Conflict detection — save at requested time, flag if overlap
+        if (scheduledStartAt && assignedToUserId) {
+          const taskDuration = 60;
+          const proposedEnd = new Date(new Date(scheduledStartAt).getTime() + taskDuration * 60000);
+          hasConflict = await detectScheduleConflict(
+            assignedToUserId, startDate,
+            scheduledStartAt, proposedEnd.toISOString(),
+            taskDuration,
+            isEditMode ? taskId : undefined,
+          );
         }
       }
 
@@ -252,7 +262,6 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
       if (assignedToUserId) payload.assignedToUserId = assignedToUserId;
       if (scheduledStartAt) payload.scheduledStartAt = scheduledStartAt;
       if (scheduledEndAt) payload.scheduledEndAt = scheduledEndAt;
-      if (allDay) payload.allDay = allDay;
       if (jobId) payload.jobId = jobId;
 
       // Supplier visit payload: supplierId, supplierLocationId, poNumber
@@ -276,7 +285,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
             body: JSON.stringify(svPayload),
           });
         }
-        return updated;
+        return { task: updated, hasConflict };
       } else {
         const created = await apiRequest<any>("/api/tasks", {
           method: "POST",
@@ -288,18 +297,23 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
             body: JSON.stringify(svPayload),
           });
         }
-        return created;
+        return { task: created, hasConflict };
       }
     },
-    onSuccess: () => {
+    onSuccess: (result: any) => {
       queryClient.invalidateQueries({
         predicate: (q) => {
           const k = q.queryKey[0];
           return typeof k === "string" && k.startsWith("/api/tasks");
         },
       });
-      onOpenChange(false);
-      resetForm();
+      if (result?.hasConflict) {
+        // Show conflict alert — defer close/reset until user acknowledges
+        setShowConflictAlert(true);
+      } else {
+        onOpenChange(false);
+        resetForm();
+      }
       onChanged?.();
     },
     onError: (error: any) => {
@@ -399,7 +413,7 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
                 />
               </div>
 
-              {/* Row 3: Assigned To | Start Date | Start Time | All Day */}
+              {/* Row 3: Assigned To | Start Date | Start Time */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div className="space-y-1">
                   <Label className="text-xs">Assigned To</Label>
@@ -451,27 +465,11 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
                     type="time"
                     value={startTime}
                     onChange={(e) => setStartTime(e.target.value)}
-                    disabled={allDay || !startDate}
+                    disabled={!startDate}
                     className="h-9 text-sm"
                   />
                 </div>
 
-                <div className="flex items-end pb-2">
-                  <div className="flex items-center space-x-2">
-                    <Checkbox
-                      id="allDay"
-                      checked={allDay}
-                      onCheckedChange={(c) => {
-                        setAllDay(c as boolean);
-                        if (c) setStartTime("");
-                      }}
-                      disabled={!startDate}
-                    />
-                    <Label htmlFor="allDay" className="text-xs font-normal cursor-pointer">
-                      All day
-                    </Label>
-                  </div>
-                </div>
               </div>
 
               {/* Row 4: Link to Job (full width) */}
@@ -669,6 +667,20 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
         onOpenChange={setQuickAddOpen}
         onSuccess={(supplier) => setSupplierId(supplier.id)}
       />
+
+      <AlertDialog open={showConflictAlert} onOpenChange={setShowConflictAlert}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Scheduling conflict detected</AlertDialogTitle>
+            <AlertDialogDescription>
+              This item overlaps another scheduled item. Please review the dispatch board.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction onClick={() => { setShowConflictAlert(false); onOpenChange(false); resetForm(); }}>OK</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

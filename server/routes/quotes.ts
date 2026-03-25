@@ -339,6 +339,7 @@ router.get("/:id/pdf", asyncHandler(async (req: AuthedRequest, res: Response) =>
     location: {
       companyName: details.location.companyName,
       address: details.location.address,
+      address2: details.location.address2,
       city: details.location.city,
       provinceState: details.location.province,
       postalCode: details.location.postalCode,
@@ -386,6 +387,7 @@ router.get("/:id/pdf/preview", asyncHandler(async (req: AuthedRequest, res: Resp
     location: {
       companyName: details.location.companyName,
       address: details.location.address,
+      address2: details.location.address2,
       city: details.location.city,
       provinceState: details.location.province,
       postalCode: details.location.postalCode,

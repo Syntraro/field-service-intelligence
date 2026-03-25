@@ -43,7 +43,6 @@ export function statusToVariant(status: string): PillVariant {
     case "sent":
       return "info"
     case "on_hold":
-    case "needs_review":
     case "requires_invoicing":
     case "past_due":
     case "overdue":

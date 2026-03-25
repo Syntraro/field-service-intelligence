@@ -17,12 +17,16 @@ import {
 export class ApiError extends Error {
   status: number;
   url: string;
+  /** Server-supplied error code (e.g., "VERSION_MISMATCH", "VISIT_CONFLICT", "CONFLICT").
+   *  Extracted from response body `code` field so callers can distinguish 409 subtypes. */
+  code?: string;
 
-  constructor(status: number, url: string, message: string) {
+  constructor(status: number, url: string, message: string, code?: string) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.url = url;
+    this.code = code;
   }
 }
 
@@ -70,7 +74,6 @@ export async function initCSRF(): Promise<void> {
 
     const data = await response.json();
     csrfToken = data.csrfToken;
-    console.log('[CSRF] Token initialized:', csrfToken?.substring(0, 8) + '...');
   } catch (error) {
     console.error('[CSRF] Failed to fetch CSRF token:', error);
     throw error; // Re-throw so app knows initialization failed
@@ -81,7 +84,6 @@ export async function initCSRF(): Promise<void> {
  * Refresh CSRF token (called automatically on CSRF errors)
  */
 async function refreshCSRF(): Promise<void> {
-  console.log('[CSRF] Refreshing token...');
   csrfToken = null; // Clear old token first
   await initCSRF();
 }
@@ -139,7 +141,6 @@ export async function apiRequest<T = any>(
     // Ensure we have a token
     const token = await getCSRFToken();
     headers.set('x-csrf-token', token);
-    console.log(`[CSRF] Adding token to ${method} ${url}`);
   }
 
   // Make request
@@ -190,7 +191,8 @@ export async function apiRequest<T = any>(
           throw new ApiError(
             retryResponse.status,
             url,
-            clientMappedMessage
+            clientMappedMessage,
+            (errorData.code as string) || undefined
           );
         }
 
@@ -238,7 +240,8 @@ export async function apiRequest<T = any>(
     throw new ApiError(
       response.status,
       url,
-      clientMappedMessage
+      clientMappedMessage,
+      (errorData.code as string) || undefined
     );
   }
 

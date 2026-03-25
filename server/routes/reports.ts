@@ -31,15 +31,14 @@ router.get("/action-required-kpis", requireRole(MANAGER_ROLES), asyncHandler(asy
   const windowStart = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
 
   // ==========================================
-  // PART A: Current Jobs Needing Review
-  // Using normalized model: status='open' AND openSubStatus='needs_review'
+  // PART A: Current Jobs On Hold
+  // Canonical model: status='open' AND openSubStatus='on_hold'
   // ==========================================
   const currentJobs = await db
     .select({
       id: jobs.id,
-      actionRequiredAt: jobs.actionRequiredAt,
-      actionRequiredEscalatedAt: jobs.actionRequiredEscalatedAt,
-      actionRequiredReason: jobs.actionRequiredReason,
+      onHoldAt: jobs.onHoldAt,
+      holdReason: jobs.holdReason,
     })
     .from(jobs)
     .where(
@@ -47,7 +46,7 @@ router.get("/action-required-kpis", requireRole(MANAGER_ROLES), asyncHandler(asy
         eq(jobs.companyId, companyId),
         activeJobFilter(),
         eq(jobs.status, "open"),
-        eq(jobs.openSubStatus, "needs_review")
+        eq(jobs.openSubStatus, "on_hold")
       )
     );
 
@@ -61,12 +60,8 @@ router.get("/action-required-kpis", requireRole(MANAGER_ROLES), asyncHandler(asy
   for (const job of currentJobs) {
     total++;
 
-    if (job.actionRequiredEscalatedAt) {
-      escalated++;
-    }
-
-    if (job.actionRequiredAt) {
-      const ageMs = now.getTime() - new Date(job.actionRequiredAt).getTime();
+    if (job.onHoldAt) {
+      const ageMs = now.getTime() - new Date(job.onHoldAt).getTime();
       const ageHours = ageMs / (1000 * 60 * 60);
 
       if (ageHours >= 24) {
@@ -83,7 +78,7 @@ router.get("/action-required-kpis", requireRole(MANAGER_ROLES), asyncHandler(asy
     }
 
     // Count by reason
-    const reason = job.actionRequiredReason || "unknown";
+    const reason = job.holdReason || "unknown";
     reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
   }
 

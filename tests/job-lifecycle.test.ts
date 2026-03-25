@@ -339,6 +339,82 @@ describe("Job Lifecycle Hardening Tests", () => {
       expect(result.finalStatus).toBe("invoiced");
       expect(result.patch.invoiceId).toBe(invoiceId);
     });
+
+    // 2026-03-18: Harmonization test — invoice_now must set terminal metadata
+    it("invoice_now sets previousStatus, closedAt, closedBy (harmonized with MARK_INVOICED)", async () => {
+      const job = await jobRepository.getJob(testCompanyId, testJobId);
+
+      const actor: TransitionActor = { userId: testUserId, role: "dispatcher" };
+      const invoiceId = uuidv4();
+      const intent: LifecycleIntent = { type: "CLOSE_JOB", mode: "invoice_now", invoiceId };
+
+      const result = applyLifecycleTransition(job!, intent, actor);
+
+      // Terminal metadata — must match MARK_INVOICED semantics
+      expect(result.patch.previousStatus).toBeDefined();
+      expect(result.patch.closedAt).toBeInstanceOf(Date);
+      expect(result.patch.closedBy).toBe(actor.userId);
+      // Schedule and hold clearing
+      expect(result.patch.scheduledStart).toBeNull();
+      expect(result.patch.scheduledEnd).toBeNull();
+      expect(result.patch.openSubStatus).toBeNull();
+      // Audit event
+      expect(result.auditEvents).toHaveLength(1);
+      expect(result.auditEvents[0].action).toBe("close_and_invoice");
+      expect(result.auditEvents[0].meta?.invoiceId).toBe(invoiceId);
+    });
+
+    it("invoice_now and MARK_INVOICED produce consistent terminal metadata", () => {
+      const baseJob = {
+        id: "j-compare", status: "open", openSubStatus: "in_progress",
+        scheduledStart: new Date(), scheduledEnd: new Date(), isAllDay: true,
+        invoiceId: null, closedAt: null, closedBy: null, previousStatus: null,
+        holdReason: null, holdNotes: null, nextActionDate: null, onHoldAt: null,
+        pmBillingDisposition: "invoice_on_completion",
+      } as any;
+
+      const actor: TransitionActor = { userId: "test-user", role: "dispatcher" };
+      const invoiceId = "inv-compare-test";
+
+      const closeResult = applyLifecycleTransition(
+        { ...baseJob },
+        { type: "CLOSE_JOB", mode: "invoice_now", invoiceId },
+        actor
+      );
+      const markResult = applyLifecycleTransition(
+        { ...baseJob },
+        { type: "MARK_INVOICED", invoiceId },
+        actor
+      );
+
+      // Both must reach invoiced with identical terminal metadata fields
+      expect(closeResult.finalStatus).toBe("invoiced");
+      expect(markResult.finalStatus).toBe("invoiced");
+
+      // Terminal metadata consistency
+      expect(closeResult.patch.status).toBe(markResult.patch.status);
+      expect(closeResult.patch.previousStatus).toBe(markResult.patch.previousStatus);
+      expect(closeResult.patch.closedBy).toBe(markResult.patch.closedBy);
+      expect(closeResult.patch.closedAt).toBeInstanceOf(Date);
+      expect(markResult.patch.closedAt).toBeInstanceOf(Date);
+
+      // Invoice link
+      expect(closeResult.patch.invoiceId).toBe(markResult.patch.invoiceId);
+
+      // Schedule/hold clearing
+      expect(closeResult.patch.scheduledStart).toBeNull();
+      expect(markResult.patch.scheduledStart).toBeNull();
+      expect(closeResult.patch.openSubStatus).toBeNull();
+      expect(markResult.patch.openSubStatus).toBeNull();
+
+      // PM billing
+      expect(closeResult.patch.pmBillingStatus).toBe("invoiced");
+      expect(markResult.patch.pmBillingStatus).toBe("invoiced");
+
+      // Audit actions remain intentionally different
+      expect(closeResult.auditEvents[0].action).toBe("close_and_invoice");
+      expect(markResult.auditEvents[0].action).toBe("mark_invoiced");
+    });
   });
 
   // ============================================================================
@@ -531,6 +607,291 @@ describe("Job Lifecycle Hardening Tests", () => {
       // Clean up
       await db.delete(jobStatusEvents).where(eq(jobStatusEvents.jobId, jobId));
       await db.delete(jobs).where(eq(jobs.id, jobId));
+    });
+  });
+
+  // ============================================================================
+  // Test 8: MARK_INVOICED lifecycle transition
+  // ============================================================================
+  describe("MARK_INVOICED transition", () => {
+    const actor: TransitionActor = { userId: "test-user", role: "dispatcher" };
+    const invoiceId = "inv-test-123";
+
+    it("transitions open job to invoiced", () => {
+      const job = {
+        id: "j1", status: "open", openSubStatus: null,
+        scheduledStart: new Date(), scheduledEnd: new Date(), isAllDay: false,
+        invoiceId: null, closedAt: null, closedBy: null, previousStatus: null,
+        holdReason: null, holdNotes: null, nextActionDate: null, onHoldAt: null,
+        pmBillingDisposition: null,
+      } as any;
+
+      const intent: LifecycleIntent = { type: "MARK_INVOICED", invoiceId };
+      const result = applyLifecycleTransition(job, intent, actor);
+
+      expect(result.finalStatus).toBe("invoiced");
+      expect(result.patch.status).toBe("invoiced");
+      expect(result.patch.invoiceId).toBe(invoiceId);
+      expect(result.patch.previousStatus).toBe("open");
+      expect(result.patch.closedAt).toBeDefined();
+      expect(result.patch.closedBy).toBe(actor.userId);
+      // Schedule clearing
+      expect(result.patch.scheduledStart).toBeNull();
+      expect(result.patch.scheduledEnd).toBeNull();
+      // Hold clearing
+      expect(result.patch.openSubStatus).toBeNull();
+      expect(result.patch.holdReason).toBeNull();
+      // Audit event
+      expect(result.auditEvents).toHaveLength(1);
+      expect(result.auditEvents[0].fromStatus).toBe("open");
+      expect(result.auditEvents[0].toStatus).toBe("invoiced");
+      expect(result.auditEvents[0].action).toBe("mark_invoiced");
+    });
+
+    it("transitions completed job to invoiced", () => {
+      const job = {
+        id: "j2", status: "completed", openSubStatus: null,
+        scheduledStart: null, scheduledEnd: null, isAllDay: false,
+        invoiceId: null, closedAt: new Date(), closedBy: "someone", previousStatus: "open",
+        holdReason: null, holdNotes: null, nextActionDate: null, onHoldAt: null,
+        pmBillingDisposition: null,
+      } as any;
+
+      const intent: LifecycleIntent = { type: "MARK_INVOICED", invoiceId };
+      const result = applyLifecycleTransition(job, intent, actor);
+
+      expect(result.finalStatus).toBe("invoiced");
+      expect(result.patch.status).toBe("invoiced");
+      expect(result.patch.previousStatus).toBe("completed");
+    });
+
+    it("idempotent for already-invoiced job", () => {
+      const job = {
+        id: "j3", status: "invoiced", openSubStatus: null,
+        scheduledStart: null, scheduledEnd: null, isAllDay: false,
+        invoiceId: "existing-inv", closedAt: new Date(), closedBy: "someone",
+        previousStatus: "open",
+        holdReason: null, holdNotes: null, nextActionDate: null, onHoldAt: null,
+        pmBillingDisposition: null,
+      } as any;
+
+      const intent: LifecycleIntent = { type: "MARK_INVOICED", invoiceId };
+      const result = applyLifecycleTransition(job, intent, actor);
+
+      expect(result.finalStatus).toBe("invoiced");
+      expect(result.patch).toEqual({}); // No-op
+      expect(result.auditEvents).toHaveLength(0);
+    });
+
+    it("rejects archived job", () => {
+      const job = {
+        id: "j4", status: "archived", openSubStatus: null,
+        scheduledStart: null, scheduledEnd: null, isAllDay: false,
+        invoiceId: null, closedAt: new Date(), closedBy: "someone",
+        previousStatus: "open",
+        holdReason: null, holdNotes: null, nextActionDate: null, onHoldAt: null,
+        pmBillingDisposition: null,
+      } as any;
+
+      const intent: LifecycleIntent = { type: "MARK_INVOICED", invoiceId };
+
+      expect(() => applyLifecycleTransition(job, intent, actor)).toThrow(LifecycleTransitionError);
+      try {
+        applyLifecycleTransition(job, intent, actor);
+      } catch (error: any) {
+        expect(error.code).toBe("INVALID_STATE");
+      }
+    });
+
+    it("RBAC: technician cannot mark invoiced", () => {
+      const job = {
+        id: "j5", status: "open", openSubStatus: null,
+        scheduledStart: null, scheduledEnd: null, isAllDay: false,
+        invoiceId: null, closedAt: null, closedBy: null, previousStatus: null,
+        holdReason: null, holdNotes: null, nextActionDate: null, onHoldAt: null,
+        pmBillingDisposition: null,
+      } as any;
+
+      const techActor: TransitionActor = { userId: "tech", role: "technician" };
+      const intent: LifecycleIntent = { type: "MARK_INVOICED", invoiceId };
+
+      expect(() => applyLifecycleTransition(job, intent, techActor)).toThrow(LifecycleTransitionError);
+      try {
+        applyLifecycleTransition(job, intent, techActor);
+      } catch (error: any) {
+        expect(error.code).toBe("FORBIDDEN");
+      }
+    });
+
+    it("sets pmBillingStatus for PM jobs", () => {
+      const job = {
+        id: "j6", status: "completed", openSubStatus: null,
+        scheduledStart: null, scheduledEnd: null, isAllDay: false,
+        invoiceId: null, closedAt: new Date(), closedBy: "someone",
+        previousStatus: "open", pmBillingDisposition: "invoice_on_completion",
+        holdReason: null, holdNotes: null, nextActionDate: null, onHoldAt: null,
+      } as any;
+
+      const intent: LifecycleIntent = { type: "MARK_INVOICED", invoiceId };
+      const result = applyLifecycleTransition(job, intent, actor);
+
+      expect(result.patch.pmBillingStatus).toBe("invoiced");
+    });
+
+    it("domain transition produces correct patch with all fields", () => {
+      // Full patch validation — verifies every field the transition sets
+      const job = {
+        id: "j-full", status: "open", openSubStatus: "on_hold",
+        scheduledStart: new Date(), scheduledEnd: new Date(), isAllDay: true,
+        invoiceId: null, closedAt: null, closedBy: null, previousStatus: null,
+        holdReason: "parts", holdNotes: "waiting on compressor",
+        nextActionDate: "2026-04-01", onHoldAt: new Date(),
+        pmBillingDisposition: null,
+      } as any;
+
+      const intent: LifecycleIntent = { type: "MARK_INVOICED", invoiceId: "inv-full-test" };
+      const result = applyLifecycleTransition(job, intent, actor);
+
+      // Status
+      expect(result.finalStatus).toBe("invoiced");
+      expect(result.patch.status).toBe("invoiced");
+      // Invoice link
+      expect(result.patch.invoiceId).toBe("inv-full-test");
+      // Close metadata
+      expect(result.patch.previousStatus).toBe("open");
+      expect(result.patch.closedAt).toBeInstanceOf(Date);
+      expect(result.patch.closedBy).toBe(actor.userId);
+      // Schedule clearing
+      expect(result.patch.scheduledStart).toBeNull();
+      expect(result.patch.scheduledEnd).toBeNull();
+      expect(result.patch.isAllDay).toBe(false);
+      // Hold clearing
+      expect(result.patch.openSubStatus).toBeNull();
+      expect(result.patch.holdReason).toBeNull();
+      expect(result.patch.holdNotes).toBeNull();
+      expect(result.patch.nextActionDate).toBeNull();
+      expect(result.patch.onHoldAt).toBeNull();
+      // Audit
+      expect(result.auditEvents).toHaveLength(1);
+      expect(result.auditEvents[0].action).toBe("mark_invoiced");
+      expect(result.auditEvents[0].meta).toEqual({ invoiceId: "inv-full-test" });
+    });
+  });
+
+  // ============================================================================
+  // Test 9: BP-1 fix — CLOSE_JOB(invoice_later) produces canonical terminal state
+  // for reconciliation auto-close
+  // ============================================================================
+  describe("BP-1: CLOSE_JOB(invoice_later) canonical terminal state", () => {
+    const actor: TransitionActor = { userId: "completing-tech-123", role: "system" };
+
+    it("produces full terminal metadata from open job", () => {
+      const job = {
+        id: "bp1-1", status: "open", openSubStatus: "in_progress",
+        scheduledStart: new Date(), scheduledEnd: new Date(), isAllDay: true,
+        invoiceId: null, closedAt: null, closedBy: null, previousStatus: null,
+        holdReason: "parts", holdNotes: "waiting", nextActionDate: "2026-04-01",
+        onHoldAt: new Date(), pmBillingDisposition: null,
+      } as any;
+
+      const intent: LifecycleIntent = { type: "CLOSE_JOB", mode: "invoice_later" };
+      const result = applyLifecycleTransition(job, intent, actor);
+
+      // Status
+      expect(result.finalStatus).toBe("completed");
+      expect(result.patch.status).toBe("completed");
+      // Terminal metadata — these were MISSING in the old bypass
+      expect(result.patch.previousStatus).toBe("open");
+      expect(result.patch.closedAt).toBeInstanceOf(Date);
+      expect(result.patch.closedBy).toBe("completing-tech-123");
+      // Schedule clearing
+      expect(result.patch.scheduledStart).toBeNull();
+      expect(result.patch.scheduledEnd).toBeNull();
+      expect(result.patch.isAllDay).toBe(false);
+      // Hold clearing
+      expect(result.patch.openSubStatus).toBeNull();
+      expect(result.patch.holdReason).toBeNull();
+      expect(result.patch.holdNotes).toBeNull();
+      expect(result.patch.nextActionDate).toBeNull();
+      expect(result.patch.onHoldAt).toBeNull();
+      // Audit event
+      expect(result.auditEvents).toHaveLength(1);
+      expect(result.auditEvents[0].action).toBe("close");
+      expect(result.auditEvents[0].fromStatus).toBe("open");
+      expect(result.auditEvents[0].toStatus).toBe("completed");
+      expect(result.auditEvents[0].meta).toEqual({ mode: "invoice_later" });
+    });
+
+    it("handles PM job pmBillingStatus (no billing disposition)", () => {
+      const job = {
+        id: "bp1-2", status: "open", openSubStatus: null,
+        scheduledStart: null, scheduledEnd: null, isAllDay: false,
+        invoiceId: null, closedAt: null, closedBy: null, previousStatus: null,
+        holdReason: null, holdNotes: null, nextActionDate: null, onHoldAt: null,
+        pmBillingDisposition: null,
+      } as any;
+
+      const intent: LifecycleIntent = { type: "CLOSE_JOB", mode: "invoice_later" };
+      const result = applyLifecycleTransition(job, intent, actor);
+
+      // No pmBillingDisposition → no pmBillingStatus in patch
+      expect(result.patch.pmBillingStatus).toBeUndefined();
+    });
+
+    it("system role is accepted by RBAC", () => {
+      const job = {
+        id: "bp1-3", status: "open", openSubStatus: null,
+        scheduledStart: null, scheduledEnd: null, isAllDay: false,
+        invoiceId: null, closedAt: null, closedBy: null, previousStatus: null,
+        holdReason: null, holdNotes: null, nextActionDate: null, onHoldAt: null,
+        pmBillingDisposition: null,
+      } as any;
+
+      const systemActor: TransitionActor = { userId: "tech-user", role: "system" };
+      const intent: LifecycleIntent = { type: "CLOSE_JOB", mode: "invoice_later" };
+
+      // Should NOT throw FORBIDDEN
+      const result = applyLifecycleTransition(job, intent, systemActor);
+      expect(result.finalStatus).toBe("completed");
+    });
+
+    it("rejects close on already-terminal job", () => {
+      const job = {
+        id: "bp1-4", status: "completed", openSubStatus: null,
+        scheduledStart: null, scheduledEnd: null, isAllDay: false,
+        invoiceId: null, closedAt: new Date(), closedBy: "someone",
+        previousStatus: "open",
+        holdReason: null, holdNotes: null, nextActionDate: null, onHoldAt: null,
+        pmBillingDisposition: null,
+      } as any;
+
+      const intent: LifecycleIntent = { type: "CLOSE_JOB", mode: "invoice_later" };
+
+      expect(() => applyLifecycleTransition(job, intent, actor)).toThrow(LifecycleTransitionError);
+      try {
+        applyLifecycleTransition(job, intent, actor);
+      } catch (error: any) {
+        expect(error.code).toBe("INVALID_STATE");
+      }
+    });
+
+    it("undo-close prerequisites exist after canonical close", () => {
+      const job = {
+        id: "bp1-5", status: "open", openSubStatus: null,
+        scheduledStart: new Date(), scheduledEnd: new Date(), isAllDay: false,
+        invoiceId: null, closedAt: null, closedBy: null, previousStatus: null,
+        holdReason: null, holdNotes: null, nextActionDate: null, onHoldAt: null,
+        pmBillingDisposition: null,
+      } as any;
+
+      const intent: LifecycleIntent = { type: "CLOSE_JOB", mode: "invoice_later" };
+      const result = applyLifecycleTransition(job, intent, actor);
+
+      // These are the undo-close prerequisites that were missing in the old bypass
+      expect(result.patch.closedAt).toBeInstanceOf(Date);
+      expect(result.patch.previousStatus).toBe("open");
+      // closedBy is set so audit trail knows who closed it
+      expect(result.patch.closedBy).toBe(actor.userId);
     });
   });
 });

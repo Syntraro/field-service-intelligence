@@ -7,7 +7,7 @@
 
 import { Router } from "express";
 import type { Response } from "express";
-import { getWorkflowSummary, getNeedsAttentionJobs } from "../storage/dashboard";
+import { getWorkflowSummary, getNeedsAttentionJobs, getFinancialSummary } from "../storage/dashboard";
 import { getQueryCtx } from "../lib/queryCtx";
 import { asyncHandler } from "../middleware/errorHandler";
 import type { AuthedRequest } from "../auth/tenantIsolation";
@@ -42,6 +42,18 @@ router.get("/needs-attention", asyncHandler(async (req: AuthedRequest, res: Resp
 
   const jobs = await getNeedsAttentionJobs(ctx, limit);
   res.json({ data: jobs });
+}));
+
+/**
+ * GET /api/dashboard/financial
+ *
+ * Financial dashboard aggregation — revenue by period, AR summary, quote pipeline, PM health.
+ * Revenue = sum of payments received (cash-basis), not invoiced amounts.
+ */
+router.get("/financial", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const ctx = getQueryCtx(req);
+  const summary = await getFinancialSummary(ctx);
+  res.json(summary);
 }));
 
 export default router;

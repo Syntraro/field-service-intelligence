@@ -325,6 +325,7 @@ export class TimeTrackingRepository extends BaseRepository {
     options: {
       type: TimeEntryType;
       jobId?: string | null;
+      visitId?: string | null; // Labor unification: optional visit attribution
       notes?: string | null;
       billable?: boolean;
       at?: Date;
@@ -369,6 +370,7 @@ export class TimeTrackingRepository extends BaseRepository {
         technicianId,
         workSessionId: openSession?.id ?? null,
         jobId: options.jobId ?? null,
+        visitId: options.visitId ?? null,
         type: options.type,
         startAt: now,
         billable,

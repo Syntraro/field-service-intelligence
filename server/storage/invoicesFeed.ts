@@ -14,9 +14,11 @@
  * — this module is read-only queries.
  */
 
-import { eq, and, sql, desc, asc, or, isNull, inArray, ilike, gt, lt } from "drizzle-orm";
+import { eq, and, sql, desc, asc, or, isNull, isNotNull, inArray, ilike, gt, lt } from "drizzle-orm";
 import { invoices, clients, customerCompanies, jobs } from "@shared/schema";
 import type { QueryCtx } from "../lib/queryCtx";
+import { activeJobFilter } from "./jobFilters";
+import { locationDisplayNameExpr } from "../lib/queryHelpers";
 
 // ---------------------------------------------------------------------------
 // Step A1: InvoiceFeedFilters
@@ -118,23 +120,31 @@ export interface InvoiceStatsResult {
 // Internal: shared select fields and helpers
 // ---------------------------------------------------------------------------
 
-const UNPAID_STATUSES = ["awaiting_payment", "sent", "partial_paid"];
+/** Canonical unpaid/outstanding invoice statuses — invoices awaiting or with pending payment. */
+export const UNPAID_INVOICE_STATUSES: string[] = ["awaiting_payment", "sent", "partial_paid"];
 
-/** Standard soft-delete filter for invoices (handles legacy NULL isActive). */
+/** Raw SQL fragment derived from UNPAID_INVOICE_STATUSES for hand-written queries. */
+export const UNPAID_INVOICE_STATUS_SQL = UNPAID_INVOICE_STATUSES.map(s => `'${s}'`).join(", ");
+
+/** Canonical soft-delete filter for invoices: isActive=true AND deletedAt IS NULL. */
 function activeInvoiceFilter() {
   return and(
-    or(eq(invoices.isActive, true), isNull(invoices.isActive)),
+    eq(invoices.isActive, true),
     isNull(invoices.deletedAt)
   );
 }
 
-/** Compute isPastDue: unpaid status + balance > 0 + dueDate < today. */
+/**
+ * Compute isPastDue: payment-eligible status + balance > 0 + dueDate < today.
+ * 2026-03-18: Removed "draft" — draft invoices have not been sent to the customer
+ * and cannot be meaningfully past due. Matches dashboard pastDueCount SQL predicate.
+ */
 function computeIsPastDue(
   status: string | null,
   dueDate: string | Date | null,
   balance: string | number | null
 ): boolean {
-  const unpaidStatuses = ["draft", "awaiting_payment", "sent", "partial_paid"];
+  const unpaidStatuses = ["awaiting_payment", "sent", "partial_paid"];
   if (!status || !unpaidStatuses.includes(status)) return false;
 
   const balanceNum = typeof balance === "string" ? parseFloat(balance) : (balance ?? 0);
@@ -173,8 +183,8 @@ const feedSelectFields = {
   jobId: invoices.jobId,
   jobNumber: jobs.jobNumber,
   workDescription: invoices.workDescription,
-  // Phase 5: canonical COALESCE for location display name
-  locationDisplayName: sql<string>`COALESCE(${customerCompanies.name}, ${clients.companyName})`,
+  // Phase 5: canonical COALESCE for location display name — uses canonical helper
+  locationDisplayName: locationDisplayNameExpr,
   locationName: clients.location,
   // QBO fields
   qboInvoiceId: invoices.qboInvoiceId,
@@ -268,7 +278,8 @@ export async function getInvoicesFeed(
     .from(invoices)
     .leftJoin(clients, eq(invoices.locationId, clients.id))
     .leftJoin(customerCompanies, eq(clients.parentCompanyId, customerCompanies.id))
-    .leftJoin(jobs, eq(invoices.jobId, jobs.id))
+    // 2026-03-18: Filter joined jobs for active status — prevents soft-deleted job data leaking into invoice feed
+    .leftJoin(jobs, and(eq(invoices.jobId, jobs.id), activeJobFilter()))
     .where(
       and(
         eq(invoices.companyId, ctx.tenantId),
@@ -386,7 +397,7 @@ export async function getInvoiceStats(
   let draftCount = 0;
 
   for (const row of rows) {
-    if (UNPAID_STATUSES.includes(row.status ?? "")) {
+    if (UNPAID_INVOICE_STATUSES.includes(row.status ?? "")) {
       outstandingCount += Number(row.count);
       totalOutstanding += Number(row.totalAmount);
     }
@@ -404,7 +415,7 @@ export async function getInvoiceStats(
         eq(invoices.companyId, ctx.tenantId),
         activeInvoiceFilter(),
         sql`CAST(${invoices.balance} AS numeric) > 0`,
-        inArray(invoices.status, UNPAID_STATUSES),
+        inArray(invoices.status, UNPAID_INVOICE_STATUSES),
         sql`${invoices.dueDate} < CURRENT_DATE`
       )
     );

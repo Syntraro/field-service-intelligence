@@ -15,12 +15,14 @@ import {
 } from "./dispatchPreviewUtils";
 import type { DispatchVisit } from "./dispatchPreviewTypes";
 import { clampResizeEnd } from "./dispatchOverlapUtils";
-import { Clock, ClipboardList, Truck, Loader2 } from "lucide-react";
+import { Clock, ClipboardList, Truck } from "lucide-react";
 
 type Props = {
   task: DispatchTask;
   isSaving?: boolean;
   isSelected?: boolean;
+  /** True if this task overlaps another item on the same technician lane */
+  hasConflict?: boolean;
   onSelect?: (task: DispatchTask) => void;
   onResize?: (task: DispatchTask, newEndTime: string) => void;
   /** All visits in this lane — used for resize overlap clamping */
@@ -61,12 +63,13 @@ export function getTaskPosition(task: DispatchTask, timelineStartHour = TIMELINE
   return { left, width };
 }
 
-export default function DispatchTaskBlock({ task, isSaving, isSelected, onSelect, onResize, laneVisits = [], laneTasks = [], timelineStartHour: tsHour = TIMELINE_START_HOUR, timelineEndHour: teHour = TIMELINE_END_HOUR }: Props) {
+export default function DispatchTaskBlock({ task, isSaving, isSelected, hasConflict, onSelect, onResize, laneVisits = [], laneTasks = [], timelineStartHour: tsHour = TIMELINE_START_HOUR, timelineEndHour: teHour = TIMELINE_END_HOUR }: Props) {
   const pos = getTaskPosition(task, tsHour);
   if (!pos) return null;
 
   const typeLabel = TASK_TYPE_LABELS[task.type] ?? task.type;
   const wasDraggingRef = useRef(false);
+  const suppressClickUntilRef = useRef(0);
   const [resizeDeltaPx, setResizeDeltaPx] = useState(0);
   const [isResizing, setIsResizing] = useState(false);
   const resizeStartXRef = useRef(0);
@@ -99,6 +102,7 @@ export default function DispatchTaskBlock({ task, isSaving, isSelected, onSelect
       wasDraggingRef.current = false;
       return;
     }
+    if (Date.now() < suppressClickUntilRef.current) return;
     onSelect?.(task);
   }, [onSelect, task]);
 
@@ -142,6 +146,7 @@ export default function DispatchTaskBlock({ task, isSaving, isSelected, onSelect
     resizeStartXRef.current = e.clientX;
     resizeStartWidthRef.current = Math.max(pos.width - 2, 38);
     setResizeDeltaPx(0);
+    suppressClickUntilRef.current = Date.now() + 2000;
 
     const onPointerMove = (ev: PointerEvent) => {
       setResizeDeltaPx(ev.clientX - resizeStartXRef.current);
@@ -152,6 +157,7 @@ export default function DispatchTaskBlock({ task, isSaving, isSelected, onSelect
       document.removeEventListener("pointerup", onPointerUp);
       setIsResizing(false);
       setResizeDeltaPx(0);
+      suppressClickUntilRef.current = Date.now() + 500;
 
       const finalDelta = ev.clientX - resizeStartXRef.current;
       const finalWidth = Math.max(resizeStartWidthRef.current + finalDelta, MIN_DURATION_MINUTES * PX_PER_MINUTE);
@@ -186,9 +192,10 @@ export default function DispatchTaskBlock({ task, isSaving, isSelected, onSelect
       {...(isResizing ? {} : attributes)}
       onClick={handleClick}
       data-dispatch-block="task"
+      data-task-id={task.id}
       className={`group/task absolute top-1 bottom-1 rounded border border-dashed border-blue-300 bg-blue-50/80 text-blue-700 overflow-visible hover:shadow-sm hover:z-10 transition-shadow ${
         isDragging ? "opacity-40 shadow-lg z-30" : ""
-      } ${isResizing ? "z-20 shadow-lg" : ""} ${isSelected ? "ring-2 ring-blue-500 ring-offset-1 shadow-md shadow-blue-200/50 z-20" : ""} ${!isResizing ? "cursor-grab active:cursor-grabbing" : ""}`}
+      } ${isResizing ? "z-20 shadow-lg" : ""} ${isSelected ? "ring-2 ring-blue-500 ring-offset-1 shadow-md shadow-blue-200/50 z-20" : ""} ${hasConflict && !isSelected ? "ring-2 ring-red-500 ring-offset-1 shadow-md shadow-red-200/50 border-red-400" : ""} ${!isResizing ? "cursor-grab active:cursor-grabbing" : ""}`}
       style={{ left: pos.left, width: effectiveWidth }}
       title={`${typeLabel}: ${task.title}\n${formatDuration(task.durationMinutes)}`}
     >
@@ -217,13 +224,6 @@ export default function DispatchTaskBlock({ task, isSaving, isSelected, onSelect
           </div>
         )}
       </div>
-      {/* Subtle saving indicator — small spinner in top-left, no content replacement */}
-      {isSaving && (
-        <div className="absolute top-0.5 left-0.5 flex items-center justify-center">
-          <Loader2 className="h-2.5 w-2.5 animate-spin text-blue-500/70" />
-        </div>
-      )}
-
       {/* Resize handle — right edge (available during saving — mutations serialize safely) */}
       {!isDragging && (
         <div

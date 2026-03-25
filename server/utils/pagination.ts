@@ -1,6 +1,8 @@
 import { z } from "zod";
 
-export const MAX_LIMIT = 200;
+// Bug fix: raised from 200 to 1000 — imported historical archived jobs (700+)
+// were truncated by the 200-row cap, causing archived filter to show ~200 instead of all.
+export const MAX_LIMIT = 1000;
 export const DEFAULT_LIMIT = 50;
 
 // Supports either cursor-based or offset-based

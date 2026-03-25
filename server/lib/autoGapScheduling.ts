@@ -9,6 +9,8 @@
 
 import { db } from "../db";
 import { sql } from "drizzle-orm";
+import { JOB_ACTIVE_SQL_J } from "../storage/jobFilters";
+import { VISIT_TERMINAL_STATUS_SQL } from "./visitPredicates";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -74,26 +76,10 @@ interface TechInfo {
 }
 
 // ---------------------------------------------------------------------------
-// Haversine + travel estimate (shared pattern from visitIntelligence.ts)
+// Haversine + travel estimate
 // ---------------------------------------------------------------------------
 
-function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6_371_000;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLng = ((lng2 - lng1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-/** Travel estimate: 2 min per km (~30 km/h city). Minimum 5 min. */
-function travelMinutes(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const distM = haversineMeters(lat1, lng1, lat2, lng2);
-  return Math.max(5, Math.round((distM / 1000) * 2));
-}
+import { haversineMeters, estimateTravelMinutes } from "./distance";
 
 // ---------------------------------------------------------------------------
 // Workday parsing
@@ -139,6 +125,7 @@ async function fetchVisitsInRange(
       j.job_number AS "jobNumber"
     FROM job_visits jv
     JOIN jobs j ON j.id = jv.job_id AND j.company_id = ${companyId}
+      AND ${sql.raw(JOB_ACTIVE_SQL_J)}
     LEFT JOIN client_locations cl ON cl.id = j.location_id
     WHERE jv.company_id = ${companyId}
       AND jv.is_active = true
@@ -146,7 +133,7 @@ async function fetchVisitsInRange(
       AND jv.scheduled_start IS NOT NULL
       AND jv.scheduled_start >= ${dateFrom}::date
       AND jv.scheduled_start < (${dateTo}::date + INTERVAL '1 day')
-      AND jv.status NOT IN ('completed', 'cancelled')
+      AND jv.status NOT IN (${sql.raw(VISIT_TERMINAL_STATUS_SQL)})
       ${techFilter}
     ORDER BY jv.scheduled_start ASC
   `);
@@ -328,7 +315,7 @@ export async function suggestVisitSlots(input: SuggestVisitSlotsInput): Promise<
         // Travel time from previous visit (or 0 if start of day)
         let travelBefore = 0;
         if (gap.prevVisit?.locationLat && gap.prevVisit?.locationLng) {
-          travelBefore = travelMinutes(
+          travelBefore = estimateTravelMinutes(
             parseFloat(gap.prevVisit.locationLat),
             parseFloat(gap.prevVisit.locationLng),
             location.lat,
@@ -339,7 +326,7 @@ export async function suggestVisitSlots(input: SuggestVisitSlotsInput): Promise<
         // Travel time to next visit (or 0 if end of day)
         let travelAfter = 0;
         if (gap.nextVisit?.locationLat && gap.nextVisit?.locationLng) {
-          travelAfter = travelMinutes(
+          travelAfter = estimateTravelMinutes(
             location.lat,
             location.lng,
             parseFloat(gap.nextVisit.locationLat),
@@ -361,7 +348,7 @@ export async function suggestVisitSlots(input: SuggestVisitSlotsInput): Promise<
           gap.prevVisit?.locationLat && gap.prevVisit?.locationLng &&
           gap.nextVisit?.locationLat && gap.nextVisit?.locationLng
         ) {
-          directTravel = travelMinutes(
+          directTravel = estimateTravelMinutes(
             parseFloat(gap.prevVisit.locationLat),
             parseFloat(gap.prevVisit.locationLng),
             parseFloat(gap.nextVisit.locationLat),

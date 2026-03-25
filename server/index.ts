@@ -166,13 +166,17 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
 
   if (IS_PROD) {
     // Hide stack traces in production
-    res.status(status).json({ 
-      error: status >= 500 ? "Internal server error" : err?.message ?? "Error" 
+    res.status(status).json({
+      error: status >= 500 ? "Internal server error" : err?.message ?? "Error",
+      // Preserve error code so frontend can distinguish 409 subtypes (e.g., VERSION_MISMATCH vs JOB_TERMINAL)
+      ...(err?.code && err.code !== 'EBADCSRFTOKEN' && { code: err.code }),
     });
   } else {
     // Show full errors in development
-    res.status(status).json({ 
-      error: err?.message ?? "Error", 
+    res.status(status).json({
+      error: err?.message ?? "Error",
+      // Preserve error code so frontend can distinguish 409 subtypes
+      ...(err?.code && err.code !== 'EBADCSRFTOKEN' && { code: err.code }),
       stack: err?.stack,
       ...(err?.details && { details: err.details })
     });

@@ -1,8 +1,10 @@
 import { db } from "../db";
-import { eq, and, sql, desc, or, lt, isNull, isNotNull, asc } from "drizzle-orm";
-import { invoices, invoiceLines, clients, payments, jobs, jobParts, laborEntries, technicians, timeEntries, users, companySettings, customerCompanies } from "@shared/schema";
+import { eq, and, sql, desc, or, lt, isNull, isNotNull, asc, inArray } from "drizzle-orm";
+import { invoices, invoiceLines, clients, payments, jobs, jobParts, laborEntries, technicians, timeEntries, users, companySettings, customerCompanies, items } from "@shared/schema";
 import { BaseRepository, parseDecimal } from "./base";
 import { activeJobFilter } from "./jobFilters";
+import { activeInvoiceFilter, UNPAID_INVOICE_STATUSES } from "./invoicesFeed";
+import { locationDisplayNameExpr } from "../lib/queryHelpers";
 import { encodeCursor, decodeCursor } from "../utils/cursor";
 import type { PaginationParams } from "../utils/pagination";
 import type { PaginatedResult } from "./types";
@@ -67,7 +69,7 @@ export interface InvoiceValidationResult {
  * - SELECT FOR UPDATE locking to prevent race conditions
  * - Idempotency guarantees (same job = same invoice)
  * - Proper invoice number sequencing
- * - Job status transition to 'invoiced'
+ * - Invoice-to-job linking (invoiceId set on job)
  *
  * There is NO public createInvoice() method by design.
  * Direct db.insert(invoices) outside of createInvoiceFromJob() is PROHIBITED.
@@ -147,8 +149,7 @@ export class InvoiceRepository extends BaseRepository {
       .leftJoin(clients, eq(invoices.locationId, clients.id))
       .where(and(
         eq(invoices.companyId, companyId),
-        // Legacy data compatibility: treat NULL isActive as active
-        or(eq(invoices.isActive, true), isNull(invoices.isActive))
+        activeInvoiceFilter()
       ))
       .$dynamic();
 
@@ -285,8 +286,7 @@ export class InvoiceRepository extends BaseRepository {
       .where(and(
         eq(invoices.id, invoiceId),
         eq(invoices.companyId, companyId),
-        // Soft-delete filter: consistent with getInvoices
-        or(eq(invoices.isActive, true), isNull(invoices.isActive))
+        activeInvoiceFilter()
       ))
       .limit(1);
 
@@ -314,8 +314,7 @@ export class InvoiceRepository extends BaseRepository {
         and(
           eq(invoices.companyId, companyId),
           eq(invoices.jobId, jobId),
-          // Legacy data compatibility: treat NULL isActive as active
-          or(eq(invoices.isActive, true), isNull(invoices.isActive))
+          activeInvoiceFilter()
         )
       )
       .limit(1);
@@ -336,8 +335,7 @@ export class InvoiceRepository extends BaseRepository {
       .from(invoices)
       .where(and(
         eq(invoices.companyId, companyId),
-        // Legacy data compatibility: treat NULL isActive as active
-        or(eq(invoices.isActive, true), isNull(invoices.isActive))
+        activeInvoiceFilter()
       ))
       .groupBy(invoices.status);
 
@@ -352,39 +350,48 @@ export class InvoiceRepository extends BaseRepository {
     companyId: string,
     invoiceId: string,
     currentVersion: number | undefined,
-    patch: any
+    patch: any,
+    txHandle?: any
   ) {
+    const queryDb = txHandle ?? db;
     this.assertCompanyId(companyId);
     this.validateUUID(invoiceId, "invoiceId");
 
     // If no version provided, skip version check (backward compatibility)
     if (currentVersion === undefined) {
-      const rows = await db
+      const rows = await queryDb
         .update(invoices)
         .set({
           ...patch,
           version: sql`${invoices.version} + 1`,
           updatedAt: new Date()
         })
-        .where(and(eq(invoices.id, invoiceId), eq(invoices.companyId, companyId)))
+        // 2026-03-18: Added soft-delete guard — cannot mutate deleted invoices
+        .where(and(
+          eq(invoices.id, invoiceId),
+          eq(invoices.companyId, companyId),
+          activeInvoiceFilter()
+        ))
         .returning();
 
       return rows[0] ?? null;
     }
 
     // With version check - optimistic locking
-    const rows = await db
+    const rows = await queryDb
       .update(invoices)
       .set({
         ...patch,
         version: sql`${invoices.version} + 1`, // Increment version
         updatedAt: new Date(),
       })
+      // 2026-03-18: Added soft-delete guard — cannot mutate deleted invoices
       .where(
         and(
           eq(invoices.id, invoiceId),
           eq(invoices.companyId, companyId),
-          eq(invoices.version, currentVersion) // Check version matches!
+          eq(invoices.version, currentVersion), // Check version matches!
+          activeInvoiceFilter()
         )
       )
       .returning();
@@ -477,6 +484,43 @@ export class InvoiceRepository extends BaseRepository {
       await this.recalculateInvoiceTotalsInTx(tx, companyId, invoiceId);
       return updated;
     });
+  }
+
+  /**
+   * Batch-apply a uniform tax rate to all lines of an invoice in a single statement,
+   * then recalculate invoice totals once. Used by tax group integration during
+   * invoice creation to avoid N individual updateInvoiceLine() round-trips.
+   *
+   * Returns the total lineSubtotal across all lines (needed for tax snapshot).
+   */
+  async batchApplyLineTax(companyId: string, invoiceId: string, combinedRateDecimal: number, txHandle?: any): Promise<number> {
+    const runInTx = async (tx: any) => {
+      // Single UPDATE: apply tax rate, compute taxAmount and lineTotal for all lines
+      await (tx as any).execute(sql`
+        UPDATE invoice_lines
+        SET tax_rate = ${String(combinedRateDecimal)},
+            tax_amount = ROUND(CAST(line_subtotal AS numeric) * ${combinedRateDecimal}, 2)::text,
+            line_total = ROUND(CAST(line_subtotal AS numeric) + CAST(line_subtotal AS numeric) * ${combinedRateDecimal}, 2)::text,
+            updated_at = NOW()
+        WHERE company_id = ${companyId}
+          AND invoice_id = ${invoiceId}
+      `);
+
+      // Sum lineSubtotal for tax snapshot (one query)
+      const [sumRow] = await tx
+        .select({ total: sql<string>`COALESCE(SUM(CAST(${invoiceLines.lineSubtotal} AS numeric)), 0)::text` })
+        .from(invoiceLines)
+        .where(and(eq(invoiceLines.companyId, companyId), eq(invoiceLines.invoiceId, invoiceId)));
+      const invoiceSubtotal = parseFloat(sumRow?.total ?? "0");
+
+      // Recalculate invoice totals once (not N times)
+      await this.recalculateInvoiceTotalsInTx(tx, companyId, invoiceId);
+
+      return invoiceSubtotal;
+    };
+
+    // If caller provided a tx handle, run directly on it. Otherwise wrap in own tx.
+    return txHandle ? runInTx(txHandle) : db.transaction(runInTx);
   }
 
   /**
@@ -619,8 +663,7 @@ export class InvoiceRepository extends BaseRepository {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Fetch unpaid invoices (awaiting_payment or sent status) with balance > 0
-    const unpaidStatuses = ["awaiting_payment", "sent", "partial_paid"];
+    // Fetch unpaid invoices with balance > 0
 
     // Phase 4 Step D: join customerCompanies for correct display name
     const rows = await db
@@ -632,8 +675,8 @@ export class InvoiceRepository extends BaseRepository {
         total: invoices.total,
         balance: invoices.balance,
         locationName: clients.location,
-        // Phase 4 Step D: COALESCE gives parent company name when available
-        locationDisplayName: sql<string>`COALESCE(${customerCompanies.name}, ${clients.companyName})`,
+        // Phase 4 Step D: canonical location display name helper
+        locationDisplayName: locationDisplayNameExpr,
       })
       .from(invoices)
       .leftJoin(clients, eq(invoices.locationId, clients.id))
@@ -641,10 +684,9 @@ export class InvoiceRepository extends BaseRepository {
       .where(
         and(
           eq(invoices.companyId, companyId),
-          or(eq(invoices.isActive, true), isNull(invoices.isActive)),
-          isNull(invoices.deletedAt),
+          activeInvoiceFilter(),
           sql`CAST(${invoices.balance} AS numeric) > 0`,
-          sql`${invoices.status} IN ('awaiting_payment', 'sent', 'partial_paid')`
+          inArray(invoices.status, UNPAID_INVOICE_STATUSES)
         )
       )
       .orderBy(asc(invoices.dueDate));
@@ -684,9 +726,9 @@ export class InvoiceRepository extends BaseRepository {
     balance: string | number | null,
     today?: Date
   ): boolean {
-    // Unpaid statuses that can be past due
-    const unpaidStatuses = ["draft", "awaiting_payment", "sent", "partial_paid"];
-    if (!status || !unpaidStatuses.includes(status)) {
+    // 2026-03-18: Removed "draft" — draft invoices have not been sent to the customer
+    // and cannot be meaningfully past due. Matches dashboard pastDueCount SQL predicate.
+    if (!status || !UNPAID_INVOICE_STATUSES.includes(status)) {
       return false;
     }
 
@@ -713,19 +755,20 @@ export class InvoiceRepository extends BaseRepository {
    * Pre-invoice validation: Check if job has billable items
    * Returns validation result with errors, warnings, and billable item counts
    */
-  async validateJobForInvoice(companyId: string, jobId: string): Promise<InvoiceValidationResult> {
+  // P3-04: Optional preloadedJob avoids redundant job fetch when caller already has it
+  async validateJobForInvoice(companyId: string, jobId: string, preloadedJob?: typeof jobs.$inferSelect): Promise<InvoiceValidationResult> {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
     const errors: string[] = [];
     const warnings: string[] = [];
 
-    // Get the job (exclude soft-deleted and inactive)
-    const [job] = await db
+    // Get the job (skip fetch if preloaded by caller)
+    const job = preloadedJob ?? (await db
       .select()
       .from(jobs)
       .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), activeJobFilter()))
-      .limit(1);
+      .limit(1))[0];
 
     if (!job) {
       return {
@@ -838,7 +881,7 @@ export class InvoiceRepository extends BaseRepository {
    * Prices are snapshotted at the time of invoicing
    * Can be called multiple times safely - always produces same result
    */
-  async refreshInvoiceFromJob(companyId: string, invoiceId: string) {
+  async refreshInvoiceFromJob(companyId: string, invoiceId: string, txHandle?: any) {
     const invoice = await this.getInvoice(companyId, invoiceId);
     if (!invoice) {
       throw this.notFoundError("Invoice");
@@ -848,8 +891,9 @@ export class InvoiceRepository extends BaseRepository {
       throw this.validationError("Invoice is not linked to a job");
     }
 
-    // Use transaction for idempotency - delete then insert
-    return await db.transaction(async (tx) => {
+    // When txHandle is provided, run directly on that handle (caller owns tx).
+    // Otherwise, wrap in own transaction for standalone idempotency.
+    const runInTx = async (tx: any) => {
       // Step 1: Delete ALL existing job-sourced invoice lines (idempotent - always start fresh)
       await tx
         .delete(invoiceLines)
@@ -870,9 +914,14 @@ export class InvoiceRepository extends BaseRepository {
       const baseLineNumber = Number(maxLine || 0);
 
       // Step 2: Get current job parts with their CURRENT prices (snapshot)
-      const parts = await tx
-        .select()
+      // LEFT JOIN items to resolve item type — no active/deleted filter on items
+      const partsWithType = await tx
+        .select({
+          part: jobParts,
+          catalogType: items.type,
+        })
         .from(jobParts)
+        .leftJoin(items, eq(jobParts.productId, items.id))
         .where(and(
           eq(jobParts.companyId, companyId), // Tenant isolation
           eq(jobParts.jobId, invoice.jobId!),
@@ -880,20 +929,38 @@ export class InvoiceRepository extends BaseRepository {
         ))
         .orderBy(jobParts.sortOrder);
 
+      const parts = partsWithType.map((r: { part: typeof jobParts.$inferSelect; catalogType: string | null }) => ({
+        ...r.part,
+        catalogType: r.catalogType,
+      }));
+
       // Step 3: Insert fresh invoice lines from job parts with SNAPSHOTTED prices
       let linesCreated = 0;
       if (parts.length > 0) {
-        const newLines = parts.map((part, index) => {
+        const newLines = parts.map((part: any, index: number) => {
           const qty = parseFloat(part.quantity?.toString() || "1");
           // SNAPSHOT: Use the price from jobPart at this moment
           const unitPrice = parseFloat(String(part.unitPrice || "0"));
           const unitCost = part.unitCost ? parseFloat(String(part.unitCost)) : null;
           const lineSubtotal = qty * unitPrice;
 
+          // Resolve lineItemType from catalog: product→material, service→service
+          // If no catalog link (ad-hoc line) or orphaned reference, default to "service" with warning
+          let lineItemType: "service" | "material" = "service";
+          if (part.catalogType === "product") {
+            lineItemType = "material";
+          } else if (part.catalogType === "service") {
+            lineItemType = "service";
+          } else if (part.productId) {
+            // productId set but no catalog match — orphaned reference
+            console.warn(`[refreshInvoiceFromJob] Job part ${part.id} has productId ${part.productId} but no catalog item found — defaulting lineItemType to "service"`);
+          }
+
           return {
             companyId, // Add tenant isolation
             invoiceId,
             lineNumber: baseLineNumber + index + 1,
+            lineItemType,
             description: part.description,
             quantity: part.quantity?.toString() || "1",
             source: "job" as const,
@@ -932,7 +999,10 @@ export class InvoiceRepository extends BaseRepository {
         jobId: invoice.jobId,
         linesRefreshed: linesCreated + laborLinesCreated,
       };
-    });
+    };
+
+    // If caller provided a tx handle, run directly on it. Otherwise wrap in own tx.
+    return txHandle ? runInTx(txHandle) : db.transaction(runInTx);
   }
 
   /**
@@ -1065,20 +1135,26 @@ export class InvoiceRepository extends BaseRepository {
       });
     }
 
-    // Create invoice lines from grouped entries
-    const newLines = [];
+    // P3-02 Phase 1: Pre-build all invoice line values, then batch INSERT
+    const allLineValues: Array<{
+      companyId: string; invoiceId: string; lineNumber: number;
+      lineItemType: "service"; description: string; quantity: string;
+      source: "job"; unitPrice: string; unitCost: string | null;
+      lineSubtotal: string; taxRate: string; taxAmount: string;
+      lineTotal: string; technicianId: string;
+    }> = [];
+    // Track which groups get which lineNumber for the back-reference mapping
+    const groupsByLineNumber = new Map<number, typeof grouped extends Map<string, infer V> ? V : never>();
     let lineNumber = startLineNumber;
 
     for (const group of Array.from(grouped.values())) {
       if (group.totalBilledMinutes === 0) continue;
 
-      // Convert minutes to decimal hours with 2 decimal places
       const hours = group.totalBilledMinutes / 60;
       const unitPrice = group.billedRate || 0;
       const unitCost = group.costRate || 0;
       const lineSubtotal = hours * unitPrice;
 
-      // Format type for display
       const typeDisplay = group.type
         .replace(/_/g, " ")
         .replace(/\b\w/g, (c: string) => c.toUpperCase());
@@ -1087,74 +1163,97 @@ export class InvoiceRepository extends BaseRepository {
         ? `Labor - ${typeDisplay} (${group.technicianName})`
         : `Labor - ${typeDisplay}`;
 
-      const [insertedLine] = await tx
-        .insert(invoiceLines)
-        .values({
-          companyId,
-          invoiceId,
-          lineNumber: ++lineNumber,
-          lineItemType: "service" as const,
-          description,
-          quantity: hours.toFixed(2),
-          source: "job" as const,
-          unitPrice: String(unitPrice.toFixed(2)),
-          unitCost: unitCost > 0 ? String(unitCost.toFixed(2)) : null,
-          lineSubtotal: String(lineSubtotal.toFixed(2)),
-          taxRate: "0",
-          taxAmount: "0",
-          lineTotal: String(lineSubtotal.toFixed(2)),
-          technicianId: group.technicianId,
-        })
-        .returning({ id: invoiceLines.id });
+      const assignedLineNumber = ++lineNumber;
+      groupsByLineNumber.set(assignedLineNumber, group);
 
-      // Mark time entries as invoiced with billing snapshots and LOCK them
-      const now = new Date();
-      for (const snapshot of group.entrySnapshots) {
-        await tx
-          .update(timeEntries)
-          .set({
-            invoiceId,
-            invoiceLineId: insertedLine.id,
-            invoicedAt: now,
-            billedMinutesSnapshot: snapshot.billedMinutes,
-            billedRateSnapshot: String(snapshot.billedRate.toFixed(2)),
-            billingRulesHash: rulesResult.rulesHash,
-            // Phase 9: Lock entries to prevent edits
-            lockedAt: now,
-            lockedByInvoiceId: invoiceId,
-            lockReason: "INVOICED",
-            updatedAt: now,
-          })
-          .where(eq(timeEntries.id, snapshot.id));
-      }
-
-      newLines.push(insertedLine);
+      allLineValues.push({
+        companyId,
+        invoiceId,
+        lineNumber: assignedLineNumber,
+        lineItemType: "service" as const,
+        description,
+        quantity: hours.toFixed(2),
+        source: "job" as const,
+        unitPrice: String(unitPrice.toFixed(2)),
+        unitCost: unitCost > 0 ? String(unitCost.toFixed(2)) : null,
+        lineSubtotal: String(lineSubtotal.toFixed(2)),
+        taxRate: "0",
+        taxAmount: "0",
+        lineTotal: String(lineSubtotal.toFixed(2)),
+        technicianId: group.technicianId,
+      });
     }
 
-    // Also mark excluded entries as processed (with 0 billed) and LOCK them
-    const lockTime = new Date();
+    if (allLineValues.length === 0) {
+      // No non-zero groups — still need to process excluded entries below
+    } else {
+      // Single batch INSERT with RETURNING for lineId mapping
+      const insertedLines = await tx
+        .insert(invoiceLines)
+        .values(allLineValues)
+        .returning({ id: invoiceLines.id, lineNumber: invoiceLines.lineNumber });
+
+      // Build lineId lookup by lineNumber
+      const lineIdByNumber = new Map<number, string>();
+      for (const row of insertedLines) {
+        lineIdByNumber.set(row.lineNumber, row.id);
+      }
+
+      // P3-02 Phase 2: Per-entry UPDATEs for included entries (unchanged semantics)
+      // Each entry has unique billedMinutesSnapshot + billedRateSnapshot
+      const now = new Date();
+      for (const [assignedLineNumber, group] of Array.from(groupsByLineNumber.entries())) {
+        const lineId = lineIdByNumber.get(assignedLineNumber);
+        if (!lineId) continue; // Should not happen — defensive guard
+        for (const snapshot of group.entrySnapshots) {
+          await tx
+            .update(timeEntries)
+            .set({
+              invoiceId,
+              invoiceLineId: lineId,
+              invoicedAt: now,
+              billedMinutesSnapshot: snapshot.billedMinutes,
+              billedRateSnapshot: String(snapshot.billedRate.toFixed(2)),
+              billingRulesHash: rulesResult.rulesHash,
+              // Phase 9: Lock entries to prevent edits
+              lockedAt: now,
+              lockedByInvoiceId: invoiceId,
+              lockReason: "INVOICED",
+              updatedAt: now,
+            })
+            .where(eq(timeEntries.id, snapshot.id));
+        }
+      }
+    }
+
+    // P3-02 Phase 3: Batch UPDATE excluded entries (uniform values)
+    const excludedIds: string[] = [];
     for (const entry of entries) {
       const billed = billedMap.get(entry.id);
       if (billed && (billed.wasExcluded || billed.billedMinutes === 0)) {
-        await tx
-          .update(timeEntries)
-          .set({
-            invoiceId,
-            invoicedAt: lockTime,
-            billedMinutesSnapshot: 0,
-            billedRateSnapshot: "0.00",
-            billingRulesHash: rulesResult.rulesHash,
-            // Phase 9: Lock entries to prevent edits
-            lockedAt: lockTime,
-            lockedByInvoiceId: invoiceId,
-            lockReason: "INVOICED",
-            updatedAt: lockTime,
-          })
-          .where(eq(timeEntries.id, entry.id));
+        excludedIds.push(entry.id);
       }
     }
+    if (excludedIds.length > 0) {
+      const lockTime = new Date();
+      await tx
+        .update(timeEntries)
+        .set({
+          invoiceId,
+          invoicedAt: lockTime,
+          billedMinutesSnapshot: 0,
+          billedRateSnapshot: "0.00",
+          billingRulesHash: rulesResult.rulesHash,
+          // Phase 9: Lock entries to prevent edits
+          lockedAt: lockTime,
+          lockedByInvoiceId: invoiceId,
+          lockReason: "INVOICED",
+          updatedAt: lockTime,
+        })
+        .where(inArray(timeEntries.id, excludedIds));
+    }
 
-    return newLines.length;
+    return allLineValues.length;
   }
 
   /**
@@ -1177,8 +1276,9 @@ export class InvoiceRepository extends BaseRepository {
    * - Job parts prices are snapshotted when refreshInvoiceFromJob is called
    * - Changes to product catalog after invoicing do NOT affect existing invoices
    *
-   * STATUS TRANSITION:
-   * - Always sets job.status to 'invoiced' (deterministic)
+   * LIFECYCLE NOTE (2026-03-18):
+   * - Does NOT set job.status — lifecycle transition is the caller's responsibility
+   * - Use MARK_INVOICED orchestrator intent to transition job to "invoiced" status
    *
    * AUTHORIZED CALLERS (defined in INVOICE_CREATION_SOURCES):
    * - POST /api/invoices/from-job/:jobId (invoices.ts) -> "INVOICE_ROUTE"
@@ -1218,7 +1318,8 @@ export class InvoiceRepository extends BaseRepository {
 
     // PRE-INVOICE VALIDATION (unless skipped) - before acquiring lock
     if (!options?.skipValidation) {
-      const validation = await this.validateJobForInvoice(companyId, jobId);
+      // P3-04: Pass pre-fetched job to avoid redundant SELECT
+      const validation = await this.validateJobForInvoice(companyId, jobId, jobPreCheck);
       if (!validation.valid) {
         throw this.validationError(validation.errors.join("; "));
       }
@@ -1267,8 +1368,7 @@ export class InvoiceRepository extends BaseRepository {
             and(
               eq(invoices.companyId, companyId),
               eq(invoices.jobId, jobId),
-              // Legacy data compatibility: treat NULL isActive as active
-              or(eq(invoices.isActive, true), isNull(invoices.isActive))
+              activeInvoiceFilter()
             )
           )
           .limit(1);
@@ -1338,22 +1438,17 @@ export class InvoiceRepository extends BaseRepository {
           })
           .returning();
 
-        // Update job: set invoiceId (and status when NOT called from close route)
-        // When called from JOB_CLOSE_ROUTE, the lifecycle engine (transitionJobStatus)
-        // owns the status transition — setting status here would cause a conflict because
-        // transitionJobStatus re-reads the job and rejects non-open statuses.
-        const jobUpdate: any = {
-          invoiceId: invoice.id,
-          updatedAt: new Date(),
-        };
-        if (creationSource !== "JOB_CLOSE_ROUTE") {
-          // Standalone invoice creation: set status to invoiced directly
-          jobUpdate.status = "invoiced";
-        }
-
+        // 2026-03-18: Invoice creation ONLY links invoice to job.
+        // Lifecycle transition (status → invoiced) is the caller's responsibility
+        // via the canonical jobLifecycleOrchestrator.
+        // Previously, standalone invoice creation autonomously set status="invoiced"
+        // which violated single-authority lifecycle contract.
         await tx
           .update(jobs)
-          .set(jobUpdate)
+          .set({
+            invoiceId: invoice.id,
+            updatedAt: new Date(),
+          })
           .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
 
         return {

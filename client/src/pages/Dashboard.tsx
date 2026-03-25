@@ -1,39 +1,32 @@
 /**
- * Dashboard - Main admin dashboard
+ * Dashboard - Operations Command Center
  *
- * Design features:
- * 1. TailPanel-style frame contrast: sidebar/header unified, main content darker
- * 2. Flat list items: border-b dividers, no card-in-card
- * 3. Tasks panel with filters (Active/Completed, Technician, Type)
- * 4. WorkflowStrip with half-height dividers
- *
- * Promoted from DashboardPreview2: 2026-02-06
+ * Layout: Top summary row → Operations + Alerts → Pipeline + Financial → Tasks sidebar
+ * Data: Reuses existing dashboard/workflow, attention, and invoices queries.
  */
 
 import { useState, useEffect, useMemo } from "react";
 import { useLocation } from "wouter";
-import { Calendar, FileText, DollarSign, Briefcase, ChevronRight, ChevronDown, ChevronUp, PanelRightClose, PanelRightOpen, Plus, ClipboardList, CheckSquare, Square, AlertTriangle, Clock, Route } from "lucide-react";
+import {
+  FileText, DollarSign, Briefcase, ChevronRight, ChevronDown, ChevronUp,
+  PanelRightClose, PanelRightOpen, Plus, ClipboardList, CheckSquare, Square,
+  AlertTriangle, Clock, Route, Calendar, Activity, TrendingUp, Users,
+  Wrench, ExternalLink,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
-// Phase 1: ActivityStore still used by mutation components for immediate feedback;
-// Dashboard now reads from server-backed /api/activity endpoint
+import { resolveDashboardNav, type DashboardAction } from "@/lib/dashboardNavigation";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AsyncBlock } from "@/components/AsyncBlock";
 import { TaskDialog } from "@/components/TaskDialog";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import type { Job as SchemaJob, Invoice as SchemaInvoice } from "@shared/schema";
 
@@ -41,8 +34,6 @@ import type { Job as SchemaJob, Invoice as SchemaInvoice } from "@shared/schema"
 // Types
 // ============================================================================
 
-// Dashboard API response shapes — extend schema types with API enrichments
-// scheduledStart comes as ISO string from JSON API (not Date)
 interface Job extends Pick<SchemaJob, "id" | "jobNumber" | "summary" | "status"> {
   scheduledStart: string | null;
   locationName?: string;
@@ -56,8 +47,9 @@ interface Invoice extends Pick<SchemaInvoice, "id" | "invoiceNumber" | "total" |
 
 interface WorkflowSummary {
   quotes: { approvedCount: number; draftCount: number };
-  jobs: { requiresInvoicingCount: number; activeCount: number; onHoldCount: number };
+  jobs: { requiresInvoicingCount: number; activeCount: number; onHoldCount: number; unscheduledCount: number };
   invoices: { outstandingCount: number; pastDueCount: number };
+  pm: { awaitingGenerationCount: number; overdueCount: number; comingDueCount: number; upcomingCount: number };
   fourth: null;
 }
 
@@ -71,124 +63,19 @@ type Task = {
   scheduledStartAt?: string | null;
 };
 
-// ============================================================================
-// Workflow Strip Component - half-height centered dividers
-// ============================================================================
-
-/** Attention summary shape from GET /api/attention/summary */
 type AttentionSummary = Record<string, number>;
 
-function WorkflowStrip({ data, isLoading, isError, attention }: {
-  data?: WorkflowSummary;
-  isLoading: boolean;
-  isError: boolean;
-  attention?: AttentionSummary;
-}) {
-  const [, setLocation] = useLocation();
-
-  if (isError) {
-    return (
-      <div className="bg-destructive/10 border border-destructive/20 rounded-md p-4 text-center text-sm text-destructive">
-        Failed to load workflow summary. Please refresh.
-      </div>
-    );
-  }
-
-  const sections = [
-    {
-      title: "Quotes",
-      icon: FileText,
-      items: [
-        { label: "Approved", count: data?.quotes.approvedCount ?? 0, href: "/quotes?status=approved" },
-        { label: "Draft", count: data?.quotes.draftCount ?? 0, href: "/quotes?status=draft" },
-      ],
-      color: "text-teal-600 dark:text-teal-400",
-    },
-    {
-      title: "Jobs",
-      icon: Briefcase,
-      // Phase 1: Counts from attention queue (server-backed) with workflow fallback
-      items: [
-        { label: "Requires Invoicing", count: attention?.["job.requires_invoicing"] ?? data?.jobs.requiresInvoicingCount ?? 0, href: "/jobs?lifecycle=completed" },
-        { label: "Unassigned", count: attention?.["job.unassigned"] ?? null, href: "/jobs?lifecycle=open&show=unassigned" },
-        { label: "Unscheduled", count: attention?.["job.unscheduled"] ?? null, href: "/jobs?lifecycle=open&show=backlog" },
-      ],
-      color: "text-emerald-600 dark:text-emerald-400",
-    },
-    {
-      title: "Invoices",
-      icon: DollarSign,
-      items: [
-        { label: "Outstanding", count: data?.invoices.outstandingCount ?? 0, href: "/invoices?filter=outstanding" },
-        { label: "Past Due", count: data?.invoices.pastDueCount ?? 0, href: "/invoices?filter=pastDue" },
-      ],
-      color: "text-amber-600 dark:text-amber-400",
-    },
-    {
-      title: "Reports",
-      icon: Calendar,
-      items: [],
-      color: "text-slate-500 dark:text-slate-400",
-      placeholder: "Coming soon",
-    },
-  ];
-
-  return (
-    <div className="bg-white dark:bg-gray-900 rounded-md border border-gray-200 dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
-        {sections.map((section, index) => (
-          <div
-            key={section.title}
-            className="relative px-4 py-3"
-          >
-            {/* Full-height vertical divider between columns */}
-            {index > 0 && (
-              <div className="hidden sm:block absolute left-0 inset-y-0 w-px bg-gray-200 dark:bg-gray-800" />
-            )}
-            <div className="flex items-center gap-2 mb-2">
-              <section.icon className={`h-4 w-4 ${section.color}`} />
-              <span className={`text-sm font-medium ${section.color}`}>{section.title}</span>
-            </div>
-            <div>
-              {section.placeholder ? (
-                <p className="text-xs text-muted-foreground">{section.placeholder}</p>
-              ) : isLoading ? (
-                <div className="space-y-2">
-                  {[1, 2].map((i) => (
-                    <Skeleton key={i} className="h-5 w-full rounded-lg" />
-                  ))}
-                </div>
-              ) : (
-                <div className="space-y-1">
-                  {section.items.map((item) => (
-                    <button
-                      key={item.label}
-                      onClick={() => setLocation(item.href)}
-                      className="flex items-center justify-between w-full text-left py-1 px-2 -mx-2 rounded-md hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors group"
-                    >
-                      <span className="text-xs text-muted-foreground group-hover:text-foreground transition-colors">
-                        {item.label}
-                      </span>
-                      {item.count !== null ? (
-                        <span className="text-sm font-semibold tabular-nums">{item.count}</span>
-                      ) : (
-                        <ChevronRight className="h-3.5 w-3.5 text-muted-foreground group-hover:text-foreground transition-colors" />
-                      )}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+interface AttentionItem {
+  id: string;
+  entityType: string;
+  entityId: string;
+  ruleType: string;
+  severity: string;
+  status: string;
+  firstDetectedAt: string;
+  lastDetectedAt: string;
+  meta: Record<string, unknown> | null;
 }
-
-// ============================================================================
-// Widget Components - flat rows with dividers
-// ============================================================================
 
 interface AttentionJob extends Job {
   attentionType?: string;
@@ -196,231 +83,390 @@ interface AttentionJob extends Job {
   isAllDay?: boolean;
 }
 
-function NeedsAttentionWidget({
-  jobs,
-  isLoading,
-  isError,
-  error,
-  onRetry,
-}: {
-  jobs: AttentionJob[];
-  isLoading: boolean;
-  isError: boolean;
-  error?: unknown;
-  onRetry?: () => void;
-}) {
-  const [, setLocation] = useLocation();
+// ============================================================================
+// Shared card wrapper — consistent surface styling
+// ============================================================================
 
-  // Date-only display — no time, avoids timezone confusion on the dashboard
-  const formatSchedule = (start: string | null) => {
-    if (!start) return null;
-    const startDate = new Date(start);
-    return startDate.toLocaleDateString("en-CA", { month: "short", day: "numeric" });
-  };
-
-  const displayJobs = jobs.slice(0, 5);
-
+function DashCard({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className="bg-white dark:bg-gray-900 rounded-md border border-gray-200 dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)] flex flex-col">
-      <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800">
-        <h3 className="text-sm font-semibold">Needs Attention</h3>
-      </div>
-      <div className="flex-1">
-        <AsyncBlock
-          title="attention items"
-          isLoading={isLoading}
-          isError={isError}
-          error={error}
-          onRetry={onRetry}
-          isEmpty={jobs.length === 0}
-          emptyMessage="All caught up!"
-          skeletonRows={5}
-        >
-          <div>
-            {displayJobs.map((job, index) => {
-              const schedule = formatSchedule(job.scheduledStart);
-              const companyName = job.location?.companyName || job.locationName || "No location";
-              const isLast = index === displayJobs.length - 1;
-
-              return (
-                <button
-                  key={job.id}
-                  onClick={() => setLocation(`/jobs/${job.id}`)}
-                  className={`w-full text-left px-4 py-2.5 hover:bg-[#F3F4F6] dark:hover:bg-gray-800/50 transition-colors ${!isLast ? "border-b border-gray-200 dark:border-gray-800" : ""}`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-foreground truncate">{companyName}</p>
-                      <p className="text-xs text-muted-foreground truncate mt-0.5">
-                        {job.summary}
-                        {schedule && <span className="text-muted-foreground/70"> · {schedule}</span>}
-                      </p>
-                    </div>
-                    {job.attentionType === "overdue" && (
-                      <span className="inline-flex items-center rounded-full border px-2 h-5 text-[11px] font-medium bg-[rgba(220,38,38,0.12)] text-[#B91C1C] border-[rgba(220,38,38,0.25)] dark:bg-red-950/40 dark:text-red-400 dark:border-red-800 whitespace-nowrap">
-                        Overdue
-                      </span>
-                    )}
-                    {job.attentionType === "requires_invoicing" && (
-                      <span className="inline-flex items-center rounded-full border px-2 h-5 text-[11px] font-medium bg-[rgba(245,158,11,0.14)] text-[#92400E] border-[rgba(245,158,11,0.28)] dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800 whitespace-nowrap">
-                        Needs invoicing
-                      </span>
-                    )}
-                    {job.attentionType === "on_hold" && (
-                      <span className="inline-flex items-center rounded-full border px-2 h-5 text-[11px] font-medium bg-[rgba(245,158,11,0.14)] text-[#92400E] border-[rgba(245,158,11,0.28)] dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800 whitespace-nowrap">
-                        On hold
-                      </span>
-                    )}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </AsyncBlock>
-      </div>
-      {!isError && !isLoading && jobs.length > 0 && (
-        <div className="px-4 py-2 border-t border-gray-200 dark:border-gray-800">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full h-8"
-            onClick={() => setLocation("/jobs")}
-          >
-            View all jobs <ChevronRight className="h-4 w-4 ml-1" />
-          </Button>
-        </div>
-      )}
+    <div className={`bg-white dark:bg-gray-900 rounded-lg border border-border/60 shadow-sm ${className}`}>
+      {children}
     </div>
   );
 }
 
-function InvoicesWidget({
-  invoices,
-  isLoading,
-  isError,
-  error,
-  onRetry,
-}: {
-  invoices: Invoice[];
-  isLoading: boolean;
-  isError: boolean;
-  error?: unknown;
-  onRetry?: () => void;
-}) {
-  const [, setLocation] = useLocation();
-  const [isExpanded, setIsExpanded] = useState(false);
-
-  const COLLAPSED_LIMIT = 5;
-  const EXPANDED_LIMIT = 10;
-  const displayLimit = isExpanded ? EXPANDED_LIMIT : COLLAPSED_LIMIT;
-  const displayedInvoices = invoices.slice(0, displayLimit);
-  const hasMore = invoices.length > COLLAPSED_LIMIT;
-
-  const formatCurrency = (amount: string) => {
-    const num = parseFloat(amount || "0");
-    return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(num);
-  };
-
-  const formatDate = (date: string | null) => {
-    if (!date) return "No due date";
-    return new Date(date).toLocaleDateString("en-CA", { month: "short", day: "numeric" });
-  };
-
+function CardHeader({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return (
-    <div className="bg-white dark:bg-gray-900 rounded-md border border-gray-200 dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)] flex flex-col">
-      <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800">
-        <div className="flex items-center justify-between">
-          <button
-            onClick={() => setLocation("/invoices?filter=awaiting_payment")}
-            className="text-sm font-semibold hover:text-primary hover:underline transition-colors text-left"
-          >
-            Invoices
-          </button>
-          <div className="flex items-center gap-3">
-            {hasMore && !isLoading && !isError && invoices.length > 0 && (
-              <button
-                onClick={() => setIsExpanded(!isExpanded)}
-                className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors"
-              >
-                {isExpanded ? (
-                  <>Show less <ChevronUp className="h-3 w-3" /></>
-                ) : (
-                  <>Show more <ChevronDown className="h-3 w-3" /></>
-                )}
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-      <div className="flex-1">
-        <AsyncBlock
-          title="invoices"
-          isLoading={isLoading}
-          isError={isError}
-          error={error}
-          onRetry={onRetry}
-          isEmpty={invoices.length === 0}
-          emptyMessage="No unpaid invoices"
-          skeletonRows={5}
-        >
-          <div>
-            {displayedInvoices.map((invoice, index) => {
-              const isLast = index === displayedInvoices.length - 1;
-
-              return (
-                <button
-                  key={invoice.id}
-                  onClick={() => setLocation(`/invoices/${invoice.id}`)}
-                  className={`w-full text-left px-4 py-2.5 hover:bg-[#F3F4F6] dark:hover:bg-gray-800/50 transition-colors ${!isLast ? "border-b border-gray-200 dark:border-gray-800" : ""}`}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-medium text-foreground truncate">
-                        {invoice.locationName || "Invoice"}
-                      </p>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        {invoice.invoiceNumber && <span>#{invoice.invoiceNumber} · </span>}
-                        Due {formatDate(invoice.dueDate)}
-                      </p>
-                    </div>
-                    <div className="text-right flex-shrink-0 flex flex-col items-end">
-                      {invoice.isPastDue && (
-                        <span className="inline-flex items-center rounded-full border px-2 h-5 text-[11px] font-medium bg-[rgba(220,38,38,0.12)] text-[#B91C1C] border-[rgba(220,38,38,0.25)] dark:bg-red-950/40 dark:text-red-400 dark:border-red-800 mb-0.5">
-                          Past due
-                        </span>
-                      )}
-                      <p className="text-sm font-semibold text-foreground tabular-nums">
-                        {formatCurrency(invoice.balance)}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {invoice.isPastDue ? "Outstanding" : "Awaiting"}
-                      </p>
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </AsyncBlock>
-      </div>
-      {!isError && !isLoading && invoices.length > 0 && (
-        <div className="px-4 py-2 border-t border-gray-200 dark:border-gray-800">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full h-8"
-            onClick={() => setLocation("/invoices?filter=awaiting_payment")}
-          >
-            View all invoices <ChevronRight className="h-4 w-4 ml-1" />
-          </Button>
-        </div>
-      )}
+    <div className={`px-4 py-3 border-b border-border/40 ${className}`}>
+      {children}
     </div>
   );
 }
 
 // ============================================================================
-// Tasks Panel - flat rows with dividers, matching other cards
+// Row 1 — Top Summary Cards
+// ============================================================================
+
+function SummaryCards({ data, isLoading, attention }: {
+  data?: WorkflowSummary;
+  isLoading: boolean;
+  attention?: AttentionSummary;
+}) {
+  const [, setLocation] = useLocation();
+
+  const cards = [
+    {
+      title: "Quotes",
+      icon: FileText,
+      color: "text-teal-600",
+      bg: "bg-teal-50 dark:bg-teal-950/30",
+      items: [
+        { label: "Approved", value: data?.quotes.approvedCount ?? 0, action: "quotes.approved" as DashboardAction },
+        { label: "Draft", value: data?.quotes.draftCount ?? 0, action: "quotes.draft" as DashboardAction },
+      ],
+    },
+    {
+      title: "Jobs",
+      icon: Briefcase,
+      color: "text-emerald-600",
+      bg: "bg-emerald-50 dark:bg-emerald-950/30",
+      items: [
+        { label: "Unscheduled", value: data?.jobs.unscheduledCount ?? 0, action: "jobs.unscheduled" as DashboardAction },
+        { label: "Needs Invoicing", value: data?.jobs.requiresInvoicingCount ?? 0, action: "jobs.needsInvoicing" as DashboardAction },
+      ],
+    },
+    {
+      title: "Invoices",
+      icon: DollarSign,
+      color: "text-amber-600",
+      bg: "bg-amber-50 dark:bg-amber-950/30",
+      items: [
+        { label: "Outstanding", value: data?.invoices.outstandingCount ?? 0, action: "invoices.outstanding" as DashboardAction },
+        { label: "Past Due", value: data?.invoices.pastDueCount ?? 0, action: "invoices.pastDue" as DashboardAction, warn: true },
+      ],
+    },
+    {
+      title: "PM Health",
+      icon: Wrench,
+      color: "text-violet-600",
+      bg: "bg-violet-50 dark:bg-violet-950/30",
+      items: [
+        { label: "Overdue", value: data?.pm.overdueCount ?? 0, action: "pm.overdue" as DashboardAction, warn: true },
+        { label: "Coming Due (0–7d)", value: data?.pm.comingDueCount ?? 0, action: "pm.comingDue" as DashboardAction },
+        { label: "Upcoming (7–30d)", value: data?.pm.upcomingCount ?? 0, action: "pm.upcoming" as DashboardAction },
+      ],
+    },
+  ];
+
+  return (
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      {cards.map((card) => (
+        <DashCard key={card.title}>
+          <div className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <div className={`p-1.5 rounded-md ${card.bg}`}>
+                <card.icon className={`h-3.5 w-3.5 ${card.color}`} />
+              </div>
+              <h3 className={`text-xs font-semibold uppercase tracking-wider ${card.color}`}>{card.title}</h3>
+            </div>
+            {isLoading ? (
+              <div className="space-y-2">
+                <Skeleton className="h-5 w-full" />
+                <Skeleton className="h-5 w-3/4" />
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {card.items.map((item) => (
+                  <button
+                    key={item.label}
+                    onClick={() => setLocation(resolveDashboardNav(item.action))}
+                    className="flex items-center justify-between w-full text-left py-1 px-1.5 -mx-1.5 rounded hover:bg-muted/50 transition-colors group"
+                  >
+                    <span className="text-xs text-muted-foreground group-hover:text-foreground transition-colors">{item.label}</span>
+                    <span className={`text-sm font-bold tabular-nums ${item.warn && typeof item.value === "number" && item.value > 0 ? "text-red-600" : "text-foreground"}`}>
+                      {item.value}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </DashCard>
+      ))}
+    </div>
+  );
+}
+
+// ============================================================================
+// Row 2 Left — Today's Operations
+// ============================================================================
+
+function TodaysOperations({ data, attention, isLoading }: {
+  data?: WorkflowSummary;
+  attention?: AttentionSummary;
+  isLoading: boolean;
+}) {
+  const [, setLocation] = useLocation();
+
+  const todayStats = [
+    { label: "Active Jobs", value: data?.jobs.activeCount ?? 0, icon: Briefcase, color: "text-blue-600 bg-blue-50 dark:bg-blue-950/30", action: "ops.activeJobs" as DashboardAction },
+    { label: "On Hold", value: data?.jobs.onHoldCount ?? 0, icon: Clock, color: "text-amber-600 bg-amber-50 dark:bg-amber-950/30", action: "ops.onHold" as DashboardAction },
+    { label: "Needs Invoicing", value: attention?.["job.requires_invoicing"] ?? data?.jobs.requiresInvoicingCount ?? 0, icon: DollarSign, color: "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30", action: "ops.needsInvoicing" as DashboardAction },
+    { label: "Overdue", value: attention?.["job.overdue"] ?? 0, icon: AlertTriangle, color: "text-red-600 bg-red-50 dark:bg-red-950/30", action: "ops.overdue" as DashboardAction },
+  ];
+
+  return (
+    <DashCard className="flex flex-col">
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Activity className="h-4 w-4 text-blue-500" />
+          <h3 className="text-sm font-semibold">Today's Operations</h3>
+        </div>
+      </CardHeader>
+      <div className="p-4 flex-1">
+        {isLoading ? (
+          <div className="grid grid-cols-2 gap-3">
+            {[1,2,3,4].map(i => <Skeleton key={i} className="h-16" />)}
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+            {todayStats.map((stat) => (
+              <button
+                key={stat.label}
+                onClick={() => setLocation(resolveDashboardNav(stat.action))}
+                className="rounded-lg border border-border/40 p-3 text-left hover:bg-muted/40 transition-colors cursor-pointer"
+              >
+                <div className="flex items-center gap-2 mb-1.5">
+                  <div className={`p-1 rounded ${stat.color.split(" ").slice(1).join(" ")}`}>
+                    <stat.icon className={`h-3 w-3 ${stat.color.split(" ")[0]}`} />
+                  </div>
+                  <span className="text-[11px] text-muted-foreground font-medium">{stat.label}</span>
+                </div>
+                <p className="text-xl font-bold tabular-nums">{stat.value}</p>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </DashCard>
+  );
+}
+
+// ============================================================================
+// Row 2 Right — Dispatch Alerts (exception-based, not duplicating top row)
+// ============================================================================
+
+function DispatchAlerts({ alerts, attention, isLoading }: {
+  alerts: AttentionItem[];
+  attention?: AttentionSummary;
+  isLoading: boolean;
+}) {
+  const [, setLocation] = useLocation();
+
+  // Build exception-based alert items from attention data
+  const alertItems = useMemo(() => {
+    const items: { label: string; count: number; href: string; severity: "warning" | "danger" | "info" }[] = [];
+
+    const overdue = attention?.["job.overdue"] ?? 0;
+    if (overdue > 0) items.push({ label: `${overdue} overdue job${overdue > 1 ? "s" : ""} need attention`, count: overdue, href: resolveDashboardNav("alerts.overdueJobs"), severity: "danger" });
+
+    const unassigned = attention?.["job.unassigned"] ?? 0;
+    if (unassigned > 0) items.push({ label: `${unassigned} job${unassigned > 1 ? "s" : ""} unassigned`, count: unassigned, href: resolveDashboardNav("alerts.unassignedJobs"), severity: "warning" });
+
+    // Operational alerts: running long, late, etc.
+    const opAlerts = alerts.filter(a => ["visit.running_long", "visit.late", "visit.overdue"].includes(a.ruleType));
+    if (opAlerts.length > 0) items.push({ label: `${opAlerts.length} active visit alert${opAlerts.length > 1 ? "s" : ""}`, count: opAlerts.length, href: resolveDashboardNav("alerts.visitAlerts"), severity: "danger" });
+
+    const techAlerts = alerts.filter(a => ["tech.offline", "tech.idle"].includes(a.ruleType));
+    if (techAlerts.length > 0) items.push({ label: `${techAlerts.length} technician alert${techAlerts.length > 1 ? "s" : ""}`, count: techAlerts.length, href: resolveDashboardNav("alerts.techAlerts"), severity: "info" });
+
+    // If nothing needs attention
+    if (items.length === 0) items.push({ label: "All clear — no exceptions", count: 0, href: "", severity: "info" });
+
+    return items;
+  }, [attention, alerts]);
+
+  const severityStyles = {
+    danger: "bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-900 text-red-700 dark:text-red-400",
+    warning: "bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-900 text-amber-700 dark:text-amber-400",
+    info: "bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-900 text-blue-700 dark:text-blue-400",
+  };
+
+  return (
+    <DashCard className="flex flex-col">
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 text-amber-500" />
+          <h3 className="text-sm font-semibold">Dispatch Alerts</h3>
+          {alertItems.length > 0 && alertItems[0].count > 0 && (
+            <Badge variant="destructive" className="text-[10px] h-5 rounded-full">{alertItems.reduce((s, a) => s + a.count, 0)}</Badge>
+          )}
+        </div>
+      </CardHeader>
+      <div className="p-3 flex-1 space-y-2">
+        {isLoading ? (
+          <div className="space-y-2">
+            {[1,2,3].map(i => <Skeleton key={i} className="h-10" />)}
+          </div>
+        ) : (
+          alertItems.map((item, i) => (
+            item.href ? (
+              <button
+                key={i}
+                onClick={() => setLocation(item.href)}
+                className={`w-full text-left rounded-lg border px-3 py-2.5 text-xs font-medium transition-colors hover:opacity-80 flex items-center justify-between ${severityStyles[item.severity]}`}
+              >
+                <span>{item.label}</span>
+                <ChevronRight className="h-3.5 w-3.5 opacity-50 flex-shrink-0" />
+              </button>
+            ) : (
+              <div key={i} className={`rounded-lg border px-3 py-2.5 text-xs font-medium ${severityStyles[item.severity]}`}>
+                {item.label}
+              </div>
+            )
+          ))
+        )}
+      </div>
+    </DashCard>
+  );
+}
+
+// ============================================================================
+// Row 3 Left — Work Pipeline
+// ============================================================================
+
+function WorkPipeline({ data, attention, isLoading }: {
+  data?: WorkflowSummary;
+  attention?: AttentionSummary;
+  isLoading: boolean;
+}) {
+  const [, setLocation] = useLocation();
+
+  const pipelineItems = [
+    { label: "PM instances awaiting generation", count: data?.pm?.awaitingGenerationCount ?? 0, action: "pipeline.pmAwaiting" as DashboardAction },
+    { label: "Quotes awaiting approval", count: data?.quotes.draftCount ?? 0, action: "pipeline.quotesAwaitingApproval" as DashboardAction },
+    { label: "Approved quotes not converted", count: data?.quotes.approvedCount ?? 0, action: "pipeline.approvedNotConverted" as DashboardAction },
+    { label: "Jobs awaiting scheduling", count: data?.jobs.unscheduledCount ?? 0, action: "pipeline.jobsAwaitingScheduling" as DashboardAction },
+    { label: "Jobs awaiting invoice", count: data?.jobs.requiresInvoicingCount ?? 0, action: "pipeline.jobsAwaitingInvoice" as DashboardAction },
+  ];
+
+  return (
+    <DashCard className="flex flex-col">
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <TrendingUp className="h-4 w-4 text-violet-500" />
+          <h3 className="text-sm font-semibold">Work Pipeline</h3>
+        </div>
+      </CardHeader>
+      <div className="flex-1">
+        {isLoading ? (
+          <div className="p-4 space-y-3">
+            {[1,2,3,4,5].map(i => <Skeleton key={i} className="h-8" />)}
+          </div>
+        ) : (
+          <div>
+            {pipelineItems.map((item, index) => {
+              const isLast = index === pipelineItems.length - 1;
+              return (
+                <button
+                  key={item.label}
+                  onClick={() => setLocation(resolveDashboardNav(item.action))}
+                  className={`w-full text-left px-4 py-3 hover:bg-muted/40 transition-colors flex items-center justify-between group ${!isLast ? "border-b border-border/40" : ""}`}
+                >
+                  <span className="text-xs text-muted-foreground group-hover:text-foreground transition-colors">{item.label}</span>
+                  <div className="flex items-center gap-2">
+                    <span className={`text-sm font-bold tabular-nums ${item.count > 0 ? "text-foreground" : "text-muted-foreground/50"}`}>{item.count}</span>
+                    <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/40 group-hover:text-muted-foreground transition-colors" />
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </DashCard>
+  );
+}
+
+// ============================================================================
+// Row 3 Right — Financial Snapshot
+// ============================================================================
+
+function FinancialSnapshot({ invoices, data, isLoading }: {
+  invoices: Invoice[];
+  data?: WorkflowSummary;
+  isLoading: boolean;
+}) {
+  const [, setLocation] = useLocation();
+
+  const formatCurrency = (amount: number) =>
+    new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD", minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(amount);
+
+  // Derive totals from invoice data
+  const outstandingTotal = useMemo(() => invoices.reduce((sum, inv) => sum + parseFloat(inv.balance || "0"), 0), [invoices]);
+  const pastDueTotal = useMemo(() => invoices.filter(i => i.isPastDue).reduce((sum, inv) => sum + parseFloat(inv.balance || "0"), 0), [invoices]);
+  const pastDueCount = data?.invoices.pastDueCount ?? invoices.filter(i => i.isPastDue).length;
+
+  const metrics = [
+    { label: "Outstanding Invoices", value: formatCurrency(outstandingTotal), sub: `${data?.invoices.outstandingCount ?? invoices.length} invoices` },
+    { label: "Past Due", value: formatCurrency(pastDueTotal), sub: `${pastDueCount} invoices`, warn: pastDueCount > 0 },
+  ];
+
+  return (
+    <DashCard className="flex flex-col">
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <DollarSign className="h-4 w-4 text-emerald-500" />
+            <h3 className="text-sm font-semibold">Financial Snapshot</h3>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 text-xs text-muted-foreground hover:text-foreground gap-1"
+            onClick={() => setLocation("/financial-dashboard")}
+          >
+            Financial Dashboard
+            <ExternalLink className="h-3 w-3" />
+          </Button>
+        </div>
+      </CardHeader>
+      <div className="p-4 flex-1">
+        {isLoading ? (
+          <div className="space-y-4">
+            <Skeleton className="h-14" />
+            <Skeleton className="h-14" />
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {metrics.map((m) => (
+              <div key={m.label} className="flex items-center justify-between">
+                <div>
+                  <p className="text-[11px] text-muted-foreground font-medium uppercase tracking-wider">{m.label}</p>
+                  <p className={`text-lg font-bold tabular-nums mt-0.5 ${m.warn ? "text-red-600 dark:text-red-400" : ""}`}>{m.value}</p>
+                </div>
+                <span className="text-xs text-muted-foreground">{m.sub}</span>
+              </div>
+            ))}
+            {invoices.length > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="w-full h-8 text-xs"
+                onClick={() => setLocation("/invoices?filter=awaiting_payment")}
+              >
+                View all invoices <ChevronRight className="h-3.5 w-3.5 ml-1" />
+              </Button>
+            )}
+          </div>
+        )}
+      </div>
+    </DashCard>
+  );
+}
+
+// ============================================================================
+// Tasks Panel (preserved from previous implementation)
 // ============================================================================
 
 function getInitials(fullName?: string, firstName?: string, lastName?: string): string {
@@ -445,20 +491,12 @@ function formatTaskDate(dateString?: string | null): string {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-function TasksPanel({
-  collapsed,
-  onToggleCollapsed,
-}: {
-  collapsed: boolean;
-  onToggleCollapsed: () => void;
-}) {
+function TasksPanel({ collapsed, onToggleCollapsed }: { collapsed: boolean; onToggleCollapsed: () => void }) {
   const { user } = useAuth();
   const currentUserId = user?.id;
   const { teamMembers } = useTechniciansDirectory();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [selectedTaskId, setSelectedTaskId] = useState<string | undefined>(undefined);
-
-  // Filter state: Active/Completed, Technician, Type
   const [tab, setTab] = useState<"active" | "completed">("active");
   const [techFilter, setTechFilter] = useState<string>("all");
   const [typeFilter, setTypeFilter] = useState<string>("all");
@@ -466,22 +504,17 @@ function TasksPanel({
   const tasksUrl = `/api/tasks?offset=0&limit=50`;
   const { data, isLoading, error } = useQuery({ queryKey: [tasksUrl], enabled: !collapsed });
 
-  // Parse raw tasks from API
   const allTasks: Task[] = useMemo(() => {
     if (!data) return [];
     const items = Array.isArray(data) ? data : (data as any).items || (data as any).data || [];
     return items;
   }, [data]);
 
-  // Apply filters: tab (active/completed), technician, type
   const filteredTasks: Task[] = useMemo(() => {
     return allTasks.filter((t: Task) => {
-      // Tab filter
       if (tab === "active" && (t.status === "completed" || t.status === "cancelled")) return false;
       if (tab === "completed" && t.status !== "completed") return false;
-      // Technician filter
       if (techFilter !== "all" && t.assignedToUserId !== techFilter) return false;
-      // Type filter
       if (typeFilter !== "all" && t.type !== typeFilter) return false;
       return true;
     });
@@ -501,20 +534,12 @@ function TasksPanel({
     },
   });
 
-  const handleTaskClick = (taskId: string) => {
-    setSelectedTaskId(taskId);
-    setDialogOpen(true);
-  };
+  const handleTaskClick = (taskId: string) => { setSelectedTaskId(taskId); setDialogOpen(true); };
+  const handleNewTask = () => { setSelectedTaskId(undefined); setDialogOpen(true); };
 
-  const handleNewTask = () => {
-    setSelectedTaskId(undefined);
-    setDialogOpen(true);
-  };
-
-  // Collapsed state - matching card style
   if (collapsed) {
     return (
-      <div className="h-full w-14 bg-white dark:bg-gray-900 rounded-md border border-gray-200 dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)] flex flex-col items-center py-3 gap-2">
+      <div className="h-full w-14 bg-white dark:bg-gray-900 rounded-lg border border-border/60 shadow-sm flex flex-col items-center py-3 gap-2">
         <Button variant="ghost" size="icon" onClick={onToggleCollapsed} title="Expand tasks" className="rounded-md">
           <PanelRightOpen className="h-5 w-5" />
         </Button>
@@ -529,15 +554,13 @@ function TasksPanel({
     );
   }
 
-  // Expanded state - matching card style with flat rows
   return (
-    <div className="h-full w-[380px] bg-white dark:bg-gray-900 rounded-md border border-gray-200 dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)] flex flex-col">
-      {/* Header */}
-      <div className="px-3 py-2 border-b border-gray-200 dark:border-gray-800">
+    <div className="h-full w-[380px] bg-white dark:bg-gray-900 rounded-lg border border-border/60 shadow-sm flex flex-col">
+      <div className="px-3 py-2 border-b border-border/40">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
             <ClipboardList className="h-5 w-5" />
-            <span className="font-semibold">Tasks</span>
+            <span className="font-semibold text-sm">Tasks</span>
             <Badge variant="secondary" className="text-xs rounded-full">{filteredTasks.length}</Badge>
           </div>
           <div className="flex items-center gap-1">
@@ -549,49 +572,27 @@ function TasksPanel({
             </Button>
           </div>
         </div>
-
-        {/* Filter Controls */}
         <div className="space-y-2">
-          {/* Active/Completed Toggle — pill style matching Jobs filter chips */}
           <div className="flex items-center gap-1">
-            <Button
-              size="sm"
-              variant={tab === "active" ? "default" : "ghost"}
-              onClick={() => setTab("active")}
-              className={`rounded-full h-7 text-xs px-3 ${tab === "active" ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent" : "text-muted-foreground"}`}
-            >
+            <Button size="sm" variant={tab === "active" ? "default" : "ghost"} onClick={() => setTab("active")}
+              className={`rounded-full h-7 text-xs px-3 ${tab === "active" ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent" : "text-muted-foreground"}`}>
               Active
             </Button>
-            <Button
-              size="sm"
-              variant={tab === "completed" ? "default" : "ghost"}
-              onClick={() => setTab("completed")}
-              className={`rounded-full h-7 text-xs px-3 ${tab === "completed" ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent" : "text-muted-foreground"}`}
-            >
+            <Button size="sm" variant={tab === "completed" ? "default" : "ghost"} onClick={() => setTab("completed")}
+              className={`rounded-full h-7 text-xs px-3 ${tab === "completed" ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent" : "text-muted-foreground"}`}>
               Completed
             </Button>
           </div>
-
-          {/* Technician and Type Filter Dropdowns */}
           <div className="flex items-center gap-2">
             <Select value={techFilter} onValueChange={setTechFilter}>
-              <SelectTrigger className="h-7 text-xs flex-1">
-                <SelectValue placeholder="All Technicians" />
-              </SelectTrigger>
+              <SelectTrigger className="h-7 text-xs flex-1"><SelectValue placeholder="All Technicians" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Technicians</SelectItem>
-                {teamMembers.map((tech) => (
-                  <SelectItem key={tech.id} value={String(tech.id)}>
-                    {tech.fullName}
-                  </SelectItem>
-                ))}
+                {teamMembers.map((tech) => (<SelectItem key={tech.id} value={String(tech.id)}>{tech.fullName}</SelectItem>))}
               </SelectContent>
             </Select>
-
             <Select value={typeFilter} onValueChange={setTypeFilter}>
-              <SelectTrigger className="h-7 text-xs w-[120px]">
-                <SelectValue placeholder="All Types" />
-              </SelectTrigger>
+              <SelectTrigger className="h-7 text-xs w-[120px]"><SelectValue placeholder="All Types" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Types</SelectItem>
                 <SelectItem value="GENERAL">General</SelectItem>
@@ -601,8 +602,6 @@ function TasksPanel({
           </div>
         </div>
       </div>
-
-      {/* List - flat rows with dividers */}
       <div className="flex-1 overflow-y-auto min-h-0">
         {isLoading ? (
           <div className="p-4 text-sm text-muted-foreground">Loading tasks…</div>
@@ -617,20 +616,10 @@ function TasksPanel({
               const initials = t.assignedUser ? getInitials(t.assignedUser.fullName, t.assignedUser.firstName, t.assignedUser.lastName) : null;
               const taskDate = formatTaskDate(t.scheduledStartAt);
               const isLast = index === filteredTasks.length - 1;
-
               return (
-                <div
-                  key={t.id}
-                  className={`px-4 py-2.5 flex items-start gap-2 cursor-pointer hover:bg-[#F3F4F6] dark:hover:bg-gray-800/50 transition-colors relative ${!isLast ? "border-b border-gray-200 dark:border-gray-800" : ""}`}
-                  onClick={() => handleTaskClick(t.id)}
-                >
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="mt-0.5 h-6 w-6 flex-shrink-0 rounded-lg"
-                    onClick={(e) => { e.stopPropagation(); if (!isDone) closeTask.mutate(t.id); }}
-                    title={isDone ? "Completed" : "Complete"}
-                  >
+                <div key={t.id} className={`px-4 py-2.5 flex items-start gap-2 cursor-pointer hover:bg-muted/40 transition-colors relative ${!isLast ? "border-b border-border/40" : ""}`} onClick={() => handleTaskClick(t.id)}>
+                  <Button variant="ghost" size="icon" className="mt-0.5 h-6 w-6 flex-shrink-0 rounded-lg"
+                    onClick={(e) => { e.stopPropagation(); if (!isDone) closeTask.mutate(t.id); }} title={isDone ? "Completed" : "Complete"}>
                     {isDone ? <CheckSquare className="h-4 w-4" /> : <Square className="h-4 w-4" />}
                   </Button>
                   <div className="min-w-0 flex-1 pr-8">
@@ -648,224 +637,8 @@ function TasksPanel({
           </div>
         )}
       </div>
-
       <TaskDialog open={dialogOpen} onOpenChange={setDialogOpen} taskId={selectedTaskId} onChanged={() => queryClient.invalidateQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('/api/tasks') })} />
     </div>
-  );
-}
-
-// RecentActivityWidget removed (2026-03-05) — activity feed moved to AppHeader ActivityFeedDrawer
-
-// ============================================================================
-// Operational Alerts Widget — Phase 5: Visit intelligence signals
-// ============================================================================
-
-/** Attention item shape from GET /api/attention */
-interface AttentionItem {
-  id: string;
-  entityType: string;
-  entityId: string;
-  ruleType: string;
-  severity: string;
-  status: string;
-  firstDetectedAt: string;
-  lastDetectedAt: string;
-  meta: Record<string, unknown> | null;
-}
-
-/** Phase 5/5B operational rule types */
-const OPERATIONAL_RULE_TYPES = ["visit.running_long", "visit.late", "visit.overdue", "tech.offline", "tech.idle"];
-
-const ALERT_LABELS: Record<string, { label: string; color: string }> = {
-  "visit.running_long": { label: "Running Long", color: "bg-[rgba(220,38,38,0.12)] text-[#B91C1C] border-[rgba(220,38,38,0.25)] dark:bg-red-950/40 dark:text-red-400 dark:border-red-800" },
-  "visit.late": { label: "Late", color: "bg-[rgba(245,158,11,0.14)] text-[#92400E] border-[rgba(245,158,11,0.28)] dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800" },
-  "visit.overdue": { label: "Overdue", color: "bg-[rgba(220,38,38,0.12)] text-[#B91C1C] border-[rgba(220,38,38,0.25)] dark:bg-red-950/40 dark:text-red-400 dark:border-red-800" },
-  "tech.offline": { label: "Offline", color: "bg-[rgba(107,114,128,0.12)] text-[#374151] border-[rgba(107,114,128,0.25)] dark:bg-gray-800/40 dark:text-gray-400 dark:border-gray-700" },
-  "tech.idle": { label: "Idle", color: "bg-[rgba(59,130,246,0.12)] text-[#1E40AF] border-[rgba(59,130,246,0.25)] dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-800" },
-};
-
-function OperationalAlertsWidget({ alerts, isLoading }: { alerts: AttentionItem[]; isLoading: boolean }) {
-  const operationalAlerts = alerts.filter((a) => OPERATIONAL_RULE_TYPES.includes(a.ruleType));
-  const [confirmAction, setConfirmAction] = useState<{ visitId: string; action: "shift" | "optimize"; driftMinutes?: number } | null>(null);
-
-  const shiftMutation = useMutation({
-    mutationFn: async ({ visitId, driftMinutes }: { visitId: string; driftMinutes?: number }) =>
-      apiRequest(`/api/intelligence/visits/${visitId}/shift-remainder`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ driftMinutes }),
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ predicate: (q) => {
-        const key = String(q.queryKey[0]);
-        return key.startsWith("/api/attention") || key.startsWith("/api/calendar") || key === "/api/attention?status=open&limit=20";
-      }});
-      queryClient.invalidateQueries({ queryKey: ["attention"] });
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-    },
-  });
-
-  const optimizeMutation = useMutation({
-    mutationFn: async (visitId: string) =>
-      apiRequest(`/api/intelligence/visits/${visitId}/optimize-remainder`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ predicate: (q) => {
-        const key = String(q.queryKey[0]);
-        return key.startsWith("/api/attention") || key.startsWith("/api/calendar");
-      }});
-      queryClient.invalidateQueries({ queryKey: ["attention"] });
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-    },
-  });
-
-  const handleConfirm = () => {
-    if (!confirmAction) return;
-    if (confirmAction.action === "shift") {
-      shiftMutation.mutate({ visitId: confirmAction.visitId, driftMinutes: confirmAction.driftMinutes });
-    } else {
-      optimizeMutation.mutate(confirmAction.visitId);
-    }
-    setConfirmAction(null);
-  };
-
-  if (isLoading) {
-    return (
-      <div className="bg-white dark:bg-gray-900 rounded-md border border-gray-200 dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
-        <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 text-amber-500" />
-            <h3 className="text-sm font-semibold">Operational Alerts</h3>
-          </div>
-        </div>
-        <div className="p-4 text-sm text-muted-foreground">Loading...</div>
-      </div>
-    );
-  }
-
-  if (operationalAlerts.length === 0) return null;
-
-  const isBusy = shiftMutation.isPending || optimizeMutation.isPending;
-
-  return (
-    <>
-      <div className="bg-white dark:bg-gray-900 rounded-md border border-gray-200 dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
-        <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="h-4 w-4 text-amber-500" />
-            <h3 className="text-sm font-semibold">Operational Alerts</h3>
-            <Badge variant="secondary" className="text-xs rounded-full">{operationalAlerts.length}</Badge>
-          </div>
-        </div>
-        <div>
-          {operationalAlerts.slice(0, 8).map((alert, index) => {
-            const meta = alert.meta || {};
-            const label = ALERT_LABELS[alert.ruleType] || { label: alert.ruleType, color: "" };
-            const title = (meta.locationName as string) || (meta.techName as string) || alert.entityType;
-            const isRunningLong = alert.ruleType === "visit.running_long";
-            const driftMin = meta.driftMinutes as number | undefined;
-            const countLate = meta.countLateVisits as number | undefined;
-            const downstream = meta.downstream as Array<{ locationName: string; lateByMinutes: number }> | undefined;
-            const isLast = index === Math.min(operationalAlerts.length, 8) - 1;
-
-            // Detail line
-            let detail = "";
-            if (isRunningLong) {
-              detail = `Job #${meta.jobNumber || "?"} — ${driftMin || 0}m over`;
-              if (countLate && countLate > 0) detail += ` · ${countLate} visit${countLate > 1 ? "s" : ""} affected`;
-            } else {
-              detail = (meta.jobNumber ? `Job #${meta.jobNumber}` : "") ||
-                (meta.minutesAgo ? `${meta.minutesAgo}m ago` : "") ||
-                (meta.idleMinutes ? `Idle ${meta.idleMinutes}m` : "");
-            }
-
-            return (
-              <div
-                key={alert.id}
-                className={`px-4 py-2.5 hover:bg-[#F3F4F6] dark:hover:bg-gray-800/50 transition-colors ${!isLast ? "border-b border-gray-200 dark:border-gray-800" : ""}`}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-foreground truncate">{title}</p>
-                    {detail && <p className="text-xs text-muted-foreground truncate mt-0.5">{detail}</p>}
-                    {/* Downstream impact summary for running_long */}
-                    {isRunningLong && downstream && downstream.length > 0 && (
-                      <div className="mt-1 text-xs text-muted-foreground space-y-0.5">
-                        {downstream.slice(0, 3).map((d, i) => (
-                          <div key={i} className="truncate">
-                            {d.locationName || "Visit"}: +{d.lateByMinutes}m late
-                          </div>
-                        ))}
-                        {downstream.length > 3 && (
-                          <div className="text-muted-foreground/70">+{downstream.length - 3} more</div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1.5 flex-shrink-0">
-                    {/* Action buttons for running_long */}
-                    {isRunningLong && (
-                      <>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 px-2 text-xs gap-1"
-                          disabled={isBusy}
-                          onClick={() => setConfirmAction({ visitId: alert.entityId, action: "shift", driftMinutes: driftMin })}
-                          title="Shift remaining visits forward"
-                        >
-                          <Clock className="h-3 w-3" />
-                          Shift
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 px-2 text-xs gap-1"
-                          disabled={isBusy}
-                          onClick={() => setConfirmAction({ visitId: alert.entityId, action: "optimize" })}
-                          title="Optimize remaining visits"
-                        >
-                          <Route className="h-3 w-3" />
-                          Optimize
-                        </Button>
-                      </>
-                    )}
-                    <span className={`inline-flex items-center rounded-full border px-2 h-5 text-[11px] font-medium whitespace-nowrap ${label.color}`}>
-                      {label.label}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Confirm dialog */}
-      <AlertDialog open={!!confirmAction} onOpenChange={(open) => !open && setConfirmAction(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {confirmAction?.action === "shift" ? "Shift Remaining Visits" : "Optimize Remaining Visits"}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {confirmAction?.action === "shift"
-                ? `This will shift all remaining visits for this technician forward by ${confirmAction?.driftMinutes || "the drift"} minutes. This edits multiple visit schedules.`
-                : "This will re-optimize the order of remaining visits for this technician and update their scheduled times. This edits multiple visit schedules."}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleConfirm}>
-              {confirmAction?.action === "shift" ? "Shift" : "Optimize"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </>
   );
 }
 
@@ -883,26 +656,15 @@ export default function Dashboard() {
     try { localStorage.setItem(TASKS_COLLAPSE_KEY, tasksCollapsed ? "1" : "0"); } catch {}
   }, [tasksCollapsed]);
 
-  // Queries
-  // Phase 5 Step B3: canonical dashboard family key prefix
-  const { data: workflowData, isLoading: workflowLoading, isError: workflowError } = useQuery<WorkflowSummary>({
+  // Queries — same as before, same stale times, same keys
+  const { data: workflowData, isLoading: workflowLoading } = useQuery<WorkflowSummary>({
     queryKey: ["dashboard", "workflow"],
     queryFn: () => apiRequest(`/api/dashboard/workflow`),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
 
-  // Needs-attention uses DB NOW() for overdue cutoff — no date param needed
-  const { data: needsAttentionResponse, isLoading: needsAttentionLoading, isError: needsAttentionError, error: needsAttentionErrorObj, refetch: refetchNeedsAttention } = useQuery<{ data: (Job & { attentionType?: string })[] }>({
-    queryKey: ["dashboard", "needs-attention"],
-    queryFn: () => apiRequest(`/api/dashboard/needs-attention?limit=5`),
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
-  });
-  const needsAttentionJobs = needsAttentionResponse?.data || [];
-
-  const { data: dashboardInvoicesResponse, isLoading: dashboardInvoicesLoading, isError: dashboardInvoicesError, error: dashboardInvoicesErrorObj, refetch: refetchDashboardInvoices } = useQuery<{ data: Invoice[] }>({
-    // Phase 5 Step A7: canonical family key prefix
+  const { data: dashboardInvoicesResponse, isLoading: dashboardInvoicesLoading } = useQuery<{ data: Invoice[] }>({
     queryKey: ["invoices", "dashboard"],
     queryFn: () => apiRequest(`/api/invoices/dashboard`),
     staleTime: 60_000,
@@ -910,7 +672,6 @@ export default function Dashboard() {
   });
   const dashboardInvoices = dashboardInvoicesResponse?.data || [];
 
-  // Phase 1 Architecture: Attention summary counts
   const { data: attentionData } = useQuery<AttentionSummary>({
     queryKey: ["attention", "summary"],
     queryFn: () => apiRequest(`/api/attention/summary`),
@@ -918,7 +679,6 @@ export default function Dashboard() {
     refetchOnWindowFocus: true,
   });
 
-  // Phase 5: Operational alerts (visit.late, visit.overdue, tech.offline, tech.idle)
   const { data: operationalAlertsResponse, isLoading: operationalAlertsLoading } = useQuery<{ data: AttentionItem[] }>({
     queryKey: ["attention", "operational"],
     queryFn: () => apiRequest(`/api/attention?status=open&limit=20`),
@@ -929,20 +689,27 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-background">
-      <main className="mx-auto px-3 sm:px-4 lg:px-6 py-3 space-y-3">
+      <main className="mx-auto px-3 sm:px-4 lg:px-6 py-3">
         <div className="flex gap-4">
-          {/* Left column - main content */}
+          {/* Left column — main dashboard content */}
           <div className="flex-1 min-w-0 space-y-3">
-            <WorkflowStrip data={workflowData} isLoading={workflowLoading} isError={workflowError} attention={attentionData} />
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
-              <NeedsAttentionWidget jobs={needsAttentionJobs} isLoading={needsAttentionLoading} isError={needsAttentionError} error={needsAttentionErrorObj} onRetry={() => refetchNeedsAttention()} />
-              <InvoicesWidget invoices={dashboardInvoices} isLoading={dashboardInvoicesLoading} isError={dashboardInvoicesError} error={dashboardInvoicesErrorObj} onRetry={() => refetchDashboardInvoices()} />
+            {/* Row 1: Summary cards */}
+            <SummaryCards data={workflowData} isLoading={workflowLoading} attention={attentionData} />
+
+            {/* Row 2: Operations + Alerts */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              <TodaysOperations data={workflowData} attention={attentionData} isLoading={workflowLoading} />
+              <DispatchAlerts alerts={operationalAlerts} attention={attentionData} isLoading={operationalAlertsLoading} />
             </div>
-            {/* Phase 5: Operational Alerts — visit intelligence signals */}
-            <OperationalAlertsWidget alerts={operationalAlerts} isLoading={operationalAlertsLoading} />
+
+            {/* Row 3: Pipeline + Financial */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              <WorkPipeline data={workflowData} attention={attentionData} isLoading={workflowLoading} />
+              <FinancialSnapshot invoices={dashboardInvoices} data={workflowData} isLoading={dashboardInvoicesLoading} />
+            </div>
           </div>
 
-          {/* Right sidebar - Tasks (integrated styling) */}
+          {/* Right sidebar — Tasks panel (preserved) */}
           <div className="h-[calc(100vh-120px)] sticky top-16 self-start">
             <TasksPanel collapsed={tasksCollapsed} onToggleCollapsed={() => setTasksCollapsed((v) => !v)} />
           </div>

@@ -17,6 +17,7 @@ import { db } from "../db";
 import { jobs, invoices, attentionItems, clientLocations as clients, customerCompanies } from "@shared/schema";
 import { eq, and, sql, ne, isNull, isNotNull } from "drizzle-orm";
 import type { AttentionRuleType, AttentionSeverity } from "@shared/schema";
+import { activeJobFilter } from "../storage/jobFilters";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,16 +37,8 @@ interface AttentionRule {
   detectForEntity?: (tenantId: string, entityId: string) => Promise<AttentionMatch | null>;
 }
 
-// ---------------------------------------------------------------------------
-// Canonical effectiveEnd SQL (matches dashboard.ts)
-// ---------------------------------------------------------------------------
-
-const effectiveEndExpr = sql`CASE
-  WHEN ${jobs.scheduledEnd} IS NOT NULL THEN ${jobs.scheduledEnd}
-  WHEN ${jobs.durationMinutes} IS NOT NULL
-    THEN ${jobs.scheduledStart} + (${jobs.durationMinutes} || ' minutes')::interval
-  ELSE ${jobs.scheduledStart}
-END`;
+// 2026-03-18: effectiveEndExpr centralized in server/lib/queryHelpers.ts
+import { effectiveEndExpr } from "./queryHelpers";
 
 // ---------------------------------------------------------------------------
 // Rules
@@ -68,7 +61,7 @@ const RULES: AttentionRule[] = [
         .where(and(
           eq(jobs.companyId, tenantId),
           eq(jobs.status, "completed"),
-          isNull(jobs.deletedAt),
+          activeJobFilter(),
         ));
       return rows.map(r => ({
         entityType: "job" as const,
@@ -90,7 +83,7 @@ const RULES: AttentionRule[] = [
         .where(and(
           eq(jobs.companyId, tenantId),
           eq(jobs.id, entityId),
-          isNull(jobs.deletedAt),
+          activeJobFilter(),
         ))
         .limit(1);
       if (!row || row.status !== "completed") return null;
@@ -121,7 +114,9 @@ const RULES: AttentionRule[] = [
           eq(jobs.status, "open"),
           isNotNull(jobs.scheduledStart),
           sql`${effectiveEndExpr} < NOW()`,
-          isNull(jobs.deletedAt),
+          // Exclude jobs actively being worked — they are in progress, not overdue-attention
+          sql`(${jobs.openSubStatus} IS NULL OR ${jobs.openSubStatus} NOT IN ('in_progress', 'on_route'))`,
+          activeJobFilter(),
         ));
       return rows.map(r => ({
         entityType: "job" as const,
@@ -144,7 +139,7 @@ const RULES: AttentionRule[] = [
         .where(and(
           eq(jobs.companyId, tenantId),
           eq(jobs.id, entityId),
-          isNull(jobs.deletedAt),
+          activeJobFilter(),
         ))
         .limit(1);
       if (!row || row.status !== "open" || !row.scheduledStart) return null;
@@ -159,7 +154,9 @@ const RULES: AttentionRule[] = [
           eq(jobs.status, "open"),
           isNotNull(jobs.scheduledStart),
           sql`${effectiveEndExpr} < NOW()`,
-          isNull(jobs.deletedAt),
+          // Exclude jobs actively being worked
+          sql`(${jobs.openSubStatus} IS NULL OR ${jobs.openSubStatus} NOT IN ('in_progress', 'on_route'))`,
+          activeJobFilter(),
         ))
         .limit(1);
       if (!overdue) return null;
@@ -190,7 +187,7 @@ const RULES: AttentionRule[] = [
           eq(jobs.status, "open"),
           isNotNull(jobs.scheduledStart),
           isNull(jobs.primaryTechnicianId),
-          isNull(jobs.deletedAt),
+          activeJobFilter(),
         ));
       return rows.map(r => ({
         entityType: "job" as const,
@@ -214,7 +211,7 @@ const RULES: AttentionRule[] = [
         .where(and(
           eq(jobs.companyId, tenantId),
           eq(jobs.id, entityId),
-          isNull(jobs.deletedAt),
+          activeJobFilter(),
         ))
         .limit(1);
       if (!row || row.status !== "open" || !row.scheduledStart || row.primaryTechnicianId) return null;
@@ -231,6 +228,7 @@ const RULES: AttentionRule[] = [
     severity: "medium",
     async detect(tenantId) {
       // Active open jobs with no schedule
+      // 2026-03-17: Exclude on_hold jobs — they are deliberately parked, not unscheduled backlog
       const rows = await db
         .select({
           id: jobs.id,
@@ -244,7 +242,8 @@ const RULES: AttentionRule[] = [
           eq(jobs.companyId, tenantId),
           eq(jobs.status, "open"),
           isNull(jobs.scheduledStart),
-          isNull(jobs.deletedAt),
+          sql`(${jobs.openSubStatus} IS NULL OR ${jobs.openSubStatus} != 'on_hold')`,
+          activeJobFilter(),
         ));
       return rows.map(r => ({
         entityType: "job" as const,
@@ -258,6 +257,7 @@ const RULES: AttentionRule[] = [
           id: jobs.id,
           jobNumber: jobs.jobNumber,
           status: jobs.status,
+          openSubStatus: jobs.openSubStatus,
           scheduledStart: jobs.scheduledStart,
           companyName: sql<string>`COALESCE(${customerCompanies.name}, ${clients.companyName})`,
         })
@@ -267,10 +267,12 @@ const RULES: AttentionRule[] = [
         .where(and(
           eq(jobs.companyId, tenantId),
           eq(jobs.id, entityId),
-          isNull(jobs.deletedAt),
+          activeJobFilter(),
         ))
         .limit(1);
+      // 2026-03-17: Exclude on_hold jobs from unscheduled attention
       if (!row || row.status !== "open" || row.scheduledStart) return null;
+      if (row.openSubStatus === "on_hold") return null;
       return {
         entityType: "job" as const,
         entityId: row.id,
@@ -289,7 +291,9 @@ const RULES: AttentionRule[] = [
  * If the item already exists and is open, just bump lastDetectedAt and meta.
  * If it was resolved, reopen it.
  */
-async function upsertAttentionItem(
+// Phase 5: Exported so visitIntelligence.ts uses the canonical upsert
+// instead of owning a duplicate INSERT ON CONFLICT implementation.
+export async function upsertAttentionItem(
   tenantId: string,
   ruleType: AttentionRuleType,
   severity: AttentionSeverity,

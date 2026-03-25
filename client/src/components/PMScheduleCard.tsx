@@ -334,9 +334,6 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
       : pmTemplate?.generationMode === "period_start"
         ? "Start of month"
         : "Phase-based";
-  const schedulingLabel = pmTemplate?.autoSchedule
-    ? `Auto (${pmTemplate.scheduledTimeLocal ?? "09:00"}, ${pmTemplate.defaultDurationMinutes ?? 120} min)`
-    : "Manual";
   const partsLabel = pmTemplate?.includeLocationPmParts ? "Included" : "Not included";
 
   return (
@@ -383,10 +380,6 @@ export default function PMScheduleCard({ locationId, locationName, companyId, cl
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-muted-foreground">Job creation</span>
                       <span className="font-medium">{generationLabel}</span>
-                    </div>
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="text-muted-foreground">Scheduling</span>
-                      <span className="font-medium">{schedulingLabel}</span>
                     </div>
                     <div className="flex items-center justify-between text-xs">
                       <span className="text-muted-foreground">Parts</span>

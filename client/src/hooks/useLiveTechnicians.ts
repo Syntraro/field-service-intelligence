@@ -26,6 +26,7 @@ export function useLiveTechnicians(enabled = true) {
     },
     enabled,
     refetchInterval: 15_000, // 15-second auto-refresh
+    refetchIntervalInBackground: false,
     staleTime: 10_000,
   });
 }

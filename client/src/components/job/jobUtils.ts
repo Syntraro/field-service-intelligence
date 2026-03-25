@@ -16,7 +16,7 @@
  * - in_progress  - Work actively being performed
  * - on_hold      - Job is blocked
  * - on_route     - Technician traveling to job
- * - needs_review - Needs supervisor review
+ * - (needs_review: removed — migrated to on_hold, columns dropped)
  */
 
 import {
@@ -38,11 +38,8 @@ import { isJobScheduled, isJobAssigned, isJobOverdue } from "@shared/schema";
 // Valid lifecycle statuses - the ONLY allowed values for jobs.status
 export const VALID_JOB_STATUSES: readonly JobStatus[] = ["open", "completed", "invoiced", "archived"];
 
-// Phase 5 E1: renamed to disambiguate from visit terminal statuses
-// Terminal statuses - jobs cannot be rescheduled without explicit workflow transition
-export const JOB_TERMINAL_STATUSES: readonly JobStatus[] = ["invoiced", "archived"];
-/** @deprecated Use JOB_TERMINAL_STATUSES */
-export const TERMINAL_STATUSES = JOB_TERMINAL_STATUSES;
+// 2026-03-20 F-05: JOB_TERMINAL_STATUSES removed — zero client consumers.
+// Canonical owner: server/domain/jobLifecycle.ts
 
 // Status flow visualization for UI (lifecycle only)
 export const JOB_STATUS_FLOW = [
@@ -65,7 +62,6 @@ export const SUB_STATUS_INFO: Record<NonNullable<OpenSubStatus>, { label: string
   in_progress: { label: "In Progress", icon: Play },
   on_hold: { label: "On Hold", icon: Pause },
   on_route: { label: "On Route", icon: Truck },
-  needs_review: { label: "Needs Review", icon: AlertCircle },
 };
 
 export type JobStatusDisplay = {
@@ -110,13 +106,9 @@ export function getJobStatusDisplay(
 
   // Open status - check sub-status and derived states
   if (status === "open") {
-    // Check sub-status first (on_hold/needs_review are high priority)
     const subStatus = job.openSubStatus as OpenSubStatus | null;
     if (subStatus === "on_hold") {
       return { label: "On Hold", variant: "destructive", icon: Pause, priority: 0 };
-    }
-    if (subStatus === "needs_review") {
-      return { label: "Needs Review", variant: "destructive", icon: AlertCircle, priority: 0 };
     }
     if (subStatus === "in_progress") {
       return { label: "In Progress", variant: "default", icon: Play, priority: 1 };
@@ -205,12 +197,8 @@ export function getPriorityDisplay(priority: string): PriorityDisplay {
   }
 }
 
-/**
- * Check if a status is terminal (workflow complete)
- */
-export function isTerminalStatus(status: string): boolean {
-  return JOB_TERMINAL_STATUSES.includes(status as JobStatus);
-}
+// 2026-03-20 F-05: isTerminalStatus() removed — zero client consumers.
+// Canonical owner: server/domain/jobLifecycle.ts
 
 /**
  * Check if a job can transition to a target status

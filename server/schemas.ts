@@ -22,7 +22,7 @@ export const optionalMoneyNumber = moneyNumber.nullable().optional();
 // - "in_progress"  - Work actively being performed
 // - "on_hold"      - Job is blocked (requires holdReason)
 // - "on_route"     - Technician traveling to job site
-// - "needs_review" - Needs supervisor/manager review
+// - (needs_review: removed — migrated to on_hold, data migrated, columns dropped)
 //
 // INVARIANT: openSubStatus must be NULL when status !== 'open'
 //
@@ -37,11 +37,11 @@ export const jobStatusEnum = z.enum([
 ]);
 
 // Workflow sub-status (only valid when status = 'open')
+// 2026-03-18: needs_review removed — data migrated to on_hold, no live rows remain.
 export const openSubStatusEnum = z.enum([
   "in_progress",   // Work actively being performed
   "on_hold",       // Job is blocked (requires holdReason)
   "on_route",      // Technician traveling to job site
-  "needs_review",  // Needs supervisor/manager review
 ]);
 
 // Hold reason enum (when openSubStatus = 'on_hold')
@@ -55,24 +55,9 @@ export const holdReasonEnum = z.enum([
   "other",      // Other reason (see notes)
 ]);
 
-// Legacy status values accepted during migration (normalized to 4-value model)
-export const legacyJobStatusEnum = z.enum([
-  // New canonical values
-  "open",
-  "completed",
-  "invoiced",
-  "archived",
-  // Legacy values (normalized on write)
-  "assigned",           // -> "open" (assignment is derived from fields)
-  "unscheduled",        // -> "open" (scheduling is derived from fields)
-  "scheduled",          // -> "open" (scheduling is derived from fields)
-  "in_progress",        // -> "open" + openSubStatus='in_progress'
-  "on_hold",            // -> "open" + openSubStatus='on_hold'
-  "requires_invoicing", // -> "completed"
-  "closed",             // -> "archived"
-  "canceled",           // -> "archived"
-  "cancelled",          // -> "archived" (UK spelling)
-]);
+// 2026-03-18: legacyJobStatusEnum REMOVED — no longer imported anywhere.
+// The jobs status update route now accepts only canonical values + two convenience
+// aliases ("in_progress", "on_hold"). See server/routes/jobs.ts statusUpdateSchema.
 
 // Invoice statuses - Canonical lifecycle: draft → awaiting_payment → partial_paid/paid (with void from any non-terminal)
 // Note: "sent" is deprecated in favor of "awaiting_payment" but kept for backward compatibility
@@ -148,9 +133,7 @@ export const jobUpdateStatusSchema = z.object({
   holdReason: holdReasonEnum.nullable().optional(),
   holdNotes: z.string().nullable().optional(),
   nextActionDate: z.string().nullable().optional(), // ISO date string (YYYY-MM-DD)
-  // Legacy fields (deprecated, kept for backward compatibility)
-  actionRequiredReason: z.string().nullable().optional(),
-  actionRequiredNotes: z.string().nullable().optional(),
+  // 2026-03-18: actionRequired* columns DROPPED from DB
 }).refine(
   (data) => {
     // INVARIANT: openSubStatus must be NULL when status !== 'open'

@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { getQuoteStatusBadge } from "@/lib/statusBadges";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -57,21 +58,6 @@ interface QuoteDetails {
 function formatCurrency(amount: string | number): string {
   const num = typeof amount === "string" ? parseFloat(amount) : amount;
   return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(num);
-}
-
-function getStatusBadge(status: string): {
-  label: string;
-  variant: "default" | "destructive" | "secondary" | "outline";
-} {
-  switch (status) {
-    case "draft": return { label: "Draft", variant: "outline" };
-    case "sent": return { label: "Sent", variant: "default" };
-    case "approved": return { label: "Approved", variant: "default" };
-    case "declined": return { label: "Declined", variant: "destructive" };
-    case "expired": return { label: "Expired", variant: "secondary" };
-    case "converted": return { label: "Converted", variant: "secondary" };
-    default: return { label: status, variant: "outline" };
-  }
 }
 
 function safeFormatDate(value: unknown): string {
@@ -264,7 +250,7 @@ export default function QuoteDetailPage() {
   }
 
   const { quote, lines, location, customerCompany, isExpired } = details;
-  const statusInfo = getStatusBadge(quote.status);
+  const statusInfo = getQuoteStatusBadge(quote.status);
   const clientName = customerCompany?.name || location.companyName;
   const isDraft = quote.status === "draft";
   const isSent = quote.status === "sent";
@@ -539,7 +525,7 @@ export default function QuoteDetailPage() {
                   {location.address && (
                     <div className="flex items-start gap-2 text-sm text-muted-foreground">
                       <MapPin className="h-4 w-4 mt-0.5 shrink-0" />
-                      <span>{location.address}</span>
+                      <span>{[location.address, location.address2].filter(Boolean).join(", ")}</span>
                     </div>
                   )}
                   {location.phone && (
