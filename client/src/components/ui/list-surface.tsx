@@ -6,16 +6,16 @@ import { cn } from "@/lib/utils"
  * Shared class constants for list/table surfaces.
  * Standardized across Clients, Jobs, and Invoices list pages.
  */
-export const listSurfaceClass = "rounded-md bg-white dark:bg-gray-900 overflow-hidden border border-gray-200 dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)]"
+export const listSurfaceClass = "rounded-md bg-[#ffffff] dark:bg-gray-900 overflow-hidden border border-[#e5e7eb] dark:border-gray-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)]"
 
-export const listRowClass = "border-b border-gray-200 dark:border-gray-800 last:border-b-0 hover:bg-gray-100/60 dark:hover:bg-gray-800/60 transition-colors"
+export const listRowClass = "border-b border-[#e5e7eb] dark:border-gray-800 last:border-b-0 hover:bg-[#f8fafc] dark:hover:bg-gray-800/60 transition-colors"
 
-// Standardized hover matches shared Table component (#F3F4F6)
-export const tableRowClass = "cursor-pointer hover:bg-[#F3F4F6] dark:hover:bg-gray-800/60 transition-colors border-b border-gray-200 dark:border-gray-800 last:border-b-0"
+// Standardized hover matches shared Table component
+export const tableRowClass = "cursor-pointer hover:bg-[#f8fafc] dark:hover:bg-gray-800/60 transition-colors border-b border-[#e5e7eb] dark:border-gray-800 last:border-b-0"
 
 // Standardized list-page typography tokens (Jobber-style dense layout)
 /** Table header row: background, border, padding, text */
-export const listHeaderRowClass = "grid items-center border-b border-gray-200 dark:border-gray-800 py-2 text-xs font-medium text-muted-foreground bg-[#FAFAFA] dark:bg-gray-900/50"
+export const listHeaderRowClass = "grid items-center border-b border-[#e5e7eb] dark:border-gray-800 py-2 text-xs font-medium text-muted-foreground bg-[#f8fafc] dark:bg-gray-900/50"
 /** Primary cell text (company name, job location, invoice client) */
 export const listPrimaryClass = "text-sm font-medium truncate"
 /** Secondary cell text (contact, sublocation, description) */

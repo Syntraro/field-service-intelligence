@@ -92,6 +92,36 @@ export class TeamRepository extends BaseRepository {
       .orderBy(users.fullName);
   }
 
+  /** 2026-03-31: Bulk fetch technician calendar colors for a company.
+   *  Returns Map<userId, color> for all technicians with a color set. */
+  async getTechnicianColors(companyId: string): Promise<Map<string, string>> {
+    const rows = await db
+      .select({ userId: technicianProfiles.userId, color: technicianProfiles.color })
+      .from(technicianProfiles)
+      .innerJoin(users, eq(users.id, technicianProfiles.userId))
+      .where(and(eq(users.companyId, companyId), isNull(users.deletedAt)));
+    const map = new Map<string, string>();
+    for (const r of rows) {
+      if (r.color) map.set(r.userId, r.color);
+    }
+    return map;
+  }
+
+  /** 2026-04-03: Bulk fetch technician labour cost rates for a company.
+   *  Returns Map<userId, laborCostPerHour> for all technicians with a rate set. */
+  async getTechnicianRates(companyId: string): Promise<Map<string, string>> {
+    const rows = await db
+      .select({ userId: technicianProfiles.userId, laborCostPerHour: technicianProfiles.laborCostPerHour })
+      .from(technicianProfiles)
+      .innerJoin(users, eq(users.id, technicianProfiles.userId))
+      .where(and(eq(users.companyId, companyId), isNull(users.deletedAt)));
+    const map = new Map<string, string>();
+    for (const r of rows) {
+      if (r.laborCostPerHour) map.set(r.userId, r.laborCostPerHour);
+    }
+    return map;
+  }
+
   /**
    * Get single team member
    */

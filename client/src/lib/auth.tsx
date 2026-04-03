@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { apiRequest, queryClient, resetCsrf } from "./queryClient";
+import { apiRequest, queryClient, initCSRF } from "./queryClient";
 
 export interface User {
   id: string;
@@ -26,6 +26,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [userInitialized, setUserInitialized] = useState(false);
 
+  // Pre-warm CSRF token on mount so login click doesn't block on the fetch
+  useEffect(() => {
+    initCSRF().catch(() => {});
+  }, []);
+
   const { data, isLoading, isError } = useQuery<User>({
     queryKey: ["/api/auth/me"],
     retry: false,
@@ -48,9 +53,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ email, password }),
       }),
     onSuccess: (userData) => {
-      resetCsrf(); // session changed → force fresh CSRF token
       setUser(userData);
       queryClient.setQueryData(["/api/auth/me"], userData);
+      // Pre-warm CSRF token for the new session (non-blocking).
+      // The old token may be invalid after passport session regeneration,
+      // but apiRequest auto-retries on EBADCSRFTOKEN, so this is safe.
+      initCSRF().catch(() => {});
     },
   });
 
@@ -61,9 +69,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ email, password }),
       }),
     onSuccess: (userData) => {
-      resetCsrf(); // session changed → force fresh CSRF token
       setUser(userData);
       queryClient.setQueryData(["/api/auth/me"], userData);
+      initCSRF().catch(() => {});
     },
   });
 
@@ -75,8 +83,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       queryClient.cancelQueries();
     },
     onSuccess: () => {
-      resetCsrf(); // session destroyed → clear CSRF
       queryClient.clear();
+      // Pre-warm CSRF for the next login (non-blocking)
+      initCSRF().catch(() => {});
     },
   });
 

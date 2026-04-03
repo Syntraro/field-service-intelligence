@@ -1,11 +1,14 @@
 /**
- * Payroll Page
- * Phase 4: Weekly Payroll Summary + Approval + CSV Export
+ * Payroll Page — Simplified weekly summary + approval (2026-04-03)
+ *
+ * Shows Mon–Sun hours from time_entries only. No worked/tracked/billable/untracked.
+ * Day cells link to the daily admin timesheet view for detail/editing.
  */
 import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { format, addDays, subDays, startOfWeek, parseISO } from "date-fns";
 import { useAuth } from "@/lib/auth";
+import { useLocation } from "wouter";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -30,19 +33,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { TechnicianWeeklySummary, DailyPayrollBreakdown } from "@shared/schema";
 
-// Manager roles that can access this page
 const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"];
+const DAY_ABBREVS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-// Format minutes as hours:minutes
 function formatMinutes(minutes: number): string {
   if (minutes === 0) return "0:00";
   const hrs = Math.floor(minutes / 60);
@@ -50,36 +46,24 @@ function formatMinutes(minutes: number): string {
   return `${hrs}:${mins.toString().padStart(2, "0")}`;
 }
 
-// Format minutes as decimal hours (for display alongside)
-function formatDecimalHours(minutes: number): string {
-  return (minutes / 60).toFixed(2);
-}
-
-// Get Monday of the current week
 function getMonday(date: Date): string {
   const monday = startOfWeek(date, { weekStartsOn: 1 });
   return format(monday, "yyyy-MM-dd");
 }
 
-// Day abbreviations
-const DAY_ABBREVS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-
 export default function PayrollPage() {
   const { user } = useAuth();
   const { toast } = useToast();
+  const [, setLocation] = useLocation();
 
-  // State for week selection (store Monday date as YYYY-MM-DD)
   const [weekStart, setWeekStart] = useState<string>(() => getMonday(new Date()));
 
-  // Compute week dates
   const weekDates = useMemo(() => {
     const monday = parseISO(weekStart);
     return Array.from({ length: 7 }, (_, i) => format(addDays(monday, i), "yyyy-MM-dd"));
   }, [weekStart]);
 
   const weekEnd = weekDates[6];
-
-  // Check if user has manager access
   const isManager = !!(user && MANAGER_ROLES.includes(user.role));
 
   // Fetch weekly payroll summary
@@ -95,56 +79,33 @@ export default function PayrollPage() {
     enabled: isManager,
   });
 
-  // Approve week mutation
+  // Approve mutation
   const approveMutation = useMutation({
     mutationFn: async ({ technicianId }: { technicianId: string }) => {
       return apiRequest("/api/payroll/approve", {
         method: "POST",
-        body: JSON.stringify({
-          technicianId,
-          weekStart,
-        }),
+        body: JSON.stringify({ technicianId, weekStart }),
       });
     },
-    onSuccess: (_, variables) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/payroll/weekly"] });
-      toast({
-        title: "Week Approved",
-        description: "Payroll week has been approved and locked.",
-      });
+      toast({ title: "Week Approved", description: "Payroll week has been approved and locked." });
     },
     onError: (error: Error) => {
-      toast({
-        title: "Approval Failed",
-        description: error.message || "Failed to approve week",
-        variant: "destructive",
-      });
+      toast({ title: "Approval Failed", description: error.message || "Failed to approve week", variant: "destructive" });
     },
   });
 
   // Navigate weeks
-  const goToPreviousWeek = () => {
-    const monday = parseISO(weekStart);
-    setWeekStart(format(subDays(monday, 7), "yyyy-MM-dd"));
-  };
+  const goToPreviousWeek = () => setWeekStart(format(subDays(parseISO(weekStart), 7), "yyyy-MM-dd"));
+  const goToNextWeek = () => setWeekStart(format(addDays(parseISO(weekStart), 7), "yyyy-MM-dd"));
+  const goToCurrentWeek = () => setWeekStart(getMonday(new Date()));
 
-  const goToNextWeek = () => {
-    const monday = parseISO(weekStart);
-    setWeekStart(format(addDays(monday, 7), "yyyy-MM-dd"));
-  };
-
-  const goToCurrentWeek = () => {
-    setWeekStart(getMonday(new Date()));
-  };
-
-  // Handle CSV export
+  // CSV export
   const handleExportCsv = async () => {
     try {
-      const res = await fetch(`/api/payroll/weekly.csv?weekStart=${weekStart}`, {
-        credentials: "include",
-      });
+      const res = await fetch(`/api/payroll/weekly.csv?weekStart=${weekStart}`, { credentials: "include" });
       if (!res.ok) throw new Error("Failed to export CSV");
-
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -154,21 +115,17 @@ export default function PayrollPage() {
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
-
-      toast({
-        title: "Export Complete",
-        description: "Payroll CSV downloaded successfully.",
-      });
-    } catch (error) {
-      toast({
-        title: "Export Failed",
-        description: "Failed to download CSV",
-        variant: "destructive",
-      });
+      toast({ title: "Export Complete", description: "Payroll CSV downloaded." });
+    } catch {
+      toast({ title: "Export Failed", description: "Failed to download CSV", variant: "destructive" });
     }
   };
 
-  // Show forbidden message if not a manager
+  // Navigate to daily timesheet for a specific technician + day
+  const openDayDetail = (technicianId: string, date: string) => {
+    setLocation(`/settings/timesheets?userId=${technicianId}&date=${date}`);
+  };
+
   if (!isManager) {
     return (
       <div className="p-6">
@@ -177,8 +134,6 @@ export default function PayrollPage() {
             <AlertTriangle className="h-12 w-12 text-destructive mb-4" />
             <h2 className="text-xl font-semibold mb-2">Access Denied</h2>
             <p className="text-muted-foreground text-center">
-              You do not have permission to view this page.
-              <br />
               Only managers, admins, and owners can access payroll data.
             </p>
           </CardContent>
@@ -187,18 +142,11 @@ export default function PayrollPage() {
     );
   }
 
-  // Calculate totals
-  const totals = useMemo(() => {
-    return summaries.reduce(
-      (acc, s) => ({
-        workedMinutes: acc.workedMinutes + s.totals.workedMinutes,
-        trackedMinutes: acc.trackedMinutes + s.totals.trackedMinutes,
-        billableMinutes: acc.billableMinutes + s.totals.billableMinutes,
-        untrackedMinutes: acc.untrackedMinutes + Math.max(0, s.totals.untrackedMinutesRaw),
-      }),
-      { workedMinutes: 0, trackedMinutes: 0, billableMinutes: 0, untrackedMinutes: 0 }
-    );
-  }, [summaries]);
+  // Weekly total across all technicians
+  const grandTotal = useMemo(
+    () => summaries.reduce((acc, s) => acc + s.totalMinutes, 0),
+    [summaries]
+  );
 
   return (
     <div className="p-4 space-y-4" data-testid="payroll-page">
@@ -206,9 +154,7 @@ export default function PayrollPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Payroll</h1>
-          <p className="text-muted-foreground">
-            Weekly time summaries, approvals, and export
-          </p>
+          <p className="text-muted-foreground">Weekly time summaries and approvals</p>
         </div>
         <Button onClick={handleExportCsv} variant="outline" disabled={summaries.length === 0}>
           <Download className="h-4 w-4 mr-2" />
@@ -224,7 +170,6 @@ export default function PayrollPage() {
               <ChevronLeft className="h-4 w-4 mr-1" />
               Previous Week
             </Button>
-
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2">
                 <Calendar className="h-4 w-4 text-muted-foreground" />
@@ -236,7 +181,6 @@ export default function PayrollPage() {
                 Today
               </Button>
             </div>
-
             <Button variant="ghost" size="sm" onClick={goToNextWeek}>
               Next Week
               <ChevronRight className="h-4 w-4 ml-1" />
@@ -274,12 +218,8 @@ export default function PayrollPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-[180px]">Technician</TableHead>
-                    <TableHead className="text-right w-[80px]">Worked</TableHead>
-                    <TableHead className="text-right w-[80px]">Tracked</TableHead>
-                    <TableHead className="text-right w-[80px]">Billable</TableHead>
-                    <TableHead className="text-right w-[80px]">Untracked</TableHead>
                     {DAY_ABBREVS.map((day, i) => (
-                      <TableHead key={day} className="text-center w-[60px] text-xs">
+                      <TableHead key={day} className="text-center w-[70px] text-xs">
                         {day}
                         <br />
                         <span className="text-muted-foreground font-normal">
@@ -287,6 +227,7 @@ export default function PayrollPage() {
                         </span>
                       </TableHead>
                     ))}
+                    <TableHead className="text-right w-[80px]">Total</TableHead>
                     <TableHead className="w-[100px]">Status</TableHead>
                     <TableHead className="w-[80px]"></TableHead>
                   </TableRow>
@@ -294,73 +235,24 @@ export default function PayrollPage() {
                 <TableBody>
                   {summaries.map((summary) => (
                     <TableRow key={summary.technicianId}>
-                      <TableCell className="font-medium">
-                        {summary.technicianName}
-                      </TableCell>
-                      <TableCell className="text-right font-mono text-sm">
-                        <TooltipProvider>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span>{formatMinutes(summary.totals.workedMinutes)}</span>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {formatDecimalHours(summary.totals.workedMinutes)} hrs (from work sessions)
-                            </TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
-                      </TableCell>
-                      <TableCell className="text-right font-mono text-sm">
-                        <TooltipProvider>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <span>{formatMinutes(summary.totals.trackedMinutes)}</span>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {formatDecimalHours(summary.totals.trackedMinutes)} hrs (from time entries)
-                            </TooltipContent>
-                          </Tooltip>
-                        </TooltipProvider>
-                      </TableCell>
-                      <TableCell className="text-right font-mono text-sm text-green-600">
-                        {formatMinutes(summary.totals.billableMinutes)}
-                      </TableCell>
-                      <TableCell
-                        className={cn(
-                          "text-right font-mono text-sm",
-                          summary.totals.untrackedMinutesRaw > 0 && "text-amber-600"
-                        )}
-                      >
-                        {formatMinutes(Math.max(0, summary.totals.untrackedMinutesRaw))}
-                      </TableCell>
-                      {/* Daily breakdown */}
-                      {summary.daily.map((day: DailyPayrollBreakdown, i: number) => (
-                        <TableCell key={i} className="text-center text-xs font-mono">
-                          <TooltipProvider>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span
-                                  className={cn(
-                                    day.workedMinutes === 0 && day.trackedMinutes === 0
-                                      ? "text-muted-foreground"
-                                      : ""
-                                  )}
-                                >
-                                  {day.workedMinutes === 0 && day.trackedMinutes === 0
-                                    ? "-"
-                                    : formatMinutes(day.workedMinutes)}
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent>
-                                <div className="text-xs">
-                                  <div>Worked: {formatMinutes(day.workedMinutes)}</div>
-                                  <div>Tracked: {formatMinutes(day.trackedMinutes)}</div>
-                                  <div>Billable: {formatMinutes(day.billableMinutes)}</div>
-                                </div>
-                              </TooltipContent>
-                            </Tooltip>
-                          </TooltipProvider>
+                      <TableCell className="font-medium">{summary.technicianName}</TableCell>
+                      {/* Day cells — clickable to drill into daily timesheet */}
+                      {summary.daily.map((day: DailyPayrollBreakdown) => (
+                        <TableCell
+                          key={day.date}
+                          className={cn(
+                            "text-center text-xs font-mono cursor-pointer hover:bg-muted/60 transition-colors",
+                            day.totalMinutes === 0 && "text-muted-foreground"
+                          )}
+                          onClick={() => openDayDetail(summary.technicianId, day.date)}
+                          title={`Click to view ${day.dayOfWeek} detail`}
+                        >
+                          {day.totalMinutes === 0 ? "-" : formatMinutes(day.totalMinutes)}
                         </TableCell>
                       ))}
+                      <TableCell className="text-right font-mono text-sm font-medium">
+                        {formatMinutes(summary.totalMinutes)}
+                      </TableCell>
                       <TableCell>
                         {summary.approved ? (
                           <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
@@ -368,9 +260,7 @@ export default function PayrollPage() {
                             Approved
                           </Badge>
                         ) : (
-                          <Badge variant="outline" className="text-muted-foreground">
-                            Pending
-                          </Badge>
+                          <Badge variant="outline" className="text-muted-foreground">Pending</Badge>
                         )}
                       </TableCell>
                       <TableCell>
@@ -395,24 +285,16 @@ export default function PayrollPage() {
                   {/* Totals row */}
                   <TableRow className="bg-muted/50 font-medium">
                     <TableCell>Total ({summaries.length})</TableCell>
-                    <TableCell className="text-right font-mono">
-                      {formatMinutes(totals.workedMinutes)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono">
-                      {formatMinutes(totals.trackedMinutes)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-green-600">
-                      {formatMinutes(totals.billableMinutes)}
-                    </TableCell>
-                    <TableCell
-                      className={cn(
-                        "text-right font-mono",
-                        totals.untrackedMinutes > 0 && "text-amber-600"
-                      )}
-                    >
-                      {formatMinutes(totals.untrackedMinutes)}
-                    </TableCell>
-                    <TableCell colSpan={9}></TableCell>
+                    {weekDates.map((_, i) => {
+                      const dayTotal = summaries.reduce((acc, s) => acc + (s.daily[i]?.totalMinutes ?? 0), 0);
+                      return (
+                        <TableCell key={i} className="text-center text-xs font-mono">
+                          {dayTotal === 0 ? "-" : formatMinutes(dayTotal)}
+                        </TableCell>
+                      );
+                    })}
+                    <TableCell className="text-right font-mono">{formatMinutes(grandTotal)}</TableCell>
+                    <TableCell colSpan={2}></TableCell>
                   </TableRow>
                 </TableBody>
               </Table>
@@ -429,8 +311,8 @@ export default function PayrollPage() {
             <div>
               <p className="font-medium text-foreground">Approval Locks</p>
               <p>
-                Once a week is approved for a technician, their time entries and work sessions
-                for that week are locked. Modifications require manager override with a reason.
+                Once a week is approved, time entries are locked. Modifications require
+                manager override with a reason. Click any day cell to view and edit entries.
               </p>
             </div>
           </div>

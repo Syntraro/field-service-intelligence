@@ -62,23 +62,23 @@ export function SchedulingHistory({ jobId, defaultOpen = false }: SchedulingHist
 
   return (
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-      <Card>
+      <Card className="rounded-xl border-[#e5e7eb] bg-[#ffffff]">
         <CollapsibleTrigger asChild>
           <button
-            className="w-full flex items-center justify-between px-5 py-4 bg-primary/[0.09] hover:bg-primary/[0.13] transition-colors"
+            className="w-full flex items-center justify-between px-5 py-4 bg-[#f8fafc] hover:bg-slate-100 transition-colors border-b border-[#e2e8f0]"
             data-testid="trigger-scheduling-history"
           >
-            <span className="text-sm font-semibold flex items-center gap-2">
-              <Calendar className="h-4 w-4" />
+            <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
+              <Calendar className="h-4 w-4 text-[#64748b]" />
               Scheduling History
               {history.length > 0 && (
                 <span className="text-xs text-muted-foreground">({history.length})</span>
               )}
             </span>
             {isOpen ? (
-              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+              <ChevronDown className="h-4 w-4 text-[#64748b]" />
             ) : (
-              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+              <ChevronRight className="h-4 w-4 text-[#64748b]" />
             )}
           </button>
         </CollapsibleTrigger>

@@ -231,6 +231,7 @@ timeRouter.post(
         notes: validated.notes,
         billable,
         actingUserId: req.user!.id,
+        costRateOverride: validated.costRateOverride,
       }
     );
 
@@ -432,6 +433,22 @@ timeRouter.put(
     );
 
     res.json(updated);
+  })
+);
+
+/**
+ * DELETE /api/time/entries/:id
+ * Delete a time entry (manager only)
+ * Reuses canonical deleteTimeEntry storage method
+ */
+timeRouter.delete(
+  "/entries/:id",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    await timeTrackingRepository.deleteTimeEntry(req.companyId!, req.params.id, {
+      userId: req.user!.id,
+    });
+    res.status(204).end();
   })
 );
 

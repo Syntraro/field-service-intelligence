@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { eq, and, desc, inArray, isNull, isNotNull, sql } from "drizzle-orm";
-import { customerCompanies, clients, jobs, invoices, quotes, clientContacts, clientParts, clientNotes } from "@shared/schema";
+import { customerCompanies, clients, jobs, invoices, quotes, contactPersons, clientParts, clientNotes } from "@shared/schema";
 import type { Client } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset } from "./base";
 import { activeJobFilter, notDeletedClientFilter, notDeletedCustomerCompanyFilter } from "./jobFilters";
@@ -508,8 +508,8 @@ export class CustomerCompanyRepository extends BaseRepository {
       throw this.notFoundError("Customer company");
     }
 
-    // Auto-geocode address if lat/lng not provided
-    const coords = await geocodeToLatLng(data.address, data.city, data.province, data.postalCode);
+    // Auto-geocode address if lat/lng not provided (includes country for disambiguation)
+    const coords = await geocodeToLatLng(data.address, data.city, data.province, data.postalCode, (data as any).country);
 
     const [location] = await db
       .insert(clients)
@@ -573,8 +573,8 @@ export class CustomerCompanyRepository extends BaseRepository {
       throw this.notFoundError("Customer company");
     }
 
-    // Auto-geocode address (outside transaction — external API call is fine)
-    const coords = await geocodeToLatLng(data.address, data.city, data.province, data.postalCode);
+    // Auto-geocode address (outside transaction — external API call is fine; includes country)
+    const coords = await geocodeToLatLng(data.address, data.city, data.province, data.postalCode, (data as any).country);
 
     const [location] = await tx
       .insert(clients)

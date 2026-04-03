@@ -1,37 +1,153 @@
 /**
- * WeekDispatchCell — individual cell in the week grid (one tech, one day).
- * Compact item rows for dense weekly overview. Click to select for detail panel.
- * Items are draggable for week-view drag/drop rescheduling.
- * Multi-tech visits show a team indicator badge.
+ * WeekDayColumn (WeekDispatchCell) — single day column in the week calendar grid.
+ * Positions visit and task blocks vertically by scheduledStart time.
+ * Acts as a drop target for DnD rescheduling (dayKey-based, no tech rows).
+ * Each visit/task block is draggable for cross-day moves.
+ * Supports bottom-edge resize with 15-minute snap, overlap clamping via shared utils.
+ *
+ * 2026-03-30: Rewritten from tech×day cell to vertical time-positioned column.
+ * 2026-03-30: Added resize support, unassigned badge, 15-min snapping, overlap cap.
  */
-import { useDraggable, useDroppable } from "@dnd-kit/core";
+import { useState, useMemo, useCallback, useRef } from "react";
+import { addMinutes } from "date-fns";
+import { useDraggable, useDroppable, useDndContext, useDndMonitor } from "@dnd-kit/core";
 import type { DispatchVisit, DispatchTask } from "./dispatchPreviewTypes";
 import type { DispatchDragData, DispatchDropData } from "./dispatchDndTypes";
-import { formatDuration, isCompletedStatus } from "./dispatchPreviewUtils";
+import { formatDuration, isCompletedStatus, jobStateColor, SNAP_MINUTES, MIN_DURATION_MINUTES } from "./dispatchPreviewUtils";
+import { UNASSIGNED_COLOR } from "@shared/colors";
+import { clampResizeEnd } from "./dispatchOverlapUtils";
 import { VisitCardContent } from "./VisitCardContent";
-import { ClipboardList, Truck } from "lucide-react";
+import { ClipboardList, Truck, User } from "lucide-react";
+import { useDispatchHover } from "./dispatchHoverContext";
 
 type Props = {
+  dayKey: string;
   visits: DispatchVisit[];
   tasks: DispatchTask[];
+  startHour: number;
+  endHour: number;
+  hourHeight: number;
   selectedItemId: string | null;
+  savingIds: Set<string>;
   onSelectVisit: (visit: DispatchVisit) => void;
   onSelectTask: (task: DispatchTask) => void;
-  techId: string;
-  dayKey: string;
+  onResize?: (visit: DispatchVisit, newEndTime: string) => void;
+  /** 2026-03-31: techId→color lookup for week-view card coloring */
+  techColorMap?: Map<string, string>;
 };
 
-const MAX_VISIBLE = 4;
+const MIN_BLOCK_HEIGHT = 18;
+/** Maximum side-by-side overlap columns before compression kicks in */
+const MAX_OVERLAP_COLUMNS = 3;
 
-/** Draggable visit row inside a week cell */
-function WeekVisitItem({ visit, techId, dayKey, isSelected, onSelect }: {
+// ── Overlap column assignment ──
+// Groups overlapping items and assigns horizontal columns for side-by-side rendering.
+// Caps at MAX_OVERLAP_COLUMNS — excess items stack into the last column.
+interface LayoutInfo { column: number; totalColumns: number; }
+
+function computeOverlapLayout(items: Array<{ id: string; startMin: number; endMin: number }>): Map<string, LayoutInfo> {
+  const layouts = new Map<string, LayoutInfo>();
+  if (items.length === 0) return layouts;
+
+  const sorted = [...items].sort((a, b) => a.startMin - b.startMin || a.endMin - b.endMin);
+
+  // Greedy column assignment: each item takes the first column that doesn't overlap
+  const columns: Array<{ endMin: number }>[] = [];
+  const itemCols = new Map<string, number>();
+
+  for (const item of sorted) {
+    let placed = false;
+    for (let col = 0; col < columns.length; col++) {
+      const colItems = columns[col];
+      const lastEnd = colItems[colItems.length - 1].endMin;
+      if (item.startMin >= lastEnd) {
+        colItems.push(item);
+        itemCols.set(item.id, col);
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) {
+      columns.push([item]);
+      itemCols.set(item.id, columns.length - 1);
+    }
+  }
+
+  // Determine max columns per overlap group (connected set of overlapping items)
+  const groups: string[][] = [];
+  let currentGroup: typeof sorted = [];
+  let groupEnd = 0;
+
+  for (const item of sorted) {
+    if (currentGroup.length === 0 || item.startMin < groupEnd) {
+      currentGroup.push(item);
+      groupEnd = Math.max(groupEnd, item.endMin);
+    } else {
+      groups.push(currentGroup.map(i => i.id));
+      currentGroup = [item];
+      groupEnd = item.endMin;
+    }
+  }
+  if (currentGroup.length > 0) groups.push(currentGroup.map(i => i.id));
+
+  for (const group of groups) {
+    const usedCols = new Set(group.map(id => itemCols.get(id)!));
+    // Cap visual columns at MAX_OVERLAP_COLUMNS for readability
+    const rawTotal = usedCols.size;
+    const totalColumns = Math.min(rawTotal, MAX_OVERLAP_COLUMNS);
+    for (const id of group) {
+      const colsArray = Array.from(usedCols).sort((a, b) => a - b);
+      const rawCol = colsArray.indexOf(itemCols.get(id)!);
+      // Items beyond MAX_OVERLAP_COLUMNS share the last column
+      const column = Math.min(rawCol, MAX_OVERLAP_COLUMNS - 1);
+      layouts.set(id, { column, totalColumns });
+    }
+  }
+
+  return layouts;
+}
+
+/** Format minutes-since-midnight as "h:mm AM/PM" for ghost preview label */
+function formatMinuteTime(totalMinutes: number): string {
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  const period = h >= 12 ? "PM" : "AM";
+  const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  return `${h12}:${m.toString().padStart(2, "0")} ${period}`;
+}
+
+/** Convert a scheduled item to time range (minutes from midnight) */
+function toTimeRange(scheduledStart: string | null, durationMinutes: number): { startMin: number; endMin: number } | null {
+  if (!scheduledStart) return null;
+  const s = new Date(scheduledStart);
+  const startMin = s.getHours() * 60 + s.getMinutes();
+  return { startMin, endMin: startMin + durationMinutes };
+}
+
+// ── Draggable + resizable visit block ──
+function WeekCalendarVisitBlock({ visit, top, height, left, width, isSelected, isSaving, onSelect, onResize, dayKey, hourHeight, startHour, endHour, laneVisits, laneTasks, techColor }: {
   visit: DispatchVisit;
-  techId: string;
-  dayKey: string;
+  top: number;
+  height: number;
+  left: string;
+  width: string;
   isSelected: boolean;
+  isSaving: boolean;
   onSelect: (v: DispatchVisit) => void;
+  onResize?: (v: DispatchVisit, newEndTime: string) => void;
+  dayKey: string;
+  hourHeight: number;
+  startHour: number;
+  endHour: number;
+  laneVisits: DispatchVisit[];
+  laneTasks: DispatchTask[];
+  /** 2026-03-31: Assigned technician color for left accent */
+  techColor?: string;
 }) {
+  const { hoveredVisitId, setHoveredVisitId } = useDispatchHover();
+  const isMapHovered = hoveredVisitId === visit.id;
   const isCompleted = isCompletedStatus(visit.status);
+  const isUnassigned = !visit.technicianId && visit.technicianIds.length === 0;
   const dragData: DispatchDragData = {
     type: "scheduled-visit",
     visitId: visit.id,
@@ -44,35 +160,172 @@ function WeekVisitItem({ visit, techId, dayKey, isSelected, onSelect }: {
     originalStart: visit.scheduledStart,
   };
 
+  const [isResizing, setIsResizing] = useState(false);
+  const [resizeDeltaY, setResizeDeltaY] = useState(0);
+  const resizeStartYRef = useRef(0);
+  const resizeStartHeightRef = useRef(0);
+  const suppressClickUntilRef = useRef(0);
+
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: `week-visit-${visit.id}--${techId}--${dayKey}`,
+    id: `week-cal-visit-${visit.id}--${dayKey}`,
     data: dragData,
+    disabled: isSaving || isCompleted || isResizing,
   });
 
+  const stateColor = jobStateColor(visit.jobStatus, visit.jobOpenSubStatus);
+
+  // Scope resize clamp candidates to same-technician only (mirrors Day view per-lane behavior).
+  // Week view merges all techs visually, but resize must not clamp against other techs' items.
+  const sameTechVisits = useMemo(() => {
+    if (isUnassigned) {
+      return laneVisits.filter(v => !v.technicianId && v.technicianIds.length === 0);
+    }
+    const techId = visit.technicianId;
+    return laneVisits.filter(v => v.technicianId === techId || v.technicianIds.includes(techId!));
+  }, [laneVisits, visit.technicianId, isUnassigned]);
+
+  const sameTechTasks = useMemo(() => {
+    if (isUnassigned) {
+      return laneTasks.filter(t => !t.assignedToUserId);
+    }
+    return laneTasks.filter(t => t.assignedToUserId === visit.technicianId);
+  }, [laneTasks, visit.technicianId, isUnassigned]);
+
+  // Compute clamped duration from a raw pixel height during resize
+  const clampedDurationFromHeight = useCallback((rawHeight: number): number => {
+    if (!visit.scheduledStart) return MIN_DURATION_MINUTES;
+    const start = new Date(visit.scheduledStart);
+    const startMinuteOfDay = start.getHours() * 60 + start.getMinutes();
+    const rawMinutes = (rawHeight / hourHeight) * 60;
+    const snappedMinutes = Math.max(
+      Math.round(rawMinutes / SNAP_MINUTES) * SNAP_MINUTES,
+      MIN_DURATION_MINUTES,
+    );
+    const proposedEnd = startMinuteOfDay + snappedMinutes;
+    // Clamp against same-tech items + timeline end using shared overlap util
+    const clampedEnd = clampResizeEnd(startMinuteOfDay, proposedEnd, sameTechVisits, sameTechTasks, visit.id, endHour);
+    return Math.max(clampedEnd - startMinuteOfDay, MIN_DURATION_MINUTES);
+  }, [visit.scheduledStart, visit.id, hourHeight, endHour, sameTechVisits, sameTechTasks]);
+
+  // Effective height during resize
+  const rawResizeHeight = isResizing
+    ? Math.max(resizeStartHeightRef.current + resizeDeltaY, (MIN_DURATION_MINUTES / 60) * hourHeight)
+    : 0;
+  const effectiveHeight = isResizing
+    ? (clampedDurationFromHeight(rawResizeHeight) / 60) * hourHeight
+    : Math.max(height, MIN_BLOCK_HEIGHT);
+  const previewDuration = isResizing
+    ? clampedDurationFromHeight(rawResizeHeight)
+    : visit.durationMinutes;
+
+  const handleResizePointerDown = useCallback((e: React.PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setIsResizing(true);
+    resizeStartYRef.current = e.clientY;
+    resizeStartHeightRef.current = Math.max(height, MIN_BLOCK_HEIGHT);
+    setResizeDeltaY(0);
+    suppressClickUntilRef.current = Date.now() + 2000;
+
+    const onPointerMove = (ev: PointerEvent) => {
+      setResizeDeltaY(ev.clientY - resizeStartYRef.current);
+    };
+
+    const onPointerUp = (ev: PointerEvent) => {
+      document.removeEventListener("pointermove", onPointerMove);
+      document.removeEventListener("pointerup", onPointerUp);
+      setIsResizing(false);
+      setResizeDeltaY(0);
+      suppressClickUntilRef.current = Date.now() + 500;
+
+      const finalDelta = ev.clientY - resizeStartYRef.current;
+      const finalHeight = Math.max(resizeStartHeightRef.current + finalDelta, (MIN_DURATION_MINUTES / 60) * hourHeight);
+
+      if (visit.scheduledStart && onResize) {
+        const start = new Date(visit.scheduledStart);
+        const startMinuteOfDay = start.getHours() * 60 + start.getMinutes();
+        const rawMinutes = (finalHeight / hourHeight) * 60;
+        const snappedMinutes = Math.max(
+          Math.round(rawMinutes / SNAP_MINUTES) * SNAP_MINUTES,
+          MIN_DURATION_MINUTES,
+        );
+        const proposedEnd = startMinuteOfDay + snappedMinutes;
+        const clampedEnd = clampResizeEnd(startMinuteOfDay, proposedEnd, sameTechVisits, sameTechTasks, visit.id, endHour);
+        const clampedMinutes = Math.max(clampedEnd - startMinuteOfDay, MIN_DURATION_MINUTES);
+
+        if (clampedMinutes !== visit.durationMinutes) {
+          onResize(visit, addMinutes(start, clampedMinutes).toISOString());
+        }
+      }
+    };
+
+    document.addEventListener("pointermove", onPointerMove);
+    document.addEventListener("pointerup", onPointerUp);
+  }, [height, visit, onResize, hourHeight, sameTechVisits, sameTechTasks, endHour]);
+
+  const handleClick = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (Date.now() < suppressClickUntilRef.current) return;
+    onSelect(visit);
+  }, [visit, onSelect]);
+
   return (
-    <button
+    <div
       ref={setNodeRef}
-      {...listeners}
-      {...attributes}
-      data-dispatch-block="week-visit"
+      {...(isResizing ? {} : listeners)}
+      {...(isResizing ? {} : attributes)}
+      data-dispatch-block="week-cal-visit"
       data-visit-id={visit.id}
-      onClick={(e) => { e.stopPropagation(); onSelect(visit); }}
-      className={`flex w-full items-center gap-1 rounded border border-emerald-200/60 bg-emerald-50/40 px-1.5 py-0.5 text-left transition-colors hover:bg-emerald-50/60 hover:border-emerald-300 cursor-grab active:cursor-grabbing ${
-        isSelected ? "ring-2 ring-emerald-500 bg-emerald-50 border-emerald-200" : ""
-      } ${isDragging ? "opacity-40" : ""} ${isCompleted ? "opacity-55" : ""}`}
+      onClick={handleClick}
+      onMouseEnter={() => setHoveredVisitId(visit.id)}
+      onMouseLeave={() => setHoveredVisitId(null)}
+      className={`group/visit absolute rounded border px-1 py-0.5 text-left transition-shadow ${techColor ? "" : stateColor} ${
+        isResizing ? "overflow-visible z-20 shadow-lg" : "overflow-hidden"
+      } ${isSelected ? "ring-2 ring-emerald-500 z-10" : "z-[1]"
+      } ${isDragging ? "opacity-40 shadow-lg z-30" : "hover:shadow-sm"} ${isMapHovered && !isSelected ? "ring-2 ring-emerald-400 shadow-md z-10" : ""} ${isCompleted ? "opacity-50" : ""} ${isSaving ? "pointer-events-none opacity-60" : ""} ${!isResizing ? "cursor-grab active:cursor-grabbing" : ""}`}
+      style={{ top, height: effectiveHeight, left, width, ...(techColor ? { backgroundColor: `${techColor}25`, borderColor: `${techColor}66`, borderLeftWidth: 3, borderLeftColor: techColor } : {}) }}
     >
-      <VisitCardContent visit={visit} variant="week" />
-    </button>
+      {/* Unassigned indicator */}
+      {isUnassigned && (
+        <div className="absolute top-0.5 right-0.5 flex items-center gap-px rounded bg-slate-200/80 px-1 py-px z-[2]">
+          <User className="h-2 w-2 text-slate-500" />
+          <span className="text-[7px] font-medium text-slate-500 leading-none">–</span>
+        </div>
+      )}
+
+      <VisitCardContent visit={visit} variant="week-calendar" displayDuration={isResizing ? previewDuration : undefined} />
+
+      {/* Resize duration tooltip during resize */}
+      {isResizing && (
+        <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 rounded bg-slate-800 px-1.5 py-0.5 text-[9px] font-bold text-white whitespace-nowrap shadow z-30">
+          {formatDuration(previewDuration)}
+        </div>
+      )}
+
+      {/* Bottom resize handle — visible on hover, not for completed visits */}
+      {!isCompleted && !isSaving && onResize && (
+        <div
+          className="absolute bottom-0 left-0 right-0 h-2 cursor-s-resize opacity-0 hover:opacity-100 group-hover/visit:opacity-60 transition-opacity z-[3]"
+          onPointerDown={handleResizePointerDown}
+        >
+          <div className="mx-auto w-6 h-[3px] rounded-full bg-slate-400 mt-0.5" />
+        </div>
+      )}
+    </div>
   );
 }
 
-/** Draggable task row inside a week cell */
-function WeekTaskItem({ task, techId, dayKey, isSelected, onSelect }: {
+// ── Draggable task block ──
+function WeekCalendarTaskBlock({ task, top, height, left, width, isSelected, isSaving, onSelect, dayKey }: {
   task: DispatchTask;
-  techId: string;
-  dayKey: string;
+  top: number;
+  height: number;
+  left: string;
+  width: string;
   isSelected: boolean;
+  isSaving: boolean;
   onSelect: (t: DispatchTask) => void;
+  dayKey: string;
 }) {
   const dragData: DispatchDragData = {
     type: "scheduled-task",
@@ -86,72 +339,187 @@ function WeekTaskItem({ task, techId, dayKey, isSelected, onSelect }: {
   };
 
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: `week-task-${task.id}--${techId}--${dayKey}`,
+    id: `week-cal-task-${task.id}--${dayKey}`,
     data: dragData,
   });
+
+  const isQuoteAssessment = task.type === "QUOTE_ASSESSMENT";
 
   return (
     <button
       ref={setNodeRef}
       {...listeners}
       {...attributes}
-      data-dispatch-block="week-task"
+      data-dispatch-block="week-cal-task"
       data-task-id={task.id}
       onClick={(e) => { e.stopPropagation(); onSelect(task); }}
-      className={`flex w-full items-center gap-1 rounded px-1 py-0.5 text-left transition-colors hover:bg-blue-50 cursor-grab active:cursor-grabbing ${
-        isSelected ? "ring-1 ring-blue-500 bg-blue-50" : ""
-      } ${isDragging ? "opacity-40" : ""}`}
+      className={`absolute rounded border border-dashed px-1 py-0.5 text-left overflow-hidden cursor-grab active:cursor-grabbing transition-shadow ${
+        isQuoteAssessment ? "border-amber-300 bg-amber-50" : "border-blue-200 bg-blue-50"
+      } ${isSelected ? "ring-1 ring-blue-500 z-10" : "z-[1]"} ${isDragging ? "opacity-40 shadow-lg" : "hover:shadow-sm"} ${isSaving ? "pointer-events-none opacity-60" : ""}`}
+      style={{ top, height: Math.max(height, MIN_BLOCK_HEIGHT), left, width }}
     >
-      {task.type === "SUPPLIER_VISIT" || task.type === "supplier_run"
-        ? <Truck className="h-2.5 w-2.5 flex-shrink-0 text-blue-500" />
-        : <ClipboardList className="h-2.5 w-2.5 flex-shrink-0 text-blue-500" />}
-      <span className="truncate text-[10px] text-blue-700 flex-1">{task.title}</span>
-      <span className="text-[9px] text-blue-400 whitespace-nowrap flex-shrink-0">
-        {formatDuration(task.durationMinutes)}
-      </span>
+      <div className="flex items-center gap-1 overflow-hidden leading-tight">
+        {task.type === "SUPPLIER_VISIT" || task.type === "supplier_run"
+          ? <Truck className="h-2.5 w-2.5 flex-shrink-0 text-blue-500" />
+          : <ClipboardList className="h-2.5 w-2.5 flex-shrink-0 text-blue-500" />}
+        <span className="truncate text-[10px] font-medium text-blue-800">{task.title}</span>
+      </div>
+      {height > 24 && (
+        <p className="text-[9px] text-blue-500">{formatDuration(task.durationMinutes)}</p>
+      )}
     </button>
   );
 }
 
-export default function WeekDispatchCell({ visits, tasks, selectedItemId, onSelectVisit, onSelectTask, techId, dayKey }: Props) {
-  // Make the cell a droppable zone for week-view drag/drop
-  const dropData: DispatchDropData = { technicianId: techId, dayKey };
+// ── Main day column component ──
+export default function WeekDayColumn({
+  dayKey, visits, tasks, startHour, endHour, hourHeight,
+  selectedItemId, savingIds, onSelectVisit, onSelectTask, onResize, techColorMap,
+}: Props) {
+  // Register as drop target — calendar-style: dayKey only, no technicianId
+  const dropData: DispatchDropData = { dayKey };
   const { setNodeRef, isOver } = useDroppable({
-    id: `week-cell-${techId}--${dayKey}`,
+    id: `week-day-${dayKey}`,
     data: dropData,
   });
 
-  const totalItems = visits.length + tasks.length;
+  // Ref to column DOM node for pointer-relative ghost positioning
+  const columnElRef = useRef<HTMLDivElement | null>(null);
+  const mergedRef = useCallback((node: HTMLDivElement | null) => {
+    setNodeRef(node);
+    columnElRef.current = node;
+  }, [setNodeRef]);
 
-  const visibleVisits = visits.slice(0, MAX_VISIBLE);
-  const remainingSlots = Math.max(0, MAX_VISIBLE - visibleVisits.length);
-  const visibleTasks = tasks.slice(0, remainingSlots);
-  const overflow = totalItems - visibleVisits.length - visibleTasks.length;
+  // Ghost preview: snapped start minute during drag-over
+  const { active } = useDndContext();
+  const [ghostStartMin, setGhostStartMin] = useState<number | null>(null);
+  const droppableId = `week-day-${dayKey}`;
+
+  useDndMonitor({
+    onDragMove(event) {
+      if (!columnElRef.current) return;
+      // Only compute ghost when hovering this specific column
+      if (event.over?.id !== droppableId) {
+        if (ghostStartMin !== null) setGhostStartMin(null);
+        return;
+      }
+      const activator = event.activatorEvent as PointerEvent;
+      const currentY = activator.clientY + event.delta.y;
+      const rect = columnElRef.current.getBoundingClientRect();
+      const relativeY = currentY - rect.top;
+      const minuteOffset = (relativeY / hourHeight) * 60;
+      const absoluteMinute = startHour * 60 + minuteOffset;
+      // Snap to 15-minute grid, clamp to visible range
+      const snapped = Math.round(absoluteMinute / SNAP_MINUTES) * SNAP_MINUTES;
+      const clamped = Math.max(startHour * 60, Math.min(snapped, endHour * 60 - SNAP_MINUTES));
+      setGhostStartMin(clamped);
+    },
+    onDragEnd() { setGhostStartMin(null); },
+    onDragCancel() { setGhostStartMin(null); },
+  });
+
+  const totalHeight = (endHour - startHour) * hourHeight;
+
+  // Compute vertical positions and overlap layouts
+  const { visitPositions, taskPositions } = useMemo(() => {
+    const allRanges: Array<{ id: string; startMin: number; endMin: number; kind: "visit" | "task" }> = [];
+
+    for (const v of visits) {
+      const range = toTimeRange(v.scheduledStart, v.durationMinutes);
+      if (range) allRanges.push({ id: v.id, ...range, kind: "visit" });
+    }
+    for (const t of tasks) {
+      const range = toTimeRange(t.scheduledStart, t.durationMinutes);
+      if (range) allRanges.push({ id: t.id, ...range, kind: "task" });
+    }
+
+    const layouts = computeOverlapLayout(allRanges);
+    const startMinOffset = startHour * 60;
+
+    const vPos = new Map<string, { top: number; height: number; left: string; width: string }>();
+    const tPos = new Map<string, { top: number; height: number; left: string; width: string }>();
+
+    for (const item of allRanges) {
+      const layout = layouts.get(item.id) ?? { column: 0, totalColumns: 1 };
+      const top = ((item.startMin - startMinOffset) / 60) * hourHeight;
+      const height = Math.max(((item.endMin - item.startMin) / 60) * hourHeight, MIN_BLOCK_HEIGHT);
+      const colWidth = 100 / layout.totalColumns;
+      const left = `${layout.column * colWidth}%`;
+      const width = `${colWidth - 1}%`;
+
+      const pos = { top, height, left, width };
+      if (item.kind === "visit") vPos.set(item.id, pos);
+      else tPos.set(item.id, pos);
+    }
+
+    return { visitPositions: vPos, taskPositions: tPos };
+  }, [visits, tasks, startHour, hourHeight]);
 
   return (
-    <div ref={setNodeRef} className={`space-y-px min-h-[36px] rounded transition-colors ${isOver ? "bg-blue-50/60 ring-1 ring-inset ring-blue-300" : ""}`}>
-      {visibleVisits.map(v => (
-        <WeekVisitItem
-          key={`${v.id}--${techId}`}
-          visit={v}
-          techId={techId}
-          dayKey={dayKey}
-          isSelected={selectedItemId === v.id}
-          onSelect={onSelectVisit}
-        />
-      ))}
-      {visibleTasks.map(t => (
-        <WeekTaskItem
-          key={`${t.id}--${techId}`}
-          task={t}
-          techId={techId}
-          dayKey={dayKey}
-          isSelected={selectedItemId === t.id}
-          onSelect={onSelectTask}
-        />
-      ))}
-      {overflow > 0 && (
-        <p className="text-[9px] text-muted-foreground px-1">+{overflow} more</p>
+    <div ref={mergedRef} data-week-day={dayKey} className="absolute inset-0" style={{ height: totalHeight }}>
+      {/* Visit blocks */}
+      {visits.map(v => {
+        const pos = visitPositions.get(v.id);
+        if (!pos) return null;
+        return (
+          <WeekCalendarVisitBlock
+            key={v.id}
+            visit={v}
+            top={pos.top}
+            height={pos.height}
+            left={pos.left}
+            width={pos.width}
+            isSelected={selectedItemId === v.id}
+            isSaving={savingIds.has(v.id)}
+            onSelect={onSelectVisit}
+            onResize={onResize}
+            dayKey={dayKey}
+            hourHeight={hourHeight}
+            startHour={startHour}
+            endHour={endHour}
+            laneVisits={visits}
+            laneTasks={tasks}
+            techColor={v.technicianId ? techColorMap?.get(v.technicianId) : UNASSIGNED_COLOR}
+          />
+        );
+      })}
+
+      {/* Task blocks */}
+      {tasks.map(t => {
+        const pos = taskPositions.get(t.id);
+        if (!pos) return null;
+        return (
+          <WeekCalendarTaskBlock
+            key={t.id}
+            task={t}
+            top={pos.top}
+            height={pos.height}
+            left={pos.left}
+            width={pos.width}
+            isSelected={selectedItemId === t.id}
+            isSaving={savingIds.has(t.id)}
+            onSelect={onSelectTask}
+            dayKey={dayKey}
+          />
+        );
+      })}
+
+      {/* Ghost preview — snapped to 15-min slot under cursor during drag-over */}
+      {isOver && ghostStartMin !== null && active?.data?.current && (
+        <div
+          className="absolute left-0 right-0 rounded border-2 border-dashed border-emerald-400 bg-emerald-50/40 pointer-events-none z-20"
+          style={{
+            top: ((ghostStartMin - startHour * 60) / 60) * hourHeight,
+            height: Math.max(
+              ((active.data.current.durationMinutes ?? 60) / 60) * hourHeight,
+              MIN_BLOCK_HEIGHT,
+            ),
+          }}
+        >
+          <span className="text-[10px] font-medium text-emerald-600 px-1 leading-tight">
+            {formatMinuteTime(ghostStartMin)} · {formatDuration(active.data.current.durationMinutes ?? 60)}
+          </span>
+        </div>
       )}
     </div>
   );

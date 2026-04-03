@@ -4,11 +4,12 @@
  */
 import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { ChevronDown, Check } from "lucide-react";
+import { ChevronDown, Check, MapPin, Route } from "lucide-react";
 import type { Technician, VisitStatus } from "./dispatchPreviewTypes";
 import { UNASSIGNED_TECH_ID } from "./dispatchPreviewTypes";
 import { VISIT_STATUS_OPTIONS } from "@/lib/visitStatusDisplay";
 import { visitStatusDot } from "./dispatchPreviewUtils";
+import { UNASSIGNED_COLOR } from "@shared/colors";
 
 type Props = {
   technicians: Technician[];
@@ -24,6 +25,15 @@ type Props = {
   showHideWeekends?: boolean;
   hideWeekends?: boolean;
   onToggleHideWeekends?: () => void;
+  /** Map panel toggle — right-aligned in filter row */
+  showMap?: boolean;
+  onToggleMap?: () => void;
+  /** Show unscheduled jobs on map toggle — visible only when map is open */
+  showUnscheduledOnMap?: boolean;
+  onToggleUnscheduledOnMap?: () => void;
+  /** Show route lines on map toggle — visible only when map is open */
+  showRoutes?: boolean;
+  onToggleRoutes?: () => void;
 };
 
 function MultiSelectDropdown({
@@ -68,6 +78,9 @@ export default function DispatchFiltersBar({
   selectedStatuses, onStatusToggle,
   includeUnassigned,
   showHideWeekends, hideWeekends, onToggleHideWeekends,
+  showMap, onToggleMap,
+  showUnscheduledOnMap, onToggleUnscheduledOnMap,
+  showRoutes, onToggleRoutes,
 }: Props) {
   // 2026-03-23: Total includes Unassigned when present, for accurate badge count
   const totalFilterable = technicians.length + (includeUnassigned ? 1 : 0);
@@ -105,7 +118,7 @@ export default function DispatchFiltersBar({
                 }`}>
                   {selectedTechIds.has(UNASSIGNED_TECH_ID) && <Check className="h-3 w-3 text-white" />}
                 </div>
-                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: "#94a3b8" }} />
+                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: UNASSIGNED_COLOR }} />
                 <span className="italic text-slate-500">Unassigned</span>
               </button>
             </>
@@ -149,6 +162,56 @@ export default function DispatchFiltersBar({
           Hide Weekends
         </button>
       )}
+
+      {/* 2026-03-31: Map toggle + unscheduled toggle — right-aligned in filter row */}
+      <div className="ml-auto flex items-center gap-1.5">
+        {showMap && onToggleUnscheduledOnMap && (
+          <button
+            onClick={onToggleUnscheduledOnMap}
+            className={`flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+              showUnscheduledOnMap
+                ? "border-primary bg-primary/5 text-primary"
+                : "bg-white text-muted-foreground border-slate-200 hover:bg-slate-50"
+            }`}
+            title={showUnscheduledOnMap ? "Hide unscheduled jobs on map" : "Show unscheduled jobs on map"}
+          >
+            <div className={`flex h-3.5 w-3.5 items-center justify-center rounded border ${
+              showUnscheduledOnMap ? "border-primary bg-primary" : "border-slate-300"
+            }`}>
+              {showUnscheduledOnMap && <Check className="h-2.5 w-2.5 text-white" />}
+            </div>
+            Unscheduled
+          </button>
+        )}
+        {showMap && onToggleRoutes && (
+          <button
+            onClick={onToggleRoutes}
+            className={`flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+              showRoutes
+                ? "border-primary bg-primary/5 text-primary"
+                : "bg-white text-muted-foreground border-slate-200 hover:bg-slate-50"
+            }`}
+            title={showRoutes ? "Hide route lines" : "Show route lines between stops"}
+          >
+            <Route className="h-3.5 w-3.5" />
+            Routes
+          </button>
+        )}
+        {onToggleMap && (
+          <button
+            onClick={onToggleMap}
+            className={`flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+              showMap
+                ? "bg-primary text-white border-primary"
+                : "bg-white text-muted-foreground border-slate-200 hover:bg-slate-50"
+            }`}
+            title={showMap ? "Hide map panel" : "Show map panel"}
+          >
+            <MapPin className="h-3.5 w-3.5" />
+            Map
+          </button>
+        )}
+      </div>
     </div>
   );
 }

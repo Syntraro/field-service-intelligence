@@ -233,14 +233,14 @@ export default function SupplierDetailPage() {
 
   if (!isCreateMode && isLoading) {
     return (
-      <div className="p-6 bg-gray-200 dark:bg-gray-900">
+      <div className="p-6 bg-[#F4F8F4] dark:bg-gray-900">
         <div>Loading...</div>
       </div>
     );
   }
 
   return (
-    <div className="p-6 space-y-6 bg-gray-200 dark:bg-gray-900">
+    <div className="p-6 space-y-6 bg-[#F4F8F4] dark:bg-gray-900">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">

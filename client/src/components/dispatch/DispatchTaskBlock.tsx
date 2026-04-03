@@ -15,7 +15,7 @@ import {
 } from "./dispatchPreviewUtils";
 import type { DispatchVisit } from "./dispatchPreviewTypes";
 import { clampResizeEnd } from "./dispatchOverlapUtils";
-import { Clock, ClipboardList, Truck } from "lucide-react";
+import { Clock, ClipboardList, Truck, FileSearch } from "lucide-react";
 
 type Props = {
   task: DispatchTask;
@@ -37,6 +37,7 @@ type Props = {
 const TASK_TYPE_LABELS: Record<string, string> = {
   GENERAL: "Task",
   SUPPLIER_VISIT: "Supplier Visit",
+  QUOTE_ASSESSMENT: "Quote Assessment",
   supplier_run: "Supplier Run",
   pickup: "Pickup",
   delivery: "Delivery",
@@ -48,6 +49,11 @@ const TASK_TYPE_LABELS: Record<string, string> = {
 /** Returns true if this task type should show the Truck icon */
 function isSupplierType(type: string): boolean {
   return type === "SUPPLIER_VISIT" || type === "supplier_run";
+}
+
+/** Returns true if this is a quote assessment task */
+function isQuoteAssessment(type: string): boolean {
+  return type === "QUOTE_ASSESSMENT";
 }
 
 /** Get pixel position for a task block. Accepts optional dynamic startHour for 24h mode. */
@@ -193,9 +199,11 @@ export default function DispatchTaskBlock({ task, isSaving, isSelected, hasConfl
       onClick={handleClick}
       data-dispatch-block="task"
       data-task-id={task.id}
-      className={`group/task absolute top-1 bottom-1 rounded border border-dashed border-blue-300 bg-blue-50/80 text-blue-700 overflow-visible hover:shadow-sm hover:z-10 transition-shadow ${
+      className={`group/task absolute top-1 bottom-1 rounded border border-dashed overflow-visible hover:shadow-sm hover:z-10 transition-shadow ${
+        isQuoteAssessment(task.type) ? "border-amber-400 bg-amber-50/80 text-amber-800" : "border-blue-300 bg-blue-50/80 text-blue-700"
+      } ${
         isDragging ? "opacity-40 shadow-lg z-30" : ""
-      } ${isResizing ? "z-20 shadow-lg" : ""} ${isSelected ? "ring-2 ring-blue-500 ring-offset-1 shadow-md shadow-blue-200/50 z-20" : ""} ${hasConflict && !isSelected ? "ring-2 ring-red-500 ring-offset-1 shadow-md shadow-red-200/50 border-red-400" : ""} ${!isResizing ? "cursor-grab active:cursor-grabbing" : ""}`}
+      } ${isResizing ? "z-20 shadow-lg" : ""} ${isSelected ? "ring-2 ring-[#76B054] ring-offset-1 shadow-md shadow-[rgba(118,176,84,0.3)] z-20" : ""} ${hasConflict && !isSelected ? "ring-2 ring-red-500 ring-offset-1 shadow-md shadow-red-200/50 border-red-400" : ""} ${!isResizing ? "cursor-grab active:cursor-grabbing" : ""}`}
       style={{ left: pos.left, width: effectiveWidth }}
       title={`${typeLabel}: ${task.title}\n${formatDuration(task.durationMinutes)}`}
     >
@@ -203,9 +211,11 @@ export default function DispatchTaskBlock({ task, isSaving, isSelected, hasConfl
         {effectiveWidth > 100 ? (
           <>
             <div className="flex items-center gap-1 truncate">
-              {isSupplierType(task.type)
-                ? <Truck className="h-3 w-3 flex-shrink-0" />
-                : <ClipboardList className="h-3 w-3 flex-shrink-0" />}
+              {isQuoteAssessment(task.type)
+                ? <FileSearch className="h-3 w-3 flex-shrink-0" />
+                : isSupplierType(task.type)
+                  ? <Truck className="h-3 w-3 flex-shrink-0" />
+                  : <ClipboardList className="h-3 w-3 flex-shrink-0" />}
               <span className="truncate text-[11px] font-semibold">{task.title}</span>
             </div>
             <div className="flex items-center gap-1.5 text-[10px] opacity-80">
@@ -217,9 +227,11 @@ export default function DispatchTaskBlock({ task, isSaving, isSelected, hasConfl
           </>
         ) : (
           <div className="flex items-center gap-0.5 truncate">
-            {isSupplierType(task.type)
-              ? <Truck className="h-3 w-3 flex-shrink-0" />
-              : <ClipboardList className="h-3 w-3 flex-shrink-0" />}
+            {isQuoteAssessment(task.type)
+              ? <FileSearch className="h-3 w-3 flex-shrink-0" />
+              : isSupplierType(task.type)
+                ? <Truck className="h-3 w-3 flex-shrink-0" />
+                : <ClipboardList className="h-3 w-3 flex-shrink-0" />}
             <span className="truncate text-[10px] font-semibold">{task.title}</span>
           </div>
         )}
@@ -229,12 +241,12 @@ export default function DispatchTaskBlock({ task, isSaving, isSelected, hasConfl
         <div
           onPointerDown={handleResizePointerDown}
           className={`absolute top-0 bottom-0 right-0 w-2 cursor-ew-resize ${
-            isResizing ? "bg-blue-400/30" : "hover:bg-blue-400/20"
+            isResizing ? "bg-[rgba(118,176,84,0.30)]" : "hover:bg-[rgba(118,176,84,0.20)]"
           } transition-colors`}
           title="Drag to resize"
         >
           <div className={`absolute top-1/2 right-0.5 -translate-y-1/2 w-0.5 h-4 rounded-full ${
-            isResizing ? "bg-blue-500" : "bg-slate-400/0 group-hover/task:bg-slate-400/60"
+            isResizing ? "bg-[#76B054]" : "bg-slate-400/0 group-hover/task:bg-slate-400/60"
           } transition-colors`} />
         </div>
       )}

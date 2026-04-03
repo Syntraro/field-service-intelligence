@@ -1,12 +1,13 @@
 /**
- * DispatchBoardHeader — top bar with title, date nav, view toggles (Day/Week),
+ * DispatchBoardHeader — top bar with title, date nav, view toggles (Day/Week/Month),
  * and 24-hour timeline toggle.
+ * 2026-03-31: Enabled Month view button; updated date label for month navigation.
  */
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { format, startOfWeek, endOfWeek } from "date-fns";
 
-export type DispatchView = "day" | "week";
+export type DispatchView = "day" | "week" | "month";
 
 type Props = {
   selectedDate: Date;
@@ -15,7 +16,7 @@ type Props = {
   onToday: () => void;
   activeView?: DispatchView;
   onViewChange?: (v: DispatchView) => void;
-  /** Item 7: Show 24-hour timeline toggle (day view only) */
+  /** Show 24-hour timeline toggle (Day and Week views only) */
   show24Hour?: boolean;
   onToggle24Hour?: () => void;
 };
@@ -27,9 +28,12 @@ export default function DispatchBoardHeader({
 }: Props) {
   const isToday = format(selectedDate, "yyyy-MM-dd") === format(new Date(), "yyyy-MM-dd");
 
-  const dateLabel = activeView === "week"
-    ? `${format(startOfWeek(selectedDate, { weekStartsOn: 1 }), "MMM d")} – ${format(endOfWeek(selectedDate, { weekStartsOn: 1 }), "MMM d, yyyy")}`
-    : format(selectedDate, "EEEE, MMM d, yyyy");
+  const dateLabel =
+    activeView === "month"
+      ? format(selectedDate, "MMMM yyyy")
+      : activeView === "week"
+        ? `${format(startOfWeek(selectedDate, { weekStartsOn: 1 }), "MMM d")} – ${format(endOfWeek(selectedDate, { weekStartsOn: 1 }), "MMM d, yyyy")}`
+        : format(selectedDate, "EEEE, MMM d, yyyy");
 
   return (
     <div className="flex items-center justify-between border-b bg-white px-5 py-3">
@@ -53,7 +57,7 @@ export default function DispatchBoardHeader({
 
       {/* 24-hour toggle + view toggles */}
       <div className="flex items-center gap-3">
-        {activeView === "day" && onToggle24Hour && (
+        {(activeView === "day" || activeView === "week") && onToggle24Hour && (
           <button
             onClick={onToggle24Hour}
             className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
@@ -67,7 +71,7 @@ export default function DispatchBoardHeader({
           </button>
         )}
       <div className="inline-flex items-center rounded-lg border bg-white p-0.5">
-        {(["day", "week"] as const).map(v => (
+        {(["day", "week", "month"] as const).map(v => (
           <button
             key={v}
             onClick={() => onViewChange?.(v)}
@@ -80,13 +84,6 @@ export default function DispatchBoardHeader({
             {v}
           </button>
         ))}
-        <button
-          disabled
-          title="Month view — coming soon"
-          className="rounded-md px-3 py-1 text-xs font-medium capitalize text-muted-foreground/40 cursor-not-allowed"
-        >
-          month
-        </button>
       </div>
       </div>
     </div>

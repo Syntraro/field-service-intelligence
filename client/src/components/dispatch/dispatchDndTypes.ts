@@ -11,8 +11,10 @@ export type DispatchDragType = "scheduled-visit" | "unscheduled-visit" | "schedu
 /** Data attached to a draggable dispatch item */
 export interface DispatchDragData {
   type: DispatchDragType;
-  /** For visits: visitId. For tasks: taskId. */
-  visitId: string;
+  /** For scheduled visits: real persisted visitId. For tasks: taskId.
+   *  For unscheduled-visit: real visitId if a visit row exists, undefined otherwise.
+   *  Never contains a job UUID — absence is represented as undefined. */
+  visitId?: string;
   jobId: string;
   jobNumber: number;
   /** Current technician (null for unscheduled) */
@@ -25,9 +27,12 @@ export interface DispatchDragData {
   originalStart?: string | null;
 }
 
-/** Data attached to a lane drop zone (day view) or cell drop zone (week view) */
+/** Data attached to a lane drop zone (day view) or cell/column drop zone (week/month view).
+ *  Day view lanes always provide technicianId.
+ *  Week calendar columns and Month day cells provide dayKey; technicianId is optional
+ *  (calendar/month drops preserve the drag source's tech assignment). */
 export interface DispatchDropData {
-  technicianId: string;
-  /** Present for week view cells — "yyyy-MM-dd" format */
+  technicianId?: string;
+  /** Present for week/month view cells — "yyyy-MM-dd" format */
   dayKey?: string;
 }

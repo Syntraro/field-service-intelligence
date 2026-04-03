@@ -46,6 +46,7 @@ import {
 } from "@/components/ui/tooltip";
 import type { Quote, QuoteLine, Client, CustomerCompany } from "@shared/schema";
 import { ApplyQuoteTemplateModal } from "@/components/ApplyQuoteTemplateModal";
+import { Briefcase as BriefcaseIcon, FileSearch, CalendarCheck } from "lucide-react";
 
 interface QuoteDetails {
   quote: Quote;
@@ -231,6 +232,95 @@ export default function QuoteDetailPage() {
     onError: (error: Error) => {
       toast({ title: "Failed to convert quote", description: error.message, variant: "destructive" });
     },
+  });
+
+  // Phase 2: Team members for owner selector
+  const { data: teamMembers = [] } = useQuery<{ id: string; firstName: string; lastName: string; role: string }[]>({
+    queryKey: ["/api/team"],
+    queryFn: async () => {
+      const res = await fetch("/api/team", { credentials: "include" });
+      if (!res.ok) return [];
+      return res.json();
+    },
+  });
+
+  // Phase 2: Assessment scheduling state
+  const [showScheduleAssessment, setShowScheduleAssessment] = useState(false);
+  const [assessmentDate, setAssessmentDate] = useState("");
+  const [assessmentAssignee, setAssessmentAssignee] = useState("");
+
+  // Phase 2: Owner update mutation
+  const updateOwnerMutation = useMutation({
+    mutationFn: (userId: string | null) =>
+      apiRequest(`/api/quotes/${quoteId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ salesOwnerUserId: userId }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
+      toast({ title: "Quote owner updated" });
+    },
+    onError: (e: Error) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
+  });
+
+  // Phase 2: Assessment requirement toggle
+  const toggleAssessmentMutation = useMutation({
+    mutationFn: (needed: boolean) =>
+      apiRequest(`/api/quotes/${quoteId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ assessmentStatus: needed ? "required" : null }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
+    },
+    onError: (e: Error) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
+  });
+
+  // Phase 2: Schedule assessment
+  const scheduleAssessmentMutation = useMutation({
+    mutationFn: () =>
+      apiRequest(`/api/quotes/${quoteId}/assessment/schedule`, {
+        method: "POST",
+        body: JSON.stringify({
+          scheduledStartAt: new Date(assessmentDate).toISOString(),
+          assignedToUserId: assessmentAssignee || undefined,
+        }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
+      setShowScheduleAssessment(false);
+      setAssessmentDate("");
+      setAssessmentAssignee("");
+      toast({ title: "Assessment scheduled" });
+    },
+    onError: (e: Error) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
+  });
+
+  // Phase 2: Complete assessment
+  const completeAssessmentMutation = useMutation({
+    mutationFn: () =>
+      apiRequest(`/api/quotes/${quoteId}/assessment/complete`, { method: "POST" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
+      toast({ title: "Assessment completed" });
+    },
+    onError: (e: Error) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
+  });
+
+  // Phase 2: Cancel assessment
+  const cancelAssessmentMutation = useMutation({
+    mutationFn: () =>
+      apiRequest(`/api/quotes/${quoteId}/assessment`, { method: "DELETE" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["quote", quoteId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/quotes/list"] });
+      toast({ title: "Assessment cancelled" });
+    },
+    onError: (e: Error) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
   });
 
   if (!quoteId) {
@@ -584,6 +674,58 @@ export default function QuoteDetailPage() {
                       <span>{safeFormatDate(quote.declinedAt)}</span>
                     </div>
                   )}
+
+                  {/* Phase 2: Quote owner */}
+                  <div className="pt-2 border-t">
+                    <div className="flex justify-between items-center">
+                      <span className="text-muted-foreground">Owner</span>
+                      <select
+                        className="text-sm border rounded px-2 py-1 max-w-[140px]"
+                        value={(quote as any).salesOwnerUserId || ""}
+                        onChange={(e) => updateOwnerMutation.mutate(e.target.value || null)}
+                        disabled={updateOwnerMutation.isPending}
+                      >
+                        <option value="">Unassigned</option>
+                        {teamMembers.map(u => (
+                          <option key={u.id} value={u.id}>{[u.firstName, u.lastName].filter(Boolean).join(" ")}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Phase 2: Assessment workflow */}
+                  <div className="pt-2 border-t space-y-2">
+                    <div className="flex justify-between items-center">
+                      <span className="text-muted-foreground">Assessment</span>
+                      {!(quote as any).assessmentStatus ? (
+                        <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => toggleAssessmentMutation.mutate(true)}>
+                          Mark needed
+                        </Button>
+                      ) : (quote as any).assessmentStatus === "required" ? (
+                        <div className="flex items-center gap-1">
+                          <Badge variant="outline" className="text-[10px] border-amber-300 text-amber-700">Needed</Badge>
+                          <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => setShowScheduleAssessment(true)}>
+                            Schedule
+                          </Button>
+                          <Button variant="ghost" size="sm" className="h-6 text-xs text-muted-foreground" onClick={() => toggleAssessmentMutation.mutate(false)}>
+                            Clear
+                          </Button>
+                        </div>
+                      ) : (quote as any).assessmentStatus === "scheduled" ? (
+                        <div className="flex items-center gap-1">
+                          <Badge variant="outline" className="text-[10px] border-amber-400 text-amber-800 bg-amber-50">Scheduled</Badge>
+                          <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => completeAssessmentMutation.mutate()}>
+                            Complete
+                          </Button>
+                          <Button variant="ghost" size="sm" className="h-6 text-xs text-muted-foreground" onClick={() => cancelAssessmentMutation.mutate()}>
+                            Cancel
+                          </Button>
+                        </div>
+                      ) : (quote as any).assessmentStatus === "completed" ? (
+                        <Badge variant="outline" className="text-[10px] border-emerald-300 text-emerald-700">Completed</Badge>
+                      ) : null}
+                    </div>
+                  </div>
                 </CardContent>
               </Card>
             </div>
@@ -822,6 +964,44 @@ export default function QuoteDetailPage() {
         quoteId={quoteId}
         quoteNumber={quote.quoteNumber || undefined}
       />
+
+      {/* Phase 2: Schedule Assessment Dialog */}
+      <Dialog open={showScheduleAssessment} onOpenChange={setShowScheduleAssessment}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Schedule Quote Assessment</DialogTitle>
+            <DialogDescription>Schedule a site assessment for {quote.quoteNumber || "this quote"}.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label>Date & Time *</Label>
+              <Input type="datetime-local" value={assessmentDate} onChange={(e) => setAssessmentDate(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label>Assigned To</Label>
+              <select
+                className="w-full border rounded px-3 py-2 text-sm"
+                value={assessmentAssignee}
+                onChange={(e) => setAssessmentAssignee(e.target.value)}
+              >
+                <option value="">Unassigned</option>
+                {teamMembers.map(u => (
+                  <option key={u.id} value={u.id}>{[u.firstName, u.lastName].filter(Boolean).join(" ")}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowScheduleAssessment(false)}>Cancel</Button>
+            <Button
+              onClick={() => scheduleAssessmentMutation.mutate()}
+              disabled={!assessmentDate || scheduleAssessmentMutation.isPending}
+            >
+              {scheduleAssessmentMutation.isPending ? "Scheduling..." : "Schedule Assessment"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

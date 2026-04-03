@@ -41,9 +41,13 @@ interface JobNotesSectionProps {
   embedded?: boolean;
   /** Report note count to parent for sidebar tab label */
   onCountChange?: (count: number) => void;
+  /** When true, hides the internal "+ Add Note" button (parent controls note creation) */
+  hideAddButton?: boolean;
+  /** When true, hides the internal header row (parent provides its own collapsible header) */
+  hideHeader?: boolean;
 }
 
-export default function JobNotesSection({ jobId, embedded = false, onCountChange }: JobNotesSectionProps) {
+export default function JobNotesSection({ jobId, embedded = false, onCountChange, hideAddButton = false, hideHeader = false }: JobNotesSectionProps) {
   const { toast } = useToast();
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
 
@@ -83,46 +87,46 @@ export default function JobNotesSection({ jobId, embedded = false, onCountChange
   // The sidebar collapse arrow is rendered by the parent (JobDetailPage), not here.
   const header = (
     <div
-      className="flex items-center justify-between px-5 py-4 bg-primary/[0.09]"
+      className="flex items-center justify-between px-4 py-2.5 bg-[#f8fafc] border-b border-[#e2e8f0]"
       data-testid="trigger-notes"
     >
-      <span className="text-sm font-semibold flex items-center gap-2">
-        <MessageSquare className="h-4 w-4 text-muted-foreground" />
+      <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
+        <MessageSquare className="h-4 w-4 text-[#64748b]" />
         Notes {notes.length > 0 && `(${notes.length})`}
       </span>
-      <Button
-        variant="ghost"
-        size="sm"
-        className="text-xs h-auto min-h-0 p-0 text-primary"
-        onClick={() => setIsAddDialogOpen(true)}
-        data-testid="button-add-note"
-      >
-        + Add Note
-      </Button>
+      {!hideAddButton && (
+        <button
+          className="text-xs text-[#76B054] hover:text-[#5F9442] font-medium"
+          onClick={() => setIsAddDialogOpen(true)}
+          data-testid="button-add-note"
+        >
+          + Add Note
+        </button>
+      )}
     </div>
   );
 
   // Notes list — always visible (no vertical collapse)
   const body = (
-    <div className={embedded ? "px-4 pb-4 pt-1" : "border-t px-4 pb-4 pt-3"}>
+    <div className={embedded ? "px-3 pb-3 pt-1" : "border-t px-3 pb-3 pt-2"}>
       {isLoading ? (
         <p className="text-xs text-muted-foreground">Loading notes...</p>
       ) : notes.length === 0 ? (
-        <div className="text-center py-4 text-muted-foreground">
-          <MessageSquare className="h-6 w-6 mx-auto mb-1 opacity-50" />
+        <div className="text-center py-3 text-muted-foreground">
+          <MessageSquare className="h-5 w-5 mx-auto mb-1 opacity-50" />
           <p className="text-xs">No notes yet</p>
         </div>
       ) : (
-        <div className="space-y-1.5">
-          {notes.map((note) => (
+        <div className="space-y-0">
+          {notes.map((note, idx) => (
             <div
               key={note.id}
-              className="group py-1.5 px-1"
+              className={`group py-3 px-1 ${idx > 0 ? "border-t border-slate-200" : ""}`}
               data-testid={`note-${note.id}`}
             >
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] text-muted-foreground">
-                  <span className="font-medium text-foreground/80">{getUserName(note)}</span>
+                <span className="text-xs text-slate-500">
+                  <span className="font-semibold text-slate-700">{getUserName(note)}</span>
                   {" · "}
                   {format(new Date(note.createdAt), "MMM d, h:mm a")}
                   {note.updatedAt && " · edited"}
@@ -138,7 +142,7 @@ export default function JobNotesSection({ jobId, embedded = false, onCountChange
                   <Trash2 className="h-3 w-3" />
                 </Button>
               </div>
-              <p className="text-[13px] leading-relaxed whitespace-pre-wrap mt-0.5">{note.noteText}</p>
+              <p className="text-[14px] leading-5 whitespace-pre-wrap mt-0.5 text-slate-800">{note.noteText}</p>
 
               {/* Attachments display */}
               {note.attachments && note.attachments.length > 0 && (
@@ -178,12 +182,12 @@ export default function JobNotesSection({ jobId, embedded = false, onCountChange
     <>
       {embedded ? (
         <div data-testid="card-job-notes">
-          {header}
+          {!hideHeader && header}
           {body}
         </div>
       ) : (
         <Card data-testid="card-job-notes">
-          {header}
+          {!hideHeader && header}
           {body}
         </Card>
       )}

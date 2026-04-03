@@ -21,7 +21,7 @@ import { Card } from "@/components/ui/card";
 import {
   MoreHorizontal, Send, DollarSign, PenTool, RotateCw, Ban, Edit, FileText,
   Printer, CheckCircle, Undo2, MapPin, Phone, Mail, User, Briefcase, Calendar,
-  Check, X,
+  Check, X, Trash2,
 } from "lucide-react";
 import { Link } from "wouter";
 import type { Invoice, Client, CustomerCompany, Job } from "@shared/schema";
@@ -67,9 +67,11 @@ export interface InvoiceHeaderCardProps {
   onSend?: () => void;
   onCollectPayment?: () => void;
   onVoid?: () => void;
+  onDelete?: () => void;
   onRefreshFromJob?: () => void;
   refreshPending?: boolean;
   voidPending?: boolean;
+  deletePending?: boolean;
   onDownloadPdf?: () => void;
   onPrintPdf?: () => void;
   pdfPending?: boolean;
@@ -83,11 +85,13 @@ export interface InvoiceHeaderCardProps {
   statusVariant?: "default" | "destructive" | "secondary" | "outline";
   isPastDue?: boolean;
 
-  // Invoice number + payment terms editing callbacks
+  // Invoice number + payment terms + issue date editing callbacks
   onUpdateInvoiceNumber?: (invoiceNumber: string) => void;
   invoiceNumberPending?: boolean;
   onUpdatePaymentTerms?: (data: { paymentTermsDays: number | null; dueDate?: string }) => void;
   paymentTermsPending?: boolean;
+  onUpdateIssueDate?: (issueDate: string) => void;
+  issueDatePending?: boolean;
 }
 
 function formatCurrency(amount: string | number): string {
@@ -119,9 +123,11 @@ export function InvoiceHeaderCard({
   onSend,
   onCollectPayment,
   onVoid,
+  onDelete,
   onRefreshFromJob,
   refreshPending,
   voidPending,
+  deletePending,
   onDownloadPdf,
   onPrintPdf,
   pdfPending,
@@ -138,6 +144,8 @@ export function InvoiceHeaderCard({
   invoiceNumberPending,
   onUpdatePaymentTerms,
   paymentTermsPending,
+  onUpdateIssueDate,
+  issueDatePending,
 }: InvoiceHeaderCardProps) {
   // Derived status flags
   const isAwaitingPayment = invoice.status === "awaiting_payment" || invoice.status === "sent";
@@ -145,10 +153,18 @@ export function InvoiceHeaderCard({
   const isPayable = isAwaitingPayment || isPartialPaid;
   const isTerminal = invoice.status === "paid" || invoice.status === "voided";
   const canVoid = !isTerminal && (isDraft || isAwaitingPayment || isPartialPaid);
+  // Draft invoices can be deleted if not synced to QBO and no payments recorded
+  const canDelete = isDraft && !invoice.qboInvoiceId && parseFloat(invoice.amountPaid || "0") === 0;
 
   // Invoice number editing state
   const [editingNumber, setEditingNumber] = useState(false);
   const [numberDraft, setNumberDraft] = useState(invoice.invoiceNumber || "");
+
+  // Issue date editing state
+  const [editingIssueDate, setEditingIssueDate] = useState(false);
+  const issueDateRaw = (invoice as any).issuedAt || invoice.issueDate;
+  const issueDateForInput = issueDateRaw ? new Date(issueDateRaw).toISOString().split("T")[0] : "";
+  const [issueDateDraft, setIssueDateDraft] = useState(issueDateForInput);
 
   // Custom due date state (for "Custom" payment terms)
   const [showCustomDate, setShowCustomDate] = useState(false);
@@ -189,9 +205,9 @@ export function InvoiceHeaderCard({
   const serviceText = formatAddress(serviceAddress);
 
   return (
-    <Card className="p-4 mb-6">
-      {/* Row 1: Invoice title + status + total + actions */}
-      <div className="flex items-start justify-between gap-4">
+    <div data-testid="invoice-header-area">
+      {/* Compact top action row — matches job detail page pattern */}
+      <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-3">
           {/* Invoice number (editable in edit mode) */}
           {isEditing && editingNumber ? (
@@ -224,23 +240,151 @@ export function InvoiceHeaderCard({
             </div>
           )}
           {statusLabel && <Badge variant={statusVariant}>{statusLabel}</Badge>}
+          {/* Inline total for quick reference */}
+          <span className="text-sm text-muted-foreground ml-2">
+            {formatCurrency(invoice.total)}
+          </span>
         </div>
 
-        <div className="text-right">
-          <div className="text-sm text-muted-foreground">Total</div>
-          <div className="text-lg font-semibold">{formatCurrency(invoice.total)}</div>
+        {/* Action buttons — top right, matching job detail pattern */}
+        <div className="flex items-center gap-2">
+          {isDraft && onEdit && (
+            <Button variant="outline" size="sm" onClick={onEdit}>
+              <Edit className="h-4 w-4 mr-1" />
+              {isEditing ? "Done Editing" : "Edit Invoice"}
+            </Button>
+          )}
+          {canEdit && !isDraft && onEdit && (
+            <Button variant="outline" size="sm" onClick={onEdit}>
+              <Edit className="h-4 w-4 mr-1" />
+              {isEditing ? "Done Editing" : "Edit"}
+            </Button>
+          )}
+
+          {isDraft && onSend && (
+            <Button variant="default" size="sm" onClick={onSend} disabled={sendPending}>
+              <Send className="h-4 w-4 mr-1" />
+              {sendPending ? "Sending..." : "Send Invoice"}
+            </Button>
+          )}
+
+          {isPayable && onCollectPayment && (
+            <Button variant="default" size="sm" onClick={onCollectPayment}>
+              <DollarSign className="h-4 w-4 mr-1" />
+              Add Payment
+            </Button>
+          )}
+
+          {onDownloadPdf && (
+            <Button variant="outline" size="sm" onClick={onDownloadPdf} disabled={pdfPending}>
+              <FileText className="h-4 w-4 mr-1" />
+              {pdfPending ? "Loading..." : "Download PDF"}
+            </Button>
+          )}
+          {onPrintPdf && (
+            <Button variant="outline" size="sm" onClick={onPrintPdf} disabled={pdfPending}>
+              <Printer className="h-4 w-4 mr-1" />
+              Print
+            </Button>
+          )}
+
+          {!isTerminal && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <MoreHorizontal className="h-4 w-4 mr-1" />
+                  More
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem disabled>
+                  <PenTool className="h-4 w-4 mr-2" />
+                  Collect Signature
+                </DropdownMenuItem>
+
+                {isDraft && job && onRefreshFromJob && (
+                  <DropdownMenuItem onClick={onRefreshFromJob} disabled={refreshPending}>
+                    <RotateCw className="h-4 w-4 mr-2" />
+                    Refresh from Job
+                  </DropdownMenuItem>
+                )}
+
+                {onToggleSent && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onClick={() => onToggleSent(!invoice.sentAt)}
+                      disabled={toggleSentPending}
+                    >
+                      {invoice.sentAt ? (
+                        <>
+                          <Undo2 className="h-4 w-4 mr-2" />
+                          {toggleSentPending ? "Updating..." : "Undo sent"}
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle className="h-4 w-4 mr-2" />
+                          {toggleSentPending ? "Updating..." : "Mark as sent"}
+                        </>
+                      )}
+                    </DropdownMenuItem>
+                  </>
+                )}
+
+                {canDelete && onDelete && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onClick={onDelete}
+                      disabled={deletePending}
+                      className="text-destructive focus:text-destructive"
+                    >
+                      <Trash2 className="h-4 w-4 mr-2" />
+                      {deletePending ? "Deleting..." : "Delete Draft"}
+                    </DropdownMenuItem>
+                  </>
+                )}
+                {canVoid && !canDelete && onVoid && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      onClick={onVoid}
+                      disabled={voidPending}
+                      className="text-destructive focus:text-destructive"
+                    >
+                      <Ban className="h-4 w-4 mr-2" />
+                      {voidPending ? "Voiding..." : "Void Invoice"}
+                    </DropdownMenuItem>
+                  </>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+
+          {isTerminal && (
+            <span className="text-sm text-muted-foreground">
+              {invoice.status === "paid" ? "Fully paid" : "Invoice voided"}
+            </span>
+          )}
         </div>
       </div>
 
-      {/* Row 2: Jobber-style info grid — addresses, contact, terms */}
-      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-sm border-t pt-4">
+      {/* Info card — addresses, contact, terms */}
+      <Card className="p-4 mb-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-sm">
         {/* Billing Address */}
         <div>
           <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-1">Billing Address</div>
           <div className="flex items-start gap-1.5">
             <MapPin className="h-3.5 w-3.5 text-muted-foreground mt-0.5 shrink-0" />
             <div>
-              <p className="font-medium">{clientName}</p>
+              {customerCompany?.id ? (
+                <Link href={`/clients/${customerCompany.id}`}>
+                  <span className="font-medium text-primary hover:underline cursor-pointer">{clientName}</span>
+                </Link>
+              ) : (
+                <p className="font-medium">{clientName}</p>
+              )}
               {billingText ? (
                 <p className="text-muted-foreground whitespace-pre-line">{billingText}</p>
               ) : (
@@ -311,14 +455,37 @@ export function InvoiceHeaderCard({
                 </Link>
               </div>
             )}
-            {/* Issued date */}
+            {/* Issued date (editable in edit mode) */}
             <div className="flex items-center gap-1.5">
               <Calendar className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-              <span>
-                Issued: {invoice.issuedAt || invoice.issueDate
-                  ? format(new Date(invoice.issuedAt || invoice.issueDate), "MMM d, yyyy")
-                  : "Not set"}
-              </span>
+              {isEditing && editingIssueDate ? (
+                <div className="flex items-center gap-1">
+                  <Input
+                    type="date"
+                    value={issueDateDraft}
+                    onChange={(e) => setIssueDateDraft(e.target.value)}
+                    className="h-7 text-xs w-36"
+                    data-testid="input-issue-date"
+                  />
+                  <Button variant="ghost" size="sm" className="h-7 w-7 p-0" disabled={issueDatePending} onClick={() => { if (issueDateDraft && onUpdateIssueDate) { onUpdateIssueDate(issueDateDraft); setEditingIssueDate(false); } }}>
+                    <Check className="h-3.5 w-3.5 text-green-600" />
+                  </Button>
+                  <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={() => { setEditingIssueDate(false); setIssueDateDraft(issueDateForInput); }}>
+                    <X className="h-3.5 w-3.5 text-muted-foreground" />
+                  </Button>
+                </div>
+              ) : (
+                <span className="flex items-center gap-1">
+                  Issued: {issueDateRaw
+                    ? format(new Date(issueDateRaw), "MMM d, yyyy")
+                    : "Not set"}
+                  {isEditing && (
+                    <Button variant="ghost" size="sm" className="h-5 w-5 p-0 ml-0.5" onClick={() => setEditingIssueDate(true)} data-testid="button-edit-issue-date">
+                      <Edit className="h-3 w-3 text-muted-foreground" />
+                    </Button>
+                  )}
+                </span>
+              )}
             </div>
             {/* Due date */}
             <div className="flex items-center gap-1.5">
@@ -368,115 +535,8 @@ export function InvoiceHeaderCard({
         </div>
       </div>
 
-      {/* Row 3: Action buttons */}
-      <div className="mt-4 flex flex-wrap items-center gap-2 border-t pt-3">
-        {isDraft && onEdit && (
-          <Button variant="outline" size="sm" onClick={onEdit}>
-            <Edit className="h-4 w-4 mr-1" />
-            {isEditing ? "Done Editing" : "Edit Invoice"}
-          </Button>
-        )}
-        {canEdit && !isDraft && onEdit && (
-          <Button variant="outline" size="sm" onClick={onEdit}>
-            <Edit className="h-4 w-4 mr-1" />
-            {isEditing ? "Done Editing" : "Edit"}
-          </Button>
-        )}
-
-        {isDraft && onSend && (
-          <Button variant="default" size="sm" onClick={onSend} disabled={sendPending}>
-            <Send className="h-4 w-4 mr-1" />
-            {sendPending ? "Sending..." : "Send Invoice"}
-          </Button>
-        )}
-
-        {isPayable && onCollectPayment && (
-          <Button variant="default" size="sm" onClick={onCollectPayment}>
-            <DollarSign className="h-4 w-4 mr-1" />
-            Add Payment
-          </Button>
-        )}
-
-        {onDownloadPdf && (
-          <Button variant="outline" size="sm" onClick={onDownloadPdf} disabled={pdfPending}>
-            <FileText className="h-4 w-4 mr-1" />
-            {pdfPending ? "Loading..." : "Download PDF"}
-          </Button>
-        )}
-        {onPrintPdf && (
-          <Button variant="outline" size="sm" onClick={onPrintPdf} disabled={pdfPending}>
-            <Printer className="h-4 w-4 mr-1" />
-            Print
-          </Button>
-        )}
-
-        {!isTerminal && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm">
-                <MoreHorizontal className="h-4 w-4 mr-1" />
-                More
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start">
-              <DropdownMenuItem disabled>
-                <PenTool className="h-4 w-4 mr-2" />
-                Collect Signature
-              </DropdownMenuItem>
-
-              {isDraft && job && onRefreshFromJob && (
-                <DropdownMenuItem onClick={onRefreshFromJob} disabled={refreshPending}>
-                  <RotateCw className="h-4 w-4 mr-2" />
-                  Refresh from Job
-                </DropdownMenuItem>
-              )}
-
-              {onToggleSent && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    onClick={() => onToggleSent(!invoice.sentAt)}
-                    disabled={toggleSentPending}
-                  >
-                    {invoice.sentAt ? (
-                      <>
-                        <Undo2 className="h-4 w-4 mr-2" />
-                        {toggleSentPending ? "Updating..." : "Undo sent"}
-                      </>
-                    ) : (
-                      <>
-                        <CheckCircle className="h-4 w-4 mr-2" />
-                        {toggleSentPending ? "Updating..." : "Mark as sent"}
-                      </>
-                    )}
-                  </DropdownMenuItem>
-                </>
-              )}
-
-              {canVoid && onVoid && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    onClick={onVoid}
-                    disabled={voidPending}
-                    className="text-destructive focus:text-destructive"
-                  >
-                    <Ban className="h-4 w-4 mr-2" />
-                    {voidPending ? "Voiding..." : "Void Invoice"}
-                  </DropdownMenuItem>
-                </>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
-
-        {isTerminal && (
-          <span className="text-sm text-muted-foreground ml-2">
-            {invoice.status === "paid" ? "Fully paid" : "Invoice voided"}
-          </span>
-        )}
-      </div>
-    </Card>
+      </Card>
+    </div>
   );
 }
 

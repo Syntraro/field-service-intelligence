@@ -40,6 +40,8 @@ export interface TaskCreateInput {
   scheduledEndAt?: string;
   jobId?: string;
   clientId?: string;
+  // Phase 2: Quote assessment link — immutable after create
+  quoteId?: string;
   estimatedDurationMinutes?: number;
 }
 
@@ -127,6 +129,9 @@ export class TaskRepository extends BaseRepository {
 
     if (input.estimatedDurationMinutes !== undefined)
       values.estimatedDurationMinutes = input.estimatedDurationMinutes;
+
+    // Phase 2: Quote assessment link
+    if (input.quoteId !== undefined) values.quoteId = input.quoteId;
 
     const [task] = await db.insert(tasks).values(values).returning();
 

@@ -250,6 +250,10 @@ router.get(
   "/technicians",
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const members = await storage.getTeamMembers(req.companyId!);
+    // 2026-03-31: Fetch canonical technician colors from technicianProfiles
+    const colorMap = await storage.getTechnicianColors(req.companyId!);
+    // 2026-04-03: Fetch labour cost rates for Add Time modal cost-per-hour field
+    const rateMap = await storage.getTechnicianRates(req.companyId!);
 
     // Use canonical filter with diagnostics
     const { schedulable, excluded } = filterSchedulableTechnicians(
@@ -271,8 +275,9 @@ router.get(
       email: m.email,
       role: m.role,
       roleId: m.roleId,
-      // Include schedulability info for client-side diagnostics
       isSchedulable: m.isSchedulable,
+      color: colorMap.get(m.id) ?? null,
+      laborCostPerHour: rateMap.get(m.id) ?? null,
     }));
 
     res.json(result);

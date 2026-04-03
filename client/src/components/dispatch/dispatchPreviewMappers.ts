@@ -4,7 +4,7 @@
  * Read-only mapper layer — no mutations.
  *
  * buildTechnicianRoster() creates the authoritative tech roster from
- * GET /api/team/technicians, enriched with colors from event payload.
+ * GET /api/team/technicians with canonical team colors.
  */
 import type { CalendarEventDto, UnscheduledJobDto, CalendarTechnicianDto } from "@shared/types/scheduling";
 import type { TeamMember } from "@/hooks/useTechnicians";
@@ -73,6 +73,9 @@ export function mapEventToDispatchVisit(event: CalendarEventDto): DispatchVisit 
     locationCity: event.locationCity,
     locationProvinceState: event.locationProvinceState,
     locationPostalCode: event.locationPostalCode,
+    lat: event.lat ?? null,
+    lng: event.lng ?? null,
+    equipmentIds: (event as any).equipmentIds ?? null,
   };
 }
 
@@ -110,6 +113,9 @@ export function mapUnscheduledToDispatchVisit(job: UnscheduledJobDto): DispatchV
     locationCity: job.locationCity,
     locationProvinceState: job.locationProvinceState,
     locationPostalCode: job.locationPostalCode,
+    // Map coordinates for dispatch map markers (same as scheduled mapper)
+    lat: job.lat ?? null,
+    lng: job.lng ?? null,
   };
 }
 
@@ -138,30 +144,20 @@ export function mapRawTask(task: any): DispatchTask {
 }
 
 /**
- * Build the authoritative technician roster from the team directory,
- * enriched with colors from calendar events when available.
- * This ensures the board always shows all schedulable technicians
- * even on days with zero scheduled visits.
+ * Build the authoritative technician roster from the team directory.
+ * Color comes exclusively from canonical TeamMember.color (technicianProfiles
+ * via /api/team/technicians), with a deterministic palette fallback.
+ * 2026-03-31: Removed event-mined color fallback — canonical team color is now
+ * the single source of truth.
  */
 export function buildTechnicianRoster(
   teamMembers: TeamMember[],
-  events: CalendarEventDto[],
 ): Technician[] {
-  // Build a color lookup from event technician data
-  const colorMap = new Map<string, string>();
-  for (const event of events) {
-    for (const tech of event.technicians) {
-      if (tech.color && !colorMap.has(tech.id)) {
-        colorMap.set(tech.id, tech.color);
-      }
-    }
-  }
-
   return teamMembers.map((m, i) => ({
     id: m.id,
     name: m.fullName,
     initials: getInitials(m.fullName),
-    color: colorMap.get(m.id) ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length],
+    color: m.color ?? DEFAULT_COLORS[i % DEFAULT_COLORS.length],
     status: "available" as const,
   }));
 }

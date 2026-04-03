@@ -28,6 +28,8 @@ const createTaskSchema = z.object({
   type: z.string().max(50).optional(),
   jobId: z.string().uuid().optional(),
   clientId: z.string().uuid().optional(),
+  // Phase 2: Quote assessment link — set for QUOTE_ASSESSMENT tasks only, immutable after create
+  quoteId: z.string().uuid().optional(),
   estimatedDurationMinutes: z.number().int().positive().optional(),
   status: z.enum(["pending", "in_progress", "completed", "cancelled"]).optional().default("pending"),
   scheduledStartAt: z.preprocess(
@@ -105,6 +107,8 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
       notes: validated.notes ?? (validated as any).description ?? undefined,
       clientId: validated.clientId ?? undefined,
       jobId: validated.jobId,
+      // Phase 2: Quote assessment link
+      quoteId: validated.quoteId,
       // Fix 4: Default task duration to 60 minutes for timeline visibility
       estimatedDurationMinutes: validated.estimatedDurationMinutes ?? 60,
       scheduledStartAt: (validated.scheduledStartAt && typeof validated.scheduledStartAt === 'string') ? validated.scheduledStartAt : undefined,

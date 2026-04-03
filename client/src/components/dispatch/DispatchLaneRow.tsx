@@ -53,16 +53,15 @@ export default memo(function DispatchLaneRow({
   timelineEndHour: endHour,
   onEmptySlotClick,
 }: Props) {
-  const isUnassigned = tech.id === UNASSIGNED_TECH_ID;
   const dropData: DispatchDropData = { technicianId: tech.id };
 
+  // 2026-03-26: Unassigned lane is now a valid drop target (clears tech assignment)
   const { setNodeRef, isOver } = useDroppable({
     id: `lane-${tech.id}`,
     data: dropData,
-    disabled: isUnassigned,
   });
 
-  const overBg = hasOverlap ? "bg-red-50/60" : "bg-blue-50/60";
+  const overBg = hasOverlap ? "bg-red-50/60" : "bg-[rgba(118,176,84,0.08)]";
 
   // Exclude allDay items from timeline — allDay scheduling removed from product UX
   const timedVisits = useMemo(() => visits.filter(v => !v.isAllDay), [visits]);
@@ -128,16 +127,23 @@ export default memo(function DispatchLaneRow({
     }
   }, []);
 
+  const isUnassignedLane = tech.id === UNASSIGNED_TECH_ID;
+
   return (
     <div
       ref={setNodeRef}
       onClick={handleLaneClick}
       onPointerDownCapture={handleLanePointerDown}
-      className={`group relative flex ${!isLast ? "border-b border-slate-200/80" : ""} ${
+      className={`group relative flex ${!isLast && !isUnassignedLane ? "border-b border-slate-200/80" : ""} ${
         isOver ? overBg : ""
       } transition-colors ${onEmptySlotClick ? "cursor-pointer" : ""}`}
       style={{ height: LANE_HEIGHT_PX, width: totalWidth }}
     >
+      {/* 2026-03-27: Double-divider for Unassigned lane — matches sidebar */}
+      {isUnassignedLane && (
+        <div className="absolute bottom-0 left-0 right-0 h-[3px] pointer-events-none z-[5]"
+          style={{ background: "linear-gradient(to bottom, rgba(100,116,139,0.25) 0px, rgba(100,116,139,0.25) 1px, transparent 1px, transparent 2px, rgba(100,116,139,0.18) 2px, rgba(100,116,139,0.18) 3px)" }} />
+      )}
       {/* Goal 2: Hour cell grid lines — alternating subtle fill for half-day rhythm */}
       {hours.map((h, idx) => (
         <div
@@ -160,7 +166,7 @@ export default memo(function DispatchLaneRow({
 
       {/* Drop target highlight overlay */}
       {isOver && !hasOverlap && (
-        <div className="pointer-events-none absolute inset-0 border-2 border-dashed border-blue-300 rounded bg-blue-50/30 z-10" />
+        <div className="pointer-events-none absolute inset-0 border-2 border-dashed border-[#76B054] rounded bg-[rgba(118,176,84,0.06)] z-10" />
       )}
       {isOver && hasOverlap && (
         <div className="pointer-events-none absolute inset-0 border-2 border-dashed border-red-300 rounded bg-red-50/30 z-10" />

@@ -82,6 +82,12 @@ export type DispatchVisit = {
   locationCity?: string | null;
   locationProvinceState?: string | null;
   locationPostalCode?: string | null;
+  /** Client location latitude (from client_locations) */
+  lat?: string | null;
+  /** Client location longitude (from client_locations) */
+  lng?: string | null;
+  /** Equipment IDs from job_visits.equipment_ids — propagated from job-level equipment */
+  equipmentIds?: string[] | null;
 };
 
 /** Task item rendered on the dispatch timeline */

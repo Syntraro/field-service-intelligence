@@ -205,43 +205,54 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       doc.text(statusLabel, detailsX + 5, detailsY + 5, { width: 90, align: "center" });
 
       // ========================================
-      // LINE ITEMS TABLE
+      // LINE ITEMS TABLE (respects visibility flags)
       // ========================================
+      const showLineItems = invoice.showLineItems !== false;
+      const showQty = invoice.showQuantity !== false;
+      const showUnitPrice = invoice.showUnitPrice !== false;
+      const showLineTotals = invoice.showLineTotals !== false;
+
       const tableTop = Math.max(clientInfoY + 30, detailsY + 50);
+      let rowY: number;
 
-      // Table header
-      doc.rect(leftCol, tableTop, pageWidth, 24).fill("#f5f5f5");
+      if (showLineItems) {
+        // Table header
+        doc.rect(leftCol, tableTop, pageWidth, 24).fill("#f5f5f5");
 
-      doc.fontSize(10).fillColor("#333333").font("Helvetica-Bold");
-      doc.text("Description", leftCol + 10, tableTop + 7, { width: 280 });
-      doc.text("Qty", leftCol + 300, tableTop + 7, { width: 50, align: "center" });
-      doc.text("Rate", leftCol + 360, tableTop + 7, { width: 80, align: "right" });
-      doc.text("Amount", leftCol + 450, tableTop + 7, { width: 80, align: "right" });
+        doc.fontSize(10).fillColor("#333333").font("Helvetica-Bold");
+        doc.text("Description", leftCol + 10, tableTop + 7, { width: 280 });
+        if (showQty) doc.text("Qty", leftCol + 300, tableTop + 7, { width: 50, align: "center" });
+        if (showUnitPrice) doc.text("Rate", leftCol + 360, tableTop + 7, { width: 80, align: "right" });
+        if (showLineTotals) doc.text("Amount", leftCol + 450, tableTop + 7, { width: 80, align: "right" });
 
-      // Table rows
-      let rowY = tableTop + 24;
-      doc.font("Helvetica").fontSize(10).fillColor("#333333");
+        // Table rows
+        rowY = tableTop + 24;
+        doc.font("Helvetica").fontSize(10).fillColor("#333333");
 
-      if (lines.length === 0) {
-        doc.fillColor("#999999").text("No line items", leftCol + 10, rowY + 10);
-        rowY += 30;
-      } else {
-        for (const line of lines) {
-          const lineHeight = 24;
+        if (lines.length === 0) {
+          doc.fillColor("#999999").text("No line items", leftCol + 10, rowY + 10);
+          rowY += 30;
+        } else {
+          for (const line of lines) {
+            const lineHeight = 24;
 
-          // Alternate row background
-          if (lines.indexOf(line) % 2 === 1) {
-            doc.rect(leftCol, rowY, pageWidth, lineHeight).fill("#fafafa");
+            // Alternate row background
+            if (lines.indexOf(line) % 2 === 1) {
+              doc.rect(leftCol, rowY, pageWidth, lineHeight).fill("#fafafa");
+            }
+
+            doc.fillColor("#333333");
+            doc.text(line.description || "", leftCol + 10, rowY + 7, { width: 280 });
+            if (showQty) doc.text(line.quantity || "1", leftCol + 300, rowY + 7, { width: 50, align: "center" });
+            if (showUnitPrice) doc.text(formatCurrency(line.unitPrice), leftCol + 360, rowY + 7, { width: 80, align: "right" });
+            if (showLineTotals) doc.text(formatCurrency(line.lineSubtotal), leftCol + 450, rowY + 7, { width: 80, align: "right" });
+
+            rowY += lineHeight;
           }
-
-          doc.fillColor("#333333");
-          doc.text(line.description || "", leftCol + 10, rowY + 7, { width: 280 });
-          doc.text(line.quantity || "1", leftCol + 300, rowY + 7, { width: 50, align: "center" });
-          doc.text(formatCurrency(line.unitPrice), leftCol + 360, rowY + 7, { width: 80, align: "right" });
-          doc.text(formatCurrency(line.lineSubtotal), leftCol + 450, rowY + 7, { width: 80, align: "right" });
-
-          rowY += lineHeight;
         }
+      } else {
+        // Line items hidden — just leave space for totals
+        rowY = tableTop;
       }
 
       // ========================================
@@ -287,9 +298,10 @@ export function generateInvoicePdf(data: InvoicePdfData): Promise<Buffer> {
       doc.text("Total:", totalsX + 10, totalsRowY);
       doc.text(formatCurrency(invoice.total), totalsX + totalsWidth - 90, totalsRowY, { width: 80, align: "right" });
 
-      // Amount Paid and Balance (if any payments)
+      // Amount Paid and Balance (if any payments and showBalance is enabled)
+      const showBalance = invoice.showBalance !== false;
       const amountPaid = parseFloat(invoice.amountPaid || "0");
-      if (amountPaid > 0) {
+      if (showBalance && amountPaid > 0) {
         totalsRowY += 20;
         doc.fontSize(10).fillColor("#666666").font("Helvetica");
         doc.text("Amount Paid:", totalsX + 10, totalsRowY);

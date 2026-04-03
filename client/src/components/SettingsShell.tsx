@@ -115,6 +115,13 @@ const settingsNavItems: SettingsNavItem[] = [
     testId: "nav-payroll-settings",
   },
   {
+    href: "/settings/timesheets",
+    icon: Clock,
+    title: "Timesheets",
+    description: "Daily time entry detail & editing",
+    testId: "nav-timesheets-settings",
+  },
+  {
     href: "/settings/time-analytics",
     icon: BarChart3,
     title: "Time Analytics",

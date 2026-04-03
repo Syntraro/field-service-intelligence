@@ -1,7 +1,7 @@
 import { db } from "../db";
 import { and, eq, desc, gte, lte, asc, sql, notInArray, isNull, isNotNull, or } from "drizzle-orm";
 import { activeJobFilter } from "./jobFilters";
-import { jobVisits, jobs, jobNotes, users, clientLocations } from "@shared/schema";
+import { jobVisits, jobs, jobNotes, users, clientLocations, jobEquipment } from "@shared/schema";
 import { BaseRepository, clampLimit } from "./base";
 import { sanitizeAllDayTimestamps } from "../utils/allDaySanitizer";
 import {
@@ -544,6 +544,18 @@ export class JobVisitsRepository extends BaseRepository {
       input.assignedTechnicianIds ??
       (input.assignedTechnicianId ? [input.assignedTechnicianId] : null);
 
+    // Inherit job-level equipment if no explicit visit equipment provided
+    let equipmentIds: string[] | null = input.equipmentIds ?? null;
+    if (equipmentIds == null) {
+      const jobEquipRows = await db
+        .select({ equipmentId: jobEquipment.equipmentId })
+        .from(jobEquipment)
+        .where(and(eq(jobEquipment.companyId, companyId), eq(jobEquipment.jobId, jobId)));
+      if (jobEquipRows.length > 0) {
+        equipmentIds = jobEquipRows.map(r => r.equipmentId);
+      }
+    }
+
     const [visit] = await db
       .insert(jobVisits)
       .values({
@@ -559,6 +571,7 @@ export class JobVisitsRepository extends BaseRepository {
         status: input.status ?? "scheduled",
         visitNumber,
         visitNotes: input.visitNotes ?? null,
+        equipmentIds,
       })
       .returning();
 
@@ -644,6 +657,7 @@ export class JobVisitsRepository extends BaseRepository {
     if ("isAllDay" in input) updates.isAllDay = input.isAllDay;
     if ("visitNumber" in input) updates.visitNumber = input.visitNumber;
     if ("assignedTechnicianIds" in input) updates.assignedTechnicianIds = input.assignedTechnicianIds;
+    if ("equipmentIds" in input) updates.equipmentIds = input.equipmentIds;
 
     // 4) Compute scheduledEnd when we have a start but no explicit end yet
     // Skip if scheduledStart was explicitly cleared (unschedule path already handled above)
@@ -757,40 +771,9 @@ export class JobVisitsRepository extends BaseRepository {
     return updated;
   }
 
-  /**
-   * Check in to a visit
-   */
-  async checkInJobVisit(companyId: string, visitId: string) {
-    const existing = await this.getJobVisit(companyId, visitId);
-    if (!existing) {
-      throw this.notFoundError("Visit");
-    }
-
-    if (existing.checkedInAt) {
-      return existing; // Already checked in
-    }
-
-    const [updated] = await db
-      .update(jobVisits)
-      .set({
-        checkedInAt: new Date(),
-        status: "on_site",
-        updatedAt: new Date(),
-        version: existing.version + 1,
-      })
-      // 2026-03-18: SQL-level soft-delete guard — defense-in-depth alongside getJobVisit() prefetch
-      .where(and(
-        eq(jobVisits.id, visitId),
-        eq(jobVisits.companyId, companyId),
-        activeVisitGuard()
-      ))
-      .returning();
-
-    // Step 2.4: Sync job schedule from visits after check-in
-    await this.syncJobScheduleFromVisits(companyId, existing.jobId);
-
-    return updated;
-  }
+  // Labor unification: checkInJobVisit() REMOVED — manager check-in now uses
+  // lifecycle.startVisit() + timeTrackingRepository.recordJobStatus() in the route handler.
+  // The old method set status="on_site" which was inconsistent with the lifecycle's "in_progress".
 
   // 2026-03-18: checkOutJobVisit() DELETED — check-out is now metadata-only (recorded
   // via updateJobVisit in the route handler). Visit completion goes through the
@@ -825,7 +808,6 @@ export const jobVisitsRepository = new JobVisitsRepository();
  * A visit is considered actioned if ANY of these conditions are true:
  * - checkedInAt is set (technician checked in)
  * - checkedOutAt is set (technician checked out)
- * - actualDurationMinutes is set (time was tracked)
  * - status has progressed beyond 'scheduled' (dispatched, en_route, on_site, in_progress, on_hold, completed)
  *
  * Note: visitNotes alone does NOT trigger actioned status (adding notes before starting is common).
@@ -836,13 +818,13 @@ export const jobVisitsRepository = new JobVisitsRepository();
 export function isVisitActioned(visit: {
   checkedInAt?: Date | null;
   checkedOutAt?: Date | null;
-  actualDurationMinutes?: number | null;
   status: string;
 }): boolean {
-  // Strong signals: time tracking fields
+  // Strong signals: operational timestamps
   if (visit.checkedInAt) return true;
   if (visit.checkedOutAt) return true;
-  if (visit.actualDurationMinutes && visit.actualDurationMinutes > 0) return true;
+  // Labor unification: actualDurationMinutes removed — redundant with checkedInAt check above.
+  // If duration > 0, checkedInAt was necessarily set, so line above already returns true.
 
   // Status progression signals (anything beyond 'scheduled' means work has started)
   const ACTIONED_STATUSES = [
@@ -868,7 +850,6 @@ export function isVisitActioned(visit: {
 export function isVisitEmpty(visit: {
   checkedInAt?: Date | null;
   checkedOutAt?: Date | null;
-  actualDurationMinutes?: number | null;
   status: string;
 }): boolean {
   return !isVisitActioned(visit);

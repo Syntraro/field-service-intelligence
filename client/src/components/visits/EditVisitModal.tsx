@@ -1,54 +1,28 @@
 /**
  * EditVisitModal — Canonical visit editing modal.
  *
- * 2026-03-24 LAYOUT REFINEMENT: Two-column layout, streamlined.
- * - Left: Visit details (instructions) + Schedule (date, start/end time, techs)
- * - Right: Quick actions (Job Details panel removed — info consolidated in header)
- * - Footer: Delete / Cancel / Save
- *
- * ARCHITECTURAL RULE: Visits are execution objects. Jobs own business-state.
- * This modal does NOT mutate job substatus, hold reason, or follow-up state.
- *
- * Shared by: DispatchPreview, JobDetailPage, any future visit-edit entry point.
- * Saves via canonical dispatch mutations (when provided) or PATCH fallback.
+ * 2026-03-27: Added Equipment section (visit-level equipment selection),
+ * reworked line items to read-only summary + Quick Add.
+ * Line items read/write job_parts directly — no visit-level storage.
+ * Equipment selection persisted via equipmentIds on job_visits.
  */
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { format, parseISO } from "date-fns";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import {
-  Dialog,
-  DialogContent,
-} from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  CalendarIcon,
-  CalendarX2,
-  CheckCircle2,
-  ExternalLink,
-  Loader2,
-  MapPin,
-  Plus,
-  User,
-  X,
+  CalendarIcon, CheckCircle2, ChevronDown, Loader2, MapPin, Plus, Trash2, User, X,
+  Wrench, Search,
 } from "lucide-react";
 import { Link } from "wouter";
 import { useToast } from "@/hooks/use-toast";
@@ -57,6 +31,7 @@ import { getMemberDisplayName } from "@/lib/displayName";
 import { detectScheduleConflict } from "@/lib/scheduleOverlapCheck";
 import { queryClient, apiRequest, isApiError } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
+import { AddEquipmentDialog } from "@/components/AddEquipmentDialog";
 import type { JobVisit } from "@shared/schema";
 
 // ============================================================================
@@ -68,59 +43,39 @@ export interface EditVisitModalProps {
   onOpenChange: (open: boolean) => void;
   jobId: string;
   visitId: string;
-  /** Optional callback fired after delete succeeds. */
   onAfterMutation?: () => void;
-  /** Display context — customer company name */
   customerName?: string;
-  /** Customer company ID — used for clickable company name link in header */
   customerCompanyId?: string;
-  /** Job number */
   jobNumber?: number;
-  /** Job summary / title (e.g., "Ice Machine Not Producing") */
   jobSummary?: string;
-  /** Location name (e.g., site / branch name) */
   locationName?: string;
-  /** Location address (street, city, province) */
   locationAddress?: string;
-  /** Dispatch-context scheduling: schedule unscheduled visit */
+  locationPhone?: string;
+  /** Location ID for equipment creation — enables "Add equipment to job" action */
+  locationId?: string;
   onDispatchSchedule?: (params: {
-    jobId: string;
-    visitId: string;
-    technicianUserId: string;
-    startAt: string;
-    endAt: string;
-    visitNotes?: string | null;
+    jobId: string; visitId: string; technicianUserId: string;
+    startAt: string; endAt: string; visitNotes?: string | null;
   }) => void;
-  /** Dispatch-context scheduling: reschedule existing visit */
   onDispatchReschedule?: (params: {
-    visitId: string;
-    jobId: string;
-    technicianUserId?: string | null;
-    startAt: string;
-    endAt: string;
-    visitNotes?: string | null;
+    visitId: string; jobId: string; technicianUserId?: string | null;
+    startAt: string; endAt: string; visitNotes?: string | null;
   }) => void;
-  /** Dispatch-context crew update */
   onDispatchUpdateCrew?: (params: {
-    visitId: string;
-    technicianUserIds: string[];
+    visitId: string; technicianUserIds: string[];
   }) => void;
 }
 
 // ============================================================================
-// Time helpers
+// Helpers
 // ============================================================================
 
-/** Add minutes to HH:mm, return HH:mm */
 function addMinutesToTime(time: string, minutes: number): string {
   const [h, m] = time.split(":").map(Number);
   const total = h * 60 + m + minutes;
-  const nh = Math.floor(total / 60) % 24;
-  const nm = total % 60;
-  return `${String(nh).padStart(2, "0")}:${String(nm).padStart(2, "0")}`;
+  return `${String(Math.floor(total / 60) % 24).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
 }
 
-/** Duration in minutes between two HH:mm strings */
 function timeDiffMinutes(start: string, end: string): number {
   const [sh, sm] = start.split(":").map(Number);
   const [eh, em] = end.split(":").map(Number);
@@ -129,619 +84,602 @@ function timeDiffMinutes(start: string, end: string): number {
   return diff;
 }
 
-// ============================================================================
-// Form state
-// ============================================================================
-
-interface ScheduleFormState {
-  date: string; // YYYY-MM-DD or ""
-  startTime: string; // HH:mm or ""
-  endTime: string; // HH:mm or ""
-  assignedTechnicianIds: string[];
-}
+interface ScheduleFormState { date: string; startTime: string; endTime: string; assignedTechnicianIds: string[]; }
 
 function initScheduleForm(visit: JobVisit): ScheduleFormState {
-  const techIds = (visit as any).assignedTechnicianIds
-    ?? (visit.assignedTechnicianId ? [visit.assignedTechnicianId] : []);
-  if (!visit.scheduledStart) {
-    return { date: "", startTime: "", endTime: "", assignedTechnicianIds: techIds };
-  }
-  const start = typeof visit.scheduledStart === "string"
-    ? parseISO(visit.scheduledStart) : visit.scheduledStart;
+  const techIds = (visit as any).assignedTechnicianIds ?? (visit.assignedTechnicianId ? [visit.assignedTechnicianId] : []);
+  if (!visit.scheduledStart) return { date: "", startTime: "", endTime: "", assignedTechnicianIds: techIds };
+  const start = typeof visit.scheduledStart === "string" ? parseISO(visit.scheduledStart) : visit.scheduledStart;
   const dateStr = format(start, "yyyy-MM-dd");
   const startTime = format(start, "HH:mm");
   let endTime = addMinutesToTime(startTime, 60);
-  if (visit.scheduledEnd) {
-    const end = typeof visit.scheduledEnd === "string"
-      ? parseISO(visit.scheduledEnd) : visit.scheduledEnd;
-    endTime = format(end, "HH:mm");
-  }
+  if (visit.scheduledEnd) { const end = typeof visit.scheduledEnd === "string" ? parseISO(visit.scheduledEnd) : visit.scheduledEnd; endTime = format(end, "HH:mm"); }
   return { date: dateStr, startTime, endTime, assignedTechnicianIds: techIds };
 }
+
+interface JobLineItem { id: string; description: string; quantity: string; unitPrice: string | null; unitCost: string | null; productId: string | null; itemType?: string | null; sortOrder: number; }
+
+/** Location equipment record — used for the equipment selector */
+interface LocationEquipmentRecord {
+  id: string;
+  name: string;
+  equipmentType?: string | null;
+  manufacturer?: string | null;
+  modelNumber?: string | null;
+  serialNumber?: string | null;
+}
+
+// Follow-up reason options — maps to canonical holdReasonEnum
+const FOLLOWUP_REASONS = [
+  { outcome: "needs_parts" as const, holdReason: "parts" as const, label: "Needs Parts" },
+  { outcome: "needs_followup" as const, holdReason: "scheduling" as const, label: "Return Visit Required" },
+  { outcome: "needs_followup" as const, holdReason: "customer" as const, label: "Customer Approval" },
+  { outcome: "needs_followup" as const, holdReason: "access" as const, label: "Access Issue" },
+  { outcome: "needs_followup" as const, holdReason: "other" as const, label: "Other" },
+];
 
 // ============================================================================
 // Component
 // ============================================================================
 
 export function EditVisitModal({
-  open,
-  onOpenChange,
-  jobId,
-  visitId,
-  onAfterMutation,
-  customerName,
-  customerCompanyId,
-  jobNumber,
-  jobSummary,
-  locationName,
-  locationAddress,
-  onDispatchSchedule,
-  onDispatchReschedule,
-  onDispatchUpdateCrew,
+  open, onOpenChange, jobId, visitId, onAfterMutation,
+  customerName, customerCompanyId, jobNumber, jobSummary,
+  locationName, locationAddress, locationPhone, locationId,
+  onDispatchSchedule, onDispatchReschedule, onDispatchUpdateCrew,
 }: EditVisitModalProps) {
   const { toast } = useToast();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showConflictAlert, setShowConflictAlert] = useState(false);
   const pendingConflictRef = useRef(false);
 
-  const [schedule, setSchedule] = useState<ScheduleFormState>({
-    date: "", startTime: "", endTime: "", assignedTechnicianIds: [],
-  });
+  const [schedule, setSchedule] = useState<ScheduleFormState>({ date: "", startTime: "", endTime: "", assignedTechnicianIds: [] });
   const [visitNotes, setVisitNotes] = useState("");
 
-  const { teamMembers: technicians } = useTechniciansDirectory();
-  const techOptions = technicians.map((t) => ({
-    id: t.id,
-    displayName: getMemberDisplayName(t),
-  }));
+  // Equipment selection state — stores location_equipment IDs for this visit
+  const [selectedEquipmentIds, setSelectedEquipmentIds] = useState<string[]>([]);
+  const [equipmentSearch, setEquipmentSearch] = useState("");
+  const [showAddEquipmentDialog, setShowAddEquipmentDialog] = useState(false);
 
-  // Fetch visit data
+  // Line items section — collapsed by default
+  const [lineItemsExpanded, setLineItemsExpanded] = useState(false);
+
+  // Quick Add line item state
+  const [addingItem, setAddingItem] = useState(false);
+  const [newItem, setNewItem] = useState({ description: "", quantity: "1", unitPrice: "", productId: "" });
+  const [catalogSearch, setCatalogSearch] = useState("");
+
+  const { teamMembers: technicians } = useTechniciansDirectory();
+  const techOptions = technicians.map((t) => ({ id: t.id, displayName: getMemberDisplayName(t) }));
+
+  // ── Queries ──
   const { data: visit, isLoading, isError, refetch } = useQuery<JobVisit>({
     queryKey: ["visit-detail", visitId],
-    queryFn: async () => {
-      const res = await fetch(`/api/jobs/${jobId}/visits/${visitId}`, {
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Failed to fetch visit");
-      return res.json();
-    },
+    queryFn: async () => { const r = await fetch(`/api/jobs/${jobId}/visits/${visitId}`, { credentials: "include" }); if (!r.ok) throw new Error("Failed to fetch visit"); return r.json(); },
     enabled: open && !!visitId,
   });
 
-  // Initialize form from visit data
+  const { data: lineItemsRaw } = useQuery<JobLineItem[]>({
+    queryKey: ["/api/jobs", jobId, "parts"],
+    queryFn: async () => { const r = await fetch(`/api/jobs/${jobId}/parts`, { credentials: "include" }); if (!r.ok) throw new Error("Failed"); const d = await r.json(); return Array.isArray(d) ? d : d.items || d.data || []; },
+    enabled: open && !!jobId,
+  });
+  const lineItems: JobLineItem[] = lineItemsRaw ?? [];
+
+  const { data: catalogRaw } = useQuery<any>({
+    queryKey: ["/api/items", { limit: 1000 }],
+    queryFn: async () => { const r = await fetch(`/api/items?limit=1000`, { credentials: "include" }); if (!r.ok) return []; const d = await r.json(); return Array.isArray(d) ? d : d.data || d.items || []; },
+    enabled: open && addingItem,
+  });
+  const catalog: { id: string; name: string; description?: string; unitPrice?: string }[] = catalogRaw ?? [];
+
+  // Location equipment — full equipment set at this site (broader than job-linked subset)
+  const { data: locationEquipmentRaw } = useQuery<LocationEquipmentRecord[]>({
+    queryKey: ["/api/clients", locationId, "equipment"],
+    queryFn: async () => { const r = await fetch(`/api/clients/${locationId}/equipment`, { credentials: "include" }); if (!r.ok) return []; return r.json(); },
+    enabled: open && !!locationId,
+  });
+  const locationEquipment: LocationEquipmentRecord[] = locationEquipmentRaw ?? [];
+
+  const effectiveLocationId = locationId;
+
+  // Job-level equipment fallback — used when visit.equipmentIds is null (legacy visits pre-fix)
+  const { data: jobEquipmentFallback } = useQuery<{ equipmentId: string }[]>({
+    queryKey: ["/api/jobs", jobId, "equipment"],
+    queryFn: async () => { const r = await fetch(`/api/jobs/${jobId}/equipment`, { credentials: "include" }); if (!r.ok) return []; const d = await r.json(); return Array.isArray(d) ? d : d.items || d.data || []; },
+    enabled: open && !!jobId && !!visit && (visit as any).equipmentIds == null,
+  });
+
+  // Init form state from visit data
   useEffect(() => {
     if (visit) {
       setSchedule(initScheduleForm(visit));
       setVisitNotes(visit.visitNotes || "");
-    }
-  }, [visit]);
-
-  // Shared query invalidation
-  const invalidateVisitQueries = () => {
-    queryClient.invalidateQueries({ queryKey: ["visit-detail", visitId] });
-    queryClient.invalidateQueries({ queryKey: ["visits"] });
-    queryClient.invalidateQueries({ queryKey: ["jobs"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
-    queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
-    queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-  };
-
-  // PATCH visit mutation (fallback when dispatch callbacks not provided)
-  const editMutation = useMutation({
-    mutationFn: async (payload: Record<string, unknown>) => {
-      return apiRequest(`/api/jobs/${jobId}/visits/${visitId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ ...payload, version: visit?.version }),
-      });
-    },
-    onSuccess: () => {
-      invalidateVisitQueries();
-      toast({ title: "Visit Updated" });
-      if (pendingConflictRef.current) {
-        pendingConflictRef.current = false;
-        setShowConflictAlert(true);
+      const visitEquipIds = (visit as any).equipmentIds;
+      if (visitEquipIds != null) {
+        // Visit has explicit equipment (including empty [] = user-cleared)
+        setSelectedEquipmentIds(visitEquipIds);
+      } else if (jobEquipmentFallback && jobEquipmentFallback.length > 0) {
+        // Fallback: inherit from job-level equipment (read-only init, not persisted)
+        setSelectedEquipmentIds(jobEquipmentFallback.map(je => je.equipmentId));
       } else {
-        onOpenChange(false);
+        setSelectedEquipmentIds([]);
       }
-    },
-    onError: (error: Error) => {
-      if ((isApiError(error) && error.status === 409) || /version|optimistic/i.test(error.message)) {
-        toast({ title: "Conflict", description: "This visit was updated elsewhere. Refreshing..." });
-        invalidateVisitQueries();
-        return;
-      }
-      toast({ title: "Error", description: error.message || "Failed to update visit", variant: "destructive" });
-    },
+    }
+  }, [visit, jobEquipmentFallback]);
+  useEffect(() => { if (!open) { setAddingItem(false); setCatalogSearch(""); setEquipmentSearch(""); } }, [open]);
+
+  // ── Invalidation ──
+  const invalidateVisitQueries = () => { queryClient.invalidateQueries({ queryKey: ["visit-detail", visitId] }); queryClient.invalidateQueries({ queryKey: ["visits"] }); queryClient.invalidateQueries({ queryKey: ["jobs"] }); queryClient.invalidateQueries({ queryKey: ["/api/calendar"] }); queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] }); queryClient.invalidateQueries({ queryKey: ["dashboard"] }); };
+  const invalidateLineItems = () => { queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "parts"] }); };
+  const invalidateEquipment = () => { queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "equipment"] }); queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "equipment"] }); };
+
+  // ── Mutations ──
+  const editMutation = useMutation({
+    mutationFn: async (payload: Record<string, unknown>) => apiRequest(`/api/jobs/${jobId}/visits/${visitId}`, { method: "PATCH", body: JSON.stringify({ ...payload, version: visit?.version }) }),
+    onSuccess: () => { invalidateVisitQueries(); toast({ title: "Visit Updated" }); if (pendingConflictRef.current) { pendingConflictRef.current = false; setShowConflictAlert(true); } else onOpenChange(false); },
+    onError: (err: Error) => { if ((isApiError(err) && err.status === 409) || /version|optimistic/i.test(err.message)) { toast({ title: "Conflict", description: "Refreshing..." }); invalidateVisitQueries(); return; } toast({ title: "Error", description: err.message, variant: "destructive" }); },
   });
 
-  // Delete mutation
   const deleteMutation = useMutation({
     mutationFn: async () => apiRequest(`/api/jobs/${jobId}/visits/${visitId}`, { method: "DELETE" }),
-    onSuccess: () => {
-      queryClient.setQueriesData<{ events?: any[] }>(
-        { queryKey: ["/api/calendar"] },
-        (old) => old?.events ? { ...old, events: old.events.filter((e: any) => e.id !== visitId) } : old,
-      );
-      queryClient.setQueriesData<any[]>(
-        { queryKey: ["/api/calendar/unscheduled"] },
-        (old) => Array.isArray(old) ? old.filter((j: any) => j.activeVisitId !== visitId) : old,
-      );
-      invalidateVisitQueries();
-      onAfterMutation?.();
-      toast({ title: "Visit Deleted" });
-      onOpenChange(false);
-    },
-    onError: (error: Error) => {
-      toast({ title: "Error", description: error.message || "Failed to delete visit", variant: "destructive" });
-    },
+    onSuccess: () => { queryClient.setQueriesData<{ events?: any[] }>({ queryKey: ["/api/calendar"] }, (old) => old?.events ? { ...old, events: old.events.filter((e: any) => e.id !== visitId) } : old); queryClient.setQueriesData<any[]>({ queryKey: ["/api/calendar/unscheduled"] }, (old) => Array.isArray(old) ? old.filter((j: any) => j.activeVisitId !== visitId) : old); invalidateVisitQueries(); onAfterMutation?.(); toast({ title: "Visit Deleted" }); onOpenChange(false); },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 
-  // 2026-03-23: Canonical visit completion — calls POST /complete which triggers
-  // lifecycle.completeVisit() orchestrator: sets outcome, reconciles parent job,
-  // creates audit note. Replaces prior lightweight PATCH { status: "completed" }.
   const completeMutation = useMutation({
-    mutationFn: async () => {
-      return apiRequest(`/api/jobs/${jobId}/visits/${visitId}/complete`, {
-        method: "POST",
-        body: JSON.stringify({ outcome: "completed" }),
-      });
-    },
-    onSuccess: () => {
-      invalidateVisitQueries();
-      onAfterMutation?.();
-      toast({ title: "Visit Completed" });
-      onOpenChange(false);
-    },
-    onError: (error: Error) => {
-      if (isApiError(error) && (error as any).status === 409) {
-        // Visit already completed — treat as idempotent success
-        invalidateVisitQueries();
-        toast({ title: "Visit Already Completed" });
-        onOpenChange(false);
-        return;
-      }
-      toast({ title: "Error", description: error.message || "Failed to complete visit", variant: "destructive" });
-    },
+    mutationFn: async (payload: { outcome: string; holdReason?: string; holdNotes?: string }) => apiRequest(`/api/jobs/${jobId}/visits/${visitId}/complete`, { method: "POST", body: JSON.stringify(payload) }),
+    onSuccess: () => { invalidateVisitQueries(); onAfterMutation?.(); toast({ title: "Visit Completed" }); onOpenChange(false); },
+    onError: (err: Error) => { if (isApiError(err) && (err as any).status === 409) { invalidateVisitQueries(); toast({ title: "Already Completed" }); onOpenChange(false); return; } toast({ title: "Error", description: err.message, variant: "destructive" }); },
   });
 
-  const handleCompleteVisit = () => {
-    completeMutation.mutate();
+  // ── Line item Quick Add mutation ──
+  const cancelAddRow = () => { setAddingItem(false); setNewItem({ description: "", quantity: "1", unitPrice: "", productId: "" }); setCatalogSearch(""); };
+
+  const addLineItemMutation = useMutation({
+    mutationFn: async (data: { description: string; quantity: string; unitPrice?: string; productId?: string }) => apiRequest(`/api/jobs/${jobId}/parts`, { method: "POST", body: JSON.stringify(data) }),
+    onSuccess: () => { invalidateLineItems(); cancelAddRow(); },
+    onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  // Catalog search — live filter matching name + description, case-insensitive
+  const searchTerm = addingItem ? catalogSearch.trim().toLowerCase() : "";
+  const filteredCatalog = searchTerm.length >= 1
+    ? catalog.filter(p =>
+        p.name.toLowerCase().includes(searchTerm) ||
+        (p.description && p.description.toLowerCase().includes(searchTerm))
+      ).slice(0, 8)
+    : [];
+
+  const handleSelectCatalogItem = (item: typeof catalog[0]) => {
+    setNewItem({ description: item.name, quantity: "1", unitPrice: item.unitPrice || "", productId: item.id });
+    setCatalogSearch("");
   };
 
-  // ── Save handler ──
-  const handleSave = async () => {
-    let startAt: string | null = null;
-    let endAt: string | null = null;
-    const isScheduled = schedule.date && schedule.startTime;
+  const handleSubmitNewItem = () => {
+    if (!newItem.description.trim()) return;
+    addLineItemMutation.mutate({ description: newItem.description.trim(), quantity: newItem.quantity, unitPrice: newItem.unitPrice || undefined, productId: newItem.productId || undefined });
+  };
 
+  // ── Equipment helpers ──
+  const equipmentSearchTerm = equipmentSearch.trim().toLowerCase();
+  const availableEquipment = useMemo(() => {
+    const unselected = locationEquipment.filter(eq => !selectedEquipmentIds.includes(eq.id));
+    if (!equipmentSearchTerm) return unselected;
+    return unselected.filter(eq =>
+      eq.name.toLowerCase().includes(equipmentSearchTerm) ||
+      (eq.modelNumber?.toLowerCase().includes(equipmentSearchTerm) ?? false) ||
+      (eq.serialNumber?.toLowerCase().includes(equipmentSearchTerm) ?? false) ||
+      (eq.manufacturer?.toLowerCase().includes(equipmentSearchTerm) ?? false)
+    );
+  }, [locationEquipment, selectedEquipmentIds, equipmentSearchTerm]);
+
+  const selectedEquipment = useMemo(
+    () => locationEquipment.filter(eq => selectedEquipmentIds.includes(eq.id)),
+    [locationEquipment, selectedEquipmentIds],
+  );
+
+  const handleSelectEquipment = useCallback((equipmentId: string) => {
+    setSelectedEquipmentIds(prev => prev.includes(equipmentId) ? prev : [...prev, equipmentId]);
+    setEquipmentSearch("");
+  }, []);
+
+  const handleRemoveEquipment = useCallback((equipmentId: string) => {
+    setSelectedEquipmentIds(prev => prev.filter(id => id !== equipmentId));
+  }, []);
+
+  // After creating new equipment at the location, refresh list and auto-select
+  const handleEquipmentCreated = useCallback((created: { id: string; name: string }) => {
+    if (!created?.id) return;
+    invalidateEquipment();
+    setSelectedEquipmentIds(prev => [...prev, created.id]);
+  }, []);
+
+  // ── Save ──
+  const handleSave = async () => {
+    let startAt: string | null = null, endAt: string | null = null;
+    const isScheduled = schedule.date && schedule.startTime;
     if (isScheduled) {
       const start = new Date(`${schedule.date}T${schedule.startTime}:00`);
-      const end = schedule.endTime
-        ? new Date(`${schedule.date}T${schedule.endTime}:00`)
-        : new Date(start.getTime() + 60 * 60000);
+      const end = schedule.endTime ? new Date(`${schedule.date}T${schedule.endTime}:00`) : new Date(start.getTime() + 3600000);
       if (end <= start) end.setDate(end.getDate() + 1);
-      startAt = start.toISOString();
-      endAt = end.toISOString();
-
+      startAt = start.toISOString(); endAt = end.toISOString();
       const techId = schedule.assignedTechnicianIds[0] || null;
-      if (techId) {
-        const dur = timeDiffMinutes(schedule.startTime, schedule.endTime || addMinutesToTime(schedule.startTime, 60));
-        const hasConflict = await detectScheduleConflict(techId, schedule.date, startAt, endAt, dur, visit?.id);
-        if (hasConflict) pendingConflictRef.current = true;
-      }
+      if (techId) { const dur = timeDiffMinutes(schedule.startTime, schedule.endTime || addMinutesToTime(schedule.startTime, 60)); if (await detectScheduleConflict(techId, schedule.date, startAt, endAt, dur, visit?.id)) pendingConflictRef.current = true; }
     }
-
     const wasUnscheduled = !visit?.scheduledStart;
     const techId = schedule.assignedTechnicianIds[0] || null;
 
-    // Dispatch-context scheduling
+    // Equipment selection is always included in payload
+    const equipmentPayload = { equipmentIds: selectedEquipmentIds };
+
     if (startAt && endAt) {
       if (wasUnscheduled && onDispatchSchedule && techId) {
+        // Save equipment via separate PATCH since dispatch callbacks don't include it
+        editMutation.mutate(equipmentPayload);
         onDispatchSchedule({ jobId, visitId, technicianUserId: techId, startAt, endAt, visitNotes: visitNotes || null });
-        if (onDispatchUpdateCrew && schedule.assignedTechnicianIds.length > 1) {
-          onDispatchUpdateCrew({ visitId, technicianUserIds: schedule.assignedTechnicianIds });
-        }
-        if (!pendingConflictRef.current) onOpenChange(false);
-        else { pendingConflictRef.current = false; setShowConflictAlert(true); }
+        if (onDispatchUpdateCrew && schedule.assignedTechnicianIds.length > 1) onDispatchUpdateCrew({ visitId, technicianUserIds: schedule.assignedTechnicianIds });
+        if (!pendingConflictRef.current) onOpenChange(false); else { pendingConflictRef.current = false; setShowConflictAlert(true); }
         return;
       }
       if (!wasUnscheduled && onDispatchReschedule) {
+        editMutation.mutate(equipmentPayload);
         onDispatchReschedule({ visitId, jobId, technicianUserId: techId, startAt, endAt, visitNotes: visitNotes || null });
-        if (onDispatchUpdateCrew && schedule.assignedTechnicianIds.length > 1) {
-          onDispatchUpdateCrew({ visitId, technicianUserIds: schedule.assignedTechnicianIds });
-        }
-        if (!pendingConflictRef.current) onOpenChange(false);
-        else { pendingConflictRef.current = false; setShowConflictAlert(true); }
+        if (onDispatchUpdateCrew && schedule.assignedTechnicianIds.length > 1) onDispatchUpdateCrew({ visitId, technicianUserIds: schedule.assignedTechnicianIds });
+        if (!pendingConflictRef.current) onOpenChange(false); else { pendingConflictRef.current = false; setShowConflictAlert(true); }
         return;
       }
     }
-
-    // Fallback: PATCH path
-    const payload: Record<string, unknown> = {};
-    if (!isScheduled) {
-      payload.scheduledStart = null;
-      payload.scheduledEnd = null;
-      payload.isAllDay = false;
-      payload.estimatedDurationMinutes = null;
-    } else if (startAt && endAt) {
-      payload.scheduledStart = startAt;
-      payload.scheduledEnd = endAt;
-      payload.isAllDay = false;
-      payload.estimatedDurationMinutes = timeDiffMinutes(
-        schedule.startTime, schedule.endTime || addMinutesToTime(schedule.startTime, 60));
-    }
+    const payload: Record<string, unknown> = { ...equipmentPayload };
+    if (!isScheduled) { payload.scheduledStart = null; payload.scheduledEnd = null; payload.isAllDay = false; payload.estimatedDurationMinutes = null; }
+    else if (startAt && endAt) { payload.scheduledStart = startAt; payload.scheduledEnd = endAt; payload.isAllDay = false; payload.estimatedDurationMinutes = timeDiffMinutes(schedule.startTime, schedule.endTime || addMinutesToTime(schedule.startTime, 60)); }
     payload.assignedTechnicianId = techId;
-    if (schedule.assignedTechnicianIds.length > 0) {
-      payload.assignedTechnicianIds = schedule.assignedTechnicianIds;
-    }
+    if (schedule.assignedTechnicianIds.length > 0) payload.assignedTechnicianIds = schedule.assignedTechnicianIds;
     payload.visitNotes = visitNotes || null;
     editMutation.mutate(payload);
   };
 
-  const handleUnschedule = () => {
-    editMutation.mutate({ scheduledStart: null, scheduledEnd: null });
-  };
-
-  const handleAddTech = (id: string) => {
-    if (schedule.assignedTechnicianIds.includes(id)) return;
-    setSchedule((s) => ({ ...s, assignedTechnicianIds: [...s.assignedTechnicianIds, id] }));
-  };
-  const handleRemoveTech = (id: string) => {
-    setSchedule((s) => ({ ...s, assignedTechnicianIds: s.assignedTechnicianIds.filter((t) => t !== id) }));
-  };
+  const handleUnschedule = () => editMutation.mutate({ scheduledStart: null, scheduledEnd: null });
+  const handleAddTech = (id: string) => { if (!schedule.assignedTechnicianIds.includes(id)) setSchedule((s) => ({ ...s, assignedTechnicianIds: [...s.assignedTechnicianIds, id] })); };
+  const handleRemoveTech = (id: string) => { setSchedule((s) => ({ ...s, assignedTechnicianIds: s.assignedTechnicianIds.filter((t) => t !== id) })); };
 
   const isPending = editMutation.isPending || completeMutation.isPending;
   const selectedDate = schedule.date ? parseISO(schedule.date) : undefined;
   const isVisitCompleted = visit?.status === "completed";
   const isVisitCancelled = visit?.status === "cancelled";
-
-  // Build title: "Client — Summary" or just one
-  const titleLine = [customerName, jobSummary].filter(Boolean).join(" — ") || `Job #${jobNumber || ""}`;
+  const calcTotal = (qty: string, price: string | null) => ((parseFloat(qty) || 0) * (parseFloat(price || "0") || 0)).toFixed(2);
+  const lineItemsTotal = lineItems.reduce((sum, li) => sum + (parseFloat(li.quantity) || 0) * (parseFloat(li.unitPrice || "0") || 0), 0);
 
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent
-          className="sm:max-w-4xl p-0 gap-0 overflow-hidden rounded-2xl"
-          data-testid="dialog-edit-visit"
-        >
-          {/* ── HEADER ── 2026-03-24: Streamlined — company name is clickable link,
-              Job # shown as muted secondary, Job Details panel removed from right column. */}
-          <div className="px-8 pt-7 pb-5 border-b border-slate-200 bg-slate-50/60">
-            <div className="flex items-baseline gap-3">
-              <h1 className="text-2xl font-semibold tracking-tight text-slate-900 leading-tight truncate">
+        <DialogContent className="sm:max-w-4xl p-0 gap-0 overflow-hidden rounded-xl [&>button.absolute]:hidden" data-testid="dialog-edit-visit">
+
+          {/* ══════ HEADER ══════ */}
+          <div className="flex items-center justify-between gap-4 px-5 py-3 border-b border-slate-200 bg-slate-50/80">
+            <div className="min-w-0">
+              <div className="flex items-baseline gap-2">
                 {customerName && customerCompanyId ? (
-                  <Link
-                    href={`/clients/${customerCompanyId}`}
-                    className="hover:text-emerald-700 hover:underline transition-colors"
-                    onClick={(e) => { e.stopPropagation(); onOpenChange(false); }}
-                  >
-                    {customerName}
-                  </Link>
+                  <Link href={`/clients/${customerCompanyId}`} className="text-[15px] font-bold text-slate-900 hover:text-emerald-700 hover:underline truncate" onClick={(e) => { e.stopPropagation(); onOpenChange(false); }}>{customerName}</Link>
                 ) : (
-                  customerName || jobSummary || `Job #${jobNumber || ""}`
+                  <span className="text-[15px] font-bold text-slate-900 truncate">{customerName || jobSummary || `Job #${jobNumber || ""}`}</span>
                 )}
-              </h1>
-              {jobNumber && (
-                <Link
-                  href={`/jobs/${jobId}`}
-                  className="text-xs font-medium text-slate-400 hover:text-blue-600 hover:underline whitespace-nowrap transition-colors"
-                  onClick={(e) => { e.stopPropagation(); onOpenChange(false); }}
-                  data-testid="link-job-number"
-                >
-                  Job #{jobNumber}
-                </Link>
-              )}
-            </div>
-            {jobSummary && customerName && (
-              <p className="mt-1 text-sm text-slate-600 truncate">{jobSummary}</p>
-            )}
-            {(locationName || locationAddress) && (
-              <p className="mt-1.5 flex items-center gap-1.5 text-sm text-slate-500">
-                <MapPin className="h-3.5 w-3.5 flex-shrink-0" />
-                <span className="truncate">
-                  {locationName}{locationName && locationAddress ? " — " : ""}{locationAddress}
-                </span>
+                {jobNumber && (
+                  <Link href={`/jobs/${jobId}`} className="text-[13px] font-semibold text-slate-600 hover:text-[#76B054] hover:underline whitespace-nowrap" onClick={(e) => { e.stopPropagation(); onOpenChange(false); }}>Job #{jobNumber}</Link>
+                )}
+              </div>
+              <p className="text-[13px] text-slate-600 truncate mt-0.5">
+                {[locationPhone, [locationName, locationAddress].filter(Boolean).join(" — ")].filter(Boolean).join(" · ")}
               </p>
-            )}
+            </div>
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              {/* Outcome badge for completed visits */}
+              {isVisitCompleted && visit?.outcome && (
+                <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
+                  visit.outcome === "completed"
+                    ? "bg-emerald-100 text-emerald-700"
+                    : "bg-amber-100 text-amber-700"
+                }`}>
+                  {visit.outcome === "completed" ? "Completed" :
+                   visit.outcome === "needs_parts" ? "Completed — Needs parts" :
+                   visit.outcome === "needs_followup" ? "Completed — Follow-up required" :
+                   "Completed"}
+                </span>
+              )}
+              {!isVisitCompleted && !isVisitCancelled && (
+                <>
+                  <Button size="sm" onClick={() => completeMutation.mutate({ outcome: "completed" })} disabled={isPending} className="h-8 px-3 text-xs bg-emerald-500 hover:bg-emerald-600 text-white font-semibold">
+                    <CheckCircle2 className="h-3.5 w-3.5 mr-1" />Complete
+                  </Button>
+                  {/* Follow-up: popover with reason selection before submit */}
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button size="sm" variant="outline" disabled={isPending} className="h-8 px-3 text-xs border-amber-300 text-amber-700 hover:bg-amber-50 font-semibold">Follow-up</Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-52 p-1" align="end">
+                      <div className="text-[11px] font-semibold text-slate-500 px-2 py-1.5 border-b mb-1 uppercase tracking-wider">Follow-up reason</div>
+                      {FOLLOWUP_REASONS.map(r => (
+                        <button key={r.holdReason} onClick={() => completeMutation.mutate({ outcome: r.outcome, holdReason: r.holdReason })}
+                          className="w-full text-left text-sm px-3 py-1.5 rounded hover:bg-amber-50 text-slate-700">{r.label}</button>
+                      ))}
+                    </PopoverContent>
+                  </Popover>
+                  {visit?.scheduledStart && (
+                    <Button size="sm" variant="outline" onClick={handleUnschedule} disabled={isPending} className="h-8 px-3 text-xs font-semibold">Unschedule</Button>
+                  )}
+                </>
+              )}
+              <Button size="sm" variant="ghost" onClick={() => onOpenChange(false)} className="h-8 w-8 p-0 text-slate-400 hover:text-slate-600"><X className="h-4 w-4" /></Button>
+            </div>
           </div>
 
           {isLoading ? (
-            <div className="flex items-center justify-center py-20">
-              <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
-            </div>
+            <div className="flex items-center justify-center py-20"><Loader2 className="h-6 w-6 animate-spin text-slate-400" /></div>
           ) : !visit ? (
-            /* 2026-03-24: Explicit missing-data state instead of infinite spinner.
-               Shown when query resolves but visit data is absent (e.g., race condition, deleted visit). */
             <div className="flex flex-col items-center justify-center py-20 gap-3">
               <p className="text-sm text-slate-500">{isError ? "Failed to load visit data." : "Visit data not available."}</p>
-              <Button variant="outline" size="sm" onClick={() => refetch()}>
-                Retry
-              </Button>
+              <Button variant="outline" size="sm" onClick={() => refetch()}>Retry</Button>
             </div>
           ) : (
-            <div className="grid grid-cols-12 gap-6 px-8 py-6">
-              {/* ── LEFT COLUMN ── */}
-              <div className="col-span-12 lg:col-span-8 space-y-5">
-                {/* Visit Details */}
-                <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
-                  <div className="px-5 py-4 border-b border-slate-100">
-                    <h2 className="text-sm font-semibold text-slate-900">Visit details</h2>
+            <>
+              {/* ══════ BODY — 2×2 grid: Instructions|Team, Equipment|Schedule ══════ */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 px-5 pt-4 pb-2 items-start">
+                {/* Row 1 Left — Instructions */}
+                <div className="rounded-lg border border-slate-200 bg-white">
+                  <div className="px-4 py-3">
+                    <Input value={jobSummary || ""} readOnly className="border-0 p-0 text-sm font-bold text-slate-900 shadow-none focus-visible:ring-0 bg-transparent h-auto" placeholder="Visit title" />
                   </div>
-                  <div className="px-5 py-4">
-                    <label className="block text-xs font-medium text-slate-500 mb-1.5">Instructions</label>
-                    <Textarea
-                      placeholder="Special instructions or notes for this visit..."
-                      value={visitNotes}
-                      onChange={(e) => setVisitNotes(e.target.value)}
-                      rows={3}
-                      className="text-sm resize-none"
-                      data-testid="textarea-visit-notes"
-                    />
+                  <div className="border-t border-slate-100" />
+                  <div className="px-4 py-3">
+                    <Textarea placeholder="Instructions for this visit..." value={visitNotes} onChange={(e) => setVisitNotes(e.target.value)} rows={3} className="border-0 p-0 text-sm resize-none shadow-none focus-visible:ring-0 bg-transparent" />
                   </div>
-                </section>
+                </div>
 
-                {/* Schedule */}
-                <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
-                  <div className="px-5 py-4 border-b border-slate-100">
-                    <h2 className="text-sm font-semibold text-slate-900">Schedule</h2>
+                {/* Row 1 Right — Team */}
+                <div className="rounded-lg border border-slate-200 bg-white px-4 py-2.5">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Team</h3>
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <button className="text-[11px] font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-0.5"><Plus className="h-3 w-3" />Assign</button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-48 p-1" align="end">
+                        <div className="text-xs font-medium text-slate-400 px-2 py-1.5 border-b mb-1">Select Technician</div>
+                        {(() => { const avail = techOptions.filter((t) => !schedule.assignedTechnicianIds.includes(t.id)); if (!avail.length) return <div className="text-xs text-slate-400 px-2 py-2">No available</div>; return avail.map((t) => (<button key={t.id} onClick={() => handleAddTech(t.id)} className="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-slate-100 flex items-center gap-2"><User className="h-3.5 w-3.5 text-slate-400" />{t.displayName}</button>)); })()}
+                      </PopoverContent>
+                    </Popover>
                   </div>
-                  <div className="px-5 py-4">
-                    {!schedule.date && !visit.scheduledStart && (
-                      <p className="text-xs text-slate-400 mb-3">
-                        This visit is not yet scheduled. Set a date and time below.
-                      </p>
-                    )}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {/* Date */}
-                      <div>
-                        <label className="block text-xs font-medium text-slate-500 mb-1.5">Date</label>
-                        <Popover>
-                          <PopoverTrigger asChild>
-                            <Button
-                              variant="outline"
-                              className={cn(
-                                "w-full justify-start text-left text-sm font-normal h-10",
-                                !schedule.date && "text-slate-400"
-                              )}
-                              data-testid="button-select-date"
-                            >
-                              <CalendarIcon className="mr-2 h-4 w-4 text-slate-400" />
-                              {schedule.date ? format(selectedDate!, "PPP") : "Select date..."}
-                            </Button>
-                          </PopoverTrigger>
-                          <PopoverContent className="w-auto p-0" align="start">
-                            <Calendar
-                              mode="single"
-                              selected={selectedDate}
-                              onSelect={(d) => d && setSchedule((s) => ({ ...s, date: format(d, "yyyy-MM-dd") }))}
-                              initialFocus
+                  <div className="flex flex-wrap gap-1.5">
+                    {schedule.assignedTechnicianIds.length === 0 && <span className="text-xs text-slate-400 italic">Unassigned</span>}
+                    {schedule.assignedTechnicianIds.map((tid) => { const tech = techOptions.find((t) => t.id === tid); if (!tech) return null; return (<span key={tid} className="inline-flex items-center gap-1 rounded-full bg-slate-100 pl-2.5 pr-1 py-0.5 text-[11px] font-medium text-slate-700">{tech.displayName}<button onClick={() => handleRemoveTech(tid)} className="h-3.5 w-3.5 rounded-full hover:bg-slate-300/50 flex items-center justify-center"><X className="h-2 w-2" /></button></span>); })}
+                  </div>
+                </div>
+
+                {/* Row 2 Left — Equipment */}
+                  <div className="rounded-lg border border-slate-200 bg-white">
+                    <div className="flex items-center justify-between px-4 py-2 border-b border-slate-100">
+                      <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                        <Wrench className="h-3 w-3" />Equipment
+                      </h3>
+                      {effectiveLocationId && (
+                        <button onClick={() => setShowAddEquipmentDialog(true)} className="text-[11px] font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-0.5">
+                          <Plus className="h-3 w-3" />New Equipment
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="px-4 py-2">
+                      {/* Multi-select combobox — options appear only inside dropdown */}
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button variant="outline" size="sm" className="w-full justify-start h-8 text-xs gap-1.5 px-2.5 text-slate-400 font-normal">
+                            <Search className="h-3 w-3 shrink-0" />
+                            Select equipment for this visit
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+                          <div className="flex items-center border-b px-2 py-1.5">
+                            <Search className="h-3.5 w-3.5 text-muted-foreground mr-2 shrink-0" />
+                            <input
+                              value={equipmentSearch}
+                              onChange={(e) => setEquipmentSearch(e.target.value)}
+                              placeholder="Search by name, model, serial..."
+                              className="flex-1 text-xs bg-transparent outline-none placeholder:text-muted-foreground"
+                              autoFocus
                             />
-                          </PopoverContent>
-                        </Popover>
-                      </div>
-
-                      {/* Technicians */}
-                      <div>
-                        <label className="block text-xs font-medium text-slate-500 mb-1.5">Technicians</label>
-                        <div className="min-h-[40px] rounded-md border border-slate-200 bg-white px-3 py-1.5 flex flex-wrap items-center gap-1.5">
-                          {schedule.assignedTechnicianIds.length === 0 && (
-                            <span className="text-xs text-slate-400 italic">Unassigned</span>
-                          )}
-                          {schedule.assignedTechnicianIds.map((tid) => {
-                            const tech = techOptions.find((t) => t.id === tid);
-                            if (!tech) return null;
-                            return (
-                              <span
-                                key={tid}
-                                className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 pl-2.5 pr-1.5 py-1 text-xs font-medium text-slate-700"
-                              >
-                                {tech.displayName}
-                                <button
-                                  type="button"
-                                  onClick={() => handleRemoveTech(tid)}
-                                  className="h-4 w-4 rounded-full hover:bg-slate-300/50 flex items-center justify-center text-slate-500"
-                                >
-                                  <X className="h-2.5 w-2.5" />
-                                </button>
-                              </span>
-                            );
-                          })}
-                          <Popover>
-                            <PopoverTrigger asChild>
-                              <button
-                                type="button"
-                                className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                              >
-                                <Plus className="h-3 w-3" /> Add
-                              </button>
-                            </PopoverTrigger>
-                            <PopoverContent className="w-48 p-1" align="start">
-                              <div className="text-xs font-medium text-slate-400 px-2 py-1.5 border-b mb-1">
-                                Select Technician
+                          </div>
+                          <div className="max-h-[200px] overflow-y-auto p-1" style={{ scrollbarWidth: "thin" }}>
+                            {availableEquipment.length === 0 ? (
+                              <div className="text-xs text-slate-400 text-center py-3">
+                                {locationEquipment.length === 0 ? "No equipment at this location" : "No matches"}
                               </div>
-                              {(() => {
-                                const available = techOptions.filter((t) => !schedule.assignedTechnicianIds.includes(t.id));
-                                if (available.length === 0) return <div className="text-xs text-slate-400 px-2 py-2">No available technicians</div>;
-                                return available.map((tech) => (
-                                  <button
-                                    key={tech.id}
-                                    type="button"
-                                    className="w-full text-left text-sm px-2 py-1.5 rounded hover:bg-slate-100 flex items-center gap-2"
-                                    onClick={() => handleAddTech(tech.id)}
-                                  >
-                                    <User className="h-3.5 w-3.5 text-slate-400" />
-                                    {tech.displayName}
-                                  </button>
-                                ));
-                              })()}
-                            </PopoverContent>
-                          </Popover>
+                            ) : (
+                              availableEquipment.map(eq => (
+                                <button key={eq.id} onClick={() => handleSelectEquipment(eq.id)}
+                                  className="flex w-full items-start gap-2 rounded px-2 py-1.5 text-xs hover:bg-emerald-50 cursor-pointer text-left">
+                                  <Wrench className="h-3 w-3 text-slate-400 mt-0.5 shrink-0" />
+                                  <span className="min-w-0 truncate">
+                                    {eq.name}
+                                    {eq.modelNumber && <span className="text-slate-400 ml-1">— {eq.modelNumber}</span>}
+                                    {eq.serialNumber && <span className="text-slate-400 ml-1">S/N: {eq.serialNumber}</span>}
+                                  </span>
+                                </button>
+                              ))
+                            )}
+                          </div>
+                        </PopoverContent>
+                      </Popover>
+
+                      {/* Selected for this visit — shown below the selector */}
+                      {selectedEquipment.length > 0 && (
+                        <div className="space-y-1 mt-2">
+                          {selectedEquipment.map(eq => (
+                            <div key={eq.id} className="flex items-center justify-between gap-2 rounded bg-emerald-50/60 px-2.5 py-1.5 text-xs">
+                              <div className="min-w-0">
+                                <span className="font-medium text-slate-700">{eq.name}</span>
+                                {eq.equipmentType && <span className="ml-1.5 text-[10px] text-slate-500 bg-slate-100 rounded px-1 py-0.5">{eq.equipmentType}</span>}
+                                {(eq.manufacturer || eq.modelNumber) && (
+                                  <span className="text-slate-400 ml-1">
+                                    {[eq.manufacturer, eq.modelNumber].filter(Boolean).join(" ")}
+                                  </span>
+                                )}
+                              </div>
+                              <button onClick={() => handleRemoveEquipment(eq.id)} className="text-slate-400 hover:text-red-500 shrink-0">
+                                <X className="h-3 w-3" />
+                              </button>
+                            </div>
+                          ))}
                         </div>
-                      </div>
-
-                      {/* Start time — native time input for keyboard-friendly direct entry */}
-                      <div>
-                        <label className="block text-xs font-medium text-slate-500 mb-1.5">Start time</label>
-                        <Input
-                          type="time"
-                          value={schedule.startTime || "09:00"}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            setSchedule((s) => {
-                              const oldDur = s.startTime && s.endTime ? timeDiffMinutes(s.startTime, s.endTime) : 60;
-                              return { ...s, startTime: v, endTime: addMinutesToTime(v, oldDur) };
-                            });
-                          }}
-                          className="h-10 text-sm"
-                          data-testid="input-start-time"
-                        />
-                      </div>
-
-                      {/* End time — native time input */}
-                      <div>
-                        <label className="block text-xs font-medium text-slate-500 mb-1.5">End time</label>
-                        <Input
-                          type="time"
-                          value={schedule.endTime || "10:00"}
-                          onChange={(e) => setSchedule((s) => ({ ...s, endTime: e.target.value }))}
-                          className="h-10 text-sm"
-                          data-testid="input-end-time"
-                        />
-                      </div>
+                      )}
+                      {locationEquipment.length === 0 && selectedEquipment.length === 0 && (
+                        <p className="text-xs text-slate-400 italic py-1 mt-1">No equipment at this location{effectiveLocationId ? " — create with + New Equipment" : ""}</p>
+                      )}
                     </div>
                   </div>
-                </section>
+
+                {/* Row 2 Right — Schedule */}
+                <div className="rounded-lg border border-slate-200 bg-white px-4 py-2.5">
+                  <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">Schedule</h3>
+                  <div className="flex items-end gap-2">
+                    <div style={{ width: 160, minWidth: 140, maxWidth: 180 }}>
+                      <label className="text-[10px] font-medium text-slate-500 mb-0.5 block">Date</label>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button variant="outline" size="sm" className={cn("w-full justify-start h-8 text-xs gap-1.5 px-2.5", !schedule.date && "text-slate-400")}>
+                            <CalendarIcon className="h-3.5 w-3.5" />
+                            {schedule.date ? format(selectedDate!, "MMM d") : "Select date"}
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto p-0" align="start">
+                          <Calendar mode="single" selected={selectedDate} onSelect={(d) => d && setSchedule((s) => ({ ...s, date: format(d, "yyyy-MM-dd") }))} initialFocus />
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                    <div style={{ width: 96 }}>
+                      <label className="text-[10px] font-medium text-slate-500 mb-0.5 block">Start</label>
+                      <Input type="time" value={schedule.startTime} placeholder="--:--"
+                        onChange={(e) => { const v = e.target.value; setSchedule((s) => { const dur = s.startTime && s.endTime ? timeDiffMinutes(s.startTime, s.endTime) : 60; return { ...s, startTime: v, endTime: v ? addMinutesToTime(v, dur) : s.endTime }; }); }}
+                        className="h-8 text-xs px-2" />
+                    </div>
+                    <span className="text-slate-400 text-xs pb-1.5">→</span>
+                    <div style={{ width: 96 }}>
+                      <label className="text-[10px] font-medium text-slate-500 mb-0.5 block">End</label>
+                      <Input type="time" value={schedule.endTime} placeholder="--:--"
+                        onChange={(e) => setSchedule((s) => ({ ...s, endTime: e.target.value }))}
+                        className="h-8 text-xs px-2" />
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              {/* ── RIGHT COLUMN ── 2026-03-24: Job Details panel removed — info consolidated in header */}
-              <div className="col-span-12 lg:col-span-4 space-y-5">
-                {/* Quick Actions Card */}
-                <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
-                  <div className="px-5 py-4 border-b border-slate-100">
-                    <h2 className="text-sm font-semibold text-slate-900">Quick actions</h2>
+              {/* ══════ PARTS & WORK LOGGED (JOB) — collapsible ══════ */}
+              <div className="px-5 pb-3">
+                <div className="rounded-lg border border-slate-200 bg-white">
+                  {/* Header — always visible, shows count + total, toggles expand */}
+                  <div className="flex items-center justify-between px-4 py-2">
+                    <button onClick={() => setLineItemsExpanded(e => !e)} className="flex items-center gap-1.5 group">
+                      <ChevronDown className={cn("h-3.5 w-3.5 text-slate-400 transition-transform", !lineItemsExpanded && "-rotate-90")} />
+                      <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Parts & Work Logged (Job)</h3>
+                      <span className="text-[11px] text-slate-400 font-medium">
+                        {lineItems.length > 0 ? `${lineItems.length} item${lineItems.length !== 1 ? "s" : ""} · $${lineItemsTotal.toFixed(2)}` : "0 items"}
+                      </span>
+                    </button>
+                    <button onClick={(e) => { e.stopPropagation(); setAddingItem(true); setLineItemsExpanded(true); setCatalogSearch(""); }} className="text-[11px] font-semibold text-emerald-600 hover:text-emerald-700 flex items-center gap-0.5"><Plus className="h-3 w-3" />Quick Add</button>
                   </div>
-                  <div className="px-5 py-4 space-y-2.5">
-                    {/* 2026-03-24: Complete visit — primary/success emphasis (softened emerald).
-                        Calls canonical POST /complete → lifecycle orchestrator. */}
-                    {!isVisitCompleted && !isVisitCancelled && (
-                      <Button
-                        onClick={handleCompleteVisit}
-                        disabled={isPending}
-                        className="w-full justify-start bg-emerald-500/90 hover:bg-emerald-600 text-white"
-                        data-testid="button-complete-visit"
-                      >
-                        <CheckCircle2 className="h-4 w-4" />
-                        Complete visit
-                      </Button>
-                    )}
-                    {/* 2026-03-24: Mark Unscheduled — warning emphasis (amber), not destructive.
-                        Only shown for scheduled, non-terminal visits. */}
-                    {visit.scheduledStart && !isVisitCompleted && !isVisitCancelled && (
-                      <Button
-                        variant="outline"
-                        onClick={handleUnschedule}
-                        disabled={isPending}
-                        className="w-full justify-start border-amber-300 text-amber-700 hover:bg-amber-50 hover:border-amber-400"
-                        data-testid="button-unschedule-visit"
-                      >
-                        <CalendarX2 className="h-4 w-4" />
-                        Mark Unscheduled
-                      </Button>
-                    )}
-                    <Button
-                      variant="ghost"
-                      className="w-full justify-start text-slate-500 hover:text-slate-700"
-                      asChild
-                    >
-                      <Link
-                        href={`/jobs/${jobId}`}
-                        onClick={(e) => { e.stopPropagation(); onOpenChange(false); }}
-                      >
-                        <ExternalLink className="h-4 w-4" />
-                        Open full job
-                      </Link>
-                    </Button>
-                  </div>
-                </section>
-              </div>
-            </div>
-          )}
 
-          {/* ── FOOTER ── */}
-          {visit && (
-            <div className="flex flex-col-reverse gap-3 border-t border-slate-200 bg-white px-8 py-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setShowDeleteConfirm(true)}
-                  className="text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300"
-                  data-testid="button-delete-visit"
-                >
-                  Delete visit
-                </Button>
+                  {/* Expandable body */}
+                  {lineItemsExpanded && (
+                    <>
+                      {lineItems.length === 0 && !addingItem && <div className="px-4 pb-3 text-xs text-slate-400 text-center">No parts or services logged</div>}
+
+                      {lineItems.length > 0 && (
+                        <div className="divide-y divide-slate-50 border-t border-slate-100">
+                          {lineItems.map((item) => (
+                            <div key={item.id} className="grid grid-cols-[1fr_52px_72px_72px] gap-2 px-4 py-2 items-center text-xs">
+                              <span className="text-slate-700 truncate">{item.description}</span>
+                              <span className="text-right text-slate-500">&times;{item.quantity}</span>
+                              <span className="text-right text-slate-500">${parseFloat(item.unitPrice || "0").toFixed(2)}</span>
+                              <span className="text-right font-medium text-slate-700">${calcTotal(item.quantity, item.unitPrice)}</span>
+                            </div>
+                          ))}
+                          <div className="grid grid-cols-[1fr_52px_72px_72px] gap-2 px-4 py-2 items-center text-xs bg-slate-50/50">
+                            <span className="font-semibold text-slate-600">Total</span>
+                            <span /><span />
+                            <span className="text-right font-bold text-slate-800">${lineItemsTotal.toFixed(2)}</span>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Quick Add row — catalog-first search */}
+                      {addingItem && (
+                        <div className="border-t border-slate-100 bg-emerald-50/15 relative">
+                          <div className="grid grid-cols-[1fr_52px_72px_72px_28px] gap-2 px-4 py-1.5 items-center">
+                            <div className="relative">
+                              <Input value={catalogSearch || newItem.description} onChange={(e) => { const v = e.target.value; setCatalogSearch(v); setNewItem(p => ({ ...p, description: v, productId: "" })); }}
+                                className="h-7 text-xs" placeholder="Search products/services..." autoFocus />
+                              {catalogSearch.length >= 1 && (
+                                <div className="absolute top-full left-0 right-0 z-50 mt-0.5 border border-slate-200 rounded bg-white shadow-lg max-h-36 overflow-y-auto">
+                                  {filteredCatalog.map(p => (
+                                    <button key={p.id} onClick={() => handleSelectCatalogItem(p)} className="w-full text-left px-3 py-1.5 text-xs hover:bg-emerald-50 flex items-center justify-between">
+                                      <span className="truncate text-slate-700">{p.name}</span>
+                                      {p.unitPrice && <span className="text-slate-400 ml-2">${parseFloat(p.unitPrice).toFixed(2)}</span>}
+                                    </button>
+                                  ))}
+                                  {filteredCatalog.length === 0 && (
+                                    <div className="px-3 py-2 text-xs text-slate-500">
+                                      No matches — <button onClick={() => { setNewItem(p => ({ ...p, description: catalogSearch })); setCatalogSearch(""); }} className="text-emerald-600 font-semibold hover:underline">create &ldquo;{catalogSearch}&rdquo;</button>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            <Input value={newItem.quantity} onChange={(e) => setNewItem(p => ({ ...p, quantity: e.target.value }))} className="h-7 text-xs text-right" />
+                            <Input value={newItem.unitPrice} onChange={(e) => setNewItem(p => ({ ...p, unitPrice: e.target.value }))} className="h-7 text-xs text-right" placeholder="0.00" />
+                            <span className="text-xs text-right text-slate-500">${calcTotal(newItem.quantity, newItem.unitPrice)}</span>
+                            <div className="flex gap-1">
+                              <button onClick={handleSubmitNewItem} disabled={!newItem.description.trim()} className="text-emerald-600 disabled:text-slate-300 text-[10px] font-bold">&#x2713;</button>
+                              <button onClick={cancelAddRow} className="text-slate-400 text-[10px] font-bold">&#x2715;</button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => onOpenChange(false)}
-                  className="px-5"
-                >
-                  Cancel
+
+              {/* ══════ FOOTER ══════ */}
+              <div className="flex items-center justify-between border-t border-slate-200 bg-white px-5 py-3">
+                <Button variant="outline" size="sm" onClick={() => setShowDeleteConfirm(true)} className="text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300 text-xs h-8 px-3">
+                  <Trash2 className="h-3 w-3 mr-1" />Delete visit
                 </Button>
-                <Button
-                  size="sm"
-                  onClick={handleSave}
-                  disabled={isPending}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm px-5"
-                  data-testid="button-save-visit"
-                >
-                  {isPending && <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />}
-                  Save changes
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={() => onOpenChange(false)} className="h-8 text-xs px-4">Cancel</Button>
+                  <Button size="sm" onClick={handleSave} disabled={isPending} className="h-8 text-xs px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold">
+                    {isPending && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}Save
+                  </Button>
+                </div>
               </div>
-            </div>
+            </>
           )}
         </DialogContent>
       </Dialog>
 
-      {/* Delete confirmation */}
-      <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
-        <AlertDialogContent data-testid="dialog-delete-visit-confirm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete Visit</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete this visit? This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => deleteMutation.mutate()}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              disabled={deleteMutation.isPending}
-            >
-              {deleteMutation.isPending ? "Deleting..." : "Delete"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {/* Add Equipment to Job dialog — uses canonical location equipment creation */}
+      {effectiveLocationId && (
+        <AddEquipmentDialog
+          locationId={effectiveLocationId}
+          open={showAddEquipmentDialog}
+          onOpenChange={setShowAddEquipmentDialog}
+          onCreated={handleEquipmentCreated}
+        />
+      )}
 
-      {/* Schedule conflict alert */}
+      <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
+        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete Visit</AlertDialogTitle><AlertDialogDescription>Are you sure? This cannot be undone.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction onClick={() => deleteMutation.mutate()} className="bg-red-600 hover:bg-red-700">Delete</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={showConflictAlert} onOpenChange={setShowConflictAlert}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Scheduling conflict detected</AlertDialogTitle>
-            <AlertDialogDescription>
-              This item overlaps another scheduled item. Please review the dispatch board.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogAction onClick={() => { setShowConflictAlert(false); onOpenChange(false); }}>OK</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
+        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Schedule Overlap</AlertDialogTitle><AlertDialogDescription>This technician already has a visit at this time.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogAction onClick={() => { setShowConflictAlert(false); onOpenChange(false); }}>OK</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
       </AlertDialog>
     </>
   );

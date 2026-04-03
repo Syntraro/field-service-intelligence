@@ -210,7 +210,7 @@ function CrewPicker({
                   disabled={isOnlyMember}
                   className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs transition-colors ${
                     isAssigned
-                      ? "bg-blue-50 text-blue-800 hover:bg-blue-100"
+                      ? "bg-[rgba(118,176,84,0.08)] text-[#39833A] hover:bg-[#C2E974]"
                       : isOffShift
                         ? "text-slate-400 hover:bg-slate-50"
                         : "text-foreground hover:bg-slate-50"
@@ -319,7 +319,7 @@ function UnscheduledScheduleForm({
         <CalendarDays className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
         <Popover>
           <PopoverTrigger asChild>
-            <button className="text-xs font-medium hover:text-blue-600 hover:underline transition-colors">
+            <button className="text-xs font-medium hover:text-[#76B054] hover:underline transition-colors">
               {selectedDate ? format(selectedDate, "EEE, MMM d, yyyy") : "Select date..."}
             </button>
           </PopoverTrigger>
@@ -391,7 +391,7 @@ function UnscheduledScheduleForm({
                     type="button"
                     onClick={() => handleToggleTech(t.id)}
                     className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs transition-colors ${
-                      isSelected ? "bg-blue-50 text-blue-800 hover:bg-blue-100" : "text-foreground hover:bg-slate-50"
+                      isSelected ? "bg-[rgba(118,176,84,0.08)] text-[#39833A] hover:bg-[#C2E974]" : "text-foreground hover:bg-slate-50"
                     } cursor-pointer`}
                   >
                     <Checkbox checked={isSelected} className="pointer-events-none" tabIndex={-1} />
@@ -410,7 +410,7 @@ function UnscheduledScheduleForm({
       <button
         onClick={handleSchedule}
         disabled={!canSchedule}
-        className="flex w-full items-center justify-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors mt-1"
+        className="flex w-full items-center justify-center gap-1.5 rounded bg-[#76B054] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#5F9442] disabled:opacity-40 disabled:cursor-not-allowed transition-colors mt-1"
       >
         <CalendarDays className="h-3 w-3" /> Schedule Visit
       </button>
@@ -611,7 +611,7 @@ function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onU
             <p className={`text-sm font-bold truncate leading-tight ${isCompleted ? "text-muted-foreground line-through" : "text-foreground"}`}>
               {isCompleted && <CheckCircle2 className="h-3.5 w-3.5 text-slate-400 inline mr-1 -mt-0.5" />}
               {visit.customerCompanyId ? (
-                <Link href={`/clients/${visit.customerCompanyId}`} className="hover:text-blue-600 hover:underline transition-colors">
+                <Link href={`/clients/${visit.customerCompanyId}`} className="hover:text-[#76B054] hover:underline transition-colors">
                   {visit.customerName}
                 </Link>
               ) : (
@@ -713,7 +713,7 @@ function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onU
                 {onReschedule ? (
                   <Popover>
                     <PopoverTrigger asChild>
-                      <button className="text-xs font-medium hover:text-blue-600 hover:underline transition-colors">
+                      <button className="text-xs font-medium hover:text-[#76B054] hover:underline transition-colors">
                         {displayDateStr}
                       </button>
                     </PopoverTrigger>
@@ -904,7 +904,7 @@ function VisitDetail({ visit, onClose, onUnschedule, onReschedule, onResize, onU
         {onOpenVisitEditor && (
           <button
             onClick={() => onOpenVisitEditor(visit)}
-            className="flex w-full items-center justify-center gap-1.5 rounded bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 transition-colors"
+            className="flex w-full items-center justify-center gap-1.5 rounded bg-[rgba(118,176,84,0.08)] px-3 py-1.5 text-xs font-medium text-[#5F9442] hover:bg-[#C2E974] transition-colors"
           >
             <Pencil className="h-3 w-3" /> Edit / Complete Visit
           </button>
@@ -997,13 +997,13 @@ function TaskDetail({ task, onClose, technicians, laneVisits = [], laneTasks = [
   return (
     <div className={mode === "popover"
       ? "flex w-[22rem] flex-col rounded-lg border bg-white shadow-xl"
-      : "flex h-full w-80 flex-shrink-0 flex-col border-l-2 border-l-blue-300 bg-white shadow-lg"
+      : "flex h-full w-80 flex-shrink-0 flex-col border-l-2 border-l-[#76B054] bg-white shadow-lg"
     }>
-      <div data-panel-drag-handle className={`flex items-center justify-between border-b bg-blue-50 px-3 py-2.5 ${mode === "popover" ? "rounded-t-lg cursor-move" : ""}`}>
+      <div data-panel-drag-handle className={`flex items-center justify-between border-b bg-[rgba(118,176,84,0.08)] px-3 py-2.5 ${mode === "popover" ? "rounded-t-lg cursor-move" : ""}`}>
         <div className="min-w-0 flex items-center gap-2">
           {isSupplierType(task.type)
-            ? <Truck className="h-4 w-4 text-blue-600 flex-shrink-0" />
-            : <ClipboardList className="h-4 w-4 text-blue-600 flex-shrink-0" />}
+            ? <Truck className="h-4 w-4 text-[#76B054] flex-shrink-0" />
+            : <ClipboardList className="h-4 w-4 text-[#76B054] flex-shrink-0" />}
           <div>
             <p className={`text-sm font-bold truncate ${isTaskCompleted ? "text-muted-foreground line-through" : "text-foreground"}`}>
               {isTaskCompleted && <CheckCircle2 className="h-3.5 w-3.5 text-slate-400 inline mr-1 -mt-0.5" />}
@@ -1014,7 +1014,7 @@ function TaskDetail({ task, onClose, technicians, laneVisits = [], laneTasks = [
         </div>
         <button
           onClick={onClose}
-          className="flex h-6 w-6 items-center justify-center rounded hover:bg-blue-100 text-muted-foreground hover:text-foreground transition-colors"
+          className="flex h-6 w-6 items-center justify-center rounded hover:bg-[#C2E974] text-muted-foreground hover:text-foreground transition-colors"
         >
           <X className="h-4 w-4" />
         </button>
@@ -1051,7 +1051,7 @@ function TaskDetail({ task, onClose, technicians, laneVisits = [], laneTasks = [
                 {onRescheduleTask ? (
                   <Popover>
                     <PopoverTrigger asChild>
-                      <button className="text-xs font-medium hover:text-blue-600 hover:underline transition-colors">
+                      <button className="text-xs font-medium hover:text-[#76B054] hover:underline transition-colors">
                         {format(new Date(task.scheduledStart), "EEE, MMM d, yyyy")}
                       </button>
                     </PopoverTrigger>
@@ -1181,7 +1181,7 @@ function TaskDetail({ task, onClose, technicians, laneVisits = [], laneTasks = [
         {task.jobId && (
           <Link
             href={`/jobs/${task.jobId}`}
-            className="flex w-full items-center justify-center gap-1.5 rounded bg-blue-100 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-200 transition-colors"
+            className="flex w-full items-center justify-center gap-1.5 rounded bg-[#C2E974] px-3 py-1.5 text-xs font-medium text-[#39833A] hover:bg-[rgba(118,176,84,0.25)] transition-colors"
           >
             <ExternalLink className="h-3 w-3" /> Open Related Job
           </Link>

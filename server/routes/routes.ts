@@ -222,7 +222,7 @@ router.post("/optimize", asyncHandler(async (req: AuthedRequest, res: Response) 
   // Also build the geocodedClients array the dialog expects
   const geocodedClientsResponse = orderedStops.map((s) => ({
     clientId: s.id,
-    coordinates: [s.lng, s.lat] as [number, number], // [lng, lat] for RouteMap
+    coordinates: [s.lng, s.lat] as [number, number],
     address: s.label,
   }));
 

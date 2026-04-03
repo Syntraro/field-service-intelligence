@@ -6,6 +6,3511 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+#### Overlap Concurrency Hardening — Transactional FOR UPDATE Locking (2026-04-03)
+
+- **All time-entry mutation paths now use database transactions with `FOR UPDATE` row locking** to prevent race-condition overlaps under concurrent requests.
+- **Centralized overlap enforcement:** New `_assertNoOverlapTx()` and `_overlapQueryForUpdate()` private methods provide the canonical transactional overlap check. All mutations call through this single enforcement point.
+- **`createFinishedTimeEntry`**: Wrapped in `this.tx()`. Overlap check + insert are atomic.
+- **`stopTimeEntry`**: Wrapped in `this.tx()`. Overlap check + endAt update are atomic.
+- **`stopRunningTimeEntry`**: Accepts optional `txDb` param to join outer transactions. Uses `_assertNoOverlapTx` inside tx.
+- **`startTimeEntry`**: Wrapped in `this.tx()`. Auto-stop of running entry + insert of new entry are atomic within one transaction.
+- **`updateTimeEntry`**: Wrapped in `this.tx()` with `FOR UPDATE` on the entry row. Overlap check + update are atomic.
+- **`updateTimeEntryManager`**: Already used transaction — replaced inline overlap query with centralized `_assertNoOverlapTx` (adds `FOR UPDATE` to overlap rows).
+- **Removed `skipOverlapCheck`**: Dead parameter fully removed in prior pass; no bypass paths remain.
+- **Non-transactional `checkTimeEntryOverlap`** kept for route-level pre-flight checks (secondary validation only).
+- **Files affected:** `server/storage/timeTracking.ts`
+
+#### Final Timesheet Hardening — Canonical Overlap, Null-Job Safety, Timer Fixes (2026-04-03)
+
+- **Canonical overlap enforcement.** All time entry mutation paths now enforce no-overlap at the repository layer:
+  - `stopTimeEntry` — added overlap check before finalizing timer stop
+  - `stopRunningTimeEntry` — added overlap check (internal helper used by startTimeEntry/recordJobStatus)
+  - `createFinishedTimeEntry` — removed `skipOverlapCheck` bypass parameter; overlap always enforced
+  - `startTimeEntry`, `updateTimeEntry`, `updateTimeEntryManager` — already protected (unchanged)
+- **Display label cleanup.** Replaced "Unassigned" with "No job linked" — purely presentational, no special workflow or bucket logic.
+- **Files affected:** `server/storage/timeTracking.ts`, `client/src/pages/AdminTimesheetsPage.tsx`, `CHANGELOG.md`
+
+#### Timesheet Adjustment — Optional Job, No Picker, Overlap Hardening (2026-04-03)
+
+- **Job association restored to optional.** `jobId` is nullable/optional in all create and update schemas. If provided, server validates against `activeWorkJobFilter()` (open, active, not deleted). If absent, entry saves cleanly.
+- **Job picker removed.** "Add Entry" on Daily Timesheet opens the time entry modal directly — no intermediate job selection step.
+- **Overlap validation hardened.** Added overlap check to `updateTimeEntry` (tech self-edit path) — previously only `createFinishedTimeEntry` and `updateTimeEntryManager` checked. All three mutation paths plus `startTimeEntry` (auto-stop) now prevent overlapping entries.
+- **Dead code removed.** Job picker dialog, ActiveJob interface, job search state, filtered jobs memo, legacy-entry edit guard, Search/Dialog/Input imports for picker — all removed from Daily Timesheet page.
+- **Unassigned entries display cleanly.** Entries without a job show "Unassigned" label. All entries are editable regardless of job association.
+- **Files affected:** `shared/schema.ts`, `server/storage/timeTracking.ts`, `server/routes/adminTimesheets.ts`, `client/src/pages/AdminTimesheetsPage.tsx`, `client/src/components/time/TimeEntryModal.tsx`
+
+#### Payroll/Timesheet Cleanup & Hardening (2026-04-03)
+
+**Job Required on Time Entries:**
+- **Backend:** `jobId` is now required (non-nullable) in `startTimeEntryRequestSchema`, `createFinishedTimeEntryRequestSchema`, and the admin create schema. Update schemas (`updateTimeEntrySchema`, `managerUpdateTimeEntrySchema`) allow `jobId` reassignment but not removal to null.
+- **Storage:** `createFinishedTimeEntry` and `startTimeEntry` now require `jobId: string`. Job validation uses `activeWorkJobFilter()` (open jobs only — excludes completed, invoiced, archived).
+- **Frontend:** `TimeEntryModal` `jobId` prop reverted to required `string`. Daily timesheet "Add Entry" now shows a job picker dialog before opening the entry modal.
+
+**Active Job Validation Tightened:**
+- All time-entry mutation paths now use `activeWorkJobFilter()` instead of `activeJobFilter()`. This ensures entries can only be assigned to jobs with `status = 'open'`, `isActive = true`, and `deletedAt IS NULL`.
+
+**AdminTimesheets Renamed:**
+- Component renamed from `AdminTimesheetsPage` to `DailyTimesheetPage` (exported function name). Internal file path kept for routing stability.
+- All user-facing text uses "Daily Timesheet" — no "Admin Timesheets" appears in UI, nav, or page titles.
+- Backend route comment updated; API path `/api/admin/timesheets` kept as internal-only path.
+
+**General/Jobless Entries Removed:**
+- No new time entries can be created without a job. "General" creation path removed.
+- Legacy null-job entries render safely as "Unassigned (legacy)" in read-only display.
+- Edit action blocked for legacy null-job entries with toast notification.
+
+**Files affected:**
+- `shared/schema.ts` — jobId required in create schemas, non-nullable in update schemas
+- `server/storage/timeTracking.ts` — jobId required in method signatures, activeWorkJobFilter used
+- `server/routes/adminTimesheets.ts` — jobId required in create schema, header comment updated
+- `client/src/pages/AdminTimesheetsPage.tsx` — Rewritten: job picker, no General creation, DailyTimesheetPage export
+- `client/src/components/time/TimeEntryModal.tsx` — jobId required prop, cleaned invalidation
+- `client/src/App.tsx` — Import renamed to DailyTimesheetPage
+
+#### Job Header Description — Visual Readability + Edit Job Modal Cleanup (2026-04-03)
+
+- **Description text darker:** Changed from `text-muted-foreground/70` to `text-slate-600` for readable contrast. Edit mode uses `text-slate-700`.
+- **Visual separation:** Added `mt-2.5 pt-2 border-t border-slate-100` between client/address row and description block.
+- **Edit Job modal simplified:** Removed schedule controls (date, time, duration, unscheduled checkbox) and technician assignment from edit mode. Edit modal now only edits location, summary, and description. Schedule/assignment is managed via visit-level controls (`EditVisitModal`).
+- **Removed schedule side-effect:** `updateJobMutation` no longer calls `applyJobSchedule()`. Removed `parseJobToScheduleValue` import.
+- **Files affected:** `client/src/pages/JobDetailPage.tsx`, `client/src/components/QuickAddJobDialog.tsx`
+
+#### Payroll/Timesheet Refactor — time_entries as Single Source of Truth (2026-04-03)
+
+**Backend:**
+- **Payroll summary now uses `time_entries` only.** Removed `work_sessions` dependency from `getWeeklyPayrollSummary()`. Work sessions remain for shift presence tracking but no longer drive payroll calculations.
+- **Simplified payroll data model.** `TechnicianWeeklySummary` now has `totalMinutes` + `daily[].totalMinutes` instead of `workedMinutes`/`trackedMinutes`/`billableMinutes`/`untrackedMinutesRaw`.
+- **CSV export updated.** Now outputs: Technician, Mon–Sun, Total Hours, Status. Removed old worked/tracked/billable/untracked columns.
+- **Admin timesheet backend consolidated.** Moved inline Drizzle queries from `adminTimesheets.ts` into `timeTrackingRepository` (`getTimesheetUsers`, `getTimesheetDay`, `getVisitsForReassign`). Route file now delegates to canonical repository.
+- **Chronological day endpoint.** `GET /api/admin/timesheets/day` now returns flat chronological entries (ordered by `startAt`) instead of grouped-by-job buckets.
+- **Active-job-only validation hardened.** `createFinishedTimeEntry`, `linkTimeEntryToJob`, and `updateTimeEntryManager` now validate `activeJobFilter()` (isActive=true, deletedAt=null) when assigning/reassigning jobs. Visits-for-reassign also filters to active jobs.
+- **Admin entry create expanded.** Supports all canonical entry types (not just travel/on_site) and optional `jobId` (null = general time).
+
+**Frontend:**
+- **Payroll page simplified.** Removed worked/tracked/billable/untracked columns. Now shows: Technician, Mon–Sun, Total, Status, Actions. Day cells are clickable to drill into daily timesheet.
+- **New Daily Admin Timesheet page** (`/settings/timesheets`). Chronological entry list with General vs job-linked display, add/edit/delete, lock indicators, user+date selector.
+- **TimeEntryModal extended.** `jobId` now optional (supports general entries). Added `extraInvalidateKeys` prop for cross-page cache invalidation.
+- **Settings nav updated.** Added "Timesheets" entry in settings sidebar.
+- **Route added.** `/settings/timesheets` → `AdminTimesheetsPage`.
+
+**Files affected:**
+- `shared/schema.ts` — Simplified `DailyPayrollBreakdown` and `TechnicianWeeklySummary` interfaces
+- `server/storage/timeTracking.ts` — Refactored payroll summary, added admin timesheet repository methods, hardened job validation
+- `server/routes/adminTimesheets.ts` — Rewritten to delegate to repository
+- `client/src/pages/PayrollPage.tsx` — Simplified to weekly grid
+- `client/src/pages/AdminTimesheetsPage.tsx` — New daily timesheet page
+- `client/src/components/time/TimeEntryModal.tsx` — Optional jobId, extra invalidation keys
+- `client/src/App.tsx` — Added timesheets route
+- `client/src/components/SettingsShell.tsx` — Added nav entry
+
+#### Job Description Editor — Safe Edit Mode (2026-04-03)
+
+- **Explicit edit mode:** Description field now has a clear view/edit toggle. Pencil icon always visible on hover. Clicking enters edit mode with Save/Cancel buttons.
+- **No more accidental data loss:** Removed fragile `onBlur` auto-save and `Enter`-as-save behaviors. Edits persist only via explicit Save button or Cmd/Ctrl+Enter.
+- **Multi-line support:** Textarea auto-expands from 1 line up to ~4 lines, then allows internal scroll. View mode also supports up to ~4 lines before scrolling.
+- **Preserved canonical save path:** Still uses `PATCH /api/jobs/:id` with optimistic locking (`version`). No new fields or endpoints. Invoice creation continues to read `job.description` unchanged.
+- **Files affected:** `client/src/pages/JobDetailPage.tsx`
+
+#### Time Entry Data Integrity + Modal Polish (2026-04-03)
+
+- **Fixed cost/hr $0 bug:** Create mode now correctly waits for technician directory to load before looking up `laborCostPerHour`. Previously the async race condition caused initial render to show $0.00. Root cause: effect ran with empty `technicians[]` array. Fix: guard on `technicians.length === 0`.
+- **Edit mode shows cost fields:** Edit mode now displays cost/hr and total cost as read-only (from `costRateSnapshot`), matching the create mode layout. Previously edit mode hid cost entirely.
+- **Labour Summary uses cost rate:** Per-entry cost in Labour Summary now uses `costRateSnapshot` (employee cost) instead of `billableRateSnapshot` (customer billing rate).
+- **Job Summary labour cost:** Replaced hardcoded `labourCostAmount = 0` with live computation from `pageLevelTimeSummary.totalCostAmount`. Labour now correctly flows into Total Cost and Profit calculations.
+- **Added `totalCostAmount` to time summary:** Server-side `getJobTimeSummary()` now computes total labour cost from `costRateSnapshot × durationMinutes`. Added to `JobTimeSummary` interface.
+- **Added `costRateSnapshot` to time entries API:** `getJobTimeEntries()` now returns `costRateSnapshot` alongside `billableRateSnapshot`.
+- **Unified entry types to 4:** Both create and edit modes now use the same 4 canonical types: Travel Time, On Site, Parts Pickup, Other. Removed the 8-type edit list.
+- **Added delete in edit mode:** Delete button with confirmation dialog. Uses new `DELETE /api/time/entries/:id` route (manager-only, reuses canonical `deleteTimeEntry` storage method).
+- **Removed redundant labour KPI row:** Removed the Travel/On-site/Billable/Total inline metrics strip from the Parts, Labour & Expenses section (data-testid `labour-summary-inline`).
+- Files changed: `client/src/components/time/TimeEntryModal.tsx`, `client/src/pages/JobDetailPage.tsx`, `server/storage/timeTracking.ts`, `server/routes/timeTracking.ts`, `shared/schema.ts`
+
+#### Time Entry Modal Unification + Layout Redesign (2026-04-03)
+
+- **Unified modal:** Merged `AddTimeEntryModal` + `EditTimeEntryModal` into single `TimeEntryModal` with `mode: "create" | "edit"` prop. Deleted both old files.
+- **Layout redesign:** Wider dialog (600px vs 480/500px), 3-column field rows (Date/Start/End, Hours/Minutes/Type, Technician/Cost/Total), compact spacing, reduced vertical height.
+- **Business rules preserved:** Create uses 4 job-scoped entry types; Edit uses full 8. Cost/hr read-only in edit mode. Lock override flow unchanged. Break-not-billable enforced client-side in both modes.
+- **State consolidation:** Replaced `showAddTimeEntry` + `showEditTimeEntry` + `editingTimeEntry` with single `timeEntryModal` state object. Removed redundant parent-level query invalidation (modal handles it).
+- **Dead code removed:** `AddTimeEntryModal.tsx`, `EditTimeEntryModal.tsx`, `TimeEntryForEdit` type.
+- Files changed: `client/src/components/time/TimeEntryModal.tsx` (new), `client/src/components/time/index.ts`, `client/src/pages/JobDetailPage.tsx`
+- Files deleted: `client/src/components/time/AddTimeEntryModal.tsx`, `client/src/components/time/EditTimeEntryModal.tsx`
+
+#### Job Detail — Right-Rail Default States & Labour Summary Flatten (2026-04-03)
+
+- **Default card states changed:** Job Summary and Labour Summary now open by default; Notes collapsed by default. All local `useState` in `JobDetailPage.tsx`.
+- **Removed nested Labour Summary toggle:** Eliminated the separate "Show entries" / "Hide entries" inner toggle and `showEntries` state. Labour entries now render immediately when the card is expanded. Single expand/collapse via card header chevron only.
+- **Time entries query always enabled:** `time-entries` query no longer gated behind `showEntries` flag; fires as soon as `LabourCardContent` mounts.
+- File: `client/src/pages/JobDetailPage.tsx`
+
+#### Job Detail — Labour Summary UI Cleanup (2026-04-03)
+
+- **Removed category breakdown:** Eliminated the Travel / On-site / Other / Billable / Total metrics grid from the Labour Summary card. The inline summary row in the Parts card is unchanged.
+- **Simplified entry list:** Labour entries now show technician name, date, time range, duration, and cost per row instead of type badges and category labels.
+- **Added cost per entry:** Each entry displays computed cost from `billableRateSnapshot × duration` when rate data is available.
+- **Row-level click:** Entire entry row is now clickable to open edit modal (previously pencil icon only on hover).
+- **Dead code removal:** Removed unused `formatTimeEntryType()` helper. Added `billableRateSnapshot` to client `TimeEntryDisplay` interface.
+- Files: `client/src/pages/JobDetailPage.tsx`
+
+#### Technician App — Equipment Card Actions & Remove Flow Fix (2026-04-03)
+
+- **Labeled action buttons:** Replaced icon-only Note/Part buttons with explicit text-labeled buttons ("Note", "Part") including counts when present (e.g. "Note (2)"). Buttons stacked vertically on the right side of each equipment card. File: `VisitDetailPage.tsx`.
+- **Active equipment remove fix:** Reordered confirm handler to clear local UI state (`setSelectedEquipmentId(null)`, `setConfirmRemoveEqId(null)`) before calling parent `onClearEquipmentWork`, and captured equipment ID upfront to prevent stale closure issues. The green "Working on" banner and card highlight now clear immediately on confirm. File: `VisitDetailPage.tsx`.
+
+#### Technician App — Equipment Card Compactness Pass (2026-04-03)
+
+- **Reading button removed:** Removed the Reading action from equipment cards entirely. Removed unused `Settings2` import. File: `VisitDetailPage.tsx`.
+- **Note + Part moved to right side:** Note and Part buttons are now inline on the right side of each equipment card row (same line as icon + name), eliminating the separate bottom action row. Buttons show icon + count (if > 0) for compactness. File: `VisitDetailPage.tsx`.
+- **Card height reduced:** Equipment icon shrunk from h-9/w-9 to h-8/w-8, text sizes tightened (12px→11px name, 10px→9px details), vertical padding reduced from py-2.5 to py-2. Cards are visibly shorter on mobile.
+
+#### Technician App — Equipment & Notes UX Pass (2026-04-03)
+
+- **Working On banner simplified:** Removed redundant Note and Part buttons from the green equipment context bar. Banner now shows only equipment label + dismiss X. Technicians add notes/parts from the equipment card itself. File: `VisitDetailPage.tsx`.
+- **Safe equipment removal flow:** Tapping X on the Working On banner opens a confirmation modal warning that notes, parts, and related work logged for that equipment in the current session will be removed. Cancel preserves everything; Remove clears equipment-scoped notes/parts without deleting the equipment record. Files: `VisitDetailPage.tsx`, `useTechState.ts`, `TechApp.tsx`.
+- **Equipment notes grouped rendering:** Notes tab now groups notes by equipment — each equipment heading appears once with all its notes stacked underneath with timestamps. General notes render in a separate group. No change to underlying storage model. File: `VisitDetailPage.tsx`.
+- **Login screen logo:** Replaced placeholder SVG checkmark icon with the canonical `Syntraro Logo Transparent.png` asset already used in the main app header. No new assets created. File: `LoginPage.tsx`.
+
+#### Schedule Screen UX Refinement (2026-04-03)
+
+- **Clock-in banner neutralized:** Replaced red `bg-red-600` "Not Clocked In" strip with neutral `bg-slate-100` strip. Left side shows a muted status dot + text; right side shows a green "Clock In" button. No red styling remains. File: `TodayPage.tsx`.
+- **Header avatar:** Replaced plain "S" text in the mobile top bar with a gradient green circular avatar showing company initials ("SD"). Reduced visual weight. File: `MobileShell.tsx`.
+- **Floating Action Button (FAB):** Added circular green FAB in the bottom-right corner with "+" icon. Tapping opens a bottom sheet with 6 actions: Job, Quote, Invoice, Task, Client, Lead. Excludes Request and Expense per spec. File: `TodayPage.tsx`.
+- **Permission-based action filtering:** FAB actions filtered by mock `UserRole` flag. Technician sees Task only; Manager+ sees Job, Quote, Invoice, Task, Client, Lead; Admin/Owner sees all. Uses simple role hierarchy lookup. File: `TodayPage.tsx`.
+
+### Fixed
+
+#### Remove `visit_id` from Time Entry Flow (2026-04-03)
+
+- **Root cause:** Drizzle schema defined `visitId` column on `time_entries` but the actual database table never had this column, causing `column "visit_id" does not exist` SQL errors on insert.
+- **Schema cleanup:** Removed `visitId` field and `time_entries_visit_idx` index from `timeEntries` table definition in `shared/schema.ts`. Removed `visitId` from `createFinishedTimeEntryRequestSchema`.
+- **Storage cleanup:** Removed `visitId` from `startTimeEntry()`, `createFinishedTimeEntry()`, and `recordJobStatus()` options and insert payloads in `server/storage/timeTracking.ts`. Removed `jobVisits` join from `getJobTimeEntries()` query. Removed unused `jobVisits` import.
+- **Route cleanup:** Removed `visitId` from request payloads in `server/routes/timeTracking.ts` (both tech and manager create endpoints), `server/routes/techField.ts` (en-route, start, complete), and `server/routes/jobVisits.routes.ts` (check-in).
+- **Frontend cleanup:** Removed `visitId: null` from `AddTimeEntryModal.tsx` request body.
+- Files: `shared/schema.ts`, `server/storage/timeTracking.ts`, `server/routes/timeTracking.ts`, `server/routes/techField.ts`, `server/routes/jobVisits.routes.ts`, `client/src/components/time/AddTimeEntryModal.tsx`.
+
+#### Radix Select `value=""` Runtime Crash (2026-04-03)
+
+- **Add Time modal crash fixed:** Replaced `<SelectItem value="">` with sentinel `"__none__"` in Visit select. Radix rejects empty-string values on `SelectItem`. State init and reset updated; submit maps sentinel back to `null`. File: `client/src/components/time/AddTimeEntryModal.tsx`.
+- **Unassigned Time filter crash fixed:** Replaced `<SelectItem value="">` with sentinel `"__all__"` in technician filter. Filter logic updated to skip API param when `"__all__"`. File: `client/src/pages/UnassignedTimePage.tsx`.
+- **Time Analytics filter crash fixed:** Same fix as above. File: `client/src/pages/TimeAnalyticsPage.tsx`.
+
+### Changed
+
+#### Technician PWA — Header Action Consolidation (2026-04-03)
+
+- **Start Job moved into timer strip:** Removed separate full-width "Start Job" button for en_route state. "Start Job" now appears as a green filled button right-aligned in the timer strip alongside Pause. Full-width CTA only remains for scheduled→Start Travel. File: `VisitDetailPage.tsx`.
+
+#### Technician PWA — Correction Pass (2026-04-03)
+
+- **Complete/Pause moved to header timer strip:** Removed large sticky bottom "Complete Job" button. Pause and Complete now sit right-aligned in the live timer strip when visit is on-site, saving vertical space. File: `VisitDetailPage.tsx`.
+- **Equipment modal with Select Existing / Add New:** Replaced simple "Add Equipment" form with segmented modal. "Select Existing" tab shows searchable list of site equipment (mock data). "Add New" tab retains the inline creation form. File: `VisitDetailPage.tsx`.
+- **Part modal with Products & Services catalog + Create Part:** Replaced simple part form with segmented modal. "Products & Services" tab shows searchable mock catalog with inline qty + add. "Create Part" tab for manual entry. File: `VisitDetailPage.tsx`.
+- **Reopen flow after outcome:** Added `handleReopen` to `useTechState.ts`. When a visit has an outcome set, a compact banner shows the outcome chip plus a "Reopen" action. Reopening clears outcome, returns visit to in_progress, and restarts the timer. File: `VisitDetailPage.tsx`, `useTechState.ts`, `TechApp.tsx`.
+- **Compact outcome banner:** Replaced tall emerald banner with slim status chip + reopen action in a single row. File: `VisitDetailPage.tsx`.
+- **Tightened bottom layout:** Removed dead spacing from Complete button removal. Bottom padding reduced from pb-40 to pb-28. Quick action bar now only contains Note/Part/Photo/Equip. File: `VisitDetailPage.tsx`.
+- **Outcome stays on page:** Selecting an outcome no longer navigates back to schedule — technician stays on visit detail to see outcome and optionally reopen. File: `TechApp.tsx`.
+
+#### Technician PWA — UI Polish Fixes (2026-04-03)
+
+- **Parts nested under equipment cards:** Parts logged against equipment now display directly under each equipment card ("Parts Used" section) instead of a separate global list. File: `VisitDetailPage.tsx`.
+- **Notes tagged with equipment:** Each note in the Notes tab shows a `[Equipment Name]` or `[General]` tag badge, replacing the old grouped-by-header layout. File: `VisitDetailPage.tsx`.
+- **Equipment selection uses green highlight:** Selected equipment card now uses green border/background (matching Syntraro brand) instead of blue. Context bar also uses green. File: `VisitDetailPage.tsx`.
+
+#### Technician PWA — UI/UX Refactor (2026-04-03)
+
+- **Multi-tech team schedule view:** Added toggleable My Schedule / Team View on TodayPage. Team View renders horizontal-scroll time grid with technician columns, visit blocks positioned by time, Day/3-Day/Week range toggle, and multi-select tech filter chips. Permission-gated (isManager). Files: `TodayPage.tsx`, `mockVisits.ts` (added MOCK_TECHNICIANS + TEAM_VISITS).
+- **State-driven primary action:** Replaced 4 equal-weight action buttons with single state-driven button: scheduled→"Start Travel", en_route→"Start Job". Pause moved to header top-right icon. Undo toast with 5s auto-dismiss after each action. File: `VisitDetailPage.tsx`.
+- **Live timer prominence:** Timer strip shows "[On Site — 00:12:45]" format with pulsing indicator, positioned directly under header. HH:MM:SS display. File: `VisitDetailPage.tsx`.
+- **Tab restructure:** Reduced from 6 tabs (Overview/Notes/Equipment/Site Assets/Checklist/Leads) to 3 (Overview/Notes/More). Removed Checklist, Site Assets, standalone Equipment tab. Leads moved to More. File: `VisitDetailPage.tsx`.
+- **Overview tab reorder:** Visit Instructions (amber highlight, always first) → Job Description → Equipment section with tap-to-select, action buttons per card (Note/Part/Reading). Parts Logged section shows accumulated parts. File: `VisitDetailPage.tsx`.
+- **Equipment-bound input:** Tap equipment to select → blue context bar appears with quick Note/Part buttons. Notes and parts tagged to selected equipment. Add Part modal with name/qty/price fields. File: `VisitDetailPage.tsx`.
+- **Quick action bar:** Pinned bottom bar with large tap targets: Note, Part, Photo (placeholder), Equipment. Always visible above bottom nav. File: `VisitDetailPage.tsx`.
+- **Complete job flow:** Sticky full-width green "Complete Job" button, only visible when status === in_progress, opens existing OutcomeModal. File: `VisitDetailPage.tsx`.
+- **Schedule card improvements:** Red clock-in banner when not clocked in. Job type tags (PM/Service/Urgent/Install) on each card. "NEXT" badge on first non-completed job. Status badges for active/completed visits. Directions button retained. File: `TodayPage.tsx`.
+- **Header compression:** Reduced to 3 tight rows: title+pause, time+company, address+directions. File: `VisitDetailPage.tsx`.
+- **Types extended:** Added JobType, MockPart, MockTechnician types. MockVisit now includes parts[], jobType, technicianId. File: `types/visit.ts`.
+- **State extended:** Added handleAddPart handler to useTechState. File: `useTechState.ts`.
+
+#### Add Time Entry Modal — Full Redesign (2026-04-03)
+
+- **Visit field removed:** Visit attachment dropdown removed from modal. `visitId: null` always submitted. Visit-based time tracking handled separately by technician visit lifecycle. File: `client/src/components/time/AddTimeEntryModal.tsx`, `client/src/pages/JobDetailPage.tsx` (removed `visits` prop).
+- **Employee cost per hour:** Editable currency field auto-populated from selected technician's `laborCostPerHour` in `technicianProfiles`. Resets on technician change. User can override for this entry only — persisted via new `costRateOverride` on request, stored in `time_entries.costRateSnapshot`. Files: `AddTimeEntryModal.tsx`, `shared/schema.ts`, `server/routes/timeTracking.ts`, `server/storage/timeTracking.ts`.
+- **Total cost display:** Calculated live as `costPerHour * durationHours`. Updates as rate or duration changes. Display-only row.
+- **Date/time split:** Replaced two `datetime-local` inputs with separate Start Date (date), Start Time (time), End Time (time) fields. Same-day assumption — no cross-midnight support.
+- **Hours/Minutes two-way sync:** Two numeric fields synced bidirectionally with Start Time / End Time. Canonical model: startTime + endTime → derive duration. Duration edits update End Time. Minutes clamped to 0-59.
+- **Entry type moved lower:** Entry Type dropdown now appears below time/duration fields, above Notes.
+- **Backend: costRateOverride support:** Added `costRateOverride` (string, nullable, optional) to `createFinishedTimeEntryRequestSchema`. Storage layer uses override for `costRateSnapshot` when provided, else auto-fetches from technician profile. File: `shared/schema.ts`, `server/storage/timeTracking.ts`, `server/routes/timeTracking.ts`.
+- **Backend: technician rates in API:** Added `getTechnicianRates()` to TeamRepository. `/api/team/technicians` now returns `laborCostPerHour` per technician. Files: `server/storage/team.ts`, `server/storage/index.ts`, `server/routes/team.ts`.
+- **Frontend: TeamMember type extended:** Added `laborCostPerHour?: string | null` to `TeamMember` interface. File: `client/src/hooks/useTechnicians.ts`.
+
+#### Add Time Entry Modal — UI/Label Cleanup (2026-04-03)
+
+- **Technician dropdown shows names:** Replaced local `getTechName()` (firstName+lastName, fallback email) with canonical `getMemberDisplayName()` from `client/src/lib/displayName.ts` (fullName > firstName+lastName > email). File: `client/src/components/time/AddTimeEntryModal.tsx`.
+- **Entry types simplified for job-level manual entry:** Reduced from 8 options to 4 user-facing labels mapped to existing backend enum values: Driving→`travel_to_job`, On Site→`on_site`, Supplier Pickup→`supplier_run`, Prep Work→`admin`. Removed: Travel to Job, Travel to Supplier, Travel Between Jobs, Break, Other. Change scoped to this modal only — `EditTimeEntryModal` and other time pages retain full type list. File: `client/src/components/time/AddTimeEntryModal.tsx`.
+- **Dead code removed:** Removed unused `AlertCircle` icon import, `Alert`/`AlertDescription` imports, `TeamMember` type import, and break-specific UI (disabled checkbox, break alert banner). File: `client/src/components/time/AddTimeEntryModal.tsx`.
+
+#### Job Detail Page — UI Correction Pass (2026-04-03)
+
+- **Job Summary: Uninvoiced removed:** Removed the Uninvoiced Amount row from the Job Summary card entirely. File: `JobDetailPage.tsx`.
+- **Job Summary: Labour row added:** Added explicit Labour row between Line Items and Expenses. Currently shows canonical $0.00 (no labour cost field exists in schema yet — placeholder for future labour costing). File: `JobDetailPage.tsx`.
+- **Job Summary: label corrections:** Renamed "Line Item Cost" → "Line Items", "Expense Cost" → "Expenses" for clearer semantics. Row order: Revenue, Line Items, Labour, Expenses, Total Cost, Profit. File: `JobDetailPage.tsx`.
+- **Action bar integrated into header card:** Merged the floating action bar strip into the header card as Section B with a subtle `border-t` divider. Single unified card, shared border-radius. File: `JobDetailPage.tsx`.
+- **Action bar layout: left/right split:** Secondary actions (Add Note, Add Time, Add Equipment, Hold) left-aligned. Schedule Visit + overflow menu right-aligned. File: `JobDetailPage.tsx`.
+- **Overflow menu: icon-only:** Removed "More" text label, now icon-only three-dot button at the far right of the action bar. Old header-level More menu eliminated (was duplicate). File: `JobDetailPage.tsx`.
+- **Equipment card visual consistency:** Replaced `<Card>` wrapper with matching `<div>` using `bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden`. Header padding aligned to `px-4 py-2.5`, added Wrench icon in title, chevron color matched. File: `JobEquipmentSection.tsx`.
+- **Add Time button fully verified:** Complete chain traced: button `onClick` → `setShowAddTimeEntry(true)` → `AddTimeEntryModal` renders with `open={showAddTimeEntry}`, correct props (`jobId`, `assignedTechnicianIds`, `visits`), submit calls `POST /api/time/entries/manager` (exists in `server/routes/timeTracking.ts`), `onSuccess` invalidates `time-summary` + `time-entries` queries. Vite build passes (no import/runtime errors).
+- **Header + action bar unified:** Tightened action row padding (`py-1.5`), removed separate background (`bg-slate-50/60` → inherits white), refined divider to `border-slate-200/60`. Both sections share single outer container with shared `rounded-2xl` and `border-slate-200`. File: `JobDetailPage.tsx`.
+- **Labour cost wired for future:** Extracted `labourCostAmount = 0` const at page level (line ~595). All profit/total-cost calculations (Job Summary collapsed, expanded, Parts card collapsed) reference this single const. When labour costing is implemented, only this one line needs to change. File: `JobDetailPage.tsx`.
+
+#### Technician Preview Route — Hardened (2026-04-03)
+
+- **Route restored:** Early return in `AppContent` renders `TechApp` standalone when `location.startsWith('/tech')`, bypassing sidebar/header. File: `App.tsx`.
+- **Redundant `<Route>` removed:** Removed duplicate `<Route path="/tech/:rest*">` from `Router()` to prevent double-mounting — early return is the single render path. File: `App.tsx`.
+- **Hardening comment added:** Protective comment block above early return documents intent and warns against wrapping TechApp in main layout. File: `App.tsx`.
+- **Sidebar link verified:** `AppSidebar.tsx:75` points to `/tech/login` — correct. No changes needed.
+
+#### Job Detail Page — Layout Refactor: Header / Action Bar / Right Rail (2026-04-03)
+
+- **Header financial strip removed:** Removed the Revenue / Cost / Labour / Expenses / Profit band from the bottom of the header card. Financial data is now shown exclusively in the right-rail Job Summary panel. File: `JobDetailPage.tsx`.
+- **New horizontal action bar below header:** Created a full-width action bar directly beneath the header and above the Parts, Labour & Expenses card. Contains: Schedule Visit (primary), Add Note, Add Time, Add Equipment, Hold (amber/caution), and invoice link. Actions moved from the old right-rail action box. File: `JobDetailPage.tsx`.
+- **Right rail reordered:** New panel order: Job Summary → Labour Summary → Notes → Equipment. Old action bar card removed from right rail. File: `JobDetailPage.tsx`.
+- **Job Summary panel (new):** Collapsible right-rail card, collapsed by default. Collapsed header row shows profit % and profit amount (e.g. "85% • $2,828.44"). Expanded view shows: Revenue, Line Item Cost, Expense Cost, Total Cost, Profit (emphasized), and Uninvoiced Amount (conditional, amber). Uses canonical `billingTotals` + `expenseTotalAmount` + `jobInvoice.total`. File: `JobDetailPage.tsx`.
+- **Labour Summary panel refactored:** Now collapsible (collapsed by default). Collapsed header row shows total time. Expanded view retains existing `LabourCardContent` with time summary and entries. File: `JobDetailPage.tsx`.
+- **Notes repositioned:** Moved below Labour Summary (was above Labour). Retains existing collapsible behavior. File: `JobDetailPage.tsx`.
+
+#### Job Detail Page — UI Clarity Pass (2026-04-02)
+
+- **Left column scroll fix:** Changed left column from `flex flex-col gap-2.5` to block layout with `space-y-2.5`. The flex layout caused card children (which have `overflow-hidden` for border-radius clipping) to shrink instead of triggering scroll — per CSS Flexbox spec §4.5, flex items with `overflow` other than `visible` have `min-height: auto` clamped to 0. Block layout matches the working right column pattern. File: `JobDetailPage.tsx`.
+- **Notes visual separation:** Added `border-t border-slate-200` dividers between note entries and increased per-note padding from `py-1` to `py-3` for clearer entry distinction. File: `JobNotesSection.tsx`.
+- **Header hierarchy:** Increased spacing between job title and client/address row (`mt-1.5` → `mt-2`), muted client/address text to `text-slate-500` for clearer primary/secondary hierarchy. File: `JobDetailPage.tsx`.
+- **Add Line Item / Apply Template button visibility:** Increased border weight (`border-slate-400`), text contrast (`text-slate-800`), added `bg-slate-50` background and `shadow-sm` for better discoverability while remaining secondary. File: `PartsBillingCard.tsx`.
+
+#### Job Detail Page — Command Center Layout Refactor (2026-04-02)
+
+- **Full-width two-column sticky layout:** Removed `max-w-[1400px] mx-auto` constraint — page now uses full available viewport width. Grid `[1fr_360px]` with left column scrolling and right column as a sticky operations rail (`sticky top-6`). Both columns start at the top.
+- **Left column:** Job identity header card (title, job#, company, address, description, status pill, invoice link, profit snapshot) at top, followed by unified Parts/Labour/Expenses economics card, then Visits + Activity.
+- **Right column (sticky rail):** Action Bar (2-col grid: Schedule Visit full-width primary, Add Note / Add Time / Add Equipment / Hold in 2x2 grid), Notes (primary content, always visible), Labour (compact secondary card), Equipment (compact).
+- **Centralized actions — no duplication:** All add actions (Note, Time, Equipment) exist only in the right rail action bar. Notes card `+ Add Note` button hidden via `hideAddButton` prop. Labour card `+ New Entry` button removed. Equipment card `+ Add Equipment` button hidden via `hideAddButton` prop.
+- **Unified note dialog system:** Single `AddJobNoteDialog` at page level, triggered by rail "Add Note" button. `JobNotesSection` internal dialog suppressed via `hideAddButton`.
+- **Equipment external dialog control:** `JobEquipmentSection` accepts `externalAddOpen` + `onExternalAddOpenChange` props so the rail's "Add Equipment" button opens the equipment dialog directly.
+- **Replaced "Add Item" with "Add Equipment"** in the action bar — all action buttons now open dialogs directly, no scroll-to-section behavior.
+- **Removed:** Next Action panel and `nextAction` useMemo. Timeline/History removed from right rail.
+- **Unified economics block:** Parts, inline Labour summary row, Expenses, and Financial Summary Bar flow as one continuous card.
+- **UI refinement pass (2026-04-02):** Header financial row now uses `bg-slate-50` band with negative margins to span full card width, labels `text-[11px] text-slate-400`, values `text-[13px] font-semibold`. Labour shows billable hours (e.g. "2.5h") instead of "0m". "Parts, Labour & Expenses" title increased to `text-[15px]` with larger icon. "Add Line Item" / "Apply Template" buttons use `border-slate-300 text-slate-700 hover:border-slate-400` for better visibility. Independent scroll: page root uses `h-full flex flex-col`, left column has `overflow-y-auto min-h-0`, right rail has `overflow-y-auto min-h-0` — left content scrolls independently while right rail stays separate. Files: `JobDetailPage.tsx`, `PartsBillingCard.tsx`.
+- **Notes legibility + header financial summary (2026-04-02):** Note body font increased to `text-[14px] leading-5` with `text-slate-800`. Author names `font-semibold text-slate-700`, timestamps `text-xs text-slate-500`. Header card restructured: status pill moved into title row (same line as job name + job#). Old status+profit row replaced with inline financial summary row (Revenue / Cost / Labour / Expenses / Profit / Profit%) separated by `border-t border-slate-100 pt-2`. Invoice link moved to right end of financial row. Files: `JobDetailPage.tsx`, `JobNotesSection.tsx`.
+- **Visual density tightening (2026-04-02):** Grid gap `gap-6` → `gap-4`. Header card padding `px-5 py-4` → `px-4 py-3`, tighter internal spacing (`mt-1` → `mt-0.5`, `mt-2.5` → `mt-1.5`). Right rail `space-y-4` → `space-y-3`. Secondary action buttons `h-9` → `h-8` with lighter border/text (`border-slate-200 text-slate-500 text-xs`). Notes header `px-5 py-4` → `px-4 py-2.5`, note items `py-1.5` → `py-1`, list gap `space-y-1.5` → `space-y-0.5`. Left column gap `gap-3` → `gap-2.5`.
+- **Left column scroll regression fix (2026-04-02):** Added `lg:grid-rows-[1fr]` to the two-column grid. Without this, the default `auto` row sizing caused the grid row to expand to content height, making `h-full` / `overflow-y-auto` on the left column ineffective and pushing scroll responsibility to `<main overflow-auto>`. With `1fr`, the row fills the grid's flex-1 height, giving columns a fixed viewport-relative height so `overflow-y-auto` actually activates. Header financial band no longer disappears when content grows — it stays at the top of the left pane's scroll. Mobile (single-column) retains auto rows via the `lg:` prefix.
+- **Layout & presentation refinement pass (2026-04-02):**
+  - **Independent two-pane scrolling:** Fixed left/right columns to truly scroll independently — removed `items-start` from grid, added `h-full` to both columns so they fill available height within a constrained flex parent. Left column is the primary scroll container; right rail scrolls separately and is not dragged by left content.
+  - **Header financial summary typography:** Values increased from `text-[13px]` to `text-xl font-bold` with stacked label/value layout (labels `text-[10px] uppercase tracking-wider`). Much more prominent and legible. Labour now shows cost as `$0.00` (dollar amount only — no minutes, hours, or duration formatting).
+  - **Removed duplicate financial summary bar:** The lower Revenue/Cost/Labour/Expenses/Profit strip under the Parts/Labour/Expenses card removed — this data is now shown only in the header.
+  - **"Parts, Labour & Expenses" title:** Increased from `text-[15px]` to `text-xl` for stronger visual anchor.
+  - **More button visibility:** Changed from icon-only (three dots) to icon + "More" text label for better affordance.
+  - **Notes card collapsible:** Wrapped notes section in Collapsible component with chevron toggle. Header always visible, body collapses. Added `hideHeader` prop to `JobNotesSection` to avoid duplicate headers.
+- **Header & card presentation refinement pass (2026-04-02):**
+  - **Title / company separation:** Increased margin between job title row and company/address row (`mt-0.5` → `mt-1.5`) for clearer visual hierarchy.
+  - **Financial band layout fix:** Moved financial summary band outside the flex row to its own full-width section within the card. Eliminates visual clipping by the More button. Card uses `overflow-hidden` with no negative margins needed. Band now sits cleanly below header content.
+  - **Financial values reduced one step:** Values reduced from `text-xl` to `text-lg` for better balance — still prominent but not overpowering.
+  - **Profit % emphasized:** Profit item now leads with percentage (e.g. "82%") as the primary bold value, dollar amount shown as smaller secondary text beside it. Supports margin-based decision-making.
+  - **Compact totals footer:** Added subtle Total Cost / Total Price footer at the bottom of the Parts/Labour/Expenses collapsible content (`bg-slate-50/60 border-t`). Gives the card a clean, intentional ending without duplicating the full financial summary strip.
+- Files changed: `client/src/pages/JobDetailPage.tsx`
+- No backend changes, no new API endpoints, no new routes.
+
+### Added
+
+#### Recurring Jobs — Tight Service Window Defaults (2026-04-02)
+
+- **Recurring job window changed to 7 before / 0 after:** Non-PM recurring job templates now default to `serviceWindowDaysAfter = 0` instead of 14. This gives recurring jobs a tight window ending on the due date itself, rather than the PM-style 14-day grace period.
+- **Client-side explicit:** `QuickAddJobDialog.tsx` now sends `serviceWindowDaysBefore: 7, serviceWindowDaysAfter: 0` explicitly when creating recurring templates.
+- **Server-side guard:** `RecurringJobsRepository.createTemplate()` uses `isPmLikeTemplate()` to apply correct defaults when `serviceWindowDaysAfter` is absent — PM templates get 14, non-PM get 0. PM behavior completely unchanged.
+- **Existing data:** Any recurring-job templates created under old defaults may still have `serviceWindowDaysAfter = 14`. Run targeted correction query (see below) after verifying affected IDs.
+- Files changed: `client/src/components/QuickAddJobDialog.tsx`, `server/storage/recurringJobs.ts`, `CHANGELOG.md`
+- **Targeted correction SQL (run manually after verifying IDs):**
+  ```sql
+  UPDATE recurring_job_templates
+  SET service_window_days_after = 0
+  WHERE job_type != 'maintenance'
+    AND service_window_days_after = 14;
+  ```
+
+#### Dispatch Map — Show Routes Toggle (2026-04-02)
+
+- **Route visualization:** Added "Routes" toggle in the dispatch filter bar (visible when map is open). When enabled, draws per-technician polylines connecting scheduled stops in chronological order (by `scheduledStart`).
+- **Stop-order numbers:** Each stop displays a numbered circle marker in the technician's color, showing dispatch sequence (1, 2, 3, ...).
+- **Technician-colored lines:** Route polylines use each technician's assigned color with dashed styling (3px weight, 60% opacity) for visual clarity without overpowering markers.
+- **Filter-aware:** Routes respect all existing dispatch filters (technician selection, visit status, day/week context). Filtered-out technicians' routes disappear. Unassigned visits excluded from routes.
+- **Edge cases handled:** Missing coordinates skipped gracefully. Technicians with 0-1 visible stops show no polyline. Routes clean up fully when toggle is turned off.
+- **Frontend-only:** No backend changes. Routes derived entirely from already-visible `mapVisits` data. No new queries or endpoints.
+- Files changed: `client/src/components/dispatch/DispatchMapPanel.tsx`, `client/src/components/dispatch/DispatchFiltersBar.tsx`, `client/src/pages/DispatchPreview.tsx`, `CHANGELOG.md`
+
+#### Dispatch Map — Auto-Fit Viewport to Visible Markers (2026-04-02)
+
+- **Smart viewport fitting:** Map now auto-zooms to fit all currently visible plotted locations instead of opening at a hardcoded Toronto/zoom-11 default that was often too zoomed out.
+- **Stable signature comparison:** Uses a sorted visit ID + coordinate signature to only refit when the visible marker set materially changes. Prevents jitter during minor rerenders and does not fight user manual pan/zoom.
+- **Single marker handling:** When exactly one marker is visible, centers on it at zoom 15 (practical dispatch-level view) instead of the previous behavior that would zoom to maxZoom.
+- **Zero markers fallback:** When no markers are visible, preserves the existing default center/zoom (Toronto, zoom 11).
+- **Filter-responsive:** Viewport updates when technician filters, status filters, day/week context, or unscheduled toggle change the visible marker set.
+- **Frontend-only:** No backend changes. Driven entirely from existing `plottable` memo (same source as rendered markers).
+- Files changed: `client/src/components/dispatch/DispatchMapPanel.tsx`, `CHANGELOG.md`
+
+#### Dispatch Map — Remove Completed Jobs from Map (2026-04-02)
+
+- **Completed visits excluded:** Visits with `status === "completed"` are now filtered out of `mapVisits` at the source, so they no longer render as markers, participate in route overlays, or affect viewport auto-fit.
+- **Dead code removed:** Removed `isCompletedStatus` import and completed-specific marker styling (gray fill, 40% opacity, "Completed" label) from `DispatchMapPanel.tsx` since completed visits can no longer reach the map.
+- **Frontend-only:** No backend changes. Filter applied in the `mapVisits` memo in `DispatchPreview.tsx`.
+- Files changed: `client/src/pages/DispatchPreview.tsx`, `client/src/components/dispatch/DispatchMapPanel.tsx`, `CHANGELOG.md`
+
+#### Dispatch Map — Route Implementation Audit (2026-04-02)
+
+- **Audit result:** Current route lines are **straight-line Leaflet Polyline segments**, NOT road-following geometry. No client-side routing library is installed.
+- **Server-side capability:** `server/routeOptimizationService.ts` integrates with OpenRouteService for stop-order optimization and geocoding, but does not return turn-by-turn polyline geometry.
+- **Future path documented:** Added inline documentation in `DispatchMapPanel.tsx` describing the upgrade path: use ORS Directions API for encoded polyline geometry between consecutive stops, decode and pass to `<Polyline>`, cache results, consider server-side proxy.
+- Files changed: `client/src/components/dispatch/DispatchMapPanel.tsx`, `CHANGELOG.md`
+
+### Fixed
+
+#### Customer Name Display — Parent Customer Fallback for Recurring Jobs (2026-04-02)
+
+- **Customer column showing dash fixed:** When a recurring job template has no direct `clientId` but its location has a `parentCompanyId`, the storage layer now resolves the customer name via the location's parent customer company. Uses a second LEFT JOIN with aliased `customerCompanies` table — no raw SQL, no subqueries.
+- **Root cause:** `QuickAddJobDialog` creates recurring templates with `locationId` only (no `clientId`). The `getTemplates()` query only joined `customer_companies` on `template.client_id`, missing the `location → parent_company_id → customer_companies` relationship.
+- Files changed: `server/storage/recurringJobs.ts`, `CHANGELOG.md`
+
+### Changed
+
+#### PM & Recurring Jobs Workspace — Architecture Fix & Data Separation (2026-04-01)
+
+- **CRITICAL: Server-side type filtering:** Added `?type=pm|recurring_job` query param to `GET /api/recurring-templates`. PM = `jobType === "maintenance"`, recurring_job = `jobType !== "maintenance"`. Replaces previous client-side `excludeJobType` prop (architecture violation). Storage layer uses Drizzle `eq`/`ne` operators — no raw SQL.
+- **CRITICAL: Fixed jobType at creation:** `QuickAddJobDialog` recurring mode now explicitly sets `jobType: "repair"` instead of relying on server default ("maintenance"). Previously all recurring jobs were saved as PM records, causing: (a) type mislabeling as "PM" in Dashboard, (b) Recurring Job tab showing empty because all records were filtered out.
+- **Tab labels renamed:** "Contracts" → "Maintenance", "Recurring Jobs" → "Recurring Job".
+- **Client-side filtering removed:** Removed `excludeJobType` prop from RecurringJobsPage. Removed `pmTemplates = templates.filter(...)` from PMWorkspacePage. Both now use dedicated server-side filtered queries with distinct query keys.
+- **Template-oriented copy removed:** Removed "Templates" heading and auto-generation copy from Recurring Job tab. Standalone page shows "Recurring Jobs" heading.
+- **Recurring Job table restructured (embedded):** Columns: Customer, Location, Recurrence, Due On, Active, Actions. Removed Title, Start Date, Status columns.
+- **Duplicate action buttons removed:** Removed inline "New Recurring Job" and "Generate Next 45 Days" from embedded tab content.
+- Files changed: `server/routes/recurringJobs.ts`, `server/storage/recurringJobs.ts`, `client/src/pages/PMWorkspacePage.tsx`, `client/src/pages/RecurringJobsPage.tsx`, `client/src/components/QuickAddJobDialog.tsx`, `CHANGELOG.md`
+
+### Added
+
+#### Dashboard — Unified PM & Recurring Job Generation Queue (2026-04-01)
+
+- **Combined generation queue:** Dashboard tab now shows both PM contract occurrences and recurring job occurrences in a single Do Now / Upcoming view. Previously the dashboard only labeled items as "PM Contract" even though the underlying query already returned all recurring template instances.
+- **Job Type column:** Replaced "PM Contract" column header with "Type" and "Name" columns. Type column displays a badge ("PM" for maintenance templates, "Recurring" for all other recurring job types). Name column shows the template title.
+- **Type-agnostic labels:** Dashboard loading, error, empty states, and generation confirmation modal updated to reference both PM and recurring jobs instead of PM-only language.
+- **Server: `templateJobType` field added:** `getUpcomingQueue()` now selects and returns `templateJobType` from `recurring_job_templates.jobType`, enabling the client to distinguish PM vs recurring job occurrences without a second query.
+- **No new generation path:** Generation still uses the existing `POST /api/recurring-templates/generate-selected` → `generateFromInstances()` for both PM and recurring job instances.
+- **No regression:** Contracts tab remains PM-only management. Recurring Jobs tab remains recurring-job-only management. No changes to generation logic, recurrence engine, or scheduling.
+- Files changed: `server/storage/recurringJobs.ts`, `client/src/pages/PMWorkspacePage.tsx`, `CHANGELOG.md`
+
+#### Recurring Jobs — Next Occurrence Visibility (2026-03-31)
+
+- **Next Occurrence column:** Recurring jobs list now displays the next upcoming occurrence date for each template, computed server-side using canonical `computeOccurrenceDates()` domain logic with a 1-year lookahead window.
+- **Start Date column restored:** Both Start Date and Next Occurrence are now visible simultaneously. Column order: Title | Recurrence | Start Date | Next Occurrence | Status | Active | Actions.
+- **Status cues:** Today's occurrences highlighted in primary color, overdue in destructive red. Inactive templates show "Paused", templates with no future occurrence show "None scheduled".
+- **Sorted by next occurrence:** Recurring jobs list sorted ascending by next occurrence date — upcoming work surfaces first, inactive/expired templates sort to the bottom.
+- **No duplicate recurrence logic:** Next occurrence computed server-side in the existing route handler using the canonical recurrence domain layer. No client-side recurrence engine introduced.
+- Files changed: `server/routes/recurringJobs.ts`, `client/src/pages/RecurringJobsPage.tsx`, `CHANGELOG.md`
+
+#### Recurring Jobs — User-Facing Management & Creation (2026-03-31)
+
+- **Navigation renamed:** Sidebar "PM" menu item renamed to "PM & Recurring Jobs" to surface recurring job management alongside PM contracts.
+- **Recurring Jobs tab:** Added "Recurring Jobs" tab to the PM & Recurring Jobs workspace (PMWorkspacePage), embedding the existing RecurringJobsPage. Recurring job templates are now discoverable and manageable directly from the main workspace instead of being hidden at `/settings/recurring-jobs`.
+- **Make Recurring toggle in job creation:** QuickAddJobDialog now includes a "Make Recurring" switch. When enabled, the dialog submits to `POST /api/recurring-templates` (the existing recurring template API) instead of creating a one-time job. Supports weekly (day-of-week selection) and monthly (day-of-month) recurrence with configurable interval, start date, and optional end date.
+- **Non-PM recurring defaults:** Recurring jobs created from the job creation dialog use `pmBillingModel: null`, `includeLocationPmParts: false`, and `generationMode: "phase"` — no PM billing fields are exposed or required.
+- **No backend changes:** The existing `POST /api/recurring-templates` route already accepts non-PM recurring jobs without PM-only validation. No schema, route, or engine changes were needed.
+- Files changed: `client/src/components/AppSidebar.tsx`, `client/src/pages/PMWorkspacePage.tsx`, `client/src/pages/RecurringJobsPage.tsx`, `client/src/components/QuickAddJobDialog.tsx`, `CHANGELOG.md`
+
+#### Unified Recurring Job Creation Modal (2026-03-31)
+
+- **Single canonical modal:** QuickAddJobDialog now supports a `mode` prop (`"standard"` | `"recurring"`). In recurring mode, the dialog opens with recurring enabled by default, hides the one-time schedule row, and shows "Create Recurring Job" as the CTA. This replaces the separate inline creation dialog in RecurringJobsPage.
+- **Recurrence presets:** Added user-facing recurrence presets (Weekly, Biweekly, Monthly, Quarterly, Semi-Annual, Annual, Custom) that map to existing engine values without backend changes. Custom mode exposes the lower-level frequency/interval/day controls.
+- **PM workspace header:** "New Recurring Job" button added to PMWorkspacePage header alongside "New PM Contract", visible on all tabs. Opens QuickAddJobDialog in recurring mode.
+- **RecurringJobsPage refactored:** Create path now uses shared QuickAddJobDialog in recurring mode. Inline dialog retained for editing existing templates only.
+- **Payload fixes:** Removed hardcoded `jobType: "maintenance"` from recurring template creation — uses API default. Added explicit `openSubStatusDefault: null` so generated jobs don't default to backlog.
+- **No duplicate flows:** Single modal, single submit path, single recurrence engine. No new scheduler, no PM-specific fields in recurring create.
+- Files changed: `client/src/components/QuickAddJobDialog.tsx`, `client/src/pages/PMWorkspacePage.tsx`, `client/src/pages/RecurringJobsPage.tsx`, `CHANGELOG.md`
+
+### Fixed
+
+#### Unscheduled Jobs Map Marker Fix — Results Mapping Gap (2026-03-31)
+
+- **Root cause:** `getUnscheduledJobs()` in `server/storage/scheduling.ts` selected `lat`/`lng` from `client_locations` in the DB query (lines 568-569) but **dropped them in the results mapping** (lines 642-672). The previous fix added lat/lng to the DB SELECT, route transform, DTO type, and client mapper — but missed the intermediate results object that bridges DB rows to the route handler. Without lat/lng on the returned objects, the route handler forwarded `null` values, and `DispatchMapPanel` correctly filtered them out as non-plottable.
+- **Fix:** Added `lat: job.lat ?? null` and `lng: job.lng ?? null` to the results mapping object in `getUnscheduledJobs()`.
+- **Pipeline verified end-to-end:** DB SELECT → results mapping → route transform → API response → client DTO → mapper → DispatchVisit → mapVisits memo → DispatchMapPanel plottable filter → CircleMarker render. All stages now pass lat/lng correctly.
+- Files changed: `server/storage/scheduling.ts`
+
+#### Dispatch Map Integration Fixes (2026-03-31)
+
+- **Map markers now respect board filters:** Map visits are derived from the same tech+status-filtered dataset as the board timeline/grid. Previously, map received raw unfiltered `scheduledVisits`, so filtered-out technicians' visits still appeared on the map.
+- **Modal z-index layering:** Map container now creates an explicit stacking context (`position: relative; z-index: 0`) to cap Leaflet's internal pane z-indices. Modals (z-50) now reliably render above the map in all cases.
+- **Unscheduled jobs map toggle:** Added "Unscheduled" toggle button in the filter bar (visible when map is open). When ON, unscheduled jobs with valid geocoded locations appear on the map. Default: OFF.
+- **Unscheduled map marker data pipeline fix:** Unscheduled jobs were missing from map markers because: (1) `getUnscheduledJobs()` DB query did not select `lat`/`lng` from `client_locations`, (2) the `/api/calendar/unscheduled` route transform did not include `lat`/`lng` in the response, (3) `mapUnscheduledToDispatchVisit()` did not map `lat`/`lng` onto the DispatchVisit object. All three gaps fixed end-to-end.
+- Files changed: `client/src/pages/DispatchPreview.tsx`, `client/src/components/dispatch/DispatchFiltersBar.tsx`, `client/src/components/dispatch/DispatchMapPanel.tsx`, `client/src/components/dispatch/dispatchPreviewMappers.ts`, `server/storage/scheduling.ts`, `server/routes/scheduling.ts`, `shared/types/scheduling.ts`
+
+#### Coordinate Persistence / Geocoding Fixes (2026-03-31)
+
+- **Stale coordinate fix:** Manual edits to address fields (street, city, province, postal code, country) in `LocationFormModal` now clear lat/lng/placeId, forcing server-side re-geocoding on save. Previously, coordinates from a prior Google Places selection survived manual address changes, causing mismatched coordinates (e.g., California coords for a Toronto address).
+- **Geocoding country disambiguation:** `geocodeToLatLng()` now accepts and includes `country` in the geocoding query. Province abbreviation "Ont" no longer resolves to Ontario, California — the country parameter disambiguates to Ontario, Canada.
+- **Canada bounds guard:** `maybeGeocode()` now validates existing coordinates against broad Canada bounds when country is "Canada"/"CA". Obviously invalid coordinates (e.g., California coords on a Canadian address) are discarded and re-geocoded instead of being preserved.
+- **Bulk import geocoding:** `bulkCreateClients()` now runs `maybeGeocode()` on each imported location before insert. Previously, imported locations with no coordinates got no geocoding, and locations with bad coordinates were persisted without validation.
+- **Supplier dialog stale coordinate fix:** Manual edits to address, city, province, postal code, or country in supplier `AddLocationDialog` and `EditLocationDialog` now unconditionally clear lat/lng/placeId. Previously, address clearing only triggered on empty input (not on change), and city/province/postalCode/country edits never cleared coordinates at all — allowing stale Google Places coordinates to survive manual address changes.
+- Files changed: `client/src/components/LocationFormModal.tsx`, `server/utils/geocode.ts`, `server/storage/clients.ts`, `server/storage/customerCompanies.ts`, `client/src/components/suppliers/AddLocationDialog.tsx`, `client/src/components/suppliers/EditLocationDialog.tsx`
+- Data fix: 43 corrupted Ontario rows need lat/lng nulled and re-geocoded (SQL provided in implementation notes).
+
+### Changed
+
+#### Week Card Text Wrapping Fix (2026-03-31)
+
+- **Week view cards no longer capped at 2 lines.** Removed `-webkit-line-clamp: 2` and `-webkit-box` display from the `week-calendar` variant so text wraps naturally within the card's available height.
+- Day cards (`timeline-wide`, `timeline-narrow`) retain the existing 2-line clamp — unchanged.
+- Root cause: `week-calendar` variant was reusing the same `WebkitLineClamp: 2` style as Day cards, preventing company names and descriptions from filling taller Week cards.
+- File changed: `client/src/components/dispatch/VisitCardContent.tsx`
+
+#### Day + Week Card Typography Hierarchy (2026-03-31)
+
+- **Split visual hierarchy** in Day/Week scheduled card text: company name rendered as `font-semibold text-slate-900` (dark/bold), description rendered as `text-slate-600` (lighter secondary), matching Unscheduled card hierarchy exactly.
+- **Wrapping fix:** Replaced `<div>` wrappers with `<p>` tags containing pure inline `<span>` children inside the `-webkit-line-clamp: 2` container. Flex/block children (TeamBadge, CheckCircle2 SVG) were breaking webkit-box line counting, preventing text from wrapping to the second line. TeamBadge moved outside the clamp container as a sibling. Completed icon removed from Day card variants (completion already indicated by card opacity and strikethrough).
+- **Top spacing fix:** Removed extra `leading-snug` wrapper div and `flex items-center` from inside the clamp container. Content now flows as pure text, filling the card body naturally without extra vertical centering dead space.
+- **Day card vertical alignment:** Changed `justify-center` to `justify-start` in `DispatchVisitBlock.tsx` card body wrapper so single-line text starts at the top instead of appearing vertically centered.
+- **Week card wrapping:** Added `break-words min-w-0` to week-calendar and timeline-wide `<p>` containers so long company names and descriptions wrap within narrow columns instead of being clipped.
+- Files changed: `client/src/components/dispatch/VisitCardContent.tsx`, `client/src/components/dispatch/DispatchVisitBlock.tsx`
+- Applied to: timeline-wide, timeline-narrow, week-calendar, week.
+- Month and Unscheduled cards unchanged.
+- File changed: `client/src/components/dispatch/VisitCardContent.tsx`
+
+#### Day + Week Card Content Simplified (2026-03-31)
+
+- **Day and Week card text simplified** to "Company — description" across 2 lines max.
+- **Address removed** entirely from all Day/Week card variants (timeline-wide, timeline-narrow, week-calendar, week).
+- **Duration removed** entirely from visible card body in Day/Week variants. Duration info remains accessible via detail panel.
+- All Day/Week variants now use a combined `companyDesc` text block with `-webkit-line-clamp: 2`.
+- **Month completed jobs** now show clear strikethrough treatment on both name and summary text, using the same canonical `isCompleted` predicate already in use.
+- Unused imports (`format`, `Clock`, `formatDuration`) removed from `VisitCardContent.tsx`.
+- File changed: `client/src/components/dispatch/VisitCardContent.tsx`
+
+### Added
+
+#### Month View (2026-03-31)
+
+- **Month added as third dispatch view** beside Day and Week.
+- **DispatchView type** extended from `"day" | "week"` to `"day" | "week" | "month"`. Month button enabled in header.
+- **MonthDispatchGrid** — pure display component: CSS grid (Mon–Sun), compact visit cards with canonical technician colors, today highlight, out-of-month dimming, in-place expand/collapse for overflow (stays in Month view).
+- **Drag from Unscheduled into Month** — uses existing `dayKey`-based DnD contract and existing `scheduleVisit` mutation. Month drops schedule at explicit `DEFAULT_SCHEDULE_HOUR = 9` (9:00 AM).
+- **Month cards** — `"month"` variant in `VisitCardContent`: compact 2-line max (name + summary), typography matches Unscheduled variant (text-[13px], font-semibold).
+- **Month overflow** — clicking "+N more" expands that day cell in-place; grid rows grow naturally. No view switch.
+- **Clicking Month card** opens existing detail panel. Unschedule uses same canonical mutation path.
+- **No new endpoints, routes, or mutations** — all data from existing `/api/calendar`, `/api/calendar/unscheduled`, `/api/tasks`.
+- Files: `dispatch/MonthDispatchGrid.tsx` (new), `dispatch/useDispatchMonthData.ts` (new adapter), `dispatch/DispatchBoardHeader.tsx`, `dispatch/VisitCardContent.tsx`, `dispatch/dispatchPreviewUtils.ts`, `pages/DispatchPreview.tsx`
+
+#### Unified Dispatch Data Layer (2026-03-31)
+
+- **Deduplicated fetch/normalize logic** from `useDispatchPreviewData.ts` and `useDispatchWeekData.ts` into shared `dispatchDataCore.ts`.
+- Shared `useDispatchRangeData()` hook handles calendar/unscheduled/tasks/technician queries for any date range.
+- All three views (Day, Week, Month) follow the same pattern: thin adapter hook over `useDispatchRangeData`.
+- **Active-view query gating**: only the current view's data queries run (`enabled` guards).
+- `DEFAULT_SCHEDULE_HOUR = 9` added to `dispatchPreviewUtils.ts` for explicit Month drop time resolution.
+- **All hidden fallback logic removed** from drop handler — no implicit DOM fallback or null-path time resolution.
+- Files: `dispatch/dispatchDataCore.ts` (new), `dispatch/useDispatchPreviewData.ts`, `dispatch/useDispatchWeekData.ts`, `dispatch/useDispatchMonthData.ts` (new), `dispatch/dispatchPreviewUtils.ts`, `pages/DispatchPreview.tsx`
+
+#### Week View 24-Hour Toggle (2026-03-31)
+
+- **24h toggle now visible in both Day and Week views** (hidden for Month).
+- `WeekDispatchGrid` accepts `show24Hour` prop; derives hour range dynamically (0–24 or 6–21).
+- Drop handler uses dynamic week hour range for pointer-Y resolution.
+- Same shared toggle state consumed by both views — no forked 24h systems.
+- Files: `dispatch/DispatchBoardHeader.tsx`, `dispatch/WeekDispatchGrid.tsx`, `pages/DispatchPreview.tsx`
+
+### Fixed
+
+#### Unassigned Visits Consistent Gray Styling (2026-03-31)
+
+- **Problem:** Week view unassigned visits (no technicianId) fell back to job state colors instead of the gray styling used in day view. Day view routed unassigned visits to the `UNASSIGNED_TECH` sentinel lane with `color: "#94a3b8"`, but week view passed `undefined` techColor.
+- **Fix:** Week view now passes `UNASSIGNED_COLOR` (`#94a3b8`) as `techColor` for visits with no `technicianId`, matching day view's gray card styling.
+- **Extracted `UNASSIGNED_COLOR` constant** to `shared/colors.ts` — replaced hardcoded `"#94a3b8"` in `DispatchPreview.tsx` and `DispatchFiltersBar.tsx`.
+- Files changed: `shared/colors.ts`, `client/src/components/dispatch/WeekDispatchCell.tsx`, `client/src/pages/DispatchPreview.tsx`, `client/src/components/dispatch/DispatchFiltersBar.tsx`
+
+#### Canonical Technician Color Resolution (2026-03-31)
+
+**All dispatch surfaces now resolve technician colors from one canonical source: `technicianProfiles.color`.**
+
+- **Root cause:** `buildTechnicianRoster()` mined colors from event data, but day and week hooks passed different event sets (day-scoped vs week-scoped). If a technician appeared in one event set but not the other, colors diverged. The `/api/team/technicians` endpoint didn't return colors, forcing this event-dependent approach.
+- **Server fix:** Added `getTechnicianColors()` to `server/storage/team.ts` — bulk-fetches `technicianProfiles.color` via `INNER JOIN users`. The `/api/team/technicians` endpoint now includes `color` in each response object.
+- **Client fix:** Added `color?: string | null` to `TeamMember` interface in `useTechnicians.ts`. Updated `buildTechnicianRoster()` in `dispatchPreviewMappers.ts` to resolve color as: (1) `teamMember.color` (canonical), (2) `DEFAULT_COLORS[i]` palette fallback only.
+- **Event-mined fallback removed (2026-03-31):** Removed `eventColorMap` construction and the `events` parameter from `buildTechnicianRoster()`. Color now resolves exclusively from canonical team data. Updated call sites in `useDispatchPreviewData.ts` and `useDispatchWeekData.ts`.
+- Since both day and week hooks receive the same `teamMembers` from the same API call, colors are now identical regardless of which events are loaded.
+- **Surfaces now consistent:** day-view cards, week-view cards, filter dropdown indicators, technician sidebar avatars — all read from the same `Technician.color` built from the canonical source.
+- Files changed: `server/storage/team.ts`, `server/storage/index.ts`, `server/routes/team.ts`, `client/src/hooks/useTechnicians.ts`, `client/src/components/dispatch/dispatchPreviewMappers.ts`
+
+#### Calendar Readability Improvements (2026-03-31)
+
+- **Week view weekday labels:** Increased from `text-[11px]` to `text-xs`, added `font-semibold` to all states (previously only "today" was semibold). Weekday abbreviations (MON, TUE, etc.) are now bolder and slightly larger for easier scanning.
+- **Day view time labels:** Changed hour labels (7 AM, 8 AM, etc.) from `font-medium` to `font-bold` for improved readability.
+- Files changed: `client/src/components/dispatch/WeekDispatchGrid.tsx`, `client/src/components/dispatch/DispatchTimeline.tsx`
+
+### Added
+
+#### Day View Technician Color + Text Contrast (2026-03-31)
+
+**Day-view scheduled visit cards now use full technician color, matching week view.**
+
+- `DispatchVisitBlock.tsx`: Applied same tech color pattern as week view — when `techColor` is present, `stateCls` (jobStateColor) and `priorityCls` border are suppressed; inline styles apply `backgroundColor` (15% tint), `borderColor` (40%), and 3px solid `borderLeftColor` (full tech color)
+- `VisitCardContent.tsx` (timeline-wide variant): darkened location text `text-slate-600` → `text-slate-800`, summary row `text-slate-700` → `text-slate-800`, duration `text-slate-500` → `text-slate-800`
+- Company name (`text-slate-900 font-semibold`) unchanged in both variants
+- Fallback: no techColor → existing `jobStateColor()` + `priorityIndicator()` styling unchanged
+- Root cause of Nadeem color mismatch: `techColor` prop was threaded to DispatchVisitBlock but never applied — card always used `jobStateColor()`. Now fixed.
+- Week view untouched — `WeekDispatchCell.tsx` not modified
+- Files changed: `DispatchVisitBlock.tsx`, `VisitCardContent.tsx`
+
+#### Week View Card Text Contrast Improvement (2026-03-31)
+
+- Darkened job description text from `text-slate-600` → `text-slate-800` in week-calendar variant
+- Darkened time/duration text from `text-slate-500` → `text-slate-800` in week-calendar variant
+- Company name (`text-slate-900 font-semibold`) unchanged
+- Changes isolated to `variant === "week-calendar"` branch in `VisitCardContent.tsx` — day view unaffected
+- File changed: `client/src/components/dispatch/VisitCardContent.tsx`
+
+#### Week View Technician Color Accent (2026-03-31)
+
+**Week-view visit cards use full technician color — background, border, and accent stripe.**
+
+- Built `techId→color` lookup Map from existing `technicians` array in `WeekDispatchGrid.tsx`
+- Threaded `techColorMap` through `WeekDayColumn` → `WeekCalendarVisitBlock` as props
+- When technician color is present: `stateColor` classes are suppressed; inline styles apply `backgroundColor` (15% opacity tint), `borderColor` (40% opacity), and solid 3px `borderLeftColor` (full color accent stripe)
+- Text stays dark (`text-slate-900/600/500` from VisitCardContent) — light tinted backgrounds preserve readability without a contrast helper
+- Fallback: no technician or no color → card renders with default `jobStateColor()` styling unchanged
+- Multi-tech visits use the primary `technicianId` for color resolution
+- Day view untouched — no changes to `DispatchVisitBlock`, `DispatchLaneRow`, `VisitCardContent`, or `DispatchTechnicianSidebar`
+- Drag overlay ghost (in DispatchPreview DragOverlay) is a separate component — unaffected
+- No new API calls, no backend changes — reuses existing `Technician.color` from `buildTechnicianRoster()`
+- Files changed: `WeekDispatchGrid.tsx`, `WeekDispatchCell.tsx`
+
+### Removed
+
+#### Standalone Live Map Page (2026-03-31)
+
+**Removed standalone `/live-map` page and dead code — dispatch-integrated map replaces it.**
+
+- Deleted `client/src/pages/LiveMapPage.tsx` — standalone map page
+- Deleted `client/src/components/RouteMap.tsx` — orphaned map component (no importers)
+- Deleted `shared/types/map.ts` — types only used by LiveMapPage
+- Deleted `server/routes/map.ts` — `/api/map/day` and `/api/map/geocode-backfill` endpoints (only consumed by LiveMapPage)
+- Removed Live Map route from `client/src/App.tsx` (`/live-map`)
+- Removed Live Map nav item from `client/src/components/AppSidebar.tsx`
+- Removed map route import and registration from `server/routes/index.ts`
+- **Retained:** `useLiveTechnicians.ts` (used by dispatch map), `server/routes/technicians.ts` (provides `/api/technicians/live`), `server/routeOptimizationService.ts` (used by routes.ts + intelligence.ts), `server/utils/geocode.ts` (used by client import, client storage, customer company storage)
+- Removed Live Map entry from command palette (`client/src/components/UniversalSearch.tsx`) and unused `Navigation` icon import
+- Deleted orphaned `server/scripts/mapSanityCheck.ts` and `db:map-sanity` npm script from `package.json`
+- Removed stale `RouteMap` comment from `server/routes/routes.ts`
+
+### Fixed
+
+#### Dispatch Map/Unscheduled Toggle Regression (2026-03-31)
+
+**Map toggle moved to filter bar; map panel doubled in width; additive layout preserved.**
+
+- Removed `showMap`/`onToggleMap` props from `DispatchBoardHeader` — toggle no longer in global toolbar.
+- Removed per-panel toggle header wrapper from right panel area in `DispatchPreview.tsx`.
+- Map toggle button now rendered inside `DispatchFiltersBar`, right-aligned (`ml-auto`) alongside Technicians and Visit Status filters.
+- Map panel width changed to responsive `clamp(700px, 40vw, 50%)` — 700px minimum, scales to 40% of viewport, caps at 50% of container. Calendar scrolls horizontally when space is tight.
+- Additive layout preserved: Unscheduled panel always visible; Map panel appears alongside it when toggled on. Calendar shrinks in-flow via flex.
+- Layout order: `[Calendar] [Unscheduled] [Map when enabled]`
+- Files changed: `client/src/components/dispatch/DispatchFiltersBar.tsx`, `client/src/pages/DispatchPreview.tsx`
+
+### Added
+
+#### Dispatch Map Panel Integration (2026-03-31)
+
+**Embedded map visualization on dispatch screen using existing calendar data source.**
+
+**Server-side (calendar query enrichment):**
+- Added `cl.lat`, `cl.lng` to the existing `LEFT JOIN client_locations` SELECT in `getScheduledJobsInRange()`
+- No new JOIN, no new query, no new endpoint — two columns added to existing query
+- Files changed: `server/storage/scheduling.ts`, `server/routes/scheduling.ts`
+
+**Shared types:**
+- Added optional `lat`/`lng` fields to `CalendarEventDto` (`shared/types/scheduling.ts`)
+- Added optional `lat`/`lng` fields to `DispatchVisit` (`client/src/components/dispatch/dispatchPreviewTypes.ts`)
+- Updated `mapEventToDispatchVisit()` to pass through lat/lng (`dispatchPreviewMappers.ts`)
+
+**Map panel component:**
+- New file: `client/src/components/dispatch/DispatchMapPanel.tsx`
+- Pure presentation: Leaflet MapContainer + CircleMarkers for visits with valid coordinates
+- Technician-colored visit markers with hover tooltips (name, location, time, duration)
+- Optional live GPS technician markers via `useLiveTechnicians()` (only polls when map visible)
+- `pointer-events-none` during drag to prevent Leaflet/dnd-kit conflict
+
+**Dispatch integration:**
+- Map toggle button in DispatchBoardHeader (both Day and Week views)
+- Additive layout: Unscheduled panel stays visible when map is open (not either/or)
+- Map panel (400px) renders alongside unscheduled panel; calendar shrinks via flex
+- Map consumes same `scheduledVisits` from `useDispatchPreviewData()` — no parallel queries
+- GPS polling enabled only when map panel is active (`useLiveTechnicians(showMap)`)
+- SSE invalidation applies automatically (same cache key)
+- Files changed: `client/src/pages/DispatchPreview.tsx`, `client/src/components/dispatch/DispatchBoardHeader.tsx`
+
+**Hover linkage (map↔calendar):**
+- New context: `client/src/components/dispatch/dispatchHoverContext.ts` — shared hover state
+- Hovering a map marker highlights the matching visit card on the calendar (emerald ring)
+- Hovering a visit card on the calendar highlights the matching map marker (enlarged, green)
+- Applied to both Day view (`DispatchVisitBlock`) and Week view (`WeekCalendarVisitBlock`)
+- Files changed: `DispatchVisitBlock.tsx`, `WeekDispatchCell.tsx`, `DispatchMapPanel.tsx`
+
+### Fixed
+
+#### Week View Drop Ghost Preview & Card Typography (2026-03-31)
+
+**Drop ghost preview:**
+- Replaced whole-day-column highlight with a precise ghost preview block snapped to 15-minute increments
+- Ghost shows target time, duration label, and approximate height matching the dragged visit's duration
+- Uses `useDndMonitor` + `useDndContext` to track pointer position relative to each day column
+- Files changed: `client/src/components/dispatch/WeekDispatchCell.tsx`
+
+**Week view card typography:**
+- Aligned `week-calendar` variant in `VisitCardContent` to match unscheduled card typography
+- Customer name: `text-[13px] font-semibold text-slate-900` (was `text-[10px]`)
+- Summary: `text-[13px] text-slate-600` (was `text-[9px] text-muted-foreground`)
+- Time/duration: `text-[11px] text-slate-500` (was `text-[9px] text-muted-foreground`)
+- Added status dot matching unscheduled variant (was missing in week-calendar)
+- Files changed: `client/src/components/dispatch/VisitCardContent.tsx`
+
+### Added
+
+#### SSE-Driven Realtime Invalidation for Dispatch/Calendar/Tasks (2026-03-31)
+
+**Purpose:** Enable cross-tab and cross-user near-real-time refresh for dispatch board,
+unscheduled queue, task surfaces, and dashboard counters dependent on dispatch/task state.
+
+**Implementation:**
+- New hook: `client/src/hooks/useDispatchStream.ts` — SSE consumer that connects to
+  existing `GET /api/dispatch/stream`, maps signals to targeted query invalidations
+- Mounted on `DispatchPreview.tsx` (dispatch board) and `Dashboard.tsx` (operations dashboard)
+- Uses existing server infrastructure: `dispatchBus.ts` EventEmitter + `dispatch-stream.ts` SSE endpoint
+- No new backend code, routes, or endpoints
+
+**Signal mapping (tightened 2026-03-31):**
+- Visit/job signals → /api/calendar, /api/calendar/unscheduled, visit-detail, dashboard, attention, dashboard-action, /api/tasks* (predicate)
+- Task signals → /api/tasks* (predicate), dashboard, attention, dashboard-action
+- Removed: visits, jobs, /api/team/technicians/working-hours (not consumed by mounted surfaces)
+- Task invalidation uses predicate-based matching to catch both dispatch-style and dashboard URL-style query keys
+
+**Safety:** Exponential backoff + jitter reconnect, 300ms debounce via bit-flag coalescing,
+singleton connection guard, catch-up invalidation on reconnect.
+
+**Scope:** Dispatch/calendar and tasks only. No other domains added to realtime.
+
+**Files changed:**
+- `client/src/hooks/useDispatchStream.ts` (new)
+- `client/src/pages/DispatchPreview.tsx` (mount hook)
+- `client/src/pages/Dashboard.tsx` (mount hook)
+
+### Fixed
+
+#### Week View Drag/Drop — Resolve Drop Time From Cursor Position (2026-03-31)
+
+**Problem:** Dragging a visit to a different day/time slot in Week view preserved the visit's
+original time-of-day instead of using the target slot under the cursor. A visit at 12:00
+dragged to the 2:15 slot would incorrectly schedule at 12:00 on the new day.
+
+**Fix:** Week view drop handler now derives target time from the pointer's Y position relative
+to the week grid column (`data-week-day` element), converts to minutes using
+`WEEK_START_HOUR`/`WEEK_HOUR_HEIGHT_PX`, and snaps to 15-minute increments. Day view
+drop logic is unchanged.
+
+**Files changed:**
+- `client/src/pages/DispatchPreview.tsx` — week branch of `handleDragEnd`
+- `client/src/components/dispatch/WeekDispatchCell.tsx` — added `data-week-day` attribute
+
+#### Dispatch Focus — Auto-Exit Selection Mode After "Add to Focus" (2026-03-31)
+
+**Problem:** After clicking "Add to Focus", the unscheduled panel remained in checkbox/selection
+mode, blocking normal drag interaction until the user manually exited with X.
+
+**Fix:** Added `setIsSelectionMode(false)` to the `handleAddToFocus` callback so selection mode
+automatically turns off after committing items to Focus.
+
+**Files changed:** `client/src/pages/DispatchPreview.tsx`
+
+
+#### Dispatch Day View — Drag Preview Alignment Fix (2026-03-31)
+
+**Root cause:** dnd-kit's `event.delta` includes `scrollAdjustedTranslate` which adds scroll
+deltas from scrollable ancestors of the drag source. For **internal drags** (rearranging
+scheduled visits), the timeline scroll container IS an ancestor, so `event.delta.x` includes
+the timeline scroll delta. But `clientXToRelativePx()` ALSO adds `scrollEl.scrollLeft`,
+double-counting the scroll offset. This produced a rightward position drift proportional to
+how much auto-scroll occurred during the drag.
+
+**Fix:** Replaced dnd-kit's `activatorEvent.clientX + event.delta.x` computation with a native
+`window.pointermove` listener that tracks the real viewport `clientX`/`clientY` directly. This
+gives the actual cursor position independent of dnd-kit's scroll adjustment, making the
+coordinate chain correct for both internal and external drags with any amount of scroll.
+
+**Changes:**
+- `handleDragStart`: attaches native `pointermove` listener on `window` at drag start
+- `handleDragMove`: reads `dragPointerXRef`/`dragPointerYRef` from native listener instead of
+  computing from `activatorEvent.clientX + event.delta.x`; auto-scroll uses native coords
+- `handleDragEnd`: removes native listener; uses `dragPointerXRef` for final drop X
+- Cleanup on unmount ensures no orphaned listener
+
+**Coordinate chain (after fix):**
+1. Native `pointermove` → `dragPointerXRef.current` (real viewport clientX)
+2. `clientXToRelativePx(pointerX, rect, scrollLeft, grabOffset)` → timeline content pixel
+3. `pxToSnappedMinutes()` → snapped minutes-of-day
+4. `resolvePlacement()` → ISO time + preview position
+
+**Ghost/preview/drop now use identical coordinate system.** No more double-counting scroll.
+
+**File changed:** `client/src/pages/DispatchPreview.tsx`
+
+**No changes to:** backend, schema, routes, week view, DnD library, card styling, Focus workflow.
+
+### Changed
+
+#### Dispatch Card Font Size Reduction — text-sm → text-[13px] (2026-03-31)
+
+**Focus cards (DispatchPreview.tsx FocusCard):**
+- Primary: `text-sm leading-tight` → `text-[13px] leading-snug`
+- Secondary: `text-sm leading-tight` → `text-[13px] leading-snug`
+
+**Scheduled cards (VisitCardContent timeline-wide):**
+- Name: `text-sm` → `text-[13px]`; added `leading-snug` to row container
+- Location: `text-sm` → `text-[13px]`
+- Summary row: `text-sm` → `text-[13px]`; added `leading-snug`
+
+**Scheduled cards (VisitCardContent timeline-narrow):**
+- Name: `text-xs` → `text-[11px]` (proportional one-step reduction)
+
+**Unscheduled cards (VisitCardContent unscheduled):**
+- Name: `text-sm` → `text-[13px]`
+- Summary: `text-sm` → `text-[13px]`
+
+**Files changed:**
+- `client/src/pages/DispatchPreview.tsx` — FocusCard text
+- `client/src/components/dispatch/VisitCardContent.tsx` — timeline-wide, timeline-narrow, unscheduled text
+
+**No text-xs used on primary/secondary lines. No color, layout, or logic changes.**
+
+#### Dispatch Color + Typography Refinement (2026-03-31)
+
+**Global typography rules applied:**
+- Primary line (company/title): `text-sm font-semibold text-slate-900`
+- Secondary line (summary/description): `text-sm font-normal text-slate-600`
+- No more `text-xs` / `text-[10px]` / `text-[11px]` for primary or secondary job info
+- No more low-contrast `text-muted-foreground` on card text
+
+**Focus cards → light blue (reduced dominance):**
+- Background: `bg-blue-600` → `bg-blue-50`; border: `border-blue-200`
+- Hover: `hover:bg-blue-100` (was `hover:bg-blue-700`)
+- Text: white → `text-slate-900` (primary) / `text-slate-600` (secondary)
+- Remove button: `text-slate-400 hover:text-slate-600`
+
+**Scheduled cards → stronger green + readability:**
+- Default state: `bg-green-100 text-green-900 border-green-400` → `bg-green-50 text-slate-900 border-green-500`
+- Timeline-wide name: `text-[11px]` → `text-sm font-semibold text-slate-900`
+- Timeline-wide summary: `text-[10px] text-muted-foreground` → `text-sm text-slate-700`
+- Timeline-wide duration: `text-slate-500` (was inherited muted)
+- Timeline-narrow name: `text-[10px]` → `text-xs font-semibold text-slate-900`
+
+**Unscheduled cards → structured neutral:**
+- Container: `bg-white` → `bg-slate-50`; border: `border-slate-200`; hover: `hover:bg-slate-100`
+- Company name: `text-[13px] text-foreground` → `text-sm text-slate-900`
+- Summary: `text-xs text-muted-foreground` → `text-sm text-slate-600`
+
+**Files changed:**
+- `client/src/pages/DispatchPreview.tsx` — FocusCard color/text
+- `client/src/components/dispatch/dispatchPreviewUtils.ts` — `jobStateColor()` default green
+- `client/src/components/dispatch/VisitCardContent.tsx` — timeline-wide, timeline-narrow, unscheduled typography
+- `client/src/components/dispatch/DispatchUnscheduledCard.tsx` — card container bg/border/hover
+
+**No logic/layout changes.** Focus workflow, DnD, mutations, queries, week view: unchanged.
+
+#### Dispatch Day View — Focus Tray 2-Row Cap (2026-03-31)
+
+**Focus tray grid max-height:** `max-h-[72px]` → `max-h-[82px]`
+- Calculated from: 2 × ~37px card height + 1 × 6px gap + 2px buffer
+- Card height: py-1 (8px) + text-[12px] leading-tight (~15px) + text-[11px] leading-tight (~14px) ≈ 37px
+- 1 row: fits without scroll. 2 rows: both fully visible. 3+ rows: internal scroll via existing overflow-y-auto
+- CSS-only change, single value. Day view only (tray already gated by `activeView === "day"`).
+
+**File changed:** `client/src/pages/DispatchPreview.tsx` — one class value
+
+#### Dispatch Unscheduled Panel — Card & Header Cleanup (2026-03-31)
+
+**Unscheduled card content trimmed (VisitCardContent "unscheduled" variant):**
+- Removed Row 3 entirely: location, duration, and job number
+- Cards now show only: company name (row 1) + job summary (row 2)
+
+**Unscheduled panel header simplified:**
+- Removed count badge (e.g. "5") from header
+- Count still shown on collapsed tab for discoverability
+
+**Filter pills replaced with single Filter button:**
+- Removed inline pill row (All | PM | Repair | Service | Install | Inspection)
+- Added single "Filter" button next to search input
+- Button opens a dropdown with the same job type options
+- Active filter shown on button label; blue highlight when filter active
+- Same `jobTypeFilter` state and filtering logic — no behavior change
+
+**Files changed:**
+- `client/src/components/dispatch/VisitCardContent.tsx` — removed metadata row from unscheduled variant
+- `client/src/components/dispatch/DispatchUnscheduledPanel.tsx` — removed count badge, filter dropdown
+
+**No behavior changes.** Focus system, DnD, mutations, queries, scheduled cards, week view: unchanged.
+
+#### Dispatch Day View — Focus Card Compaction (2026-03-30)
+
+**Focus card content trimmed:**
+- Removed job number and duration metadata row from FocusCard
+- Cards now show only: company name + job summary (2 lines)
+- Removed unused `Clock` and `formatDuration` imports
+
+**Focus card sizing reduced:**
+- Padding: `px-2.5 py-1.5` → `px-2 py-1`
+- Customer name: `text-[13px]` → `text-[12px]`
+- Rounded: `rounded-md` → `rounded`
+
+**Focus tray compacted:**
+- Grid columns: `grid-cols-2 lg:grid-cols-3` → `grid-cols-3 lg:grid-cols-4 xl:grid-cols-5`
+- Grid gap: `gap-2` → `gap-1.5`
+- Max height: `160px` → `72px`
+- Tray padding: `py-2` → `py-1.5`, header margin: `mb-1.5` → `mb-1`
+- Header text: `text-sm` → `text-xs`, Clear all: `text-xs` → `text-[11px]`
+
+**Files changed:**
+- `client/src/pages/DispatchPreview.tsx` — FocusCard content, sizing, tray grid
+
+**No behavior changes.** Unscheduled panel, DnD, mutations, queries, week view: unchanged.
+
+#### Dispatch Day View — Focus & Unscheduled Panel Visual Correction (2026-03-30)
+
+**Focus tray container:**
+- Background changed from `bg-slate-900` (near-black) to `bg-slate-100` (light neutral)
+- Header text now `text-sm font-semibold text-slate-800` (was white on dark)
+- "Clear all" button uses `text-xs text-slate-500` (was tiny white-on-dark)
+- Card grid gap increased to `gap-2`, max-height reduced to 160px for tighter tray
+
+**Focus cards:**
+- Background changed from `bg-slate-800` to `bg-blue-600` (readable blue, white text)
+- Customer name: `text-[13px]` (was `text-[10px]`)
+- Summary: `text-[11px] text-blue-100` (was `text-[9px] text-slate-300`)
+- Metadata (job #, duration): `text-[11px] text-blue-200` (was `text-[9px] text-slate-400`)
+- Remove button hover uses blue palette instead of slate
+
+**Unscheduled panel:**
+- "Select" button renamed to "Focus" with blue color treatment
+- Selection mode header: green theme → blue theme (`bg-blue-50 border-blue-200`)
+- "Add to Focus" button: `bg-blue-600` (was `bg-emerald-600`), larger text (`text-xs font-semibold`)
+- Search input height increased to `h-8`, text to `text-sm`
+- Filter chips text increased to `text-[11px]` (was `text-[10px]`)
+- Empty state text increased to `text-sm`
+
+**Unscheduled cards:**
+- Card padding increased: `px-2 py-1.5 gap-1.5` (was `px-1.5 py-1 gap-1`)
+- Selection ring color changed from emerald to blue
+- Focused indicator: `border-l-blue-600` (was `border-l-slate-700`)
+
+**Unscheduled card content (VisitCardContent "unscheduled" variant):**
+- Customer name: `text-[13px]` (was `text-[11px]`)
+- Summary: `text-xs` / 12px (was `text-[10px]`)
+- Metadata row: `text-[11px]` (was `text-[10px]`), job number `text-[10px]` (was `text-[9px]`)
+- Line heights changed to `leading-snug`, vertical spacing `mt-0.5`
+
+**Files changed:**
+- `client/src/pages/DispatchPreview.tsx` — FocusCard styling, Focus tray container
+- `client/src/components/dispatch/DispatchUnscheduledPanel.tsx` — "Focus" wording, blue theme, typography
+- `client/src/components/dispatch/DispatchUnscheduledCard.tsx` — card spacing, blue selection colors
+- `client/src/components/dispatch/VisitCardContent.tsx` — unscheduled variant font sizes
+
+**No behavior changes.** Week view, DnD, mutations, queries, backend: unchanged.
+
+#### Dispatch Day View — Focus/Selection Mode (2026-03-30)
+
+**Separated selection from focus (two distinct states):**
+- `selectedVisitIdsForFocus` (Set) — temporary multi-select checkboxes in unscheduled panel
+- `focusedVisitIds` (Set) — committed Focus set shown in the Focus bar
+- Selection is committed to Focus via explicit "Add to Focus" button
+- Both are ephemeral UI state — no backend persistence, no new routes/queries
+
+**Selection mode card behavior:**
+- Left check circle replaces grip icon; filled green when checked, empty circle when not
+- Card body click toggles `selectedVisitIdsForFocus` ONLY (not focus)
+- Items already in Focus show subtle star indicator + dark left border in normal mode
+- ExternalLink icon opens EditVisitModal via stopPropagation without toggling selection
+- Drag disabled at useDraggable level — no DnD sensor changes
+
+**Focus bar (card grid, dark blue):**
+- 3-column card grid, max 2 rows visible (108px), overflow scroll
+- Dark slate-900 background, white text, high contrast
+- Each card shows: customer name, summary, job number, duration
+- Cards are draggable (same payload as unscheduled, reuses existing DnD)
+- Click card → opens EditVisitModal (not remove)
+- Explicit X button removes from Focus (uses stopPropagation)
+- "Clear all" empties entire Focus set
+- Stale IDs cleaned opportunistically when items leave unscheduled list
+
+**Panel header controls in selection mode:**
+- Selected count display
+- Select all / Deselect all (operates on current filtered list)
+- Clear (empties selection, stays in selection mode)
+- "Add to Focus" primary button — moves selection into focus, clears selection
+- Cancel (X) exits selection mode and clears selection
+
+**Files changed:**
+- `client/src/pages/DispatchPreview.tsx` — separated state, FocusCard component, handlers, Focus bar grid
+- `client/src/components/dispatch/DispatchUnscheduledPanel.tsx` — separated selection/focus props, Add to Focus button
+- `client/src/components/dispatch/DispatchUnscheduledCard.tsx` — isChecked (selection) vs isFocused (focus) visual treatment
+- Week view, Day view timeline, mutations, queries, backend: **unchanged**
+
+#### Dispatch Week View — Behavioral Tightening (2026-03-30)
+
+**Resize support:**
+- Bottom-edge resize handles on visit blocks in Week calendar view
+- 15-minute snap increments (matching Day view SNAP_MINUTES)
+- Overlap clamping via shared `clampResizeEnd()` from dispatchOverlapUtils
+- Minimum duration: 15 minutes (matching Day view MIN_DURATION_MINUTES)
+- Duration tooltip shown during resize
+- Reuses existing `resizeVisit` mutation (POST /api/calendar/visit/:id/resize)
+
+**15-minute time snapping on drop/move:**
+- Week view drops now snap time-of-day to nearest 15-minute boundary
+- Applied to all drop types: unscheduled→calendar, scheduled cross-day move, task move
+
+**Unassigned scheduling:**
+- Calendar-style drops schedule visits as unassigned (technicianUserId: null)
+- Unassigned visits render with compact slate badge (User icon + dash)
+- No blocking, no forced tech selection, no prompts
+- Flows through existing shared mutation path (scheduleVisit/rescheduleVisit)
+
+**Multi-day visit warning:**
+- Confirmation dialog shown when drop or resize would cross midnight
+- Uses existing AlertDialog pattern (same as off-shift confirmation)
+- User must explicitly confirm before multi-day visit is created
+- Applies to both drag/drop and resize in Week view
+
+**Overlap display (Section 5):**
+- Side-by-side column layout for overlapping items
+- Capped at 3 visible columns maximum; excess items share last column
+- Percentage-based widths (not pixel-based) for responsive layout
+
+**Same-tech overlap handling (Section 6):**
+- Week view follows same behavior as Day view: client-side overlap detection only
+- Backend does not enforce same-tech overlap rules (verified: no server-side check)
+- Week calendar merges all techs into day columns — visual overlap is expected
+- Resize clamping uses shared `clampResizeEnd()` (same util as Day view)
+
+**Files modified:**
+- `client/src/components/dispatch/WeekDispatchCell.tsx` — resize handles, unassigned badge, overlap cap
+- `client/src/components/dispatch/WeekDispatchGrid.tsx` — pass onResize prop
+- `client/src/pages/DispatchPreview.tsx` — multi-day confirm dialog, week resize handler, 15-min snap
+- `CHANGELOG.md`
+- Day view: **unchanged**
+
+#### Dispatch Week View — Calendar-Style Vertical Layout (2026-03-30)
+
+**Replaced tech-row×day-column grid with Google Calendar-style vertical week view:**
+- 7 day columns (Mon→Sun) with vertical time axis (hour rows, 6AM–9PM)
+- Visits and tasks positioned vertically by `scheduledStart` within each day column
+- Overlap detection with side-by-side column layout for concurrent items
+- Current time indicator (red line) on today's column
+- Auto-scroll to business hours (8 AM) on mount
+- Today highlight, weekend styling, half-hour grid lines
+- Sticky day header row with day name and date number
+
+**Architecture — zero duplication, full reuse:**
+- Reuses existing mutations: `scheduleVisit`, `rescheduleVisit`, `resizeVisit` (via modal), `unscheduleVisit`
+- Reuses existing data hooks: `useDispatchWeekData`, `useDispatchPreviewMutations`
+- Reuses existing modals: `EditVisitModal` (click visit), `DispatchDetailPanel` (click task)
+- Reuses existing components: `DispatchUnscheduledPanel`, `DispatchFiltersBar`, `DispatchBoardHeader`, `VisitCardContent`
+- Reuses existing DnD types: `DispatchDragData`, `DispatchDropData` (extended for calendar drops)
+- Reuses existing overlap utils: `checkOverlap`, `findNearestValidSlot`
+- No new API routes, no new backend services, no new scheduling logic
+
+**Drag/drop — extended existing system:**
+- Calendar-style drops provide `dayKey` without `technicianId` (preserves source tech assignment)
+- Unscheduled → calendar drop: schedules visit on target day (unassigned)
+- Scheduled → different day: reschedules preserving time-of-day and tech assignment
+- Multi-tech visits: date change only (no crew modification on calendar drop)
+- No resize in week view Phase 1 — duration changes via EditVisitModal
+
+**New `VisitCardContent` variant: `"week-calendar"`:**
+- Vertical block layout sized by duration
+- Adaptive content: short visits (≤30min) show customer name only; longer show summary + time
+
+**Files created/modified:**
+- `client/src/components/dispatch/WeekDispatchGrid.tsx` — rewritten as calendar layout
+- `client/src/components/dispatch/WeekDispatchCell.tsx` — rewritten as day column with time positioning
+- `client/src/components/dispatch/VisitCardContent.tsx` — added "week-calendar" variant
+- `client/src/components/dispatch/dispatchDndTypes.ts` — `technicianId` made optional on `DispatchDropData`
+- `client/src/pages/DispatchPreview.tsx` — minimal changes: guard for dayKey-only drops, `savingIds` prop
+- Day view rendering and behavior: **unchanged**
+
+### Changed
+
+#### Invoice Line Item Visual Alignment Fix (2026-03-30)
+
+**Column alignment parity with PartsBillingCard:**
+- Drag handle `<th>` now always rendered (not conditional on edit mode), matching jobs — prevents column shift between view/edit
+- Tax column width changed from `w-16` to `w-20` to match jobs column proportions
+- Empty state colSpan changed from `isEditing ? 6 : 5` to always `6` (matching fixed 6-column layout)
+- View-mode drag handle `<td>` always rendered (empty when not editing), keeping column grid stable
+- Description text wrapped in `<div className="flex items-center gap-2">` matching PartsBillingCard description cell structure
+- File: `client/src/pages/InvoiceDetailPage.tsx`
+
+#### Invoice Line Item UI Alignment with Job Detail Parts & Billing (2026-03-30)
+
+**Read-only row alignment:**
+- Drag handle uses `touch-none` class with `stopPropagation` to match PartsBillingCard
+- Row is now `cursor-pointer` with click-to-edit in edit mode (matching job detail click-to-edit pattern)
+- Removed inline edit/delete icons from total cell — edit mode uses row-click instead
+- Total cell now renders value directly (no wrapper div), matching PartsBillingCard
+- File: `client/src/pages/InvoiceDetailPage.tsx`
+
+**Edit row aligned with PartsBillingCard pattern:**
+- Drag handle rendered in edit mode (was missing before)
+- Delete button added to save/cancel button group (was only in view row before)
+- Rate input uses `$` prefix with absolute positioning, matching PartsBillingCard currency inputs
+- Spinner removal CSS added (`[appearance:textfield]`) matching PartsBillingCard
+- Live total computed and shown during edit, matching PartsBillingCard
+- File: `client/src/pages/InvoiceDetailPage.tsx`
+
+**Add Line Item rewritten to match PartsBillingCard pattern:**
+- Changed from stacked grid form to table-row editor (`<tr>` inside `<tbody>`)
+- Product search uses `onBlur` with `setTimeout` + `onMouseDown preventDefault` pattern (matching PartsBillingCard)
+- Dropdown uses `z-50 rounded-md border bg-popover shadow-lg` (matching PartsBillingCard)
+- Description field is now a `<Textarea>` below product search (matching PartsBillingCard notes field)
+- Numeric inputs (Qty, Rate) sit in aligned table columns with same padding
+- Save/Cancel buttons in desc cell with `h-7 text-xs` (matching PartsBillingCard)
+- "Add Line Item" button moved outside table as `variant="outline"` (matching PartsBillingCard button bar)
+- File: `client/src/pages/InvoiceDetailPage.tsx`
+
+**Table container aligned with PartsBillingCard:**
+- Added `overflow-visible` wrapper (matching PartsBillingCard dropdown overflow behavior)
+- Added `pt-4 space-y-4` content wrapper (matching PartsBillingCard CardContent pattern)
+- SortableContext wraps `<tbody>` directly (matching PartsBillingCard)
+- Removed unused imports: `Pencil`, `Save` icons
+- File: `client/src/pages/InvoiceDetailPage.tsx`
+
+#### Invoice Detail Page Layout Alignment with Job Detail (2026-03-30)
+
+**Top action row restructured to match job detail pattern:**
+- Invoice number + status badge now on a compact top-left row
+- All action buttons (Edit, Send, Add Payment, Download PDF, Print, More) moved to top-right
+- Removed duplicate lower action button row from InvoiceHeaderCard
+- Info card (addresses, contact, terms) remains below as a tighter card with reduced margin
+- Files: `client/src/components/InvoiceHeaderCard.tsx`
+
+**Page layout updated to match job detail grid:**
+- Page background changed to `bg-[#F4F8F4]` (matching job detail)
+- Body grid changed to `lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]` (same as job detail)
+- Left column uses `flex flex-col gap-2.5 min-w-0` (same as job detail)
+- Right column uses `flex flex-col gap-2` (same as job detail)
+- File: `client/src/pages/InvoiceDetailPage.tsx`
+
+**Job Description section restyled to match job detail card pattern:**
+- Uses `rounded-xl border border-[#e5e7eb] bg-[#ffffff] shadow-sm` card wrapper
+- Collapsible header uses `bg-[#FAFCFA] hover:bg-slate-100` (matching job detail)
+- Section title uses `text-sm font-semibold text-[#0f172a]` with icon
+- File: `client/src/pages/InvoiceDetailPage.tsx`
+
+**Products & Services section restyled to match job detail Parts & Billing:**
+- Uses same card wrapper and header pattern as Parts & Billing
+- Financial summary moved inline into header row (Revenue/Cost/Profit)
+- Table switched from shadcn Table to native table with matching styles:
+  - Header: `text-[11px] uppercase tracking-wide text-muted-foreground`
+  - Rows: `border-b border-border/50 hover:bg-muted/50`
+  - Edit mode rows: `bg-primary/5` with Save/Cancel buttons
+- Removed unused shadcn Table component imports
+- File: `client/src/pages/InvoiceDetailPage.tsx`
+
+### Fixed
+
+#### Invoice Line Item Description & Job-to-Invoice Validation (2026-03-30)
+
+**Standalone invoice line item text not populating correctly:**
+- Root cause: `handleSelectProduct` in `AddLineItemRow` mapped `item.name` (short catalog label) to the line description instead of `item.description` (detailed invoice text).
+- Fix: Use `item.description || item.name` so the detailed description is preferred when available; falls back to name for items without a description.
+- Manual line entry unaffected (no product selection involved).
+- File: `client/src/pages/InvoiceDetailPage.tsx`
+
+**Create Invoice from Job failing with validation error:**
+- Root cause: `CreateInvoiceFromJobDialog.tsx` sent `includeLineItems` and `includeNotes` in the POST body, but the backend schema (`createInvoiceFromJobSchema`) uses `.strict()` and only accepts `markJobCompleted`. These were stale frontend-only fields with no backend implementation.
+- Fix: Removed stale `includeLineItems` and `includeNotes` from the frontend payload. The service already includes all job line items and notes automatically.
+- File: `client/src/components/CreateInvoiceFromJobDialog.tsx`
+
+#### Invoice System: Draft Delete, Tax Selector, Line Number Bug (2026-03-29)
+
+**Draft invoice delete action:**
+- Root cause: Backend DELETE route existed (`DELETE /api/invoices/:id`) but no UI button was wired.
+- Added Delete Draft action to invoice dropdown menu in `InvoiceHeaderCard.tsx`.
+- Delete eligible only when: status is draft, not synced to QuickBooks, no payments recorded.
+- Non-eligible draft invoices (QBO-synced or with payments) still show Void instead.
+- Added confirmation dialog in `InvoiceDetailPage.tsx`; navigates to /invoices on success.
+- Added backend guards: QBO sync check, payment amount check, audit event logging.
+- Files: `client/src/components/InvoiceHeaderCard.tsx`, `client/src/pages/InvoiceDetailPage.tsx`, `server/routes/invoices.ts`
+
+**Tax selector showing "No tax groups configured":**
+- Root cause: The `useQuery` for `/api/tax/groups` silently falls back to `[]` on any error (403, network, etc.), making the empty-state message misleading.
+- Added `isError` tracking on the tax groups query with distinct error message.
+- Added retry (2 attempts) to reduce transient failure impact.
+- "No tax groups configured" now only shows when the query succeeds but returns empty.
+- Error state shows "Failed to load tax groups" instead of falsely claiming none exist.
+- File: `client/src/pages/InvoiceDetailPage.tsx`
+
+**Add line item fails with line_number NOT NULL violation:**
+- Root cause: `createInvoiceLine()` in storage spread `lineData` directly into INSERT without ensuring `lineNumber` was set. The route schema made `lineNumber` optional, and no auto-calculation existed.
+- Fix: `createInvoiceLine()` now computes `max(line_number) + 1` within the transaction when `lineNumber` is not provided.
+- Compatible with existing reorder logic (which explicitly sets `lineNumber` on all lines).
+- File: `server/storage/invoices.ts`
+
+#### Dashboard Tasks Panel + Action Required Banner Removal (2026-03-29)
+
+**Tasks panel "Failed to load tasks" fix:**
+- Root cause: migration `2026_03_29_quote_assessment_workflow.sql` had not been applied.
+  Drizzle schema included `tasks.quoteId` (maps to `quote_id` column) but the column did not
+  exist in PostgreSQL. `SELECT *` from tasks failed with a column-not-found error.
+- Fix: applied the pending migration, which adds `quote_id` column to tasks table.
+- No code changes needed — the schema, service, and route were already correct.
+
+**Action Required banner removal:**
+- Removed the top-right "ACTION REQUIRED — X jobs past due" / "ALL CLEAR" alert badge
+  from the Today's Operations header on the Dashboard.
+- Removed all supporting code exclusive to that badge: `alertItems` memo, `totalIssues`,
+  `headerAlertText`, `headerAlertHref`, `attentionLoaded` computed values.
+- Removed `operationalAlerts` query (`GET /api/attention?status=open&limit=20`) and
+  `operationalAlertsResponse`/`operationalAlertsLoading` — only used for the badge.
+- Removed `AttentionItem` interface — only used by the badge.
+- Removed `alerts` and `alertsLoading` props from `TodaysOperations` component.
+- Preserved: `attentionData` query (`GET /api/attention/summary`) — still used by Jobs card
+  row for "Jobs past due date — need rescheduling" count.
+- Preserved: all Jobs/Invoices/Quotes/PM Health card rows unchanged.
+
+Files: `client/src/pages/Dashboard.tsx`, `CHANGELOG.md`
+Migration applied: `migrations/2026_03_29_quote_assessment_workflow.sql`
+
+#### Invoice Line Search Crash + Tax Single-Source-of-Truth (2026-03-29)
+
+**Line item search crash fix:**
+- Fixed `catalogItems.filter is not a function` runtime error. Root cause: `GET /api/items?limit=500`
+  returns `{ data: [...], meta: {...} }` (paginated object) when `limit` param is present, but
+  `AddLineItemRow` assumed a plain array. Fixed by normalizing the response at the query boundary:
+  `Array.isArray(json) ? json : json?.data ?? []`. Added secondary guard on `filteredItems`.
+
+**Tax single-source-of-truth enforcement:**
+- Extracted `applyTaxGroupCore()` as the single implementation of tax group application logic
+  (set taxGroupId → batch-apply combined rate → write snapshot). All paths now use this:
+  - `createInvoiceFromJob` (via `applyTaxGroupToInvoice(companyId, id, groupId, tx)`)
+  - `POST /:id/apply-tax` route (via `applyTaxGroupToInvoice(companyId, id, groupId)`)
+  - Standalone creation (sets taxGroupId only — no lines exist yet)
+- Eliminated ~50 lines of duplicated inline tax logic from `createInvoiceFromJob()`.
+- `applyTaxGroupToInvoice()` now accepts optional `txHandle` parameter to participate in
+  existing transactions (critical for creation flows that combine line refresh + tax).
+
+**Tax display truthfulness:**
+- Removed `effectiveTaxRatePercent` entirely from InvoiceDetailPage. This computed a rate
+  from `invoice_lines.taxRate` and used it as a fallback label, creating a false derived display.
+- `currentTaxLabel` now derives exclusively from `invoice.taxGroupId` matched against the
+  tax groups query. If group is deactivated, shows "Tax (group unavailable)" honestly.
+- "No Tax" highlight in selector now uses `!invoice.taxGroupId` only, not line-rate inference.
+
+**Tax authority model (documented):**
+- `invoice.taxGroupId`: reference/authority — indicates which tax group is applied
+- `invoice_lines.tax_rate`: calculation authority — used by `recalculateInvoiceTotalsInTx()`
+- `invoice_tax_lines`: audit/display only — component rate snapshot, never used for calculations
+- `invoice.taxTotal`: materialized sum — recomputed from lines on every mutation
+- Both `taxGroupId` and line `tax_rate` are written atomically by `applyTaxGroupCore()`
+
+Files: `client/src/pages/InvoiceDetailPage.tsx`, `server/services/invoiceCreationService.ts`,
+`CHANGELOG.md`
+
+#### Invoice Tax + Line Item Corrections (2026-03-29)
+
+**Tax default fix:**
+- Standalone invoice creation (`POST /api/invoices`) now resolves company default tax group
+  and sets `taxGroupId` on the invoice shell. Previously standalone invoices had no tax applied,
+  causing "No Tax" to appear instead of the company default.
+
+**Tax logic deduplication:**
+- Extracted `applyTaxGroupToInvoice()` into `invoiceCreationService.ts` as the single canonical
+  function for applying/removing tax on an invoice. Both the `apply-tax` route and creation service
+  now share this function, eliminating the duplicated group-resolve → batch-apply → snapshot logic.
+
+**Tax display fix:**
+- `currentTaxLabel` now derives from `invoice.taxGroupId` (canonical source of truth) matched
+  against the tax groups query. Removed misleading fallback that derived a fake label from
+  `invoice_lines.taxRate`. "No Tax" now only appears when `taxGroupId` is null.
+
+**Line item tax inheritance:**
+- `POST /:id/lines` now resolves the invoice's active tax group rate and applies it to new lines
+  automatically. Previously new lines defaulted to 0% tax even on invoices with tax configured.
+
+**Line item ↔ Products & Services linkage:**
+- Added `productId` and `unitCost` to create/update line schemas
+- Added product/service search to `AddLineItemRow` — searches `/api/items`, populates description
+  and unit price from selection. Manual entry preserved via "Skip" option.
+
+**Dead import cleanup:**
+- Removed unused `db`, `and`, `eq` imports from `server/routes/invoices.ts` (logic moved to service)
+
+Files: `server/services/invoiceCreationService.ts`, `server/routes/invoices.ts`,
+`server/storage/invoices.ts`, `client/src/pages/InvoiceDetailPage.tsx`, `CHANGELOG.md`
+
+### Changed
+
+#### Invoice Tax Selector — Jobber-style Tax Group Selection (2026-03-29)
+
+Replaced freeform percentage-edit tax UI with a Jobber-style tax group selector:
+
+- **Tax selector:** Popover dropdown in edit mode shows all configured tax groups + "No Tax" option
+- **Tax application:** `POST /api/invoices/:id/apply-tax` now accepts `{ taxGroupId: "uuid" | null }`
+  instead of raw percent. Applies tax group's combined rate via `batchApplyLineTax()`, creates
+  `invoice_tax_lines` snapshot (same flow as invoice creation), and updates `taxGroupId` on invoice.
+- **No Tax:** Sending `{ taxGroupId: null }` applies zero rate, clears taxGroupId and snapshot.
+- **Removed:** Freeform numeric percent input, `taxRateDraft` state, `editingTax` state,
+  `effectiveTaxRatePercent` edit controls. No manual % entry remains on invoice detail.
+- **Display:** Tax row shows tax group name (from groups query) or "No Tax" with combined rate.
+  Outside edit mode, read-only label. In edit mode, clickable selector.
+- **Backend:** `taxGroupId` now selected in `getInvoice()` and `getInvoices()` for display.
+- **Preserved:** New invoices still default to company default tax group via `invoiceCreationService`.
+  No company settings mutated. Future invoices unaffected by per-invoice tax changes.
+
+Files: `client/src/pages/InvoiceDetailPage.tsx`, `server/routes/invoices.ts`,
+`server/storage/invoices.ts`, `CHANGELOG.md`
+
+### Fixed
+
+#### Invoice Tax Override, Visibility UX, Reorder Safety, Standalone Diagnostics (2026-03-29)
+
+**Phase 1 — Invoice-level tax override:**
+- Added `POST /api/invoices/:id/apply-tax` route — applies a tax rate (0–100%) to all lines
+  via canonical `batchApplyLineTax()`, then recalculates totals. Does NOT mutate company settings.
+- Added inline tax rate editing UI in invoice detail totals section (edit mode only).
+  Computes effective rate from first line; pencil icon → input → save/cancel.
+- Zero-tax supported: setting rate to 0 removes tax from all lines on that invoice.
+
+**Phase 2 — Visibility settings read-only outside edit mode:**
+- Visibility settings section now visible outside edit mode (was hidden behind `isEditing &&`)
+- Switches shown `disabled` outside edit mode, interactive in edit mode
+- Descriptive text adjusts: "Control what the client sees" vs "What the client sees"
+
+**Phase 3A — Reorder payload safety:**
+- `reorderInvoiceLines()` now validates: no duplicate IDs, all IDs must belong to invoice,
+  payload must cover all active lines (full reorder required). Returns 400 on bad payload.
+
+**Phase 3B — Standalone creation diagnostics:**
+- Improved "Location not found" error to include locationId for diagnosability
+- Added `companyId` guard with clear message if session context is missing
+- Added server-side warn log on location lookup failure for debugging
+
+Files: `client/src/pages/InvoiceDetailPage.tsx`, `server/routes/invoices.ts`,
+`server/storage/invoices.ts`, `CHANGELOG.md`
+
+#### Invoice Detail Page — Edit/Send Truthfulness + Full Editing Support (2026-03-29)
+
+**Phase 0 — Copy/truthfulness fixes:**
+- Fixed misleading ConfirmSendModal copy — no longer claims "invoice cannot be edited after send"
+- Fixed send success toast from "Invoice sent successfully" to "Invoice marked as sent"
+
+**Phase 1 — Notes + visibility + company link:**
+- Client message textarea now editable in edit mode with explicit save (was readOnly placeholder)
+- Internal notes textarea now editable in edit mode with explicit save (was readOnly placeholder)
+- All 5 client visibility toggles now interactive in edit mode and persist via PATCH (were disabled)
+- Company/client name in invoice header now links to client detail page when customerCompany exists
+
+**Phase 2 — Issue date + counter drift:**
+- Fixed issueDate schema mismatch: `z.string().datetime()` → `z.string()` to accept YYYY-MM-DD
+- Added issue date inline editing UI in invoice header
+- Added counter-drift protection: manual invoice number edits that exceed current counter now
+  bump `companyCounters.nextInvoiceNumber` to prevent future collisions
+
+**Phase 3 — Line item backend routes:**
+- Added `PATCH /:id/lines/reorder` route (was 404 — frontend DnD was broken)
+- Added `PATCH /:id/lines/:lineId` route for updating individual line items
+
+**Phase 4 — Line item UI:**
+- Added "Add Line Item" inline form in edit mode
+- Added inline edit controls (description, qty, rate) per line item
+- Added delete button per line item
+- Fixed drag-and-drop reorder (now hits real backend route)
+
+**Phase 5 — PDF visibility support:**
+- Invoice PDF now respects visibility flags: showLineItems, showQuantity, showUnitPrice,
+  showLineTotals, showBalance — conditionally renders each section
+
+Files: `client/src/pages/InvoiceDetailPage.tsx`, `client/src/components/InvoiceHeaderCard.tsx`,
+`client/src/components/invoice/ConfirmSendModal.tsx`, `server/routes/invoices.ts`,
+`server/storage/invoices.ts`, `server/storage/index.ts`, `server/services/invoicePdfService.ts`
+
+#### Standalone Invoice Creation "Not found" + Inline Client Creation (2026-03-29)
+
+- Fixed `POST /api/invoices` returning generic 404 — moved route definition to top of routes
+  section (before parameterized `/:id` routes) to ensure Express matches it correctly
+- Removed unsafe `(location as any).parentCompanyId` type cast — `Client` type already includes
+  `parentCompanyId`, so direct property access now used with proper TypeScript safety
+- Added inline "New Client" button to NewInvoicePage — opens canonical `CreateClientModal`;
+  after creation, primary location is auto-selected for invoice creation
+- Added `selectedLocationLabel` state to persist display name across search result refreshes
+
+Files: `server/routes/invoices.ts`, `client/src/pages/NewInvoicePage.tsx`
+
+### Added
+
+#### Canonical Invoice Shell Creation + Standalone Invoice Path (2026-03-29)
+
+**Shared shell extraction**: Extracted `createInvoiceShell()` as canonical shared base for all
+invoice creation — owns numbering (counter SELECT FOR UPDATE + increment), counter init fallback,
+issue/due date computation (via canonical `calculateDueDate()`), and base invoice INSERT with
+default fields. Source-agnostic: no job/PM/standalone branching inside it.
+
+- `createInvoiceFromJob()` now delegates shell creation to `createInvoiceShell()`;
+  job-specific validation, idempotency, locking, line population, tax, and linkage preserved
+- `createInvoiceFromBillingEvent()` now delegates shell creation to `createInvoiceShell()`;
+  PM-specific source guard, line item creation, zero-tax behavior, and event linkage preserved
+- `createStandaloneInvoice()` added as first-class creation path — draft shell only, no lines,
+  no job/PM dependency
+- `"STANDALONE_ROUTE"` added to `INVOICE_CREATION_SOURCES`
+- `POST /api/invoices` route added for standalone draft invoice creation (requires `locationId`)
+- `/invoices/new` frontend route fixed — was previously broken (404); now renders
+  `NewInvoicePage` with location picker, calls `POST /api/invoices`, redirects to detail page
+- Duplicate inline due date math in both creation methods replaced by canonical `calculateDueDate()`
+
+Files: `server/storage/invoices.ts`, `server/routes/invoices.ts`, `server/storage/index.ts`,
+`client/src/pages/NewInvoicePage.tsx` (new), `client/src/App.tsx`
+
+### Removed
+
+#### Quick Create Drawer (2026-03-29)
+
+- Removed `QuickCreateDrawer` component and all wiring — the drawer contained a broken
+  standalone invoice creation path (`POST /api/invoices` with no backend route) and duplicated
+  quote creation already available via `NewQuoteModal`
+- "+New" dropdown menu items rewired: "New Invoice" navigates to `/invoices/new`,
+  "New Quote" opens `NewQuoteModal` directly
+- Deleted: `client/src/components/QuickCreateDrawer.tsx`
+- Removed from `App.tsx`: import, `quickCreateOpen`/`quickCreateMode` state, `<QuickCreateDrawer>` render
+- Existing creation flows preserved: QuickAddJobDialog, CreateClientModal, NewQuoteModal,
+  TaskDialog, /invoices/new page, /pm/new navigation
+
+Files: `client/src/components/QuickCreateDrawer.tsx` (deleted), `client/src/App.tsx`,
+`client/src/components/CreateClientModal.tsx` (stale comment cleanup)
+
+### Fixed
+
+#### ActionRequiredModal missing `version` in status payload (2026-03-29)
+
+- `POST /api/jobs/:id/status` requires `version` for optimistic locking (schema field added in
+  TASK 3), but ActionRequiredModal was not sending it — caused "Validation error: Required at version"
+- Added `jobVersion` prop to `ActionRequiredModal`; included in request payload
+- JobDetailPage now passes `job.version` to the modal (same pattern as other mutations on the page)
+
+Files: `client/src/components/ActionRequiredModal.tsx`, `client/src/pages/JobDetailPage.tsx`
+
+#### Remove dead completeJob / useCompleteJob code (2026-03-29)
+
+- Removed `completeJob()` and `useCompleteJob()` from `useSchedulingApi.ts` — zero callers,
+  and the `POST /api/jobs/:id/complete` route they targeted does not exist on the backend
+- Job completion is handled by `POST /api/jobs/:id/close` and `POST /api/jobs/:id/status`
+
+Files: `client/src/hooks/useSchedulingApi.ts`
+
+#### ActionRequiredModal "Put On Hold" 404 (2026-03-29)
+
+- Fixed HTTP method mismatch: frontend was calling `PATCH /api/jobs/:id/status` but backend
+  route is `POST /api/jobs/:id/status`, resulting in 404 Not Found
+- Changed `method: "PATCH"` to `method: "POST"` in the `updateStatusMutation`
+
+Files: `client/src/components/ActionRequiredModal.tsx`
+
+#### List Page Stability Fixes + Targeted Debounce (2026-03-29)
+
+Applied consistent stability pattern across all list pages: removed page-level early returns that
+swapped the full page tree on loading/error/empty states. Interactive controls (search, filters,
+sort headers) now remain mounted at all times. Loading/error/empty states render inside the
+content region only.
+
+- **Locations.tsx**: Removed page-level loading early return; added 300ms debounced search
+  (split into searchInput + search); added `keepPreviousData`; loading/empty states inside content area
+- **Jobs.tsx**: Removed page-level loading early return; moved inline `SortableHeader` to module scope
+  with explicit props; loading state inside content area
+- **Quotes.tsx**: Removed page-level loading early return; loading state inside table container
+- **InvoicesListPage.tsx**: Removed page-level loading early return; loading state inside table container
+- **LeadsPage.tsx**: Removed page-level loading early return; loading state inside table container
+- **PMWorkspacePage.tsx**: Removed early returns in `PMSetupsTab` (loading/error/empty),
+  `UpcomingTab` (loading/error/empty), `PMTemplatesTab` (loading), `PMBillingTab` (loading);
+  moved inline `SortHead` to module scope as `PlanSortHead` with explicit props
+- **Clients.tsx**: Added 300ms debounced search (split searchInput + search); structural fix was
+  already in place
+
+Files: `client/src/pages/Locations.tsx`, `client/src/pages/Jobs.tsx`, `client/src/pages/Quotes.tsx`,
+`client/src/pages/InvoicesListPage.tsx`, `client/src/pages/LeadsPage.tsx`,
+`client/src/pages/PMWorkspacePage.tsx`, `client/src/pages/Clients.tsx`
+
+#### Clients Page Search Focus Loss (2026-03-29)
+
+- Removed page-level `if (isLoading)` early return that rendered a separate component tree without the search input
+- Loading state now renders inside the `ListSurface` content area only — search input, toolbar, and page shell remain mounted at all times
+- Moved `SortHeader` from inline component (recreated every render) to module-scope function with stable React identity
+- No routes, endpoints, queries, or business logic changed
+
+Files: `client/src/pages/Clients.tsx`
+
+#### Location Search Result 404 (2026-03-29)
+
+- Global search location results no longer navigate to non-existent `/locations/:id` route
+- Now routes to canonical `/clients/{parentCompanyId}?location={locationId}` which auto-scopes ClientDetailPage to the selected location
+- Location routing handled explicitly in `executeItem()` before the generic TYPE_ROUTES fallback (location needs two IDs: parent + location)
+- Guard: if location result lacks `customerCompanyId`, falls back to `/clients/{locationId}` with console warning instead of routing to dead `/locations/` path
+- All other search result types (client, contact, job, invoice, supplier) remain unchanged
+
+Files: `client/src/components/UniversalSearch.tsx`
+
+### Added
+
+#### Phase 2: Quote Assessment Workflow (2026-03-29)
+
+**Schema (shared/schema.ts + migration):**
+- `quotes.sales_owner_user_id` VARCHAR NULL FK→users(id) ON DELETE SET NULL
+- `quotes.assessment_status` TEXT NULL (values: null, required, scheduled, completed)
+- `tasks.quote_id` VARCHAR NULL FK→quotes(id) ON DELETE SET NULL
+- `taskTypeEnum` extended: GENERAL, SUPPLIER_VISIT, **QUOTE_ASSESSMENT**
+- `quoteAssessmentStatusEnum` exported for reuse
+- `updateQuoteSchema` extended with salesOwnerUserId + assessmentStatus
+- Index: `tasks_company_quote_idx` on (company_id, quote_id)
+- Migration: `migrations/2026_03_29_quote_assessment_workflow.sql`
+
+**Backend — Quote ownership (server/routes/quotes.ts, server/storage/quotes.ts):**
+- `salesOwnerUserId` accepted on quote create and update (PATCH)
+- Passed through via spread in storage layer (no storage changes needed)
+- Visible in quote list and detail responses
+
+**Backend — Assessment orchestration (server/routes/quotes.ts):**
+- `POST /api/quotes/:id/assessment/schedule` — creates QUOTE_ASSESSMENT task, sets assessmentStatus=scheduled
+- `POST /api/quotes/:id/assessment/complete` — completes task via canonical closeTask(), sets assessmentStatus=completed
+- `DELETE /api/quotes/:id/assessment` — cancels task, sets assessmentStatus=required
+- All routes use MANAGER_ROLES permission
+
+**Backend — State invariants enforced:**
+- One active assessment per quote: hard guard queries for existing non-completed/non-cancelled QUOTE_ASSESSMENT task before creation
+- Decline hook: cancels active assessment task, clears assessmentStatus to null
+- Convert hook: cancels active assessment task, clears assessmentStatus to null before canonical job creation
+- Quote update: if assessmentStatus set to null while scheduled, auto-cancels active task
+- task.quoteId immutable: not present in updateTaskSchema (.strict() rejects it)
+- Assessment orchestration centralized in quote routes only — task routes do not mutate quote.assessmentStatus
+
+**Backend — Task support (server/routes/tasks.routes.ts, server/storage/tasks.ts):**
+- `quoteId` added to createTaskSchema and TaskCreateInput
+- `quoteId` written to DB on task creation
+- NOT in updateTaskSchema — immutable after create
+
+**Frontend — Quotes list (client/src/pages/Quotes.tsx):**
+- Owner column added (resolves user name from /api/team)
+- Assessment status badges inline with status column (needed/scheduled/done)
+
+**Frontend — Quote detail (client/src/pages/QuoteDetailPage.tsx):**
+- Owner selector in Quote Details sidebar card (select dropdown)
+- Assessment workflow controls: Mark needed → Schedule → Complete/Cancel
+- Schedule Assessment dialog with datetime picker + assignee selector
+- All mutations invalidate quote + quotes/list query keys
+
+**Frontend — Calendar rendering (client/src/components/dispatch/DispatchTaskBlock.tsx):**
+- QUOTE_ASSESSMENT added to TASK_TYPE_LABELS as "Quote Assessment"
+- Distinct visual: amber border/bg/text (vs blue for other tasks)
+- Distinct icon: FileSearch (vs ClipboardList for general, Truck for supplier)
+
+**No fake jobs created. No job_visits reused. Quote→job conversion path unchanged.**
+
+Files: shared/schema.ts, migrations/2026_03_29_quote_assessment_workflow.sql, server/routes/quotes.ts, server/storage/quotes.ts, server/routes/tasks.routes.ts, server/storage/tasks.ts, client/src/pages/Quotes.tsx, client/src/pages/QuoteDetailPage.tsx, client/src/components/dispatch/DispatchTaskBlock.tsx, client/src/components/dispatch/dispatchPreviewMappers.ts
+
+### Changed
+
+#### App Shell — Unified Header/Sidebar Surface (2026-03-29)
+
+- Removed header `boxShadow: '0 2px 6px rgba(0,0,0,0.15)'` that cast a dark shadow onto the sidebar
+- Removed `borderBottom: '1px solid #1a2230'` (dark hard line)
+- Replaced with `borderBottom: '1px solid rgba(255,255,255,0.06)'` — barely visible subtle divider
+- Header (#222b36) and sidebar (#222b36) now read as one continuous dark shell surface
+- Body content separation preserved via the rounded-tl-xl main surface and green background contrast
+
+Files: `client/src/App.tsx`
+
+#### App Shell — Rounded Top-Left Body Corner (2026-03-29)
+
+**First attempt fix:** `rounded-tl-md` on transparent wrapper was invisible — no background contrast.
+
+**Root cause:** The wrapper div had no background. Its child `<main>` painted a square `#F4F8F4` surface over it. The parent behind had `bg-background` (same light green) — zero contrast for the radius to show against.
+
+**Corrected approach:**
+- Moved radius from wrapper to `<main>` element directly: `rounded-tl-xl` (12px)
+- Added `background: #222b36` to the flex row container (sidebar + content) so the dark surface shows through the rounded corner
+- Dark row background blends seamlessly with sidebar (`#222b36`) — no visual seam
+- `<main>` surface (`#F4F8F4`) curves away from the dark background, creating a visible rounded transition
+- Stepped up from `rounded-tl-md` (6px) to `rounded-tl-xl` (12px) for shell-scale visibility
+
+Files: `client/src/App.tsx`
+
+Files: `client/src/App.tsx`
+
+#### Client Detail Page — KPI Block Left-Shift (2026-03-29)
+
+- KPI wrapper changed from `justify-center px-6` to `justify-start pl-12`
+- Block now anchors to left side of remaining space with 48px gap from title
+- Eliminates right-bias caused by centering in asymmetric remaining space
+
+Files: `client/src/pages/ClientDetailPage.tsx`
+
+#### Client Detail Page — KPI Block Size, Contrast + Centering (2026-03-29)
+
+**KPI block enlarged:**
+- Padding: px-4 py-2 → px-5 py-2.5
+- Internal gap between metrics: gap-4 → gap-5
+- Divider height: h-4 → h-5
+
+**KPI values stronger:**
+- Value font size: text-sm → text-base
+- Value color: text-slate-800 → text-slate-900
+
+**KPI labels darker:**
+- Label color: text-slate-500 → text-slate-600
+
+**KPI block centered over workspace:**
+- Title div made flex-shrink-0 to anchor left
+- KPI wrapped in `flex-1 flex justify-center px-6` container
+- Block now floats centered in remaining space between title and right edge
+- Visually sits over the main center workspace surface
+
+Files: `client/src/pages/ClientDetailPage.tsx`
+
+#### Client Detail Page — KPI Block Horizontal Reposition (2026-03-29)
+
+- Row 2 flex changed from `justify-between gap-6` to `gap-8` (no justify-between)
+- KPI block no longer pushed to far-right edge; sits adjacent to title with controlled gap
+- Remaining space falls to the right, placing KPI in the center-right composition zone
+- Title, actions, KPI styling, and lower layout unchanged
+
+Files: `client/src/pages/ClientDetailPage.tsx`
+
+#### Client Detail Page — Header + KPI Composition Correction (2026-03-29)
+
+**Top region recomposed from 2 stacked full-width bands into composed header:**
+- Merged Band 1 (header) + Band 2 (KPI strip) into single white header block
+- Row 1: action buttons (Create Job, Add Location, overflow) justified right
+- Row 2: company title left + contained KPI block right, aligned on same plane
+
+**Company title enlarged and lowered:**
+- text-xl → text-2xl for noticeably larger page anchor
+- font-bold preserved
+- Sits in Row 2 below the action buttons, no longer cramped at top edge
+- pt-3 pb-3 on header gives breathing room
+- Location count ("5 locations") sits below as secondary text-xs
+
+**KPI strip converted to contained block:**
+- Removed full-width bg-[#F0F5F0] border-b spanning strip
+- KPI metrics now in a `rounded-lg border border-slate-200 bg-slate-50/80 px-4 py-2` container
+- Block has clear boundaries, does not stretch across entire page width
+- Positioned right-aligned in Row 2, visually balanced against title
+- Metrics remain inline and compact with internal dividers
+- "Revenue YTD" shortened to "Revenue" for compactness
+
+**Lower page layout completely unchanged**
+
+Files: `client/src/pages/ClientDetailPage.tsx`
+
+#### Client Detail Page — Sidebar Hierarchy + Note Card Polish (2026-03-29)
+
+**Right rail section headers enlarged and darkened:**
+- CONTACTS, NOTES, ACTIVITY, Site Info: text-[10px] uppercase tracking-wider text-slate-600 → text-xs font-semibold text-slate-700
+- Dropped uppercase/tracking-wider for a more natural heading feel
+- Added mb-1.5 for clearer header-to-content spacing
+- Headers now clearly anchor each section visually
+
+**Contacts action simplified:**
+- Replaced outline Button (h-7 px-2.5) with ghost text link: Plus icon + "Add" in text-primary
+- LocContactsCompact: same treatment for both "Assign" and "Add" actions
+- Visually lighter, consistent with NotesPanel's "Add Note" ghost style
+- All handlers preserved — only visual treatment changed
+
+**Contacts/Notes header alignment unified:**
+- Both now use `h3 text-xs font-semibold text-slate-700` as the section title
+- Both show action on the right as a ghost link
+- Parent wrappers use consistent pt-2.5 pb-2
+
+**Note card polish (NotesPanel.tsx):**
+- Horizontal padding increased: p-2.5 → px-3 py-2.5 (more breathing room for wrapped text)
+- Metadata row: added truncate + mr-2 on author/date to prevent collision with actions
+- Date format shortened: "MMM d, yyyy, h:mm a" → "MMM d, h:mm a" (saves space in rail)
+- Action buttons: gap-0.5 → gap-1, added hover:text-foreground / hover:text-destructive for clarity
+- Metadata top margin: mt-1.5 → mt-2 for clearer separation from note text
+
+**Supporting text darkened one step:**
+- Center subtitle (address, "Client-level view..."): text-slate-500 → text-slate-600
+
+Files: `client/src/pages/ClientDetailPage.tsx`, `client/src/components/NotesPanel.tsx`
+
+#### Client Detail Page — Typography Contrast + Note Wrapping Fix (2026-03-29)
+
+**Title emphasis increased:**
+- Company title: font-semibold → font-bold
+- Center workspace title: font-semibold → font-bold
+
+**Section headers darkened (slate-400 → slate-600):**
+- CONTACTS, NOTES, ACTIVITY, Site Info headers in right rail
+- ACTIVE WORK, Active, Archived, Jobs, Invoices, Quotes, Equipment, PM Parts headers in center content
+- LOCATIONS label in left rail
+
+**KPI labels darkened (slate-400 → slate-500):**
+- Completed, Revenue YTD, Active, Outstanding labels
+
+**Supporting text darkened (slate-400 → slate-500):**
+- Location count in header
+- Center subtitle ("Client-level view across all N locations")
+- Center address line
+- Left rail location address lines
+- Left rail location count
+- Right rail "Site Code" label
+- Inactive tab labels (slate-400 → slate-500, hover slate-600 → slate-700)
+
+**Notes wrapping fix (NotesPanel.tsx):**
+- Added `break-words` + `overflow-wrap: anywhere` to note text — prevents horizontal overflow from long unbroken strings
+- Added `overflow-hidden` to note card container
+- Note cards padding reduced: p-3 → p-2.5
+- Notes list gap reduced: space-y-4 → space-y-2
+
+Files: `client/src/pages/ClientDetailPage.tsx`, `client/src/components/NotesPanel.tsx`
+
+#### Client Detail Page — Framed Workspace Surfaces (2026-03-29)
+
+**Header noise removed:**
+- Back arrow button removed from header — navigation exists elsewhere
+- Active badge removed for active clients — only shows "Inactive" badge when client is actually inactive
+- Header is now cleaner: company name + tags + location count + actions
+
+**Three parent workspace surfaces added:**
+- 3-column area wrapped in `p-3 gap-3` for page-level breathing room
+- LEFT column: `rounded-lg border border-slate-200` — reads as one cohesive location index surface
+- CENTER column: `rounded-lg border border-slate-200 bg-white` — reads as one workspace surface
+- RIGHT column: `rounded-lg border border-slate-200` — reads as one support sidebar surface
+- Old flat `border-l` / `border-r` divider lines removed — gap + surface borders provide separation
+- Page no longer feels edge-to-edge flat
+
+**Center workspace cleanup:**
+- Removed redundant `bg-white` on inner header (parent surface handles it)
+- Removed `shadow-[0_1px_2px...]` from inner header (surface border is sufficient)
+- Removed `bg-[#F4F8F4]/40` from tab content area (clean white from parent)
+
+**Internal density preserved:**
+- All section padding, row heights, compact headers unchanged
+- Notes/Activity empty states unchanged
+- Contact action buttons unchanged
+- Left column width adjusted from 260px to 256px for even math with gap
+
+Files: `client/src/pages/ClientDetailPage.tsx`
+
+#### Client Detail Page — Rail + Center Refinement Pass (2026-03-29)
+
+**Right rail collapse control moved to top-right:**
+- Removed bottom-edge footer placement, moved to top-right corner of rail
+- Subtle h-5 w-5 button with minimal px-1.5 pt-1.5 offset
+- Collapsed state: expand icon at pt-2.5, vertically centered in narrow rail
+
+**Right rail inner padding standardized to px-4:**
+- All sections (Contacts, Notes, Activity, Site Info) now use consistent px-4
+- Buttons no longer flush against rail edge
+- Contact action buttons increased from h-6 px-2 to h-7 px-2.5
+
+**Right rail empty states compressed:**
+- NotesPanel: changed from stacked icon+text (py-3) to inline flex row (py-2, h-3.5 icon)
+- Activity: skeleton h-8 → h-5 w-24, empty text uses text-muted-foreground/60
+- Contact empty states: removed py-1, single line only
+
+**Center workspace tightened:**
+- Subtitle mb reduced from mb-2 to mb-1 (closer to tabs)
+- Removed mt-1 gap before tab bar (tabs now directly follow subtitle)
+- Header→subtitle→tabs reads as one connected block
+
+**Left rail rhythm:**
+- Search/label border unified to border-slate-100
+- Company overview row py reduced from py-2.5 to py-2, border unified
+- Search input bg: bg-slate-50 → bg-slate-50/80
+
+Files: `client/src/pages/ClientDetailPage.tsx`, `client/src/components/NotesPanel.tsx`
+
+#### Global Layout Color System — Green UI Frame + Backgrounds (2026-03-29)
+
+**Sidebar merged with header (dark shell):**
+- Sidebar background changed from light gray (#e2e8f0 / bg-sidebar) to header-matching #222b36
+- Sidebar border-right removed for solid panel appearance
+- Sidebar text changed to white/translucent: default rgba(255,255,255,0.7), active white
+- Sidebar hover: rgba(255,255,255,0.08), active: rgba(255,255,255,0.16)
+- Active item icon uses #C2E974 (soft green), inactive uses white/50
+- Sidebar dividers: border-white/10 instead of border-gray-200
+- Sidebar toggle: white/50 with white/90 hover
+- CSS variables updated: --sidebar (213 23% 17%), --sidebar-foreground (white), --sidebar-accent (white/0.08), --sidebar-border (matches sidebar bg)
+
+**App background replaced with soft green tint:**
+- --app-bg: #f1f5f9 → #F4F8F4
+- --background HSL: 210 40% 96% → 120 22% 96%
+- App.tsx main element: #f8fafc → #F4F8F4
+- All page containers updated: Dashboard, Jobs, Clients, Quotes, Invoices, Leads, Dispatch, PM, JobDetail, ClientDetail, FinancialDashboard, TeamMemberDetail, SupplierDetail, PartsManagement, Portal pages
+- Card section headers: #f8fafc → #FAFCFA (green-neutral tint)
+- Hover states: #f8fafc → #F0F5F0
+
+**Design token updates (index.css):**
+- --card-border: #E5E7EB → #E2E8F0
+- --sidebar-text: rgba(255,255,255,0.9)
+- --sidebar-muted: rgba(255,255,255,0.5)
+- --sidebar-hover: rgba(255,255,255,0.08)
+- Both light and dark mode sidebar variables updated
+
+Files: index.css, App.tsx, AppSidebar.tsx, Dashboard.tsx, Jobs.tsx, Quotes.tsx, InvoicesListPage.tsx, LeadsPage.tsx, ClientDetailPage.tsx, JobDetailPage.tsx, DispatchPreview.tsx, FinancialDashboard.tsx, TeamMemberDetail.tsx, SupplierDetailPage.tsx, PartsManagementPage.tsx, PortalLogin.tsx, PortalVerify.tsx
+
+#### Client Detail Page — Final Refinement Pass (2026-03-29)
+
+**Right rail empty-state compression:**
+- NotesPanel empty state: py-8 → py-3, icon h-10 → h-5, removed subtitle text
+- Activity empty states already compact (single line)
+- Section padding reduced: pt-2.5 pb-2 → pt-2 pb-1.5, header mb 1.5 → 1
+
+**Right rail collapse control repositioned:**
+- Removed separate "Details" header row that consumed 33px
+- Collapsed state: toggle at top of rail, minimal
+- Expanded state: collapse button moved to bottom-right edge as subtle h-5 w-5 icon
+- Gained ~33px vertical space in expanded rail
+
+**Center workspace cohesion:**
+- Added shadow-[0_1px_2px_rgba(0,0,0,0.04)] to header+tabs block for subtle depth
+- Removed border-t between subtitle and tabs, replaced with mt-1 spacing
+- Header pt reduced from pt-3 to pt-2.5
+- Context icons slightly smaller (h-4 → h-3.5)
+
+Files: `client/src/pages/ClientDetailPage.tsx`, `client/src/components/NotesPanel.tsx`
+
+#### Global Green Brand Color System (2026-03-29)
+
+**Complete replacement of blue action/selection/focus colors with green brand system:**
+- PRIMARY_GREEN: #76B054 | HOVER: #5F9442 | ACTIVE: #39833A | SOFT: #C2E974
+
+**CSS Foundation (index.css):**
+- --primary, --ring, --sidebar-primary, --sidebar-ring all updated from blue HSL (217 91% 53%) to green HSL (98 37% 51%)
+- --brand, --brand-hover, --brand-ring updated to green hex values
+- Both light and dark mode variables updated
+
+**UI Input Components:**
+- input.tsx, select.tsx, textarea.tsx: focus border #3B82F6 → #76B054, focus shadow rgba(59,130,246) → rgba(118,176,84,0.25)
+- UniversalSearch.tsx: same focus state update
+
+**Primary Action Buttons:**
+- JobDetailPage: Schedule Visit / Create Invoice / Restore Job buttons: bg-[#2563eb] → bg-[#76B054]
+- DispatchDetailPanel: Schedule Visit button: bg-blue-600 → bg-[#76B054]
+- App.tsx: "New" button inline style: #2563eb → #76B054
+- Tech app visitDisplay.ts: scheduled action button: bg-blue-600 → bg-[#76B054]
+
+**Sidebar Navigation (AppSidebar.tsx):**
+- Active border-l: #2563eb → #76B054
+- Active icon color: #2563eb → #76B054
+- Active background: #eff6ff → rgba(118,176,84,0.08)
+
+**Selection States:**
+- ClientDetailPage: location/company selected rows, active tab underline, active job count badges — all blue → green
+- DispatchDetailPanel: selected technician highlights — all blue → green
+- DispatchTaskBlock: selected task ring — blue-500 → #76B054
+- WeekDispatchCell: task hover, drop zone highlight — blue → green
+- WeekDispatchGrid: today column — blue → green
+- DispatchLaneRow: drop target overlay — blue → green
+- AssignContactDialog: selected contact — blue → green
+
+**Action Links:**
+- JobDetailPage, JobEquipmentSection, JobNotesSection, JobHeaderCard: action links text-[#2563eb] → text-[#76B054]
+- DispatchDetailPanel: date picker triggers, client links — hover:text-blue-600 → hover:text-[#76B054]
+- EditVisitModal: job link hover — blue → green
+- TodayPage: nav button hover — blue → green
+- VisitDetailPage: directions link — blue → green
+
+**Secondary/Outline Buttons:**
+- DispatchDetailPanel: Edit Visit, Open Related Job buttons — blue-50/blue-100 → green system
+
+**Informational colors preserved (NOT changed):**
+- Status badges (sent, scheduled, pending, travel, PM)
+- Timeline indicators, chart colors, map markers
+- Role badges, subscription info boxes, outcome category colors
+
+Files: index.css, input.tsx, select.tsx, textarea.tsx, UniversalSearch.tsx, App.tsx, AppSidebar.tsx, ClientDetailPage.tsx, JobDetailPage.tsx, JobEquipmentSection.tsx, JobNotesSection.tsx, JobHeaderCard.tsx, EditVisitModal.tsx, AssignContactDialog.tsx, DispatchDetailPanel.tsx, DispatchTaskBlock.tsx, DispatchLaneRow.tsx, WeekDispatchCell.tsx, WeekDispatchGrid.tsx, DispatchPreview.tsx, TodayPage.tsx, VisitDetailPage.tsx, visitDisplay.ts
+
+#### Client Detail Page — Final Layout Refinement Pass (2026-03-29)
+
+**Right rail widened to 320px and made collapsible:**
+- Width increased from 280px to 320px for better contact card readability
+- Collapse/expand toggle added (page-local useState, no persistence)
+- Collapsed state reduces to 40px with PanelRightOpen icon to re-expand
+- "Details" label shown in expanded header row
+
+**Right rail contacts header merged:**
+- Removed separate "2 contacts" / "3 assigned" informational row
+- Contacts section now has single header row: "CONTACTS" label left + Add/Assign buttons right
+- Contact list begins immediately below (~8px gap)
+- Buttons remain h-6 compact
+
+**Right rail Notes/Activity tightened:**
+- Reduced section spacing to pt-2.5 pb-2
+- Activity loading skeleton reduced from h-16 to h-8
+- Empty states kept as single compact lines
+
+**Center workspace context clarity improved:**
+- Company Overview: Building2 icon + "Client-level view across all N locations" subtitle
+- Location view: MapPin icon + location address subtitle indented under name
+- Context distinction now visible through icon + subtitle text
+
+**Center workspace hierarchy subtly strengthened:**
+- Tab bar now separated from header by border-t border-slate-100
+- Tab content area uses bg-slate-50/40 background for subtle surface distinction
+- Header uses pt-3 for slightly more breathing room
+
+**KPI strip refined for stronger legibility:**
+- Values upgraded to text-sm font-bold (from font-semibold text-xs)
+- Labels use items-baseline alignment for better visual rhythm
+- Separators slightly taller (h-3.5) and gap increased to 6
+- Subtle bg-slate-50/90 background on strip
+
+**Left rail rhythm cleaned:**
+- Search field and label merged: shows search when >3 locations, shows label+count otherwise
+- Company overview row slightly taller (py-2.5) for visual separation
+- Border color unified to border-slate-200/60
+
+**Hook ordering fix (prior session):**
+- KPI useMemo hooks above early returns to prevent hook-count crash
+
+**All existing functionality preserved — layout/spacing only:**
+- Route: `/clients/:clientId` with `?scope=`, `?location=`, `?tab=` params unchanged
+- All 17 actions, 7 data queries, contact model, modals intact
+- No new routes, endpoints, or query keys
+
+Files: `client/src/pages/ClientDetailPage.tsx`
+
+### Added
+
+#### Contacts UX Polish — Location Labels + Role Editing (2026-03-28)
+
+**Company contact cards — location name labels:**
+- Replaced vague "2 locs" badge with actual location names (e.g., "Oakville, RBC Plaza")
+- Truncates cleanly when >2 locations: "Oakville, RBC Plaza +1 more"
+- Uses MapPin icon for visual clarity
+- Data derived from existing locationContacts + locations arrays (no new queries)
+- Files: `client/src/pages/ClientDetailPage.tsx` (CompanyContactsCompact, ContactCard)
+
+**Location contact cards — assignment role editing:**
+- Added "Edit Roles" button (tag icon) on location contact cards (appears on hover)
+- Opens `EditAssignmentRolesDialog` with pre-selected current roles
+- Saves via `PATCH /api/customer-companies/:id/assignments/:assignmentId`
+- Roles: billing, scheduling, operations, site, manager, owner, primary, after-hours, maintenance
+- Does NOT edit person identity — only the location-specific assignment roles
+- Files: `client/src/components/EditAssignmentRolesDialog.tsx` (new), `client/src/pages/ClientDetailPage.tsx`
+
+**Backend — assignment role update endpoint:**
+- Added `PATCH /api/customer-companies/:companyId/assignments/:assignmentId`
+- Accepts `{ roles: string[] }` body
+- Uses existing `clientContactRepository.updateAssignment()` method
+- Files: `server/routes/customer-companies.ts`
+
+**Action semantics preserved:**
+- Company page: Edit = person identity, Delete = full person delete
+- Location page: Edit contact (pencil) = person identity, Edit roles (tag) = assignment roles, Unassign (trash) = remove assignment only
+
+### Fixed
+
+#### Critical: Clients Page Showing 0 Companies — Schema/Migration Drift (2026-03-28)
+
+**Root cause:** Schema (`shared/schema.ts`) defined `leadId` column on `jobs` and `quotes` tables,
+plus `contactPersons` and `contactAssignments` tables, but the corresponding database migrations
+had not been run. Drizzle ORM generates `SELECT ... lead_id ...` for every jobs/quotes query,
+causing PostgreSQL to throw `column "lead_id" does not exist`. This broke:
+- **Clients list page** — `GET /api/clients` calls `getCalendarAssignmentsInRange()` which queries `jobs` table → 500 error → frontend shows 0 companies
+- **Client detail page** — overview endpoint queries `jobs` → 500 → "client not found"
+- **Any endpoint touching jobs or quotes** — all broken
+- **Contact endpoints** — referenced non-existent `contact_persons` / `contact_assignments` tables
+- **Universal search** — contact search queried non-existent `contact_persons` table
+
+**Fix applied:** Ran missing database migrations:
+1. Added `lead_id VARCHAR` column to `jobs` and `quotes` tables
+2. Created `leads` table with correct `VARCHAR` key types (matching `companies.id` type)
+3. Created `contact_persons` and `contact_assignments` tables
+4. Migrated existing `client_contacts` data into new identity+assignment model (228 persons, 2 assignments)
+
+**Files affected:** Database schema only (no code changes needed — code was correct, DB was behind)
+
+**Verification:** All read paths confirmed working:
+- `getPaginatedClients`: 305 locations ✓
+- `getCalendarAssignmentsInRange`: queries jobs successfully ✓
+- `getCustomerCompanyOverview`: returns company + jobs + invoices ✓
+- `listCustomerCompanies`: 244 companies ✓
+- `getLegacyContactsForCustomerCompany`: returns contacts ✓
+- Direct jobs/quotes/contactPersons/contactAssignments/leads queries: all pass ✓
+
+### Changed
+
+#### Contacts UX Polish — Validation, Edit, Location Actions (2026-03-28)
+
+**Validation relaxed (firstName-only):**
+- Client `canSave`: changed from `(firstName OR lastName) AND (phone OR email)` to `firstName` only
+- Backend `contactFieldsSchema`: removed `phone OR email` refine, kept only `firstName` refine
+- Backend PATCH validation: same relaxation applied
+- Files: `ContactFormDialog.tsx`, `server/routes/customer-companies.ts`
+
+**Location page edit support:**
+- Location contact cards now have an "Edit" button (pencil icon)
+- Edit uses the person's real `contactPersonId` (not the assignment ID) for the PATCH
+- Opens same ContactFormDialog in edit mode with person identity
+- After save, both location and company queries are invalidated
+
+**Location page action semantics:**
+- "Add" = create company person + auto-assign to this location (unchanged)
+- "Edit" = edit person identity (new — wired to ContactFormDialog)
+- "Unassign" = remove assignment only, person stays in directory (unchanged)
+
+Files: `client/src/components/ContactFormDialog.tsx`, `client/src/pages/ClientDetailPage.tsx`,
+`server/routes/customer-companies.ts`
+
+#### Contacts UI — Identity + Assignment Alignment (2026-03-28)
+
+Aligned the contacts UI to the new identity + assignment model. No more duplicate person rows.
+
+**Client Detail page (company scope):**
+- Contacts section is now a person directory — one row per human
+- Each person shows assignment count badge (e.g., "2 locs")
+- "Add" creates a new company-level person
+- "Edit" edits person identity (name, email, phone)
+- "Delete" removes person and all their assignments (cascade)
+
+**Client Detail page (location scope):**
+- Contacts section shows only persons assigned to this location
+- "Add" creates a new company person AND auto-assigns to this location
+- "Assign" opens AssignContactDialog — picks from company directory, sets roles
+- Delete button is now "Unassign" — removes assignment only, person stays in directory
+- Unassign calls `DELETE /api/customer-companies/:id/assignments/:assignmentId`
+
+**New components:**
+- `client/src/components/AssignContactDialog.tsx` — picks existing person, assigns to location with roles
+  - Filters out already-assigned persons
+  - Role selection using standard contact roles
+
+**Modified components:**
+- `client/src/components/ContactFormDialog.tsx` — simplified to pure person identity editor
+  - Removed role management (roles are per-assignment, managed by AssignContactDialog)
+  - On location-context create: creates company person + auto-assigns
+- `client/src/pages/ClientDetailPage.tsx`:
+  - `CompanyContactsCompact`: shows persons with assignmentCount badge
+  - `LocContactsCompact`: assign/unassign flow, no standalone create
+  - `ContactCard`: new `assignmentCount` and `deleteLabel` props
+
+**New backend endpoints (required for UI):**
+- `POST /api/customer-companies/:id/contacts/:contactId/assign` — assign existing person to location
+- `DELETE /api/customer-companies/:id/assignments/:assignmentId` — unassign (not delete person)
+
+Files: `client/src/components/ContactFormDialog.tsx`, `client/src/components/AssignContactDialog.tsx`,
+`client/src/pages/ClientDetailPage.tsx`, `server/routes/customer-companies.ts`
+
+#### Contacts Refactor — Identity + Assignment Model (2026-03-28)
+
+Eliminated duplicate person rows for multi-location contacts. Split the single `client_contacts`
+table into two tables: `contact_persons` (one row per human) and `contact_assignments` (location
+role assignments).
+
+**Schema:**
+- New `contact_persons` table: id, companyId, customerCompanyId, firstName, lastName, email, phone, isPrimary
+- New `contact_assignments` table: id, companyId, contactPersonId (FK), locationId (FK), roles[]
+  - Unique constraint on (contactPersonId, locationId) prevents duplicate assignments
+- Old `client_contacts` renamed to `client_contacts_legacy` (backup, can be dropped after verification)
+- `portalMagicTokens.contactId` FK updated to reference `contact_persons`
+- Migration: `migrations/2026_03_28_refactor_contacts_identity.sql`
+  - Deduplicates by email first, then name+phone within same customerCompanyId
+  - Creates assignment rows for all location-scoped contacts
+  - Conservative: prefers separate people over unsafe merges
+
+**Storage (`server/storage/clientContacts.ts`):**
+- Complete rewrite to operate on two tables
+- Person CRUD: createPerson, getPersonById, getCompanyPersons, updatePerson, deletePerson
+- Assignment CRUD: assignToLocation, getLocationAssignments, updateAssignment, deleteAssignment
+- Composite: getCompanyDirectory (persons + assignments), getLocationContacts (assigned persons)
+- Legacy compatibility methods: getLegacyContactsForCustomerCompany, getLegacyContactsForLocation
+  (preserves `{ companyContacts, locationContacts }` API response shape)
+- Backward-compatible aliases: findContactByEmail, findContactByName, findContactByNamePhone, createContactTx
+
+**Routes:**
+- `customer-companies.ts` GET: uses getLegacyContactsForCustomerCompany
+- `customer-companies.ts` POST: creates ONE person + optional location assignments (no duplicate rows)
+- `customer-companies.ts` PATCH: updates person identity only (simplified from old replace-all pattern)
+- `customer-companies.ts` DELETE: deletes person (cascades to assignments via FK)
+- `clients.ts` GET contacts: uses getLegacyContactsForLocation
+- `clients.ts` full-create: creates person via createPerson + optional assignToLocation
+- `portal.ts`: email lookup uses `contact_persons` table instead of `client_contacts`
+
+**Other files:**
+- `server/storage/search.ts`: raw SQL updated from `client_contacts` → `contact_persons`
+- `server/storage/customerCompanies.ts`: import updated
+- `server/services/clientImport.ts`: uses `getCompanyPersons` instead of `getAllContactsForCustomerCompany`
+- `shared/schema.ts`: new table definitions, types, Zod schemas; legacy type aliases for compatibility
+
+Files: `migrations/2026_03_28_refactor_contacts_identity.sql`, `shared/schema.ts`,
+`server/storage/clientContacts.ts`, `server/routes/customer-companies.ts`,
+`server/routes/clients.ts`, `server/routes/portal.ts`, `server/storage/search.ts`,
+`server/storage/customerCompanies.ts`, `server/services/clientImport.ts`
+
+### Added
+
+#### Lead System — Pre-Quote Pipeline + Attribution Layer (2026-03-28)
+
+Minimal lead tracking system for sales opportunity attribution. Supports the lifecycle:
+Lead → Quote → Job → Invoice. No CRM features, no commission logic, no scheduling.
+
+**Schema:**
+- New `leads` table with: id, companyId, locationId, customerCompanyId, createdByUserId,
+  originTechnicianId (immutable), assignedToUserId, sourceType, sourceRefType, sourceRefId,
+  status, priority, title, description, estimatedValue, convertedQuoteId, convertedAt
+- Added `lead_id` nullable FK to `quotes` table (indexed)
+- Added `lead_id` nullable FK to `jobs` table (indexed)
+- Migration: `migrations/2026_03_28_add_leads.sql`
+
+**Server:**
+- `server/storage/leads.ts` — Lead repository (createLead, getLead, listLeads, updateLead)
+- `server/routes/leads.ts` — CRUD endpoints (GET/POST/PATCH /api/leads, GET /api/leads/:id)
+  - Status transitions enforced: new→contacted, new→lost, contacted→lost (manual only)
+  - originTechnicianId immutable after creation
+- Modified `server/routes/quotes.ts`:
+  - POST /api/quotes accepts optional `leadId`
+  - Validates lead exists and is not already quoted/won (MVP: one lead → one quote)
+  - Sets lead.status='quoted' and lead.convertedQuoteId on quote creation
+  - POST /api/quotes/:id/convert-to-job propagates quote.leadId to job.leadId
+  - Sets lead.status='won' on successful conversion
+- Registered leads router in `server/routes/index.ts`
+
+**Client:**
+- `client/src/pages/LeadsPage.tsx` — Leads list with summary cards, search, status filters
+- `client/src/components/CreateLeadModal.tsx` — Lead creation modal (client selector, title, description, priority, estimated value)
+- Added /leads route in App.tsx
+- Added Leads nav item in AppSidebar.tsx
+
+**Status transition ownership (strict):**
+- 'new' → POST /api/leads
+- 'contacted'/'lost' → PATCH /api/leads/:id
+- 'quoted' → POST /api/quotes (when leadId present)
+- 'won' → POST /api/quotes/:id/convert-to-job (when quote has leadId)
+
+**leadId flow: lead → quote → job (verified)**
+- Quote created with leadId → quote.leadId set
+- Job created from quote → job.leadId copied from quote.leadId
+- No parallel creation paths introduced
+
+**Edge cases handled:**
+- Office-created lead (no originTechnicianId)
+- One lead → one quote enforced (reject if already quoted/won)
+- Quote/job deletion does not auto-revert lead status
+- Reopened job does not change lead attribution
+- Multiple leads per client supported
+
+Files: `migrations/2026_03_28_add_leads.sql`, `shared/schema.ts`, `server/storage/leads.ts`,
+`server/routes/leads.ts`, `server/routes/quotes.ts`, `server/routes/index.ts`,
+`client/src/pages/LeadsPage.tsx`, `client/src/components/CreateLeadModal.tsx`,
+`client/src/App.tsx`, `client/src/components/AppSidebar.tsx`
+
+### Changed
+
+#### Dashboard Visual Refinement — Shell, KPIs, Density, Tasks Layout (2026-03-28)
+
+Targeted visual adjustments to the dashboard. No card redesign, no logic changes.
+
+**1. Header + Sidebar unified:**
+- Both set to `#e2e8f0` (same color, slightly darker than before)
+- Header border: `1px solid #e5e7eb`
+- Sidebar border: `1px solid #e5e7eb`
+- No shadows — clean, flat, professional
+
+**2. KPI number sizing:**
+- Primary stat: `text-2xl` → `text-3xl` (24px → 30px)
+- Secondary stats: `text-xl` → `text-2xl` (20px → 24px)
+- Labels kept same size (no change)
+
+**3. Card row density:**
+- Worklist row padding: `py-2` → `py-1.5` (slightly tighter)
+- Maintains readability, reduces visual bulk
+
+**4. Tasks panel repositioned:**
+- KPI row now renders full-width above the cards+tasks area
+- Tasks panel aligns horizontally with top of cards grid (not with KPI row)
+- Layout: `[KPI full width]` → `[Cards grid | Tasks panel]`
+
+**5. Tasks panel height fix:**
+- `maxHeight: calc(100vh - 8rem)` on both panel wrapper and container
+- Prevents page scroll when task content is short
+- Internal scroll only when content exceeds available space
+
+Files modified: `client/src/App.tsx`, `client/src/components/AppSidebar.tsx`, `client/src/pages/Dashboard.tsx`
+
+#### Global App Shell Restyle — Header, Sidebar, Search (2026-03-28)
+
+Refined the shared application chrome (header, sidebar, search) at the global shell level.
+All pages using the common shell inherit these changes automatically.
+
+**Global header (`App.tsx`):**
+- Background: `#ecedf1` → `#F1F5F9`
+- Border: `1px solid #E2E8F0` (replaces old `#e5e7eb`)
+- Shadow: removed (was `0 2px 6px rgba(0,0,0,0.06)`)
+- Company area: replaced single-line company name with two-line "Hello," + company name stack
+  - Line 1: "Hello," in `13px text-[#6B7280]`
+  - Line 2: dynamic company name in `15px font-semibold text-[#111827]`
+  - Increased gap between logo and text block for breathing room
+- Right controls gap: `gap-2` → `gap-3` (~12px between items)
+
+**Global sidebar (`AppSidebar.tsx`):**
+- Background: `#f1f5f9` → `#E9EEF5` (slightly darker than header for structural separation)
+- Border: `1px solid #E2E8F0`
+- Shadow: removed (was `2px 0 6px rgba(0,0,0,0.06)`)
+
+**Global search control (`UniversalSearch.tsx`):**
+- Background: `#374151` (dark) → `#FFFFFF` (white)
+- Border: added `1px solid #E2E8F0`
+- Text color: `text-white` → `text-[#111827]`
+- Placeholder: `text-white/60` → `text-[#9CA3AF]`
+- Search/loader icons: `text-white/60` → `text-[#9CA3AF]`
+- Focus state: green ring → blue `border-[#3B82F6]` with subtle `ring rgba(59,130,246,0.15)`
+- Removed inline `style={{ background: '#374151' }}`
+
+Files modified: `client/src/App.tsx`, `client/src/components/AppSidebar.tsx`, `client/src/components/UniversalSearch.tsx`
+
+### Fixed
+
+#### Job Detail Page — Unified Card Header Styling (2026-03-28)
+
+All card headers on the Job Detail page now use ONE consistent style. Eliminated the split between
+old `bg-primary/[0.09]` headers (Notes, Equipment, Status Timeline, Scheduling History) and new
+hardcoded hex headers (Parts & Billing, Expenses, Visits, Labour).
+
+**Unified header style (all cards):**
+- Background: `bg-[#f8fafc]`
+- Hover (collapsible): `hover:bg-slate-100`
+- Border: `border-b border-[#e2e8f0]` (or `border-t` for Activity sub-section)
+- Title: `text-sm font-semibold text-[#0f172a]`
+- Icons: `text-[#64748b]`
+- Action links: `text-[#2563eb] hover:text-[#1d4ed8]` (link style, not ghost Button)
+- Chevrons: `text-[#64748b]`
+
+**Files updated:**
+- `JobNotesSection.tsx`: header bg + border + title/icon colors, "+ Add Note" → link style
+- `JobEquipmentSection.tsx`: header bg + border + title colors, Card wrapper → `rounded-xl border-[#e5e7eb] bg-[#ffffff]`, "+ Add Equipment" → link style, chevrons → `text-[#64748b]`
+- `job/JobStatusTimeline.tsx`: header bg + border + title/icon colors, Card wrapper → `rounded-xl border-[#e5e7eb] bg-[#ffffff]`, chevron → `text-[#64748b]`
+- `job/SchedulingHistory.tsx`: header bg + border + title/icon colors, Card wrapper → `rounded-xl border-[#e5e7eb] bg-[#ffffff]`, chevrons → `text-[#64748b]`
+- `JobDetailPage.tsx`: Activity header → `bg-[#f8fafc]` with `border-t`, removed old divider div
+
+**Removed:** All `bg-primary/[0.09]` and `hover:bg-primary/[0.13]` patterns from job detail cards.
+
+### Changed
+
+#### Job Detail Page — Visual Hierarchy Refinement (2026-03-28)
+
+Visual-only refinements to the Job Detail page. No layout, routing, or data logic changes.
+
+**Header card:**
+- Background: `bg-primary/[0.09]` → `bg-[#ffffff]` (pure white)
+- Border: `border-border/80` → `border-[#e5e7eb]` with `rounded-xl`
+- Client name: `text-2xl font-extrabold` → `text-xl font-bold text-[#0f172a]`
+- Summary subtitle: `text-muted-foreground/90` → `text-[#475569]`
+- Address: `text-muted-foreground/70` → `text-[#64748b]`
+- Hover: client name hover → `text-[#2563eb]` (blue accent)
+
+**Action buttons restructured:**
+- "Schedule Visit" is now primary blue (`bg-[#2563eb]`)
+- "Put on Hold" remains as secondary outline
+- "Complete Job", "Edit Job", "Archive Job" moved into "More" dropdown
+- "Create Invoice" (completed state) uses primary blue
+- Reduced button count in action row for clarity
+
+**Card headers (all cards):**
+- Background: `bg-primary/[0.09]` → `bg-[#f8fafc]`
+- Border: `border-border/40` → `border-[#e2e8f0]`
+- Title: `text-foreground` → `text-[#0f172a]` (14-15px, weight 600)
+- Icons: `text-muted-foreground/70` → `text-[#64748b]`
+
+**Parts & Billing financial summary:**
+- Revenue/Cost/Expenses labels: stronger `font-semibold text-[#0f172a]`
+- Profit: `text-[#16a34a]` (green) for positive, red for negative
+- Percentage: `text-[#94a3b8]` (muted)
+
+**Card containers (all):**
+- `rounded-lg border-border/80 bg-card` → `rounded-xl border-[#e5e7eb] bg-[#ffffff]`
+
+**Labour card:**
+- Header: `bg-[#f8fafc]` with `border-b border-[#e2e8f0]`
+- "+ New Time Entry" → link-style (`text-[#2563eb]`) instead of ghost Button
+
+**Page background:**
+- Added `bg-[#f1f5f9]` to page wrapper
+
+**Right column:**
+- Gap reduced from `gap-2.5` to `gap-2` for tighter grouping
+
+Files modified: `client/src/pages/JobDetailPage.tsx`, `client/src/components/JobHeaderCard.tsx`
+
+#### Invoices + Quotes Page Redesign — Jobs-Style Hierarchy (2026-03-28)
+
+Redesigned both pages to match the approved Jobs page presentation: same header/subtitle/card/filter/table
+rhythm, same surface system, same visual tone. Cross-page consistency is now enforced.
+
+**Invoices page (`InvoicesListPage.tsx`):**
+- Added: Header row (title "Invoices" + subtitle + "New Invoice" button)
+- Added: 4 summary cards — Outstanding (amber), Issued This Month (blue), Average Invoice (emerald), Overdue (red)
+  - Data from canonical `/api/invoices/stats` endpoint
+  - Small icon accents only, white card backgrounds
+- Replaced: `TablePageShell` + `ListToolbar` + `ListSurface` wrappers with custom page shell matching Jobs
+- Updated: Search placeholder to "Search invoices, clients, numbers"
+- Updated: Table container to `bg-white rounded-xl border-slate-200 shadow-sm`, header strip `bg-slate-50`
+- Updated: All text colors to slate system (slate-900/800/700/500)
+- Updated: Page background to `bg-slate-100`
+- Preserved: All filter logic, QBO sync filters, status counts, row actions, empty states, data-testid attributes
+
+**Quotes page (`Quotes.tsx`):**
+- Added: Header row (title "Quotes" + subtitle + "New Quote" button)
+- Added: 4 summary cards — Draft Quotes (slate), Sent This Month (blue), Accepted (emerald), Converted to Jobs (violet)
+  - Data derived from canonical quote list (client-side aggregation from `/api/quotes/list`)
+  - No fabricated comparisons — neutral truthful note text
+- Replaced: `TablePageShell` + `ListToolbar` + `ListSurface` wrappers with custom page shell matching Jobs
+- Updated: Search placeholder to "Search quotes, clients, numbers"
+- Updated: Table with `bg-slate-50` header strip, `bg-white rounded-xl` container, explicit `text-slate-*` colors
+- Updated: Column order to Client / Location first (matches Jobs/Invoices)
+- Updated: Page background to `bg-slate-100`
+- Preserved: All filter logic, status counts, URL param parsing, NewQuoteModal, empty states, data-testid attributes
+
+**Removed from both pages:**
+- `TablePageShell` wrapper (replaced with custom page shell)
+- `ListToolbar` wrapper (replaced with inline search/filter row)
+- `ListSurface` wrapper (replaced with inline styled container)
+- `Card`/`CardContent` components from Invoices (replaced with SummaryCard)
+- Various unused imports
+
+Files modified: `client/src/pages/InvoicesListPage.tsx`, `client/src/pages/Quotes.tsx`
+
+#### Accent System Switch: Green → Blue (2026-03-28)
+
+Replaced all green-based UI accents with a consistent blue system. Green remains only for success states.
+
+**Accent color system (locked):**
+- Primary blue: `#2563eb` (replaces `#82BA58`)
+- Hover blue: `#1d4ed8` (replaces `#6FA846`)
+- Light blue bg: `#eff6ff` (sidebar active highlight)
+- Brand ring: `rgba(37,99,235,0.18)`
+
+**CSS variables (index.css):**
+- `--brand`: `#82BA58` → `#2563eb`
+- `--brand-hover`: `#6FA846` → `#1d4ed8`
+- `--brand-ring`: green rgba → blue rgba
+- `--primary-green` renamed to `--primary-blue`
+- `--primary` (light + dark): `94 45% 54%` (green) → `217 91% 53%` (blue)
+- `--sidebar-primary` (light + dark): green → blue
+- `--sidebar-ring`, `--ring` (light + dark): green → blue
+
+**Component changes:**
+- `App.tsx`: "New" button `#82BA58`/`#6FA846` → `#2563eb`/`#1d4ed8`
+- `AppSidebar.tsx`: Active border `#22c55e` → `#2563eb`, active bg `#e5e7eb` → `#eff6ff`, active icon `text-emerald-600` → `text-[#2563eb]`
+- `Dashboard.tsx`: Jobs card icon `text-emerald-600 bg-emerald-100` → `text-blue-600 bg-blue-100`
+- `status-pill.tsx`: Success variant updated from old brand green to standard success green (`#22c55e`/`#16a34a`)
+
+**Preserved as green (success states):**
+- Dashboard "All Clear" dot + text (green-500/green-600)
+- Status pill success variant (green)
+- All status badges: completed, invoiced, on-site, active, etc.
+- PM status indicators, chart colors, tech app visit states
+
+Files modified: `client/src/index.css`, `client/src/App.tsx`, `client/src/components/AppSidebar.tsx`, `client/src/pages/Dashboard.tsx`, `client/src/components/ui/status-pill.tsx`
+
+#### Global Color System Standardization (2026-03-28)
+
+Enforced a consistent color system across the entire app. Colors only — no layout, spacing, or component changes.
+
+**Color system (locked):**
+- Page background: `#f1f5f9`
+- Card/surface background: `#ffffff`
+- Header/strip areas: `#f8fafc`
+- Borders: `#e5e7eb`
+- Primary text: `#111827`
+- Secondary text: `#4b5563`
+
+**CSS custom properties (index.css):**
+- `--app-bg`: `#f9fafb` → `#f1f5f9`
+- `--sidebar-bg`: `#F9FAFB` → `#f1f5f9`
+- `--background`: `210 20% 98%` → `210 40% 96%` (matches `#f1f5f9`)
+- `--sidebar`: `210 20% 98%` → `210 40% 96%`
+
+**Shared components:**
+- `table.tsx`: `bg-[#FAFAFA]` → `bg-[#f8fafc]`, `hover:bg-[#F3F4F6]` → `hover:bg-[#f8fafc]`, `border-gray-200` → `border-[#e5e7eb]`, `text-[#6B7280]` → `text-[#4b5563]`
+- `list-surface.tsx`: All `bg-white`, `border-gray-200`, `hover:bg-gray-100/60`, `bg-[#FAFAFA]`, `hover:bg-[#F3F4F6]` → system values
+- `status-pill.tsx`: Neutral variant `bg-[#F3F4F6]` → `bg-[#f8fafc]`, `text-[#374151]` → `text-[#4b5563]`
+- `AppSidebar.tsx`: Inline `backgroundColor: '#f3f4f6'` → `'#f1f5f9'`
+- `QuickCreateDrawer.tsx`: `hover:bg-[#F3F4F6]` → `hover:bg-[#f8fafc]`
+- `DashboardActionModal.tsx`: All `border-gray-*` → `border-[#e5e7eb]`, `bg-gray-*` → system values, `text-gray-*` → system values
+
+Files modified: `client/src/index.css`, `client/src/components/ui/table.tsx`, `client/src/components/ui/list-surface.tsx`, `client/src/components/ui/status-pill.tsx`, `client/src/components/AppSidebar.tsx`, `client/src/components/QuickCreateDrawer.tsx`, `client/src/components/DashboardActionModal.tsx`
+
+### Fixed
+
+#### Jobs Page Summary Cards — Incorrect/Stale Metrics (2026-03-28)
+
+**Root causes (3 compounding issues):**
+
+1. **"Scheduled" card used wrong data source.** Was using `workflowData.jobs.activeCount` which counts
+   ALL open jobs (not visits, not future-only). Replaced with `/api/visits?from=<now>&excludeStatuses=cancelled,completed`
+   to count only future non-terminal visits.
+
+2. **Visit count cards included cancelled visits.** `/api/visits?from=...&to=...` returns all statuses by
+   default. Added `excludeStatuses=cancelled` to week and month cards.
+
+3. **Cards never refreshed after visit changes.** Three issues:
+   - Query keys used `["/api/visits", ...]` prefix which is NOT matched by dispatch invalidation of `["visits"]`.
+     Changed to `["visits", "summary-week", ...]` so prefix matching works.
+   - `refetchOnWindowFocus: false` prevented refresh on tab focus. Changed to `true`.
+   - `staleTime: 5 * 60_000` (5 min) was too long. Reduced to `60_000` (1 min).
+
+4. **Stale date boundaries.** `useMemo(() => new Date(), [])` computed date boundaries once on mount.
+   Replaced with inline computation so queries always use fresh boundaries.
+
+**Removed:** `WorkflowSummary` interface and `/api/dashboard/workflow` query (no longer needed for cards).
+Cleaned up unused imports (`queryClient`, `useToast`, `Clock`, `X`, `CalendarDays`, `TrendingUp`, `UserType`).
+
+**Files:** `client/src/pages/Jobs.tsx`
+
+### Changed
+
+#### Jobs Page Redesign — Informational Overview + Clean Table (2026-03-28)
+
+Complete visual redesign of the Jobs page to match approved mockup direction. The Jobs page is now
+a clean informational surface, distinct from the action-driven Dashboard.
+
+**Added:**
+- Header row with title "Jobs", subtitle, and always-visible "New Job" button
+- 4 summary cards: Visits This Week, Visits This Month, Scheduled, Projected Revenue
+  - Data from canonical endpoints: `/api/visits` (date range), `/api/dashboard/workflow`, `/api/dashboard/financial`
+  - Revenue comparison note derived from actual month-over-month data
+- Professional darker neutral visual tone (`bg-slate-100` page, `bg-white` cards, `bg-slate-50` table headers)
+- Tighter corner radii (`rounded-xl` cards/table, `rounded-lg` controls)
+
+**Removed:**
+- SLA warning banners (72h urgent + 24h SLA breach) — action-driven alerts belong on Dashboard only
+- SLA KPI query (`/api/reports/action-required-kpis`) and related state
+- SLA aging indicator ("Aging: 3d" + SLA pill) from status column
+- `TablePageShell` wrapper — replaced with custom page shell matching approved design
+- `ListSurface` wrapper — replaced with inline styled container matching approved design
+- `ListToolbar` — replaced with inline search/filter row matching approved design
+
+**Preserved (no behavior changes):**
+- All filter logic (lifecycle status, workflow sub-status, dashboard virtual filters)
+- Full text search + history mode search
+- Table sorting (all 4 sortable columns)
+- Infinite scroll pagination
+- Keyboard navigation (Arrow keys + Enter)
+- Row click → job detail navigation
+- Row actions dropdown (Apply Template)
+- URL query param parsing for dashboard contextual links
+- All data-testid attributes on critical elements
+
+**Visual changes:**
+- Page background: `bg-slate-100`
+- Cards/table: `bg-white`, `border-slate-200`, `shadow-sm`, `rounded-xl`
+- Table header: `bg-slate-50`, `text-slate-600`
+- Text: slate-900/800/700/500 hierarchy (headings → body → muted)
+- Client/Location column: company name + location only — no age/elapsed text
+- Column header renamed from "Location" to "Client / Location"
+
+**Files:** `client/src/pages/Jobs.tsx`
+
+### Fixed
+
+#### Dashboard Not Refreshing After Dispatch Board Schedule Changes (2026-03-28)
+
+**Root cause:** Two invalidation gaps in `useDispatchPreviewMutations.ts`:
+
+1. `rescheduleVisit()` and `resizeVisit()` used `backgroundInvalidate({ calendarOnly: true })`, which
+   only invalidated `/api/calendar` and `visit-detail` — skipping all dashboard, jobs, attention, and
+   unscheduled queries. These are the most common dispatch board operations (drag to new time/day/tech).
+   A date change directly affects past-due status and attention counts but dashboard was never told.
+
+2. `["attention"]` query keys (powering the "Jobs past due" count and ACTION REQUIRED badge) were never
+   invalidated by ANY dispatch mutation — not even full `backgroundInvalidate()`. Same for
+   `["dashboard-action"]` (modal data source).
+
+**Fix:**
+- Changed `rescheduleVisit` and `resizeVisit` from `calendarOnly: true` to full `backgroundInvalidate()`
+- Added `["attention"]` and `["dashboard-action"]` invalidation to both `backgroundInvalidate()` (full path)
+  and `invalidateAfterCompletion()`
+- No new polling, websockets, or architecture changes — pure mutation-driven invalidation fix
+
+**Files:** `client/src/components/dispatch/useDispatchPreviewMutations.ts`
+
+### Changed
+
+#### Dashboard Color System Standardization (2026-03-28)
+
+Locked all dashboard surfaces to a fixed color system. Colors only — no layout, spacing, or component changes.
+
+- **Page background**: `#f1f5f9` (replaces `bg-background`)
+- **All cards**: `bg #ffffff` with `border #e5e7eb` (stat cards, worklist cards, tasks panel, collapsed panel)
+- **Card headers**: `bg #f8fafc` with `border-bottom #e5e7eb` (already applied, confirmed consistent)
+- **Primary text**: `#111827` (stat numbers, card titles, task titles, hover states)
+- **Secondary text**: `#4b5563` (stat labels, row labels, sub text, meta text, icons, chevrons, date meta)
+- **Removed conflicting grays**: replaced all `text-gray-*`, `bg-gray-*`, `text-slate-*`, `border-gray-*` in light mode with exact system values; dark mode variants preserved
+- **Hover states**: unified to `bg-[#f8fafc]` (rows, stat cards)
+
+Files modified: `client/src/pages/Dashboard.tsx`
+
+#### Dashboard Visual Hierarchy + Scan Improvement (2026-03-28)
+
+Visual-only refinements to improve scan speed, section clarity, and text hierarchy. No layout, spacing, or component changes.
+
+- **Today's Operations title**: `font-weight: 600`, added `border-bottom: 1px solid #e5e7eb` with `padding-bottom: 8px` divider
+- **Top stat cards**: `background-color: #f9fafb` (subtle lift), labels `#6b7280` weight 500, numbers `#111827` weight 700
+- **Card headers (Jobs/Invoices/Quotes/PM Health/Tasks)**: unified to `bg-[#f8fafc]` (slate-50) with `border-bottom: 1px solid #e5e7eb`
+- **Card body rows**: non-urgent text `#374151`, secondary/meta text `#6b7280`
+- **Tasks panel**: matched card system — `bg #ffffff`, `border #e5e7eb`, header `#f8fafc`, title `#111827`, task text `#374151`, date meta `#6b7280`
+- **Sidebar**: default text `#1f2937`, inactive icons `#4b5563`
+
+Files modified: `client/src/pages/Dashboard.tsx`, `client/src/components/AppSidebar.tsx`
+
+#### Dashboard Visual Polish — Depth, Contrast, and Separation (2026-03-28)
+
+Visual-only adjustments to improve UI depth and readability. No layout, spacing, or component changes.
+
+- **Header**: Added `box-shadow: 0 2px 6px rgba(0,0,0,0.08)` for clear separation from content
+- **Sidebar**: Set `background-color: #f3f4f6`, `border-right: 1px solid #e5e7eb`, `box-shadow: 2px 0 6px rgba(0,0,0,0.06)` for stronger visual presence
+- **Sidebar active item**: `background-color: #e5e7eb`, `color: #111827`, `font-weight: 600`, left accent `border-left: 3px solid #22c55e`
+- **Page background**: Updated CSS `--background` to `210 20% 98%` (~#f9fafb) and `--app-bg` to `#f9fafb`
+- **Cards**: Explicit `bg-[#ffffff]`, `border: 1px solid #e5e7eb`, `box-shadow: 0 1px 2px rgba(0,0,0,0.04)` on all dashboard cards
+- **Text contrast**: Primary text `#111827`, secondary text `#4b5563` on dashboard elements
+- **Action Required badge**: `background-color: #fef2f2`, `border: 1px solid #fecaca`, `color: #b91c1c`
+- **Global foreground**: Updated CSS `--foreground` to `220 14% 10%` for improved text contrast
+
+Files modified: `client/src/App.tsx`, `client/src/components/AppSidebar.tsx`, `client/src/index.css`, `client/src/pages/Dashboard.tsx`
+
+### Fixed
+
+#### Needs Scheduling Modal — Count Mismatch + On-Hold Bucket Rename + Hold Context (2026-03-28)
+
+**Issue 1 — "Needs scheduling" modal count did not match dashboard count.**
+Root cause: dashboard excluded on_hold jobs from unscheduled count
+(`openSubStatus IS NULL OR openSubStatus != 'on_hold'`), but the `unscheduledOnly` filter in
+`jobsFeed.ts` only checked `scheduledStart IS NULL` without the on_hold exclusion. On-hold jobs
+lacking a scheduled start appeared in the modal but not in the dashboard count.
+
+Fix: added `openSubStatus != 'on_hold'` predicate to the `unscheduledOnly` filter in
+`server/storage/jobsFeed.ts`, aligning it with the canonical dashboard definition in
+`server/storage/dashboard.ts`.
+
+**Issue 2 — On-hold bucket label was "needs parts" but bucket contains all hold reasons.**
+Renamed dashboard label and modal title from "needs parts" to "needs action".
+
+**Issue 3 — On-hold modal rows lacked triage context.**
+Promoted `holdReason` and `holdNotes` from detail-only to `JobFeedItem` (feed-level select).
+On-hold modal rows now display hold reason and hold notes (when present). Primary action changed
+from "Schedule" (misleading for varied hold reasons) to "Open Job" for proper triage.
+
+**Files changed:**
+- `server/storage/jobsFeed.ts` — `unscheduledOnly` filter aligned; `holdReason`/`holdNotes` promoted to feed
+- `client/src/components/DashboardActionModal.tsx` — on_hold title, hold context display, action change
+- `client/src/pages/Dashboard.tsx` — label rename
+
+#### Past Due Modal — Overdue Filter Definition Mismatch (2026-03-28)
+
+Past Due modal showed 7 jobs instead of matching the dashboard count of 2. Root cause: the modal's
+overdue WHERE clause used `scheduledStart < NOW()` while the dashboard attention count uses
+`effectiveEndExpr < NOW()` (which accounts for `scheduledEnd` and `durationMinutes`). Jobs that had
+started but not yet ended based on their duration were incorrectly included by the modal filter.
+
+Fix: changed `server/storage/jobsFeed.ts` overdue condition from `scheduledStart < NOW()` to
+`effectiveEndExpr < NOW()` — the same expression used by the attention system in
+`server/lib/attentionRules.ts:116`. `effectiveEndExpr` was already imported in the file.
+
+**File changed:** `server/storage/jobsFeed.ts` (1 line: `scheduledStart` → `effectiveEndExpr`)
+
+#### Dashboard Action Modal — Filtering + Disabled Scheduler + Open Job (2026-03-28)
+
+Three fixes to the dashboard action modal:
+
+1. **Overdue filtering**: `openSubStatus=overdue` matched zero rows — "overdue" is a computed
+   condition, not a stored column value. Added proper `overdue=true` server-side filter that checks
+   `status='open' AND scheduledStart < NOW() AND openSubStatus NOT IN ('in_progress','on_route')`.
+   Client fetchParams changed from `openSubStatus=overdue` to `overdue=true`.
+
+2. **Disabled scheduler**: `createDefaultScheduleValue()` defaults to `unscheduled: true`, which
+   causes `JobScheduleFields` to disable all inputs (line 281: `isDisabled = value.unscheduled &&
+   !allowEditWhenUnscheduled`). Fixed by passing `{ unscheduled: false }` to all
+   `createDefaultScheduleValue()` calls in the modal.
+
+3. **Open Job action**: Added "Open Job" ghost button on each row (hidden when inline scheduler is
+   expanded). Navigates to `/jobs/:jobId` — uses existing route, no new route created.
+
+**Files changed:**
+- `server/storage/jobsFeed.ts` — added `overdue` WHERE clause (scheduledStart < NOW, not in_progress/on_route)
+- `server/routes/jobs.ts` — parse `overdue=true` query param
+- `client/src/components/DashboardActionModal.tsx` — fixed fetchParams, fixed default schedule value, added Open Job button
+
+### Added
+
+#### Dashboard Action Modal — Jobs Quick Triage (2026-03-28)
+
+Clicking a Jobs dashboard row now opens a reusable action modal instead of navigating away.
+The modal lists matching jobs with inline quick actions. One shared modal shell for all 4 modes.
+
+**Modes:**
+- **Past due** (`overdue`): inline `JobScheduleFields` compact scheduler → `applyJobSchedule()`
+- **On hold** (`on_hold`): same scheduling flow (scheduling clears hold server-side)
+- **Needing scheduling** (`unscheduled`): same scheduling flow
+- **Ready to invoice** (`ready_to_invoice`): "Create Invoice" → `POST /api/invoices/from-job/:jobId`
+
+**Behavior:**
+- Modal stays open after successful action; resolved jobs disappear from list on refetch
+- Footer "View all" navigates to filtered Jobs page for deeper handling
+- Inline scheduler expands within the row — no modal stacking
+
+**Backend:** Added `openSubStatus` server-side filter to `GET /api/jobs` (was client-side only).
+Added `unscheduledOnly` query param forwarding to existing filter.
+
+**Files created:** `client/src/components/DashboardActionModal.tsx`
+**Files changed:**
+- `client/src/pages/Dashboard.tsx` — modal state, `onClick` override on Jobs rows
+- `server/storage/jobsFeed.ts` — `openSubStatus` added to `JobFeedFilters` + WHERE clause
+- `server/routes/jobs.ts` — parse `openSubStatus` + `unscheduledOnly` from query string
+
+**Reused (not duplicated):**
+- `JobScheduleFields` (compact mode) — existing scheduling form component
+- `applyJobSchedule()` — existing canonical scheduling write path
+- `POST /api/invoices/from-job/:jobId` — existing canonical invoice creation endpoint
+- `resolveDashboardNav()` — existing navigation for "View all" footer
+
+### Changed
+
+#### Dashboard — Visual Contrast Refinement (2026-03-28)
+
+Surgical contrast/readability pass on the live dashboard. No layout, sizing, radius, or logic changes.
+
+- **KPI labels**: `text-[10px] text-muted-foreground` → `text-[12px] text-gray-700` (was too pale/small)
+- **KPI icons**: `text-muted-foreground/70` → `text-gray-500`
+- **KPI values (non-primary)**: `text-lg text-muted-foreground/50` → `text-xl text-gray-900` (was washed out)
+- **Action Required badge**: `bg-red-50 border-red-200` → `bg-white border-red-500` (crisp pill)
+- **Card headers**: `bg-[#F0F1F3]` → `bg-[#E5E7EB]`, title `text-slate-800` → `text-gray-900 font-semibold`
+- **Row labels**: `text-muted-foreground` → `text-gray-700` (#374151)
+- **Row values (zero)**: `text-muted-foreground/50` → `text-gray-400`
+- **Row sub text**: `text-muted-foreground` → `text-gray-500`
+- **Row separators**: `border-border/40` → `border-gray-200`
+- **Row hover**: `hover:bg-muted/40` → `hover:bg-gray-50`
+- **Tasks header**: matched card headers `bg-[#E5E7EB]`, title `text-gray-900`
+- **Task text**: `text-foreground/80` → `text-gray-700`, dates `text-gray-500`
+- **Task separators**: `border-border/40` → `border-gray-200`
+- **Sidebar**: bg `#FFFFFF` → `#F9FAFB` (subtle off-white), text `text-slate-500` → `text-gray-600`,
+  icons `text-slate-400` → `text-gray-500`, active bg `gray-100` → `gray-200/70`, dividers `gray-200`
+
+**Files changed:** `client/src/pages/Dashboard.tsx`, `client/src/components/AppSidebar.tsx`,
+`client/src/index.css`
+
+#### Dashboard — Floating Today's Operations + Preview-Style Headers (2026-03-28)
+
+Live dashboard layout/styling updated to match the approved preview structure. No data/logic changes.
+
+- **Today's Operations**: removed dark `bg-gray-600` header band + `DashCard` wrapper. Title now
+  floats as `text-lg font-bold text-slate-900` above KPI cards. Alert badge restyled for light bg
+  (`bg-red-50 border-red-200 text-red-600`). KPI cards are white with `border-gray-200 shadow-sm`,
+  floating directly on the page canvas.
+- **Section headers**: Jobs/Invoices/Quotes/PM cards changed from `bg-gray-500 text-white` to
+  `bg-[#F0F1F3] text-slate-800 border-gray-200` (preview header color).
+- **Tasks header**: same change — `bg-[#F0F1F3]` with dark text. Badge, buttons, tabs, and filter
+  selects restyled for light background (`text-slate-500`, `bg-white border-gray-200`).
+- **Icon badges**: switched from dark-bg colors (`emerald-800/40`, `amber-800/40`) to light-bg
+  (`emerald-100`, `amber-100`, `teal-100`, `violet-100`) with darker icon text (`-600`).
+
+**File changed:** `client/src/pages/Dashboard.tsx`
+
+#### App Shell — White Sidebar + Light Background (2026-03-28)
+
+Updated production sidebar and background to match the preview dashboard colour scheme.
+
+- **Sidebar**: white (`#FFFFFF`) with dark text (`#334155`), gray-100 active state, emerald-600
+  active icons, `border-gray-100` dividers. Replaced dark navy `#243241` with white.
+- **Background**: `#ECEEF1` (was `#F7F9FB`). Stronger contrast against white cards.
+- CSS vars updated: `--sidebar-bg`, `--sidebar-text`, `--sidebar`, `--sidebar-foreground`,
+  `--sidebar-border`, `--sidebar-accent`, `--background`, `--app-bg`
+
+**Files changed:**
+- `client/src/index.css` — CSS custom properties
+- `client/src/components/AppSidebar.tsx` — sidebar component classes (dark-on-light text, hover, active states)
+
+### Fixed
+
+#### Job Equipment Not Propagating to Visits (2026-03-28)
+
+Equipment attached during job creation was visible on the Job Detail page but missing from
+visit/dispatch contexts. Root cause: the initial visit is created BEFORE equipment is linked
+(two-phase job creation), and no propagation step existed.
+
+- **Backend propagation** (`server/storage/jobs.ts`): `createJobEquipment()` now auto-populates
+  `equipmentIds` on all active visits where `equipmentIds IS NULL`. Does NOT overwrite `[]`
+  (user-cleared) or populated arrays (user-edited). Idempotent.
+- **Dispatch visibility** (`server/storage/scheduling.ts`): Added `jv.equipment_ids` to calendar
+  SELECT query so dispatch board receives equipment data.
+- **Frontend fallback** (`client/src/components/visits/EditVisitModal.tsx`): When visit has
+  `equipmentIds = null` (legacy pre-fix visits), falls back to reading job-level equipment via
+  `GET /api/jobs/:jobId/equipment`. Read-only initialization, not auto-persisted.
+- **Type update** (`client/src/components/dispatch/dispatchPreviewTypes.ts`): Added `equipmentIds`
+  to `DispatchVisit` type. Mapper updated in `dispatchPreviewMappers.ts`.
+- **New visit inheritance** (`server/storage/jobVisits.ts`): `createJobVisit()` now reads
+  `job_equipment` for the parent job and initializes `equipmentIds` on the new visit. Only applies
+  when no explicit `equipmentIds` is provided in the input. Closes the gap where new visits
+  created after equipment was already linked would start with null equipment.
+
+### Changed
+
+#### Quick Create — Dropdown Menu Replaces Slide-Over Drawer (2026-03-28)
+
+Replaced the full-height right-side sheet launcher with a compact dropdown menu anchored to the
+"New" button. The menu opens directly below the button with no backdrop dimming or slide animation.
+
+- **6 items**: New Job, New Client, New Invoice, New Quote, New Task, New PM Contract
+- Job/Client: open existing modals directly (same as before)
+- Invoice/Quote: open the existing QuickCreateDrawer in the specific form mode (location picker)
+- Task: opens TaskDialog in create mode
+- PM Contract: navigates to `/pm/new`
+- Drawer is preserved only for Invoice/Quote sub-flows (location picker + create mutation)
+- Added `initialMode` prop to `QuickCreateDrawer` so it opens directly in the right form mode
+
+**Files changed:**
+- `client/src/App.tsx` �� replaced button onClick with DropdownMenu, added TaskDialog + state
+- `client/src/components/QuickCreateDrawer.tsx` — added `initialMode` prop, sync on open
+
+### Added
+
+#### Dashboard Preview — Visual Correction Pass (2026-03-28)
+
+Corrected dashboard preview to match approved mockup more closely. Fixed sparse wireframe feel,
+weak hierarchy, and faint card presence. Route/sidebar unchanged. Static mock data only.
+
+**Visual corrections applied:**
+- Canvas darkened from `#F3F4F6` to `#ECEEF1` for stronger card contrast
+- Removed `max-w-[1400px]` constraint — content fills available width, no dead margins
+- Card borders strengthened: `border-gray-200` (was `/70`), `shadow-sm` (was hairline `0.03`)
+- Header bands strengthened: `bg-[#F0F1F3]` (was `#F8F9FA` — nearly invisible)
+- Title upgraded: `text-lg font-bold` (was `text-[15px] font-semibold`)
+- KPI numbers: `text-[28px]` (was `text-2xl`), status dots `h-2 w-2` (was `h-[6px]`)
+- Financial Snapshot: 300px wide (was 260px), `text-sm` rows (was `text-[11px]`/`text-[12px]`),
+  dark CTA button with `bg-slate-800` (was ghost text link)
+- Domain cards: `py-3` headers (was `py-2.5`), `h-[18px]` icons (was `h-4`), count badges
+  with white bg + border + shadow (was flat `bg-slate-100`)
+- Action rows: `text-sm` labels (was `text-[13px]`), `h-2 w-2` dots (was `h-[6px]`),
+  `py-2.5` row padding (was `py-2`)
+- Tasks rail: 340px (was 320px), `py-3` rows (was `py-2.5`), `text-sm` (was `text-[12px]`),
+  active tab uses dark pill `bg-slate-800 text-white` (was flat `bg-slate-100`)
+- Alerts: `h-2 w-2` dots, `text-sm` text, bordered count badge
+- Sidebar: 208px (was 192px), `py-2` items (was `py-[7px]`)
+- Spacing: `gap-4` throughout (was `gap-5`), `space-y-2.5` cards (was `space-y-3`)
+
+**File replaced:** `client/src/pages/DashboardPreview.tsx`
+
+### Reverted
+
+#### Global Draggable Modal System — Reverted (2026-03-28)
+
+Removed draggable modal implementation from `dialog.tsx`. Caused regressions: dialogs opening at
+bottom of screen, drag not working on most modals, flying/jumping behavior on others. Restored
+original stable DialogContent (centered via `translate-x-[-50%] translate-y-[-50%]`) and plain
+DialogHeader (no pointer handlers, no cursor classes). All drag-related code removed: DragContext,
+offset state, pointer listeners, viewport clamping, ref merging, inline transform style.
+
+**File reverted:** `client/src/components/ui/dialog.tsx`
+
+### Reverted
+
+#### Dashboard Visual Redesign — Full Revert (2026-03-28)
+
+Reverted all dashboard color spec and compact visual revision changes back to the pre-redesign
+baseline (commit `85078d1`). No redesign elements remain.
+
+**Files reverted to original state:**
+- `client/src/pages/Dashboard.tsx` — original layout, colors, spacing, typography
+- `client/src/components/AppSidebar.tsx` — original sidebar styling (`bg-sidebar`, CSS vars)
+- `client/src/App.tsx` — original header (inline `--sidebar-bg` style, `#82BA58` brand button)
+- `client/src/components/UniversalSearch.tsx` — original search input styling
+- `client/src/index.css` — original CSS variables (`--sidebar-bg: #243241`, `--sidebar: 211 29% 20%`)
+
+### Fixed
+
+#### Edit Visit Modal — Layout + Collapsible Line Items (2026-03-27)
+
+- **Layout**: Switched from column-stacked layout to 2×2 grid with `items-start`:
+  Row 1: Instructions | Team. Row 2: Equipment | Schedule. Equipment and Schedule always
+  align horizontally regardless of content height.
+- **Collapsible line items**: "Parts & Work Logged (Job)" section is now collapsed by default.
+  Header shows item count + total (`3 items · $450.00`). Click to expand/collapse. Quick Add
+  auto-expands the section. Modal stays compact even with 20+ line items.
+
+**File changed:** `client/src/components/visits/EditVisitModal.tsx`
+
+#### Edit Visit Equipment Selector — Dropdown, Multi-Select, and Scope Fixes (2026-03-27)
+
+- **Dropdown behavior**: Equipment options no longer render visibly in the section body. Options
+  now appear only inside a Popover dropdown when the user clicks "Select equipment for this visit."
+- **Multi-select**: Selecting one equipment item no longer prevents selecting another. The Popover
+  stays open for continued selection. Users can reopen the dropdown after closing it.
+- **Action label**: Renamed "Add to Job" → "+ New Equipment" to accurately reflect behavior.
+- **Data scope**: Switched equipment query from `GET /api/jobs/{jobId}/equipment` (job-linked only)
+  to `GET /api/clients/{locationId}/equipment` (full location equipment set). All equipment at the
+  location now appears in the selector, not just equipment previously linked to the job.
+
+**Files changed:**
+- `client/src/components/visits/EditVisitModal.tsx` — equipment section rewritten
+
+### Added
+
+#### Edit Visit Modal — Equipment Section + Quick Add Line Items (2026-03-27)
+
+**Equipment Section (new):**
+- Added first-class Equipment section to the Edit Visit modal
+- Searchable selector shows all equipment linked to the job
+- Multi-select: choose which equipment is being worked on for this visit
+- "Add to Job" action creates new equipment at the location and links it to the job
+- Newly created equipment is immediately selectable for the visit
+- Equipment selection persisted via `equipmentIds` array on `job_visits` table
+
+**Parts & Work Logged (Job) — Line Items Rework:**
+- Replaced full inline edit/delete line items grid with read-only summary
+- Section renamed to "Parts & Work Logged (Job)" for clarity
+- Shows item name, quantity, unit price, total, and overall total
+- Retained "Quick Add" for fast catalog-first line item creation to `job_line_items`
+- Removed click-to-edit and delete buttons from visit modal (full editing remains on Job Detail)
+
+**Schema:**
+- Added `equipment_ids` VARCHAR(36)[] column to `job_visits` table
+- Migration: `migrations/2026_03_27_add_visit_equipment_ids.sql`
+- Updated `updateJobVisitSchema` and storage layer to handle `equipmentIds`
+
+**Files changed:**
+- `shared/schema.ts` — added `equipmentIds` to jobVisits table + update schema
+- `server/routes/jobVisits.routes.ts` — added `equipmentIds` to updateVisitSchema
+- `server/storage/jobVisits.ts` — handle `equipmentIds` in updateJobVisit
+- `client/src/components/visits/EditVisitModal.tsx` — equipment section + line items rework
+- `client/src/pages/JobDetailPage.tsx` — pass `locationId` prop to EditVisitModal
+- `client/src/pages/DispatchPreview.tsx` — pass `locationId` prop to EditVisitModal
+
+**No lifecycle changes. No new duplicate paths. Equipment ownership remains location-scoped.**
+
+#### Client Detail — Unified Add Equipment Dialog via Shared Component (2026-03-27)
+
+**Problem:** The Client Detail page's "Add Equipment" dialog was a duplicate, inferior form (free-text
+type input instead of canonical dropdown, no notes field) with its own inline mutation — a parallel
+creation path violating DRY.
+
+**Fix:** Extracted the canonical equipment creation dialog from `EquipmentPicker` into a shared
+`AddEquipmentDialog` component. Both `EquipmentPicker` and `ClientDetailPage` now use the same
+dialog, same form fields (proper type dropdown with 16 equipment types, notes field), and same
+canonical `POST /api/clients/:locationId/equipment` mutation.
+
+**Files changed:**
+- `client/src/components/AddEquipmentDialog.tsx` — new shared component (extracted from EquipmentPicker)
+- `client/src/components/EquipmentPicker.tsx` — uses shared AddEquipmentDialog, removed duplicate form/mutation
+- `client/src/pages/ClientDetailPage.tsx` — uses shared AddEquipmentDialog, removed duplicate form state/mutation/dialog
+
+**No schema changes. No new backend routes. No duplicate creation paths.**
+
+#### Job Detail — Compact Equipment Card, Open by Default (2026-03-27)
+
+**Layout:** Replaced wide table layout with compact stacked cards per equipment item. Each item
+shows name + type badge on primary row, then make/model/serial/notes as secondary meta lines.
+Only fields with values are rendered — no empty labels or placeholder dashes.
+
+**Default open:** Equipment section now renders expanded by default (`defaultOpen` prop).
+Still collapsible via existing Collapsible trigger.
+
+**Files modified:** `client/src/components/JobEquipmentSection.tsx`, `client/src/pages/JobDetailPage.tsx`, `CHANGELOG.md`
+
+#### Create Job — Equipment Picker Upgrade (2026-03-27)
+
+**Searchable EquipmentPicker:** Replaced plain dropdown with searchable popover (matches name,
+model number, serial number, notes). Descriptive labels use format
+`Name — Model: XXX — S/N: YYY` with fallback logic. Selected chips show compact identifiers
+with full label on hover.
+
+**Inline Add Equipment:** `+ Add` button opens lightweight dialog using canonical
+`POST /api/clients/:locationId/equipment`. Newly created equipment is auto-selected. Disabled
+when no location selected. Uses same equipment type list as LocationEquipmentSection.
+
+**QuickAddJobDialog integration:** Equipment section below Location (create mode only).
+Resets on location change or modal close. Post-create job-equipment linking unchanged
+(`POST /api/jobs/:jobId/equipment` per item). No backend changes. Uses existing
+`location_equipment` (source) and `job_equipment` (linkage) via existing API endpoints.
+
+**Files modified:** `client/src/components/EquipmentPicker.tsx`, `CHANGELOG.md`
+
+### Fixed
+
+#### Location Navigation — Final Cleanup + Search Fix (2026-03-27)
+
+**Root cause of search bug:** Server search query returned `parent_company_id as "customerCompanyId"`
+in the SQL (line 270), but the JS result mapper (line 379-385) did NOT include `customerCompanyId`
+in the mapped object. So `sr.customerCompanyId` was always `undefined` for location results,
+causing the fallback to `/clients` (list page) instead of `/clients/:clientId?location=:id`
+(detail page).
+
+**Server fix:** Added `customerCompanyId: r.customerCompanyId` to the location result mapper in
+`server/storage/search.ts:379-385`.
+
+**Legacy LocationDetailPage deleted:** `client/src/pages/LocationDetailPage.tsx` removed from disk.
+Dead import comment removed from App.tsx. Zero remaining references.
+
+**Redirect routes retained:** `/locations/:locationId` and `/clients/:id/locations/:locationId`
+still resolve via `LocationRedirect` component — fetches `parentCompanyId` and redirects to
+canonical URL. Renders no legacy UI.
+
+**Data integrity:** 305 active locations, zero orphans (all have `parent_company_id`).
+
+#### Location Navigation — Single Canonical Destination (prior entry, 2026-03-27)
+
+**Enforced one canonical location route:** `/clients/:clientId?location=:locationId`. All location
+navigation now opens the client split-screen page with the location pre-selected.
+
+**Legacy routes converted to redirects:** `/locations/:locationId` and
+`/clients/:id/locations/:locationId` no longer render standalone LocationDetailPage. They now
+resolve `parentCompanyId` via API and redirect to the canonical URL. LocationDetailPage import
+removed from App.tsx.
+
+**All navigation sources updated:**
+- Global search: always routes to `/clients/:clientId?location=:locationId` (no fallback)
+- All-locations page: row click → canonical URL using `loc.parentCompanyId`
+- PM detail page: both location links → canonical URL using `template.clientId`
+
+**Data integrity:** Verified all 305 active locations have `parent_company_id` (zero orphans).
+Schema allows NULL but no orphans exist in production data.
+
+**Files modified:** `client/src/App.tsx` (routes + redirect component),
+`client/src/components/UniversalSearch.tsx`, `client/src/pages/Locations.tsx`,
+`client/src/pages/PMDetailPage.tsx`, `CHANGELOG.md`
+
+#### Global Search — Location Results Navigate to Canonical Client Page (2026-03-27)
+
+**Root cause:** Search results for locations navigated to `/locations/:id` (standalone
+LocationDetailPage) instead of the canonical client split-screen at
+`/clients/:customerCompanyId?location=:locationId`. The search query did not return
+`parent_company_id` for locations, so the client couldn't construct the correct URL.
+
+**Server fix:** Added `cl.parent_company_id as "customerCompanyId"` to the location search query
+in `server/storage/search.ts`. This returns the parent customer company ID with each location
+search result.
+
+**Client fix:** Updated `UniversalSearch.tsx` `executeItem()` to check for `customerCompanyId`
+on location results. When present, navigates to `/clients/:customerCompanyId?location=:locationId`
+which opens the canonical ClientDetailPage with the location pre-selected in the split view.
+Falls back to `/locations/:id` when no parent company (edge case).
+
+**Standalone LocationDetailPage retained:** Still valid for /all-locations row clicks and PM
+template links. Not removed.
+
+**Files modified:** `server/storage/search.ts`, `client/src/components/UniversalSearch.tsx`,
+`CHANGELOG.md`
+
+#### Products & Services / Catalog Visibility Fix (2026-03-27)
+
+**Root cause:** Shared React Query cache key `["/api/items", { limit: 1000 }]` with incompatible
+queryFn return shapes. EditVisitModal parsed `d.items || []` but server returns `{ data: [...] }`,
+producing empty array. Whichever consumer fetched first poisoned the cache for all others.
+
+**Fix:** Normalized ALL item catalog queryFn implementations to return `Item[]` consistently.
+Every consumer now parses: `Array.isArray(json) ? json : json.data || json.items || []`. Removed
+downstream mixed-shape parsing (`partsData?.items ?? partsData?.data`) since queryFn guarantees
+normalized array.
+
+**Consumers fixed (6 files):**
+- `EditVisitModal.tsx` — `d.items || []` → `d.data || d.items || []`
+- `useProductsServices.ts` — raw JSON return → normalized array
+- `PartsBillingCard.tsx` — raw JSON + useMemo unwrap → normalized at queryFn
+- `CategoryManagementPage.tsx` — raw JSON + `partsData?.items` → normalized at queryFn
+- `PMTemplateEditorPage.tsx` — raw JSON + useMemo unwrap → normalized at queryFn
+- `JobTemplateModal.tsx` — already correct (no change)
+
+**DB verified:** 95 items exist, 93 active for real company. Zero inactive, zero deleted. No
+data loss.
+
+**Files modified:** `client/src/components/visits/EditVisitModal.tsx`,
+`client/src/hooks/useProductsServices.ts`, `client/src/components/PartsBillingCard.tsx`,
+`client/src/pages/CategoryManagementPage.tsx`, `client/src/pages/PMTemplateEditorPage.tsx`,
+`CHANGELOG.md`
+
+### Changed
+
+#### Edit Visit Modal — Behavior + Sizing Corrections (2026-03-27)
+
+**Follow-up completion:** Confirmed server already completes the visit (status="completed") and
+places the job on hold with holdReason. Added outcome badge in header for completed visits:
+"Completed", "Completed — Needs parts", "Completed — Follow-up required". No visit-card
+color logic added. No dispatch-board color changes.
+
+**Schedule sizing locked:** Date field: `width: 160px` (min 140, max 180). Start/End fields:
+`width: 96px` each. All inputs `h-8 text-xs`. No more oscillation — explicit pixel widths.
+
+**Unscheduled visits fixed:** Removed `|| "09:00"` / `|| "10:00"` fallbacks on time inputs.
+Unscheduled visits now show empty time fields (blank `<input type="time">` with no value).
+Date shows "Select date" placeholder. Team assignment remains allowed on unscheduled visits.
+
+**Catalog search fixed:** Increased fetch limit from 500 to 1000 (matches PartsBillingCard
+canonical usage). Added `description` to catalog item type. Search now matches both `name` AND
+`description` (case-insensitive, trimmed, partial match). Results increased from 6 to 8.
+"Create item" only appears when truly no matches exist.
+
+**Files modified:** `client/src/components/visits/EditVisitModal.tsx`, `CHANGELOG.md`
+
+#### Dispatch Board — Unassigned Row Double Divider (2026-03-27)
+
+**Double-line divider under Unassigned row:** Both the technician sidebar and timeline lane
+render a 3px pseudo-element at the bottom of the Unassigned row using a linear-gradient
+(two 1px slate lines with 1px transparent gap). Replaces the standard single `border-b` on that
+row only. Unassigned sidebar text is italic + muted, avatar has 60% opacity — visually distinct
+from technician rows. Normal technician row borders unchanged.
+
+**Files modified:** `client/src/components/dispatch/DispatchTechnicianSidebar.tsx`,
+`client/src/components/dispatch/DispatchLaneRow.tsx`, `CHANGELOG.md`
+
+#### Technician App — Action Logic + Equipment System Fix (2026-03-27)
+
+**No default active state:** On screen load, no action button is highlighted. Buttons only
+highlight after user taps them.
+
+**Free transitions:** Any button tappable at any time — no enforced sequence. On My Way, On
+Site, Complete are all independently tappable.
+
+**Timer fixed:** Starts on "On My Way" (en_route), continues through "On Site" (in_progress),
+label changes to match state ("En Route • 00:12" → "On Site • 01:18"). Timer STOPS and resets
+on Complete — never starts on Complete.
+
+**Complete opens modal:** Tapping Complete always opens the outcome modal (Completed, Needs
+Parts, Needs Follow-Up, On Hold) — never instant completion.
+
+**Equipment clickable:** Equipment items in Overview and Equipment tabs now open a detail modal
+showing name, model, serial, and equipment-specific notes with inline add.
+
+**Unified notes system:** Notes are now structured (`MockNote` with id, text, timestamp,
+technician, optional equipmentId). Notes tab shows grouped display: equipment notes grouped
+under equipment name, general notes under "General". Add Note sheet includes optional equipment
+attachment selector. Equipment notes appear in both equipment detail and job notes tab.
+
+**Parts → Site Assets:** Tab renamed from "Parts" to "Site Assets".
+
+**Files modified:** `client/src/tech-app/pages/VisitDetailPage.tsx` (full rewrite),
+`client/src/tech-app/types/visit.ts` (MockNote type, structured notes),
+`client/src/tech-app/types/index.ts` (export MockNote),
+`client/src/tech-app/state/useTechState.ts` (free transitions, structured notes, timer fix),
+`CHANGELOG.md`
+
+#### Edit Visit Modal — Surgical Correction Pass (2026-03-27)
+
+**Header strengthened:** Company name `text-[15px] font-bold`, job# `text-[13px] font-semibold
+text-slate-600`, address line `text-[13px] text-slate-600`. Compact height preserved.
+
+**Schedule compacted:** Reverted from stacked 3-block layout to single compact row:
+`[Date] [Start] → [End]`. All inputs h-7 with `text-[11px]`. Date shows short format (MMM d).
+Time inputs fixed-width 82px. Labels above each (`text-[10px]`).
+
+**Follow-up fixed:** No longer fires invalid mutation. Now opens Popover with 5 reason choices
+(Needs Parts, Return Visit Required, Customer Approval, Access Issue, Other). Each maps to
+canonical `{ outcome, holdReason }` per server schema: needs_parts→parts, needs_followup→
+scheduling/customer/access/other. Satisfies `completeVisitWithOutcomeSchema` refine rule.
+
+**Catalog-first line item add:** Typing in add-row searches catalog live (dropdown appears after
+1+ chars). Selecting an item auto-fills description + price + productId. When no match: explicit
+"create '[query]'" link. No freeform fallback. No "or enter freeform item" text.
+
+**Section headers strengthened:** Team, Schedule, Line Items headers all `text-xs font-bold
+text-slate-700`. Column headers (Item/Qty/Price/Total) same treatment. All now stronger than
+body text.
+
+**Draft row reliability:** Cancel (✕) always available. Modal close resets state. No ghost rows.
+
+**Files modified:** `client/src/components/visits/EditVisitModal.tsx`, `CHANGELOG.md`
+
+#### Edit Visit Modal — Visual Polish + Interaction Completion (2026-03-27)
+
+**Header refinement:** Client name `text-base font-bold` (was text-sm). Job# `text-xs text-slate-500`
+(was text-[11px] text-slate-400). Address line `text-xs text-slate-500`. Action buttons h-8 px-3
+with icons. Duplicate close X removed via `[&>button.absolute]:hidden` on DialogContent — only
+the header X remains.
+
+**Section headers strengthened:** All section headers (Team, Schedule, Line Items, column headers)
+changed from `text-[10px] text-slate-400` to `text-[11px] text-slate-600 font-semibold` — now
+visually stronger than body text.
+
+**Schedule labels added:** Start time / End time labels above time inputs. Date label added. Time
+inputs in 2-col grid with proper spacing. Date shows full format (EEE, MMM d, yyyy).
+
+**Follow-up wired:** Calls `completeMutation.mutate("needs_followup")` using the canonical POST
+/complete endpoint with outcome parameter. No longer inert.
+
+**Line item add flow completed:** Click "+Add" opens catalog search (filters products by name).
+Select from catalog auto-fills description + price. "or enter freeform item" link skips catalog.
+Cancel button (✕) reliably closes draft row. No ghost rows on abandon. Modal close resets state.
+
+**Line item edit/delete:** Edit row has save (✓) and cancel (✕) buttons. Delete uses Trash2 icon
+with hover-to-red. Existing behavior preserved.
+
+**Footer:** Delete button now uses `variant="outline"` with Trash2 icon and red border — looks
+like an intentional control, not floating text.
+
+**Files modified:** `client/src/components/visits/EditVisitModal.tsx`, `CHANGELOG.md`
+
+#### Technician App — Pixel-Directed Job Detail Layout (2026-03-27)
+
+**Header compacted to ~110px:** Back arrow + wrench icon + job title on row 1. Company •
+time range on row 2. Address + Directions on row 3. All text left-aligned with pl-7 indent
+under icons. Dark navy background.
+
+**4-button action row:** On My Way, On Site, Complete + Pause. All 4 always visible (never
+hidden). Current step: solid green. Completed: green tint. Next: dark outline. Pause: light
+grey, always present. Tapping completed step reverts (reversible). Equal-width distribution
+for 3 main buttons, fixed-width pause.
+
+**Timer from On My Way:** Timer now starts on `en_route` (not just `in_progress`). Format:
+"En Route • 00:12" or "On Site • 00:37". Pulse dot. Resets if reverted to scheduled.
+
+**Overview tab redesigned:** Equipment preview card first (thumbnail placeholder + name +
+model/serial). Then visit instructions (amber card). Then job description (white card).
+Tight spacing.
+
+**Tab order:** Overview, Notes, Equipment, Parts, Checklist, Leads (Notes moved to position 2).
+
+**Files modified:** `client/src/tech-app/pages/VisitDetailPage.tsx` (full rewrite),
+`client/src/tech-app/state/useTechState.ts` (timer starts on en_route), `CHANGELOG.md`
+
+#### Edit Visit Modal — Redesign with Line Items (2026-03-27)
+
+**Layout restructured:** Compact single-row header (company name + job# left, action buttons +
+close right, phone/address as subtitle). Body is 2-column: left card (job summary read-only +
+instructions textarea), right column stacked (Team card with tech chips + assign, Schedule card
+with compact inline date/start→end). Full-width Line Items section below with dense table.
+Small footer (Delete left, Cancel/Save right).
+
+**Line items wired to job_parts:** Modal now fetches `GET /api/jobs/:jobId/parts` directly.
+Add creates `POST /api/jobs/:jobId/parts`. Edit updates `PUT /api/jobs/:jobId/parts/:id`.
+Delete calls `DELETE /api/jobs/:jobId/parts/:id`. No visit-level line item storage. No
+conversion logic. No metadata tagging. No temporary arrays. Query key shared with
+PartsBillingCard on JobDetailPage — both refresh on mutation.
+
+**Actions in header:** Complete (green), Follow-up (amber placeholder), Unschedule (neutral),
+Close (X). No status dropdown. No "Open full job" button in header.
+
+**No backend changes.** Existing job_parts CRUD endpoints used as-is.
+
+**Files modified:** `client/src/components/visits/EditVisitModal.tsx` (full rewrite), `CHANGELOG.md`
+
+#### Technician App — Non-Destructive Action Flow (2026-03-27)
+
+**Persistent 3-step action bar:** Replaced single morphing button with always-visible horizontal
+bar showing all steps: Start Route → On Site → Complete + Pause. All steps remain visible
+regardless of current state. Visual states: completed step (green/20 tint), current step (solid
+green, primary), next step (outline/dim), future steps (very dim). Pause button appears on right
+when working.
+
+**Reversible actions:** Tapping a completed step reverts to the previous state (On Site →
+En Route, Start Route → Scheduled). Tapping current step advances forward. Tapping Complete
+when working opens outcome modal as before. Mock state only — no backend.
+
+**Files modified:** `client/src/tech-app/pages/VisitDetailPage.tsx`, `CHANGELOG.md`
+
+#### Technician App — Layout Optimization + Tab System (2026-03-27)
+
+**Status strip redesigned:** Single h-10 horizontal strip: left (dot + status label), center
+(running shift timer HH:MM), right (contextual buttons). Replaces previous status row. Timer
+uses `useShiftTimer` hook updating every 10s.
+
+**Job cards compacted:** Removed separate bottom Directions row. Time + company now on one line
+(inline). Directions icon moved to right side inline with chevron. Card padding reduced
+(px-3.5 py-2.5 → px-3 py-2). Card spacing reduced (space-y-2.5 → space-y-1.5). Cards now
+single `<button>` with directions as nested stop-propagation target.
+
+**Job detail tab system:** Horizontal scrollable tab bar under action button: Overview,
+Equipment, Notes, Parts, Checklist, Leads. Green active underline. Tab content replaces
+the previous stacked sections.
+
+Tab content: **Overview** = instructions + description (merged). **Equipment** = list + add
+button (dashed border). **Notes** = list + add button. **Parts** = mock parts list + add.
+**Checklist** = interactive checkboxes with completion counter (mock data). **Leads** = Create
+Lead button (mock placeholder).
+
+**Removed:** Large stacked equipment/notes sections, quick-access button row, redundant spacing.
+
+**Files modified:** `client/src/tech-app/pages/TodayPage.tsx`,
+`client/src/tech-app/pages/VisitDetailPage.tsx`, `CHANGELOG.md`
+
+#### Technician App — Space Optimization + Desktop Shell Isolation (2026-03-27)
+
+**Desktop shell removed:** Tech app (`/tech/*`) now early-returns from `AppContent` before the
+office shell renders — no more desktop header, sidebar, search bar, or command palette wrapping
+the mobile UI. Same isolation pattern as the portal app.
+
+**Compact top bar:** All tech screens now show a slim 40px top bar (S logo + company name)
+instead of the large branded header. Login screen uses `hideTopBar` since it has its own branding.
+
+**Today screen tightened:** Removed "Good morning" greeting and large SYNTRARO header block.
+Replaced with a single work-status strip: status text + clock-in button left, job count right.
+Buttons reduced to h-7. Job cards tightened (p-4→px-3.5 py-2.5, direction row py-2→py-1.5).
+
+**Job detail tightened:** Removed status chip from header. Header padding reduced (pt-3→pt-2,
+pb-4→pb-2.5). Action button h-11→h-10. Equipment and Notes sections replaced with two compact
+horizontal quick-access buttons under the action bar. Large empty card sections eliminated.
+Equipment modal tighter (model/serial side-by-side).
+
+**Bottom nav reduced:** Height fixed at 52px (was ~60px), icons 18px (was 20px), text 10px
+(was 11px).
+
+**Files modified:** `client/src/App.tsx` (tech app shell isolation),
+`client/src/tech-app/components/MobileShell.tsx`, `client/src/tech-app/pages/TodayPage.tsx`,
+`client/src/tech-app/pages/VisitDetailPage.tsx`, `CHANGELOG.md`
+
+#### Technician App — Job Detail Layout Refinement (2026-03-26)
+
+**Tighter header:** Reduced padding (pt-3→pt-2.5, pb-4→pb-3), moved time range inline with
+back button row, company name and job title tighter spacing. Header no longer feels oversized.
+
+**Integrated action bar:** Primary action button (Start Route / Arrive / Complete) moved into the
+dark header zone directly below the job info — no gap or separate card. Pause/Resume button sits
+beside the primary action as an inline companion, not a separate row.
+
+**Timer inline:** Working timer moved from a separate bordered card into a slim strip at the bottom
+of the header area. Minimal: dot + status + elapsed.
+
+**Merged job details:** Job Description and Site Instructions combined into one flow. Site
+Instructions first (amber tint retained for visibility), Job Description below it — no enclosing
+card border, just typography hierarchy and spacing.
+
+**Reduced boxing:** Equipment and Notes sections no longer have full card borders. Section headers
+are lightweight text labels. Content rows use subtle `bg-slate-50` backgrounds. Equipment
+model/serial merged onto one line.
+
+**Tighter spacing:** Section gaps reduced (space-y-4→space-y-3), internal padding reduced
+throughout, content padding (p-4→px-4 py-3), equipment/note rows tighter (py-2.5→py-2).
+
+**Files modified:** `client/src/tech-app/pages/VisitDetailPage.tsx`, `CHANGELOG.md`
+
+### Fixed
+
+#### Technician App — Job Detail Route 404 Fix (2026-03-26)
+
+**Root cause:** The parent route `<Route path="/tech/:rest*">` in App.tsx used the `:rest*` named
+parameter syntax, which regexparam compiles to `([^/]+?)` — a single-segment match only. This
+matched `/tech/today` (one segment) but NOT `/tech/visit/v1` (two segments), causing the outer
+Switch to fall through to the NotFound component.
+
+**Fix:** Changed from `path="/tech/:rest*"` to `path="/tech/*"`. The `*` wildcard in regexparam
+compiles to `(.*)` which correctly matches any number of path segments after `/tech/`.
+
+**Files modified:** `client/src/App.tsx` (one line), `CHANGELOG.md`
+
+### Added
+
+#### Technician App UI — Job Detail Screen (2026-03-26)
+
+**Job detail / visit execution screen:** Tapping a job card on /tech/today now opens a full
+mock job detail page at /tech/visit/:id. Dark navy header with back button, status badge,
+company, job title, time, address, and Directions. Simplified action flow: Start Route →
+Arrive On Site → Working (with Pause/Resume) → Complete Visit (outcome modal). Live elapsed
+timer during working state. Sections: job description, site instructions (amber highlight),
+equipment list with add/remove, notes with add. Equipment add modal with name (required),
+model, serial fields. Outcome modal preserved from prior prototype.
+
+**Type extensions:** `MockVisit` extended with `description`, `instructions`, `equipment[]`,
+`workStartedAt`. New `MockEquipment` type. `VisitStatus` simplified — removed `checked_out`
+intermediate state. Mock data enriched with realistic descriptions, instructions, and equipment.
+
+**No backend integration.** All state is local. Equipment add/remove is mock state only.
+
+**Files modified:** `client/src/tech-app/pages/VisitDetailPage.tsx` (full rewrite),
+`client/src/tech-app/types/visit.ts`, `client/src/tech-app/types/index.ts`,
+`client/src/tech-app/data/mockVisits.ts`, `client/src/tech-app/state/useTechState.ts`,
+`client/src/tech-app/utils/visitDisplay.ts`, `client/src/tech-app/app/TechApp.tsx`, `CHANGELOG.md`
+
+#### Technician App UI — Visual Refinement Pass (2026-03-26)
+
+**Today screen tightened:** Header reduced ~20% (pt-5→pt-4, text-lg→text-base, shorter date format).
+Work status card replaced with compact inline row integrated into the dark header zone (saves ~60px
+vertical). "Next" badge removed from first job. First job strengthened with green tint background
+(`bg-[#22c55e]/[0.03]`), stronger green border, and green time text. Directions button weight reduced
+(text-[10px], slate-400 color). Job card padding tightened (p-4→px-4 py-3). Card border radius
+reduced (rounded-2xl→rounded-xl). Bottom nav active state strengthened (font-semibold, stroke-[2.5]
+on active icon). Bottom padding reduced (pb-20→pb-16).
+
+**Files modified:** `client/src/tech-app/pages/TodayPage.tsx`, `client/src/tech-app/components/MobileShell.tsx`,
+`CHANGELOG.md`
+
+#### Technician App UI Prototype — Login + Today Screen (2026-03-26)
+
+**Branded login screen:** Dark navy (`#0f1a2e`) background with Syntraro brand lockup (logo mark,
+"SYNTRARO", "Field Service Intelligence"). White card with email/password form and green primary
+action button (`#22c55e`). Mock only — navigates directly to /tech/today on submit.
+
+**Today screen:** Dark navy branded header with greeting and job count. Work status card with
+two visual states (Not clocked in → Clock In; Working → Break / Clock Out). Mock toggle via
+local state. Job list with 4 realistic scheduled visits showing time, company, job title, address,
+and Directions button. First job highlighted with green "Next" badge. Bottom nav: Today,
+Timesheet, Search, More.
+
+**No backend integration.** All data is local mock. No API calls, no query hooks, no mutations,
+no real auth.
+
+**Files modified:** `client/src/tech-app/pages/LoginPage.tsx`, `client/src/tech-app/pages/TodayPage.tsx`,
+`client/src/tech-app/components/MobileShell.tsx`, `client/src/tech-app/data/mockVisits.ts`,
+`client/src/tech-app/app/TechApp.tsx`, `CHANGELOG.md`
+
+#### Dispatch Board — Persistent Unassigned Lane (2026-03-26)
+
+**Unassigned lane is now a first-class dispatch lane.** Always renders at top of board (day and
+week views), toggleable in technician filter, and fully droppable. Dropping a scheduled visit
+onto Unassigned keeps the date/time and clears technician assignment via `rescheduleVisit({
+technicianUserId: null })`. Dropping from the unscheduled rail onto Unassigned schedules with
+null technician. Tasks are blocked from dropping onto Unassigned (tasks require an assignee).
+
+**Aligned client type with server contract:** `ScheduleParams.technicianUserId` widened from
+`string` to `string | null` to match server schema (`.nullable().optional()`). Optimistic
+reschedule now handles `null` explicitly — clears `primaryTechnicianId`, `assignedTechnicianIds`,
+and `technicians` array so the visit moves to the Unassigned lane immediately without waiting
+for server refetch.
+
+**No backend changes.** Server already supports nullable technician assignment across all
+scheduling endpoints. Check-in/check-out operational guards remain — unassigned visits cannot
+be checked in until a technician is assigned.
+
+**Files modified:** `client/src/pages/DispatchPreview.tsx`, `client/src/components/dispatch/
+DispatchLaneRow.tsx`, `client/src/components/dispatch/useDispatchPreviewMutations.ts`, `CHANGELOG.md`
+
+### Fixed
+
+#### Dispatch Board — Eliminate Fake visitId Fallback (2026-03-26)
+
+**Completed identity contract enforcement.** Removed all `visit.visitId ?? visit.id` fallback
+patterns that allowed job UUIDs to masquerade as visit UUIDs. `DispatchDragData.visitId` is now
+optional (`string | undefined`). `ScheduleParams.visitId` is now optional. For backlog items
+without a persisted visit, `visitId` is `undefined` — never a job UUID. The `scheduleVisit`
+mutation uses an explicit `optimisticKey` (falls back to `jobId` for cache tracking only) and
+normalizes to the real visit UUID on server response. Visit-detail cache is only seeded under
+the real visit UUID (never under optimisticKey when it equals jobId).
+
+**Files modified:** `client/src/components/dispatch/dispatchDndTypes.ts`,
+`client/src/components/dispatch/DispatchUnscheduledCard.tsx`,
+`client/src/components/dispatch/useDispatchPreviewMutations.ts`,
+`client/src/pages/DispatchPreview.tsx`, `CHANGELOG.md`
+
+#### Dispatch Board — "Visit Not Found" on First Open After Scheduling (2026-03-26)
+
+**Root cause:** When scheduling an unscheduled/backlog job via drag-and-drop, the drag payload
+carried `visit.id` which is the **job UUID** (not a visit UUID) for backlog items. This job UUID
+propagated through the optimistic calendar event (`id`, `visitId`) and the visit-detail cache
+seed key. When the user clicked the newly-scheduled event, `EditVisitModal` requested
+`GET /api/jobs/{jobId}/visits/{jobUUID}` — which returned 404 because no visit row has that ID.
+The issue self-healed after 800ms background invalidation replaced optimistic data with
+server-authoritative data containing the real visit UUID.
+
+**Fix (3 files):**
+1. `DispatchUnscheduledCard.tsx` — Drag payload now uses `visit.visitId ?? visit.id`, preferring
+   the real visit UUID from `activeVisitId` when available.
+2. `useDispatchPreviewMutations.ts` — After schedule mutation succeeds, if the server returns a
+   visit UUID different from the optimistic ID, the calendar cache is patched immediately to
+   replace the optimistic identity with the real one. Visit-detail cache is seeded under the
+   real visit UUID only.
+3. `DispatchPreview.tsx` — `handleScheduleFromPanel` now uses `visit.visitId ?? visit.id` instead
+   of `visit.id` to prefer real visit identity for backlog items.
+
+**Files modified:** `client/src/components/dispatch/DispatchUnscheduledCard.tsx`,
+`client/src/components/dispatch/useDispatchPreviewMutations.ts`,
+`client/src/pages/DispatchPreview.tsx`, `CHANGELOG.md`
+
+### Changed
+
+#### Dashboard Visual Pass — Dark Section Headers (2026-03-26)
+
+**Section headers darkened then softened:** Headers moved from light pastel to dark neutral. After initial
+pass was too heavy, lightened by ~25%: Today's Operations `bg-gray-600` (anchor), WorklistCards + Tasks
+`bg-gray-500`. DashCard now uses `overflow-hidden` so child headers inherit parent `rounded-lg` corners
+cleanly — no separate `rounded-t-lg` needed on headers inside DashCard. Tasks sidebar (not DashCard) retains
+explicit `rounded-t-lg`. Icon accent pills use dark muted tints (`*-800/40`) with lightened icon colors
+(`*-300`). Interactive elements in Tasks header adjusted for contrast on `gray-500` background.
+
+**Files modified:** `client/src/pages/Dashboard.tsx`, `CHANGELOG.md`
+
+#### Dashboard Hardening — Alert Consolidation + Remaining Fix (2026-03-26)
+
+**Remaining metric corrected:** "Remaining" is now a true pipeline metric computed as
+`total_workload - on_route - in_progress - completed`. Previously it counted all non-terminal
+visits, which overlapped with On Route and In Progress tiles. "Scheduled Today" now shows
+total non-cancelled visits for today (full workload). The 5-tile pipeline now decomposes
+without overlap: Scheduled Today = On Route + In Progress + Remaining + Completed.
+
+**Alert presentation consolidated:** Removed duplicate dual-layer alert signaling (amber
+attention row + bottom ACTION REQUIRED bar). Alert/system state now lives in a single
+compact badge in the Today's Operations header bar (right-aligned). States: ALL CLEAR
+(green, when zero issues), ACTION REQUIRED — specific label (one issue type), ACTION
+REQUIRED — N issues (multiple types). Badge is clickable; routes to highest-priority alert.
+
+**Alert priority order:** job.overdue > job.on_hold > job.unassigned > visit alerts > tech alerts.
+
+**Fallback hardening:** ALL CLEAR only displays when attention data has successfully loaded.
+If attention API is pending or failed, no badge is shown (neutral state) instead of false
+ALL CLEAR. Eliminated `?? 0` fallback on undefined attention data that could mask real alerts.
+
+**Files modified:** `server/storage/todaySummary.ts`, `client/src/pages/Dashboard.tsx`, `CHANGELOG.md`
+
+#### Dashboard Hardening — Real Today Data + Route Fixes (2026-03-25)
+
+**Today's Operations — real data:** Added `GET /api/dashboard/today-summary` endpoint returning live visit counts by status for today. Query uses single-pass SQL with FILTER clauses on `job_visits` table filtered by `scheduledStart` in today's date range. Metrics: Scheduled Today (scheduled+dispatched), On Route (en_route), In Progress (in_progress+on_site), Remaining (all non-terminal), Completed Today (completed). Dashboard now fetches this via `["dashboard", "today-summary"]` query instead of hardcoded 0s.
+
+**Route/filter corrections:**
+- Draft invoices: `invoices.outstanding` → `invoices.draft` → `/invoices?filter=draft` (was incorrectly routing to awaiting_payment)
+- Quotes awaiting approval: `quotes.draft` → `pipeline.quotesAwaitingApproval` → `/quotes?status=sent` (was incorrectly routing to draft; "awaiting approval" = sent to customer, not draft)
+- Added `invoices.draft` action to `DashboardAction` type and `DESTINATIONS` map
+
+**Files created:** `server/storage/todaySummary.ts`
+**Files modified:** `server/routes/dashboard.ts`, `client/src/lib/dashboardNavigation.ts`, `client/src/pages/Dashboard.tsx`
+
+#### Technician PWA — Isolated to `client/src/tech-app/` (2026-03-25)
+
+Restructured tech PWA prototype from monolithic `client/src/tech/` into isolated `client/src/tech-app/` with proper module boundaries. New structure: `app/` (TechApp shell + routing), `pages/` (LoginPage, TodayPage, VisitDetailPage), `components/` (MobileShell, OutcomeModal, NotesSheet), `state/` (useTechState hook), `data/` (mockVisits), `types/` (visit types + barrel export), `utils/` (visitDisplay helpers). Zero imports from office app (`@/components`, `@/lib`, `@/hooks`, `@/pages`, `@shared`). App.tsx import updated to `@/tech-app/app/TechApp`. Old `client/src/tech/` directory deleted.
+
+**Files created:** 12 files in `client/src/tech-app/`
+**Files deleted:** `client/src/tech/TechApp.tsx`, `client/src/tech/mockData.ts`
+**Files modified:** `client/src/App.tsx` (import path)
+
+#### Dashboard — Promoted Preview to Production (2026-03-25)
+
+Promoted the approved dashboard preview into the live production dashboard at `/`. The old dashboard layout (summary cards → operations + alerts → pipeline + financial) is replaced with the worklist-style command center.
+
+**New live layout:** Today's Operations (full-width top with status progression + system status bar) → Jobs + Invoices (row 1, worklist-style rows with $ values) → Quotes + PM Health (row 2) → Tasks sidebar (unchanged).
+
+**Removed:** `DashboardPreview.tsx` (deleted), `/dashboard-preview` route (removed from App.tsx), "Dashboard Preview" sidebar link (removed from AppSidebar.tsx). Preview banner and preview labels removed.
+
+**All routes verified:** Every dashboard row navigates to the correct destination page with correct filter/query params via `resolveDashboardNav()`. All 21 action→URL mappings confirmed against destination page URL parameter handling.
+
+**Files changed:** `client/src/pages/Dashboard.tsx` (replaced), `client/src/App.tsx` (route cleanup), `client/src/components/AppSidebar.tsx` (sidebar cleanup)
+**Files deleted:** `client/src/pages/DashboardPreview.tsx`
+
+#### Technician PWA — UI Prototype (2026-03-25)
+
+Added self-contained technician PWA prototype at `/tech/login`. No backend, no API calls, no real auth — pure UI shell with mock data and local React state.
+
+**Screens:** Login → Today (schedule overview with active/upcoming/completed visits) → Visit Detail (status actions + notes + outcome flow) → Active (redirect to active visit)
+
+**Flow:** Login → see schedule → tap visit → Start Route → Arrive On Site → Check Out → Outcome modal (Completed / Needs Parts / Needs Follow-Up / On Hold) → return to Today. Notes via bottom sheet (local state only).
+
+**Navigation:** Bottom tab bar (Today / Active / More). Mobile-first layout with large tap targets, max-w-md centered container.
+
+**Files created:** `client/src/tech/mockData.ts` (4 mock visits), `client/src/tech/TechApp.tsx` (all screens + routing + state)
+**Files modified:** `client/src/App.tsx` (route registration), `client/src/components/AppSidebar.tsx` (sidebar link)
+
+#### Dashboard Preview v8 — Dark Headers + System State (2026-03-25)
+
+Targeted visual correction on `/dashboard-preview`. All card headers switched from colored tints (green/amber/teal/violet) to unified dark neutral (`bg-gray-50 dark:bg-gray-800/50`) with `text-foreground` titles. Color now appears only in icon pills and urgency states. "All Clear" status bar rebuilt as full-width system state block: left-aligned bold uppercase label, right-aligned subtext, neutral gray background with `border-t` — reads as system state, not helper text. "Action Required" bar uses softer `bg-red-50` with `border-t-2`. Card borders strengthened to `border-gray-200 dark:border-gray-700`. Tasks panel restored to readable contrast (`text-foreground/80`) at `text-xs` weight — subordinate but not faded.
+
+#### Dashboard Preview v7 — Hierarchy & Depth (2026-03-25)
+
+Final visual hierarchy pass on `/dashboard-preview`. Introduced 5-tier contrast system: (L1) Today's Ops — darkened card body `bg-gray-50/80`, full-width status strip pinned to card bottom; (L2) Jobs — `elevated` shadow (`shadow-md`) + `urgentBg` on top row (past due); (L3) Invoices — `urgentBg` on past due row, even at value 0 (faint tint); (L4) Quotes/PM — lightest tints, no elevation; (L5) Tasks — panel border softened (`border-border/40`, `shadow-none`), task titles changed from `text-sm font-medium` to `text-xs font-normal text-muted-foreground`, dates reduced to `text-[11px]`. Status strips converted from rounded pills to full-width card-bottom bars with `border-t`. "needs parts / review" → "needs parts". No layout, data, or structural changes.
+
+#### Dashboard Preview v6 — Visual Cohesion (2026-03-25)
+
+Pure visual pass on `/dashboard-preview`. Eliminated multi-color tile problem: all Today's Operations tiles now use unified neutral surface (`bg-gray-50`, `border-gray-200`) instead of per-tile accent colors (blue/sky/emerald/orange/green). Icons use `text-muted-foreground/70` instead of individual colors. Primary tile (Scheduled Today) distinguished by slightly stronger border/shadow, not color. "ALL CLEAR" status bar strengthened: green-tinted background, bold uppercase text, `font-semibold`. Card header tints softened across all domain cards (reduced opacity by ~40%). No wording, layout, or data changes.
+
+#### Dashboard Preview v5 — Polish Pass (2026-03-25)
+
+Polish pass on `/dashboard-preview`. Today's Operations header changed from blue to dark charcoal for professional anchor (strongest on page). "Scheduled Today" made primary metric — larger number (text-2xl), subtle blue border/tint, while other tiles use muted values. All "—" placeholders replaced with `0`. Alert bar strengthened — darker red bg (`bg-red-100`), thicker border (`border-2`), bold uppercase label. Jobs card reordered by priority: past due first, on hold second. Wording refined: "Jobs past due date — need rescheduling", "Jobs on hold — needs parts / review", "Jobs completed — ready for invoice". Past due invoices and overdue PM rows get subtle red row tint (`urgentBg`). "Draft quotes — need sending" restored. Row padding tightened (`py-2.5` → `py-2`), card header padding reduced (`py-3` → `py-2.5`), body padding reduced for denser worklist feel. No structural or data changes.
+
+#### Dashboard Preview v4 — Worklist Style (2026-03-25)
+
+Refined `/dashboard-preview` to worklist-style phrasing. Removed all category/group rows (`⚠ Needs Attention`, `▶ Needs Action`). Every row now stands alone as `object + condition`: "Jobs on hold — awaiting resolution", "Jobs past due date", "Past due invoices — $X (N)", "Quotes awaiting approval", "PM instances awaiting generation". System status alerts use specific operator phrasing ("3 jobs past due — need rescheduling", "2 jobs unassigned — need dispatch"). Today's Operations header uses strongest visual anchor (blue tint + 2px border). Jobs header second strongest (green tint + 2px). Invoices medium. Quotes/PM lightest. Removed "Draft quotes — need sending" (data not available). DomainCard replaced with simpler flat `WorklistCard`.
+
+#### Dashboard Preview v3 — Command Center (2026-03-25)
+
+Rebuilt `/dashboard-preview` as an action-oriented command center. Every metric now answers "what do I need to do?"
+
+**Today's Operations:** 5-column status progression (Scheduled Today → On Route → In Progress → Remaining → Completed Today). Attention row below shows On Hold + Overdue counts. System Status bar: `ACTION REQUIRED (N issues)` with pulsing red dot when alerts exist, `ALL CLEAR` with green dot when clean.
+
+**Jobs card:** Grouped by urgency — `⚠ Needs Attention` (On Hold, Overdue) and `▶ Needs Action` (Need Scheduling, Need Invoice). Removed passive "Scheduled" and "Active" metrics. Subtle green header tint.
+
+**Invoices card:** Past Due leads (highest urgency), then Outstanding, then Draft. Dollar values + counts. Subtle orange header tint.
+
+**Quotes card:** Action language — "Needs Follow-Up", "Draft (needs sending)", "Approved (not converted)". Subtle teal header tint.
+
+**PM Health:** Urgency hierarchy — `⚠ Overdue`, `▶ Coming Due`, `• Upcoming`, `+ Awaiting Generation`. Subtle purple header tint.
+
+**Visual hierarchy:** Urgency indicators (`⚠ ▶ • +`) prefix group headings and inform row styling. Warning items use red text when counts > 0. Domain cards have subtle tinted headers for visual weight differentiation.
+
+**File changed:** `client/src/pages/DashboardPreview.tsx`
+
+### Fixed
+
+#### Labor Unification Final Cleanup (2026-03-25)
+
+**reopenVisit fix:** Removed `actualDurationMinutes: null` from visit reopen path (`jobLifecycleOrchestrator.ts`). Reopening a visit now affects workflow state only — historical labor data is preserved. Manual edits to labor remain a separate explicit action.
+
+**Manager check-out hard 400:** Check-out without assigned technician now fails with deterministic `400` before any write (previously silently skipped time entry stop). Validation order: visit → technician → checkedInAt → checkedOutAt.
+
+**`job_visits.actualDurationMinutes` column dropped:** Removed column definition from Drizzle schema, removed from insert schema omit, created `migrations/2026_03_25_drop_job_visits_actual_duration_minutes.sql`. Zero compile/runtime references remain in visit/labor domain. Tasks domain column (separate table) untouched.
+
+**Files changed:** `shared/schema.ts`, `server/services/jobLifecycleOrchestrator.ts`, `server/routes/jobVisits.routes.ts`, `server/storage/jobVisits.ts`
+
+### Changed
+
+#### Dashboard Preview v2 — Operational Rebuild (2026-03-25)
+
+Rebuilt `/dashboard-preview` layout based on review feedback. Key changes:
+- **Today's Operations** redesigned as time-based status progression (Scheduled Today → On Route → In Progress → Completed Today) instead of generic state counts. On Route / In Progress / Completed Today shown as preview placeholders (require visit-level today queries not yet available).
+- **Dispatch Alerts** fully integrated into Today's Operations with "All clear" neutral state when no issues.
+- **Jobs card** strengthened: now shows Unscheduled, Scheduled (derived), On Hold, Needs Invoicing, Overdue. Removed generic "Active".
+- **Invoices card** now shows dollar values + counts (e.g., "$12,400 (6)") instead of counts only.
+- **PM Health** now includes "Awaiting Generation" count.
+- **Layout reordered**: Row 1 = Jobs + Invoices (highest priority), Row 2 = Quotes + PM Health.
+- No production dashboard changes. Preview only.
+
+**File changed:** `client/src/pages/DashboardPreview.tsx`
+
+#### Labor / Time Tracking Cleanup & Hardening (2026-03-25)
+
+Post-unification hardening pass for the labor/time tracking system.
+
+**Safety guard — scoped stop on check-out:** Manager check-out now finds the running entry by `jobId` before stopping, preventing accidental stop of an entry for a different job/visit.
+
+**Dead code removed:** `checkInJobVisit()` method deleted from `jobVisits.ts` (orphaned after unification — set `status="on_site"`, replaced by `lifecycle.startVisit()`). Related test cases removed from `visit-write-softdelete-guard.test.ts`.
+
+**`actualDurationMinutes` surface removed:** Removed from visit feed API response type (`VisitFeedItem`) and serialization (`toVisitFeedItem`). Removed from `isVisitActioned`/`isVisitEmpty` test fixtures. Column retained in DB schema (tasks domain still uses it on separate table).
+
+**Visit attribution UI:** `AddTimeEntryModal` now shows optional visit selector when visits exist. Job detail labour card entry rows display visit badge (`V#N`) when entry has `visitId`. `TimeEntryDisplay` type updated with `visitId`/`visitNumber`.
+
+**Files changed:** `server/routes/jobVisits.routes.ts`, `server/storage/jobVisits.ts`, `server/storage/visits.ts`, `client/src/components/time/AddTimeEntryModal.tsx`, `client/src/pages/JobDetailPage.tsx`, `client/src/lib/visitUtils.ts`, `tests/visit-write-softdelete-guard.test.ts`, `tests/visit-selection-invariants.test.ts`
+
+#### Labor / Time Tracking Unification (2026-03-25)
+
+Unified the dual time-tracking system so `time_entries` is the single source of truth for labor duration, cost, and billing. `job_visits` remains workflow-only (scheduling, dispatch, operational timestamps).
+
+**Schema:**
+- Added nullable `visit_id` FK to `time_entries` table for visit-level attribution
+- Migration: `migrations/2026_03_25_add_visit_id_to_time_entries.sql`
+
+**Manager check-in/check-out unified with tech flow:**
+- Manager check-in now uses `lifecycle.startVisit()` + `timeTrackingRepository.recordJobStatus()` — same canonical path as technician mobile flow. Creates on_site time entry with rate snapshots.
+- Manager check-out now stops running time entry via `timeTrackingRepository.stopTimeEntry()`. No longer writes `actualDurationMinutes`.
+
+**`visitId` propagation:**
+- `recordJobStatus()`, `startTimeEntry()`, `createFinishedTimeEntry()` all accept optional `visitId`
+- Tech mobile routes (en-route, start, complete) pass `visit.id` through
+- Manual entry API (`POST /api/time/entries`, `/api/time/entries/manager`) accepts optional `visitId`
+- `getJobTimeEntries()` returns `visitId` + `visitNumber` (via JOIN to job_visits)
+
+**`actualDurationMinutes` deprecated:**
+- Stopped writing in: manager check-out route, `lifecycle.completeVisit()`, `bulkCompleteVisitsInternal()`, `rescheduleVisit()`, scheduling conflict auto-complete
+- Removed from `isVisitActioned()` predicate (server + client) — redundant with `checkedInAt` check
+- Column retained for compatibility; existing values untouched
+
+**Running timer freshness:**
+- Job detail time summary conditionally polls every 60s when a timer is running (`refetchIntervalInBackground: false`)
+
+**Files changed:**
+- `shared/schema.ts` — `visitId` column + index + request schema
+- `server/storage/timeTracking.ts` — `visitId` in write + read methods
+- `server/routes/jobVisits.routes.ts` — unified check-in/check-out handlers
+- `server/routes/techField.ts` — `visitId` passthrough
+- `server/routes/timeTracking.ts` — `visitId` in create payloads
+- `server/services/jobLifecycleOrchestrator.ts` — removed `actualDurationMinutes` writes
+- `server/storage/scheduling.ts` — removed `actualDurationMinutes` write
+- `server/storage/jobVisits.ts` — cleaned `isVisitActioned`/`isVisitEmpty`
+- `client/src/lib/visitUtils.ts` — mirrored predicate cleanup
+- `client/src/pages/JobDetailPage.tsx` — running timer polling
+
 ### Added
 
 #### Dashboard Layout Preview Page (2026-03-25)

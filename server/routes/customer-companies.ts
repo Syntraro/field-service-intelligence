@@ -249,16 +249,13 @@ router.get("/:companyId/contacts", asyncHandler(async (req: AuthedRequest, res: 
   const { companyId: tenantCompanyId } = req;
   const { companyId: customerCompanyId } = req.params;
 
-  const allContacts = await clientContactRepository.getAllContactsForCustomerCompany(
+  // Identity + Assignment model: returns company directory + flattened location assignments
+  const result = await clientContactRepository.getLegacyContactsForCustomerCompany(
     tenantCompanyId!,
     customerCompanyId
   );
 
-  // Split into company-level (locationId is null) and location-level contacts
-  const companyContacts = allContacts.filter(c => !c.locationId);
-  const locationContacts = allContacts.filter(c => !!c.locationId);
-
-  res.json({ companyContacts, locationContacts });
+  res.json(result);
 }));
 
 // Validation: name present + (phone or email)
@@ -280,11 +277,8 @@ const contactFieldsSchema = z.object({
     })).optional().default([]),
   }).optional().default({ type: "company", locationIds: [], locations: [] }),
 }).refine(
-  (d) => (d.firstName?.trim() || d.lastName?.trim()),
-  { message: "First name or last name is required" }
-).refine(
-  (d) => (d.phone?.trim() || d.email?.trim()),
-  { message: "Phone or email is required" }
+  (d) => (d.firstName?.trim()),
+  { message: "First name is required" }
 );
 
 /**
@@ -304,42 +298,35 @@ router.post("/:companyId/contacts", requireRole(MANAGER_ROLES), asyncHandler(asy
   const locationsWithRoles = association.locations ?? [];
   const locationIds = association.locationIds ?? [];
 
-  const baseData = {
+  // Identity + Assignment model: always create ONE person record first
+  const person = await clientContactRepository.createPerson(tenantCompanyId!, {
     customerCompanyId,
-    firstName: contactFields.firstName,
-    lastName: contactFields.lastName,
+    firstName: contactFields.firstName ?? "",
+    lastName: contactFields.lastName ?? "",
     phone: contactFields.phone ?? null,
     email: contactFields.email ?? null,
     isPrimary: contactFields.isPrimary,
-  };
+  });
 
+  // Then create location assignments if requested
   if (association.type === "locations" && locationsWithRoles.length > 0) {
-    // Phase 3: Validate locationIds belong to this customer company
     await validateLocationOwnership(tenantCompanyId!, customerCompanyId, locationsWithRoles.map(l => l.locationId));
-    // Phase 5: per-location roles — each location carries its own roles array
-    const rows = await clientContactRepository.createContacts(
-      tenantCompanyId!,
-      locationsWithRoles.map(loc => ({ ...baseData, locationId: loc.locationId, roles: loc.roles }))
-    );
-    res.status(201).json({ contacts: rows });
+    for (const loc of locationsWithRoles) {
+      await clientContactRepository.assignToLocation(tenantCompanyId!, {
+        contactPersonId: person.id, locationId: loc.locationId, roles: loc.roles,
+      });
+    }
   } else if (association.type === "locations" && locationIds.length > 0) {
-    // Phase 3: Validate locationIds belong to this customer company
     await validateLocationOwnership(tenantCompanyId!, customerCompanyId, locationIds);
-    // Legacy: same roles for all locations (backward compat)
-    const rows = await clientContactRepository.createContacts(
-      tenantCompanyId!,
-      locationIds.map(locId => ({ ...baseData, locationId: locId, roles: contactFields.roles }))
-    );
-    res.status(201).json({ contacts: rows });
-  } else {
-    // Company-wide: locationId = null
-    const contact = await clientContactRepository.createContact(tenantCompanyId!, {
-      ...baseData,
-      locationId: null,
-      roles: contactFields.roles,
-    });
-    res.status(201).json(contact);
+    for (const locId of locationIds) {
+      await clientContactRepository.assignToLocation(tenantCompanyId!, {
+        contactPersonId: person.id, locationId: locId, roles: contactFields.roles ?? [],
+      });
+    }
   }
+  // Company-wide contacts (no assignments) are just person records in the directory
+
+  res.status(201).json(person);
 }));
 
 /**
@@ -377,83 +364,33 @@ const updateContactSchema = z.object({
  */
 router.patch("/:companyId/contacts/:contactId", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const { companyId: tenantCompanyId } = req;
-  const { companyId: customerCompanyId, contactId } = req.params;
+  const { contactId } = req.params;
 
-  const existing = await clientContactRepository.getContactById(tenantCompanyId!, contactId);
+  // Identity + Assignment model: contactId is a person ID. Update person identity.
+  const existing = await clientContactRepository.getPersonById(tenantCompanyId!, contactId);
   if (!existing) throw createError(404, "Contact not found");
 
   const data = validateSchema(updateContactSchema, req.body);
 
-  // Merge with existing to validate the final state
   const merged = {
     firstName: data.firstName ?? existing.firstName,
     lastName: data.lastName ?? existing.lastName,
     phone: data.phone !== undefined ? data.phone : existing.phone,
     email: data.email !== undefined ? data.email : existing.email,
   };
-  if (!merged.firstName?.trim() && !merged.lastName?.trim()) {
-    throw createError(400, "First name or last name is required");
-  }
-  if (!merged.phone?.trim() && !merged.email?.trim()) {
-    throw createError(400, "Phone or email is required");
+  // Only firstName is required
+  if (!merged.firstName?.trim()) {
+    throw createError(400, "First name is required");
   }
 
-  // Phase 3: Derive existing scope from DB record (not from client payload)
-  const existingScope: "company" | "location" = existing.locationId ? "location" : "company";
-
-  // Full association replace mode: delete old rows, insert new ones in a transaction
-  if (data.association && data.existingContactIds) {
-    // Phase 3: Enforce scope immutability — company contacts stay company, location contacts stay location
-    const requestedScope = data.association.type === "company" ? "company" : "location";
-    if (existingScope !== requestedScope) {
-      throw createError(400, `Cannot change contact scope from "${existingScope}" to "${requestedScope}". Delete and recreate instead.`);
-    }
-
-    const baseData = {
-      customerCompanyId: existing.customerCompanyId,
-      firstName: merged.firstName,
-      lastName: merged.lastName,
-      phone: merged.phone ?? null,
-      email: merged.email ?? null,
-      isPrimary: data.isPrimary ?? existing.isPrimary,
-    };
-
-    let newRows: Array<typeof baseData & { locationId: string | null; roles: string[] }>;
-    if (data.association.type === "company") {
-      // Company-wide: single row with locationId = null
-      newRows = [{ ...baseData, locationId: null, roles: data.association.roles ?? [] }];
-    } else {
-      // Per-location rows
-      const locations = data.association.locations ?? [];
-      if (locations.length === 0) {
-        throw createError(400, "At least one location is required for location-specific contacts");
-      }
-      // Phase 3: Validate locationIds belong to this customer company
-      await validateLocationOwnership(tenantCompanyId!, existing.customerCompanyId, locations.map(l => l.locationId));
-      newRows = locations.map((loc) => ({
-        ...baseData,
-        locationId: loc.locationId,
-        roles: loc.roles ?? [],
-      }));
-    }
-
-    const inserted = await clientContactRepository.replacePersonContacts(
-      tenantCompanyId!,
-      existing.customerCompanyId,
-      data.existingContactIds,
-      newRows
-    );
-
-    // Return in the same split format as GET for immediate UI consistency
-    const companyContacts = inserted.filter((c) => !c.locationId);
-    const locationContacts = inserted.filter((c) => !!c.locationId);
-    return res.json({ companyContacts, locationContacts });
-  }
-
-  // Fallback: simple single-row update (backward compat)
-  // Phase 3: Strip locationId from simple updates — scope cannot be mutated via this path
-  const { locationId: _stripLocationId, association: _stripAssoc, existingContactIds: _stripIds, ...safeUpdateData } = data;
-  const updated = await clientContactRepository.updateContact(tenantCompanyId!, contactId, safeUpdateData);
+  // Update person identity fields only
+  const updated = await clientContactRepository.updatePerson(tenantCompanyId!, contactId, {
+    firstName: merged.firstName,
+    lastName: merged.lastName,
+    phone: merged.phone ?? null,
+    email: merged.email ?? null,
+    isPrimary: data.isPrimary ?? existing.isPrimary,
+  });
   if (!updated) throw createError(404, "Contact not found");
 
   res.json(updated);
@@ -467,8 +404,65 @@ router.delete("/:companyId/contacts/:contactId", requireRole(MANAGER_ROLES), asy
   const { companyId: tenantCompanyId } = req;
   const { contactId } = req.params;
 
-  const deleted = await clientContactRepository.deleteContact(tenantCompanyId!, contactId);
+  // Identity + Assignment model: deleting a person cascades to all their assignments via FK
+  const deleted = await clientContactRepository.deletePerson(tenantCompanyId!, contactId);
   if (!deleted) throw createError(404, "Contact not found");
+
+  res.json({ success: true });
+}));
+
+// ============================================================================
+// Contact Assignments — assign/unassign persons to locations
+// ============================================================================
+
+/**
+ * POST /api/customer-companies/:companyId/contacts/:contactId/assign
+ * Assign an existing person to a location with roles.
+ */
+router.post("/:companyId/contacts/:contactId/assign", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId: tenantCompanyId } = req;
+  const { contactId } = req.params;
+  const { locationId, roles = [] } = req.body;
+  if (!locationId) throw createError(400, "locationId is required");
+
+  const person = await clientContactRepository.getPersonById(tenantCompanyId!, contactId);
+  if (!person) throw createError(404, "Contact not found");
+
+  const assignment = await clientContactRepository.assignToLocation(tenantCompanyId!, {
+    contactPersonId: contactId, locationId, roles,
+  });
+  res.status(201).json(assignment);
+}));
+
+/**
+ * PATCH /api/customer-companies/:companyId/assignments/:assignmentId
+ * Update assignment roles for a contact at a specific location.
+ */
+const updateAssignmentSchema = z.object({
+  roles: z.array(z.string()).default([]),
+}).strict();
+
+router.patch("/:companyId/assignments/:assignmentId", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId: tenantCompanyId } = req;
+  const { assignmentId } = req.params;
+
+  const data = validateSchema(updateAssignmentSchema, req.body);
+  const updated = await clientContactRepository.updateAssignment(tenantCompanyId!, assignmentId, { roles: data.roles ?? [] });
+  if (!updated) throw createError(404, "Assignment not found");
+
+  res.json(updated);
+}));
+
+/**
+ * DELETE /api/customer-companies/:companyId/assignments/:assignmentId
+ * Remove a contact assignment (unassign from location). Does NOT delete the person.
+ */
+router.delete("/:companyId/assignments/:assignmentId", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const { companyId: tenantCompanyId } = req;
+  const { assignmentId } = req.params;
+
+  const deleted = await clientContactRepository.deleteAssignment(tenantCompanyId!, assignmentId);
+  if (!deleted) throw createError(404, "Assignment not found");
 
   res.json({ success: true });
 }));

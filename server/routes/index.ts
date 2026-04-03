@@ -45,6 +45,7 @@ import paymentsRouter from "./payments";
 import qboRouter from "./qbo";
 import quotesRouter from "./quotes";
 import quoteTemplatesRouter from "./quoteTemplates";
+import leadsRouter from "./leads";
 import notificationsRouter from "./notifications";
 import adminRouter from "./admin";
 import { timeRouter as timeTrackingRouter, jobTimeRouter, payrollRouter } from "./timeTracking";
@@ -73,8 +74,6 @@ import dispatchStreamRouter from "./dispatch-stream";
 import intelligenceRouter from "./intelligence";
 // Equipment catalog item associations (reference-only)
 import equipmentCatalogItemsRouter from "./equipmentCatalogItems.routes";
-// Dispatch map aggregator
-import mapRouter from "./map";
 // Client CSV import (v1)
 import clientImportRouter from "./clientImport";
 // Job CSV import (Jobber historical jobs)
@@ -220,6 +219,7 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/qbo", qboRouter);
   app.use("/api/quotes", quotesRouter);
   app.use("/api/quote-templates", quoteTemplatesRouter);
+  app.use("/api/leads", leadsRouter);
   app.use("/api/notifications", notificationsRouter);
   app.use("/api/time", timeTrackingRouter); // Time tracking: clock in/out + time entries
   app.use("/api/payroll", payrollRouter); // Payroll: weekly summaries + approval + CSV export
@@ -286,8 +286,6 @@ export function registerRoutes(app: Express): Server {
   // Phase 5: Visit intelligence signals
   app.use("/api/intelligence", intelligenceRouter);
 
-  // Dispatch map aggregator
-  app.use("/api/map", mapRouter);
 
   // Client CSV import (v1): preview + execute
   app.use("/api/client-import", clientImportRouter);

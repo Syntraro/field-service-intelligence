@@ -195,19 +195,17 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
     setTemplateConfirmState({ open: false, templateId: null, templateName: "", mode: "replace" });
   };
 
-  const { data: catalogData } = useQuery<{ items: Item[] }>({
+  const { data: catalogData } = useQuery<Item[]>({
     queryKey: ["/api/items", { limit: 1000 }],
     queryFn: async () => {
       const res = await fetch("/api/items?limit=1000", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch catalog");
-      return res.json();
+      const json = await res.json();
+      // Normalize: server returns { data: [...] } when ?limit is explicit, or raw array
+      return Array.isArray(json) ? json : json.data || json.items || [];
     },
   });
-  const catalogParts = useMemo(() => {
-    if (!catalogData) return [];
-    if (Array.isArray(catalogData)) return catalogData;
-    return catalogData?.items ?? (catalogData as any)?.data ?? [];
-  }, [catalogData]);
+  const catalogParts: Item[] = catalogData ?? [];
 
   useEffect(() => {
     if (!jobParts || editingRowId) return;
@@ -550,6 +548,7 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
               variant="outline"
               size="sm"
               onClick={handleAddLineItem}
+              className="border-slate-400 text-slate-800 bg-slate-50 hover:bg-slate-100 hover:border-slate-500 font-medium shadow-sm"
               data-testid="button-add-line-item"
             >
               <Plus className="h-3 w-3 mr-1" />
@@ -561,6 +560,7 @@ export function PartsBillingCard({ jobId, onTotalsChange }: PartsBillingCardProp
                 size="sm"
                 onClick={() => { setTemplatePickerOpen(true); setTemplateSearch(""); }}
                 disabled={applyTemplateMutation.isPending}
+                className="border-slate-400 text-slate-800 bg-slate-50 hover:bg-slate-100 hover:border-slate-500 font-medium shadow-sm"
                 data-testid="button-apply-template"
               >
                 <FileText className="h-3 w-3 mr-1" />

@@ -103,7 +103,7 @@ export default function FinancialDashboard() {
     ? Math.round((data.revenue.month / data.revenue.lastMonth - 1) * 100) : null;
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-[#F4F8F4]">
       <main className="mx-auto max-w-6xl px-3 sm:px-4 lg:px-6 py-3 space-y-3">
         {/* Page header — compact */}
         <div className="flex items-center gap-3">

@@ -485,33 +485,59 @@ export const locationTagAssignments = pgTable("location_tag_assignments", {
 
 export type LocationTagAssignment = typeof locationTagAssignments.$inferSelect;
 
-// Client Contacts - multiple contacts per customer company or per location
-// location_id = NULL → company-level contact; set → location-specific contact
-export const clientContacts = pgTable("client_contacts", {
+// ============================================================================
+// Contact Persons — one row per human (identity), owned by customer company
+// ============================================================================
+export const contactPersons = pgTable("contact_persons", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   customerCompanyId: varchar("customer_company_id").notNull().references(() => customerCompanies.id, { onDelete: "cascade" }),
-  locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "cascade" }),
   firstName: text("first_name").notNull().default(""),
   lastName: text("last_name").notNull().default(""),
   email: text("email"),
   phone: text("phone"),
-  // Role flags: 'billing', 'scheduling', 'general', 'primary'
-  roles: text("roles").array().notNull().default(sql`'{}'::text[]`),
   isPrimary: boolean("is_primary").notNull().default(false),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
-export const insertClientContactSchema = createInsertSchema(clientContacts).omit({
+export const insertContactPersonSchema = createInsertSchema(contactPersons).omit({
   id: true,
   companyId: true,
   createdAt: true,
   updatedAt: true,
 });
 
-export type ClientContact = typeof clientContacts.$inferSelect;
-export type InsertClientContact = z.infer<typeof insertClientContactSchema>;
+export type ContactPerson = typeof contactPersons.$inferSelect;
+export type InsertContactPerson = z.infer<typeof insertContactPersonSchema>;
+
+// ============================================================================
+// Contact Assignments — links a person to a location with roles
+// ============================================================================
+export const contactAssignments = pgTable("contact_assignments", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  contactPersonId: varchar("contact_person_id").notNull().references(() => contactPersons.id, { onDelete: "cascade" }),
+  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "cascade" }),
+  roles: text("roles").array().notNull().default(sql`'{}'::text[]`),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const insertContactAssignmentSchema = createInsertSchema(contactAssignments).omit({
+  id: true,
+  companyId: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type ContactAssignment = typeof contactAssignments.$inferSelect;
+export type InsertContactAssignment = z.infer<typeof insertContactAssignmentSchema>;
+
+// Legacy compatibility alias — old code references ClientContact type
+// TODO: Remove after all consumers are migrated
+export type ClientContact = ContactPerson & { locationId?: string | null; roles?: string[] };
+export type InsertClientContact = InsertContactPerson & { locationId?: string | null; roles?: string[] };
 
 // Items table - represents products and services for QuickBooks Online sync
 // These Items are designed to sync to QuickBooks Online Items in the future.
@@ -1747,6 +1773,8 @@ export const jobs = pgTable("jobs", {
   closedBy: text("closed_by"),                          // User ID who closed the job
   // Soft deletion / state
   isActive: boolean("is_active").notNull().default(true), // Legacy (use deletedAt)
+  // Lead attribution — links job to originating lead for pipeline/commission tracking
+  leadId: varchar("lead_id"),
   // Soft delete (canonical)
   deletedAt: timestamp("deleted_at"), // NULL = active, NOT NULL = soft-deleted
   // Optimistic locking
@@ -2232,16 +2260,19 @@ export const jobVisits = pgTable("job_visits", {
   assignedTechnicianId: varchar("assigned_technician_id").references(() => users.id, { onDelete: "set null" }),
   assignedTechnicianIds: varchar("assigned_technician_ids").array(), // DB has array
 
+  // Equipment selection — which location equipment this visit addresses (2026-03-27)
+  equipmentIds: varchar("equipment_ids").array(),
+
   // Status
   status: text("status").notNull().default("scheduled"),
 
   // Visit sequencing
   visitNumber: integer("visit_number"), // nullable in DB, computed by repository
 
-  // Time tracking
+  // Time tracking (operational timestamps — labor duration derived from time_entries)
   checkedInAt: timestamp("checked_in_at"),
   checkedOutAt: timestamp("checked_out_at"),
-  actualDurationMinutes: integer("actual_duration_minutes"),
+  // actualDurationMinutes: DROPPED — labor duration is derived from time_entries (labor unification)
 
   // Notes
   visitNotes: text("visit_notes"),
@@ -2275,7 +2306,6 @@ export const insertJobVisitSchema = createInsertSchema(jobVisits).omit({
   companyId: true,
   createdAt: true,
   updatedAt: true,
-  actualDurationMinutes: true,
   version: true,
 }).extend({
   status: z.enum(jobVisitStatusEnum).default("scheduled"),
@@ -2298,6 +2328,7 @@ export const updateJobVisitSchema = z.object({
   estimatedDurationMinutes: z.number().int().positive().optional(),
   assignedTechnicianId: z.string().uuid().nullable().optional(),
   assignedTechnicianIds: z.array(z.string()).nullable().optional(),
+  equipmentIds: z.array(z.string()).nullable().optional(),
   visitNumber: z.number().int().min(1).optional(),
   status: z.enum(jobVisitStatusEnum).optional(),
   visitNotes: z.string().nullable().optional(),
@@ -2559,7 +2590,7 @@ export const applyJobTemplateSchema = z.object({
 // - Supplier visits can be created without selecting supplier, then reconciled later
 // ============================================================================
 
-export const taskTypeEnum = ["GENERAL", "SUPPLIER_VISIT"] as const;
+export const taskTypeEnum = ["GENERAL", "SUPPLIER_VISIT", "QUOTE_ASSESSMENT"] as const;
 export type TaskType = typeof taskTypeEnum[number];
 
 export const taskStatusEnum = ["pending", "in_progress", "completed", "cancelled"] as const;
@@ -2603,6 +2634,8 @@ export const tasks = pgTable("tasks", {
   clientId: varchar("client_id").references(() => clientLocations.id, { onDelete: "set null" }),
   // Canonical reference to service location (optional for tasks)
   locationId: varchar("location_id").references(() => clientLocations.id, { onDelete: "set null" }),
+  // Phase 2: Quote assessment link — set for QUOTE_ASSESSMENT tasks only
+  quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: "set null" }),
 
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: timestamp("updated_at"),
@@ -2615,6 +2648,8 @@ export const tasks = pgTable("tasks", {
   companyClientIdx: index("tasks_company_client_idx").on(table.companyId, table.clientId),
   // Canonical location index
   companyLocationIdx: index("tasks_company_location_idx").on(table.companyId, table.locationId),
+  // Quote assessment index
+  companyQuoteIdx: index("tasks_company_quote_idx").on(table.companyId, table.quoteId),
 }));
 
 export const insertTaskSchema = createInsertSchema(tasks).omit({
@@ -3004,6 +3039,9 @@ export type QboWebhookEvent = typeof qboWebhookEvents.$inferSelect;
 export const quoteStatusEnum = ["draft", "sent", "approved", "declined", "expired", "converted"] as const;
 export type QuoteStatus = typeof quoteStatusEnum[number];
 
+export const quoteAssessmentStatusEnum = ["required", "scheduled", "completed"] as const;
+export type QuoteAssessmentStatus = typeof quoteAssessmentStatusEnum[number];
+
 export const quotes = pgTable("quotes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
@@ -3037,6 +3075,14 @@ export const quotes = pgTable("quotes", {
   isActive: boolean("is_active").notNull().default(true),
   deletedAt: timestamp("deleted_at"),
   // Optimistic locking
+  // Phase 2: Quote ownership — who is commercially responsible for advancing this quote
+  salesOwnerUserId: varchar("sales_owner_user_id").references(() => users.id, { onDelete: "set null" }),
+  // Phase 2: Assessment workflow — orthogonal to quote.status (commercial lifecycle)
+  // null = no assessment needed, 'required' = needed but not scheduled,
+  // 'scheduled' = active QUOTE_ASSESSMENT task exists, 'completed' = assessment done
+  assessmentStatus: text("assessment_status"),
+  // Lead attribution — links quote to originating lead for pipeline tracking
+  leadId: varchar("lead_id"),
   version: integer("version").notNull().default(0),
   // Metadata
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -3079,6 +3125,8 @@ export const updateQuoteSchema = z.object({
   notesInternal: z.string().nullable().optional(),
   notesCustomer: z.string().nullable().optional(),
   isActive: z.boolean().optional(),
+  salesOwnerUserId: z.string().nullable().optional(),
+  assessmentStatus: z.enum(["required", "scheduled", "completed"]).nullable().optional(),
 });
 
 export type InsertQuote = z.infer<typeof insertQuoteSchema>;
@@ -3516,7 +3564,6 @@ export const timeEntries = pgTable("time_entries", {
   // Optional links
   workSessionId: varchar("work_session_id").references(() => workSessions.id, { onDelete: "set null" }),
   jobId: varchar("job_id").references(() => jobs.id, { onDelete: "set null" }),
-  visitId: varchar("visit_id").references(() => jobVisits.id, { onDelete: "set null" }), // Phase: labor unification — nullable FK for visit attribution
   // Entry type
   type: text("type").notNull(), // TimeEntryType
   // Time tracking
@@ -3549,8 +3596,6 @@ export const timeEntries = pgTable("time_entries", {
   techStartIdx: index("time_entries_tech_start_idx").on(table.companyId, table.technicianId, table.startAt),
   // Index for finding entries by job
   jobIdx: index("time_entries_job_idx").on(table.companyId, table.jobId),
-  // Index for finding entries by visit (labor unification)
-  visitIdx: index("time_entries_visit_idx").on(table.companyId, table.visitId),
   // Index for finding uninvoiced entries
   invoiceIdx: index("time_entries_invoice_idx").on(table.companyId, table.invoiceId),
   // Partial index for finding running entries (endAt IS NULL) - enforced in code
@@ -3579,7 +3624,7 @@ export const insertTimeEntrySchema = createInsertSchema(timeEntries).omit({
 });
 
 export const updateTimeEntrySchema = z.object({
-  jobId: z.string().nullable().optional(),
+  jobId: z.string().uuid().nullable().optional(),
   type: z.enum(timeEntryTypeEnum).optional(),
   startAt: z.string().datetime().optional(),
   endAt: z.string().datetime().nullable().optional(),
@@ -3675,11 +3720,11 @@ export const clockOutRequestSchema = z.object({
 });
 export type ClockOutRequest = z.infer<typeof clockOutRequestSchema>;
 
-// Start time entry request
+// Start time entry request — jobId optional (validated if provided)
 export const startTimeEntryRequestSchema = z.object({
   type: z.enum(timeEntryTypeEnum),
-  jobId: z.string().nullable().optional(),
-  at: z.string().datetime().optional(), // Defaults to now
+  jobId: z.string().uuid().nullable().optional(),
+  at: z.string().datetime().optional(),
   notes: z.string().nullable().optional(),
   billable: z.boolean().default(true),
 });
@@ -3693,14 +3738,15 @@ export const stopTimeEntryRequestSchema = z.object({
 });
 export type StopTimeEntryRequest = z.infer<typeof stopTimeEntryRequestSchema>;
 
-// Create finished time entry request (for manual entry)
+// Create finished time entry — jobId optional (validated if provided)
 export const createFinishedTimeEntryRequestSchema = z.object({
   type: z.enum(timeEntryTypeEnum),
-  jobId: z.string().nullable().optional(),
+  jobId: z.string().uuid().nullable().optional(),
   startAt: z.string().datetime(),
   endAt: z.string().datetime(),
   notes: z.string().nullable().optional(),
   billable: z.boolean().default(true),
+  costRateOverride: z.string().nullable().optional(),
 });
 export type CreateFinishedTimeEntryRequest = z.infer<typeof createFinishedTimeEntryRequestSchema>;
 
@@ -3724,7 +3770,7 @@ export const managerUpdateTimeEntrySchema = z.object({
   type: z.enum(timeEntryTypeEnum).optional(),
   startAt: z.string().datetime().optional(),
   endAt: z.string().datetime().nullable().optional(),
-  jobId: z.string().nullable().optional(), // Reassign time entry to a different job
+  jobId: z.string().uuid().nullable().optional(), // Reassign or clear job association
   overrideInvoiceLock: z.boolean().optional(),
   overrideReason: z.string().optional(), // Required if overrideInvoiceLock is true for invoiced entries
 });
@@ -3758,6 +3804,8 @@ export interface JobTimeSummary {
   otherMinutes: number;
   billableMinutes: number;
   totalMinutes: number;
+  /** Total labour cost computed from costRateSnapshot × durationMinutes per entry */
+  totalCostAmount: number;
   isRunning: boolean;
   runningType: TimeEntryType | null;
   technicianBreakdown: Array<{
@@ -3828,38 +3876,24 @@ export const approveWeekRequestSchema = z.object({
 });
 export type ApproveWeekRequest = z.infer<typeof approveWeekRequestSchema>;
 
-// Daily payroll breakdown
+// Daily payroll breakdown — simplified to time_entries only (2026-04-03)
 export interface DailyPayrollBreakdown {
   date: string; // YYYY-MM-DD
   dayOfWeek: string; // Mon, Tue, etc.
-  workedMinutes: number;
-  trackedMinutes: number;
-  billableMinutes: number;
+  totalMinutes: number; // Sum of completed time_entries.durationMinutes
 }
 
-// Technician weekly payroll summary
+// Technician weekly payroll summary — time_entries as sole source of truth (2026-04-03)
 export interface TechnicianWeeklySummary {
   technicianId: string;
   technicianName: string | null;
   weekStart: string;
   weekEnd: string;
-  totals: {
-    workedMinutes: number;
-    trackedMinutes: number;
-    billableMinutes: number;
-    untrackedMinutesRaw: number; // Can be negative
-  };
+  totalMinutes: number; // Weekly total from time_entries
   daily: DailyPayrollBreakdown[];
   approved: boolean;
   approvedAt: Date | null;
   approvedByName: string | null;
-}
-
-// Weekly payroll summary response
-export interface WeeklyPayrollSummary {
-  weekStart: string;
-  weekEnd: string;
-  summaries: TechnicianWeeklySummary[];
 }
 
 // ============================================================================
@@ -4492,7 +4526,7 @@ export type InvoiceTaxLine = typeof invoiceTaxLines.$inferSelect;
 export const portalMagicTokens = pgTable("portal_magic_tokens", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-  contactId: varchar("contact_id").notNull().references(() => clientContacts.id, { onDelete: "cascade" }),
+  contactId: varchar("contact_id").notNull().references(() => contactPersons.id, { onDelete: "cascade" }),
   customerCompanyId: varchar("customer_company_id").notNull().references(() => customerCompanies.id, { onDelete: "cascade" }),
   /** SHA-256 hash of the token (raw token is never stored) */
   tokenHash: text("token_hash").notNull(),
@@ -4717,3 +4751,66 @@ export const updateJobExpenseSchema = z.object({
 export type InsertJobExpense = z.infer<typeof insertJobExpenseSchema>;
 export type UpdateJobExpense = z.infer<typeof updateJobExpenseSchema>;
 export type JobExpense = typeof jobExpenses.$inferSelect;
+
+// ============================================================================
+// LEADS — Pre-quote pipeline + attribution layer
+// ============================================================================
+
+export const leadStatusEnum = ["new", "contacted", "quoted", "won", "lost"] as const;
+export type LeadStatus = typeof leadStatusEnum[number];
+
+export const leadSourceTypeEnum = ["tech", "office"] as const;
+export type LeadSourceType = typeof leadSourceTypeEnum[number];
+
+export const leads = pgTable("leads", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  locationId: varchar("location_id").notNull().references(() => clientLocations.id, { onDelete: "restrict" }),
+  customerCompanyId: varchar("customer_company_id").references(() => customerCompanies.id, { onDelete: "set null" }),
+  createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id),
+  // Immutable after creation — the technician who originated the opportunity
+  originTechnicianId: varchar("origin_technician_id").references(() => users.id),
+  assignedToUserId: varchar("assigned_to_user_id").references(() => users.id),
+  sourceType: text("source_type").notNull().default("office"),
+  sourceRefType: text("source_ref_type"), // 'visit' | 'job' | null
+  sourceRefId: varchar("source_ref_id"),
+  status: text("status").notNull().default("new"),
+  priority: text("priority").default("medium"),
+  title: text("title").notNull(),
+  description: text("description"),
+  estimatedValue: numeric("estimated_value", { precision: 12, scale: 2 }),
+  // Set when lead converts to quote
+  convertedQuoteId: varchar("converted_quote_id"),
+  convertedAt: timestamp("converted_at"),
+  isActive: boolean("is_active").notNull().default(true),
+  version: integer("version").notNull().default(0),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+});
+
+export const insertLeadSchema = createInsertSchema(leads).omit({
+  id: true,
+  companyId: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  status: z.enum(leadStatusEnum).default("new"),
+  sourceType: z.enum(leadSourceTypeEnum).default("office"),
+  priority: z.enum(jobPriorityEnum).nullable().default("medium"),
+  title: z.string().min(1).max(500),
+  description: z.string().max(2000).nullable().optional(),
+  estimatedValue: z.string().nullable().optional(),
+});
+
+export const updateLeadSchema = z.object({
+  assignedToUserId: z.string().nullable().optional(),
+  status: z.enum(leadStatusEnum).optional(),
+  priority: z.enum(jobPriorityEnum).nullable().optional(),
+  title: z.string().min(1).max(500).optional(),
+  description: z.string().max(2000).nullable().optional(),
+  estimatedValue: z.string().nullable().optional(),
+});
+
+export type InsertLead = z.infer<typeof insertLeadSchema>;
+export type UpdateLead = z.infer<typeof updateLeadSchema>;
+export type Lead = typeof leads.$inferSelect;

@@ -1,15 +1,14 @@
-import React, { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogClose, DialogDescription } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogClose, DialogDescription } from "@/components/ui/dialog";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Plus, Trash2, Loader2, Wrench, Info, ChevronDown, ChevronRight } from "lucide-react";
+import { Trash2, Loader2, Wrench, Info, ChevronDown, ChevronRight } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { LocationEquipment, JobEquipment } from "@shared/schema";
@@ -24,6 +23,12 @@ interface JobEquipmentSectionProps {
   jobId: string;
   locationId: string | null;
   defaultOpen?: boolean;
+  /** When true, hides the internal "+ Add Equipment" button (parent controls it) */
+  hideAddButton?: boolean;
+  /** External control: when set to true, opens the add equipment dialog */
+  externalAddOpen?: boolean;
+  /** Callback when the externally-triggered dialog closes */
+  onExternalAddOpenChange?: (open: boolean) => void;
 }
 
 const EQUIPMENT_TYPES: Record<string, string> = {
@@ -45,10 +50,18 @@ const EQUIPMENT_TYPES: Record<string, string> = {
   other: "Other",
 };
 
-export default function JobEquipmentSection({ jobId, locationId, defaultOpen = false }: JobEquipmentSectionProps) {
+export default function JobEquipmentSection({ jobId, locationId, defaultOpen = false, hideAddButton = false, externalAddOpen, onExternalAddOpenChange }: JobEquipmentSectionProps) {
   const { toast } = useToast();
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  // Sync external add-dialog control into internal state
+  useEffect(() => {
+    if (externalAddOpen) setIsAddDialogOpen(true);
+  }, [externalAddOpen]);
+  const handleAddDialogChange = (open: boolean) => {
+    setIsAddDialogOpen(open);
+    onExternalAddOpenChange?.(open);
+  };
   const [selectedEquipmentId, setSelectedEquipmentId] = useState<string>("");
   const [notes, setNotes] = useState("");
 
@@ -81,7 +94,7 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "equipment"] });
-      setIsAddDialogOpen(false);
+      handleAddDialogChange(false);
       setSelectedEquipmentId("");
       setNotes("");
       toast({
@@ -151,31 +164,34 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
   }
 
   return (
+    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden" data-testid="card-job-equipment">
     <Collapsible open={isOpen} onOpenChange={setIsOpen}>
-      <Card data-testid="card-job-equipment">
         <CollapsibleTrigger asChild>
-          <button className="w-full flex items-center justify-between px-5 py-4 bg-primary/[0.09] hover:bg-primary/[0.13] transition-colors" data-testid="trigger-equipment">
-            <span className="text-sm font-semibold">Equipment</span>
+          <button className="w-full flex items-center justify-between px-4 py-2.5 bg-[#f8fafc] hover:bg-slate-100 transition-colors" data-testid="trigger-equipment">
+            <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
+              <Wrench className="h-4 w-4 text-[#64748b]" />
+              Equipment
+            </span>
             <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-xs h-auto min-h-0 p-0 text-primary"
-                disabled={!locationId || availableEquipment.length === 0}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setIsAddDialogOpen(true);
-                }}
-                data-testid="button-add-job-equipment"
-              >
-                + Add Equipment
-              </Button>
-              {isOpen ? <ChevronDown className="h-4 w-4 text-muted-foreground" /> : <ChevronRight className="h-4 w-4 text-muted-foreground" />}
+              {!hideAddButton && (
+                <button
+                  className="text-xs text-[#76B054] hover:text-[#5F9442] font-medium disabled:opacity-40 disabled:pointer-events-none"
+                  disabled={!locationId || availableEquipment.length === 0}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsAddDialogOpen(true);
+                  }}
+                  data-testid="button-add-job-equipment"
+                >
+                  + Add Equipment
+                </button>
+              )}
+              {isOpen ? <ChevronDown className="h-4 w-4 text-slate-400 shrink-0" /> : <ChevronRight className="h-4 w-4 text-slate-400 shrink-0" />}
             </div>
           </button>
         </CollapsibleTrigger>
         <CollapsibleContent>
-          <div className="border-t px-4 pb-4 pt-3">
+          <div className="border-t border-slate-200 px-4 pb-4 pt-3">
             {!locationId ? (
               <div className="text-center py-4 text-muted-foreground">
                 <Info className="h-6 w-6 mx-auto mb-2 opacity-50" />
@@ -194,85 +210,55 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
                 )}
               </div>
             ) : (
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Type</TableHead>
-                      <TableHead>Make/Model</TableHead>
-                      <TableHead>Serial #</TableHead>
-                      <TableHead>Notes</TableHead>
-                      <TableHead className="w-16">Action</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {jobEquipment.map(je => {
-                      // Defensive: guard against malformed rows where equipment hydration is missing
-                      const eq = je.equipment;
-                      return (
-                      <React.Fragment key={je.id}>
-                        <TableRow data-testid={`row-job-equipment-${je.id}`}>
-                          <TableCell className="font-medium">{eq?.name ?? "Unknown equipment"}</TableCell>
-                          <TableCell>
-                            {eq?.equipmentType ? (
-                              <Badge variant="secondary">
-                                {getEquipmentTypeLabel(eq.equipmentType)}
-                              </Badge>
-                            ) : (
-                              <span className="text-muted-foreground">—</span>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            {eq?.manufacturer || eq?.modelNumber ? (
-                              <span className="text-sm">
-                                {eq.manufacturer}
-                                {eq.manufacturer && eq.modelNumber ? " - " : ""}
-                                {eq.modelNumber}
-                              </span>
-                            ) : (
-                              <span className="text-muted-foreground">—</span>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            {eq?.serialNumber || <span className="text-muted-foreground">—</span>}
-                          </TableCell>
-                          <TableCell>
-                            {je.notes ? (
-                              <span className="text-sm">{je.notes}</span>
-                            ) : (
-                              <span className="text-muted-foreground">-</span>
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => removeMutation.mutate(je.id)}
-                              disabled={removeMutation.isPending}
-                              data-testid={`button-remove-job-equipment-${je.id}`}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                        {/* Typical Parts / Materials — read-only catalog items per equipment (2026-03-06) */}
-                        <TableRow>
-                          <TableCell colSpan={6} className="pt-0 pb-2 px-4">
-                            <EquipmentCatalogItemsSection equipmentId={je.equipmentId} readOnly />
-                          </TableCell>
-                        </TableRow>
-                      </React.Fragment>
-                    ); })}
-                  </TableBody>
-                </Table>
+              <div className="space-y-2">
+                {jobEquipment.map(je => {
+                  const eq = je.equipment;
+                  return (
+                    <div key={je.id} className="rounded-md border p-3" data-testid={`row-job-equipment-${je.id}`}>
+                      {/* Primary row: name + type badge + remove */}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Wrench className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                          <span className="text-sm font-medium truncate">{eq?.name ?? "Unknown equipment"}</span>
+                          {eq?.equipmentType && (
+                            <Badge variant="secondary" className="text-[10px] px-1.5 py-0 shrink-0">
+                              {getEquipmentTypeLabel(eq.equipmentType)}
+                            </Badge>
+                          )}
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 shrink-0"
+                          onClick={() => removeMutation.mutate(je.id)}
+                          disabled={removeMutation.isPending}
+                          data-testid={`button-remove-job-equipment-${je.id}`}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                      {/* Secondary meta: only render fields that exist */}
+                      {(eq?.manufacturer || eq?.modelNumber || eq?.serialNumber || je.notes) && (
+                        <div className="mt-1 pl-[22px] text-xs text-muted-foreground space-y-0.5">
+                          {eq?.manufacturer && <div>Make: {eq.manufacturer}</div>}
+                          {eq?.modelNumber && <div>Model: {eq.modelNumber}</div>}
+                          {eq?.serialNumber && <div>S/N: {eq.serialNumber}</div>}
+                          {je.notes && <div className="text-foreground/70">{je.notes}</div>}
+                        </div>
+                      )}
+                      {/* Catalog items per equipment */}
+                      <div className="mt-1 pl-[22px]">
+                        <EquipmentCatalogItemsSection equipmentId={je.equipmentId} readOnly />
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
         </CollapsibleContent>
-      </Card>
 
-      <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+      <Dialog open={isAddDialogOpen} onOpenChange={handleAddDialogChange}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Add Equipment to Job</DialogTitle>
@@ -327,5 +313,6 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
         </DialogContent>
       </Dialog>
     </Collapsible>
+    </div>
   );
 }

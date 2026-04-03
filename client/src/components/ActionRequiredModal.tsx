@@ -40,6 +40,8 @@ export const getActionRequiredReasonLabel = getHoldReasonLabel;
 
 interface ActionRequiredModalProps {
   jobId: string;
+  /** Current job version for optimistic locking on status change */
+  jobVersion: number;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSuccess?: () => void;
@@ -52,10 +54,12 @@ interface HoldJobPayload {
   holdReason: string;
   holdNotes?: string;
   nextActionDate?: string;
+  version: number;
 }
 
 export function ActionRequiredModal({
   jobId,
+  jobVersion,
   open,
   onOpenChange,
   onSuccess,
@@ -77,7 +81,7 @@ export function ActionRequiredModal({
   const updateStatusMutation = useMutation({
     mutationFn: async (payload: HoldJobPayload) => {
       return apiRequest(`/api/jobs/${jobId}/status`, {
-        method: "PATCH",
+        method: "POST",
         body: JSON.stringify(payload),
       });
     },
@@ -118,6 +122,7 @@ export function ActionRequiredModal({
       status: "open",
       openSubStatus: "on_hold",
       holdReason: reason,
+      version: jobVersion,
     };
 
     // Only include notes if non-empty

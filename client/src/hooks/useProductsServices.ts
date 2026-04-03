@@ -4,7 +4,6 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
   Part,
-  PartsResponse,
   ProductFormData,
   SortField,
   SortDirection,
@@ -48,17 +47,18 @@ export function useProductsServices(options: UseProductsServicesOptions = {}) {
   }, [searchQuery]);
 
   // Fetch items
-  const { data: partsData, isLoading, refetch } = useQuery<Part[] | PartsResponse>({
+  const { data: partsData, isLoading, refetch } = useQuery<Part[]>({
     queryKey: ["/api/items", { limit: 1000 }],
     queryFn: async () => {
       const res = await fetch("/api/items?limit=1000", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch parts");
       const json = await res.json();
-      return json;
+      // Normalize: server returns { data: [...] } when ?limit is explicit, or raw array
+      return Array.isArray(json) ? json : json.data || json.items || [];
     },
   });
 
-  const allParts = Array.isArray(partsData) ? partsData : (partsData?.items ?? partsData?.data ?? []);
+  const allParts: Part[] = partsData ?? [];
 
   // Filter and sort
   const filteredAndSortedParts = useMemo(() => {

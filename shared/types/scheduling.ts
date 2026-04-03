@@ -69,6 +69,10 @@ export interface CalendarEventDto {
   locationCity?: string | null;
   locationProvinceState?: string | null;
   locationPostalCode?: string | null;
+  /** Client location latitude (from client_locations, numeric 10,7) */
+  lat?: string | null;
+  /** Client location longitude (from client_locations, numeric 10,7) */
+  lng?: string | null;
   /** Job type (e.g., "PM", "Repair", "Install") */
   jobType: string;
   /** Job summary/description */
@@ -190,6 +194,10 @@ export interface UnscheduledJobDto {
   locationCity?: string | null;
   locationProvinceState?: string | null;
   locationPostalCode?: string | null;
+  /** Client location latitude (from client_locations) — for dispatch map markers */
+  lat?: string | null;
+  /** Client location longitude (from client_locations) — for dispatch map markers */
+  lng?: string | null;
   /** 2026-03-22: Real visit ID from job_visits — enables canonical EditVisitModal opening.
    *  Null if no active non-terminal visit exists (e.g., all visits archived/completed). */
   activeVisitId?: string | null;

@@ -89,60 +89,119 @@ export async function createInvoiceFromJob(
     // Fall through to Phase B enrichment below
   }
 
-  // Steps 2–5: Populate lines, apply tax, snapshot — all in one transaction.
-  // Storage methods receive the tx handle so they participate in this boundary
-  // instead of creating their own independent committed transactions.
+  // Steps 2–4: Populate lines, resolve default tax, apply tax — all in one transaction.
   await db.transaction(async (tx) => {
     // Step 2: Refresh/populate invoice lines from job parts + labor
     await storage.refreshInvoiceFromJob(companyId, result.invoice.id, tx);
 
-    // Step 3: Resolve default tax group (read-only, runs on tx connection)
+    // Step 3-4: Resolve default tax group and apply via canonical shared function
     const defaultGroup = await taxRepository.getDefaultTaxGroup(companyId);
-    if (!defaultGroup || defaultGroup.rates.length === 0) {
-      return; // No tax to apply
-    }
-
-    const combinedRate = defaultGroup.rates.reduce(
-      (sum, r) => sum + parseFloat(r.rate || "0"), 0
-    );
-
-    // Set taxGroupId on the invoice
-    await storage.updateInvoice(companyId, result.invoice.id, undefined, {
-      taxGroupId: defaultGroup.id,
-    }, tx);
-
-    // Step 4: Batch apply combined rate (single UPDATE + one recalculation)
-    const combinedRateDecimal = combinedRate / 100;
-    const invoiceSubtotal = await storage.batchApplyLineTax(
-      companyId, result.invoice.id, combinedRateDecimal, tx
-    );
-
-    // Step 5: Snapshot tax component rates (idempotent: delete existing first)
-    await tx
-      .delete(invoiceTaxLines)
-      .where(and(
-        eq(invoiceTaxLines.companyId, companyId),
-        eq(invoiceTaxLines.invoiceId, result.invoice.id)
-      ));
-    const snapshotRows = defaultGroup.rates.map((r) => {
-      const pct = parseFloat(r.rate || "0");
-      const taxAmt = invoiceSubtotal * (pct / 100);
-      return {
-        companyId,
-        invoiceId: result.invoice.id,
-        taxRateId: r.id,
-        taxRateName: r.name,
-        ratePercent: r.rate,
-        taxableAmount: String(invoiceSubtotal.toFixed(2)),
-        taxAmount: String(taxAmt.toFixed(2)),
-        taxGroupId: defaultGroup.id,
-        taxGroupName: defaultGroup.name,
-      };
-    });
-    if (snapshotRows.length > 0) {
-      await tx.insert(invoiceTaxLines).values(snapshotRows);
+    if (defaultGroup && defaultGroup.rates.length > 0) {
+      await applyTaxGroupToInvoice(companyId, result.invoice.id, defaultGroup.id, tx);
     }
   });
 
   return { invoice: result.invoice, created: true };
+}
+
+// ============================================================================
+// Apply Tax Group to Invoice (shared canonical logic)
+// ============================================================================
+
+/**
+ * Apply a specific tax group to an invoice, or remove tax (taxGroupId=null).
+ * Canonical shared logic — used by both apply-tax route and standalone creation.
+ *
+ * When applying a group:
+ *   1. Sets invoice.taxGroupId
+ *   2. Batch applies combined rate to all lines
+ *   3. Creates invoice_tax_lines snapshot
+ *
+ * When removing tax (taxGroupId=null):
+ *   1. Clears invoice.taxGroupId
+ *   2. Batch applies zero rate
+ *   3. Deletes invoice_tax_lines snapshot
+ *
+ * Does NOT mutate company settings. Invoice-scoped only.
+ */
+/**
+ * Core tax application logic — runs within a provided transaction or creates its own.
+ * This is the SINGLE implementation of: resolve group → set taxGroupId → batch-apply rate → write snapshot.
+ */
+async function applyTaxGroupCore(
+  companyId: string,
+  invoiceId: string,
+  taxGroupId: string | null,
+  txHandle: any
+): Promise<void> {
+  if (taxGroupId === null) {
+    await storage.batchApplyLineTax(companyId, invoiceId, 0, txHandle);
+    await storage.updateInvoice(companyId, invoiceId, undefined, { taxGroupId: null }, txHandle);
+    await txHandle.delete(invoiceTaxLines).where(and(
+      eq(invoiceTaxLines.companyId, companyId),
+      eq(invoiceTaxLines.invoiceId, invoiceId)
+    ));
+    return;
+  }
+
+  const group = await taxRepository.getTaxGroup(companyId, taxGroupId);
+  if (!group || !group.rates || group.rates.length === 0) {
+    return; // No-op if group missing/empty
+  }
+
+  const combinedRate = group.rates.reduce(
+    (sum, r) => sum + parseFloat(r.rate || "0"), 0
+  );
+  const combinedRateDecimal = combinedRate / 100;
+
+  await storage.updateInvoice(companyId, invoiceId, undefined, {
+    taxGroupId: group.id,
+  }, txHandle);
+
+  const invoiceSubtotal = await storage.batchApplyLineTax(
+    companyId, invoiceId, combinedRateDecimal, txHandle
+  );
+
+  // Snapshot: delete existing, insert fresh (audit/display only — not used for calculations)
+  await txHandle.delete(invoiceTaxLines).where(and(
+    eq(invoiceTaxLines.companyId, companyId),
+    eq(invoiceTaxLines.invoiceId, invoiceId)
+  ));
+  const snapshotRows = group.rates.map((r) => {
+    const pct = parseFloat(r.rate || "0");
+    const taxAmt = invoiceSubtotal * (pct / 100);
+    return {
+      companyId,
+      invoiceId,
+      taxRateId: r.id,
+      taxRateName: r.name,
+      ratePercent: r.rate,
+      taxableAmount: String(invoiceSubtotal.toFixed(2)),
+      taxAmount: String(taxAmt.toFixed(2)),
+      taxGroupId: group.id,
+      taxGroupName: group.name,
+    };
+  });
+  if (snapshotRows.length > 0) {
+    await txHandle.insert(invoiceTaxLines).values(snapshotRows);
+  }
+}
+
+/**
+ * Apply a tax group to an invoice, or remove tax (taxGroupId=null).
+ * Canonical shared function — used by apply-tax route and invoice creation paths.
+ * Accepts optional txHandle to participate in an existing transaction.
+ */
+export async function applyTaxGroupToInvoice(
+  companyId: string,
+  invoiceId: string,
+  taxGroupId: string | null,
+  txHandle?: any
+): Promise<void> {
+  if (txHandle) {
+    return applyTaxGroupCore(companyId, invoiceId, taxGroupId, txHandle);
+  }
+  return db.transaction(async (tx) => {
+    return applyTaxGroupCore(companyId, invoiceId, taxGroupId, tx);
+  });
 }

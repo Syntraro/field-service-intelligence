@@ -4,8 +4,8 @@
  * (not grouped by company) with location-level tags.
  */
 
-import { useState, useMemo, useCallback } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useState, useMemo, useCallback, useEffect } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Tag, ArrowLeft, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -38,7 +38,13 @@ const LOCATIONS_GRID_COLS = "40px repeat(6, minmax(0, 1fr))";
 
 export default function Locations() {
   const [, setLocation] = useLocation();
+  // List stability: split search into immediate input + debounced query value
+  const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setSearch(searchInput), 300);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
   const [selectedTagIds, setSelectedTagIds] = useState<Set<string>>(new Set());
 
   // Phase 2B: Row selection + bulk edit state
@@ -77,6 +83,7 @@ export default function Locations() {
   }, [tagAssignments]);
 
   // Fetch all locations (same endpoint as Clients page)
+  // List stability: keepPreviousData prevents flash on search transitions
   const { data, isLoading } = useQuery({
     queryKey: ["/api/clients", search],
     queryFn: async () => {
@@ -86,6 +93,7 @@ export default function Locations() {
       });
       return await apiRequest(`/api/clients?${params}`);
     },
+    placeholderData: keepPreviousData,
   });
 
   const locations = (data?.data || []) as Client[];
@@ -145,16 +153,7 @@ export default function Locations() {
     return m;
   }, [filteredLocations, selectedRows]);
 
-  if (isLoading) {
-    return (
-      <TablePageShell title="Locations" data-testid="locations-page">
-        <div className="flex items-center justify-center h-64">
-          <div className="text-muted-foreground">Loading locations...</div>
-        </div>
-      </TablePageShell>
-    );
-  }
-
+  // List stability: single return path — loading/empty states render inside content area only
   return (
     <TablePageShell
       title="Locations"
@@ -168,8 +167,8 @@ export default function Locations() {
     >
       {/* List Pages Refactor: Consolidated toolbar with search + filters popover */}
       <ListToolbar
-        searchValue={search}
-        onSearchChange={setSearch}
+        searchValue={searchInput}
+        onSearchChange={setSearchInput}
         searchPlaceholder="Search locations..."
         searchTestId="input-search-locations"
       >
@@ -230,7 +229,7 @@ export default function Locations() {
 
       {/* Locations table */}
       <ListSurface>
-        {/* Virtualized grid header */}
+        {/* Grid header — always mounted */}
         <div
           className="grid items-center border-b border-gray-200 dark:border-gray-800 py-3 text-sm font-medium text-muted-foreground"
           style={{ gridTemplateColumns: LOCATIONS_GRID_COLS }}
@@ -250,7 +249,12 @@ export default function Locations() {
           <div className="px-4">Maintenance Months</div>
         </div>
 
-        {filteredLocations.length === 0 ? (
+        {/* List stability: loading/empty states render inside content area only */}
+        {isLoading ? (
+          <div className="flex items-center justify-center h-64">
+            <div className="text-muted-foreground">Loading locations...</div>
+          </div>
+        ) : filteredLocations.length === 0 ? (
           <div className="text-center text-muted-foreground py-8">
             No locations found
           </div>
@@ -263,7 +267,7 @@ export default function Locations() {
                 key={loc.id}
                 style={{ height: ROW_HEIGHT, gridTemplateColumns: LOCATIONS_GRID_COLS }}
                 className={`grid items-center ${tableRowClass}`}
-                onClick={() => setLocation(`/locations/${loc.id}`)}
+                onClick={() => setLocation(loc.parentCompanyId ? `/clients/${loc.parentCompanyId}?location=${loc.id}` : `/clients`)}
                 data-testid={`row-location-${loc.id}`}
               >
                 <div className="flex justify-center" onClick={(e) => e.stopPropagation()}>

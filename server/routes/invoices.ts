@@ -12,7 +12,7 @@ import { requireFeature } from "../auth/requireFeature";
 import { assertInvoiceStatusTransition } from "../domain/jobLifecycle";
 import { invoiceStatusEnum } from "@shared/schema";
 import type { InvoiceStatus } from "@shared/schema";
-import { createInvoiceFromJob as createInvoiceFromJobService, calculateDueDate } from "../services/invoiceCreationService";
+import { createInvoiceFromJob as createInvoiceFromJobService, calculateDueDate, applyTaxGroupToInvoice } from "../services/invoiceCreationService";
 import {
   isBillingLocked,
   isQboSynced,
@@ -57,6 +57,8 @@ const createInvoiceLineSchema = z.object({
   lineTotal: z.number().min(0).max(999999.99),
   lineNumber: z.number().int().positive().optional(),
   source: z.enum(["manual", "job"]).optional().default("manual"),
+  productId: z.string().uuid().nullable().optional(), // Link to items (Products & Services)
+  unitCost: z.number().min(0).max(999999.99).optional(), // Cost from product/service
   // QBO override options
   overrideQboLock: z.boolean().optional(),
   overrideReason: z.string().min(10).max(500).optional(),
@@ -69,7 +71,7 @@ const createInvoiceFromJobSchema = z.object({
 const updateInvoiceSchema = z.object({
   // 2026-03-18: Uses canonical invoiceStatusEnum from shared/schema.ts (was hardcoded, missing awaiting_payment)
   status: z.enum(invoiceStatusEnum).optional(),
-  issueDate: z.string().datetime().optional(),
+  issueDate: z.string().min(1).max(50).optional(), // Accepts YYYY-MM-DD (date column) or ISO datetime
   dueDate: z.string().optional().nullable(), // Accepts date string or null (for custom terms)
   // Payment terms - when changed, dueDate is recalculated; null = custom terms
   paymentTermsDays: z.number().int().min(0).max(365).optional().nullable(),
@@ -167,6 +169,65 @@ function validateSendRequirements(invoice: any): string[] {
 // ========================================
 // ROUTES
 // ========================================
+
+// Standalone invoice creation schema
+const createStandaloneInvoiceSchema = z.object({
+  locationId: z.string().uuid(),
+  workDescription: z.string().max(2000).optional(),
+}).strict();
+
+/**
+ * POST /api/invoices - Create standalone draft invoice (no job/PM dependency)
+ * Returns a draft invoice shell with no lines. Lines are added separately.
+ * 2026-03-29: First-class standalone invoice creation path.
+ */
+router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const validated = validateSchema(createStandaloneInvoiceSchema, req.body);
+  const companyId = req.companyId!;
+
+  if (!companyId) {
+    throw createError(401, "Company context required. Ensure you are logged in with a valid company.");
+  }
+
+  // Resolve location and customerCompanyId (same pattern as job/PM paths)
+  const location = await storage.getClient(companyId, validated.locationId);
+  if (!location) {
+    // Precise error for diagnosability — location may not exist or may belong to another tenant
+    console.warn(
+      `[POST /api/invoices] Location lookup failed: locationId=${validated.locationId}, companyId=${companyId}`
+    );
+    throw createError(404, `Location not found for this company. Verify the location ID (${validated.locationId}) belongs to your account.`);
+  }
+
+  const result = await storage.createStandaloneInvoice(
+    companyId,
+    {
+      locationId: validated.locationId,
+      customerCompanyId: location.parentCompanyId ?? null,
+      workDescription: validated.workDescription,
+    },
+    "STANDALONE_ROUTE"
+  );
+
+  // Apply default tax group to new invoice (sets taxGroupId; no lines yet so batch-apply is no-op)
+  const { taxRepository } = await import("../storage/tax");
+  const defaultTaxGroup = await taxRepository.getDefaultTaxGroup(companyId);
+  if (defaultTaxGroup && defaultTaxGroup.rates.length > 0) {
+    await storage.updateInvoice(companyId, result.invoice.id, undefined, {
+      taxGroupId: defaultTaxGroup.id,
+    });
+  }
+
+  logEventAsync(getQueryCtx(req), {
+    eventType: "invoice.created",
+    entityType: "invoice",
+    entityId: result.invoice.id,
+    summary: `Invoice #${result.invoiceNumber} created (standalone)`,
+    meta: { invoiceNumber: result.invoiceNumber },
+  });
+
+  res.status(201).json(result.invoice);
+}));
 
 // Phase 5 Step A4: GET /api/invoices/list — canonical invoice feed
 router.get("/list", asyncHandler(async (req: AuthedRequest, res: Response) => {
@@ -341,6 +402,19 @@ router.post("/:id/lines", requireRole(MANAGER_ROLES), requireEditableStatus(), a
   // Check lock (throws 409 if locked without override)
   checkQboLineItemLock(invoice, 'add', { overrideQboLock, overrideReason });
 
+  // If invoice has an active tax group and line doesn't specify tax, apply the group's rate
+  if (invoice.taxGroupId && (lineData.taxRate === undefined || lineData.taxRate === 0)) {
+    const { taxRepository } = await import("../storage/tax");
+    const group = await taxRepository.getTaxGroup(req.companyId!, invoice.taxGroupId);
+    if (group && group.rates.length > 0) {
+      const combinedRate = group.rates.reduce((s: number, r: any) => s + parseFloat(r.rate || "0"), 0);
+      const taxRateDecimal = combinedRate / 100;
+      lineData.taxRate = taxRateDecimal;
+      lineData.taxAmount = Math.round(lineData.lineSubtotal * taxRateDecimal * 100) / 100;
+      lineData.lineTotal = Math.round((lineData.lineSubtotal + lineData.taxAmount) * 100) / 100;
+    }
+  }
+
   // Create the line item
   const created = await storage.createInvoiceLine(req.companyId!, req.params.id, lineData);
 
@@ -389,7 +463,98 @@ router.delete("/:id/lines/:lineId", requireRole(MANAGER_ROLES), requireEditableS
   res.json({ ...result, _qboWarning: warning });
 }));
 
+// PATCH /api/invoices/:id/lines/reorder - Reorder line items
+// NOTE: Must be registered BEFORE /:id/lines/:lineId to avoid "reorder" matching as :lineId
+const reorderInvoiceLinesSchema = z.array(z.object({
+  id: z.string().uuid(),
+  lineNumber: z.number().int().positive(),
+})).min(1).max(200);
+
+router.patch("/:id/lines/reorder", requireRole(MANAGER_ROLES), requireEditableStatus(), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const ordering = validateSchema(reorderInvoiceLinesSchema, req.body);
+  try {
+    await storage.reorderInvoiceLines(req.companyId!, req.params.id, ordering);
+  } catch (error: any) {
+    // Validation errors from reorderInvoiceLines are user-facing (bad payload)
+    if (error.message?.includes("duplicate") || error.message?.includes("does not belong") || error.message?.includes("Full reorder required")) {
+      throw createError(400, error.message);
+    }
+    throw error;
+  }
+  res.json({ success: true });
+}));
+
+// PATCH /api/invoices/:id/lines/:lineId - Update a single line item (with QBO lock check)
+const updateInvoiceLineSchema = z.object({
+  description: z.string().min(1).max(500).optional(),
+  quantity: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
+  unitPrice: z.number().min(0).max(999999.99).optional(),
+  unitCost: z.number().min(0).max(999999.99).optional(),
+  lineSubtotal: z.number().min(0).max(999999.99).optional(),
+  taxRate: z.number().min(0).max(1).optional(),
+  taxAmount: z.number().min(0).max(999999.99).optional(),
+  lineTotal: z.number().min(0).max(999999.99).optional(),
+  productId: z.string().uuid().nullable().optional(),
+  overrideQboLock: z.boolean().optional(),
+  overrideReason: z.string().min(10).max(500).optional(),
+}).strict();
+
+router.patch("/:id/lines/:lineId", requireRole(MANAGER_ROLES), requireEditableStatus(), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const validated = validateSchema(updateInvoiceLineSchema, req.body);
+  const { overrideQboLock, overrideReason, ...lineData } = validated;
+
+  const invoice = (req as any).invoice;
+
+  if (overrideQboLock) {
+    requireQboOverrideReason(overrideQboLock, overrideReason);
+  }
+  checkQboLineItemLock(invoice, 'update', { overrideQboLock, overrideReason });
+
+  const updated = await storage.updateInvoiceLine(req.companyId!, req.params.id, req.params.lineId, lineData);
+  if (!updated) {
+    throw createError(404, "Line item not found");
+  }
+
+  let warning: string | undefined;
+  if (isQboSynced(invoice) && overrideQboLock && overrideReason) {
+    const outOfSyncUpdate = buildOutOfSyncUpdate(overrideReason, req.user?.id);
+    await storage.updateInvoice(req.companyId!, req.params.id, undefined, outOfSyncUpdate);
+    logQboLockOverride(req.companyId!, req.params.id, req.user?.id ?? 'unknown', 'edit_line', overrideReason, invoice.qboInvoiceId);
+    warning = "Invoice is now out of sync with QuickBooks. Manual reconciliation required.";
+  }
+
+  res.json({ ...updated, _qboWarning: warning });
+}));
+
 // POST /api/invoices/:id/refresh-from-job - Refresh invoice lines from job (draft only, with QBO lock check)
+// POST /api/invoices/:id/apply-tax - Apply tax group or remove tax from invoice
+// Reuses canonical batchApplyLineTax() + tax snapshot — does NOT mutate company settings
+// Accepts { taxGroupId: "uuid" } to apply a group, or { taxGroupId: null } for no tax
+const applyTaxSchema = z.object({
+  taxGroupId: z.string().uuid().nullable(),
+}).strict();
+
+router.post("/:id/apply-tax", requireRole(MANAGER_ROLES), requireEditableStatus(), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const validated = validateSchema(applyTaxSchema, req.body);
+  const companyId = req.companyId!;
+  const invoiceId = req.params.id;
+
+  // Validate tax group exists before applying (null = no tax, always valid)
+  if (validated.taxGroupId !== null) {
+    const { taxRepository } = await import("../storage/tax");
+    const group = await taxRepository.getTaxGroup(companyId, validated.taxGroupId);
+    if (!group) throw createError(404, "Tax group not found");
+    if (!group.rates || group.rates.length === 0) throw createError(400, "Tax group has no rates configured");
+  }
+
+  // Delegate to canonical shared function (same logic as invoice creation)
+  await applyTaxGroupToInvoice(companyId, invoiceId, validated.taxGroupId);
+
+  // Re-fetch to return updated invoice with recalculated totals
+  const updated = await storage.getInvoice(companyId, invoiceId);
+  res.json(updated);
+}));
+
 router.post("/:id/refresh-from-job", requireRole(MANAGER_ROLES), requireEditableStatus(), asyncHandler(async (req: AuthedRequest, res: Response) => {
   // Parse QBO override from body
   const overrideQboLock = req.body?.overrideQboLock === true;
@@ -516,6 +681,15 @@ router.patch("/:id", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async
     // Invoice number uniqueness check (enforced per tenant via DB unique index)
     // The DB index invoices_company_invoice_number_uq handles this, but we catch
     // the constraint violation and return a clear 409 error.
+
+    // Counter-drift guard: if manual invoice number is numeric and exceeds
+    // companyCounters.nextInvoiceNumber, bump the counter to prevent future collisions.
+    if (patch.invoiceNumber) {
+      const numericVal = parseInt(patch.invoiceNumber, 10);
+      if (!isNaN(numericVal) && String(numericVal) === patch.invoiceNumber.trim()) {
+        await storage.bumpInvoiceCounterIfNeeded(req.companyId!, numericVal + 1);
+      }
+    }
 
     // When paymentTermsDays is a number (standard terms), recalculate dueDate
     // 2026-03-19: Uses canonical calculateDueDate (F-06 hardening)
@@ -860,7 +1034,7 @@ router.patch("/:id/sent", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
   res.json(updated);
 }));
 
-// DELETE /api/invoices/:id - Delete invoice (draft only)
+// DELETE /api/invoices/:id - Delete invoice (draft only, with safety guards)
 router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const invoice = await storage.getInvoice(req.companyId!, req.params.id);
   if (!invoice) {
@@ -871,6 +1045,16 @@ router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authe
     throw createError(409, "Only draft invoices can be deleted. Void the invoice instead.");
   }
 
+  // Guard: cannot delete if synced/exported to QuickBooks
+  if (invoice.qboInvoiceId) {
+    throw createError(409, "Cannot delete an invoice that has been synced to QuickBooks. Void it instead.");
+  }
+
+  // Guard: cannot delete if any payments have been recorded
+  if (parseFloat(invoice.amountPaid || "0") > 0) {
+    throw createError(409, "Cannot delete an invoice with recorded payments. Void it instead.");
+  }
+
   // Soft delete via isActive flag
   await storage.updateInvoice(
     req.companyId!,
@@ -878,6 +1062,15 @@ router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authe
     undefined,
     { isActive: false, deletedAt: new Date() }
   );
+
+  // Log delete event
+  logEventAsync(getQueryCtx(req), {
+    eventType: "invoice.deleted",
+    entityType: "invoice",
+    entityId: req.params.id,
+    summary: `Invoice #${invoice.invoiceNumber} deleted (draft)`,
+    meta: { invoiceNumber: invoice.invoiceNumber },
+  });
 
   res.json({ success: true });
 }));

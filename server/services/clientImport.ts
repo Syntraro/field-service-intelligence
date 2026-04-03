@@ -285,7 +285,7 @@ async function getCompanyCacheEntry(
   }
 
   // Fetch existing contacts for email/name+phone/name-only dedup
-  const contacts = await clientContactRepository.getAllContactsForCustomerCompany(companyId, existing.id);
+  const contacts = await clientContactRepository.getCompanyPersons(companyId, existing.id);
   const contactEmails = new Set<string>();
   const contactNamePhones = new Set<string>();
   const contactNames = new Set<string>();

@@ -25,6 +25,9 @@ import {
   generateForSingleTemplate,
   generateFromInstances,
   previewGeneration,
+  computeOccurrenceDates,
+  getCompanyToday,
+  formatDateString,
 } from "../domain/recurrence";
 
 const router = Router();
@@ -42,6 +45,7 @@ const SCHEDULING_ROLES = ["owner", "admin", "dispatcher"];
  *
  * Query params:
  * - activeOnly: boolean (default false)
+ * - type: "pm" | "recurring_job" (optional — filters by jobType server-side)
  */
 router.get(
   "/",
@@ -49,12 +53,31 @@ router.get(
   asyncHandler(async (req: AuthedRequest, res: Response) => {
     const companyId = req.companyId;
     const activeOnly = req.query.activeOnly === "true";
+    const type = req.query.type as "pm" | "recurring_job" | undefined;
 
     const templates = await recurringJobsRepository.getTemplates(companyId, {
       activeOnly,
+      type: type === "pm" || type === "recurring_job" ? type : undefined,
     });
 
-    res.json(templates);
+    // Compute nextOccurrence for each template using canonical recurrence domain logic.
+    // computeOccurrenceDates is pure date math (no DB queries), safe to call per-template.
+    const today = await getCompanyToday(companyId);
+    const windowEnd = new Date(today);
+    windowEnd.setFullYear(windowEnd.getFullYear() + 1); // 1-year lookahead
+
+    const templatesWithNext = templates.map((t) => {
+      if (!t.isActive) {
+        return { ...t, nextOccurrence: null };
+      }
+      const occurrences = computeOccurrenceDates(t, today, windowEnd);
+      return {
+        ...t,
+        nextOccurrence: occurrences.length > 0 ? formatDateString(occurrences[0]) : null,
+      };
+    });
+
+    res.json(templatesWithNext);
   })
 );
 

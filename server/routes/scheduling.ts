@@ -145,6 +145,8 @@ function transformToDto(job: ScheduledJobWithDetails): CalendarEventDto {
     locationCity: job.locationCity ?? null,
     locationProvinceState: job.locationProvinceState ?? null,
     locationPostalCode: job.locationPostalCode ?? null,
+    lat: job.lat ?? null,
+    lng: job.lng ?? null,
   };
 }
 
@@ -551,6 +553,9 @@ router.get(
       locationCity: job.locationCity ?? null,
       locationProvinceState: job.locationProvinceState ?? null,
       locationPostalCode: job.locationPostalCode ?? null,
+      // Coordinates for dispatch map markers
+      lat: job.lat ?? null,
+      lng: job.lng ?? null,
       // 2026-03-22: Real visit ID for canonical EditVisitModal opening from unscheduled panel
       activeVisitId: (job as any).activeVisitId ?? null,
     }));

@@ -426,30 +426,33 @@ router.post("/full-create", requireRole(MANAGER_ROLES), asyncHandler(async (req:
     createdLocations.push(newLoc);
   }
 
-  // 4) Create contacts (company-level and location-level)
+  // 4) Create contacts — Identity + Assignment model
   // contacts array format: [{ firstName, lastName, email, phone, roles, locationIndex?, isPrimary }]
-  // locationIndex: undefined/null = company-level, 0 = primary location, 1+ = additional location index
+  // Creates person record first, then assignment if locationIndex is specified
   let createdContacts: any[] = [];
   if (contacts.length > 0) {
-    const contactRows = contacts.map((c: any) => {
-      let locationId: string | null = null;
-      if (c.locationIndex != null && c.locationIndex >= 0) {
-        // locationIndex 0 = primary, 1+ = additional locations (offset by 1 since createdLocations[0] = primary)
-        const loc = createdLocations[c.locationIndex];
-        if (loc) locationId = loc.id;
-      }
-      return {
+    for (const c of contacts) {
+      const person = await clientContactRepository.createPerson(companyId!, {
         customerCompanyId: customerCompany.id,
-        locationId,
         firstName: (c.firstName || "").trim(),
         lastName: (c.lastName || "").trim(),
         email: c.email?.trim() || null,
         phone: c.phone?.trim() || null,
-        roles: Array.isArray(c.roles) ? c.roles : [],
         isPrimary: c.isPrimary === true,
-      };
-    });
-    createdContacts = await clientContactRepository.createContacts(companyId, contactRows);
+      });
+      createdContacts.push(person);
+      // Create location assignment if locationIndex is specified
+      if (c.locationIndex != null && c.locationIndex >= 0) {
+        const loc = createdLocations[c.locationIndex];
+        if (loc) {
+          await clientContactRepository.assignToLocation(companyId!, {
+            contactPersonId: person.id,
+            locationId: loc.id,
+            roles: Array.isArray(c.roles) ? c.roles : [],
+          });
+        }
+      }
+    }
   }
 
   res.json({
@@ -551,16 +554,15 @@ router.get("/:clientId/contacts", asyncHandler(async (req: AuthedRequest, res: R
   const client = await storage.getClient(companyId!, clientId);
   if (!client) throw createError(404, "Client not found");
 
-  // Get location-specific contacts
-  const locationContacts = await clientContactRepository.getLocationContacts(companyId!, clientId);
-
-  // Get company-level contacts if this location has a parent company
-  let companyContacts: any[] = [];
+  // Identity + Assignment model: return company persons + location-assigned persons
   if (client.parentCompanyId) {
-    companyContacts = await clientContactRepository.getCompanyContacts(companyId!, client.parentCompanyId);
+    const result = await clientContactRepository.getLegacyContactsForLocation(
+      companyId!, clientId, client.parentCompanyId
+    );
+    res.json(result);
+  } else {
+    res.json({ companyContacts: [], locationContacts: [] });
   }
-
-  res.json({ companyContacts, locationContacts });
 }));
 
 /**

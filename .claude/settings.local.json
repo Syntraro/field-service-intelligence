@@ -143,7 +143,26 @@
       "Bash(git -C /home/runner/workspace log --oneline --all migrations/2026_03_24*.sql)",
       "Bash(git:*)",
       "Read(//home/runner/workspace/**)",
-      "Bash(find /home/runner/workspace/server -type f \\\\\\(-name *cron* -o -name *scheduler* -o -name *worker* -o -name *jobs.ts \\\\\\))"
+      "Bash(find /home/runner/workspace/server -type f \\\\\\(-name *cron* -o -name *scheduler* -o -name *worker* -o -name *jobs.ts \\\\\\))",
+      "Bash(find /home/runner/workspace/client/src/components -type f \\\\\\(-name *header* -o -name *nav* -o -name *top* \\\\\\))",
+      "Bash(grep -E \"^[^/]*\\(/[^/]*\\)?/package.json$\")",
+      "Bash(1 done:*)",
+      "Bash(source .env)",
+      "Bash(npx tsx -e \":*)",
+      "Bash(/tmp/mutations_summary.txt:*)",
+      "Bash(find /home/runner/workspace -type f \\\\\\(-name *.ts -o -name *.tsx \\\\\\) -not -path */node_modules/* -not -path */.cache/* -not -path */dist/*)",
+      "Bash(find /home/runner/workspace/client /home/runner/workspace/server -type f \\\\\\(-name *.ts -o -name *.tsx -o -name *.js -o -name *.jsx \\\\\\))",
+      "Bash(find . -type f \\\\\\(-name *.ts -o -name *.tsx -o -name *.js -o -name *.json -o -name *.css -o -name *.scss -o -name *.html \\\\\\) ! -path ./.cache/* ! -path ./.git/* ! -path ./node_modules/* ! -path ./dist/*)",
+      "Bash(find /home/runner/workspace/client/src/pages -type f \\\\\\(-name *.tsx -o -name *.jsx \\\\\\))",
+      "Bash(find /home/runner/workspace/client/src -type f \\\\\\(-name *location* -o -name *Location* \\\\\\))",
+      "Bash(find /home/runner/workspace/client/src -type f \\\\\\(-name *edit* -o -name *Edit* \\\\\\))",
+      "Bash(find /home/runner/workspace/client/src -type f \\\\\\(-name *Map*.tsx -o -name *map*.tsx \\\\\\))",
+      "Bash(apt list:*)",
+      "Bash(pip3 install:*)",
+      "Bash(nix-env --query)",
+      "Bash(npx md-to-pdf:*)",
+      "Bash(find /home/runner/workspace -type f \\\\\\(-name *.tsx -o -name *.ts -o -name *.jsx -o -name *.js \\\\\\))",
+      "Bash(find /home/runner/workspace/client/src/components -type f \\\\\\(-name *[Pp][Mm]* -o -name *[Dd]ashboard* -o -name *[Rr]ecurring* \\\\\\))"
     ]
   }
 }

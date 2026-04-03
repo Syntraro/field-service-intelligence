@@ -250,7 +250,7 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
 
   return (
     <>
-      <div className="space-y-4">
+      <div className="space-y-2">
         {/* Add button (hidden when parent provides its own header button) */}
         {!hideAddButton && !isAdding && (
           <div className="flex justify-end">
@@ -324,14 +324,13 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
 
         {/* ── Notes List ───────────────────────── */}
         {notes.length === 0 && !isAdding ? (
-          <div className="text-center py-8 text-muted-foreground">
-            <StickyNote className="h-10 w-10 mx-auto mb-3 opacity-50" />
-            <p className="text-sm">No notes yet.</p>
-            <p className="text-xs mt-1">Add a note to keep track of important information.</p>
+          <div className="flex items-center justify-center gap-1.5 py-2 text-muted-foreground">
+            <StickyNote className="h-3.5 w-3.5 opacity-30" />
+            <p className="text-[11px]">No notes yet.</p>
           </div>
         ) : (
           notes.map((note) => (
-            <div key={note.id} className="p-3 border rounded-lg text-sm" data-testid={`note-${note.id}`}>
+            <div key={note.id} className="px-3 py-2.5 border rounded-lg text-sm overflow-hidden" data-testid={`note-${note.id}`}>
               {editingNoteId === note.id ? (
                 /* ── Inline Edit ─── */
                 <div className="space-y-3">
@@ -365,7 +364,7 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
               ) : (
                 /* ── Read View ──── */
                 <>
-                  <p className="whitespace-pre-wrap text-xs">{note.noteText}</p>
+                  <p className="whitespace-pre-wrap break-words text-xs" style={{ overflowWrap: "anywhere" }}>{note.noteText}</p>
 
                   {/* Visibility badges */}
                   {(note.showOnJobs || note.showOnInvoices || note.showOnQuotes) && (
@@ -402,17 +401,17 @@ const NotesPanel = forwardRef<NotesPanelRef, NotesPanelProps>(function NotesPane
                     </div>
                   )}
 
-                  {/* Compact metadata: "Author · Date, Time" */}
-                  <div className="flex items-center justify-between mt-1.5 text-[10px] text-muted-foreground">
-                    <span>
-                      {note.createdByName || "Unknown"} · {note.createdAt && format(new Date(note.createdAt), "MMM d, yyyy, h:mm a")}
+                  {/* Compact metadata: "Author · Date, Time" + actions */}
+                  <div className="flex items-center justify-between mt-2 text-[10px] text-muted-foreground">
+                    <span className="truncate mr-2">
+                      {note.createdByName || "Unknown"} · {note.createdAt && format(new Date(note.createdAt), "MMM d, h:mm a")}
                       {note.updatedAt && note.updatedAt !== note.createdAt && " (edited)"}
                     </span>
-                    <div className="flex gap-0.5">
-                      <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => startEdit(note)} data-testid={`button-edit-note-${note.id}`}>
+                    <div className="flex gap-1 flex-shrink-0">
+                      <Button variant="ghost" size="sm" className="h-5 w-5 p-0 text-muted-foreground hover:text-foreground" onClick={() => startEdit(note)} data-testid={`button-edit-note-${note.id}`}>
                         <Pencil className="h-3 w-3" />
                       </Button>
-                      <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={() => setDeleteNoteId(note.id)} data-testid={`button-delete-note-${note.id}`}>
+                      <Button variant="ghost" size="sm" className="h-5 w-5 p-0 text-muted-foreground hover:text-destructive" onClick={() => setDeleteNoteId(note.id)} data-testid={`button-delete-note-${note.id}`}>
                         <Trash2 className="h-3 w-3" />
                       </Button>
                     </div>

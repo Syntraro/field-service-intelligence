@@ -11,6 +11,10 @@ export interface TeamMember {
   status?: string;
   isSchedulable?: boolean;
   createdAt?: string;
+  /** 2026-03-31: Canonical calendar color from technicianProfiles */
+  color?: string | null;
+  /** 2026-04-03: Default labour cost per hour from technicianProfiles */
+  laborCostPerHour?: string | null;
 }
 
 export function useTechniciansDirectory() {

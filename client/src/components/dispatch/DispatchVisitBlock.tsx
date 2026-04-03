@@ -7,6 +7,7 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import type { DispatchVisit, DispatchTask } from "./dispatchPreviewTypes";
 import type { DispatchDragData } from "./dispatchDndTypes";
+import { useDispatchHover } from "./dispatchHoverContext";
 import {
   priorityIndicator, formatDuration, isCompletedStatus, jobStateColor,
   HOUR_WIDTH_PX, SNAP_MINUTES, MIN_DURATION_MINUTES, PX_PER_MINUTE,
@@ -40,6 +41,8 @@ type Props = {
 };
 
 export default function DispatchVisitBlock({ visit, left, width, techColor, isSaving, isSelected, hasConflict, onSelect, onUnschedule, onResize, laneVisits = [], laneTasks = [], laneTechId, timelineEndHour: teHour = TIMELINE_END_HOUR }: Props) {
+  const { hoveredVisitId, setHoveredVisitId } = useDispatchHover();
+  const isMapHovered = hoveredVisitId === visit.id;
   const isTeamVisit = visit.technicianIds.length > 1;
   const isCompleted = isCompletedStatus(visit.status);
   const dragData: DispatchDragData = {
@@ -181,15 +184,17 @@ export default function DispatchVisitBlock({ visit, left, width, techColor, isSa
       {...(isResizing ? {} : listeners)}
       {...(isResizing ? {} : attributes)}
       onClick={handleClick}
+      onMouseEnter={() => setHoveredVisitId(visit.id)}
+      onMouseLeave={() => setHoveredVisitId(null)}
       data-dispatch-block="visit"
       data-visit-id={visit.id}
-      className={`group/visit absolute top-1 bottom-1 rounded border ${stateCls} ${priorityCls ? `border-l-[3px] ${priorityCls}` : ""} overflow-visible transition-shadow hover:shadow-md hover:z-10 ${
+      className={`group/visit absolute top-1 bottom-1 rounded border ${techColor ? "" : stateCls} ${!techColor && priorityCls ? `border-l-[3px] ${priorityCls}` : ""} overflow-visible transition-shadow hover:shadow-md hover:z-10 ${
         isDragging ? "opacity-40 shadow-lg z-30" : ""
-      } ${isResizing ? "z-20 shadow-lg" : ""} ${isSelected ? "ring-2 ring-emerald-500 ring-offset-1 shadow-md shadow-emerald-200/50 z-20" : ""} ${hasConflict && !isSelected ? "ring-2 ring-red-500 ring-offset-1 shadow-md shadow-red-200/50 border-red-400" : ""} ${!isResizing ? "cursor-grab active:cursor-grabbing" : ""} ${isCompleted ? "opacity-55" : ""}`}
-      style={{ left, width: effectiveWidth }}
+      } ${isResizing ? "z-20 shadow-lg" : ""} ${isSelected ? "ring-2 ring-emerald-500 ring-offset-1 shadow-md shadow-emerald-200/50 z-20" : ""} ${hasConflict && !isSelected ? "ring-2 ring-red-500 ring-offset-1 shadow-md shadow-red-200/50 border-red-400" : ""} ${isMapHovered && !isSelected ? "ring-2 ring-emerald-400 shadow-md shadow-emerald-200/40 z-15" : ""} ${!isResizing ? "cursor-grab active:cursor-grabbing" : ""} ${isCompleted ? "opacity-55" : ""}`}
+      style={{ left, width: effectiveWidth, ...(techColor ? { backgroundColor: `${techColor}25`, borderColor: `${techColor}66`, borderLeftWidth: 3, borderLeftColor: techColor } : {}) }}
       title={`${visit.customerName}\n${visit.summary}\n${visit.locationName}\n#${visit.jobNumber} · ${formatDuration(visit.durationMinutes)}`}
     >
-      <div className="flex h-full flex-col justify-center px-2 py-1 overflow-hidden">
+      <div className="flex h-full flex-col justify-start px-2 py-1 overflow-hidden">
         <VisitCardContent
           visit={visit}
           variant={isNarrow ? "timeline-narrow" : "timeline-wide"}

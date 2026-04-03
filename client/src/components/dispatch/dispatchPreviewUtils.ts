@@ -34,6 +34,8 @@ export const LANE_HEIGHT_PX = 64;
 export const DIVIDER_HEIGHT_PX = 26;
 export const TECH_SIDEBAR_WIDTH_PX = 200;
 export const SNAP_MINUTES = 15;
+/** Default hour for scheduling via Month view drops (no time grid available) */
+export const DEFAULT_SCHEDULE_HOUR = 9;
 export const MIN_DURATION_MINUTES = 15;
 export const PX_PER_MINUTE = HOUR_WIDTH_PX / 60;
 
@@ -86,8 +88,8 @@ export function jobStateColor(
   if (openSubStatus === "in_progress" || openSubStatus === "on_route") {
     return "bg-blue-100 text-blue-900 border-blue-400";
   }
-  // Default open/scheduled → solid green
-  return "bg-green-100 text-green-900 border-green-400";
+  // Default open/scheduled → solid green with strong border
+  return "bg-green-50 text-slate-900 border-green-500";
 }
 
 /**

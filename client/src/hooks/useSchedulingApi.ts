@@ -271,19 +271,6 @@ export async function unscheduleVisit(
   });
 }
 
-/**
- * Mark a job as complete
- */
-export async function completeJob(
-  jobId: string,
-  payload?: { completionNotes?: string }
-): Promise<any> {
-  return apiRequest(`/api/jobs/${jobId}/complete`, {
-    method: "POST",
-    body: JSON.stringify(payload || {}),
-  });
-}
-
 // ============================================================================
 // React Query Hooks
 // ============================================================================
@@ -356,28 +343,6 @@ export function useUnscheduleVisit() {
       invalidateJobQueries(queryClient, "unschedule", variables.jobId);
       // Also invalidate visits since unschedule marks visit as inactive
       invalidateVisitQueries(queryClient, "unschedule", variables.jobId || variables.visitId);
-    },
-  });
-}
-
-/**
- * Hook to mark a job as complete
- *
- * INVALIDATION: calendar only + jobs (NOT unscheduled)
- * Reason: Job stays on calendar, status changes to completed
- */
-export function useCompleteJob() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: ({ jobId, payload }: { jobId: string; payload?: { completionNotes?: string } }) =>
-      completeJob(jobId, payload),
-    onSuccess: (_, variables) => {
-      // Job stays on calendar - no need to invalidate unscheduled
-      invalidateCalendarQueries(queryClient, "complete", variables.jobId);
-      invalidateJobQueries(queryClient, "complete", variables.jobId);
-      // Phase 5 Step B3: canonical dashboard family key
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     },
   });
 }

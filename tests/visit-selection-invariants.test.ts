@@ -150,7 +150,6 @@ async function createTestVisit(
     visitNumber?: number;
     checkedInAt?: Date;
     checkedOutAt?: Date;
-    actualDurationMinutes?: number;
   }
 ): Promise<string> {
   const visitId = uuidv4();
@@ -169,7 +168,6 @@ async function createTestVisit(
     estimatedDurationMinutes: 60,
     checkedInAt: options.checkedInAt ?? null,
     checkedOutAt: options.checkedOutAt ?? null,
-    actualDurationMinutes: options.actualDurationMinutes ?? null,
     version: 1,
   });
 
@@ -604,7 +602,7 @@ describe("Visit Selection & Calendar Invariant Tests", () => {
       const visit = {
         checkedInAt: new Date(),
         checkedOutAt: null,
-        actualDurationMinutes: null,
+
         status: "on_site",
       };
       expect(isVisitActioned(visit)).toBe(true);
@@ -616,7 +614,7 @@ describe("Visit Selection & Calendar Invariant Tests", () => {
         const visit = {
           checkedInAt: null,
           checkedOutAt: null,
-          actualDurationMinutes: null,
+  
           status,
         };
         expect(isVisitActioned(visit)).toBe(true);
@@ -627,7 +625,7 @@ describe("Visit Selection & Calendar Invariant Tests", () => {
       const visit = {
         checkedInAt: null,
         checkedOutAt: null,
-        actualDurationMinutes: null,
+
         status: "scheduled",
       };
       expect(isVisitActioned(visit)).toBe(false);

@@ -369,10 +369,9 @@ export async function completeVisit(
     };
 
     // Auto check-out if checked in but not yet checked out
+    // Labor unification: actualDurationMinutes deprecated — duration derived from time_entries
     if (existing.checkedInAt && !existing.checkedOutAt) {
       visitUpdates.checkedOutAt = now;
-      const durationMs = now.getTime() - new Date(existing.checkedInAt).getTime();
-      visitUpdates.actualDurationMinutes = Math.round(durationMs / 60000);
     }
 
     // Include outcome note in visitNotes if provided
@@ -595,7 +594,8 @@ export async function reopenVisit(
       completedByUserId: null,
       isFollowUpNeeded: false,
       checkedOutAt: null,
-      actualDurationMinutes: null,
+      // actualDurationMinutes: intentionally NOT nulled — historical labor data preserved on reopen.
+      // Reopening affects workflow state only; manual labor edits are a separate explicit action.
       updatedAt: now,
       version: existing.version + 1,
     })
@@ -1193,7 +1193,7 @@ async function reconcileJobAfterVisitCompletion(input: {
  *
  * Sets structured completion fields on each visit:
  * outcome="completed", completedAt=now, isFollowUpNeeded=false,
- * checkedOutAt (if checkedInAt was set), actualDurationMinutes.
+ * checkedOutAt (if checkedInAt was set).
  */
 async function bulkCompleteVisitsInternal(
   companyId: string,
@@ -1220,10 +1220,9 @@ async function bulkCompleteVisitsInternal(
       };
 
       // Auto check-out if checked in but not yet checked out
+      // Labor unification: actualDurationMinutes deprecated — duration derived from time_entries
       if (visit.checkedInAt && !visit.checkedOutAt) {
         updates.checkedOutAt = now;
-        const durationMs = now.getTime() - new Date(visit.checkedInAt).getTime();
-        updates.actualDurationMinutes = Math.round(durationMs / 60000);
       } else if (!visit.checkedInAt) {
         // Never checked in — still set checkedOutAt for audit completeness
         updates.checkedOutAt = now;
@@ -1302,17 +1301,14 @@ export async function rescheduleVisit(
   if (shouldSpawn) {
     // Handle old visit
     if (intent.mode === "complete_and_new") {
+      // Labor unification: actualDurationMinutes deprecated — duration derived from time_entries
       const now = new Date();
-      const actualDuration = visit.checkedInAt
-        ? Math.round((now.getTime() - new Date(visit.checkedInAt).getTime()) / 60000)
-        : null;
       await jobVisitsRepository.updateJobVisit(companyId, visit.id, visit.version, {
         status: "completed",
         outcome: "completed",
         completedAt: now,
         isFollowUpNeeded: false,
         checkedOutAt: now,
-        ...(actualDuration !== null && { actualDurationMinutes: actualDuration }),
       });
     } else {
       await jobVisitsRepository.updateJobVisit(companyId, visit.id, visit.version, {

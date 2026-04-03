@@ -2,8 +2,7 @@
  * CreateClientModal — Canonical client/company creation modal.
  *
  * 2026-03-21: Created as the single canonical surface for client creation.
- * Replaces: NewClientPage, AddClientPage, QuickAddClientModal, NewAddClientDialog,
- * and the QuickCreateDrawer's inline client form.
+ * Replaces: NewClientPage, AddClientPage, QuickAddClientModal, NewAddClientDialog.
  *
  * Product rule: Client creation and client setup are separate concerns.
  * This modal creates a minimal valid client record, then navigates to

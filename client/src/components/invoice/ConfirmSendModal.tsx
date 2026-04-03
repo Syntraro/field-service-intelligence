@@ -40,10 +40,10 @@ export function ConfirmSendModal({
           <AlertDialogTitle>Send Invoice?</AlertDialogTitle>
           <AlertDialogDescription className="space-y-2">
             <span className="block">
-              Send Invoice #{invoiceNumber || "Draft"} for {formatCurrency(total)} to {customerName}?
+              Mark Invoice #{invoiceNumber || "Draft"} for {formatCurrency(total)} to {customerName} as sent?
             </span>
-            <span className="block font-medium text-foreground">
-              Note: Once sent, this invoice cannot be edited. Only notes can be updated.
+            <span className="block text-foreground">
+              This will set the invoice status to awaiting payment. The invoice remains editable — if you change billing details later, you may need to resend an updated copy to the client.
             </span>
           </AlertDialogDescription>
         </AlertDialogHeader>

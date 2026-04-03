@@ -19,12 +19,11 @@ const ACTIONED_STATUSES = [
 export function isVisitActioned(visit: {
   checkedInAt?: Date | string | null;
   checkedOutAt?: Date | string | null;
-  actualDurationMinutes?: number | null;
   status: string;
 }): boolean {
   if (visit.checkedInAt) return true;
   if (visit.checkedOutAt) return true;
-  if (visit.actualDurationMinutes && visit.actualDurationMinutes > 0) return true;
+  // Labor unification: actualDurationMinutes removed — redundant with checkedInAt check
   if (ACTIONED_STATUSES.includes(visit.status)) return true;
   return false;
 }
@@ -36,7 +35,6 @@ export function isVisitActioned(visit: {
 export function isVisitEmpty(visit: {
   checkedInAt?: Date | string | null;
   checkedOutAt?: Date | string | null;
-  actualDurationMinutes?: number | null;
   status: string;
 }): boolean {
   return !isVisitActioned(visit);

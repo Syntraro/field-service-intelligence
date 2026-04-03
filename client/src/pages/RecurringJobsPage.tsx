@@ -4,7 +4,7 @@
  * Manage recurring job templates and generate future job instances.
  */
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
@@ -42,6 +42,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
 import { Plus, Pencil, Trash2, RefreshCw, Calendar, Clock, List, ExternalLink, Ban, SkipForward } from "lucide-react";
 import { Link } from "wouter";
+import { format, parseISO, isPast, isToday } from "date-fns";
+// Shared Quick Create Job dialog — used in recurring mode for new template creation
+import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 
 // Types
 interface RecurringTemplate {
@@ -58,6 +61,16 @@ interface RecurringTemplate {
   openSubStatusDefault: string | null;
   isActive: boolean;
   createdAt: string;
+  /** Next computed occurrence date (YYYY-MM-DD), null if inactive or none within 1 year */
+  nextOccurrence: string | null;
+  /** Job type discriminator — "maintenance" = PM, anything else = recurring job */
+  jobType?: string;
+  /** Customer company name (joined from customer_companies) */
+  clientName?: string | null;
+  /** Location site name (joined from client_locations) */
+  locationName?: string | null;
+  /** Location address (joined from client_locations) */
+  locationAddress?: string | null;
 }
 
 interface Location {
@@ -107,7 +120,8 @@ const DAYS_OF_WEEK = [
   { value: 6, label: "Sat" },
 ];
 
-export default function RecurringJobsPage() {
+/** @param embedded - When true, hides page-level container/header for embedding as a tab in PM workspace */
+export default function RecurringJobsPage({ embedded }: { embedded?: boolean } = {}) {
   const { toast } = useToast();
   const { user } = useAuth();
   const [showCreateDialog, setShowCreateDialog] = useState(false);
@@ -132,10 +146,29 @@ export default function RecurringJobsPage() {
     openSubStatusDefault: null as string | null,
   });
 
-  // Fetch templates
-  const { data: templates = [], isLoading } = useQuery<RecurringTemplate[]>({
-    queryKey: ["/api/recurring-templates"],
+  // Fetch templates — when embedded in PM workspace, filter to recurring_job only (server-side)
+  const queryType = embedded ? "recurring_job" : undefined;
+  const { data: rawTemplates = [], isLoading } = useQuery<RecurringTemplate[]>({
+    queryKey: ["/api/recurring-templates", ...(queryType ? [{ type: queryType }] : [])],
+    queryFn: async () => {
+      const url = queryType
+        ? `/api/recurring-templates?type=${queryType}`
+        : "/api/recurring-templates";
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch recurring templates");
+      return res.json();
+    },
   });
+
+  // Sort by next occurrence ascending — active with upcoming dates first, nulls/inactive at bottom
+  const templates = useMemo(() => {
+    return [...rawTemplates].sort((a, b) => {
+      if (a.nextOccurrence && b.nextOccurrence) return a.nextOccurrence.localeCompare(b.nextOccurrence);
+      if (a.nextOccurrence) return -1;
+      if (b.nextOccurrence) return 1;
+      return 0; // Both null — preserve server order
+    });
+  }, [rawTemplates]);
 
   // Fetch locations for dropdown — server returns { data: Location[], pagination }
   const { data: locationsResponse } = useQuery<{ data: Location[] }>({
@@ -390,11 +423,13 @@ export default function RecurringJobsPage() {
     }
   };
 
-  const isDialogOpen = showCreateDialog || editingTemplate !== null;
+  // Edit dialog only — create now uses shared QuickAddJobDialog in recurring mode
+  const isEditDialogOpen = editingTemplate !== null;
 
   return (
-    <div className="container mx-auto py-6 space-y-6">
-      {/* Header */}
+    <div className={embedded ? "space-y-6" : "container mx-auto py-6 space-y-6"}>
+      {/* Header — hidden when embedded as a tab in PM & Recurring Jobs workspace */}
+      {!embedded && (
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold">Recurring Jobs</h1>
@@ -426,6 +461,8 @@ export default function RecurringJobsPage() {
           )}
         </div>
       </div>
+      )}
+      {/* Embedded mode: duplicate action buttons removed — workspace-level header provides New Recurring Job + New PM Contract */}
 
       {/* Last generation result */}
       {lastGenerationResult && (
@@ -444,29 +481,98 @@ export default function RecurringJobsPage() {
         </Card>
       )}
 
-      {/* Templates list */}
+      {/* Recurring jobs list — when embedded, uses operational columns matching Maintenance tab structure */}
       <Card>
-        <CardHeader>
-          <CardTitle>Templates</CardTitle>
-          <CardDescription>
-            Active templates will generate jobs automatically when you run generation.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
+        {!embedded && (
+          <CardHeader>
+            <CardTitle>Recurring Jobs</CardTitle>
+            <CardDescription>
+              Active recurring jobs will generate work automatically when you run generation.
+            </CardDescription>
+          </CardHeader>
+        )}
+        <CardContent className={embedded ? "pt-2" : ""}>
           {isLoading ? (
             <div className="text-center py-8 text-muted-foreground">Loading...</div>
           ) : templates.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground">
-              No recurring job templates yet. Create one to get started.
+              No recurring jobs yet. Create one to get started.
             </div>
+          ) : embedded ? (
+            /* Embedded table — operational columns: Customer, Location, Recurrence, Due On, Active, Actions */
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Customer</TableHead>
+                  <TableHead>Location</TableHead>
+                  <TableHead>Recurrence</TableHead>
+                  <TableHead>Due On</TableHead>
+                  <TableHead>Active</TableHead>
+                  {canEdit && <TableHead className="w-[100px]">Actions</TableHead>}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {templates.map((template) => (
+                  <TableRow key={template.id}>
+                    <TableCell className="font-medium max-w-[180px]">{template.clientName || "—"}</TableCell>
+                    <TableCell>
+                      <div className="max-w-[180px]">
+                        {template.locationName && <div className="text-sm font-medium">{template.locationName}</div>}
+                        {template.locationAddress && <div className="text-xs text-muted-foreground">{template.locationAddress}</div>}
+                        {!template.locationName && !template.locationAddress && "—"}
+                      </div>
+                    </TableCell>
+                    <TableCell>{formatRecurrence(template)}</TableCell>
+                    <TableCell>
+                      {!template.isActive ? (
+                        <span className="text-xs text-muted-foreground">Paused</span>
+                      ) : template.nextOccurrence ? (
+                        <span className={
+                          isPast(parseISO(template.nextOccurrence)) && !isToday(parseISO(template.nextOccurrence))
+                            ? "text-xs text-destructive font-medium"
+                            : isToday(parseISO(template.nextOccurrence))
+                              ? "text-xs text-primary font-medium"
+                              : "text-xs"
+                        }>
+                          {format(parseISO(template.nextOccurrence), "MMM d, yyyy")}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">None scheduled</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={template.isActive ? "default" : "secondary"}>
+                        {template.isActive ? "Active" : "Inactive"}
+                      </Badge>
+                    </TableCell>
+                    {canEdit && (
+                      <TableCell>
+                        <div className="flex gap-1">
+                          <Button variant="ghost" size="icon" title="View Instances" onClick={() => setViewingTemplate(template)}>
+                            <List className="h-4 w-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" title="Edit" onClick={() => openEditDialog(template)}>
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" title="Deactivate" onClick={() => deleteMutation.mutate(template.id)} disabled={deleteMutation.isPending}>
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    )}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
           ) : (
+            /* Standalone table — original columns for standalone /recurring-jobs page */
             <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Title</TableHead>
                   <TableHead>Recurrence</TableHead>
                   <TableHead>Start Date</TableHead>
-                  <TableHead>Status</TableHead>
+                  <TableHead>Next Occurrence</TableHead>
                   <TableHead>Active</TableHead>
                   {canEdit && <TableHead className="w-[100px]">Actions</TableHead>}
                 </TableRow>
@@ -478,9 +584,21 @@ export default function RecurringJobsPage() {
                     <TableCell>{formatRecurrence(template)}</TableCell>
                     <TableCell>{template.startDate}</TableCell>
                     <TableCell>
-                      <Badge variant="outline">
-                        {template.openSubStatusDefault ?? "Backlog"}
-                      </Badge>
+                      {!template.isActive ? (
+                        <span className="text-xs text-muted-foreground">Paused</span>
+                      ) : template.nextOccurrence ? (
+                        <span className={
+                          isPast(parseISO(template.nextOccurrence)) && !isToday(parseISO(template.nextOccurrence))
+                            ? "text-xs text-destructive font-medium"
+                            : isToday(parseISO(template.nextOccurrence))
+                              ? "text-xs text-primary font-medium"
+                              : "text-xs"
+                        }>
+                          {format(parseISO(template.nextOccurrence), "MMM d, yyyy")}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">None scheduled</span>
+                      )}
                     </TableCell>
                     <TableCell>
                       <Badge variant={template.isActive ? "default" : "secondary"}>
@@ -526,26 +644,25 @@ export default function RecurringJobsPage() {
         </CardContent>
       </Card>
 
-      {/* Create/Edit Dialog */}
-      <Dialog open={isDialogOpen} onOpenChange={(open) => {
+      {/* Shared QuickAddJobDialog in recurring mode — canonical create path for new recurring jobs */}
+      <QuickAddJobDialog
+        open={showCreateDialog}
+        onOpenChange={setShowCreateDialog}
+        mode="recurring"
+      />
+
+      {/* Edit-only Dialog — retained for editing existing recurring templates */}
+      <Dialog open={isEditDialogOpen} onOpenChange={(open) => {
         if (!open) {
-          setShowCreateDialog(false);
           setEditingTemplate(null);
           resetForm();
         }
       }}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>
-              {editingTemplate ? "Edit Template" : "New Recurring Job Template"}
-            </DialogTitle>
+            <DialogTitle>Edit Template</DialogTitle>
             <DialogDescription>
-              Define a recurring pattern for automatic job creation.
-              {editingTemplate && (
-                <span className="block mt-1 text-amber-600 dark:text-amber-400">
-                  Changes affect future generated jobs only; existing jobs are not modified.
-                </span>
-              )}
+              Changes affect future generated jobs only; existing jobs are not modified.
             </DialogDescription>
           </DialogHeader>
 
@@ -711,7 +828,6 @@ export default function RecurringJobsPage() {
             <Button
               variant="outline"
               onClick={() => {
-                setShowCreateDialog(false);
                 setEditingTemplate(null);
                 resetForm();
               }}
@@ -724,11 +840,10 @@ export default function RecurringJobsPage() {
                 !formData.title ||
                 !formData.startDate ||
                 (formData.recurrenceKind === "weekly" && formData.daysOfWeek.length === 0) ||
-                createMutation.isPending ||
                 updateMutation.isPending
               }
             >
-              {editingTemplate ? "Save Changes" : "Create Template"}
+              Save Changes
             </Button>
           </DialogFooter>
         </DialogContent>

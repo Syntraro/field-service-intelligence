@@ -4,7 +4,7 @@
  * Sortable headers, dense Jobber-style row height.
  */
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Plus, X, Tag, MapPin, Users, ChevronUp, ChevronDown } from "lucide-react";
@@ -57,9 +57,36 @@ const ROW_HEIGHT = 48;
 // 4-column layout: checkbox, Name (wider), Address, Tags, Status
 const CLIENTS_GRID_COLS = "40px 2fr 1.5fr 1fr 100px";
 
+/** Sortable column header — defined at module scope to maintain stable React identity across renders */
+function SortHeader({ field, sortField, sortDir, onSort, children }: {
+  field: SortField; sortField: SortField; sortDir: SortDir;
+  onSort: (field: SortField) => void; children: React.ReactNode;
+}) {
+  const active = sortField === field;
+  return (
+    <button
+      type="button"
+      className="flex items-center gap-1 px-4 text-left hover:text-foreground transition-colors select-none"
+      onClick={() => onSort(field)}
+    >
+      {children}
+      {active && (sortDir === "asc"
+        ? <ChevronUp className="h-3 w-3" />
+        : <ChevronDown className="h-3 w-3" />
+      )}
+    </button>
+  );
+}
+
 export default function Clients() {
   const [, setLocation] = useLocation();
+  // List stability: split search into immediate input + debounced query value
+  const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setSearch(searchInput), 300);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
   const [activeTab, setActiveTab] = useState<"active" | "inactive">("active");
   // 2026-03-21: Canonical client creation modal
   const [createClientOpen, setCreateClientOpen] = useState(false);
@@ -237,34 +264,6 @@ export default function Clients() {
     setLocation(`/clients/${primaryLocationId}`);
   };
 
-  /** Sortable column header with directional indicator */
-  const SortHeader = ({ field, children }: { field: SortField; children: React.ReactNode }) => {
-    const active = sortField === field;
-    return (
-      <button
-        type="button"
-        className="flex items-center gap-1 px-4 text-left hover:text-foreground transition-colors select-none"
-        onClick={() => handleSort(field)}
-      >
-        {children}
-        {active && (sortDir === "asc"
-          ? <ChevronUp className="h-3 w-3" />
-          : <ChevronDown className="h-3 w-3" />
-        )}
-      </button>
-    );
-  };
-
-  if (isLoading) {
-    return (
-      <TablePageShell title="Clients" data-testid="clients-page">
-        <div className="flex items-center justify-center h-64">
-          <div className="text-muted-foreground">Loading clients...</div>
-        </div>
-      </TablePageShell>
-    );
-  }
-
   return (
     <TablePageShell
       title="Clients"
@@ -283,8 +282,8 @@ export default function Clients() {
       data-testid="clients-page"
     >
       <ListToolbar
-        searchValue={search}
-        onSearchChange={setSearch}
+        searchValue={searchInput}
+        onSearchChange={setSearchInput}
         searchPlaceholder="Search clients..."
         searchTestId="input-search-clients"
       >
@@ -380,13 +379,17 @@ export default function Clients() {
               aria-label="Select all visible rows"
             />
           </div>
-          <SortHeader field="name">Name</SortHeader>
-          <SortHeader field="address">Address</SortHeader>
-          <SortHeader field="tags">Tags</SortHeader>
-          <SortHeader field="status">Status</SortHeader>
+          <SortHeader field="name" sortField={sortField} sortDir={sortDir} onSort={handleSort}>Name</SortHeader>
+          <SortHeader field="address" sortField={sortField} sortDir={sortDir} onSort={handleSort}>Address</SortHeader>
+          <SortHeader field="tags" sortField={sortField} sortDir={sortDir} onSort={handleSort}>Tags</SortHeader>
+          <SortHeader field="status" sortField={sortField} sortDir={sortDir} onSort={handleSort}>Status</SortHeader>
         </div>
 
-        {sortedGroups.length === 0 ? (
+        {isLoading ? (
+          <div className="flex items-center justify-center h-48">
+            <div className="text-muted-foreground">Loading clients...</div>
+          </div>
+        ) : sortedGroups.length === 0 ? (
           <EmptyState
             icon={Users}
             message={`No ${activeTab} clients found`}

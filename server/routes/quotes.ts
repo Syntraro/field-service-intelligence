@@ -14,10 +14,15 @@ import { quoteRepository } from "../storage/quotes";
 import { jobRepository } from "../storage/jobs";
 import { clientRepository } from "../storage/clients";
 import { customerCompanyRepository } from "../storage/customerCompanies";
+import { leadRepository } from "../storage/leads";
 import { storage } from "../storage";
 import { generateQuotePdf } from "../services/quotePdfService";
 import { resolveCustomerCompanyForLocation } from "../services/customerCompanyResolver";
 import type { QuoteStatus } from "@shared/schema";
+import { tasks } from "@shared/schema";
+import { eq, and, notInArray } from "drizzle-orm";
+import { db } from "../db";
+import * as taskService from "../services/tasks.service";
 // Phase 1 Architecture: Event Log
 import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
@@ -34,6 +39,10 @@ router.use(requireFeature("quotesEnabled"));
 const createQuoteSchema = z.object({
   locationId: z.string().min(1),
   customerCompanyId: z.string().nullable().optional(),
+  // Lead attribution — optional link to originating lead
+  leadId: z.string().nullable().optional(),
+  // Phase 2: Quote ownership
+  salesOwnerUserId: z.string().nullable().optional(),
   title: z.string().max(200).optional(),
   issueDate: z.string(),
   expiryDate: z.string().nullable().optional(),
@@ -60,6 +69,11 @@ const updateQuoteSchema = z.object({
   expiryDate: z.string().nullable().optional(),
   notesInternal: z.string().max(2000).nullable().optional(),
   notesCustomer: z.string().max(2000).nullable().optional(),
+  // Phase 2: Quote ownership
+  salesOwnerUserId: z.string().nullable().optional(),
+  // Phase 2: Assessment requirement — only 'required' or null can be set directly by update
+  // 'scheduled' and 'completed' are set by assessment orchestration routes only
+  assessmentStatus: z.enum(["required"]).nullable().optional(),
 }).strict();
 
 const createQuoteLineSchema = z.object({
@@ -146,12 +160,27 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
   const customerCompanyId = validated.customerCompanyId
     ?? await resolveCustomerCompanyForLocation(companyId, location);
 
-  const { lines = [], ...quoteData } = validated;
+  const { lines = [], leadId, ...quoteData } = validated;
+
+  // Lead attribution: validate lead exists and is eligible for conversion.
+  // MVP rule: one lead → one quote. Enforced by checking BOTH status AND convertedQuoteId
+  // to prevent corruption if status was manually reverted.
+  if (leadId) {
+    const lead = await leadRepository.getLead(companyId, leadId);
+    if (!lead) throw createError(400, "Lead not found");
+    if (lead.status === "quoted" || lead.status === "won") {
+      throw createError(400, `Lead is already '${lead.status}' — one lead can only produce one quote`);
+    }
+    if (lead.convertedQuoteId) {
+      throw createError(400, "Lead already has a linked quote — revise the existing quote instead of creating a new one");
+    }
+  }
 
   const quote = await quoteRepository.createQuote(
     companyId,
     {
       ...quoteData,
+      leadId: leadId || undefined,
       customerCompanyId,
       status: "draft" as const,
     },
@@ -161,13 +190,22 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
     }))
   );
 
+  // Lead attribution: update lead status to 'quoted' and set conversion reference
+  if (leadId) {
+    await leadRepository.updateLead(companyId, leadId, {
+      status: "quoted",
+      convertedQuoteId: quote.id,
+      convertedAt: new Date(),
+    });
+  }
+
   // Phase 1: Log quote creation event
   logEventAsync(getQueryCtx(req), {
     eventType: "quote.created",
     entityType: "quote",
     entityId: quote.id,
     summary: `Created Quote #${quote.quoteNumber}`,
-    meta: { quoteNumber: quote.quoteNumber, customerCompanyId },
+    meta: { quoteNumber: quote.quoteNumber, customerCompanyId, leadId: leadId || undefined },
   });
 
   res.status(201).json(quote);
@@ -190,6 +228,12 @@ router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authed
   }
 
   const validated = validateSchema(updateQuoteSchema, req.body);
+
+  // Phase 2: If assessment requirement is being cleared while active assessment exists, cancel it
+  if (validated.assessmentStatus === null && existing.assessmentStatus === "scheduled") {
+    await cancelActiveAssessmentTask(companyId, quoteId);
+  }
+
   const updated = await quoteRepository.updateQuote(companyId, quoteId, validated);
 
   if (!updated) {
@@ -200,6 +244,11 @@ router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authed
 }));
 
 // DELETE /api/quotes/:id - Delete a quote (draft only)
+// LEAD HARDENING: Deleting a quote does NOT auto-revert lead.status.
+// This is intentional — lead attribution is forward-only. If a draft quote linked to a lead
+// is deleted, the lead retains its 'quoted' status and convertedQuoteId. An admin must
+// manually update the lead status if they want to re-open it. This prevents silent data
+// loss from accidental deletions and keeps the attribution chain auditable.
 router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
   const quoteId = req.params.id;
@@ -503,10 +552,16 @@ router.post("/:id/decline", requireRole(MANAGER_ROLES), asyncHandler(async (req:
     throw createError(400, "Only sent quotes can be declined");
   }
 
+  // Phase 2: Cancel active assessment on decline
+  if (quote.assessmentStatus === "scheduled") {
+    await cancelActiveAssessmentTask(companyId, quoteId);
+  }
+
   const updated = await quoteRepository.updateQuote(companyId, quoteId, {
     status: "declined",
     declinedAt: new Date(),
-  });
+    assessmentStatus: null,
+  } as any);
 
   // Emit notification for quote decline
   const customerName = quoteDetails.customerCompany?.name || quoteDetails.location?.companyName || "Customer";
@@ -550,6 +605,16 @@ router.post("/:id/convert-to-job", requireRole(MANAGER_ROLES), asyncHandler(asyn
     throw createError(400, "Only approved quotes can be converted to jobs");
   }
 
+  // Phase 2: Cancel active assessment before conversion (do not block)
+  if (quote.assessmentStatus === "scheduled") {
+    await cancelActiveAssessmentTask(companyId, quoteId);
+  }
+
+  // Lead attribution: resolve leadId from quote before creating job.
+  // Type-safe: quote object from getQuoteDetails may not expose leadId in its TS type
+  // but the DB column exists — access via index signature.
+  const quoteLeadId: string | null = (quote as Record<string, unknown>).leadId as string | null ?? null;
+
   // Create the job (status is "open" - scheduling is derived from scheduledStart)
   const job = await jobRepository.createJob(companyId, {
     locationId: quote.locationId,
@@ -559,6 +624,8 @@ router.post("/:id/convert-to-job", requireRole(MANAGER_ROLES), asyncHandler(asyn
     scheduledStart: validated.scheduledDate || null,
     summary: `Created from Quote ${quote.quoteNumber}`,
     description: validated.notes || null,
+    // Lead attribution: propagate leadId from quote to job for downstream reporting
+    leadId: quoteLeadId,
   });
 
   // Create job parts from quote lines
@@ -574,18 +641,153 @@ router.post("/:id/convert-to-job", requireRole(MANAGER_ROLES), asyncHandler(asyn
     });
   }
 
-  // Update quote status to converted
+  // Update quote status to converted + clear assessment state
   await quoteRepository.updateQuote(companyId, quoteId, {
     status: "converted",
     convertedAt: new Date(),
     convertedToJobId: job.id,
-  });
+    assessmentStatus: null,
+  } as any);
+
+  // Lead attribution: if quote originated from a lead, mark lead as 'won'.
+  // Explicit null guard: only update lead if quoteLeadId is a real UUID string.
+  // This prevents accidental lead status corruption from unrelated quote conversions.
+  if (quoteLeadId) {
+    await leadRepository.updateLead(companyId, quoteLeadId, {
+      status: "won",
+    });
+  }
 
   // Return job with basic info
   res.status(201).json({
     job,
     message: `Quote ${quote.quoteNumber} converted to Job #${job.jobNumber}`,
   });
+}));
+
+// ========================================
+// PHASE 2: QUOTE ASSESSMENT ORCHESTRATION
+// ========================================
+
+// Helper: find active (non-completed, non-cancelled) QUOTE_ASSESSMENT task for a quote
+async function findActiveAssessmentTask(companyId: string, quoteId: string) {
+  const [task] = await db
+    .select()
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.companyId, companyId),
+        eq(tasks.quoteId, quoteId),
+        eq(tasks.type, "QUOTE_ASSESSMENT"),
+        notInArray(tasks.status, ["completed", "cancelled"])
+      )
+    )
+    .limit(1);
+  return task ?? null;
+}
+
+// Helper: cancel active assessment task and update quote.assessmentStatus
+// This is the SINGLE orchestration point for assessment cancellation.
+async function cancelActiveAssessmentTask(companyId: string, quoteId: string) {
+  const activeTask = await findActiveAssessmentTask(companyId, quoteId);
+  if (activeTask) {
+    await db
+      .update(tasks)
+      .set({ status: "cancelled", updatedAt: new Date() })
+      .where(and(eq(tasks.id, activeTask.id), eq(tasks.companyId, companyId)));
+  }
+}
+
+// Validation schema for scheduling an assessment
+const scheduleAssessmentSchema = z.object({
+  assignedToUserId: z.string().uuid().optional(),
+  scheduledStartAt: z.string().datetime(),
+  scheduledEndAt: z.string().datetime().optional(),
+  estimatedDurationMinutes: z.number().int().positive().optional(),
+  notes: z.string().max(2000).optional(),
+}).strict();
+
+// POST /api/quotes/:id/assessment/schedule - Schedule a quote assessment
+// Creates a QUOTE_ASSESSMENT task and sets assessmentStatus='scheduled'
+router.post("/:id/assessment/schedule", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const quoteId = req.params.id;
+
+  const quote = await quoteRepository.getQuote(companyId, quoteId);
+  if (!quote) throw createError(404, "Quote not found");
+
+  // Hard guard: one active assessment per quote
+  const existing = await findActiveAssessmentTask(companyId, quoteId);
+  if (existing) {
+    throw createError(409, "This quote already has an active assessment. Cancel it before scheduling a new one.");
+  }
+
+  const validated = validateSchema(scheduleAssessmentSchema, req.body);
+
+  // Create the QUOTE_ASSESSMENT task via canonical task service
+  const task = await taskService.createTask(companyId, {
+    createdByUserId: req.user!.id,
+    type: "QUOTE_ASSESSMENT",
+    title: `Quote Assessment — ${quote.quoteNumber || "Draft"}`,
+    notes: validated.notes,
+    assignedToUserId: validated.assignedToUserId,
+    scheduledStartAt: validated.scheduledStartAt,
+    scheduledEndAt: validated.scheduledEndAt,
+    estimatedDurationMinutes: validated.estimatedDurationMinutes ?? 60,
+    // Link to quote's location for calendar context
+    clientId: quote.locationId,
+    // Phase 2: quoteId link
+    quoteId,
+  });
+
+  // Update quote assessment status — orchestration ownership stays here
+  await quoteRepository.updateQuote(companyId, quoteId, {
+    assessmentStatus: "scheduled",
+  } as any);
+
+  res.status(201).json({ task, assessmentStatus: "scheduled" });
+}));
+
+// POST /api/quotes/:id/assessment/complete - Complete the active assessment
+router.post("/:id/assessment/complete", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const quoteId = req.params.id;
+
+  const quote = await quoteRepository.getQuote(companyId, quoteId);
+  if (!quote) throw createError(404, "Quote not found");
+
+  const activeTask = await findActiveAssessmentTask(companyId, quoteId);
+  if (!activeTask) {
+    throw createError(404, "No active assessment found for this quote");
+  }
+
+  // Complete the task via canonical task service
+  await taskService.closeTask(companyId, activeTask.id, req.user!.id);
+
+  // Update quote assessment status — orchestration ownership stays here
+  await quoteRepository.updateQuote(companyId, quoteId, {
+    assessmentStatus: "completed",
+  } as any);
+
+  res.json({ assessmentStatus: "completed" });
+}));
+
+// DELETE /api/quotes/:id/assessment - Cancel the active assessment
+router.delete("/:id/assessment", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const quoteId = req.params.id;
+
+  const quote = await quoteRepository.getQuote(companyId, quoteId);
+  if (!quote) throw createError(404, "Quote not found");
+
+  await cancelActiveAssessmentTask(companyId, quoteId);
+
+  // Set back to 'required' — assessment is still needed, just not scheduled
+  await quoteRepository.updateQuote(companyId, quoteId, {
+    assessmentStatus: "required",
+  } as any);
+
+  res.json({ assessmentStatus: "required" });
 }));
 
 export default router;

@@ -15,7 +15,7 @@ import { useSurfaceController } from "@/hooks/useSurfaceController";
 import {
   Search, Loader2, Briefcase, FileText, Building2, MapPin, Truck, UserCircle,
   Plus, LayoutDashboard, LayoutGrid, ClipboardList, Receipt, FileCheck,
-  Users, Wrench, Settings, Shield, Navigation, Zap,
+  Users, Wrench, Settings, Shield, Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -79,7 +79,6 @@ function buildCommands(callbacks: { onCreateJob?: () => void; onCreateQuote?: ()
     { id: "open-quotes",    label: "Open Quotes",    keywords: ["quotes", "estimates"], icon: FileCheck, section: "navigation", route: "/quotes" },
     { id: "nav-dashboard",  label: "Dashboard",      keywords: ["home", "overview"], icon: LayoutDashboard, section: "navigation", route: "/" },
     { id: "nav-dispatch",   label: "Dispatch",       keywords: ["dispatch", "calendar", "schedule", "disp"], icon: LayoutGrid, section: "navigation", route: "/dispatch" },
-    { id: "nav-livemap",    label: "Live Map",       keywords: ["live map", "gps", "tracking", "map"], icon: Navigation, section: "navigation", route: "/live-map" },
     { id: "nav-jobs",       label: "Jobs",           keywords: ["jobs", "job", "work orders"], icon: ClipboardList, section: "navigation", route: "/jobs" },
     { id: "nav-pm",         label: "PM",             keywords: ["pm", "preventive maintenance", "preventative"], icon: Wrench, section: "navigation", route: "/pm" },
     { id: "nav-invoices",   label: "Invoices",       keywords: ["invoices", "invoice", "billing", "inv"], icon: Receipt, section: "navigation", route: "/invoices" },
@@ -120,7 +119,7 @@ const TYPE_ROUTES: Record<SearchResultType, (id: string) => string> = {
   job: (id) => `/jobs/${id}`,
   invoice: (id) => `/invoices/${id}`,
   customerCompany: (id) => `/clients/${id}`,
-  location: (id) => `/locations/${id}`,
+  location: (id) => `/clients/${id}`,  // Fallback only — location routing handled explicitly in executeItem
   contact: (id) => `/clients/${id}`,  // Navigate to parent company (contacts live under companies)
   supplier: (id) => `/suppliers/${id}`,
 };
@@ -290,9 +289,20 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
       }
     } else {
       const sr = item.item;
-      const routeId = (sr.type === "customerCompany" || sr.type === "contact") && sr.customerCompanyId
-        ? sr.customerCompanyId : sr.id;
-      setLocation(TYPE_ROUTES[sr.type](routeId));
+      // Location results navigate to parent client page with ?location= scope
+      if (sr.type === "location") {
+        if (sr.customerCompanyId) {
+          setLocation(`/clients/${sr.customerCompanyId}?location=${sr.id}`);
+        } else {
+          // Strict guard: location must have a parent company — block navigation entirely
+          console.error("[Search] Location result missing customerCompanyId — invalid state", { locationId: sr.id });
+          return;
+        }
+      } else {
+        const routeId = (sr.type === "customerCompany" || sr.type === "contact") && sr.customerCompanyId
+          ? sr.customerCompanyId : sr.id;
+        setLocation(TYPE_ROUTES[sr.type](routeId));
+      }
     }
     closePalette();
   }, [setLocation, closePalette]);
@@ -460,9 +470,9 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
     <div ref={paletteRef} className="relative">
       {/* Header search input — always visible */}
       <div className="relative">
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white/60" />
+        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#9CA3AF]" />
         {loading && (
-          <Loader2 className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-white/60 animate-spin" />
+          <Loader2 className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#9CA3AF] animate-spin" />
         )}
         <input
           ref={inputRef}
@@ -473,8 +483,7 @@ export default function UniversalSearch({ onCreateJob, onCreateQuote, onCreateIn
           onKeyDown={handleKeyDown}
           onFocus={() => setOpen(true)}
           data-testid="universal-search-input"
-          className="h-8 w-72 rounded-md border-none pl-8 pr-8 text-sm text-white placeholder:text-white/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#A6D683]"
-          style={{ background: '#374151' }}
+          className="h-8 w-72 rounded-md border border-white/20 pl-8 pr-8 text-sm text-[#111827] placeholder:text-[#9CA3AF] bg-white/90 focus-visible:outline-none focus-visible:border-[#76B054] focus-visible:ring-2 focus-visible:ring-[rgba(118,176,84,0.25)] focus-visible:bg-white"
         />
       </div>
 

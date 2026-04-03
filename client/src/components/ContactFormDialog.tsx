@@ -1,18 +1,16 @@
 /**
- * ContactFormDialog — Canonical contact create/edit modal.
+ * ContactFormDialog — Person identity create/edit modal.
  *
- * Handles both company-level and location-level contacts via scope props.
- * Extracted from ClientDetailPage.tsx (2026-03-22) for reusability.
- *
- * Scope behavior:
- *   - On CREATE: scope determined by `associationType` prop
- *   - On EDIT: scope derived from existing contact's `locationId`
+ * Identity + Assignment model:
+ *   - This dialog handles person identity ONLY (name, email, phone, isPrimary)
+ *   - Roles are per-assignment (managed by AssignContactDialog)
+ *   - On create from location context: creates company person + auto-assigns to location
  *
  * API:
  *   - Create: POST /api/customer-companies/:companyId/contacts
  *   - Edit:   PATCH /api/customer-companies/:companyId/contacts/:contactId
  */
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { useMutation } from "@tanstack/react-query";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
@@ -25,10 +23,10 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import type { ClientContact } from "@shared/schema";
 
-/** Contact scope — canonical values for association type */
+/** Contact scope — used to determine auto-assignment on create */
 export type ContactScope = "company" | "location";
 
-/** Standard contact roles — structured selection in ContactFormDialog */
+/** Standard contact roles — used by AssignContactDialog for role selection */
 export const STANDARD_CONTACT_ROLES = [
   "billing", "scheduling", "operations", "site", "manager",
   "owner", "primary", "after-hours", "maintenance",
@@ -41,6 +39,7 @@ export function ContactFormDialog({
   onOpenChange: (open: boolean) => void;
   companyId?: string;
   contact?: ClientContact | null;
+  /** On create: "company" = company-only person, "location" = person + auto-assign to locationId */
   associationType: ContactScope;
   locationId?: string;
   onSuccess: () => void;
@@ -49,13 +48,6 @@ export function ContactFormDialog({
   const [form, setForm] = useState({
     firstName: "", lastName: "", phone: "", email: "", isPrimary: false,
   });
-  const [selectedRoles, setSelectedRoles] = useState<Set<string>>(new Set());
-  const [customRole, setCustomRole] = useState("");
-
-  const effectiveScope: ContactScope = contact
-    ? (contact.locationId ? "location" : "company")
-    : associationType;
-  const effectiveLocationId = contact?.locationId ?? locationId;
 
   useEffect(() => {
     if (open && contact) {
@@ -66,57 +58,33 @@ export function ContactFormDialog({
         email: contact.email || "",
         isPrimary: contact.isPrimary || false,
       });
-      const roles = Array.isArray(contact.roles) ? contact.roles : [];
-      const known = new Set(roles.filter(r => (STANDARD_CONTACT_ROLES as readonly string[]).includes(r)));
-      const unknown = roles.filter(r => !(STANDARD_CONTACT_ROLES as readonly string[]).includes(r));
-      setSelectedRoles(known);
-      setCustomRole(unknown.join(", "));
     } else if (open) {
       setForm({ firstName: "", lastName: "", phone: "", email: "", isPrimary: false });
-      setSelectedRoles(new Set());
-      setCustomRole("");
     }
   }, [open, contact]);
-
-  const toggleRole = useCallback((role: string) => {
-    setSelectedRoles(prev => {
-      const next = new Set(prev);
-      next.has(role) ? next.delete(role) : next.add(role);
-      return next;
-    });
-  }, []);
-
-  const computeRoles = (): string[] => {
-    const roles = Array.from(selectedRoles);
-    const custom = customRole.split(",").map(r => r.trim()).filter(Boolean);
-    return [...roles, ...custom];
-  };
 
   const mutation = useMutation({
     mutationFn: async (data: typeof form) => {
       if (!companyId) throw new Error("Company not loaded");
-      const roles = computeRoles();
       const body: any = {
         firstName: data.firstName,
         lastName: data.lastName,
         phone: data.phone || null,
         email: data.email || null,
-        roles,
         isPrimary: data.isPrimary,
       };
 
       if (contact) {
-        if (effectiveScope === "location" && effectiveLocationId) {
-          body.locationId = effectiveLocationId;
-        }
+        // Edit existing person identity
         return apiRequest(`/api/customer-companies/${companyId}/contacts/${contact.id}`, {
           method: "PATCH", body: JSON.stringify(body),
         });
       } else {
-        if (effectiveScope === "company") {
+        // Create new person — if location context, auto-assign to that location
+        if (associationType === "location" && locationId) {
+          body.association = { type: "locations", locationIds: [locationId] };
+        } else {
           body.association = { type: "company" };
-        } else if (effectiveLocationId) {
-          body.association = { type: "locations", locationIds: [effectiveLocationId] };
         }
         return apiRequest(`/api/customer-companies/${companyId}/contacts`, {
           method: "POST", body: JSON.stringify(body),
@@ -133,16 +101,17 @@ export function ContactFormDialog({
     },
   });
 
-  const canSave = (form.firstName.trim() || form.lastName.trim()) && (form.phone.trim() || form.email.trim());
+  // Only firstName is required — all other fields optional
+  const canSave = form.firstName.trim().length > 0;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{contact ? "Edit Contact" : "Add Contact"}</DialogTitle>
-          <p className="text-xs text-muted-foreground">
-            {effectiveScope === "company" ? "Company-wide contact" : "Location-specific contact"}
-          </p>
+          {!contact && associationType === "location" && (
+            <p className="text-xs text-muted-foreground">Creates a company contact and assigns to this location.</p>
+          )}
         </DialogHeader>
         <div className="space-y-4 py-2">
           <div className="grid grid-cols-2 gap-3">
@@ -165,36 +134,8 @@ export function ContactFormDialog({
               <Input value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} />
             </div>
           </div>
-          <div className="space-y-2">
-            <Label>Roles</Label>
-            <div className="flex flex-wrap gap-1.5">
-              {STANDARD_CONTACT_ROLES.map(role => (
-                <button
-                  key={role}
-                  type="button"
-                  onClick={() => toggleRole(role)}
-                  className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
-                    selectedRoles.has(role)
-                      ? "bg-primary text-primary-foreground border-primary"
-                      : "bg-white text-muted-foreground border-slate-200 hover:border-slate-400"
-                  }`}
-                >
-                  {role}
-                </button>
-              ))}
-            </div>
-            <Input
-              placeholder="Other roles (comma-separated)"
-              value={customRole}
-              onChange={e => setCustomRole(e.target.value)}
-              className="mt-1.5 h-8 text-xs"
-            />
-          </div>
           <label className="flex items-center gap-2 cursor-pointer">
-            <Checkbox
-              checked={form.isPrimary}
-              onCheckedChange={(checked) => setForm(f => ({ ...f, isPrimary: !!checked }))}
-            />
+            <Checkbox checked={form.isPrimary} onCheckedChange={(checked) => setForm(f => ({ ...f, isPrimary: !!checked }))} />
             <span className="text-xs">Primary contact</span>
           </label>
         </div>

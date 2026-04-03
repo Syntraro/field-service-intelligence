@@ -756,7 +756,7 @@ export default function PMDetailPage() {
           </DetailRow>
           <DetailRow label="Location">
             {template.locationId ? (
-              <Link href={`/locations/${template.locationId}`} className="text-sm font-medium text-primary hover:underline flex items-center gap-1">
+              <Link href={template.clientId ? `/clients/${template.clientId}?location=${template.locationId}` : `/clients`} className="text-sm font-medium text-primary hover:underline flex items-center gap-1">
                 <MapPin className="h-3.5 w-3.5" />{locationName}
               </Link>
             ) : <span className="text-sm font-medium">—</span>}
@@ -837,7 +837,7 @@ export default function PMDetailPage() {
           </Button>
           {template.locationId && (
             <Button variant="outline" size="sm" asChild>
-              <Link href={`/locations/${template.locationId}`}><ExternalLink className="h-3.5 w-3.5 mr-1.5" />Open Location</Link>
+              <Link href={template.clientId ? `/clients/${template.clientId}?location=${template.locationId}` : `/clients`}><ExternalLink className="h-3.5 w-3.5 mr-1.5" />Open Location</Link>
             </Button>
           )}
           {template.clientId && (

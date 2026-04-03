@@ -324,20 +324,20 @@ export const JobHeaderCard = forwardRef<JobHeaderCardHandle, JobHeaderCardProps>
                 className="text-left"
                 data-testid="link-client-title"
               >
-                <h1 className="text-2xl font-extrabold tracking-tight text-foreground hover:text-primary transition-colors" data-testid="text-client-title">
+                <h1 className="text-xl font-bold tracking-tight text-[#0f172a] hover:text-[#76B054] transition-colors" data-testid="text-client-title">
                   {clientName}
                 </h1>
               </button>
 
               {job.summary && (
-                <p className="mt-0.5 text-sm font-medium text-muted-foreground/90" data-testid="text-job-summary">
+                <p className="mt-0.5 text-sm font-medium text-[#475569]" data-testid="text-job-summary">
                   {job.summary}
                 </p>
               )}
 
-              <div className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground/70" data-testid="text-location-info">
+              <div className="mt-2 flex items-center gap-1.5 text-xs text-[#64748b]" data-testid="text-location-info">
                 <MapPin className="h-3.5 w-3.5 flex-shrink-0" />
-                <span className="font-medium text-muted-foreground/80">{locationName}</span>
+                <span className="font-medium text-[#64748b]">{locationName}</span>
                 {fullAddress && (
                   <>
                     <span>·</span>

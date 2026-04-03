@@ -176,6 +176,10 @@ export interface ScheduledJobWithDetails {
   locationCity?: string | null;
   locationProvinceState?: string | null;
   locationPostalCode?: string | null;
+  /** Client location latitude (from client_locations) */
+  lat?: string | null;
+  /** Client location longitude (from client_locations) */
+  lng?: string | null;
 }
 
 /**
@@ -276,6 +280,7 @@ export class SchedulingRepository extends BaseRepository {
         jv.visit_notes,
         jv.outcome_note,
         jv.version as visit_version,
+        jv.equipment_ids,
         j.description,
         j.access_instructions,
         j.company_id,
@@ -295,7 +300,9 @@ export class SchedulingRepository extends BaseRepository {
         cl.address as location_address,
         cl.city as location_city,
         cl.province as location_province_state,
-        cl.postal_code as location_postal_code
+        cl.postal_code as location_postal_code,
+        cl.lat as location_lat,
+        cl.lng as location_lng
       FROM job_visits jv
       JOIN jobs j ON jv.job_id = j.id
       LEFT JOIN client_locations cl ON j.location_id = cl.id
@@ -327,6 +334,7 @@ export class SchedulingRepository extends BaseRepository {
       visit_notes: string | null;
       outcome_note: string | null;
       visit_version: number;
+      equipment_ids: string[] | null;
       description: string | null;
       access_instructions: string | null;
       company_id: string;
@@ -347,6 +355,8 @@ export class SchedulingRepository extends BaseRepository {
       location_city: string | null;
       location_province_state: string | null;
       location_postal_code: string | null;
+      location_lat: string | null;
+      location_lng: string | null;
     }>;
 
     // DEV-only debug log
@@ -447,6 +457,9 @@ export class SchedulingRepository extends BaseRepository {
         locationCity: row.location_city,
         locationProvinceState: row.location_province_state,
         locationPostalCode: row.location_postal_code,
+        lat: row.location_lat ?? null,
+        lng: row.location_lng ?? null,
+        equipmentIds: row.equipment_ids ?? null,
       };
     });
 
@@ -552,6 +565,8 @@ export class SchedulingRepository extends BaseRepository {
         locationCity: clientLocations.city,
         locationProvinceState: clientLocations.province,
         locationPostalCode: clientLocations.postalCode,
+        lat: clientLocations.lat,
+        lng: clientLocations.lng,
         activeVisitId: activeVisitIdSubquery,
       })
       .from(jobs)
@@ -652,6 +667,9 @@ export class SchedulingRepository extends BaseRepository {
         locationCity: job.locationCity,
         locationProvinceState: job.locationProvinceState,
         locationPostalCode: job.locationPostalCode,
+        // Fix: lat/lng were selected from DB but dropped in results mapping — unscheduled jobs never appeared on dispatch map
+        lat: job.lat ?? null,
+        lng: job.lng ?? null,
         // 2026-03-22: Real visit ID for canonical EditVisitModal opening
         activeVisitId: job.activeVisitId ?? null,
       };
@@ -962,10 +980,8 @@ export class SchedulingRepository extends BaseRepository {
       );
     } else if (data.conflictMode === 'complete_and_new') {
       // Case 3: Actioned visit + explicit complete_and_new → complete old, create new
+      // Labor unification: actualDurationMinutes deprecated — duration derived from time_entries
       const now = new Date();
-      const actualDuration = openVisit.checkedInAt
-        ? Math.round((now.getTime() - new Date(openVisit.checkedInAt).getTime()) / 60000)
-        : null;
       await jobVisitsRepository.updateJobVisit(
         companyId,
         openVisit.id,
@@ -976,7 +992,6 @@ export class SchedulingRepository extends BaseRepository {
           completedAt: now,
           isFollowUpNeeded: false,
           checkedOutAt: now,
-          ...(actualDuration !== null && { actualDurationMinutes: actualDuration }),
         }
       );
       visit = await jobVisitsRepository.createJobVisit(companyId, data.jobId, {

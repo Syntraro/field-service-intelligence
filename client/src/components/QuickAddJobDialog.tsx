@@ -58,9 +58,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Check, ChevronsUpDown, Loader2, Plus, CalendarIcon, Users, Search } from "lucide-react";
+import { Check, ChevronsUpDown, Loader2, Plus, CalendarIcon, Users, Search, Repeat } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import type { Job, InsertJob } from "@shared/schema";
+import { EquipmentPicker } from "@/components/EquipmentPicker";
 
 /** Shape returned by GET /api/clients/search-locations */
 interface LocationSearchResult {
@@ -77,7 +79,6 @@ interface LocationSearchResult {
 import {
   type JobScheduleValue,
   createDefaultScheduleValue,
-  parseJobToScheduleValue,
 } from "@/components/jobs/JobScheduleFields";
 import { createJobWithSchedule, applyJobSchedule } from "@/lib/jobScheduling";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
@@ -97,6 +98,17 @@ const DURATION_OPTIONS = [
   { value: 180, label: "3h" },
   { value: 240, label: "4h" },
   { value: 480, label: "8h" },
+];
+
+// Day-of-week labels for recurring job weekly schedule
+const DAYS_OF_WEEK = [
+  { value: 0, label: "Sun" },
+  { value: 1, label: "Mon" },
+  { value: 2, label: "Tue" },
+  { value: 3, label: "Wed" },
+  { value: 4, label: "Thu" },
+  { value: 5, label: "Fri" },
+  { value: 6, label: "Sat" },
 ];
 
 // ============================================================================
@@ -225,6 +237,19 @@ function TechnicianMultiSelect({
 // Main Dialog
 // ============================================================================
 
+// Recurrence preset definitions — map user-facing labels to existing engine values
+// without introducing new recurrence types or backend changes
+type RecurrencePreset = "weekly" | "biweekly" | "monthly" | "quarterly" | "semi-annual" | "annual" | "custom";
+const RECURRENCE_PRESETS: { value: RecurrencePreset; label: string; kind: "weekly" | "monthly"; interval: number }[] = [
+  { value: "weekly",      label: "Weekly",      kind: "weekly",  interval: 1 },
+  { value: "biweekly",    label: "Biweekly",    kind: "weekly",  interval: 2 },
+  { value: "monthly",     label: "Monthly",     kind: "monthly", interval: 1 },
+  { value: "quarterly",   label: "Quarterly",   kind: "monthly", interval: 3 },
+  { value: "semi-annual", label: "Semi-Annual", kind: "monthly", interval: 6 },
+  { value: "annual",      label: "Annual",      kind: "monthly", interval: 12 },
+  { value: "custom",      label: "Custom",      kind: "weekly",  interval: 1 },
+];
+
 interface QuickAddJobDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -238,9 +263,12 @@ interface QuickAddJobDialogProps {
     durationMinutes?: number;
     primaryTechnicianId?: string;
   };
+  /** Mode control: "standard" = normal create with optional recurring toggle,
+   *  "recurring" = opens with recurring ON by default, schedule row hidden */
+  mode?: "standard" | "recurring";
 }
 
-export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, editJob, onSuccess, initialSchedule }: QuickAddJobDialogProps) {
+export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, editJob, onSuccess, initialSchedule, mode = "standard" }: QuickAddJobDialogProps) {
   const { toast } = useToast();
   const { logActivity } = useActivityStore();
   const [locationOpen, setLocationOpen] = useState(false);
@@ -256,18 +284,32 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
 
   const [showConflictAlert, setShowConflictAlert] = useState(false);
   const [formData, setFormData] = useState(getDefaultFormData());
+  const [selectedEquipmentIds, setSelectedEquipmentIds] = useState<string[]>([]);
+
+  // Recurring job state — when enabled, submits to POST /api/recurring-templates instead of POST /api/jobs
+  // In recurring mode, isRecurring defaults ON
+  const isRecurringMode = mode === "recurring";
+  const [isRecurring, setIsRecurring] = useState(isRecurringMode);
+  const [recurrencePreset, setRecurrencePreset] = useState<RecurrencePreset>("weekly");
+  const [recurringKind, setRecurringKind] = useState<"weekly" | "monthly">("weekly");
+  const [recurringInterval, setRecurringInterval] = useState(1);
+  const [recurringDaysOfWeek, setRecurringDaysOfWeek] = useState<number[]>([1]); // Default Monday
+  const [recurringDayOfMonth, setRecurringDayOfMonth] = useState(1);
+  const [recurringStartDate, setRecurringStartDate] = useState(format(new Date(), "yyyy-MM-dd"));
+  const [recurringEndDate, setRecurringEndDate] = useState("");
+
   const [scheduleValue, setScheduleValue] = useState<JobScheduleValue>(
     createDefaultScheduleValue({ unscheduled: true })
   );
 
   useEffect(() => {
     if (open && editJob) {
+      // Edit mode: populate core fields only — no schedule/assignment (2026-04-03)
       setFormData({
         locationId: editJob.locationId || "",
         summary: editJob.summary || "",
         description: editJob.description || "",
       });
-      setScheduleValue(parseJobToScheduleValue(editJob));
     } else if (open && initialSchedule) {
       // Dispatch board quick-create: prefill schedule with tech + date + time
       setScheduleValue(createDefaultScheduleValue({
@@ -300,8 +342,18 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
       setShowQuickCreate(false);
       setQuickCreateName("");
       setShowConflictAlert(false);
+      setSelectedEquipmentIds([]);
+      // Reset recurring state on close — recurring mode defaults ON
+      setIsRecurring(isRecurringMode);
+      setRecurrencePreset("weekly");
+      setRecurringKind("weekly");
+      setRecurringInterval(1);
+      setRecurringDaysOfWeek([1]);
+      setRecurringDayOfMonth(1);
+      setRecurringStartDate(format(new Date(), "yyyy-MM-dd"));
+      setRecurringEndDate("");
     }
-  }, [open]);
+  }, [open, isRecurringMode]);
 
   // ── Data queries ──
   // Server-backed location search with surface-managed debounce.
@@ -399,8 +451,33 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
       if (!result.success) throw new Error(result.error || "Failed to create job");
       return result;
     },
-    onSuccess: (result: any) => {
+    onSuccess: async (result: any) => {
       const job = result.job;
+
+      // Link selected equipment after job creation (fire-and-forget with error toast)
+      if (job?.id && selectedEquipmentIds.length > 0) {
+        const linkErrors: string[] = [];
+        for (const equipmentId of selectedEquipmentIds) {
+          try {
+            await apiRequest(`/api/jobs/${job.id}/equipment`, {
+              method: "POST",
+              body: JSON.stringify({ equipmentId }),
+            });
+          } catch {
+            linkErrors.push(equipmentId);
+          }
+        }
+        if (linkErrors.length > 0) {
+          toast({
+            title: "Job created",
+            description: `${linkErrors.length} equipment item(s) could not be linked. You can add them from the job detail page.`,
+            variant: "destructive",
+          });
+        }
+        // Invalidate job equipment cache
+        queryClient.invalidateQueries({ queryKey: ["/api/jobs", job.id, "equipment"] });
+      }
+
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       queryClient.invalidateQueries({ queryKey: ["/api/calendar"], exact: false });
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
@@ -447,19 +524,12 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
 
   const updateJobMutation = useMutation({
     mutationFn: async (data: Partial<InsertJob>) => {
-      const result = await apiRequest(`/api/jobs/${editJob?.id}`, {
-        method: "PUT",
+      // Edit mode: update core job fields only. Schedule/assignment is managed
+      // via visit-level controls (EditVisitModal), not job-level editing (2026-04-03).
+      return apiRequest(`/api/jobs/${editJob?.id}`, {
+        method: "PATCH",
         body: JSON.stringify(data),
       });
-      if (editJob?.id) {
-        const scheduleResult = await applyJobSchedule(editJob.id, scheduleValue, {
-          isUpdate: !!editJob.scheduledStart,
-        });
-        if (!scheduleResult.success) {
-          console.warn("[QuickAddJobDialog] Schedule update warning:", scheduleResult.error);
-        }
-      }
-      return result;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
@@ -511,7 +581,66 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     quickCreateClientMutation.mutate(quickCreateName.trim());
   };
 
-  const isPending = createJobMutation.isPending || updateJobMutation.isPending;
+  // Apply recurrence preset — auto-configures kind/interval from preset selection
+  const handlePresetChange = useCallback((preset: RecurrencePreset) => {
+    setRecurrencePreset(preset);
+    if (preset !== "custom") {
+      const def = RECURRENCE_PRESETS.find((p) => p.value === preset)!;
+      setRecurringKind(def.kind);
+      setRecurringInterval(def.interval);
+    }
+  }, []);
+
+  // Recurring template creation — maps QuickAddJob form fields to POST /api/recurring-templates payload
+  const createRecurringMutation = useMutation({
+    mutationFn: async () => {
+      const payload: Record<string, unknown> = {
+        title: formData.summary.trim(),
+        description: formData.description.trim() || null,
+        locationId: formData.locationId || null,
+        // Non-PM recurring jobs must use a non-maintenance jobType so they are distinguishable from PM contracts
+        jobType: "repair",
+        priority: "medium",
+        recurrenceKind: recurringKind,
+        interval: recurringInterval,
+        startDate: recurringStartDate,
+        endDate: recurringEndDate || null,
+        // Non-PM recurring job defaults: no PM billing, no PM parts, phase generation mode
+        pmBillingModel: null,
+        includeLocationPmParts: false,
+        generationMode: "phase",
+        // 2026-04-02: Recurring jobs use tight window (7 before, 0 after) — not PM-style 14-day after
+        serviceWindowDaysBefore: 7,
+        serviceWindowDaysAfter: 0,
+        // Do not force sub-status — let jobs generate with status=open, no sub-status
+        openSubStatusDefault: null,
+      };
+      if (recurringKind === "weekly") {
+        payload.daysOfWeek = recurringDaysOfWeek;
+      } else {
+        payload.dayOfMonth = recurringDayOfMonth;
+      }
+      return await apiRequest("/api/recurring-templates", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/recurring-templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/recurring-jobs"] });
+      toast({
+        title: "Recurring Job Created",
+        description: "A recurring job template has been created. Jobs will be generated automatically.",
+      });
+      onOpenChange(false);
+      onSuccess?.();
+    },
+    onError: (error: Error) => {
+      toast({ title: "Error", description: error.message || "Failed to create recurring job", variant: "destructive" });
+    },
+  });
+
+  const isPending = createJobMutation.isPending || updateJobMutation.isPending || createRecurringMutation.isPending;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -524,7 +653,23 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
       toast({ title: "Error", description: "Please enter a job summary", variant: "destructive" });
       return;
     }
-    if (!scheduleValue.unscheduled && !scheduleValue.date) {
+
+    // Recurring path: validate recurring fields and submit to recurring template API
+    if (isRecurring && !isEditMode) {
+      if (!recurringStartDate) {
+        toast({ title: "Error", description: "Please select a start date for the recurring job", variant: "destructive" });
+        return;
+      }
+      if (recurringKind === "weekly" && recurringDaysOfWeek.length === 0) {
+        toast({ title: "Error", description: "Please select at least one day of the week", variant: "destructive" });
+        return;
+      }
+      createRecurringMutation.mutate(undefined);
+      return;
+    }
+
+    // Schedule validation only applies to create mode (2026-04-03)
+    if (!isEditMode && !scheduleValue.unscheduled && !scheduleValue.date) {
       toast({ title: "Error", description: "Please select a date for the scheduled job", variant: "destructive" });
       return;
     }
@@ -546,7 +691,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-xl" data-testid="dialog-quick-add-job">
         <DialogHeader>
-          <DialogTitle data-testid="text-dialog-title">{isEditMode ? "Edit Job" : "Create New Job"}</DialogTitle>
+          <DialogTitle data-testid="text-dialog-title">{isEditMode ? "Edit Job" : isRecurringMode ? "Create Recurring Job" : "Create New Job"}</DialogTitle>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-3">
@@ -605,6 +750,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
                           value={location.id}
                           onSelect={() => {
                             setFormData(prev => ({ ...prev, locationId: location.id }));
+                            setSelectedEquipmentIds([]); // Reset equipment on location change
                             setLocationOpen(false);
                           }}
                           data-testid={`option-location-${location.id}`}
@@ -679,6 +825,18 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
             </Popover>
           </div>
 
+          {/* ── Equipment (optional) ── */}
+          {!isEditMode && (
+            <div>
+              <Label className="text-xs font-medium mb-1 block">Equipment</Label>
+              <EquipmentPicker
+                locationId={formData.locationId || null}
+                selectedEquipmentIds={selectedEquipmentIds}
+                onChange={setSelectedEquipmentIds}
+              />
+            </div>
+          )}
+
           {/* ── Summary ── */}
           <div>
             <Label htmlFor="summary" className="text-xs font-medium mb-1 block">Summary *</Label>
@@ -692,7 +850,196 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
             />
           </div>
 
-          {/* ── Scheduling Row (compact inline) ── */}
+          {/* ── Make Recurring toggle — shown in standard create mode only (forced ON in recurring mode) ── */}
+          {!isEditMode && !isRecurringMode && (
+            <div className="flex items-center gap-2 py-1">
+              <Switch
+                id="make-recurring"
+                checked={isRecurring}
+                onCheckedChange={setIsRecurring}
+                data-testid="switch-make-recurring"
+              />
+              <Label htmlFor="make-recurring" className="text-xs font-medium cursor-pointer flex items-center gap-1.5">
+                <Repeat className="h-3.5 w-3.5" />
+                Make Recurring
+              </Label>
+            </div>
+          )}
+
+          {/* ── Recurring schedule fields — shown when Make Recurring is ON ── */}
+          {isRecurring && !isEditMode && (
+            <div className="space-y-3 rounded-md border p-3 bg-muted/30">
+              {/* Row: Preset + Start date + End date */}
+              <div className="flex items-start gap-3">
+                <div className="flex-1">
+                  <Label className="text-xs font-medium mb-1 block">Recurrence</Label>
+                  <Select value={recurrencePreset} onValueChange={(v) => handlePresetChange(v as RecurrencePreset)}>
+                    <SelectTrigger className="h-9 text-xs" data-testid="select-recurrence-preset">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {RECURRENCE_PRESETS.map((p) => (
+                        <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex-1">
+                  <Label className="text-xs font-medium mb-1 block">Start date *</Label>
+                  <Input
+                    type="date"
+                    value={recurringStartDate}
+                    onChange={(e) => setRecurringStartDate(e.target.value)}
+                    className="h-9 text-xs"
+                    data-testid="input-recurring-start"
+                  />
+                </div>
+                <div className="flex-1">
+                  <Label className="text-xs font-medium mb-1 block">End date</Label>
+                  <Input
+                    type="date"
+                    value={recurringEndDate}
+                    onChange={(e) => setRecurringEndDate(e.target.value)}
+                    className="h-9 text-xs"
+                    placeholder="Optional"
+                    data-testid="input-recurring-end"
+                  />
+                </div>
+              </div>
+
+              {/* Custom controls — only shown when preset is "custom" */}
+              {recurrencePreset === "custom" && (
+                <>
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1">
+                      <Label className="text-xs font-medium mb-1 block">Frequency</Label>
+                      <Select value={recurringKind} onValueChange={(v) => setRecurringKind(v as "weekly" | "monthly")}>
+                        <SelectTrigger className="h-9 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="weekly">Weekly</SelectItem>
+                          <SelectItem value="monthly">Monthly</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="w-20">
+                      <Label className="text-xs font-medium mb-1 block">Every</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={52}
+                        value={recurringInterval}
+                        onChange={(e) => setRecurringInterval(Math.max(1, Math.min(52, Number(e.target.value) || 1)))}
+                        className="h-9 text-xs"
+                        data-testid="input-recurring-interval"
+                      />
+                    </div>
+                    <span className="text-xs text-muted-foreground mt-5">{recurringKind === "weekly" ? "week(s)" : "month(s)"}</span>
+                  </div>
+
+                  {/* Weekly: day-of-week buttons */}
+                  {recurringKind === "weekly" && (
+                    <div>
+                      <Label className="text-xs font-medium mb-1.5 block">Days</Label>
+                      <div className="flex gap-1">
+                        {DAYS_OF_WEEK.map((day) => {
+                          const selected = recurringDaysOfWeek.includes(day.value);
+                          return (
+                            <button
+                              key={day.value}
+                              type="button"
+                              className={cn(
+                                "h-8 w-9 rounded text-xs font-medium border transition-colors",
+                                selected ? "bg-primary text-primary-foreground border-primary" : "bg-background hover:bg-muted",
+                              )}
+                              onClick={() =>
+                                setRecurringDaysOfWeek(
+                                  selected
+                                    ? recurringDaysOfWeek.filter((d) => d !== day.value)
+                                    : [...recurringDaysOfWeek, day.value].sort(),
+                                )
+                              }
+                              data-testid={`btn-day-${day.label.toLowerCase()}`}
+                            >
+                              {day.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Monthly: day-of-month selector */}
+                  {recurringKind === "monthly" && (
+                    <div className="w-24">
+                      <Label className="text-xs font-medium mb-1 block">Day of month</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={31}
+                        value={recurringDayOfMonth}
+                        onChange={(e) => setRecurringDayOfMonth(Math.max(1, Math.min(31, Number(e.target.value) || 1)))}
+                        className="h-9 text-xs"
+                        data-testid="input-day-of-month"
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+
+              {/* Weekly day-of-week for non-custom weekly presets */}
+              {recurrencePreset !== "custom" && recurringKind === "weekly" && (
+                <div>
+                  <Label className="text-xs font-medium mb-1.5 block">Days</Label>
+                  <div className="flex gap-1">
+                    {DAYS_OF_WEEK.map((day) => {
+                      const selected = recurringDaysOfWeek.includes(day.value);
+                      return (
+                        <button
+                          key={day.value}
+                          type="button"
+                          className={cn(
+                            "h-8 w-9 rounded text-xs font-medium border transition-colors",
+                            selected ? "bg-primary text-primary-foreground border-primary" : "bg-background hover:bg-muted",
+                          )}
+                          onClick={() =>
+                            setRecurringDaysOfWeek(
+                              selected
+                                ? recurringDaysOfWeek.filter((d) => d !== day.value)
+                                : [...recurringDaysOfWeek, day.value].sort(),
+                            )
+                          }
+                          data-testid={`btn-day-${day.label.toLowerCase()}`}
+                        >
+                          {day.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Monthly day-of-month for non-custom monthly presets */}
+              {recurrencePreset !== "custom" && recurringKind === "monthly" && (
+                <div className="w-24">
+                  <Label className="text-xs font-medium mb-1 block">Day of month</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={31}
+                    value={recurringDayOfMonth}
+                    onChange={(e) => setRecurringDayOfMonth(Math.max(1, Math.min(31, Number(e.target.value) || 1)))}
+                    className="h-9 text-xs"
+                    data-testid="input-day-of-month"
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Scheduling Row (compact inline) — hidden in edit mode and when Make Recurring is ON (2026-04-03) ── */}
+          {!isEditMode && !isRecurring && (
           <div>
             <div className="flex items-center gap-3 mb-2">
               <Label className="text-xs font-medium">Schedule</Label>
@@ -772,6 +1119,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               />
             </div>
           </div>
+          )}
 
           {/* ── Description (optional, compact) ── */}
           <div>
@@ -808,10 +1156,10 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
               {isPending ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  {isEditMode ? "Saving..." : "Creating..."}
+                  {isEditMode ? "Saving..." : isRecurring ? "Creating Recurring..." : "Creating..."}
                 </>
               ) : (
-                isEditMode ? "Save Changes" : "Create Job"
+                isEditMode ? "Save Changes" : (isRecurring || isRecurringMode) ? "Create Recurring Job" : "Create Job"
               )}
             </Button>
           </DialogFooter>

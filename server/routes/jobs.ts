@@ -105,12 +105,19 @@ router.get("/", asyncHandler(async (req: AuthedRequest, res: Response) => {
     ? (pagination.limit ?? HISTORY_DEFAULT_LIMIT)
     : JOBS_LIST_LIMIT;
 
+  const openSubStatus = req.query.openSubStatus ? String(req.query.openSubStatus) : undefined;
+  const unscheduledOnly = req.query.unscheduledOnly === "true";
+  const overdue = req.query.overdue === "true";
+
   const filters: JobFeedFilters = {
     status: isHistoryMode ? undefined : status, // History searches all statuses
     technicianId: isHistoryMode ? undefined : technicianId,
     search,
     locationId: isHistoryMode ? undefined : locationId,
     dateRange: isHistoryMode ? undefined : dateRange,
+    openSubStatus: isHistoryMode ? undefined : openSubStatus,
+    unscheduledOnly: isHistoryMode ? false : unscheduledOnly,
+    overdue: isHistoryMode ? false : overdue,
     sortBy,
     sortOrder,
     limit: effectiveLimit,

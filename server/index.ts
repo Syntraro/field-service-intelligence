@@ -95,7 +95,7 @@ app.use(
     secret: sessionSecret ?? "dev-secret",
     resave: false,
     rolling: true, // Reset maxAge on every response → idle timeout behavior
-    saveUninitialized: true, // ← Create session even before login for CSRF
+    saveUninitialized: false, // Only save sessions that are modified (CSRF endpoint initializes session via csurf secret)
     cookie: {
       httpOnly: true,
       secure: IS_PROD,

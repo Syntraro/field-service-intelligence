@@ -1,17 +1,26 @@
 /**
- * Dashboard - Operations Command Center
+ * Dashboard — Operations Command Center
  *
- * Layout: Top summary row → Operations + Alerts → Pipeline + Financial → Tasks sidebar
- * Data: Reuses existing dashboard/workflow, attention, and invoices queries.
+ * Layout: Today's Operations (full-width top) → Jobs + Invoices → Quotes + PM Health → Tasks sidebar
+ * Data: Reuses canonical dashboard/workflow, attention, and invoices queries.
+ *
+ * Visual hierarchy (5 tiers):
+ * L1: Today's Operations (dark charcoal header, elevated card)
+ * L2: Jobs (strongest domain card, shadow-md)
+ * L3: Invoices (medium weight)
+ * L4: Quotes + PM Health (lightest)
+ * L5: Tasks panel (subordinate sidebar)
+ *
+ * Worklist-style phrasing: every row reads as "object + condition + implied action"
  */
 
 import { useState, useEffect, useMemo } from "react";
 import { useLocation } from "wouter";
 import {
-  FileText, DollarSign, Briefcase, ChevronRight, ChevronDown, ChevronUp,
+  FileText, DollarSign, Briefcase, ChevronRight,
   PanelRightClose, PanelRightOpen, Plus, ClipboardList, CheckSquare, Square,
-  AlertTriangle, Clock, Route, Calendar, Activity, TrendingUp, Users,
-  Wrench, ExternalLink,
+  Clock, Calendar, Activity, CheckCircle2,
+  Wrench, ExternalLink, Route,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -22,23 +31,14 @@ import { useAuth } from "@/lib/auth";
 import { resolveDashboardNav, type DashboardAction } from "@/lib/dashboardNavigation";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { Skeleton } from "@/components/ui/skeleton";
-import { AsyncBlock } from "@/components/AsyncBlock";
 import { TaskDialog } from "@/components/TaskDialog";
-import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
-  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { DashboardActionModal, type DashboardActionMode } from "@/components/DashboardActionModal";
+import { useDispatchStream } from "@/hooks/useDispatchStream";
 import type { Job as SchemaJob, Invoice as SchemaInvoice } from "@shared/schema";
 
 // ============================================================================
 // Types
 // ============================================================================
-
-interface Job extends Pick<SchemaJob, "id" | "jobNumber" | "summary" | "status"> {
-  scheduledStart: string | null;
-  locationName?: string;
-  location?: { companyName?: string; location?: string };
-}
 
 interface Invoice extends Pick<SchemaInvoice, "id" | "invoiceNumber" | "total" | "balance" | "dueDate" | "status"> {
   locationName?: string;
@@ -65,318 +65,141 @@ type Task = {
 
 type AttentionSummary = Record<string, number>;
 
-interface AttentionItem {
-  id: string;
-  entityType: string;
-  entityId: string;
-  ruleType: string;
-  severity: string;
-  status: string;
-  firstDetectedAt: string;
-  lastDetectedAt: string;
-  meta: Record<string, unknown> | null;
-}
-
-interface AttentionJob extends Job {
-  attentionType?: string;
-  scheduledEnd?: string | null;
-  isAllDay?: boolean;
+interface TodayVisitSummary {
+  scheduled: number;
+  onRoute: number;
+  inProgress: number;
+  remaining: number;
+  completed: number;
+  total: number;
 }
 
 // ============================================================================
-// Shared card wrapper — consistent surface styling
+// Shared card primitives
 // ============================================================================
 
-function DashCard({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return (
-    <div className={`bg-white dark:bg-gray-900 rounded-lg border border-border/60 shadow-sm ${className}`}>
-      {children}
-    </div>
-  );
+function formatCurrency(amount: number): string {
+  return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD", minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(amount);
 }
 
-function CardHeader({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+function DashCard({ children, className = "", elevated }: { children: React.ReactNode; className?: string; elevated?: boolean }) {
   return (
-    <div className={`px-4 py-3 border-b border-border/40 ${className}`}>
+    <div className={`bg-[#ffffff] dark:bg-gray-900 rounded-lg overflow-hidden border border-[#e2e8f0] dark:border-gray-700 ${className}`} style={{ boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
       {children}
     </div>
   );
 }
 
 // ============================================================================
-// Row 1 — Top Summary Cards
+// Today's Operations (command center top — strongest visual anchor)
 // ============================================================================
 
-function SummaryCards({ data, isLoading, attention }: {
-  data?: WorkflowSummary;
+function TodaysOperations({ today, isLoading }: {
+  today?: TodayVisitSummary;
   isLoading: boolean;
-  attention?: AttentionSummary;
 }) {
   const [, setLocation] = useLocation();
-
-  const cards = [
-    {
-      title: "Quotes",
-      icon: FileText,
-      color: "text-teal-600",
-      bg: "bg-teal-50 dark:bg-teal-950/30",
-      items: [
-        { label: "Approved", value: data?.quotes.approvedCount ?? 0, action: "quotes.approved" as DashboardAction },
-        { label: "Draft", value: data?.quotes.draftCount ?? 0, action: "quotes.draft" as DashboardAction },
-      ],
-    },
-    {
-      title: "Jobs",
-      icon: Briefcase,
-      color: "text-emerald-600",
-      bg: "bg-emerald-50 dark:bg-emerald-950/30",
-      items: [
-        { label: "Unscheduled", value: data?.jobs.unscheduledCount ?? 0, action: "jobs.unscheduled" as DashboardAction },
-        { label: "Needs Invoicing", value: data?.jobs.requiresInvoicingCount ?? 0, action: "jobs.needsInvoicing" as DashboardAction },
-      ],
-    },
-    {
-      title: "Invoices",
-      icon: DollarSign,
-      color: "text-amber-600",
-      bg: "bg-amber-50 dark:bg-amber-950/30",
-      items: [
-        { label: "Outstanding", value: data?.invoices.outstandingCount ?? 0, action: "invoices.outstanding" as DashboardAction },
-        { label: "Past Due", value: data?.invoices.pastDueCount ?? 0, action: "invoices.pastDue" as DashboardAction, warn: true },
-      ],
-    },
-    {
-      title: "PM Health",
-      icon: Wrench,
-      color: "text-violet-600",
-      bg: "bg-violet-50 dark:bg-violet-950/30",
-      items: [
-        { label: "Overdue", value: data?.pm.overdueCount ?? 0, action: "pm.overdue" as DashboardAction, warn: true },
-        { label: "Coming Due (0–7d)", value: data?.pm.comingDueCount ?? 0, action: "pm.comingDue" as DashboardAction },
-        { label: "Upcoming (7–30d)", value: data?.pm.upcomingCount ?? 0, action: "pm.upcoming" as DashboardAction },
-      ],
-    },
+  const todayFlow: { label: string; value: number; icon: React.ElementType; action?: DashboardAction; primary?: boolean }[] = [
+    { label: "Scheduled Today", value: today?.scheduled ?? 0, icon: Calendar, action: "ops.activeJobs", primary: true },
+    { label: "On Route", value: today?.onRoute ?? 0, icon: Route, action: "ops.activeJobs" },
+    { label: "In Progress", value: today?.inProgress ?? 0, icon: Activity, action: "ops.activeJobs" },
+    { label: "Remaining", value: today?.remaining ?? 0, icon: Clock, action: "ops.activeJobs" },
+    { label: "Completed Today", value: today?.completed ?? 0, icon: CheckCircle2 },
   ];
 
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-      {cards.map((card) => (
-        <DashCard key={card.title}>
-          <div className="p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <div className={`p-1.5 rounded-md ${card.bg}`}>
-                <card.icon className={`h-3.5 w-3.5 ${card.color}`} />
+    <div>
+      <div className="flex items-center justify-between gap-3 mb-2" style={{ borderBottom: '1px solid #e5e7eb', paddingBottom: '8px' }}>
+        <h3 className="text-lg font-semibold text-[#111827] dark:text-gray-100 tracking-tight">Today's Operations</h3>
+      </div>
+      {/* KPI cards floating on page background */}
+      {isLoading ? (
+        <div className="grid grid-cols-3 lg:grid-cols-5 gap-2">
+          {[1,2,3,4,5].map(i => <Skeleton key={i} className="h-[66px]" />)}
+        </div>
+      ) : (
+        <div className="grid grid-cols-3 lg:grid-cols-5 gap-2">
+          {todayFlow.map((stat) => (
+            <button
+              key={stat.label}
+              onClick={stat.action ? () => setLocation(resolveDashboardNav(stat.action!)) : undefined}
+              className={`rounded-lg px-3 py-4 text-left transition-colors bg-[#ffffff] border border-[#e2e8f0] hover:bg-[#F0F5F0] ${stat.action ? "cursor-pointer" : "cursor-default"}`}
+              style={{ boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}
+            >
+              <div className="flex items-center gap-1.5 mb-0.5">
+                <stat.icon className="h-3 w-3 text-[#4b5563]" />
+                <span className="text-[12px] text-[#4b5563] font-medium leading-tight">{stat.label}</span>
               </div>
-              <h3 className={`text-xs font-semibold uppercase tracking-wider ${card.color}`}>{card.title}</h3>
-            </div>
-            {isLoading ? (
-              <div className="space-y-2">
-                <Skeleton className="h-5 w-full" />
-                <Skeleton className="h-5 w-3/4" />
-              </div>
-            ) : (
-              <div className="space-y-1.5">
-                {card.items.map((item) => (
-                  <button
-                    key={item.label}
-                    onClick={() => setLocation(resolveDashboardNav(item.action))}
-                    className="flex items-center justify-between w-full text-left py-1 px-1.5 -mx-1.5 rounded hover:bg-muted/50 transition-colors group"
-                  >
-                    <span className="text-xs text-muted-foreground group-hover:text-foreground transition-colors">{item.label}</span>
-                    <span className={`text-sm font-bold tabular-nums ${item.warn && typeof item.value === "number" && item.value > 0 ? "text-red-600" : "text-foreground"}`}>
-                      {item.value}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </DashCard>
-      ))}
+              <p className={`font-bold tabular-nums ${stat.primary ? "text-3xl text-[#111827]" : "text-2xl text-[#111827]"}`}>{stat.value}</p>
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
 // ============================================================================
-// Row 2 Left — Today's Operations
+// Worklist Card (flat rows, pipeline-style phrasing)
 // ============================================================================
 
-function TodaysOperations({ data, attention, isLoading }: {
-  data?: WorkflowSummary;
-  attention?: AttentionSummary;
-  isLoading: boolean;
-}) {
-  const [, setLocation] = useLocation();
-
-  const todayStats = [
-    { label: "Active Jobs", value: data?.jobs.activeCount ?? 0, icon: Briefcase, color: "text-blue-600 bg-blue-50 dark:bg-blue-950/30", action: "ops.activeJobs" as DashboardAction },
-    { label: "On Hold", value: data?.jobs.onHoldCount ?? 0, icon: Clock, color: "text-amber-600 bg-amber-50 dark:bg-amber-950/30", action: "ops.onHold" as DashboardAction },
-    { label: "Needs Invoicing", value: attention?.["job.requires_invoicing"] ?? data?.jobs.requiresInvoicingCount ?? 0, icon: DollarSign, color: "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/30", action: "ops.needsInvoicing" as DashboardAction },
-    { label: "Overdue", value: attention?.["job.overdue"] ?? 0, icon: AlertTriangle, color: "text-red-600 bg-red-50 dark:bg-red-950/30", action: "ops.overdue" as DashboardAction },
-  ];
-
-  return (
-    <DashCard className="flex flex-col">
-      <CardHeader>
-        <div className="flex items-center gap-2">
-          <Activity className="h-4 w-4 text-blue-500" />
-          <h3 className="text-sm font-semibold">Today's Operations</h3>
-        </div>
-      </CardHeader>
-      <div className="p-4 flex-1">
-        {isLoading ? (
-          <div className="grid grid-cols-2 gap-3">
-            {[1,2,3,4].map(i => <Skeleton key={i} className="h-16" />)}
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-3">
-            {todayStats.map((stat) => (
-              <button
-                key={stat.label}
-                onClick={() => setLocation(resolveDashboardNav(stat.action))}
-                className="rounded-lg border border-border/40 p-3 text-left hover:bg-muted/40 transition-colors cursor-pointer"
-              >
-                <div className="flex items-center gap-2 mb-1.5">
-                  <div className={`p-1 rounded ${stat.color.split(" ").slice(1).join(" ")}`}>
-                    <stat.icon className={`h-3 w-3 ${stat.color.split(" ")[0]}`} />
-                  </div>
-                  <span className="text-[11px] text-muted-foreground font-medium">{stat.label}</span>
-                </div>
-                <p className="text-xl font-bold tabular-nums">{stat.value}</p>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    </DashCard>
-  );
+interface WorklistRow {
+  label: string;
+  value: number | string;
+  sub?: string;
+  action: DashboardAction;
+  warn?: boolean;
+  urgentBg?: boolean;
+  /** Optional click override — when set, row calls this instead of navigating */
+  onClick?: () => void;
 }
 
-// ============================================================================
-// Row 2 Right — Dispatch Alerts (exception-based, not duplicating top row)
-// ============================================================================
-
-function DispatchAlerts({ alerts, attention, isLoading }: {
-  alerts: AttentionItem[];
-  attention?: AttentionSummary;
+function WorklistCard({ title, icon: Icon, color, bg, headerStrength, rows, isLoading, elevated }: {
+  title: string;
+  icon: React.ElementType;
+  color: string;
+  bg: string;
+  headerStrength?: "strong" | "medium" | "light";
+  rows: WorklistRow[];
   isLoading: boolean;
+  elevated?: boolean;
 }) {
   const [, setLocation] = useLocation();
 
-  // Build exception-based alert items from attention data
-  const alertItems = useMemo(() => {
-    const items: { label: string; count: number; href: string; severity: "warning" | "danger" | "info" }[] = [];
-
-    const overdue = attention?.["job.overdue"] ?? 0;
-    if (overdue > 0) items.push({ label: `${overdue} overdue job${overdue > 1 ? "s" : ""} need attention`, count: overdue, href: resolveDashboardNav("alerts.overdueJobs"), severity: "danger" });
-
-    const unassigned = attention?.["job.unassigned"] ?? 0;
-    if (unassigned > 0) items.push({ label: `${unassigned} job${unassigned > 1 ? "s" : ""} unassigned`, count: unassigned, href: resolveDashboardNav("alerts.unassignedJobs"), severity: "warning" });
-
-    // Operational alerts: running long, late, etc.
-    const opAlerts = alerts.filter(a => ["visit.running_long", "visit.late", "visit.overdue"].includes(a.ruleType));
-    if (opAlerts.length > 0) items.push({ label: `${opAlerts.length} active visit alert${opAlerts.length > 1 ? "s" : ""}`, count: opAlerts.length, href: resolveDashboardNav("alerts.visitAlerts"), severity: "danger" });
-
-    const techAlerts = alerts.filter(a => ["tech.offline", "tech.idle"].includes(a.ruleType));
-    if (techAlerts.length > 0) items.push({ label: `${techAlerts.length} technician alert${techAlerts.length > 1 ? "s" : ""}`, count: techAlerts.length, href: resolveDashboardNav("alerts.techAlerts"), severity: "info" });
-
-    // If nothing needs attention
-    if (items.length === 0) items.push({ label: "All clear — no exceptions", count: 0, href: "", severity: "info" });
-
-    return items;
-  }, [attention, alerts]);
-
-  const severityStyles = {
-    danger: "bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-900 text-red-700 dark:text-red-400",
-    warning: "bg-amber-50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-900 text-amber-700 dark:text-amber-400",
-    info: "bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-900 text-blue-700 dark:text-blue-400",
-  };
-
   return (
-    <DashCard className="flex flex-col">
-      <CardHeader>
+    <DashCard className="flex flex-col" elevated={elevated}>
+      <div className="px-4 py-2.5 border-b border-[#e2e8f0] dark:border-gray-600">
         <div className="flex items-center gap-2">
-          <AlertTriangle className="h-4 w-4 text-amber-500" />
-          <h3 className="text-sm font-semibold">Dispatch Alerts</h3>
-          {alertItems.length > 0 && alertItems[0].count > 0 && (
-            <Badge variant="destructive" className="text-[10px] h-5 rounded-full">{alertItems.reduce((s, a) => s + a.count, 0)}</Badge>
-          )}
+          <Icon className={`h-3.5 w-3.5 ${color}`} />
+          <h3 className="text-sm font-semibold text-[#111827] dark:text-gray-100">{title}</h3>
         </div>
-      </CardHeader>
-      <div className="p-3 flex-1 space-y-2">
-        {isLoading ? (
-          <div className="space-y-2">
-            {[1,2,3].map(i => <Skeleton key={i} className="h-10" />)}
-          </div>
-        ) : (
-          alertItems.map((item, i) => (
-            item.href ? (
-              <button
-                key={i}
-                onClick={() => setLocation(item.href)}
-                className={`w-full text-left rounded-lg border px-3 py-2.5 text-xs font-medium transition-colors hover:opacity-80 flex items-center justify-between ${severityStyles[item.severity]}`}
-              >
-                <span>{item.label}</span>
-                <ChevronRight className="h-3.5 w-3.5 opacity-50 flex-shrink-0" />
-              </button>
-            ) : (
-              <div key={i} className={`rounded-lg border px-3 py-2.5 text-xs font-medium ${severityStyles[item.severity]}`}>
-                {item.label}
-              </div>
-            )
-          ))
-        )}
       </div>
-    </DashCard>
-  );
-}
-
-// ============================================================================
-// Row 3 Left — Work Pipeline
-// ============================================================================
-
-function WorkPipeline({ data, attention, isLoading }: {
-  data?: WorkflowSummary;
-  attention?: AttentionSummary;
-  isLoading: boolean;
-}) {
-  const [, setLocation] = useLocation();
-
-  const pipelineItems = [
-    { label: "PM instances awaiting generation", count: data?.pm?.awaitingGenerationCount ?? 0, action: "pipeline.pmAwaiting" as DashboardAction },
-    { label: "Quotes awaiting approval", count: data?.quotes.draftCount ?? 0, action: "pipeline.quotesAwaitingApproval" as DashboardAction },
-    { label: "Approved quotes not converted", count: data?.quotes.approvedCount ?? 0, action: "pipeline.approvedNotConverted" as DashboardAction },
-    { label: "Jobs awaiting scheduling", count: data?.jobs.unscheduledCount ?? 0, action: "pipeline.jobsAwaitingScheduling" as DashboardAction },
-    { label: "Jobs awaiting invoice", count: data?.jobs.requiresInvoicingCount ?? 0, action: "pipeline.jobsAwaitingInvoice" as DashboardAction },
-  ];
-
-  return (
-    <DashCard className="flex flex-col">
-      <CardHeader>
-        <div className="flex items-center gap-2">
-          <TrendingUp className="h-4 w-4 text-violet-500" />
-          <h3 className="text-sm font-semibold">Work Pipeline</h3>
-        </div>
-      </CardHeader>
       <div className="flex-1">
         {isLoading ? (
           <div className="p-4 space-y-3">
-            {[1,2,3,4,5].map(i => <Skeleton key={i} className="h-8" />)}
+            {rows.map((_, i) => <Skeleton key={i} className="h-8" />)}
           </div>
         ) : (
           <div>
-            {pipelineItems.map((item, index) => {
-              const isLast = index === pipelineItems.length - 1;
+            {rows.map((row, index) => {
+              const isLast = index === rows.length - 1;
+              const numVal = typeof row.value === "number" ? row.value : parseFloat(String(row.value).replace(/[^0-9.-]/g, "")) || 0;
+              const isWarn = row.warn && numVal > 0;
               return (
                 <button
-                  key={item.label}
-                  onClick={() => setLocation(resolveDashboardNav(item.action))}
-                  className={`w-full text-left px-4 py-3 hover:bg-muted/40 transition-colors flex items-center justify-between group ${!isLast ? "border-b border-border/40" : ""}`}
+                  key={row.label}
+                  onClick={() => row.onClick ? row.onClick() : setLocation(resolveDashboardNav(row.action))}
+                  className={`w-full text-left px-4 py-1.5 hover:bg-[#F0F5F0] transition-colors flex items-center justify-between group ${row.urgentBg ? (numVal > 0 ? "bg-red-50/60 dark:bg-red-950/15" : "bg-red-50/20 dark:bg-red-950/5") : ""} ${!isLast ? "border-b border-[#e2e8f0]" : ""}`}
                 >
-                  <span className="text-xs text-muted-foreground group-hover:text-foreground transition-colors">{item.label}</span>
+                  <span className={`text-xs group-hover:text-[#111827] transition-colors ${isWarn ? "text-red-600 dark:text-red-400 font-medium" : "text-[#4b5563]"}`}>
+                    {row.label}
+                  </span>
                   <div className="flex items-center gap-2">
-                    <span className={`text-sm font-bold tabular-nums ${item.count > 0 ? "text-foreground" : "text-muted-foreground/50"}`}>{item.count}</span>
-                    <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/40 group-hover:text-muted-foreground transition-colors" />
+                    {row.sub && <span className="text-[11px] text-[#4b5563]">{row.sub}</span>}
+                    <span className={`text-sm font-bold tabular-nums ${isWarn ? "text-red-600" : numVal > 0 || typeof row.value === "string" ? "text-[#111827]" : "text-[#4b5563]"}`}>
+                      {row.value}
+                    </span>
+                    <ChevronRight className="h-3.5 w-3.5 text-[#4b5563] group-hover:text-[#111827] transition-colors" />
                   </div>
                 </button>
               );
@@ -389,84 +212,7 @@ function WorkPipeline({ data, attention, isLoading }: {
 }
 
 // ============================================================================
-// Row 3 Right — Financial Snapshot
-// ============================================================================
-
-function FinancialSnapshot({ invoices, data, isLoading }: {
-  invoices: Invoice[];
-  data?: WorkflowSummary;
-  isLoading: boolean;
-}) {
-  const [, setLocation] = useLocation();
-
-  const formatCurrency = (amount: number) =>
-    new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD", minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(amount);
-
-  // Derive totals from invoice data
-  const outstandingTotal = useMemo(() => invoices.reduce((sum, inv) => sum + parseFloat(inv.balance || "0"), 0), [invoices]);
-  const pastDueTotal = useMemo(() => invoices.filter(i => i.isPastDue).reduce((sum, inv) => sum + parseFloat(inv.balance || "0"), 0), [invoices]);
-  const pastDueCount = data?.invoices.pastDueCount ?? invoices.filter(i => i.isPastDue).length;
-
-  const metrics = [
-    { label: "Outstanding Invoices", value: formatCurrency(outstandingTotal), sub: `${data?.invoices.outstandingCount ?? invoices.length} invoices` },
-    { label: "Past Due", value: formatCurrency(pastDueTotal), sub: `${pastDueCount} invoices`, warn: pastDueCount > 0 },
-  ];
-
-  return (
-    <DashCard className="flex flex-col">
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <DollarSign className="h-4 w-4 text-emerald-500" />
-            <h3 className="text-sm font-semibold">Financial Snapshot</h3>
-          </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 text-xs text-muted-foreground hover:text-foreground gap-1"
-            onClick={() => setLocation("/financial-dashboard")}
-          >
-            Financial Dashboard
-            <ExternalLink className="h-3 w-3" />
-          </Button>
-        </div>
-      </CardHeader>
-      <div className="p-4 flex-1">
-        {isLoading ? (
-          <div className="space-y-4">
-            <Skeleton className="h-14" />
-            <Skeleton className="h-14" />
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {metrics.map((m) => (
-              <div key={m.label} className="flex items-center justify-between">
-                <div>
-                  <p className="text-[11px] text-muted-foreground font-medium uppercase tracking-wider">{m.label}</p>
-                  <p className={`text-lg font-bold tabular-nums mt-0.5 ${m.warn ? "text-red-600 dark:text-red-400" : ""}`}>{m.value}</p>
-                </div>
-                <span className="text-xs text-muted-foreground">{m.sub}</span>
-              </div>
-            ))}
-            {invoices.length > 0 && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="w-full h-8 text-xs"
-                onClick={() => setLocation("/invoices?filter=awaiting_payment")}
-              >
-                View all invoices <ChevronRight className="h-3.5 w-3.5 ml-1" />
-              </Button>
-            )}
-          </div>
-        )}
-      </div>
-    </DashCard>
-  );
-}
-
-// ============================================================================
-// Tasks Panel (preserved from previous implementation)
+// Tasks Panel
 // ============================================================================
 
 function getInitials(fullName?: string, firstName?: string, lastName?: string): string {
@@ -539,7 +285,7 @@ function TasksPanel({ collapsed, onToggleCollapsed }: { collapsed: boolean; onTo
 
   if (collapsed) {
     return (
-      <div className="h-full w-14 bg-white dark:bg-gray-900 rounded-lg border border-border/60 shadow-sm flex flex-col items-center py-3 gap-2">
+      <div className="h-full w-14 bg-[#ffffff] dark:bg-gray-900 rounded-lg border border-[#e2e8f0] shadow-sm flex flex-col items-center py-3 gap-2">
         <Button variant="ghost" size="icon" onClick={onToggleCollapsed} title="Expand tasks" className="rounded-md">
           <PanelRightOpen className="h-5 w-5" />
         </Button>
@@ -555,19 +301,19 @@ function TasksPanel({ collapsed, onToggleCollapsed }: { collapsed: boolean; onTo
   }
 
   return (
-    <div className="h-full w-[380px] bg-white dark:bg-gray-900 rounded-lg border border-border/60 shadow-sm flex flex-col">
-      <div className="px-3 py-2 border-b border-border/40">
+    <div className="w-[380px] bg-[#ffffff] dark:bg-gray-900 rounded-lg border border-[#e2e8f0] flex flex-col" style={{ maxHeight: 'calc(100vh - 8rem)', boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}>
+      <div className="px-4 py-2.5 border-b border-[#e2e8f0] dark:border-gray-600 rounded-t-lg">
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
-            <ClipboardList className="h-5 w-5" />
-            <span className="font-semibold text-sm">Tasks</span>
-            <Badge variant="secondary" className="text-xs rounded-full">{filteredTasks.length}</Badge>
+            <ClipboardList className="h-4 w-4 text-[#4b5563] dark:text-gray-300" />
+            <span className="text-sm font-semibold text-[#111827] dark:text-gray-100">Tasks</span>
+            <Badge variant="secondary" className="text-xs rounded-full bg-[#ffffff] text-[#4b5563] dark:bg-gray-700 dark:text-gray-200">{filteredTasks.length}</Badge>
           </div>
           <div className="flex items-center gap-1">
-            <Button variant="ghost" size="icon" onClick={handleNewTask} title="New task" className="h-8 w-8 rounded-md">
+            <Button variant="ghost" size="icon" onClick={handleNewTask} title="New task" className="h-8 w-8 rounded-md text-[#4b5563] hover:text-[#111827] hover:bg-[#F0F5F0]">
               <Plus className="h-4 w-4" />
             </Button>
-            <Button variant="ghost" size="icon" onClick={onToggleCollapsed} title="Collapse tasks" className="h-8 w-8 rounded-md">
+            <Button variant="ghost" size="icon" onClick={onToggleCollapsed} title="Collapse tasks" className="h-8 w-8 rounded-md text-[#4b5563] hover:text-[#111827] hover:bg-[#F0F5F0]">
               <PanelRightClose className="h-4 w-4" />
             </Button>
           </div>
@@ -575,24 +321,24 @@ function TasksPanel({ collapsed, onToggleCollapsed }: { collapsed: boolean; onTo
         <div className="space-y-2">
           <div className="flex items-center gap-1">
             <Button size="sm" variant={tab === "active" ? "default" : "ghost"} onClick={() => setTab("active")}
-              className={`rounded-full h-7 text-xs px-3 ${tab === "active" ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent" : "text-muted-foreground"}`}>
+              className={`rounded-full h-7 text-xs px-3 ${tab === "active" ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent" : "text-[#4b5563] hover:text-[#111827] hover:bg-[#F0F5F0]"}`}>
               Active
             </Button>
             <Button size="sm" variant={tab === "completed" ? "default" : "ghost"} onClick={() => setTab("completed")}
-              className={`rounded-full h-7 text-xs px-3 ${tab === "completed" ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent" : "text-muted-foreground"}`}>
+              className={`rounded-full h-7 text-xs px-3 ${tab === "completed" ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white border-transparent" : "text-[#4b5563] hover:text-[#111827] hover:bg-[#F0F5F0]"}`}>
               Completed
             </Button>
           </div>
           <div className="flex items-center gap-2">
             <Select value={techFilter} onValueChange={setTechFilter}>
-              <SelectTrigger className="h-7 text-xs flex-1"><SelectValue placeholder="All Technicians" /></SelectTrigger>
+              <SelectTrigger className="h-7 text-xs flex-1 bg-[#ffffff] border-[#e2e8f0] text-[#4b5563] dark:bg-gray-700 dark:border-gray-600"><SelectValue placeholder="All Technicians" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Technicians</SelectItem>
                 {teamMembers.map((tech) => (<SelectItem key={tech.id} value={String(tech.id)}>{tech.fullName}</SelectItem>))}
               </SelectContent>
             </Select>
             <Select value={typeFilter} onValueChange={setTypeFilter}>
-              <SelectTrigger className="h-7 text-xs w-[120px]"><SelectValue placeholder="All Types" /></SelectTrigger>
+              <SelectTrigger className="h-7 text-xs w-[120px] bg-[#ffffff] border-[#e2e8f0] text-[#4b5563] dark:bg-gray-700 dark:border-gray-600"><SelectValue placeholder="All Types" /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Types</SelectItem>
                 <SelectItem value="GENERAL">General</SelectItem>
@@ -617,14 +363,14 @@ function TasksPanel({ collapsed, onToggleCollapsed }: { collapsed: boolean; onTo
               const taskDate = formatTaskDate(t.scheduledStartAt);
               const isLast = index === filteredTasks.length - 1;
               return (
-                <div key={t.id} className={`px-4 py-2.5 flex items-start gap-2 cursor-pointer hover:bg-muted/40 transition-colors relative ${!isLast ? "border-b border-border/40" : ""}`} onClick={() => handleTaskClick(t.id)}>
+                <div key={t.id} className={`px-4 py-2.5 flex items-start gap-2 cursor-pointer hover:bg-[#F0F5F0] transition-colors relative ${!isLast ? "border-b border-[#e2e8f0]" : ""}`} onClick={() => handleTaskClick(t.id)}>
                   <Button variant="ghost" size="icon" className="mt-0.5 h-6 w-6 flex-shrink-0 rounded-lg"
                     onClick={(e) => { e.stopPropagation(); if (!isDone) closeTask.mutate(t.id); }} title={isDone ? "Completed" : "Complete"}>
                     {isDone ? <CheckSquare className="h-4 w-4" /> : <Square className="h-4 w-4" />}
                   </Button>
                   <div className="min-w-0 flex-1 pr-8">
-                    <div className={`text-sm font-medium ${isDone ? "line-through opacity-60" : ""}`}>{t.title}</div>
-                    {taskDate && <div className="text-xs text-muted-foreground mt-0.5">{taskDate}</div>}
+                    <div className={`text-xs ${isDone ? "line-through text-[#4b5563]/50" : "text-[#111827]"}`}>{t.title}</div>
+                    {taskDate && <div className="text-[11px] text-[#4b5563] mt-0.5">{taskDate}</div>}
                   </div>
                   {initials && (
                     <div className="absolute top-2.5 right-4 h-6 w-6 rounded-full bg-primary/10 text-primary flex items-center justify-center text-xs font-medium" title={t.assignedUser?.fullName}>
@@ -643,20 +389,27 @@ function TasksPanel({ collapsed, onToggleCollapsed }: { collapsed: boolean; onTo
 }
 
 // ============================================================================
-// Main Dashboard Component
+// Main Dashboard
 // ============================================================================
 
 export default function Dashboard() {
+  // SSE-driven cross-tab/cross-user realtime invalidation for dispatch/task data shown on dashboard
+  useDispatchStream();
+
   const TASKS_COLLAPSE_KEY = "dashboardTasksCollapsed";
   const [tasksCollapsed, setTasksCollapsed] = useState<boolean>(() => {
     try { return localStorage.getItem(TASKS_COLLAPSE_KEY) === "1"; } catch { return false; }
   });
 
+  // Dashboard action modal state
+  const [actionModalOpen, setActionModalOpen] = useState(false);
+  const [actionModalMode, setActionModalMode] = useState<DashboardActionMode>("unscheduled");
+  const openActionModal = (mode: DashboardActionMode) => { setActionModalMode(mode); setActionModalOpen(true); };
+
   useEffect(() => {
     try { localStorage.setItem(TASKS_COLLAPSE_KEY, tasksCollapsed ? "1" : "0"); } catch {}
   }, [tasksCollapsed]);
 
-  // Queries — same as before, same stale times, same keys
   const { data: workflowData, isLoading: workflowLoading } = useQuery<WorkflowSummary>({
     queryKey: ["dashboard", "workflow"],
     queryFn: () => apiRequest(`/api/dashboard/workflow`),
@@ -664,13 +417,12 @@ export default function Dashboard() {
     refetchOnWindowFocus: false,
   });
 
-  const { data: dashboardInvoicesResponse, isLoading: dashboardInvoicesLoading } = useQuery<{ data: Invoice[] }>({
+  const { data: dashboardInvoicesResponse } = useQuery<{ data: Invoice[] }>({
     queryKey: ["invoices", "dashboard"],
     queryFn: () => apiRequest(`/api/invoices/dashboard`),
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
-  const dashboardInvoices = dashboardInvoicesResponse?.data || [];
 
   const { data: attentionData } = useQuery<AttentionSummary>({
     queryKey: ["attention", "summary"],
@@ -679,42 +431,106 @@ export default function Dashboard() {
     refetchOnWindowFocus: true,
   });
 
-  const { data: operationalAlertsResponse, isLoading: operationalAlertsLoading } = useQuery<{ data: AttentionItem[] }>({
-    queryKey: ["attention", "operational"],
-    queryFn: () => apiRequest(`/api/attention?status=open&limit=20`),
-    staleTime: 30_000,
+  // Today's visit summary — real-time visit counts by status
+  const { data: todaySummary, isLoading: todayLoading } = useQuery<TodayVisitSummary>({
+    queryKey: ["dashboard", "today-summary"],
+    queryFn: () => apiRequest(`/api/dashboard/today-summary`),
+    staleTime: 60_000,
     refetchOnWindowFocus: true,
   });
-  const operationalAlerts = operationalAlertsResponse?.data || [];
+
+  const invoices = dashboardInvoicesResponse?.data || [];
+  const draftInvoiceCount = invoices.filter(i => i.status === "draft").length;
+  const outstandingTotal = invoices.reduce((sum, inv) => sum + parseFloat(inv.balance || "0"), 0);
+  const pastDueInvoices = invoices.filter(i => i.isPastDue);
+  const pastDueTotal = pastDueInvoices.reduce((sum, inv) => sum + parseFloat(inv.balance || "0"), 0);
+  const pastDueCount = workflowData?.invoices.pastDueCount ?? pastDueInvoices.length;
 
   return (
-    <div className="min-h-screen bg-background">
-      <main className="mx-auto px-3 sm:px-4 lg:px-6 py-3">
-        <div className="flex gap-4">
-          {/* Left column — main dashboard content */}
-          <div className="flex-1 min-w-0 space-y-3">
-            {/* Row 1: Summary cards */}
-            <SummaryCards data={workflowData} isLoading={workflowLoading} attention={attentionData} />
+    <div className="min-h-screen bg-[#F4F8F4]">
+      <main className="mx-auto px-4 sm:px-5 lg:px-6 py-4 space-y-3">
+        {/* KPI row — full width above everything */}
+        <TodaysOperations
+          today={todaySummary}
+          isLoading={todayLoading}
+        />
 
-            {/* Row 2: Operations + Alerts */}
+        {/* Cards grid + Tasks panel — aligned horizontally below KPI row */}
+        <div className="flex gap-4">
+          <div className="flex-1 min-w-0 space-y-4">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              <TodaysOperations data={workflowData} attention={attentionData} isLoading={workflowLoading} />
-              <DispatchAlerts alerts={operationalAlerts} attention={attentionData} isLoading={operationalAlertsLoading} />
+              <WorklistCard
+                title="Jobs"
+                icon={Briefcase}
+                color="text-blue-600"
+                bg="bg-blue-100 dark:bg-blue-950/30"
+                headerStrength="strong"
+                elevated
+                isLoading={workflowLoading}
+                rows={[
+                  { label: "Jobs past due date — need rescheduling", value: attentionData?.["job.overdue"] ?? 0, action: "alerts.overdueJobs", warn: true, urgentBg: true, onClick: () => openActionModal("overdue") },
+                  { label: "Jobs on hold — needs action", value: workflowData?.jobs.onHoldCount ?? 0, action: "ops.onHold", warn: true, onClick: () => openActionModal("on_hold") },
+                  { label: "Jobs needing scheduling", value: workflowData?.jobs.unscheduledCount ?? 0, action: "jobs.unscheduled", onClick: () => openActionModal("unscheduled") },
+                  { label: "Jobs completed — ready for invoice", value: workflowData?.jobs.requiresInvoicingCount ?? 0, action: "jobs.needsInvoicing", onClick: () => openActionModal("ready_to_invoice") },
+                ]}
+              />
+              <WorklistCard
+                title="Invoices"
+                icon={DollarSign}
+                color="text-amber-600"
+                bg="bg-amber-100 dark:bg-amber-950/30"
+                headerStrength="medium"
+                isLoading={workflowLoading}
+                rows={[
+                  { label: "Past due invoices", value: formatCurrency(pastDueTotal), sub: pastDueCount > 0 ? `(${pastDueCount})` : "", action: "invoices.pastDue", warn: true, urgentBg: true },
+                  { label: "Outstanding invoices", value: formatCurrency(outstandingTotal), sub: `(${workflowData?.invoices.outstandingCount ?? invoices.length})`, action: "invoices.outstanding" },
+                  { label: "Draft invoices", value: draftInvoiceCount, action: "invoices.draft" },
+                ]}
+              />
             </div>
 
-            {/* Row 3: Pipeline + Financial */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              <WorkPipeline data={workflowData} attention={attentionData} isLoading={workflowLoading} />
-              <FinancialSnapshot invoices={dashboardInvoices} data={workflowData} isLoading={dashboardInvoicesLoading} />
+              <WorklistCard
+                title="Quotes"
+                icon={FileText}
+                color="text-teal-600"
+                bg="bg-teal-100 dark:bg-teal-950/30"
+                headerStrength="light"
+                isLoading={workflowLoading}
+                rows={[
+                  { label: "Quotes awaiting approval", value: workflowData?.quotes.draftCount ?? 0, action: "pipeline.quotesAwaitingApproval" },
+                  { label: "Draft quotes — need sending", value: 0, action: "quotes.draft" },
+                  { label: "Approved quotes not converted", value: workflowData?.quotes.approvedCount ?? 0, action: "quotes.approved" },
+                ]}
+              />
+              <WorklistCard
+                title="PM Health"
+                icon={Wrench}
+                color="text-violet-600"
+                bg="bg-violet-100 dark:bg-violet-950/30"
+                headerStrength="light"
+                isLoading={workflowLoading}
+                rows={[
+                  { label: "Overdue PM work", value: workflowData?.pm.overdueCount ?? 0, action: "pm.overdue", warn: true, urgentBg: true },
+                  { label: "PM due in next 7 days", value: workflowData?.pm.comingDueCount ?? 0, action: "pm.comingDue" },
+                  { label: "Upcoming PM (7–30 days)", value: workflowData?.pm.upcomingCount ?? 0, action: "pm.upcoming" },
+                  { label: "PM instances awaiting generation", value: workflowData?.pm.awaitingGenerationCount ?? 0, action: "pipeline.pmAwaiting" },
+                ]}
+              />
             </div>
           </div>
 
-          {/* Right sidebar — Tasks panel (preserved) */}
-          <div className="h-[calc(100vh-120px)] sticky top-16 self-start">
+          {/* Tasks panel — aligned with top of cards, not KPI row */}
+          <div className="sticky top-16 self-start" style={{ maxHeight: 'calc(100vh - 8rem)' }}>
             <TasksPanel collapsed={tasksCollapsed} onToggleCollapsed={() => setTasksCollapsed((v) => !v)} />
           </div>
         </div>
       </main>
+      <DashboardActionModal
+        open={actionModalOpen}
+        onOpenChange={setActionModalOpen}
+        mode={actionModalMode}
+      />
     </div>
   );
 }

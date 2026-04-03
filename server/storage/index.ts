@@ -138,7 +138,10 @@ export interface IStorage {
   refreshInvoiceFromJob: typeof invoiceRepository.refreshInvoiceFromJob;
   updateInvoice: typeof invoiceRepository.updateInvoice;
   createInvoiceFromJob: typeof invoiceRepository.createInvoiceFromJob;
-  
+  createStandaloneInvoice: typeof invoiceRepository.createStandaloneInvoice;
+  bumpInvoiceCounterIfNeeded: typeof invoiceRepository.bumpInvoiceCounterIfNeeded;
+  reorderInvoiceLines: typeof invoiceRepository.reorderInvoiceLines;
+
   // Items operations (products/services)
   getItems: typeof itemRepository.getItems;
   getItem: typeof itemRepository.getItem;
@@ -157,6 +160,8 @@ export interface IStorage {
   // Team operations
   createTeamMember: typeof teamRepository.createTeamMember;
   getTeamMembers: typeof teamRepository.getTeamMembers;
+  getTechnicianColors: typeof teamRepository.getTechnicianColors;
+  getTechnicianRates: typeof teamRepository.getTechnicianRates;
   getTeamMember: typeof teamRepository.getTeamMember;
   updateTeamMember: typeof teamRepository.updateTeamMember;
   deactivateTeamMember: typeof teamRepository.deactivateTeamMember;
@@ -332,7 +337,10 @@ export const storage: IStorage = {
   refreshInvoiceFromJob: invoiceRepository.refreshInvoiceFromJob.bind(invoiceRepository),
   updateInvoice: invoiceRepository.updateInvoice.bind(invoiceRepository),
   createInvoiceFromJob: invoiceRepository.createInvoiceFromJob.bind(invoiceRepository),
-  
+  createStandaloneInvoice: invoiceRepository.createStandaloneInvoice.bind(invoiceRepository),
+  bumpInvoiceCounterIfNeeded: invoiceRepository.bumpInvoiceCounterIfNeeded.bind(invoiceRepository),
+  reorderInvoiceLines: invoiceRepository.reorderInvoiceLines.bind(invoiceRepository),
+
   // Items operations (products/services)
   getItems: itemRepository.getItems.bind(itemRepository),
   getItem: itemRepository.getItem.bind(itemRepository),
@@ -351,6 +359,8 @@ export const storage: IStorage = {
   // Team operations
   createTeamMember: teamRepository.createTeamMember.bind(teamRepository),
   getTeamMembers: teamRepository.getTeamMembers.bind(teamRepository),
+  getTechnicianColors: teamRepository.getTechnicianColors.bind(teamRepository),
+  getTechnicianRates: teamRepository.getTechnicianRates.bind(teamRepository),
   getTeamMember: teamRepository.getTeamMember.bind(teamRepository),
   updateTeamMember: teamRepository.updateTeamMember.bind(teamRepository),
   deactivateTeamMember: teamRepository.deactivateTeamMember.bind(teamRepository),

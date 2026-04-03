@@ -11,7 +11,6 @@ import {
   Receipt,
   Building2,
   FileCheck,
-  MapPin,
   LayoutGrid,
   Wrench,
 } from "lucide-react";
@@ -69,13 +68,13 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       },
       testId: "nav-dashboard"
     });
-    // Temporary preview link — remove when dashboard migration is complete
+    // Temporary preview link — remove when tech PWA is production-ready
     menuItems.push({
-      title: "Dashboard Preview",
-      icon: LayoutDashboard,
-      href: "/dashboard-preview",
-      isActive: location === "/dashboard-preview",
-      testId: "nav-dashboard-preview"
+      title: "Technician Preview",
+      icon: Smartphone,
+      href: "/tech/login",
+      isActive: location.startsWith("/tech"),
+      testId: "nav-tech-preview"
     });
     menuItems.push({
       title: "Dispatch",
@@ -83,13 +82,6 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       href: "/dispatch",
       isActive: location === "/dispatch" || location === "/calendar",
       testId: "nav-dispatch"
-    });
-    menuItems.push({
-      title: "Live Map",
-      icon: MapPin,
-      href: "/live-map",
-      isActive: location === "/live-map",
-      testId: "nav-live-map"
     });
     // --- Divider 1 --- Work Management: Jobs, PM, Invoices, Quotes
     menuItems.push({
@@ -100,8 +92,9 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       testId: "nav-jobs",
       isDivider: true
     });
+    // Recurring Jobs: Section renamed from "PM" to "PM & Recurring Jobs" to surface recurring job management
     menuItems.push({
-      title: "PM",
+      title: "PM & Recurring Jobs",
       icon: Wrench,
       href: "/pm",
       isActive: location === "/pm" || location.startsWith("/pm/"),
@@ -120,6 +113,13 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       href: "/quotes",
       isActive: location === "/quotes" || location.startsWith("/quotes/"),
       testId: "nav-quotes"
+    });
+    menuItems.push({
+      title: "Leads",
+      icon: Users,
+      href: "/leads",
+      isActive: location === "/leads" || location.startsWith("/leads/"),
+      testId: "nav-leads"
     });
     // --- Divider 2 --- Relationships: Clients, Suppliers
     menuItems.push({
@@ -180,10 +180,10 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
   }
 
   return (
-    <Sidebar collapsible="icon" className="bg-sidebar text-sidebar-foreground">
-      {/* Sidebar collapse/expand toggle — relocated from header */}
+    <Sidebar collapsible="icon" className="bg-sidebar text-sidebar-foreground" style={{ background: '#222b36', borderRight: 'none' }}>
+      {/* Sidebar collapse/expand toggle */}
       <SidebarHeader className="px-2 py-2">
-        <SidebarTrigger data-testid="button-sidebar-toggle" className="text-white/85 hover:text-white hover:bg-white/10 h-8 w-8" />
+        <SidebarTrigger data-testid="button-sidebar-toggle" className="text-white/50 hover:text-white/90 hover:bg-white/[0.08] h-8 w-8" />
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
@@ -192,7 +192,7 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
               {menuItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
                   {(item as any).isDivider && (
-                    <div className="mx-2" style={{ height: 1, background: 'rgba(255,255,255,0.12)', marginTop: 12, marginBottom: 12 }} />
+                    <div className="mx-2 my-3 border-t border-white/10" />
                   )}
                   {item.href ? (
                     <SidebarMenuButton
@@ -200,10 +200,10 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
                       isActive={item.isActive}
                       tooltip={item.title}
                       data-testid={item.testId}
-                      className="h-10 text-sidebar-foreground data-[active=true]:bg-white/[0.08] data-[active=true]:border-l-[3px] data-[active=true]:border-l-[var(--brand)] data-[active=true]:font-semibold data-[active=true]:pl-[7px] hover:bg-white/[0.08]"
+                      className="h-10 text-white/70 hover:text-white hover:bg-white/[0.08] data-[active=true]:bg-white/[0.16] data-[active=true]:text-white data-[active=true]:font-semibold data-[active=true]:border-l-[3px] data-[active=true]:border-l-[#76B054]"
                     >
                       <Link href={item.href}>
-                        <item.icon className="h-4 w-4 text-[var(--sidebar-muted)]" />
+                        <item.icon className={`h-4 w-4 ${item.isActive ? "text-[#C2E974]" : "text-white/50"}`} />
                         <span>{item.title}</span>
                       </Link>
                     </SidebarMenuButton>
@@ -213,9 +213,9 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
                       onClick={item.onClick}
                       tooltip={item.title}
                       data-testid={item.testId}
-                      className="h-10 text-sidebar-foreground data-[active=true]:bg-white/[0.08] data-[active=true]:border-l-[3px] data-[active=true]:border-l-[var(--brand)] data-[active=true]:font-semibold data-[active=true]:pl-[7px] hover:bg-white/[0.08]"
+                      className="h-10 text-white/70 hover:text-white hover:bg-white/[0.08] data-[active=true]:bg-white/[0.16] data-[active=true]:text-white data-[active=true]:font-semibold data-[active=true]:border-l-[3px] data-[active=true]:border-l-[#76B054]"
                     >
-                      <item.icon className="h-4 w-4 text-[var(--sidebar-muted)]" />
+                      <item.icon className={`h-4 w-4 ${item.isActive ? "text-[#C2E974]" : "text-white/50"}`} />
                       <span>{item.title}</span>
                     </SidebarMenuButton>
                   )}

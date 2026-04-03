@@ -28,7 +28,7 @@ import {
 import {
   ArrowLeft, Plus, Briefcase, FileText, MapPin, MoreHorizontal, Search,
   Wrench, Receipt, Phone, Mail, Star, Trash2, Pencil,
-  Clock, Package, StickyNote, Tag, Building2, AlertTriangle, Archive,
+  Clock, Package, StickyNote, Tag, Building2, AlertTriangle, Archive, PanelRightClose, PanelRightOpen,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -41,7 +41,10 @@ import PMScheduleCard from "@/components/PMScheduleCard";
 import { PartsSelectorModal } from "@/components/PartsSelectorModal";
 import EditTagsModal from "@/components/EditTagsModal";
 import { ContactFormDialog, STANDARD_CONTACT_ROLES, type ContactScope } from "@/components/ContactFormDialog";
+import { AssignContactDialog } from "@/components/AssignContactDialog";
+import { EditAssignmentRolesDialog } from "@/components/EditAssignmentRolesDialog";
 import { EditCompanyDialog } from "@/components/EditCompanyDialog";
+import { AddEquipmentDialog } from "@/components/AddEquipmentDialog";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { format } from "date-fns";
@@ -158,16 +161,18 @@ function JobRow({ job, locationLabel, onNavigate }: {
   const overdue = isJobOverdue(job);
   return (
     <div
-      className="flex items-center justify-between px-3 py-2 text-xs cursor-pointer hover:bg-slate-50"
+      className="flex items-center justify-between px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
       onClick={() => onNavigate(`/jobs/${job.id}`)}
     >
       <div className="min-w-0 flex-1">
-        <span className="font-medium">#{job.jobNumber}</span> — {job.summary}
+        <span className="font-medium text-slate-500 tabular-nums">#{job.jobNumber}</span>
+        <span className="text-slate-300 mx-1">—</span>
+        <span className="font-medium text-slate-700">{job.summary}</span>
         {locationLabel && (
-          <p className="text-[10px] text-muted-foreground/70 truncate">{locationLabel}</p>
+          <p className="text-[10px] text-slate-400 truncate">{locationLabel}</p>
         )}
         {!locationLabel && job.scheduledStart && (
-          <p className="text-[10px] text-muted-foreground">{format(new Date(job.scheduledStart), "MMM dd, yyyy")}</p>
+          <p className="text-[10px] text-slate-400">{format(new Date(job.scheduledStart), "MMM dd, yyyy")}</p>
         )}
       </div>
       <Badge
@@ -255,9 +260,9 @@ export default function ClientDetailPage() {
   const [editLocationTagsOpen, setEditLocationTagsOpen] = useState(false);
   const [equipmentModalOpen, setEquipmentModalOpen] = useState(false);
   const [partsModalOpen, setPartsModalOpen] = useState(false);
-  const [newEquipmentData, setNewEquipmentData] = useState({
-    name: "", equipmentType: "", manufacturer: "", modelNumber: "", serialNumber: "",
-  });
+
+  // Right rail collapse state (page-local UI only)
+  const [rightRailCollapsed, setRightRailCollapsed] = useState(false);
 
   // Delete dialog state
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -423,22 +428,6 @@ export default function ClientDetailPage() {
     },
   });
 
-  // Location-scoped equipment mutations (lifted from LocationDetailPane)
-  const createEquipmentMutation = useMutation({
-    mutationFn: async (data: typeof newEquipmentData) => {
-      return await apiRequest(`/api/clients/${selectedLocationId}/equipment`, {
-        method: "POST", body: JSON.stringify(data),
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/clients", selectedLocationId, "equipment"] });
-      setEquipmentModalOpen(false);
-      setNewEquipmentData({ name: "", equipmentType: "", manufacturer: "", modelNumber: "", serialNumber: "" });
-      toast({ title: "Equipment added" });
-    },
-    onError: () => toast({ title: "Error", description: "Failed to add equipment.", variant: "destructive" }),
-  });
-
   const deleteEquipmentMutation = useMutation({
     mutationFn: async (equipmentId: string) => {
       await apiRequest(`/api/clients/${selectedLocationId}/equipment/${equipmentId}`, { method: "DELETE" });
@@ -570,6 +559,37 @@ export default function ClientDetailPage() {
   const locOverdueJobs = locJobs.filter(j => isJobOverdue(j));
   const locActiveJobs = locJobs.filter(j => j.status === "open" && !locOverdueJobs.some(o => o.id === j.id));
 
+  // ── KPI metrics derived from already-loaded data ──
+  // These useMemo hooks MUST be above the early returns to preserve hook order.
+  const completedJobsThisYear = useMemo(() => {
+    const yearStart = new Date(new Date().getFullYear(), 0, 1);
+    return companyJobs.filter(j => j.status === "completed" && j.updatedAt && new Date(j.updatedAt) >= yearStart).length;
+  }, [companyJobs]);
+
+  const revenueThisYear = useMemo(() => {
+    const yearStart = new Date(new Date().getFullYear(), 0, 1);
+    return allInvoices
+      .filter(i => i.status === "paid" && i.createdAt && new Date(i.createdAt) >= yearStart)
+      .reduce((sum, i) => sum + Number(i.total || 0), 0);
+  }, [allInvoices]);
+
+  const outstandingInvoices = useMemo(() => {
+    const outstanding = allInvoices.filter(i => i.status !== "paid" && i.status !== "voided");
+    const overdueTotal = outstanding
+      .filter(i => i.dueDate && new Date(i.dueDate) < new Date())
+      .reduce((sum, i) => sum + Number(i.total || 0), 0);
+    return { count: outstanding.length, overdueTotal };
+  }, [allInvoices]);
+
+  // Active jobs per location for location list badges
+  const activeJobCountByLocation = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const j of companyJobs) {
+      if (j.status === "open") m.set(j.locationId, (m.get(j.locationId) ?? 0) + 1);
+    }
+    return m;
+  }, [companyJobs]);
+
   // ── Loading / Error states ──
   if (clientLoading) {
     return (
@@ -600,355 +620,395 @@ export default function ClientDetailPage() {
   const scopeTags = scopeType === "company" ? companyTags : locationTags;
 
   return (
-    <div className="flex h-full flex-col bg-slate-50">
-      {/* ── Step 1: Top Header Card — full-width card container ── */}
-      <div className="p-4 pb-0">
-        <div className="rounded-lg border border-border/80 bg-primary/[0.09] px-5 py-4 mb-4 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.08)]">
-          <div className="flex items-center justify-between">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setLocation("/clients")}
-                  className="text-muted-foreground hover:text-foreground transition-colors"
-                  title="Back to Clients"
-                >
-                  <ArrowLeft className="h-4 w-4" />
-                </button>
-                <h1 className="text-lg font-bold text-foreground truncate">{companyName}</h1>
-                {parentCompany?.isActive !== false && (
-                  <Badge className="bg-emerald-100 text-emerald-700 text-[10px] hover:bg-emerald-100">Active</Badge>
-                )}
-              </div>
-              <div className="mt-1 flex flex-wrap items-center gap-3 text-xs ml-6">
-                <span className="flex items-center gap-1 text-muted-foreground">
-                  <MapPin className="h-3 w-3" /><strong className="text-foreground">{locations.length}</strong> Locations
-                </span>
-                <span className="flex items-center gap-1 text-muted-foreground">
-                  <Briefcase className="h-3 w-3" /><strong className="text-foreground">{activeJobsCount}</strong> Active Jobs
-                </span>
-                {overdueInvoicesCount > 0 && (
-                  <span className="flex items-center gap-1 text-red-600">
-                    <Receipt className="h-3 w-3" /><strong>{overdueInvoicesCount}</strong> Overdue
-                  </span>
-                )}
-                {pendingQuotesCount > 0 && (
-                  <span className="flex items-center gap-1 text-blue-600">
-                    <FileText className="h-3 w-3" /><strong>{pendingQuotesCount}</strong> Quotes Pending
-                  </span>
-                )}
-              </div>
-            </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <Button size="sm" className="h-7 text-xs" onClick={() => setJobDialogOpen(true)}>
-                <Plus className="mr-1 h-3 w-3" />Create Job
-              </Button>
-              <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setAddLocationDialogOpen(true)}>
-                <Plus className="mr-1 h-3 w-3" />Add Location
-              </Button>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" className="h-7 w-7">
-                    <MoreHorizontal className="h-3.5 w-3.5" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={() => setEditClientDialogOpen(true)}>
-                    <Pencil className="h-3.5 w-3.5 mr-2" /> Edit Client
-                  </DropdownMenuItem>
-                  {scopeType === "location" && selectedLoc && (
-                    <>
-                      <DropdownMenuItem onClick={() => setEditLocationModalOpen(true)}>
-                        <Pencil className="h-3.5 w-3.5 mr-2" /> Edit Location
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setEditLocationTagsOpen(true)}>
-                        <Tag className="h-3.5 w-3.5 mr-2" /> Edit Tags
-                      </DropdownMenuItem>
-                    </>
-                  )}
-                  <DropdownMenuSeparator />
-                  {scopeType === "location" && selectedLoc && (
-                    <DropdownMenuItem
-                      className="text-destructive focus:text-destructive"
-                      onClick={() => openDeleteDialog("location")}
-                    >
-                      <Trash2 className="h-3.5 w-3.5 mr-2" /> Delete Location
+    <div className="flex h-full flex-col bg-[#F4F8F4]">
+
+      {/* ═══ PAGE HEADER: TITLE + ACTIONS + KPI ═══ */}
+      <div className="bg-white border-b border-slate-200 px-6 pt-3 pb-3">
+        {/* Row 1: Actions top-right */}
+        <div className="flex items-center justify-end mb-1">
+          <div className="flex items-center gap-1.5">
+            <Button size="sm" className="h-8 text-xs" onClick={() => setJobDialogOpen(true)}>
+              <Plus className="mr-1 h-3 w-3" />Create Job
+            </Button>
+            <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => setAddLocationDialogOpen(true)}>
+              <Plus className="mr-1 h-3 w-3" />Add Location
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-8 w-8">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => setEditClientDialogOpen(true)}>
+                  <Pencil className="h-3.5 w-3.5 mr-2" /> Edit Client
+                </DropdownMenuItem>
+                {scopeType === "location" && selectedLoc && (
+                  <>
+                    <DropdownMenuItem onClick={() => setEditLocationModalOpen(true)}>
+                      <Pencil className="h-3.5 w-3.5 mr-2" /> Edit Location
                     </DropdownMenuItem>
-                  )}
-                  <DropdownMenuItem
-                    className="text-destructive focus:text-destructive"
-                    onClick={() => openDeleteDialog("company")}
-                  >
-                    <Trash2 className="h-3.5 w-3.5 mr-2" /> Delete Client
+                    <DropdownMenuItem onClick={() => setEditLocationTagsOpen(true)}>
+                      <Tag className="h-3.5 w-3.5 mr-2" /> Edit Tags
+                    </DropdownMenuItem>
+                  </>
+                )}
+                <DropdownMenuSeparator />
+                {scopeType === "location" && selectedLoc && (
+                  <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => openDeleteDialog("location")}>
+                    <Trash2 className="h-3.5 w-3.5 mr-2" /> Delete Location
                   </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+                )}
+                <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => openDeleteDialog("company")}>
+                  <Trash2 className="h-3.5 w-3.5 mr-2" /> Delete Client
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+
+        {/* Row 2: Company title left + KPI block centered over workspace */}
+        <div className="flex items-end">
+          {/* Company identity */}
+          <div className="min-w-0 flex-shrink-0">
+            <div className="flex items-center gap-2.5">
+              <h1 className="text-2xl font-bold text-slate-900 truncate">{companyName}</h1>
+              {parentCompany?.isActive === false && (
+                <Badge className="bg-slate-100 text-slate-500 border border-slate-200 text-[10px] px-1.5 py-0">Inactive</Badge>
+              )}
+              {companyTags.length > 0 && companyTags.map(tag => (
+                <span key={tag.id} className="inline-flex items-center rounded-full px-1.5 py-0 text-[10px] font-medium text-white" style={{ backgroundColor: tag.color }}>{tag.name}</span>
+              ))}
+            </div>
+            <p className="text-xs text-slate-500 mt-0.5">{locations.length} location{locations.length !== 1 ? "s" : ""}</p>
+          </div>
+
+          {/* KPI positioned left-of-center in remaining space */}
+          <div className="flex-1 flex justify-start pl-12">
+            {/* Contained KPI block */}
+            <div className="flex items-center gap-5 rounded-lg border border-slate-200 bg-slate-50/80 px-5 py-2.5">
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-slate-600 text-[11px]">Completed</span>
+                <span className="font-bold text-slate-900 text-base tabular-nums">{completedJobsThisYear}</span>
+              </div>
+              <div className="h-5 w-px bg-slate-200" />
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-slate-600 text-[11px]">Revenue</span>
+                <span className="font-bold text-slate-900 text-base">{fmt.format(revenueThisYear)}</span>
+              </div>
+              <div className="h-5 w-px bg-slate-200" />
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-slate-600 text-[11px]">Active</span>
+                <span className="font-bold text-[#76B054] text-base tabular-nums">{activeJobsCount}</span>
+              </div>
+              <div className="h-5 w-px bg-slate-200" />
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-slate-600 text-[11px]">Outstanding</span>
+                <span className="font-bold text-slate-900 text-base tabular-nums">{outstandingInvoices.count}</span>
+              </div>
+              {outstandingInvoices.overdueTotal > 0 && (
+                <>
+                  <div className="h-5 w-px bg-red-200" />
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-red-500 text-[11px] font-medium">Overdue</span>
+                    <span className="font-bold text-red-600 text-base">{fmt.format(outstandingInvoices.overdueTotal)}</span>
+                  </div>
+              </>
+            )}
             </div>
           </div>
         </div>
       </div>
 
-      {/* ── Two-Column Layout: unified Locations+Workspace card | right sidebar ── */}
-      <div className="flex flex-1 overflow-hidden px-4 pb-4 gap-4">
-        {/* Unified card: Locations rail (left) + Active Work workspace (right), single border, vertical divider only */}
-        <div className="flex flex-1 flex-col overflow-hidden rounded-lg border bg-white shadow-sm">
-          {/* ── WORKSPACE HEADER: single control strip — title left | search + tabs right ── */}
-          <div className="border-b px-4 py-2.5">
-            <div className="flex items-start justify-between gap-4">
-              {/* Left: selected entity title + address */}
-              <div className="min-w-0 flex-shrink-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <h2 className="text-sm font-semibold truncate">{scopeEntityName}</h2>
-                  <span className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
-                    {scopeType === "company" ? "Company" : "Location"}
-                  </span>
-                  {selectedLoc?.isPrimary && scopeType === "location" && (
-                    <Star className="h-3.5 w-3.5 text-yellow-500 fill-yellow-500 flex-shrink-0" />
-                  )}
-                  {scopeTags.length > 0 && scopeTags.map(tag => (
-                    <span
-                      key={tag.id}
-                      className="inline-flex items-center rounded-full px-1.5 py-0 text-[10px] font-medium text-white"
-                      style={{ backgroundColor: tag.color }}
-                    >
-                      {tag.name}
-                    </span>
-                  ))}
-                  {scopeType === "location" && selectedLoc && (
-                    <button
-                      onClick={() => setEditLocationTagsOpen(true)}
-                      className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
-                      title="Edit tags"
-                    >
-                      <Tag className="h-3 w-3" />
-                    </button>
-                  )}
-                </div>
-                {scopeType === "location" && selectedLoc && (
-                  <div className="flex items-center gap-3 mt-0.5">
-                    <p className="text-[11px] text-muted-foreground">{locationAddress(selectedLoc)}</p>
-                    {selectedLoc.roofLadderCode && (
-                      <span className="text-[10px] text-muted-foreground font-medium">
-                        Site Code: <span className="text-foreground">{selectedLoc.roofLadderCode}</span>
+      {/* ═══ 3-COLUMN MASTER-DETAIL WORKSPACE ═══ */}
+      <div className="flex flex-1 overflow-hidden p-3 gap-3">
+
+        {/* ── LEFT: LOCATION INDEX ── */}
+        <div className="w-[256px] flex-shrink-0 rounded-lg border border-slate-200 bg-white flex flex-col overflow-hidden">
+          {/* Search / label */}
+          <div className="px-3 py-2 border-b border-slate-100">
+            {locations.length > 3 ? (
+              <div className="relative">
+                <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-slate-400" />
+                <Input
+                  placeholder="Search locations..."
+                  value={locationSearch}
+                  onChange={e => setLocationSearch(e.target.value)}
+                  className="h-7 pl-7 text-[11px] bg-slate-50/80 border-slate-200 focus:bg-white"
+                />
+              </div>
+            ) : (
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-600">Locations</span>
+                <span className="text-[10px] text-slate-500 tabular-nums">{locations.length}</span>
+              </div>
+            )}
+          </div>
+
+          {/* Company overview row */}
+          <button
+            onClick={handleSelectCompany}
+            className={`w-full text-left px-3 py-2 border-b border-slate-100 flex items-center gap-2.5 transition-colors ${
+              scopeType === "company"
+                ? "bg-[rgba(118,176,84,0.08)] border-l-2 border-l-[#76B054]"
+                : "hover:bg-slate-50 border-l-2 border-l-transparent"
+            }`}
+          >
+            <Building2 className={`h-3.5 w-3.5 flex-shrink-0 ${scopeType === "company" ? "text-[#76B054]" : "text-slate-400"}`} />
+            <div className="min-w-0">
+              <span className={`text-xs font-medium block truncate ${scopeType === "company" ? "text-[#5F9442]" : "text-slate-700"}`}>Company Overview</span>
+              <span className="text-[10px] text-slate-400">All locations</span>
+            </div>
+          </button>
+
+          {/* Location rows */}
+          <div className="flex-1 overflow-y-auto">
+            {filteredLocations.length > 0 ? filteredLocations.map(loc => {
+              const isSelected = scopeType === "location" && selectedLocationId === loc.id;
+              const locActiveCount = activeJobCountByLocation.get(loc.id) ?? 0;
+              return (
+                <button
+                  key={loc.id}
+                  onClick={() => handleSelectLocation(loc.id)}
+                  className={`w-full text-left px-3 py-2 border-b border-slate-100/80 transition-colors ${
+                    isSelected
+                      ? "bg-[rgba(118,176,84,0.08)] border-l-2 border-l-[#76B054]"
+                      : "hover:bg-slate-50 border-l-2 border-l-transparent"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1">
+                        <span className={`text-xs font-medium truncate ${isSelected ? "text-[#5F9442]" : "text-slate-800"}`}>
+                          {locationDisplayName(loc)}
+                        </span>
+                        {loc.isPrimary && <Star className="h-2.5 w-2.5 text-amber-500 fill-amber-500 flex-shrink-0" />}
+                      </div>
+                      {loc.address && (
+                        <p className="text-[10px] text-slate-500 truncate mt-0.5">
+                          {[loc.address, loc.city].filter(Boolean).join(", ")}
+                        </p>
+                      )}
+                    </div>
+                    {locActiveCount > 0 && (
+                      <span className={`text-[10px] font-medium px-1.5 py-0 rounded flex-shrink-0 ${
+                        isSelected ? "bg-[#C2E974] text-[#5F9442]" : "bg-slate-100 text-slate-500"
+                      }`}>
+                        {locActiveCount}
                       </span>
                     )}
                   </div>
-                )}
-              </div>
-
-              {/* Right: search + tabs in one horizontal strip */}
-              <div className="flex min-w-0 flex-1 items-center justify-end gap-3">
-                {locations.length > 3 && (
-                  <div className="relative flex-shrink-0 w-40">
-                    <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
-                    <Input
-                      placeholder="Search locations..."
-                      value={locationSearch}
-                      onChange={e => setLocationSearch(e.target.value)}
-                      className="h-7 pl-7 text-[11px]"
-                    />
+                </button>
+              );
+            }) : (
+              <div className="px-3 py-6 text-center text-[11px] text-slate-400">
+                {locationSearch ? `No match for "${locationSearch}"` : (
+                  <div className="space-y-2">
+                    <p>No locations yet</p>
+                    <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={() => setAddLocationDialogOpen(true)}>
+                      <Plus className="mr-1 h-3 w-3" />Add Location
+                    </Button>
                   </div>
                 )}
-                <div className="flex gap-0.5 overflow-x-auto whitespace-nowrap">
-                  {(scopeType === "company" ? COMPANY_TABS : LOCATION_TABS).map(t => (
-                    <button key={t.key} onClick={() => handleTabChange(t.key)}
-                      className={`whitespace-nowrap px-2.5 py-1.5 text-xs font-medium rounded transition-colors ${
-                        workspaceTab === t.key ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-foreground hover:bg-slate-100"
-                      }`}>{t.label}</button>
-                  ))}
-                </div>
               </div>
+            )}
+          </div>
+        </div>
+
+        {/* ── CENTER: WORKSPACE ── */}
+        <div className="flex flex-1 flex-col overflow-hidden min-w-0 rounded-lg border border-slate-200 bg-white">
+          {/* Workspace header + tabs */}
+          <div className="border-b border-slate-200 px-5 pt-2.5 pb-0">
+            <div className="flex items-center justify-between gap-3 mb-1">
+              <div className="flex items-center gap-2 min-w-0 flex-1">
+                {scopeType === "company" && (
+                  <Building2 className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+                )}
+                {scopeType === "location" && (
+                  <MapPin className="h-3.5 w-3.5 text-[#76B054] flex-shrink-0" />
+                )}
+                <h2 className="text-base font-bold text-slate-900 truncate">{scopeEntityName}</h2>
+                {selectedLoc?.isPrimary && scopeType === "location" && (
+                  <Badge className="bg-amber-50 text-amber-700 border border-amber-200 text-[9px] px-1.5 py-0 hover:bg-amber-50">Primary</Badge>
+                )}
+                {scopeTags.length > 0 && scopeTags.map(tag => (
+                  <span key={tag.id} className="inline-flex items-center rounded-full px-1.5 py-0 text-[9px] font-medium text-white" style={{ backgroundColor: tag.color }}>{tag.name}</span>
+                ))}
+                {scopeType === "location" && selectedLoc && (
+                  <button onClick={() => setEditLocationTagsOpen(true)} className="text-slate-400 hover:text-slate-600" title="Edit tags">
+                    <Tag className="h-3 w-3" />
+                  </button>
+                )}
+              </div>
+              {scopeType === "location" && selectedLoc && (
+                <Button variant="ghost" size="sm" className="h-6 text-[11px] text-slate-500" onClick={() => setEditLocationModalOpen(true)}>
+                  <Pencil className="mr-1 h-3 w-3" />Edit
+                </Button>
+              )}
+            </div>
+            {scopeType === "location" && selectedLoc ? (
+              <div className="mb-1 pl-6">
+                <p className="text-[11px] text-slate-700 mt-1">{locationAddress(selectedLoc)}</p>
+                {selectedLoc.roofLadderCode && (
+                  <p className="text-[11px] font-medium text-slate-700 mt-0.5">Site Code: {selectedLoc.roofLadderCode}</p>
+                )}
+              </div>
+            ) : scopeType === "company" ? (
+              <p className="text-[11px] text-slate-600 mb-1 pl-6">Client-level view across all {locations.length} locations</p>
+            ) : null}
+            {/* Tab bar */}
+            <div className="flex -mb-px">
+              {(scopeType === "company" ? COMPANY_TABS : LOCATION_TABS).map(t => (
+                <button key={t.key} onClick={() => handleTabChange(t.key)}
+                  className={`relative px-3 py-2 text-xs font-medium transition-colors ${
+                    workspaceTab === t.key
+                      ? "text-[#76B054] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-[#76B054]"
+                      : "text-slate-500 hover:text-slate-700"
+                  }`}>{t.label}</button>
+              ))}
             </div>
           </div>
 
-          {/* ── WORKSPACE BODY: left nav column | right content area ── */}
-          <div className="flex flex-1 overflow-hidden">
-            {/* LEFT NAV: Overview row + Locations list */}
-            <div className="flex w-56 flex-shrink-0 flex-col border-r overflow-hidden">
-              {/* Overview nav row — styled as sibling to location rows */}
+          {/* Tab content */}
+          <div className="flex-1 overflow-y-auto p-4">
+            {scopeType === "company" ? (
+              <>
+                {workspaceTab === "overview" && (
+                  <CompanyOverviewTab
+                    jobs={companyJobs}
+                    invoices={allInvoices}
+                    quotes={clientQuotes}
+                    locations={locations}
+                    onNavigate={setLocation}
+                  />
+                )}
+                {workspaceTab === "jobs" && <ClientAllJobsTab jobs={companyJobs} locations={locations} onNavigate={setLocation} />}
+                {workspaceTab === "invoices" && <ClientAllInvoicesTab invoices={allInvoices} locations={locations} onNavigate={setLocation} />}
+                {workspaceTab === "quotes" && <ClientAllQuotesTab quotes={clientQuotes} locations={locations} onNavigate={setLocation} />}
+              </>
+            ) : selectedLoc ? (
+              <>
+                {workspaceTab === "overview" && (
+                  <LocOverviewTab
+                    activeJobs={locActiveJobs}
+                    overdueJobs={locOverdueJobs}
+                    equipment={locationEquipment}
+                    location={selectedLoc}
+                    onNavigate={setLocation}
+                  />
+                )}
+                {workspaceTab === "jobs" && <LocJobsTab jobs={locJobs} onNavigate={setLocation} />}
+                {workspaceTab === "invoices" && <LocInvoicesTab invoices={locInvoices} onNavigate={setLocation} />}
+                {workspaceTab === "quotes" && <LocQuotesTab quotes={locQuotes} onNavigate={setLocation} />}
+                {workspaceTab === "equipment" && (
+                  <LocEquipmentTab
+                    equipment={locationEquipment}
+                    onAdd={() => setEquipmentModalOpen(true)}
+                    onDelete={(eqId) => deleteEquipmentMutation.mutate(eqId)}
+                  />
+                )}
+                {workspaceTab === "pm" && (
+                  <PMScheduleCard
+                    locationId={selectedLocationId!}
+                    locationName={locationDisplayName(selectedLoc)}
+                    companyId={client.companyId || ""}
+                    clientId={companyId || undefined}
+                    open={true}
+                    onOpenChange={() => {}}
+                  />
+                )}
+                {workspaceTab === "parts" && (
+                  <LocPartsTab pmParts={pmParts} onAdd={() => setPartsModalOpen(true)} />
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-slate-400 text-center py-12">Select a location from the list</p>
+            )}
+          </div>
+        </div>
+
+        {/* ── RIGHT: SUPPORT SIDEBAR ── */}
+        <div className={`flex-shrink-0 rounded-lg border border-slate-200 bg-white transition-[width] duration-150 overflow-hidden ${
+          rightRailCollapsed ? "w-10" : "w-[320px]"
+        }`}>
+          {rightRailCollapsed ? (
+            <div className="flex flex-col items-center pt-2.5">
               <button
-                onClick={handleSelectCompany}
-                className={`w-full text-left px-3 py-2 border-b flex items-center gap-1.5 transition-colors ${
-                  scopeType === "company"
-                    ? "bg-blue-50/60 border-l-2 border-l-primary text-primary"
-                    : "hover:bg-slate-50 border-l-2 border-l-transparent text-foreground"
-                }`}
+                onClick={() => setRightRailCollapsed(false)}
+                className="flex items-center justify-center h-6 w-6 rounded text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                title="Expand sidebar"
               >
-                <Building2 className="h-3 w-3 flex-shrink-0" />
-                <span className="text-xs font-medium truncate">Overview</span>
+                <PanelRightOpen className="h-3.5 w-3.5" />
               </button>
-
-              {/* Locations section label */}
-              <div className="px-3 pt-3 pb-1.5">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Locations</p>
+            </div>
+          ) : (
+            <div className="flex flex-col h-full overflow-hidden">
+              {/* Collapse toggle — top-right of rail */}
+              <div className="flex justify-end px-1.5 pt-1.5 pb-0">
+                <button
+                  onClick={() => setRightRailCollapsed(true)}
+                  className="flex items-center justify-center h-5 w-5 rounded text-slate-300 hover:text-slate-500 hover:bg-slate-100 transition-colors"
+                  title="Collapse sidebar"
+                >
+                  <PanelRightClose className="h-3 w-3" />
+                </button>
               </div>
-
-              {/* Location rows */}
-              <div className="flex-1 overflow-y-auto">
-                {filteredLocations.length > 0 ? filteredLocations.map(loc => (
-                  <button
-                    key={loc.id}
-                    onClick={() => handleSelectLocation(loc.id)}
-                    className={`w-full text-left px-3 py-2 border-b transition-colors ${
-                      scopeType === "location" && selectedLocationId === loc.id
-                        ? "bg-blue-50/60 border-l-2 border-l-primary"
-                        : "hover:bg-slate-50 border-l-2 border-l-transparent"
-                    }`}
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <MapPin className="h-3 w-3 text-muted-foreground flex-shrink-0" />
-                      <span className="text-xs font-medium truncate">{locationDisplayName(loc)}</span>
-                      {loc.isPrimary && <Star className="h-3 w-3 text-yellow-500 fill-yellow-500 flex-shrink-0" />}
+              {/* Rail content */}
+              <div className="overflow-y-auto flex-1">
+                {scopeType === "company" ? (
+                  <>
+                    <div className="px-4 pt-2.5 pb-2 border-b border-slate-100">
+                      <CompanyContactsCompact
+                        companyContacts={clientLevelContacts}
+                        locationContacts={allLocationContacts}
+                        locations={locations}
+                        companyId={companyId}
+                      />
                     </div>
-                  </button>
-                )) : (
-                  <div className="px-3 py-6 text-center text-[11px] text-muted-foreground">
-                    {locationSearch ? "No match." : (
-                      <div className="space-y-2">
-                        <p>No locations yet.</p>
-                        <Button variant="outline" size="sm" className="h-5 text-[10px]" onClick={() => setAddLocationDialogOpen(true)}>
-                          <Plus className="mr-1 h-3 w-3" />Add Location
-                        </Button>
+                    <div className="px-4 pt-2.5 pb-2 border-b border-slate-100">
+                      <h3 className="text-xs font-semibold text-slate-700 mb-1.5">Notes</h3>
+                      <NotesPanel scope="company" companyId={companyId || ""} hideAddButton={false} />
+                    </div>
+                    <div className="px-4 pt-2.5 pb-2">
+                      <h3 className="text-xs font-semibold text-slate-700 mb-1.5">Activity</h3>
+                      <ClientActivityCompact companyId={companyId} />
+                    </div>
+                  </>
+                ) : selectedLoc && selectedLocationId ? (
+                  <>
+                    <div className="px-4 pt-2.5 pb-2 border-b border-slate-100">
+                      <LocContactsCompact
+                        locationContacts={locContacts}
+                        companyContacts={locCompanyContacts}
+                        locationId={selectedLocationId}
+                        parentCompanyId={companyId}
+                      />
+                    </div>
+                    <div className="px-4 pt-2.5 pb-2 border-b border-slate-100">
+                      <h3 className="text-xs font-semibold text-slate-700 mb-1.5">Notes</h3>
+                      <NotesPanel scope="location" companyId={client.companyId || ""} locationId={selectedLocationId} hideAddButton={false} />
+                    </div>
+                    {(selectedLoc.roofLadderCode || selectedLoc.notes) && (
+                      <div className="px-4 pt-2.5 pb-2">
+                        <h3 className="text-xs font-semibold text-slate-700 mb-1.5">Site Info</h3>
+                        <div className="text-xs space-y-1">
+                          {selectedLoc.roofLadderCode && (
+                            <div className="flex items-center justify-between">
+                              <span className="text-slate-500">Site Code</span>
+                              <span className="font-medium text-slate-700">{selectedLoc.roofLadderCode}</span>
+                            </div>
+                          )}
+                          {selectedLoc.notes && (
+                            <p className="text-slate-500 leading-snug">{selectedLoc.notes}</p>
+                          )}
+                        </div>
                       </div>
                     )}
-                  </div>
-                )}
+                  </>
+                ) : null}
               </div>
             </div>
-
-            {/* RIGHT: Active tab content only */}
-            <div className="flex-1 overflow-y-auto p-4">
-              {scopeType === "company" ? (
-                <>
-                  {workspaceTab === "overview" && (
-                    <CompanyOverviewTab
-                      jobs={companyJobs}
-                      invoices={allInvoices}
-                      quotes={clientQuotes}
-                      locations={locations}
-                      onNavigate={setLocation}
-                    />
-                  )}
-                  {workspaceTab === "jobs" && <ClientAllJobsTab jobs={companyJobs} locations={locations} onNavigate={setLocation} />}
-                  {workspaceTab === "invoices" && <ClientAllInvoicesTab invoices={allInvoices} locations={locations} onNavigate={setLocation} />}
-                  {workspaceTab === "quotes" && <ClientAllQuotesTab quotes={clientQuotes} locations={locations} onNavigate={setLocation} />}
-                </>
-              ) : selectedLoc ? (
-                <>
-                  {workspaceTab === "overview" && (
-                    <LocOverviewTab
-                      activeJobs={locActiveJobs}
-                      overdueJobs={locOverdueJobs}
-                      equipment={locationEquipment}
-                      location={selectedLoc}
-                      onNavigate={setLocation}
-                    />
-                  )}
-                  {workspaceTab === "jobs" && <LocJobsTab jobs={locJobs} onNavigate={setLocation} />}
-                  {workspaceTab === "invoices" && <LocInvoicesTab invoices={locInvoices} onNavigate={setLocation} />}
-                  {workspaceTab === "quotes" && <LocQuotesTab quotes={locQuotes} onNavigate={setLocation} />}
-                  {workspaceTab === "equipment" && (
-                    <LocEquipmentTab
-                      equipment={locationEquipment}
-                      onAdd={() => setEquipmentModalOpen(true)}
-                      onDelete={(eqId) => deleteEquipmentMutation.mutate(eqId)}
-                    />
-                  )}
-                  {workspaceTab === "pm" && (
-                    <PMScheduleCard
-                      locationId={selectedLocationId!}
-                      locationName={locationDisplayName(selectedLoc)}
-                      companyId={client.companyId || ""}
-                      clientId={companyId || undefined}
-                      open={true}
-                      onOpenChange={() => {}}
-                    />
-                  )}
-                  {workspaceTab === "parts" && (
-                    <LocPartsTab pmParts={pmParts} onAdd={() => setPartsModalOpen(true)} />
-                  )}
-                </>
-              ) : (
-                <EmptyState label="Select a location from the left rail" />
-              )}
-            </div>
-          </div>
-
-        </div>{/* end unified Locations + Workspace card */}
-
-        {/* Step 3: Right column — Contacts, Notes, Activity in separate cards */}
-        <div className="w-80 flex-shrink-0 overflow-y-auto space-y-4">
-          {scopeType === "company" ? (
-            <>
-              {/* Contacts card */}
-              <div className="rounded-lg border bg-white p-4 shadow-sm">
-                <MetadataSection title="Contacts">
-                  <CompanyContactsCompact
-                    companyContacts={clientLevelContacts}
-                    locationContacts={allLocationContacts}
-                    locations={locations}
-                    companyId={companyId}
-                  />
-                </MetadataSection>
-              </div>
-
-              {/* Notes card */}
-              <div className="rounded-lg border bg-white p-4 shadow-sm">
-                <MetadataSection title="Notes">
-                  <NotesPanel scope="company" companyId={companyId || ""} hideAddButton={false} />
-                </MetadataSection>
-              </div>
-
-              {/* Activity card */}
-              <div className="rounded-lg border bg-white p-4 shadow-sm">
-                <MetadataSection title="Activity">
-                  <ClientActivityCompact companyId={companyId} />
-                </MetadataSection>
-              </div>
-            </>
-          ) : selectedLoc && selectedLocationId ? (
-            <>
-              {/* Contacts card */}
-              <div className="rounded-lg border bg-white p-4 shadow-sm">
-                <MetadataSection title="Contacts">
-                  <LocContactsCompact
-                    locationContacts={locContacts}
-                    companyContacts={locCompanyContacts}
-                    locationId={selectedLocationId}
-                    parentCompanyId={companyId}
-                  />
-                </MetadataSection>
-              </div>
-
-              {/* Notes card */}
-              <div className="rounded-lg border bg-white p-4 shadow-sm">
-                <MetadataSection title="Notes">
-                  <NotesPanel scope="location" companyId={client.companyId || ""} locationId={selectedLocationId} hideAddButton={false} />
-                </MetadataSection>
-              </div>
-
-              {/* Site Info card — Part E: unified "Site Code" terminology */}
-              {(selectedLoc.roofLadderCode || selectedLoc.notes) && (
-                <div className="rounded-lg border bg-white p-4 shadow-sm">
-                  <MetadataSection title="Site Info">
-                    <div className="text-xs space-y-2">
-                      {selectedLoc.roofLadderCode && (
-                        <div>
-                          <p className="text-[10px] uppercase font-semibold text-muted-foreground">Site Code</p>
-                          <p>{selectedLoc.roofLadderCode}</p>
-                        </div>
-                      )}
-                      {selectedLoc.notes && (
-                        <div>
-                          <p className="text-[10px] uppercase font-semibold text-muted-foreground">Site Notes</p>
-                          <p>{selectedLoc.notes}</p>
-                        </div>
-                      )}
-                    </div>
-                  </MetadataSection>
-                </div>
-              )}
-            </>
-          ) : null}
+          )}
         </div>
       </div>
 
@@ -1144,50 +1204,14 @@ export default function ClientDetailPage() {
         />
       )}
 
-      {/* Add Equipment Dialog */}
-      <Dialog open={equipmentModalOpen} onOpenChange={setEquipmentModalOpen}>
-        <DialogContent>
-          <DialogHeader><DialogTitle>Add Equipment</DialogTitle></DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label>Name *</Label>
-              <Input placeholder="e.g., RTU #1" value={newEquipmentData.name}
-                onChange={e => setNewEquipmentData(d => ({ ...d, name: e.target.value }))} />
-            </div>
-            <div className="space-y-2">
-              <Label>Equipment Type</Label>
-              <Input placeholder="e.g., RTU, Furnace" value={newEquipmentData.equipmentType}
-                onChange={e => setNewEquipmentData(d => ({ ...d, equipmentType: e.target.value }))} />
-            </div>
-            <div className="space-y-2">
-              <Label>Manufacturer</Label>
-              <Input placeholder="e.g., Carrier, Trane" value={newEquipmentData.manufacturer}
-                onChange={e => setNewEquipmentData(d => ({ ...d, manufacturer: e.target.value }))} />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Model Number</Label>
-                <Input value={newEquipmentData.modelNumber}
-                  onChange={e => setNewEquipmentData(d => ({ ...d, modelNumber: e.target.value }))} />
-              </div>
-              <div className="space-y-2">
-                <Label>Serial Number</Label>
-                <Input value={newEquipmentData.serialNumber}
-                  onChange={e => setNewEquipmentData(d => ({ ...d, serialNumber: e.target.value }))} />
-              </div>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setEquipmentModalOpen(false)}>Cancel</Button>
-            <Button
-              onClick={() => createEquipmentMutation.mutate(newEquipmentData)}
-              disabled={!newEquipmentData.name.trim() || createEquipmentMutation.isPending}
-            >
-              {createEquipmentMutation.isPending ? "Adding..." : "Add Equipment"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Add Equipment Dialog — uses shared canonical creation component */}
+      {selectedLocationId && (
+        <AddEquipmentDialog
+          locationId={selectedLocationId}
+          open={equipmentModalOpen}
+          onOpenChange={setEquipmentModalOpen}
+        />
+      )}
     </div>
   );
 }
@@ -1196,10 +1220,13 @@ export default function ClientDetailPage() {
 // Metadata Panel Components
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function MetadataSection({ title, children }: { title: string; children: React.ReactNode }) {
+function MetadataSection({ title, icon, children }: { title: string; icon?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div>
-      <h3 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">{title}</h3>
+      <div className="flex items-center gap-2 mb-2">
+        {icon}
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">{title}</h3>
+      </div>
       {children}
     </div>
   );
@@ -1210,7 +1237,7 @@ function MetadataSection({ title, children }: { title: string; children: React.R
 function CompanyContactsCompact({
   companyContacts, locationContacts, locations, companyId,
 }: {
-  companyContacts: ClientContact[];
+  companyContacts: (ClientContact & { assignmentCount?: number })[];
   locationContacts: ClientContact[];
   locations: Client[];
   companyId?: string;
@@ -1218,6 +1245,22 @@ function CompanyContactsCompact({
   const { toast } = useToast();
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<ClientContact | null>(null);
+
+  // Build person ID → assigned location names for company contact cards
+  const personLocationNames = useMemo(() => {
+    const locMap = new Map<string, string>();
+    locations.forEach(l => locMap.set(l.id, l.location || l.address || l.city || "Location"));
+    const result = new Map<string, string[]>();
+    locationContacts.forEach(lc => {
+      const personId = (lc as any).contactPersonId;
+      if (!personId || !lc.locationId) return;
+      const names = result.get(personId) ?? [];
+      const name = locMap.get(lc.locationId) ?? "Location";
+      if (!names.includes(name)) names.push(name);
+      result.set(personId, names);
+    });
+    return result;
+  }, [locationContacts, locations]);
 
   const handleRefresh = useCallback(() => {
     if (companyId) {
@@ -1238,18 +1281,18 @@ function CompanyContactsCompact({
   });
 
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <span className="text-[11px] text-muted-foreground">{companyContacts.length} contact{companyContacts.length !== 1 ? "s" : ""}</span>
-        <Button variant="outline" size="sm" className="h-5 text-[10px] px-2" onClick={() => {
-          setEditingContact(null);
-          setContactDialogOpen(true);
-        }}>
-          <Plus className="mr-0.5 h-2.5 w-2.5" />Add
-        </Button>
+        <h3 className="text-xs font-semibold text-slate-700">Contacts</h3>
+        <button
+          className="flex items-center gap-0.5 text-[11px] text-primary hover:text-primary/80 transition-colors"
+          onClick={() => { setEditingContact(null); setContactDialogOpen(true); }}
+        >
+          <Plus className="h-3.5 w-3.5" /><span>Add</span>
+        </button>
       </div>
-      {companyContacts.length === 0 && locationContacts.length === 0 ? (
-        <p className="text-[11px] text-muted-foreground py-1 text-center">No contacts yet.</p>
+      {companyContacts.length === 0 ? (
+        <p className="text-[11px] text-muted-foreground">No contacts yet.</p>
       ) : (
         <div className="space-y-1">
           {companyContacts.map(c => (
@@ -1258,11 +1301,9 @@ function CompanyContactsCompact({
               contact={c}
               onEdit={(ct) => { setEditingContact(ct); setContactDialogOpen(true); }}
               onDelete={(ct) => deleteMutation.mutate(ct.id)}
+              assignedLocationNames={personLocationNames.get(c.id) ?? []}
             />
           ))}
-          {locationContacts.length > 0 && (
-            <p className="text-[10px] text-muted-foreground">+ {locationContacts.length} at locations</p>
-          )}
         </div>
       )}
       <ContactFormDialog
@@ -1277,19 +1318,25 @@ function CompanyContactsCompact({
   );
 }
 
-/** Compact location contacts for metadata panel — location contacts only (no company-wide).
- *  Company-wide contacts are only shown in Company Overview scope. */
+/** Location contacts — shows assigned contacts with unassign action.
+ *  "Add & Assign" creates a new company person and auto-assigns to this location.
+ *  "Assign Existing" picks from the company directory. */
 function LocContactsCompact({
   locationContacts, companyContacts, locationId, parentCompanyId,
 }: {
-  locationContacts: ClientContact[];
+  locationContacts: (ClientContact & { contactPersonId?: string })[];
   companyContacts: ClientContact[];
   locationId: string;
   parentCompanyId?: string;
 }) {
   const { toast } = useToast();
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
+  const [assignDialogOpen, setAssignDialogOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<ClientContact | null>(null);
+  // Edit assignment roles dialog state
+  const [editRolesTarget, setEditRolesTarget] = useState<{
+    assignmentId: string; contactName: string; currentRoles: string[];
+  } | null>(null);
 
   const handleRefresh = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "contacts"] });
@@ -1298,52 +1345,107 @@ function LocContactsCompact({
     }
   }, [locationId, parentCompanyId]);
 
-  const deleteMutation = useMutation({
-    mutationFn: async (contactId: string) => {
+  // Unassign = delete the assignment row, NOT the person
+  const unassignMutation = useMutation({
+    mutationFn: async (assignmentId: string) => {
       if (!parentCompanyId) throw new Error("Company not loaded");
-      return apiRequest(`/api/customer-companies/${parentCompanyId}/contacts/${contactId}`, { method: "DELETE" });
+      return apiRequest(`/api/customer-companies/${parentCompanyId}/assignments/${assignmentId}`, { method: "DELETE" });
     },
     onSuccess: () => {
       handleRefresh();
-      toast({ title: "Contact removed" });
+      toast({ title: "Contact unassigned from location" });
     },
-    onError: () => toast({ title: "Error", description: "Failed to remove contact.", variant: "destructive" }),
+    onError: () => toast({ title: "Error", description: "Failed to unassign contact.", variant: "destructive" }),
   });
 
+  // Person IDs already assigned (for the assign dialog to filter)
+  const assignedPersonIds = locationContacts.map(c => (c as any).contactPersonId || c.id).filter(Boolean);
+  const hasUnassigned = companyContacts.some(c => !assignedPersonIds.includes(c.id));
+
+  // For editing person identity: location contacts carry contactPersonId — use that as the person ID for PATCH
+  const handleEditFromLocation = (locContact: ClientContact) => {
+    const personId = (locContact as any).contactPersonId || locContact.id;
+    setEditingContact({ ...locContact, id: personId } as ClientContact);
+    setContactDialogOpen(true);
+  };
+
+  // For editing assignment roles: use the assignment ID (locContact.id) and current roles
+  const handleEditRoles = (locContact: ClientContact) => {
+    const nc = normalizeContact(locContact);
+    setEditRolesTarget({
+      assignmentId: locContact.id,
+      contactName: nc.displayName,
+      currentRoles: nc.roles,
+    });
+  };
+
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <span className="text-[11px] text-muted-foreground">{locationContacts.length} contact{locationContacts.length !== 1 ? "s" : ""}</span>
-        <Button variant="outline" size="sm" className="h-5 text-[10px] px-2" onClick={() => {
-          setEditingContact(null);
-          setContactDialogOpen(true);
-        }}>
-          <Plus className="mr-0.5 h-2.5 w-2.5" />Add
-        </Button>
+        <h3 className="text-xs font-semibold text-slate-700">Contacts</h3>
+        <div className="flex items-center gap-2">
+          {parentCompanyId && hasUnassigned && (
+            <button className="text-[11px] text-primary hover:text-primary/80 transition-colors" onClick={() => setAssignDialogOpen(true)}>
+              Assign
+            </button>
+          )}
+          <button
+            className="flex items-center gap-0.5 text-[11px] text-primary hover:text-primary/80 transition-colors"
+            onClick={() => { setEditingContact(null); setContactDialogOpen(true); }}
+          >
+            <Plus className="h-3.5 w-3.5" /><span>Add</span>
+          </button>
+        </div>
       </div>
       {locationContacts.length === 0 ? (
-        <p className="text-[11px] text-muted-foreground py-1 text-center">No site contacts.</p>
+        <p className="text-[11px] text-muted-foreground">No contacts assigned.</p>
       ) : (
         <div className="space-y-1">
           {locationContacts.map(c => (
             <ContactCard
               key={c.id}
               contact={c}
-              onEdit={(ct) => { setEditingContact(ct); setContactDialogOpen(true); }}
-              onDelete={(ct) => deleteMutation.mutate(ct.id)}
+              onEdit={(ct) => handleEditFromLocation(ct)}
+              onEditRoles={(ct) => handleEditRoles(ct)}
+              onDelete={(ct) => unassignMutation.mutate(ct.id)}
+              deleteLabel="Unassign"
             />
           ))}
         </div>
       )}
+      {/* Add & Assign (null contact) or Edit person (editingContact set) */}
       <ContactFormDialog
         open={contactDialogOpen}
-        onOpenChange={setContactDialogOpen}
+        onOpenChange={(v) => { setContactDialogOpen(v); if (!v) setEditingContact(null); }}
         companyId={parentCompanyId}
         contact={editingContact}
-        associationType="location"
-        locationId={locationId}
+        associationType={editingContact ? "company" : "location"}
+        locationId={editingContact ? undefined : locationId}
         onSuccess={handleRefresh}
       />
+      {/* Assign existing company contact to this location */}
+      {parentCompanyId && (
+        <AssignContactDialog
+          open={assignDialogOpen}
+          onOpenChange={setAssignDialogOpen}
+          customerCompanyId={parentCompanyId}
+          locationId={locationId}
+          assignedPersonIds={assignedPersonIds}
+          onSuccess={handleRefresh}
+        />
+      )}
+      {/* Edit assignment roles for a specific location contact */}
+      {parentCompanyId && editRolesTarget && (
+        <EditAssignmentRolesDialog
+          open={Boolean(editRolesTarget)}
+          onOpenChange={(v) => { if (!v) setEditRolesTarget(null); }}
+          customerCompanyId={parentCompanyId}
+          assignmentId={editRolesTarget.assignmentId}
+          contactName={editRolesTarget.contactName}
+          currentRoles={editRolesTarget.currentRoles}
+          onSuccess={handleRefresh}
+        />
+      )}
     </div>
   );
 }
@@ -1361,9 +1463,9 @@ function ClientActivityCompact({ companyId }: { companyId?: string }) {
     enabled: Boolean(companyId),
   });
 
-  if (!companyId) return <p className="text-[11px] text-muted-foreground">Not available</p>;
-  if (isLoading) return <Skeleton className="h-16 w-full" />;
-  if (activity.length === 0) return <p className="text-[11px] text-muted-foreground">No activity yet.</p>;
+  if (!companyId) return <p className="text-[11px] text-muted-foreground/60">—</p>;
+  if (isLoading) return <Skeleton className="h-5 w-24" />;
+  if (activity.length === 0) return <p className="text-[11px] text-muted-foreground/60">No activity yet.</p>;
 
   return (
     <div className="space-y-1.5">
@@ -1411,19 +1513,20 @@ function CompanyOverviewTab({
   const locMap = useMemo(() => new Map(locations.map(l => [l.id, locationDisplayName(l)])), [locations]);
 
   return (
-    <div className="space-y-4">
-      <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">Active ({sortedJobs.length})</h3>
-        {sortedJobs.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No jobs across locations.</p>
-        ) : (
-          <div className="divide-y border-t">
-            {sortedJobs.map(j => (
-              <JobRow key={j.id} job={j} locationLabel={locMap.get(j.locationId)} onNavigate={onNavigate} />
-            ))}
-          </div>
-        )}
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Active Work</h3>
+        <span className="text-[10px] text-slate-400">{sortedJobs.length} jobs</span>
       </div>
+      {sortedJobs.length === 0 ? (
+        <p className="text-xs text-slate-400 py-4 text-center">No active jobs across locations</p>
+      ) : (
+        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
+          {sortedJobs.map(j => (
+            <JobRow key={j.id} job={j} locationLabel={locMap.get(j.locationId)} onNavigate={onNavigate} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1440,14 +1543,17 @@ function LocOverviewTab({
   location: Client; onNavigate: (path: string) => void;
 }) {
   return (
-    <div className="space-y-5">
-      {/* Part C: Unified job rows via shared JobRow component */}
+    <div className="space-y-4">
+      {/* Active / Overdue work */}
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Active Work</h3>
+        <div className="flex items-center justify-between mb-1.5">
+          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Active Work</h3>
+          <span className="text-[10px] text-slate-400">{activeJobs.length + overdueJobs.length} jobs</span>
+        </div>
         {activeJobs.length === 0 && overdueJobs.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No active work</p>
+          <p className="text-xs text-slate-400 py-4 text-center">No active work at this location</p>
         ) : (
-          <div className="divide-y border-t">
+          <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
             {overdueJobs.map(j => (
               <JobRow key={j.id} job={j} onNavigate={onNavigate} />
             ))}
@@ -1458,17 +1564,23 @@ function LocOverviewTab({
         )}
       </div>
 
+      {/* Equipment summary */}
       {equipment.length > 0 && (
         <div>
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Equipment ({equipment.length})</h3>
-          <div className="space-y-1">
-            {equipment.slice(0, 3).map(e => (
-              <div key={e.id} className="flex items-center justify-between text-xs py-1 border-b last:border-0">
-                <span className="font-medium">{e.name} {e.equipmentType && <span className="text-muted-foreground font-normal">· {e.equipmentType}</span>}</span>
-                <span className="text-muted-foreground">{e.manufacturer || ""}</span>
+          <div className="flex items-center justify-between mb-1.5">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Equipment</h3>
+            <span className="text-[10px] text-slate-400">{equipment.length} units</span>
+          </div>
+          <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
+            {equipment.slice(0, 5).map(e => (
+              <div key={e.id} className="flex items-center justify-between text-xs px-3 py-2">
+                <span className="font-medium text-slate-700">{e.name} {e.equipmentType && <span className="text-slate-400 font-normal">· {e.equipmentType}</span>}</span>
+                <span className="text-slate-400 text-[11px]">{e.manufacturer || ""}</span>
               </div>
             ))}
-            {equipment.length > 3 && <p className="text-[11px] text-muted-foreground">+{equipment.length - 3} more</p>}
+            {equipment.length > 5 && (
+              <p className="text-[10px] text-slate-400 py-1.5 text-center">+{equipment.length - 5} more</p>
+            )}
           </div>
         </div>
       )}
@@ -1481,8 +1593,11 @@ function LocJobsTab({ jobs, onNavigate }: { jobs: Job[]; onNavigate: (p: string)
   if (jobs.length === 0) return <EmptyState label="No jobs for this location" />;
   return (
     <div>
-      <p className="text-xs text-muted-foreground mb-2">Total: {jobs.length}</p>
-      <div className="divide-y border-t">
+      <div className="flex items-center justify-between mb-1.5">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Jobs</h3>
+        <span className="text-[10px] text-slate-400">{jobs.length} total</span>
+      </div>
+      <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
         {jobs.map(j => (
           <JobRow key={j.id} job={j} onNavigate={onNavigate} />
         ))}
@@ -1503,20 +1618,26 @@ function LocInvoicesTab({ invoices, onNavigate }: { invoices: Invoice[]; onNavig
     return map[s] ?? "bg-red-100 text-red-700";
   };
   return (
-    <div className="space-y-1">
-      {invoices.map(inv => (
-        <div key={inv.id} className="flex items-center justify-between py-2 border-b last:border-0 text-xs cursor-pointer hover:bg-slate-50 rounded px-1"
-          onClick={() => onNavigate(`/invoices/${inv.id}`)}>
-          <div>
-            <div className="font-medium">INV #{inv.invoiceNumber || inv.id.slice(0, 6)}</div>
-            <div className="text-muted-foreground">{inv.issueDate ? format(new Date(inv.issueDate), "MMM dd, yyyy") : ""}</div>
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Invoices</h3>
+        <span className="text-[10px] text-slate-400">{invoices.length} total</span>
+      </div>
+      <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
+        {invoices.map(inv => (
+          <div key={inv.id} className="flex items-center justify-between py-2 px-3 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
+            onClick={() => onNavigate(`/invoices/${inv.id}`)}>
+            <div>
+              <div className="font-medium text-slate-700">INV #{inv.invoiceNumber || inv.id.slice(0, 6)}</div>
+              <div className="text-slate-400 text-[10px]">{inv.issueDate ? format(new Date(inv.issueDate), "MMM dd, yyyy") : ""}</div>
+            </div>
+            <div className="text-right">
+              <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ${statusCls(inv.status)}`}>{inv.status}</span>
+              <p className="text-slate-500 text-[11px]">{fmt.format(Number(inv.total ?? 0))}</p>
+            </div>
           </div>
-          <div className="text-right">
-            <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ${statusCls(inv.status)}`}>{inv.status}</span>
-            <p className="text-muted-foreground mt-0.5">{fmt.format(Number(inv.total ?? 0))}</p>
-          </div>
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   );
 }
@@ -1534,20 +1655,26 @@ function LocQuotesTab({ quotes, onNavigate }: { quotes: EnrichedQuote[]; onNavig
     return map[s] ?? "bg-slate-100 text-slate-600";
   };
   return (
-    <div className="space-y-1">
-      {quotes.map(q => (
-        <div key={q.id} className="flex items-center justify-between py-2 border-b last:border-0 text-xs cursor-pointer hover:bg-slate-50 rounded px-1"
-          onClick={() => onNavigate(`/quotes/${q.id}`)}>
-          <div>
-            <div className="font-medium">{(q as any).quoteNumber || `Q-${q.id.slice(0, 6)}`}{q.title ? ` — ${q.title}` : ""}</div>
-            <div className="text-muted-foreground">{q.updatedAt ? format(new Date(q.updatedAt), "MMM dd, yyyy") : ""}</div>
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Quotes</h3>
+        <span className="text-[10px] text-slate-400">{quotes.length} total</span>
+      </div>
+      <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
+        {quotes.map(q => (
+          <div key={q.id} className="flex items-center justify-between py-2 px-3 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
+            onClick={() => onNavigate(`/quotes/${q.id}`)}>
+            <div>
+              <div className="font-medium text-slate-700">{(q as any).quoteNumber || `Q-${q.id.slice(0, 6)}`}{q.title ? ` — ${q.title}` : ""}</div>
+              <div className="text-slate-400 text-[10px]">{q.updatedAt ? format(new Date(q.updatedAt), "MMM dd, yyyy") : ""}</div>
+            </div>
+            <div className="text-right">
+              <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ${statusCls(q.status)}`}>{q.status}</span>
+              <p className="text-slate-500 text-[11px]">{fmt.format(Number(q.total ?? 0))}</p>
+            </div>
           </div>
-          <div className="text-right">
-            <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium capitalize ${statusCls(q.status)}`}>{q.status}</span>
-            <p className="text-muted-foreground mt-0.5">{fmt.format(Number(q.total ?? 0))}</p>
-          </div>
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   );
 }
@@ -1561,27 +1688,32 @@ function LocEquipmentTab({
 }) {
   return (
     <div>
-      <div className="flex items-center justify-between mb-3">
-        <p className="text-xs text-muted-foreground">Total: {equipment.length}</p>
-        <Button variant="outline" size="sm" className="h-6 text-[11px]" onClick={onAdd}>
-          <Plus className="mr-1 h-3 w-3" />Add Equipment
-        </Button>
+      <div className="flex items-center justify-between mb-1.5">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Equipment</h3>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-slate-400">{equipment.length} units</span>
+          <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={onAdd}>
+            <Plus className="mr-1 h-3 w-3" />Add
+          </Button>
+        </div>
       </div>
-      {equipment.length === 0 ? <EmptyState label="No equipment" /> : (
-        <div className="space-y-2">
+      {equipment.length === 0 ? (
+        <p className="text-xs text-slate-400 py-4 text-center">No equipment registered</p>
+      ) : (
+        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
           {equipment.map(eq => (
-            <div key={eq.id} className="border-b last:border-0 p-2.5 text-xs">
+            <div key={eq.id} className="px-3 py-2 text-xs">
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="font-medium text-sm">{eq.name}</div>
-                  <div className="text-muted-foreground">{eq.equipmentType || "—"}</div>
+                  <div className="font-medium text-slate-700">{eq.name}</div>
+                  <div className="text-slate-400 text-[10px]">{eq.equipmentType || "—"}</div>
                 </div>
-                <Button variant="ghost" size="icon" className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                <Button variant="ghost" size="icon" className="h-6 w-6 text-slate-400 hover:text-destructive"
                   onClick={() => onDelete(eq.id)}>
                   <Trash2 className="h-3 w-3" />
                 </Button>
               </div>
-              <div className="mt-1 text-muted-foreground">
+              <div className="mt-0.5 text-[10px] text-slate-400">
                 {eq.manufacturer || ""} {eq.modelNumber || ""} {(eq.manufacturer || eq.modelNumber) && eq.serialNumber ? "•" : ""} S/N: {eq.serialNumber || "—"}
               </div>
             </div>
@@ -1595,23 +1727,26 @@ function LocEquipmentTab({
 function LocPartsTab({ pmParts, onAdd }: { pmParts: PMPartWithItem[]; onAdd: () => void }) {
   return (
     <div>
-      <div className="flex items-center justify-between mb-3">
-        <p className="text-xs text-muted-foreground">Total: {pmParts.length}</p>
-        <Button variant="outline" size="sm" className="h-6 text-[11px]" onClick={onAdd}>
-          <Plus className="mr-1 h-3 w-3" />Add Parts
-        </Button>
+      <div className="flex items-center justify-between mb-1.5">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">PM Parts</h3>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-slate-400">{pmParts.length} items</span>
+          <Button variant="outline" size="sm" className="h-6 text-[10px]" onClick={onAdd}>
+            <Plus className="mr-1 h-3 w-3" />Add
+          </Button>
+        </div>
       </div>
       {pmParts.length === 0 ? (
-        <EmptyState label="No PM parts configured" />
+        <p className="text-xs text-slate-400 py-4 text-center">No PM parts configured</p>
       ) : (
-        <div className="divide-y">
+        <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
           {pmParts.map(p => (
-            <div key={p.id} className="flex items-center justify-between py-2 text-xs">
+            <div key={p.id} className="flex items-center justify-between py-2 px-3 text-xs">
               <div>
-                <div className="font-medium">{p.itemName || "Unknown Part"}</div>
-                {p.itemSku && <div className="text-muted-foreground">{p.itemSku}</div>}
+                <div className="font-medium text-slate-700">{p.itemName || "Unknown Part"}</div>
+                {p.itemSku && <div className="text-slate-400 text-[10px]">{p.itemSku}</div>}
               </div>
-              <span className="text-muted-foreground">x{p.quantityPerVisit}</span>
+              <span className="text-slate-500 font-medium text-[11px]">x{p.quantityPerVisit}</span>
             </div>
           ))}
         </div>
@@ -1634,11 +1769,14 @@ function ClientAllJobsTab({ jobs, locations, onNavigate }: { jobs: Job[]; locati
   return (
     <div className="space-y-4">
       <div>
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">Active ({activeJobs.length})</h3>
+        <div className="flex items-center justify-between mb-1.5">
+          <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Active</h3>
+          <span className="text-[10px] text-slate-400">{activeJobs.length} jobs</span>
+        </div>
         {activeJobs.length === 0 ? (
-          <p className="text-xs text-muted-foreground">No active jobs.</p>
+          <p className="text-xs text-slate-400 py-4 text-center">No active jobs</p>
         ) : (
-          <div className="divide-y border-t">
+          <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
             {activeJobs.map(j => (
               <JobRow key={j.id} job={j} locationLabel={locMap.get(j.locationId)} onNavigate={onNavigate} />
             ))}
@@ -1647,8 +1785,11 @@ function ClientAllJobsTab({ jobs, locations, onNavigate }: { jobs: Job[]; locati
       </div>
       {archivedJobs.length > 0 && (
         <div>
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">Archived ({archivedJobs.length})</h3>
-          <div className="divide-y border-t">
+          <div className="flex items-center justify-between mb-1.5">
+            <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Archived</h3>
+            <span className="text-[10px] text-slate-400">{archivedJobs.length} jobs</span>
+          </div>
+          <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
             {archivedJobs.map(j => (
               <JobRow key={j.id} job={j} locationLabel={locMap.get(j.locationId)} onNavigate={onNavigate} />
             ))}
@@ -1663,21 +1804,27 @@ function ClientAllInvoicesTab({ invoices, locations, onNavigate }: { invoices: I
   const locMap = useMemo(() => new Map(locations.map(l => [l.id, locationDisplayName(l)])), [locations]);
   if (invoices.length === 0) return <EmptyState label="No invoices for this client" />;
   return (
-    <div className="divide-y">
-      {invoices.map(inv => (
-        <div key={inv.id} className="flex items-center justify-between px-3 py-2.5 text-xs cursor-pointer hover:bg-slate-50"
-          onClick={() => onNavigate(`/invoices/${inv.id}`)}>
-          <div>
-            <span className="font-medium">INV #{inv.invoiceNumber || inv.id.slice(0, 6)}</span>
-            <span className="text-muted-foreground ml-2">{fmt.format(Number(inv.total ?? 0))}</span>
-            <p className="text-muted-foreground mt-0.5">{locMap.get(inv.locationId) || ""}</p>
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Invoices</h3>
+        <span className="text-[10px] text-slate-400">{invoices.length} total</span>
+      </div>
+      <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
+        {invoices.map(inv => (
+          <div key={inv.id} className="flex items-center justify-between px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
+            onClick={() => onNavigate(`/invoices/${inv.id}`)}>
+            <div>
+              <span className="font-medium text-slate-700">INV #{inv.invoiceNumber || inv.id.slice(0, 6)}</span>
+              <span className="text-slate-500 ml-2">{fmt.format(Number(inv.total ?? 0))}</span>
+              <p className="text-slate-400 text-[10px]">{locMap.get(inv.locationId) || ""}</p>
+            </div>
+            {(() => {
+              const badge = getInvoiceStatusBadge(inv.status, false);
+              return <Badge variant={badge.variant} className="text-[10px] flex-shrink-0">{badge.label}</Badge>;
+            })()}
           </div>
-          {(() => {
-            const badge = getInvoiceStatusBadge(inv.status, false);
-            return <Badge variant={badge.variant} className="text-[10px] flex-shrink-0">{badge.label}</Badge>;
-          })()}
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   );
 }
@@ -1686,19 +1833,25 @@ function ClientAllQuotesTab({ quotes, locations, onNavigate }: { quotes: Enriche
   const locMap = useMemo(() => new Map(locations.map(l => [l.id, locationDisplayName(l)])), [locations]);
   if (quotes.length === 0) return <EmptyState label="No quotes for this client" />;
   return (
-    <div className="divide-y">
-      {quotes.map(q => (
-        <div key={q.id} className="flex items-center justify-between px-3 py-2.5 text-xs cursor-pointer hover:bg-slate-50"
-          onClick={() => onNavigate(`/quotes/${q.id}`)}>
-          <div>
-            <span className="font-medium">{(q as any).quoteNumber || `Q-${q.id.slice(0, 6)}`}</span>
-            {q.title && <span className="text-muted-foreground ml-1">— {q.title}</span>}
-            <span className="text-muted-foreground ml-2">{fmt.format(Number(q.total ?? 0))}</span>
-            <p className="text-muted-foreground mt-0.5">{q.locationId ? locMap.get(q.locationId) || "" : ""}</p>
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Quotes</h3>
+        <span className="text-[10px] text-slate-400">{quotes.length} total</span>
+      </div>
+      <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
+        {quotes.map(q => (
+          <div key={q.id} className="flex items-center justify-between px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
+            onClick={() => onNavigate(`/quotes/${q.id}`)}>
+            <div>
+              <span className="font-medium text-slate-700">{(q as any).quoteNumber || `Q-${q.id.slice(0, 6)}`}</span>
+              {q.title && <span className="text-slate-500 ml-1">— {q.title}</span>}
+              <span className="text-slate-500 ml-2">{fmt.format(Number(q.total ?? 0))}</span>
+              <p className="text-slate-400 text-[10px]">{q.locationId ? locMap.get(q.locationId) || "" : ""}</p>
+            </div>
+            <Badge variant="outline" className="text-[10px] capitalize flex-shrink-0">{q.status}</Badge>
           </div>
-          <Badge variant="outline" className="text-[10px] capitalize flex-shrink-0">{q.status}</Badge>
-        </div>
-      ))}
+        ))}
+      </div>
     </div>
   );
 }
@@ -1707,18 +1860,31 @@ function ClientAllQuotesTab({ quotes, locations, onNavigate }: { quotes: Enriche
 // Shared Components
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Contact card — compact layout: Name + Primary → Phone/Email → Role badges.
- *  Hierarchy: identity first, contact info second, roles third. */
+/** Contact card — compact layout: Name + Primary → Phone/Email → Location labels / Role badges.
+ *  Hierarchy: identity first, contact info second, locations/roles third. */
 function ContactCard({
-  contact, onEdit, onDelete, showScope = false,
+  contact, onEdit, onEditRoles, onDelete, showScope = false, assignedLocationNames, deleteLabel,
 }: {
   contact: ClientContact;
   onEdit?: (c: ClientContact) => void;
+  onEditRoles?: (c: ClientContact) => void;
   onDelete?: (c: ClientContact) => void;
   showScope?: boolean;
+  /** Location names this person is assigned to (company cards only) */
+  assignedLocationNames?: string[];
+  deleteLabel?: string;
 }) {
   const nc = normalizeContact(contact);
   const initials = [contact.firstName, contact.lastName].filter(Boolean).map(n => n![0]).join("");
+
+  // Format location names for display: "Oakville, RBC Plaza" or "Oakville, RBC Plaza +1 more"
+  const MAX_VISIBLE_LOCATIONS = 2;
+  const locationLabel = assignedLocationNames && assignedLocationNames.length > 0
+    ? assignedLocationNames.length <= MAX_VISIBLE_LOCATIONS
+      ? assignedLocationNames.join(", ")
+      : `${assignedLocationNames.slice(0, MAX_VISIBLE_LOCATIONS).join(", ")} +${assignedLocationNames.length - MAX_VISIBLE_LOCATIONS} more`
+    : null;
+
   return (
     <div className="text-xs p-1.5 border rounded group">
       {/* Row 1: Name + Primary badge + actions */}
@@ -1735,15 +1901,20 @@ function ContactCard({
             <Badge variant="secondary" className="text-[9px] px-1 py-0 flex-shrink-0">Company</Badge>
           )}
         </div>
-        {(onEdit || onDelete) && (
+        {(onEdit || onEditRoles || onDelete) && (
           <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+            {onEditRoles && (
+              <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => onEditRoles(contact)} title="Edit roles">
+                <Tag className="h-2.5 w-2.5" />
+              </Button>
+            )}
             {onEdit && (
-              <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => onEdit(contact)}>
+              <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => onEdit(contact)} title="Edit contact">
                 <Pencil className="h-2.5 w-2.5" />
               </Button>
             )}
             {onDelete && (
-              <Button variant="ghost" size="icon" className="h-5 w-5 text-muted-foreground hover:text-destructive" onClick={() => onDelete(contact)}>
+              <Button variant="ghost" size="icon" className="h-5 w-5 text-muted-foreground hover:text-destructive" onClick={() => onDelete(contact)} title={deleteLabel || "Delete"}>
                 <Trash2 className="h-2.5 w-2.5" />
               </Button>
             )}
@@ -1757,7 +1928,14 @@ function ContactCard({
           {nc.email && <span className="flex items-center gap-1 truncate"><Mail className="h-2.5 w-2.5" />{nc.email}</span>}
         </div>
       )}
-      {/* Row 3: Role badges — only if roles exist */}
+      {/* Row 3a: Assigned location labels (company cards) */}
+      {locationLabel && (
+        <div className="flex items-center gap-1 text-muted-foreground pl-[26px] mt-0.5">
+          <MapPin className="h-2.5 w-2.5 flex-shrink-0" />
+          <span className="truncate">{locationLabel}</span>
+        </div>
+      )}
+      {/* Row 3b: Role badges — only if roles exist */}
       {nc.roles.length > 0 && (
         <div className="flex flex-wrap gap-0.5 pl-[26px] mt-0.5">
           {nc.roles.map(r => (

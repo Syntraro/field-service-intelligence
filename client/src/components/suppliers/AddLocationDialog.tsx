@@ -124,10 +124,11 @@ export function AddLocationDialog({ open, onOpenChange, supplierId }: AddLocatio
                 id="address"
                 value={formData.address}
                 onChange={(val) => {
+                  // Always clear stale coordinates on manual address edit
                   setFormData((prev) => ({
                     ...prev,
                     address: val,
-                    ...(val.trim() ? {} : { lat: null, lng: null, placeId: null }),
+                    lat: null, lng: null, placeId: null,
                   }));
                 }}
                 onPlaceSelect={(p: PlaceSelectPayload) => {
@@ -163,7 +164,7 @@ export function AddLocationDialog({ open, onOpenChange, supplierId }: AddLocatio
                 <Input
                   id="city"
                   value={formData.city}
-                  onChange={(e) => setFormData({ ...formData, city: e.target.value })}
+                  onChange={(e) => setFormData(prev => ({ ...prev, city: e.target.value, lat: null, lng: null, placeId: null }))}
                   placeholder="City"
                 />
               </div>
@@ -173,7 +174,7 @@ export function AddLocationDialog({ open, onOpenChange, supplierId }: AddLocatio
                 <Input
                   id="province"
                   value={formData.province}
-                  onChange={(e) => setFormData({ ...formData, province: e.target.value })}
+                  onChange={(e) => setFormData(prev => ({ ...prev, province: e.target.value, lat: null, lng: null, placeId: null }))}
                   placeholder="ON"
                 />
               </div>
@@ -183,7 +184,7 @@ export function AddLocationDialog({ open, onOpenChange, supplierId }: AddLocatio
                 <Input
                   id="postalCode"
                   value={formData.postalCode}
-                  onChange={(e) => setFormData({ ...formData, postalCode: e.target.value })}
+                  onChange={(e) => setFormData(prev => ({ ...prev, postalCode: e.target.value, lat: null, lng: null, placeId: null }))}
                   placeholder="A1A 1A1"
                 />
               </div>
@@ -194,7 +195,7 @@ export function AddLocationDialog({ open, onOpenChange, supplierId }: AddLocatio
               <Input
                 id="country"
                 value={formData.country}
-                onChange={(e) => setFormData({ ...formData, country: e.target.value })}
+                onChange={(e) => setFormData(prev => ({ ...prev, country: e.target.value, lat: null, lng: null, placeId: null }))}
                 placeholder="Canada"
               />
             </div>

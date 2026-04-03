@@ -146,7 +146,7 @@ export default function DispatchTimeline({
             {/* Hour header row */}
             <div className="sticky top-0 z-10 flex h-8 border-b bg-slate-50">
               {hours.map(h => (
-                <div key={h} className="flex items-center border-r px-2 text-[11px] font-medium text-muted-foreground"
+                <div key={h} className="flex items-center border-r px-2 text-[11px] font-bold text-muted-foreground"
                   style={{ width: HOUR_WIDTH_PX }}>
                   {formatHour(h)}
                 </div>

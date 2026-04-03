@@ -21,6 +21,9 @@ export const TECHNICIAN_COLORS = [
   "#d97706", // amber-dark
 ] as const;
 
+/** 2026-03-31: Canonical gray for unassigned visits/technicians (Tailwind slate-400) */
+export const UNASSIGNED_COLOR = "#94a3b8";
+
 /** Get a deterministic color for a technician by roster index. */
 export function getTechnicianColor(index: number): string {
   return TECHNICIAN_COLORS[index % TECHNICIAN_COLORS.length];

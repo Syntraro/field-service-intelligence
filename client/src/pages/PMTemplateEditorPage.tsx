@@ -210,19 +210,16 @@ export default function PMTemplateEditorPage() {
   const existing = isEdit ? existingTemplates.find((t) => t.id === params.id) : null;
 
   // Fetch Products & Services catalog for line item search
-  const { data: catalogData } = useQuery<{ items: Item[] }>({
+  const { data: catalogData } = useQuery<Item[]>({
     queryKey: ["/api/items", { limit: 200 }],
     queryFn: async () => {
       const res = await fetch("/api/items?limit=200", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch catalog");
-      return res.json();
+      const json = await res.json();
+      return Array.isArray(json) ? json : json.data || json.items || [];
     },
   });
-  const catalog = useMemo(() => {
-    if (!catalogData) return [];
-    if (Array.isArray(catalogData)) return catalogData as Item[];
-    return (catalogData as any)?.items ?? (catalogData as any)?.data ?? [];
-  }, [catalogData]);
+  const catalog: Item[] = catalogData ?? [];
 
   // --- Form state ---
   const [name, setName] = useState("");

@@ -111,7 +111,7 @@ export default function TimeAnalyticsPage() {
 
   // State
   const [numWeeks, setNumWeeks] = useState<number>(8);
-  const [selectedTechnicianId, setSelectedTechnicianId] = useState<string>("");
+  const [selectedTechnicianId, setSelectedTechnicianId] = useState<string>("__all__");
   const [weekStart, setWeekStart] = useState<string>(() => getMonday(new Date()));
 
   // Check if user has manager access
@@ -127,7 +127,7 @@ export default function TimeAnalyticsPage() {
       const params = new URLSearchParams();
       params.set("weeks", numWeeks.toString());
       params.set("weekStart", weekStart);
-      if (selectedTechnicianId) {
+      if (selectedTechnicianId && selectedTechnicianId !== "__all__") {
         params.set("technicianId", selectedTechnicianId);
       }
       const res = await fetch(`/api/analytics/time/weekly?${params.toString()}`, {
@@ -275,7 +275,7 @@ export default function TimeAnalyticsPage() {
                   <SelectValue placeholder="All Technicians" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All Technicians</SelectItem>
+                  <SelectItem value="__all__">All Technicians</SelectItem>
                   {technicians.map((tech) => (
                     <SelectItem key={tech.id} value={tech.id}>
                       {tech.fullName || tech.email}

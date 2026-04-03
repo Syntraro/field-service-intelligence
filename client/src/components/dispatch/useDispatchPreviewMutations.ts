@@ -58,8 +58,12 @@ const NOT_FOUND_MSG = "This item was moved or changed. The board has been refres
 
 interface ScheduleParams {
   jobId: string;
-  visitId: string;
-  technicianUserId: string;
+  /** Real persisted visit UUID if one exists; undefined for backlog items
+   *  without a pre-existing visit row. Never pass job.id here. */
+  visitId?: string;
+  /** Technician to assign. Null = schedule without assignment (unassigned lane).
+   *  Server accepts nullable — aligned 2026-03-26. */
+  technicianUserId: string | null;
   startAt: string;
   endAt: string;
   /** When true, schedule as all-day/any-time visit (UTC midnight→23:59:59) */
@@ -249,14 +253,21 @@ function optimisticReschedule(
         // Patch allDay flag so visit immediately renders in correct surface (timeline vs any-time column)
         ...(allDay !== undefined && { allDay }),
       };
-      // Update technician assignment if changed (single-tech only)
-      if (technicianUserId) {
-        patched.primaryTechnicianId = technicianUserId;
-        patched.assignedTechnicianIds = [technicianUserId];
-        // Update technicians array name reference
-        patched.technicians = patched.technicians.length > 0
-          ? [{ ...patched.technicians[0], id: technicianUserId }]
-          : [{ id: technicianUserId, name: technicianUserId, color: null }];
+      // Update technician assignment if changed (single-tech only).
+      // 2026-03-26: Also handles explicit null (unassign) for drop-to-Unassigned lane.
+      if (technicianUserId !== undefined) {
+        if (technicianUserId === null) {
+          // Unassign — clear technician fields so visit moves to Unassigned lane immediately
+          patched.primaryTechnicianId = null;
+          patched.assignedTechnicianIds = [];
+          patched.technicians = [];
+        } else {
+          patched.primaryTechnicianId = technicianUserId;
+          patched.assignedTechnicianIds = [technicianUserId];
+          patched.technicians = patched.technicians.length > 0
+            ? [{ ...patched.technicians[0], id: technicianUserId }]
+            : [{ id: technicianUserId, name: technicianUserId, color: null }];
+        }
       }
       events[idx] = patched;
       return { ...old, events };
@@ -274,7 +285,7 @@ function optimisticSchedule(
   jobId: string,
   startAt: string,
   endAt: string,
-  technicianUserId: string,
+  technicianUserId: string | null,
 ): void {
   const durationMinutes = Math.round(
     (new Date(endAt).getTime() - new Date(startAt).getTime()) / 60000,
@@ -326,9 +337,9 @@ function optimisticSchedule(
       date,
       durationMinutes,
       version: jobData.version,
-      assignedTechnicianIds: [technicianUserId],
+      assignedTechnicianIds: technicianUserId ? [technicianUserId] : [],
       primaryTechnicianId: technicianUserId,
-      technicians: [{ id: technicianUserId, name: technicianUserId, color: null }],
+      technicians: technicianUserId ? [{ id: technicianUserId, name: technicianUserId, color: null }] : [],
       // 2026-03-23: Carry through location context for display
       locationAddress: jobData.locationAddress,
       locationCity: jobData.locationCity,
@@ -568,6 +579,10 @@ export function useDispatchPreviewMutations() {
       // 2026-03-18: Visit completion reconciles parent job — refresh job lists, dashboard, attention
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      // 2026-03-28: Attention counts (past due, on hold, unassigned) must refresh after scheduling changes
+      queryClient.invalidateQueries({ queryKey: ["attention"] });
+      // 2026-03-28: Dashboard action modal data must refresh so modal/card counts stay in sync
+      queryClient.invalidateQueries({ queryKey: ["dashboard-action"] });
       // 2026-03-20: Invalidate Job Detail visits section so it reflects completed/resolved visits
       queryClient.invalidateQueries({ queryKey: ["visits"] });
     }, 800);
@@ -600,6 +615,9 @@ export function useDispatchPreviewMutations() {
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      // 2026-03-28: Attention + dashboard-action must refresh after completion lifecycle events
+      queryClient.invalidateQueries({ queryKey: ["attention"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-action"] });
       queryClient.invalidateQueries({ queryKey: ["visits"] });
       // 2026-03-23: Invalidate visit-detail so modal reflects completion state
       queryClient.invalidateQueries({ queryKey: ["visit-detail"] });
@@ -669,17 +687,24 @@ export function useDispatchPreviewMutations() {
   const scheduleVisit = useCallback(async (params: ScheduleParams) => {
     const { jobId, visitId, technicianUserId, startAt, endAt, allDay, visitNotes } = params;
 
+    // 2026-03-26: Use real visitId for optimistic tracking when available.
+    // For backlog items without a persisted visit, use jobId as the optimistic
+    // tracking key. This is explicitly NOT a visit identity — it's a temporary
+    // key for cache lookup, concurrency chaining, and saving indicators.
+    // The success-path normalization replaces it with the real visit UUID.
+    const optimisticKey = visitId ?? jobId;
+
     // Snapshot before optimistic patch so rollback restores true pre-mutation state
     const snapshot = snapshotDispatchCache(queryClient);
 
     // Optimistic: move from unscheduled → scheduled immediately (outside chain for instant feedback)
-    optimisticSchedule(queryClient, visitId, jobId, startAt, endAt, technicianUserId);
+    optimisticSchedule(queryClient, optimisticKey, jobId, startAt, endAt, technicianUserId);
 
     // Chain per-visit: version resolved after any prior mutation completes
-    return chainForVisit(visitId, async () => {
-      const version = freshVersion(visitId);
+    return chainForVisit(optimisticKey, async () => {
+      const version = freshVersion(optimisticKey);
 
-      markSaving(visitId);
+      markSaving(optimisticKey);
       inflightRef.current++;
       try {
         const resp = await apiRequest<{ version?: number }>("/api/calendar/schedule", {
@@ -687,12 +712,32 @@ export function useDispatchPreviewMutations() {
           body: JSON.stringify({ jobId, technicianUserId, startAt, endAt, version, allDay: allDay ?? false, ...(visitNotes != null && { notes: visitNotes }) }),
         });
         // Cancel pending refetches then patch version to prevent stale-refetch overwrites
-        if (resp?.version != null) await cancelAndPatchVersion(visitId, resp.version);
-        // 2026-03-24: Seed visit-detail cache with server-authoritative visit data
-        // only if the schedule response includes a real visit object.
+        if (resp?.version != null) await cancelAndPatchVersion(optimisticKey, resp.version);
+        // 2026-03-26: Identity normalization — replace optimistic tracking key with
+        // the real persisted visit UUID from server response. The optimistic key may
+        // be a jobId (for backlog items) or an existing visitId — either way, the
+        // server-returned visit.id is the canonical identity going forward.
         const scheduleResp = resp as any;
-        if (scheduleResp?.visit) {
-          queryClient.setQueryData(["visit-detail", visitId], scheduleResp.visit);
+        const realVisitId = scheduleResp?.visit?.id;
+        if (realVisitId && realVisitId !== optimisticKey) {
+          queryClient.setQueriesData<CalendarRangeResponseDto>(
+            { queryKey: ["/api/calendar"] },
+            (old) => {
+              if (!old?.events) return old;
+              return {
+                ...old,
+                events: old.events.map(e =>
+                  (e.visitId === optimisticKey || e.id === optimisticKey)
+                    ? { ...e, id: realVisitId, visitId: realVisitId }
+                    : e
+                ),
+              };
+            },
+          );
+        }
+        // Seed visit-detail cache under the REAL visit UUID only — never under optimisticKey
+        if (realVisitId && scheduleResp?.visit) {
+          queryClient.setQueryData(["visit-detail", realVisitId], scheduleResp.visit);
         }
         backgroundInvalidate();
       } catch (err: any) {
@@ -700,7 +745,7 @@ export function useDispatchPreviewMutations() {
         handleMutationError(err, "Schedule failed");
       } finally {
         inflightRef.current--;
-        clearSaving(visitId);
+        clearSaving(optimisticKey);
       }
     });
   }, [freshVersion, queryClient, backgroundInvalidate, handleMutationError, chainForVisit, markSaving, clearSaving, cancelAndPatchVersion]);
@@ -749,7 +794,8 @@ export function useDispatchPreviewMutations() {
           throw newErr;
         }
         if (resp?.version != null) await cancelAndPatchVersion(visitId, resp.version);
-        backgroundInvalidate({ calendarOnly: true });
+        // 2026-03-28: Full invalidation — reschedule can change past-due status, attention counts, dashboard state
+        backgroundInvalidate();
       } catch (err: any) {
         restoreDispatchCache(queryClient, snapshot);
         handleMutationError(err, "Reschedule failed");
@@ -858,7 +904,8 @@ export function useDispatchPreviewMutations() {
         // Cancel pending refetches then patch version to prevent stale-refetch overwrites
         const patchVer = resp?.version ?? resp?.visitVersion;
         if (patchVer != null) await cancelAndPatchVersion(visitId, patchVer);
-        backgroundInvalidate({ calendarOnly: true });
+        // 2026-03-28: Full invalidation — resize can affect scheduling duration/attention state
+        backgroundInvalidate();
       } catch (err: any) {
         restoreDispatchCache(queryClient, snapshot);
         handleMutationError(err, "Resize failed");

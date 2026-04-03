@@ -9,7 +9,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { queryClient, resetCsrf } from "@/lib/queryClient";
+import { queryClient, initCSRF } from "@/lib/queryClient";
 
 /**
  * Listens for "session-expired" custom events (fired by queryClient on 401)
@@ -28,8 +28,9 @@ export default function SessionExpiredDialog() {
 
   const handleLogin = () => {
     setOpen(false);
-    resetCsrf();
     queryClient.clear();
+    // Pre-warm CSRF for the login page (non-blocking)
+    initCSRF().catch(() => {});
     // Encode the current path so Login can redirect back after auth
     const returnTo = encodeURIComponent(location);
     setLocation(`/login?returnTo=${returnTo}`);

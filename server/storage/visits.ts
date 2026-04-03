@@ -312,7 +312,6 @@ export interface VisitFeedItem {
   visitNotes: string | null;
   checkedInAt: string | null;
   checkedOutAt: string | null;
-  actualDurationMinutes: number | null;
   estimatedDurationMinutes: number | null;
   createdAt: string;
   updatedAt: string;
@@ -340,7 +339,6 @@ function toVisitFeedItem(v: EnrichedVisit): VisitFeedItem {
     visitNotes: v.visitNotes ?? null,
     checkedInAt: v.checkedInAt ? new Date(v.checkedInAt).toISOString() : null,
     checkedOutAt: v.checkedOutAt ? new Date(v.checkedOutAt).toISOString() : null,
-    actualDurationMinutes: v.actualDurationMinutes ?? null,
     estimatedDurationMinutes: v.estimatedDurationMinutes ?? null,
     createdAt: new Date(v.createdAt).toISOString(),
     updatedAt: new Date(v.updatedAt).toISOString(),

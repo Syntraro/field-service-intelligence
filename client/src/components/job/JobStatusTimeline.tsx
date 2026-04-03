@@ -116,14 +116,14 @@ export function JobStatusTimeline({ jobId, defaultOpen = false }: JobStatusTimel
 
   return (
     <Collapsible defaultOpen={defaultOpen}>
-      <Card>
+      <Card className="rounded-xl border-[#e5e7eb] bg-[#ffffff]">
         <CollapsibleTrigger asChild>
           <button
-            className="w-full flex items-center justify-between px-5 py-4 bg-primary/[0.09] hover:bg-primary/[0.13] transition-colors"
+            className="w-full flex items-center justify-between px-5 py-4 bg-[#f8fafc] hover:bg-slate-100 transition-colors border-b border-[#e2e8f0]"
             data-testid="trigger-status-timeline"
           >
-            <span className="text-sm font-semibold flex items-center gap-2">
-              <Clock className="h-4 w-4" />
+            <span className="text-sm font-semibold text-[#0f172a] flex items-center gap-2">
+              <Clock className="h-4 w-4 text-[#64748b]" />
               Status Timeline
               {hasEvents && (
                 <span className="text-xs text-muted-foreground font-normal">
@@ -131,7 +131,7 @@ export function JobStatusTimeline({ jobId, defaultOpen = false }: JobStatusTimel
                 </span>
               )}
             </span>
-            <ChevronRight className="h-4 w-4 text-muted-foreground group-data-[state=open]:hidden" />
+            <ChevronRight className="h-4 w-4 text-[#64748b] group-data-[state=open]:hidden" />
           </button>
         </CollapsibleTrigger>
         <CollapsibleContent>

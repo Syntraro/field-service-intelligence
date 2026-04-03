@@ -7,17 +7,17 @@ import { AuthProvider, useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import Dashboard from "@/pages/Dashboard";
-import LiveMapPage from "@/pages/LiveMapPage";
 import Jobs from "@/pages/Jobs";
 import JobDetailPage from "@/pages/JobDetailPage";
 import InvoicesListPage from "@/pages/InvoicesListPage";
 import InvoiceDetailPage from "@/pages/InvoiceDetailPage";
+import NewInvoicePage from "@/pages/NewInvoicePage";
 import Quotes from "@/pages/Quotes";
+import LeadsPage from "@/pages/LeadsPage";
 import QuoteDetailPage from "@/pages/QuoteDetailPage";
 import Reports from "@/pages/Reports";
 import AccountsReceivablePage from "@/pages/AccountsReceivablePage";
 import FinancialDashboard from "@/pages/FinancialDashboard";
-import DashboardPreview from "@/pages/DashboardPreview";
 import Admin from "@/pages/Admin";
 import AdminTenants from "@/pages/AdminTenants";
 import AdminTenantDetail from "@/pages/AdminTenantDetail";
@@ -29,7 +29,6 @@ import SupportConsole from "@/pages/SupportConsole";
 // 2026-03-21: AddClientPage and NewClientPage removed — replaced by canonical CreateClientModal
 import Clients from "@/pages/Clients";
 import ClientDetailPage from "@/pages/ClientDetailPage";
-import LocationDetailPage from "@/pages/LocationDetailPage";
 import PartsManagementPage from "@/pages/PartsManagementPage";
 import CompanySettingsPage from "@/pages/CompanySettingsPage";
 import TechnicianManagementPage from "@/pages/TechnicianManagementPage";
@@ -49,6 +48,7 @@ import QuoteTemplatesPage from "@/pages/QuoteTemplatesPage";
 import SubscriptionSettings from "@/pages/SubscriptionSettings";
 import UnassignedTimePage from "@/pages/UnassignedTimePage";
 import PayrollPage from "@/pages/PayrollPage";
+import DailyTimesheetPage from "@/pages/AdminTimesheetsPage";
 import TimeAnalyticsPage from "@/pages/TimeAnalyticsPage";
 import NotificationsPage from "@/pages/NotificationsPage";
 import TimeAlertSettingsPage from "@/pages/TimeAlertSettingsPage";
@@ -76,7 +76,7 @@ import PortalInvoiceDetail from "@/pages/portal/PortalInvoiceDetail";
 import PortalLayout from "@/components/PortalLayout";
 import { PortalAuthProvider, usePortalAuth } from "@/lib/portalAuth";
 import { ActivityProvider } from "@/lib/activityStore";
-import { QuickCreateDrawer } from "@/components/QuickCreateDrawer";
+// QuickCreateDrawer removed — creation flows use direct modals / dedicated pages
 import { SettingsShell } from "@/components/SettingsShell";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
@@ -89,7 +89,8 @@ import UniversalSearch from "@/components/UniversalSearch";
 import { QuoteTemplateChooserModal } from "@/components/QuoteTemplateChooserModal";
 import { NewQuoteModal } from "@/components/NewQuoteModal";
 import { useState } from "react";
-import { Plus, MoreHorizontal, Settings, MessageCircle, LogOut } from "lucide-react";
+import { Plus, MoreHorizontal, Settings, MessageCircle, LogOut, ClipboardList, Users, Receipt, FileText, CheckSquare, Wrench } from "lucide-react";
+import { TaskDialog } from "@/components/TaskDialog";
 import syntaroLogo from "@/assets/Syntraro Logo Transparent.png";
 import { Button } from "@/components/ui/button";
 import {
@@ -109,6 +110,8 @@ import PMWizardPage from "@/pages/PMWizardPage";
 import PMDetailPage from "@/pages/PMDetailPage";
 import PMEditPage from "@/pages/PMEditPage";
 import PMTemplateEditorPage from "@/pages/PMTemplateEditorPage";
+// Technician PWA preview — self-contained mock prototype (no backend)
+import TechApp from "@/tech-app/app/TechApp";
 
 function Router() {
   const [loc] = useLocation();
@@ -133,11 +136,6 @@ function Router() {
       <Route path="/calendar">
         <ProtectedRoute requireAdmin>
           <DispatchBoard />
-        </ProtectedRoute>
-      </Route>
-<Route path="/live-map">
-        <ProtectedRoute requireAdmin>
-          <LiveMapPage />
         </ProtectedRoute>
       </Route>
       {/* PM Templates: Full-page create/edit */}
@@ -187,6 +185,11 @@ function Router() {
           <InvoicesListPage />
         </ProtectedRoute>
       </Route>
+      <Route path="/invoices/new">
+        <ProtectedRoute requireAdmin>
+          <NewInvoicePage />
+        </ProtectedRoute>
+      </Route>
       <Route path="/invoices/:id">
         <ProtectedRoute requireAdmin>
           <InvoiceDetailPage />
@@ -202,6 +205,11 @@ function Router() {
           <QuoteDetailPage />
         </ProtectedRoute>
       </Route>
+      <Route path="/leads">
+        <ProtectedRoute requireAdmin>
+          <LeadsPage />
+        </ProtectedRoute>
+      </Route>
       <Route path="/reports">
         <ProtectedRoute requireAdmin>
           <Reports />
@@ -215,12 +223,6 @@ function Router() {
       <Route path="/financial-dashboard">
         <ProtectedRoute requireAdmin>
           <FinancialDashboard />
-        </ProtectedRoute>
-      </Route>
-      {/* Preview-only: revised dashboard layout for visual comparison (no sidebar link) */}
-      <Route path="/dashboard-preview">
-        <ProtectedRoute requireAdmin>
-          <DashboardPreview />
         </ProtectedRoute>
       </Route>
       <Route path="/admin">
@@ -346,6 +348,11 @@ function Router() {
           <PayrollPage />
         </ProtectedRoute>
       </Route>
+      <Route path="/settings/timesheets">
+        <ProtectedRoute requireAdmin>
+          <DailyTimesheetPage />
+        </ProtectedRoute>
+      </Route>
       <Route path="/settings/time-analytics">
         <ProtectedRoute requireAdmin>
           <TimeAnalyticsPage />
@@ -416,25 +423,14 @@ function Router() {
           <ManageRoles />
         </ProtectedRoute>
       </Route>
-      {/* /technician and /daily-parts routes removed — endpoints non-existent (UI-001) */}
       <Route path="/clients/:clientId">
         <ProtectedRoute requireAdmin>
           <ClientDetailPage />
         </ProtectedRoute>
       </Route>
-      <Route path="/clients/:id/locations/:locationId">
-        <ProtectedRoute requireAdmin>
-          <LocationDetailPage />
-        </ProtectedRoute>
-      </Route>
       <Route path="/all-locations">
         <ProtectedRoute requireAdmin>
           <Locations />
-        </ProtectedRoute>
-      </Route>
-      <Route path="/locations/:locationId">
-        <ProtectedRoute requireAdmin>
-          <LocationDetailPage />
         </ProtectedRoute>
       </Route>
       <Route path="/suppliers">
@@ -523,7 +519,7 @@ function AppContent() {
   const { toast } = useToast();
   const [addClientModalOpen, setAddClientModalOpen] = useState(false);
   const [addJobModalOpen, setAddJobModalOpen] = useState(false);
-  const [quickCreateOpen, setQuickCreateOpen] = useState(false);
+  const [newTaskOpen, setNewTaskOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [quoteChooserOpen, setQuoteChooserOpen] = useState(false);
   const [newQuoteModalOpen, setNewQuoteModalOpen] = useState(false);
@@ -540,7 +536,7 @@ function AppContent() {
 
   const isAuthPage = ['/login', '/signup', '/request-reset', '/reset-password'].includes(location);
   const isPortalPage = location.startsWith('/portal');
-  const isTechnicianPage = false; // Technician pages removed (UI-001) — kept as const to avoid render tree changes
+  const isTechnicianPage = location.startsWith('/tech'); // Restored 2026-04-03 for technician preview
   // Portal pages use a completely separate layout and auth
   if (isPortalPage) {
     return (
@@ -548,6 +544,13 @@ function AppContent() {
         <PortalRouter />
       </PortalAuthProvider>
     );
+  }
+  // TECH APP PORTAL
+  // This bypasses the main app shell intentionally.
+  // Do not wrap TechApp in App layout.
+  // All /tech routes are handled internally by TechApp.
+  if (isTechnicianPage) {
+    return <TechApp />;
   }
 
   const handleDashboardClick = () => {
@@ -583,12 +586,15 @@ function AppContent() {
     <SidebarProvider defaultOpen={true} style={style as React.CSSProperties}>
       <div className="flex flex-col h-screen w-full bg-background">
         {/* Global header — dark app shell, color matched to sidebar via --sidebar-bg */}
-        <header className="flex items-center gap-4 px-3 h-16 shrink-0 z-20" style={{ background: 'var(--sidebar-bg)', borderBottom: '1px solid rgba(255,255,255,0.08)' }}>
-          {/* Left: Syntraro logo branding (sidebar toggle moved to AppSidebar) */}
+        <header className="flex items-center gap-3 px-3 h-16 shrink-0 z-20" style={{ background: '#222b36', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+          {/* Left: Logo + company greeting */}
           <Link href="/" className="flex items-center gap-4 shrink-0 cursor-pointer no-underline" data-testid="header-logo">
             <img src={syntaroLogo} alt="Syntraro" className="h-12 w-auto object-contain shrink-0" />
             {!isTechnicianPage && companyDisplayName && (
-              <span className="text-white/70 text-xs truncate max-w-[180px]">{companyDisplayName}</span>
+              <div className="flex flex-col justify-center min-w-0">
+                <span className="text-[13px] text-slate-400 leading-tight">Hello,</span>
+                <span className="text-[15px] font-semibold text-white truncate max-w-[200px] leading-tight">{companyDisplayName}</span>
+              </div>
             )}
           </Link>
 
@@ -602,25 +608,56 @@ function AppContent() {
             onCreateInvoice={() => setLocation("/invoices")}
           />
 
-          {/* Right: Quick Create + More menu */}
+          {/* Right: Quick Create dropdown + More menu */}
           {!isTechnicianPage && (
-            <div className="flex items-center gap-2 shrink-0">
-              <Button
-                size="sm"
-                data-testid="button-create-new"
-                className="gap-1.5 h-8 px-3 text-sm text-white font-medium"
-                style={{ background: '#82BA58' }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = '#6FA846')}
-                onMouseLeave={(e) => (e.currentTarget.style.background = '#82BA58')}
-                onClick={() => setQuickCreateOpen(true)}
-              >
-                <Plus className="h-4 w-4" />
-                <span>New</span>
-              </Button>
+            <div className="flex items-center gap-3 shrink-0">
+              {/* Quick Create dropdown — replaces slide-over drawer for top-level menu */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    size="sm"
+                    data-testid="button-create-new"
+                    className="gap-1.5 h-8 px-3 text-sm text-white font-medium"
+                    style={{ background: '#76B054' }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = '#5F9442')}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = '#76B054')}
+                  >
+                    <Plus className="h-4 w-4" />
+                    <span>New</span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" sideOffset={8} className="w-48">
+                  <DropdownMenuItem data-testid="quick-new-job" onClick={() => setAddJobModalOpen(true)}>
+                    <ClipboardList className="h-4 w-4 mr-2" />
+                    New Job
+                  </DropdownMenuItem>
+                  <DropdownMenuItem data-testid="quick-new-client" onClick={() => setAddClientModalOpen(true)}>
+                    <Users className="h-4 w-4 mr-2" />
+                    New Client
+                  </DropdownMenuItem>
+                  <DropdownMenuItem data-testid="quick-new-invoice" onClick={() => setLocation("/invoices/new")}>
+                    <Receipt className="h-4 w-4 mr-2" />
+                    New Invoice
+                  </DropdownMenuItem>
+                  <DropdownMenuItem data-testid="quick-new-quote" onClick={() => setNewQuoteModalOpen(true)}>
+                    <FileText className="h-4 w-4 mr-2" />
+                    New Quote
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem data-testid="quick-new-task" onClick={() => setNewTaskOpen(true)}>
+                    <CheckSquare className="h-4 w-4 mr-2" />
+                    New Task
+                  </DropdownMenuItem>
+                  <DropdownMenuItem data-testid="quick-new-pm" onClick={() => setLocation("/pm/new")}>
+                    <Wrench className="h-4 w-4 mr-2" />
+                    New PM Contract
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               {/* More menu — Settings, Feedback, Logout */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" data-testid="button-more-menu" className="text-white/85 hover:text-white hover:bg-white/10">
+                  <Button variant="ghost" size="icon" data-testid="button-more-menu" className="text-slate-400 hover:text-white hover:bg-white/10">
                     <MoreHorizontal className="h-4 w-4" />
                   </Button>
                 </DropdownMenuTrigger>
@@ -644,13 +681,13 @@ function AppContent() {
           )}
         </header>
         {/* Sidebar + page content row */}
-        <div className="flex flex-1 overflow-hidden">
+        <div className="flex flex-1 overflow-hidden" style={{ background: '#222b36' }}>
           <AppSidebar onDashboardClick={handleDashboardClick} />
           <div className="flex flex-col flex-1 overflow-hidden">
             <ImpersonationBanner />
             <SubscriptionBanner />
             <TimezoneSetupBanner />
-            <main className="flex-1 overflow-auto">
+            <main className="flex-1 overflow-auto rounded-tl-xl" style={{ background: '#F4F8F4' }}>
               <Router />
             </main>
           </div>
@@ -665,11 +702,10 @@ function AppContent() {
         open={addJobModalOpen}
         onOpenChange={setAddJobModalOpen}
       />
-      <QuickCreateDrawer
-        open={quickCreateOpen}
-        onOpenChange={setQuickCreateOpen}
-        onNewJob={() => { setQuickCreateOpen(false); setAddJobModalOpen(true); }}
-        onNewClient={() => { setQuickCreateOpen(false); setAddClientModalOpen(true); }}
+      <TaskDialog
+        open={newTaskOpen}
+        onOpenChange={setNewTaskOpen}
+        onChanged={() => {}}
       />
       <QuoteTemplateChooserModal
         open={quoteChooserOpen}

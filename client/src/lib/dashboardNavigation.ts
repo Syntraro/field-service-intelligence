@@ -21,6 +21,7 @@ export type DashboardAction =
   | "jobs.needsInvoicing"
   | "invoices.outstanding"
   | "invoices.pastDue"
+  | "invoices.draft"
   | "pm.overdue"
   | "pm.comingDue"
   | "pm.upcoming"
@@ -54,6 +55,7 @@ const DESTINATIONS: Record<DashboardAction, DashboardDestination> = {
   "jobs.needsInvoicing":   { pathname: "/jobs", search: "lifecycle=completed" },
   "invoices.outstanding":  { pathname: "/invoices", search: "filter=awaiting_payment" },
   "invoices.pastDue":      { pathname: "/invoices", search: "filter=overdue" },
+  "invoices.draft":        { pathname: "/invoices", search: "filter=draft" },
   "pm.overdue":            { pathname: "/pm", search: "tab=upcoming&urgency=overdue" },
   "pm.comingDue":          { pathname: "/pm", search: "tab=upcoming&urgency=coming_due" },
   "pm.upcoming":           { pathname: "/pm", search: "tab=upcoming&urgency=upcoming" },

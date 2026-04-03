@@ -10,7 +10,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { useQuery } from "@tanstack/react-query";
-import { apiRequest, resetCsrf } from "@/lib/queryClient";
+import { apiRequest, initCSRF } from "@/lib/queryClient";
 
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Building2 } from "lucide-react";
@@ -78,8 +78,8 @@ export default function Signup() {
         }),
       });
 
-      // Session likely changed; force CSRF token refresh on next write request
-      resetCsrf();
+      // Pre-warm CSRF token for the new session (non-blocking)
+      initCSRF().catch(() => {});
 
 toast({
         title: "Account created",

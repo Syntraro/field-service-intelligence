@@ -32,10 +32,7 @@ interface Part {
   category?: string | null;
 }
 
-interface PartsResponse {
-  items: Item[];
-  total: number;
-}
+
 
 interface CategoryInfo {
   name: string;
@@ -64,12 +61,13 @@ export default function CategoryManagementPage() {
   const [editedName, setEditedName] = useState("");
   const [categoryToDelete, setCategoryToDelete] = useState<CategoryInfo | null>(null);
 
-  const { data: partsData, isLoading } = useQuery<PartsResponse>({
+  const { data: partsItems, isLoading } = useQuery<Item[]>({
     queryKey: ["/api/items", { limit: 200 }],
     queryFn: async () => {
       const res = await fetch("/api/items?limit=200", { credentials: "include" });
       if (!res.ok) throw new Error("Failed to fetch parts");
-      return res.json();
+      const json = await res.json();
+      return Array.isArray(json) ? json : json.data || json.items || [];
     },
   });
 
@@ -78,7 +76,7 @@ export default function CategoryManagementPage() {
     DEFAULT_CATEGORIES.forEach((cat) => {
       catMap.set(cat, { count: 0, isDefault: true });
     });
-    (partsData?.items ?? []).forEach((p) => {
+    (partsItems ?? []).forEach((p) => {
       const cat = p.category || "Uncategorized";
       const existing = catMap.get(cat);
       if (existing) {
@@ -90,11 +88,11 @@ export default function CategoryManagementPage() {
     return Array.from(catMap.entries())
       .map(([name, { count, isDefault }]) => ({ name, count, isDefault }))
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [partsData]);
+  }, [partsItems]);
 
   const renameCategoryMutation = useMutation({
     mutationFn: async ({ oldName, newName }: { oldName: string; newName: string }) => {
-      const partsToUpdate = (partsData?.items ?? []).filter(
+      const partsToUpdate = (partsItems ?? []).filter(
         (p) => (p.category || "Uncategorized") === oldName
       );
       const promises = partsToUpdate.map((p) =>
@@ -116,7 +114,7 @@ export default function CategoryManagementPage() {
 
   const deleteCategoryMutation = useMutation({
     mutationFn: async (categoryName: string) => {
-      const partsToUpdate = (partsData?.items ?? []).filter(
+      const partsToUpdate = (partsItems ?? []).filter(
         (p) => (p.category || "Uncategorized") === categoryName
       );
       const promises = partsToUpdate.map((p) =>

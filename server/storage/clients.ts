@@ -223,12 +223,19 @@ export class ClientRepository extends BaseRepository {
   ): Promise<Client[]> {
     if (clientDataArray.length === 0) return [];
 
+    // 2026-03-31: Geocode each imported location before insert.
+    // maybeGeocode skips if valid coordinates already present (and passes
+    // Canada bounds guard for Canadian addresses).
+    const geocodedArray = await Promise.all(
+      clientDataArray.map(data => maybeGeocode(data as any))
+    );
+
     // PHASE A.1: Explicit allowlist - only these fields can be set from input
     // Forbidden fields blocked: id, companyId, userId, createdAt, updatedAt, version,
     // qboCustomerId, qboParentCustomerId, qboSyncToken, qboLastSyncedAt, deletedAt
     const rows = await db
       .insert(clients)
-      .values(clientDataArray.map(data => ({
+      .values(geocodedArray.map(data => ({
         // System fields (from session/server)
         companyId,
         userId,

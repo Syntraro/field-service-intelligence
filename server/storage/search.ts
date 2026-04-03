@@ -250,6 +250,7 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
     LIMIT $5
   `;
 
+  // 2026-03-27: Include parent_company_id so search can navigate to canonical client page
   const locationQuery = `
     SELECT
       'location' as type,
@@ -265,7 +266,8 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
         WHEN cl.email ILIKE $2 THEN 'email'
         WHEN $4 AND regexp_replace(cl.phone, '\\D', '', 'g') ILIKE $3 THEN 'phone'
         ELSE 'name'
-      END as match
+      END as match,
+      cl.parent_company_id as "customerCompanyId"
     FROM client_locations cl
     WHERE cl.company_id = $1
       AND cl.deleted_at IS NULL
@@ -320,7 +322,7 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
         WHEN $4 AND regexp_replace(ct.phone, '\\D', '', 'g') ILIKE $3 THEN 'phone'
         ELSE 'name'
       END as match
-    FROM client_contacts ct
+    FROM contact_persons ct
     LEFT JOIN customer_companies cc ON ct.customer_company_id = cc.id
     WHERE ct.company_id = $1
       AND (
@@ -380,6 +382,7 @@ export async function universalSearch(options: SearchOptions): Promise<SearchRes
     title: r.title,
     subtitle: r.subtitle,
     match: r.match,
+    customerCompanyId: r.customerCompanyId,
   })));
   results.push(...supplierRes.rows.map((r: any) => ({
     type: r.type as SearchResultType,

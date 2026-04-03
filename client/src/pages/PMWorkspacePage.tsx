@@ -1,16 +1,17 @@
 /**
- * PM Workspace Page — Preventive Maintenance hub
+ * PM & Recurring Jobs Workspace Page — hub for preventive maintenance and recurring jobs
  *
  * PM Pivot Phase 1: Due queue-first model. Background generation creates
  * pending instances only — dispatchers manually generate jobs from the
  * PM Due Queue via selection + bulk generate.
  *
- * Five tabs:
- *   1. Dashboard (default) — actionable pending PM work needing job generation (formerly PM Due Queue)
+ * Six tabs:
+ *   1. Dashboard (default) — combined generation queue for PM + recurring job occurrences
  *   2. Contracts — list of active maintenance contracts
  *   3. Billing — PM billing management
- *   4. History — placeholder for generated/completed/skipped/canceled PM work
- *   5. Templates — reusable job content presets
+ *   4. Recurring Jobs — manage all recurring job templates (PM and non-PM)
+ *   5. History — placeholder for generated/completed/skipped/canceled PM work
+ *   6. Templates — reusable job content presets
  *
  * Route: /pm
  */
@@ -76,7 +77,12 @@ import {
   ArrowUpDown,
   DollarSign,
   Receipt,
+  Repeat,
 } from "lucide-react";
+// Recurring Jobs: Embed existing RecurringJobsPage as a tab in the PM & Recurring Jobs workspace
+import RecurringJobsPage from "@/pages/RecurringJobsPage";
+// Shared Quick Create Job dialog — used in recurring mode for "New Recurring Job" header action
+import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 
 // ============================================================================
 // Types
@@ -142,6 +148,8 @@ interface UpcomingQueueItem {
   templateId: string;
   templateTitle: string;
   templateIsActive: boolean;
+  /** Dashboard unification: jobType from template — "maintenance" = PM, anything else = Recurring Job */
+  templateJobType: string;
   serviceWindowDaysBefore: number;
   serviceWindowDaysAfter: number;
   windowStart: string;
@@ -490,6 +498,21 @@ function ComplianceBadge({ status }: { status: UpcomingQueueItem["complianceStat
 type PlanSortKey = "customer" | "location" | "name" | "recurrence" | "status" | "generation";
 type SortDir = "asc" | "desc";
 
+/** List stability: Sortable column header — defined at module scope to avoid remount on parent re-render */
+function PlanSortHead({ label, col, sortKey, sortDir, onSort }: {
+  label: string; col: PlanSortKey; sortKey: PlanSortKey; sortDir: SortDir;
+  onSort: (col: PlanSortKey) => void;
+}) {
+  return (
+    <TableHead className="cursor-pointer select-none" onClick={() => onSort(col)}>
+      <span className="inline-flex items-center gap-1">
+        {label}
+        <ArrowUpDown className={`h-3 w-3 ${sortKey === col ? "text-foreground" : "text-muted-foreground/40"}`} />
+      </span>
+    </TableHead>
+  );
+}
+
 function PMSetupsTab({
   templates, isLoading, isError, onToggleActive, isToggling, onDelete, isDeleting,
 }: {
@@ -546,55 +569,40 @@ function PMSetupsTab({
     return [...filtered].sort(cmp);
   }, [filtered, sortKey, sortDir]);
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-16">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        <span className="ml-2 text-muted-foreground">Loading PM contracts...</span>
-      </div>
-    );
-  }
-  if (isError) {
-    return <Card><CardContent className="flex items-center gap-2 py-8 text-destructive"><AlertCircle className="h-5 w-5" /><span>Failed to load PM contracts.</span></CardContent></Card>;
-  }
-  if (templates.length === 0) {
-    return (
-      <Card><CardContent className="flex flex-col items-center gap-4 py-16 text-center">
-        <Wrench className="h-12 w-12 text-muted-foreground/50" />
-        <div><p className="text-lg font-medium">No PM contracts yet</p><p className="text-sm text-muted-foreground">Create your first preventive maintenance contract.</p></div>
-        <Button onClick={() => setLocation("/pm/new")}><Plus className="mr-2 h-4 w-4" />New PM Contract</Button>
-      </CardContent></Card>
-    );
-  }
-
-  /** Sortable column header helper */
-  const SortHead = ({ label, col }: { label: string; col: PlanSortKey }) => (
-    <TableHead className="cursor-pointer select-none" onClick={() => toggleSort(col)}>
-      <span className="inline-flex items-center gap-1">
-        {label}
-        <ArrowUpDown className={`h-3 w-3 ${sortKey === col ? "text-foreground" : "text-muted-foreground/40"}`} />
-      </span>
-    </TableHead>
-  );
-
+  // List stability: single return path — loading/error/empty states render inside content area
   return (
     <div className="space-y-3">
-      {/* List Standardization: ListToolbar replaces manual Search/Input */}
+      {/* List Standardization: ListToolbar replaces manual Search/Input — always mounted */}
       <ListToolbar
         searchValue={search}
         onSearchChange={setSearch}
         searchPlaceholder="Search PM contracts..."
       />
 
+      {isLoading ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          <span className="ml-2 text-muted-foreground">Loading PM contracts...</span>
+        </div>
+      ) : isError ? (
+        <Card><CardContent className="flex items-center gap-2 py-8 text-destructive"><AlertCircle className="h-5 w-5" /><span>Failed to load PM contracts.</span></CardContent></Card>
+      ) : templates.length === 0 ? (
+        <Card><CardContent className="flex flex-col items-center gap-4 py-16 text-center">
+          <Wrench className="h-12 w-12 text-muted-foreground/50" />
+          <div><p className="text-lg font-medium">No PM contracts yet</p><p className="text-sm text-muted-foreground">Create your first preventive maintenance contract.</p></div>
+          <Button onClick={() => setLocation("/pm/new")}><Plus className="mr-2 h-4 w-4" />New PM Contract</Button>
+        </CardContent></Card>
+      ) : (
+      <>
       <ListSurface><div className="overflow-x-auto">
         <Table>
           <TableHeader><TableRow className="text-xs font-medium bg-[#FAFAFA] dark:bg-gray-900/50">
-            <SortHead label="Customer" col="customer" />
-            <SortHead label="Location" col="location" />
-            <SortHead label="Contract Name" col="name" />
-            <SortHead label="Recurrence" col="recurrence" />
-            <SortHead label="Status" col="status" />
-            <SortHead label="Due on" col="generation" />
+            <PlanSortHead label="Customer" col="customer" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
+            <PlanSortHead label="Location" col="location" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
+            <PlanSortHead label="Contract Name" col="name" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
+            <PlanSortHead label="Recurrence" col="recurrence" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
+            <PlanSortHead label="Status" col="status" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
+            <PlanSortHead label="Due on" col="generation" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
             <TableHead className="text-right">Actions</TableHead>
           </TableRow></TableHeader>
           <TableBody>
@@ -633,6 +641,8 @@ function PMSetupsTab({
         </Table>
       </div></ListSurface>
       <p className={listResultsClass}>Showing {sorted.length} contract{sorted.length !== 1 ? "s" : ""}.</p>
+      </>
+      )}
     </div>
   );
 }
@@ -641,7 +651,14 @@ function PMSetupsTab({
 // Phase 4B: Queue Item Row (reusable in flat + grouped views)
 // ============================================================================
 
-/** List Standardization: Simplified queue row — 4 columns: Customer, PM Contract, Window, Status */
+/** Dashboard unification: helper to classify template jobType for display */
+function getSourceTypeLabel(jobType: string): { label: string; short: string } {
+  return jobType === "maintenance"
+    ? { label: "Preventive Maintenance", short: "PM" }
+    : { label: "Recurring Job", short: "Recurring" };
+}
+
+/** List Standardization: Queue row — 5 columns: Customer, Job Type, Name, Window, Status */
 function QueueItemRow({ item, onClick, showCheckbox, isSelected, isEligible, onToggle }: {
   item: UpcomingQueueItem;
   onClick: () => void;
@@ -650,6 +667,7 @@ function QueueItemRow({ item, onClick, showCheckbox, isSelected, isEligible, onT
   isEligible?: boolean;
   onToggle?: (id: string) => void;
 }) {
+  const sourceType = getSourceTypeLabel(item.templateJobType);
   return (
     <TableRow className={tableRowClass} onClick={onClick}>
       {showCheckbox && (
@@ -668,6 +686,9 @@ function QueueItemRow({ item, onClick, showCheckbox, isSelected, isEligible, onT
           <div className={listPrimaryClass}>{item.customerName || "—"}</div>
           {item.locationName && <div className={listSecondaryClass}>{item.locationName}</div>}
         </div>
+      </TableCell>
+      <TableCell>
+        <Badge variant="outline" className="text-[10px] px-1.5 py-0 whitespace-nowrap">{sourceType.short}</Badge>
       </TableCell>
       <TableCell className={listPrimaryClass}>{item.templateTitle}</TableCell>
       <TableCell className={`${listSecondaryClass} whitespace-nowrap`}>{item.windowStart} — {item.windowEnd}</TableCell>
@@ -717,7 +738,7 @@ function GroupSection({ group, onItemClick, selectedIds, onToggle, onToggleGroup
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-semibold text-sm truncate">{group.label}</span>
-              <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{group.items.length} PM{group.items.length !== 1 ? "s" : ""}</Badge>
+              <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{group.items.length} item{group.items.length !== 1 ? "s" : ""}</Badge>
               {group.overdue > 0 && <Badge variant="outline" className="border-red-300 bg-red-50 text-red-700 text-[10px] px-1.5 py-0">{group.overdue} overdue</Badge>}
               {group.dueSoon > 0 && <Badge variant="outline" className="border-orange-300 bg-orange-50 text-orange-700 text-[10px] px-1.5 py-0">{group.dueSoon} due soon</Badge>}
             </div>
@@ -733,7 +754,7 @@ function GroupSection({ group, onItemClick, selectedIds, onToggle, onToggleGroup
           <Table>
             <TableHeader><TableRow className="text-xs font-medium bg-[#FAFAFA] dark:bg-gray-900/50">
               {showCheckboxes && <TableHead className="w-10" />}
-              <TableHead>Customer</TableHead><TableHead>PM Contract</TableHead>
+              <TableHead>Customer</TableHead><TableHead>Type</TableHead><TableHead>Name</TableHead>
               <TableHead>Window</TableHead><TableHead>Status</TableHead>
             </TableRow></TableHeader>
             <TableBody>
@@ -804,9 +825,9 @@ function GenerateConfirmModal({
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Generate {items.length} PM job{items.length !== 1 ? "s" : ""}?</DialogTitle>
+          <DialogTitle>Generate {items.length} job{items.length !== 1 ? "s" : ""}?</DialogTitle>
           <DialogDescription>
-            These preventive maintenance items will be converted into jobs and moved into the normal job workflow.
+            These items will be converted into jobs and moved into the normal job workflow.
             They will need to be scheduled on your dispatch board.
           </DialogDescription>
         </DialogHeader>
@@ -979,28 +1000,10 @@ function UpcomingTab() {
   // Whether to show checkboxes in the current view (Due Now only)
   const showCheckboxes = isDueNow;
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-16">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /><span className="ml-2 text-muted-foreground">Loading PM due queue...</span>
-      </div>
-    );
-  }
-  if (isError) {
-    return <Card><CardContent className="flex items-center gap-2 py-8 text-destructive"><AlertCircle className="h-5 w-5" /><span>Failed to load upcoming PM work.</span></CardContent></Card>;
-  }
-  if (items.length === 0) {
-    return (
-      <Card><CardContent className="flex flex-col items-center gap-4 py-16 text-center">
-        <Clock className="h-12 w-12 text-muted-foreground/50" />
-        <div><p className="text-lg font-medium">No PM work due</p><p className="text-sm text-muted-foreground max-w-md">PM contracts with upcoming due dates will appear here. Create a PM contract to get started.</p></div>
-      </CardContent></Card>
-    );
-  }
-
+  // List stability: single return path — loading/error/empty render inside content area
   return (
     <div className="space-y-4">
-      {/* Sub-view selector: Due Now / Upcoming */}
+      {/* Sub-view selector: Due Now / Upcoming — always mounted */}
       <div className="flex items-center gap-1 border rounded-lg p-0.5 bg-muted/30 w-fit">
         <button
           onClick={() => handleSubViewChange("due_now")}
@@ -1049,7 +1052,7 @@ function UpcomingTab() {
       {!isDueNow && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/30 rounded-lg px-3 py-2">
           <Clock className="h-4 w-4 shrink-0" />
-          <span>These PMs are not yet due. They will move to Due Now when their service window opens.</span>
+          <span>These items are not yet due. They will move to Due Now when their service window opens.</span>
         </div>
       )}
 
@@ -1123,8 +1126,19 @@ function UpcomingTab() {
         />
       )}
 
-      {/* Grouped view */}
-      {groupMode !== "none" ? (
+      {/* List stability: loading/error/empty states inside content area only */}
+      {isLoading ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /><span className="ml-2 text-muted-foreground">Loading due queue...</span>
+        </div>
+      ) : isError ? (
+        <Card><CardContent className="flex items-center gap-2 py-8 text-destructive"><AlertCircle className="h-5 w-5" /><span>Failed to load upcoming work.</span></CardContent></Card>
+      ) : items.length === 0 ? (
+        <Card><CardContent className="flex flex-col items-center gap-4 py-16 text-center">
+          <Clock className="h-12 w-12 text-muted-foreground/50" />
+          <div><p className="text-lg font-medium">No work due</p><p className="text-sm text-muted-foreground max-w-md">PM contracts and recurring jobs with upcoming due dates will appear here.</p></div>
+        </CardContent></Card>
+      ) : groupMode !== "none" ? (
         <div>
           {groups.length === 0 ? (
             <Card><CardContent className="py-8 text-center text-sm text-muted-foreground">
@@ -1180,7 +1194,8 @@ function UpcomingTab() {
                   </TableHead>
                 )}
                 <TableHead>Customer</TableHead>
-                <TableHead>PM Contract</TableHead>
+                <TableHead>Type</TableHead>
+                <TableHead>Name</TableHead>
                 <TableHead>Window</TableHead>
                 <TableHead>Status</TableHead>
               </TableRow></TableHeader>
@@ -1242,15 +1257,7 @@ function PMTemplatesTab() {
     onError: (err: Error) => toast({ title: "Failed to delete template", description: err.message, variant: "destructive" }),
   });
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-16">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        <span className="ml-2 text-muted-foreground">Loading templates...</span>
-      </div>
-    );
-  }
-
+  // List stability: single return path — loading state inside content area
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -1262,7 +1269,12 @@ function PMTemplatesTab() {
         </Button>
       </div>
 
-      {templates.length === 0 ? (
+      {isLoading ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          <span className="ml-2 text-muted-foreground">Loading templates...</span>
+        </div>
+      ) : templates.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center gap-4 py-16 text-center">
             <FileBox className="h-12 w-12 text-muted-foreground/50" />
@@ -1513,17 +1525,16 @@ function PMBillingTab({ contracts }: { contracts: RecurringTemplate[] }) {
 
   const isLoading = jobsLoading || eventsLoading;
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-16">
-        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-        <span className="ml-2 text-muted-foreground">Loading PM billing data...</span>
-      </div>
-    );
-  }
-
+  // List stability: single return path — loading state inside content area
   return (
     <div className="space-y-6">
+      {isLoading ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          <span className="ml-2 text-muted-foreground">Loading PM billing data...</span>
+        </div>
+      ) : (
+      <>
       {/* Contract Billing Summary + Run Billing button */}
       <Card>
         <CardContent className="pt-4">
@@ -1766,6 +1777,8 @@ function PMBillingTab({ contracts }: { contracts: RecurringTemplate[] }) {
           </CardContent>
         </Card>
       )}
+      </>
+      )}
     </div>
   );
 }
@@ -1786,14 +1799,18 @@ export default function PMWorkspacePage() {
   const [activeTab, setActiveTab] = useState(tabParam || "upcoming");
   // Dashboard urgency filter: when set, the upcoming tab filters to this tier only
   const [urgencyFilter, setUrgencyFilter] = useState<string | null>(urgencyParam);
+  // Shared QuickAddJobDialog in recurring mode — opened from header "New Recurring Job" button
+  const [showRecurringJobDialog, setShowRecurringJobDialog] = useState(false);
 
-  const { data: templates = [], isLoading, isError } = useQuery<RecurringTemplate[]>({
-    queryKey: ["/api/recurring-templates"],
+  // Server-side PM filter — no client-side filtering needed
+  const { data: pmTemplates = [], isLoading, isError } = useQuery<RecurringTemplate[]>({
+    queryKey: ["/api/recurring-templates", { type: "pm" }],
+    queryFn: async () => {
+      const res = await fetch("/api/recurring-templates?type=pm", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch PM templates");
+      return res.json();
+    },
   });
-
-  const pmTemplates = templates.filter(
-    (t) => t.jobType === "maintenance" || (t.monthsOfYear && t.monthsOfYear.length > 0)
-  );
 
   const toggleActiveMutation = useMutation({
     mutationFn: async ({ id, isActive }: { id: string; isActive: boolean }) => {
@@ -1844,21 +1861,25 @@ export default function PMWorkspacePage() {
     <div className="flex flex-col gap-6 p-4 md:p-6 lg:p-8 max-w-7xl mx-auto">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Preventive Maintenance</h1>
-          <p className="text-sm text-muted-foreground">Manage PM contracts and generate jobs from due work</p>
+          <h1 className="text-2xl font-semibold tracking-tight">PM & Recurring Jobs</h1>
+          <p className="text-sm text-muted-foreground">Manage PM contracts, recurring jobs, and generate work from due schedules</p>
         </div>
         <div className="flex items-center gap-2">
-          {/* PM Pivot Phase 1: Primary action creates a new PM contract */}
+          {/* Both header actions visible on all tabs — single canonical entry points */}
+          <Button variant="outline" onClick={() => setShowRecurringJobDialog(true)}>
+            <Repeat className="mr-2 h-4 w-4" />New Recurring Job
+          </Button>
           <Button onClick={() => setLocation("/pm/new")}><Plus className="mr-2 h-4 w-4" />New PM Contract</Button>
         </div>
       </div>
 
-      {/* Tab labels: Dashboard (due queue), Contracts, Billing, History (placeholder), Templates */}
+      {/* Tab labels: Dashboard, Maintenance, Billing, Recurring Job, History, Templates */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="upcoming">Dashboard</TabsTrigger>
-          <TabsTrigger value="plans">Contracts</TabsTrigger>
+          <TabsTrigger value="plans">Maintenance</TabsTrigger>
           <TabsTrigger value="billing">Billing</TabsTrigger>
+          <TabsTrigger value="recurring">Recurring Job</TabsTrigger>
           <TabsTrigger value="history">History</TabsTrigger>
           <TabsTrigger value="templates">Templates</TabsTrigger>
         </TabsList>
@@ -1870,6 +1891,10 @@ export default function PMWorkspacePage() {
         </TabsContent>
         <TabsContent value="billing" className="mt-4">
           <PMBillingTab contracts={pmTemplates} />
+        </TabsContent>
+        {/* Recurring Job tab — embeds RecurringJobsPage; server-side ?type=recurring_job filter applied internally */}
+        <TabsContent value="recurring" className="mt-4">
+          <RecurringJobsPage embedded />
         </TabsContent>
         <TabsContent value="history" className="mt-4">
           {/* History placeholder — will show generated/completed/skipped/canceled PM work */}
@@ -1887,6 +1912,13 @@ export default function PMWorkspacePage() {
           <PMTemplatesTab />
         </TabsContent>
       </Tabs>
+
+      {/* Shared QuickAddJobDialog in recurring mode — canonical entry point for New Recurring Job */}
+      <QuickAddJobDialog
+        open={showRecurringJobDialog}
+        onOpenChange={setShowRecurringJobDialog}
+        mode="recurring"
+      />
     </div>
   );
 }

@@ -10,7 +10,7 @@
 
 import { db } from "../db";
 import { eq, and, sql, desc, isNull, isNotNull, lt, gte, or, asc, lte } from "drizzle-orm";
-import { activeJobFilter } from "./jobFilters";
+import { activeWorkJobFilter } from "./jobFilters";
 import {
   workSessions,
   timeEntries,
@@ -20,6 +20,8 @@ import {
   users,
   technicianProfiles,
   jobs,
+  clientLocations,
+  jobVisits,
   type WorkSession,
   type TimeEntry,
   type TechnicianJobStatusEvent,
@@ -325,7 +327,6 @@ export class TimeTrackingRepository extends BaseRepository {
     options: {
       type: TimeEntryType;
       jobId?: string | null;
-      visitId?: string | null; // Labor unification: optional visit attribution
       notes?: string | null;
       billable?: boolean;
       at?: Date;
@@ -336,51 +337,59 @@ export class TimeTrackingRepository extends BaseRepository {
   ): Promise<TimeEntry> {
     this.assertCompanyId(companyId);
     this.validateUUID(technicianId, "technicianId");
+
+    // If jobId provided, validate it references an active open job
     if (options.jobId) {
       this.validateUUID(options.jobId, "jobId");
+      const [targetJob] = await db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(and(eq(jobs.id, options.jobId), eq(jobs.companyId, companyId), activeWorkJobFilter()))
+        .limit(1);
+      if (!targetJob) {
+        throw this.notFoundError("Job not found or is closed/inactive");
+      }
     }
 
     const now = options.at ?? new Date();
 
-    // Check approval lock
+    // Check approval lock (read-only, safe outside tx)
     await this.enforceApprovalLock(companyId, technicianId, now, {
       overrideApprovalLock: options?.overrideApprovalLock,
       overrideReason: options?.overrideReason,
       actingUserId: options?.actingUserId,
     });
 
-    // Auto-stop any running entry
-    await this.stopRunningTimeEntry(companyId, technicianId, { at: now });
-
-    // Get billable rate snapshot from technician profile
+    // Get billable rate snapshot from technician profile (read-only, safe outside tx)
     const billableRateSnapshot = await this.getTechnicianBillableRate(companyId, technicianId);
     const costRateSnapshot = await this.getTechnicianCostRate(companyId, technicianId);
-
-    // Determine billable default based on type
     const billable = options.billable ?? BILLABLE_DEFAULTS[options.type];
-
-    // Get current open work session (optional link)
     const today = now.toISOString().split("T")[0];
     const openSession = await this.getOpenWorkSession(companyId, technicianId, today);
 
-    const [entry] = await db
-      .insert(timeEntries)
-      .values({
-        companyId,
-        technicianId,
-        workSessionId: openSession?.id ?? null,
-        jobId: options.jobId ?? null,
-        visitId: options.visitId ?? null,
-        type: options.type,
-        startAt: now,
-        billable,
-        billableRateSnapshot,
-        costRateSnapshot,
-        notes: options.notes,
-      })
-      .returning();
+    // Transaction: auto-stop running entry + insert new entry atomically
+    return this.tx(async (txDb) => {
+      // Auto-stop any running entry within the same transaction
+      await this.stopRunningTimeEntry(companyId, technicianId, { at: now, txDb });
 
-    return entry;
+      const [entry] = await txDb
+        .insert(timeEntries)
+        .values({
+          companyId,
+          technicianId,
+          workSessionId: openSession?.id ?? null,
+          jobId: options.jobId ?? null,
+          type: options.type,
+          startAt: now,
+          billable,
+          billableRateSnapshot,
+          costRateSnapshot,
+          notes: options.notes,
+        })
+        .returning();
+
+      return entry;
+    });
   }
 
   /**
@@ -434,37 +443,44 @@ export class TimeTrackingRepository extends BaseRepository {
 
     const endAt = options?.at ?? new Date();
 
-    // Validate end time is after start time
     if (endAt < entry.startAt) {
       throw this.validationError("End time cannot be before start time");
     }
 
-    // Calculate duration in minutes
     const durationMinutes = Math.round(
       (endAt.getTime() - entry.startAt.getTime()) / 60000
     );
 
-    const [updated] = await db
-      .update(timeEntries)
-      .set({
-        endAt,
-        durationMinutes,
-        notes: options?.notes ?? entry.notes,
-        updatedAt: new Date(),
-      })
-      .where(eq(timeEntries.id, entry.id))
-      .returning();
+    // Transaction: lock overlapping rows → assert no overlap → update
+    return this.tx(async (txDb) => {
+      await this._assertNoOverlapTx(txDb, companyId, technicianId, entry.startAt, endAt, entry.id);
 
-    return updated;
+      const [updated] = await txDb
+        .update(timeEntries)
+        .set({
+          endAt,
+          durationMinutes,
+          notes: options?.notes ?? entry.notes,
+          updatedAt: new Date(),
+        })
+        .where(eq(timeEntries.id, entry.id))
+        .returning();
+
+      return updated;
+    });
   }
 
   /**
    * Internal helper to stop running entry without validation
    */
+  /**
+   * Internal: stop running entry with transactional overlap protection.
+   * Accepts optional txDb to participate in an outer transaction.
+   */
   private async stopRunningTimeEntry(
     companyId: string,
     technicianId: string,
-    options?: { at?: Date }
+    options?: { at?: Date; txDb?: typeof db }
   ): Promise<void> {
     const runningEntry = await this.getRunningTimeEntry(companyId, technicianId);
     if (!runningEntry) return;
@@ -474,19 +490,25 @@ export class TimeTrackingRepository extends BaseRepository {
       (endAt.getTime() - runningEntry.startAt.getTime()) / 60000
     );
 
-    await db
-      .update(timeEntries)
-      .set({
-        endAt,
-        durationMinutes,
-        updatedAt: new Date(),
-      })
-      .where(eq(timeEntries.id, runningEntry.id));
+    const doStop = async (txDb: typeof db) => {
+      await this._assertNoOverlapTx(txDb, companyId, technicianId, runningEntry.startAt, endAt, runningEntry.id);
+
+      await txDb
+        .update(timeEntries)
+        .set({ endAt, durationMinutes, updatedAt: new Date() })
+        .where(eq(timeEntries.id, runningEntry.id));
+    };
+
+    if (options?.txDb) {
+      await doStop(options.txDb);
+    } else {
+      await this.tx(doStop);
+    }
   }
 
   /**
-   * Check if a time range overlaps with existing entries for a technician
-   * Returns the overlapping entries if any exist
+   * Check if a time range overlaps with existing entries for a technician.
+   * Non-transactional variant — used for pre-flight checks outside transactions.
    */
   async checkTimeEntryOverlap(
     companyId: string,
@@ -495,31 +517,94 @@ export class TimeTrackingRepository extends BaseRepository {
     endAt: Date,
     excludeEntryId?: string
   ): Promise<TimeEntry[]> {
-    this.assertCompanyId(companyId);
-    this.validateUUID(technicianId, "technicianId");
+    return this._overlapQuery(db, companyId, technicianId, startAt, endAt, excludeEntryId);
+  }
 
-    // Overlap condition: existing.startAt < newEnd AND existing.endAt > newStart
-    // For running entries (endAt is null), they overlap if existing.startAt < newEnd
+  /**
+   * Transactional overlap assertion — locks conflicting rows with FOR UPDATE,
+   * then throws 409 if any overlap exists. This is the canonical concurrency-safe
+   * enforcement point. All mutation paths must call this inside a transaction.
+   */
+  private async _assertNoOverlapTx(
+    txDb: typeof db,
+    companyId: string,
+    technicianId: string,
+    startAt: Date,
+    endAt: Date,
+    excludeEntryId?: string
+  ): Promise<void> {
+    const overlaps = await this._overlapQueryForUpdate(
+      txDb, companyId, technicianId, startAt, endAt, excludeEntryId
+    );
+    if (overlaps.length > 0) {
+      const overlapInfo = overlaps.map(e =>
+        `${e.type} (${e.startAt.toISOString()} - ${e.endAt?.toISOString() ?? 'running'})`
+      ).join(", ");
+      throw this.conflictError(
+        `Time entry overlaps with existing entries: ${overlapInfo}`
+      );
+    }
+  }
+
+  /**
+   * Core overlap query — reusable by both transactional and non-transactional callers.
+   */
+  private async _overlapQuery(
+    queryDb: typeof db,
+    companyId: string,
+    technicianId: string,
+    startAt: Date,
+    endAt: Date,
+    excludeEntryId?: string
+  ): Promise<TimeEntry[]> {
     const conditions = [
       eq(timeEntries.companyId, companyId),
       eq(timeEntries.technicianId, technicianId),
       lt(timeEntries.startAt, endAt),
       or(
-        isNull(timeEntries.endAt), // Running entries overlap with any future time
+        isNull(timeEntries.endAt),
         sql`${timeEntries.endAt} > ${startAt}`
       ),
     ];
-
-    // Exclude a specific entry (useful for updates)
     if (excludeEntryId) {
-      this.validateUUID(excludeEntryId, "excludeEntryId");
       conditions.push(sql`${timeEntries.id} != ${excludeEntryId}`);
     }
-
-    return db
+    return queryDb
       .select()
       .from(timeEntries)
       .where(and(...conditions))
+      .orderBy(asc(timeEntries.startAt));
+  }
+
+  /**
+   * Overlap query with FOR UPDATE row locking — serializes concurrent writes
+   * for the same technician's time range.
+   */
+  private async _overlapQueryForUpdate(
+    txDb: typeof db,
+    companyId: string,
+    technicianId: string,
+    startAt: Date,
+    endAt: Date,
+    excludeEntryId?: string
+  ): Promise<TimeEntry[]> {
+    const conditions = [
+      eq(timeEntries.companyId, companyId),
+      eq(timeEntries.technicianId, technicianId),
+      lt(timeEntries.startAt, endAt),
+      or(
+        isNull(timeEntries.endAt),
+        sql`${timeEntries.endAt} > ${startAt}`
+      ),
+    ];
+    if (excludeEntryId) {
+      conditions.push(sql`${timeEntries.id} != ${excludeEntryId}`);
+    }
+    return (txDb as any)
+      .select()
+      .from(timeEntries)
+      .where(and(...conditions))
+      .for("update")
       .orderBy(asc(timeEntries.startAt));
   }
 
@@ -537,65 +622,63 @@ export class TimeTrackingRepository extends BaseRepository {
       endAt: Date;
       notes?: string | null;
       billable?: boolean;
-      skipOverlapCheck?: boolean;
       overrideApprovalLock?: boolean;
       overrideReason?: string;
       actingUserId?: string;
+      costRateOverride?: string | null;
     }
   ): Promise<TimeEntry> {
     this.assertCompanyId(companyId);
     this.validateUUID(technicianId, "technicianId");
+
+    // If jobId provided, validate it references an active open job
     if (options.jobId) {
       this.validateUUID(options.jobId, "jobId");
+      const [targetJob] = await db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(and(eq(jobs.id, options.jobId), eq(jobs.companyId, companyId), activeWorkJobFilter()))
+        .limit(1);
+      if (!targetJob) {
+        throw this.notFoundError("Job not found or is closed/inactive");
+      }
     }
 
     if (options.endAt < options.startAt) {
       throw this.validationError("End time cannot be before start time");
     }
 
-    // Check approval lock
+    // Check approval lock (read-only, safe outside tx)
     await this.enforceApprovalLock(companyId, technicianId, options.startAt, {
       overrideApprovalLock: options?.overrideApprovalLock,
       overrideReason: options?.overrideReason,
       actingUserId: options?.actingUserId,
     });
 
-    // Validate no overlaps (unless explicitly skipped for system-generated entries)
-    if (!options.skipOverlapCheck) {
-      const overlaps = await this.checkTimeEntryOverlap(
-        companyId,
-        technicianId,
-        options.startAt,
-        options.endAt
-      );
-      if (overlaps.length > 0) {
-        const overlapInfo = overlaps.map(e =>
-          `${e.type} (${e.startAt.toISOString()} - ${e.endAt?.toISOString() ?? 'running'})`
-        ).join(", ");
-        throw this.conflictError(
-          `Time entry overlaps with existing entries: ${overlapInfo}`
-        );
-      }
-    }
-
     const durationMinutes = Math.round(
       (options.endAt.getTime() - options.startAt.getTime()) / 60000
     );
 
-    // Get billable rate snapshot
+    // Get billable rate snapshot; use per-entry cost override if provided
     const billableRateSnapshot = await this.getTechnicianBillableRate(companyId, technicianId);
-    const costRateSnapshot = await this.getTechnicianCostRate(companyId, technicianId);
+    const costRateSnapshot = options.costRateOverride != null
+      ? options.costRateOverride
+      : await this.getTechnicianCostRate(companyId, technicianId);
 
     const billable = options.billable ?? BILLABLE_DEFAULTS[options.type];
 
-    const [entry] = await db
-      .insert(timeEntries)
-      .values({
-        companyId,
-        technicianId,
-        jobId: options.jobId ?? null,
-        type: options.type,
-        startAt: options.startAt,
+    // Transaction: lock overlapping rows → assert no overlap → insert
+    return this.tx(async (txDb) => {
+      await this._assertNoOverlapTx(txDb, companyId, technicianId, options.startAt, options.endAt);
+
+      const [entry] = await txDb
+        .insert(timeEntries)
+        .values({
+          companyId,
+          technicianId,
+          jobId: options.jobId ?? null,
+          type: options.type,
+          startAt: options.startAt,
         endAt: options.endAt,
         durationMinutes,
         billable,
@@ -605,7 +688,8 @@ export class TimeTrackingRepository extends BaseRepository {
       })
       .returning();
 
-    return entry;
+      return entry;
+    });
   }
 
   /**
@@ -644,39 +728,66 @@ export class TimeTrackingRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(timeEntryId, "timeEntryId");
 
-    const entry = await this.getTimeEntry(companyId, timeEntryId);
-    if (!entry) {
-      throw this.notFoundError("Time entry");
-    }
-
-    // Phase 9: Check lock status using centralized helper
-    checkEntryLock(entry, options);
-
-    // Recalculate duration if times changed
-    let durationMinutes = entry.durationMinutes;
-    const startAt = patch.startAt ?? entry.startAt;
-    const endAt = patch.endAt !== undefined ? patch.endAt : entry.endAt;
-
-    if (endAt && startAt) {
-      if (endAt < startAt) {
-        throw this.validationError("End time cannot be before start time");
+    // If jobId is being changed to a new job, validate it (read-only, safe outside tx)
+    if (patch.jobId !== undefined && patch.jobId !== null) {
+      this.validateUUID(patch.jobId, "jobId");
+      const [targetJob] = await db
+        .select({ id: jobs.id })
+        .from(jobs)
+        .where(and(eq(jobs.id, patch.jobId), eq(jobs.companyId, companyId), activeWorkJobFilter()))
+        .limit(1);
+      if (!targetJob) {
+        throw this.notFoundError("Job not found or is closed/inactive");
       }
-      durationMinutes = Math.round((endAt.getTime() - startAt.getTime()) / 60000);
-    } else if (endAt === null) {
-      durationMinutes = null;
     }
 
-    const [updated] = await db
-      .update(timeEntries)
-      .set({
-        ...patch,
-        durationMinutes,
-        updatedAt: new Date(),
-      })
-      .where(eq(timeEntries.id, timeEntryId))
-      .returning();
+    // Transaction: lock entry → validate → check overlap → update
+    return this.tx(async (txDb) => {
+      // Lock the entry row to prevent concurrent modification
+      const [entry] = await (txDb as any)
+        .select()
+        .from(timeEntries)
+        .where(and(eq(timeEntries.id, timeEntryId), eq(timeEntries.companyId, companyId)))
+        .for("update")
+        .limit(1);
 
-    return updated;
+      if (!entry) {
+        throw this.notFoundError("Time entry");
+      }
+
+      checkEntryLock(entry, options);
+
+      const newStartAt = patch.startAt ?? entry.startAt;
+      const newEndAt = patch.endAt !== undefined ? patch.endAt : entry.endAt;
+      const timesChanged =
+        (patch.startAt && patch.startAt.getTime() !== entry.startAt.getTime()) ||
+        (patch.endAt !== undefined &&
+          (patch.endAt === null
+            ? entry.endAt !== null
+            : entry.endAt === null || patch.endAt.getTime() !== entry.endAt.getTime()));
+
+      if (timesChanged && newEndAt) {
+        await this._assertNoOverlapTx(txDb, companyId, entry.technicianId, newStartAt, newEndAt, timeEntryId);
+      }
+
+      let durationMinutes = entry.durationMinutes;
+      if (newEndAt && newStartAt) {
+        if (newEndAt < newStartAt) {
+          throw this.validationError("End time cannot be before start time");
+        }
+        durationMinutes = Math.round((newEndAt.getTime() - newStartAt.getTime()) / 60000);
+      } else if (newEndAt === null) {
+        durationMinutes = null;
+      }
+
+      const [updated] = await txDb
+        .update(timeEntries)
+        .set({ ...patch, durationMinutes, updatedAt: new Date() })
+        .where(eq(timeEntries.id, timeEntryId))
+        .returning();
+
+      return updated;
+    });
   }
 
   /**
@@ -710,15 +821,15 @@ export class TimeTrackingRepository extends BaseRepository {
       actingUserId: options?.actingUserId,
     });
 
-    // Verify job exists and belongs to company
+    // Verify job exists, belongs to company, and is active (2026-04-03)
     const [job] = await db
       .select({ id: jobs.id })
       .from(jobs)
-      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)))
+      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), activeWorkJobFilter()))
       .limit(1);
 
     if (!job) {
-      throw this.notFoundError("Job");
+      throw this.notFoundError("Job not found or is closed/inactive");
     }
 
     return this.updateTimeEntry(companyId, timeEntryId, { jobId }, {
@@ -738,7 +849,7 @@ export class TimeTrackingRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
-    // Get all time entries for the job with technician info
+    // Get all time entries for the job with technician info + cost rate
     const entries = await db
       .select({
         id: timeEntries.id,
@@ -749,6 +860,7 @@ export class TimeTrackingRepository extends BaseRepository {
         endAt: timeEntries.endAt,
         durationMinutes: timeEntries.durationMinutes,
         billable: timeEntries.billable,
+        costRateSnapshot: timeEntries.costRateSnapshot,
         invoiceId: timeEntries.invoiceId,
         invoicedAt: timeEntries.invoicedAt,
       })
@@ -762,6 +874,7 @@ export class TimeTrackingRepository extends BaseRepository {
     let onSiteMinutes = 0;
     let otherMinutes = 0;
     let billableMinutes = 0;
+    let totalCostAmount = 0;
     let isRunning = false;
     let runningType: TimeEntryType | null = null;
 
@@ -821,6 +934,11 @@ export class TimeTrackingRepository extends BaseRepository {
         billableMinutes += minutes;
         tech.billableMinutes += minutes;
       }
+
+      // Accumulate labour cost from costRateSnapshot
+      if (minutes > 0 && entry.costRateSnapshot) {
+        totalCostAmount += (minutes / 60) * parseFloat(entry.costRateSnapshot);
+      }
     }
 
     const totalMinutes = travelMinutes + onSiteMinutes + otherMinutes;
@@ -832,6 +950,7 @@ export class TimeTrackingRepository extends BaseRepository {
       otherMinutes,
       billableMinutes,
       totalMinutes,
+      totalCostAmount: Math.round(totalCostAmount * 100) / 100,
       isRunning,
       runningType,
       technicianBreakdown: Array.from(techMap.values()),
@@ -880,7 +999,7 @@ export class TimeTrackingRepository extends BaseRepository {
     const [job] = await db
       .select({ id: jobs.id, status: jobs.status })
       .from(jobs)
-      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), activeJobFilter()))
+      .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), activeWorkJobFilter()))
       .limit(1);
 
     if (!job) {
@@ -1062,6 +1181,7 @@ export class TimeTrackingRepository extends BaseRepository {
         durationMinutes: timeEntries.durationMinutes,
         billable: timeEntries.billable,
         billableRateSnapshot: timeEntries.billableRateSnapshot,
+        costRateSnapshot: timeEntries.costRateSnapshot,
         notes: timeEntries.notes,
         invoiceId: timeEntries.invoiceId,
         invoicedAt: timeEntries.invoicedAt,
@@ -1267,15 +1387,15 @@ export class TimeTrackingRepository extends BaseRepository {
       // Require reason if overriding lock
       requireOverrideReason(entry, options.overrideInvoiceLock, options.overrideReason);
 
-      // Validate jobId reassignment: new job must belong to same tenant
+      // Validate jobId reassignment: job must belong to tenant AND be active (2026-04-03)
       if (patch.jobId !== undefined && patch.jobId !== null) {
         const [targetJob] = await tx
           .select({ id: jobs.id })
           .from(jobs)
-          .where(and(eq(jobs.id, patch.jobId), eq(jobs.companyId, companyId)))
+          .where(and(eq(jobs.id, patch.jobId), eq(jobs.companyId, companyId), activeWorkJobFilter()))
           .limit(1);
         if (!targetJob) {
-          throw this.notFoundError("Target job for reassignment");
+          throw this.notFoundError("Target job not found or is closed/inactive");
         }
       }
 
@@ -1297,34 +1417,8 @@ export class TimeTrackingRepository extends BaseRepository {
             : entry.endAt === null || patch.endAt.getTime() !== entry.endAt.getTime()));
 
       if (timesChanged && newEndAt) {
-        // Check overlaps within transaction (uses same connection)
-        const overlaps = await tx
-          .select()
-          .from(timeEntries)
-          .where(
-            and(
-              eq(timeEntries.companyId, companyId),
-              eq(timeEntries.technicianId, entry.technicianId),
-              lt(timeEntries.startAt, newEndAt),
-              or(
-                isNull(timeEntries.endAt),
-                sql`${timeEntries.endAt} > ${newStartAt}`
-              ),
-              sql`${timeEntries.id} != ${timeEntryId}` // Exclude current entry
-            )
-          );
-
-        if (overlaps.length > 0) {
-          const overlapInfo = overlaps
-            .map(
-              (e) =>
-                `${e.type} (${e.startAt.toISOString()} - ${e.endAt?.toISOString() ?? "running"})`
-            )
-            .join(", ");
-          throw this.conflictError(
-            `Time entry would overlap with existing entries: ${overlapInfo}`
-          );
-        }
+        // Transactional overlap check with FOR UPDATE locking
+        await this._assertNoOverlapTx(tx as any, companyId, entry.technicianId, newStartAt, newEndAt, timeEntryId);
       }
 
       // Recalculate duration if times changed
@@ -1864,6 +1958,211 @@ export class TimeTrackingRepository extends BaseRepository {
     }
   }
 
+  // ============================================================================
+  // ADMIN TIMESHEET QUERIES (consolidated from route-level inline queries, 2026-04-03)
+  // ============================================================================
+
+  /**
+   * List active staff for admin timesheet user switcher
+   */
+  async getTimesheetUsers(companyId: string) {
+    this.assertCompanyId(companyId);
+    return db
+      .select({
+        id: users.id,
+        email: users.email,
+        fullName: users.fullName,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        role: users.role,
+        status: users.status,
+      })
+      .from(users)
+      .where(
+        and(
+          eq(users.companyId, companyId),
+          isNull(users.deletedAt),
+          eq(users.disabled, false)
+        )
+      )
+      .orderBy(asc(users.firstName), asc(users.lastName));
+  }
+
+  /**
+   * Get chronological time entries for a user on a specific date.
+   * Returns flat list ordered by startAt — the canonical shape for the daily admin timesheet.
+   */
+  async getTimesheetDay(
+    companyId: string,
+    userId: string,
+    date: string
+  ): Promise<{
+    date: string;
+    userId: string;
+    entries: Array<{
+      id: string;
+      technicianId: string;
+      jobId: string | null;
+      jobNumber: number | null;
+      jobSummary: string | null;
+      jobType: string | null;
+      locationName: string | null;
+      locationAddress: string | null;
+      locationCity: string | null;
+      type: string;
+      startAt: Date;
+      endAt: Date | null;
+      durationMinutes: number | null;
+      billable: boolean;
+      notes: string | null;
+      lockedAt: Date | null;
+      lockedByInvoiceId: string | null;
+      lockReason: string | null;
+      invoiceId: string | null;
+    }>;
+    totalMinutes: number;
+  }> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(userId, "userId");
+
+    const dayStart = new Date(`${date}T00:00:00.000Z`);
+    const nextDay = new Date(dayStart.getTime() + 86400000);
+
+    const rows = await db
+      .select({
+        id: timeEntries.id,
+        technicianId: timeEntries.technicianId,
+        jobId: timeEntries.jobId,
+        type: timeEntries.type,
+        startAt: timeEntries.startAt,
+        endAt: timeEntries.endAt,
+        durationMinutes: timeEntries.durationMinutes,
+        billable: timeEntries.billable,
+        notes: timeEntries.notes,
+        lockedAt: timeEntries.lockedAt,
+        lockedByInvoiceId: timeEntries.lockedByInvoiceId,
+        lockReason: timeEntries.lockReason,
+        invoiceId: timeEntries.invoiceId,
+        jobNumber: jobs.jobNumber,
+        jobSummary: jobs.summary,
+        jobType: jobs.jobType,
+        locationName: clientLocations.companyName,
+        locationAddress: clientLocations.address,
+        locationCity: clientLocations.city,
+      })
+      .from(timeEntries)
+      .leftJoin(jobs, eq(timeEntries.jobId, jobs.id))
+      .leftJoin(clientLocations, eq(jobs.locationId, clientLocations.id))
+      .where(
+        and(
+          eq(timeEntries.companyId, companyId),
+          eq(timeEntries.technicianId, userId),
+          gte(timeEntries.startAt, dayStart),
+          lt(timeEntries.startAt, nextDay)
+        )
+      )
+      .orderBy(asc(timeEntries.startAt));
+
+    let totalMinutes = 0;
+    const entries = rows.map((r) => {
+      totalMinutes += r.durationMinutes ?? 0;
+      return {
+        id: r.id,
+        technicianId: r.technicianId,
+        jobId: r.jobId,
+        jobNumber: r.jobNumber,
+        jobSummary: r.jobSummary,
+        jobType: r.jobType,
+        locationName: r.locationName,
+        locationAddress: r.locationAddress,
+        locationCity: r.locationCity,
+        type: r.type,
+        startAt: r.startAt,
+        endAt: r.endAt,
+        durationMinutes: r.durationMinutes,
+        billable: r.billable,
+        notes: r.notes,
+        lockedAt: r.lockedAt,
+        lockedByInvoiceId: r.lockedByInvoiceId,
+        lockReason: r.lockReason,
+        invoiceId: r.invoiceId,
+      };
+    });
+
+    return { date, userId, entries, totalMinutes };
+  }
+
+  /**
+   * Get visits available for time-entry reassignment (active jobs only).
+   */
+  async getVisitsForReassign(
+    companyId: string,
+    options: { userId: string; date?: string; search?: string }
+  ) {
+    this.assertCompanyId(companyId);
+
+    const centerDate = options.date
+      ? new Date(`${options.date}T12:00:00.000Z`)
+      : new Date();
+    const windowStart = new Date(centerDate.getTime() - 7 * 86400000);
+    const windowEnd = new Date(centerDate.getTime() + 8 * 86400000);
+
+    const conditions = [
+      eq(jobVisits.companyId, companyId),
+      eq(jobVisits.isActive, true),
+      isNull(jobVisits.archivedAt),
+      gte(jobVisits.scheduledStart, windowStart),
+      lt(jobVisits.scheduledStart, windowEnd),
+      // Active jobs only (2026-04-03)
+      activeWorkJobFilter(),
+    ];
+
+    if (options.search?.trim()) {
+      const term = `%${options.search.trim()}%`;
+      conditions.push(
+        sql`(${jobs.summary} ILIKE ${term} OR CAST(${jobs.jobNumber} AS TEXT) LIKE ${term} OR ${clientLocations.companyName} ILIKE ${term})`
+      );
+    }
+
+    const rows = await db
+      .select({
+        visitId: jobVisits.id,
+        visitNumber: jobVisits.visitNumber,
+        scheduledStart: jobVisits.scheduledStart,
+        status: jobVisits.status,
+        jobId: jobVisits.jobId,
+        jobNumber: jobs.jobNumber,
+        jobSummary: jobs.summary,
+        locationName: clientLocations.companyName,
+      })
+      .from(jobVisits)
+      .innerJoin(jobs, eq(jobVisits.jobId, jobs.id))
+      .leftJoin(clientLocations, eq(jobs.locationId, clientLocations.id))
+      .where(and(...conditions))
+      .orderBy(asc(jobVisits.scheduledStart))
+      .limit(50);
+
+    const dayStr = options.date ?? centerDate.toISOString().split("T")[0];
+    const dayStartMs = new Date(`${dayStr}T00:00:00.000Z`).getTime();
+    const dayEndMs = dayStartMs + 86400000;
+
+    return rows.map((r) => {
+      const schedMs = r.scheduledStart ? new Date(r.scheduledStart).getTime() : 0;
+      return {
+        visitId: r.visitId,
+        visitNumber: r.visitNumber,
+        scheduledStart: r.scheduledStart,
+        status: r.status,
+        jobId: r.jobId,
+        jobNumber: r.jobNumber,
+        jobSummary: r.jobSummary,
+        locationName: r.locationName,
+        label: `#${r.jobNumber} ${r.jobSummary}${r.locationName ? ` (${r.locationName})` : ""}`,
+        sameDay: schedMs >= dayStartMs && schedMs < dayEndMs,
+      };
+    });
+  }
+
   /**
    * Get weekly payroll summary for all technicians (or one technician)
    */
@@ -1877,46 +2176,17 @@ export class TimeTrackingRepository extends BaseRepository {
     const normalizedWeekStart = this.normalizeToMonday(weekStart);
     const { weekEnd, days } = this.getWeekRange(normalizedWeekStart);
 
-    // Build technician filter
-    const techFilter = options?.technicianId
-      ? eq(workSessions.technicianId, options.technicianId)
-      : sql`1=1`;
-
     const techFilterEntries = options?.technicianId
       ? eq(timeEntries.technicianId, options.technicianId)
       : sql`1=1`;
 
-    // Query 1: Work sessions grouped by technician + date
-    const sessionsData = await db
-      .select({
-        technicianId: workSessions.technicianId,
-        technicianName: users.fullName,
-        workDate: workSessions.workDate,
-        clockInAt: workSessions.clockInAt,
-        clockOutAt: workSessions.clockOutAt,
-        breakMinutes: workSessions.breakMinutes,
-      })
-      .from(workSessions)
-      .leftJoin(users, eq(workSessions.technicianId, users.id))
-      .where(
-        and(
-          eq(workSessions.companyId, companyId),
-          gte(workSessions.workDate, normalizedWeekStart),
-          lte(workSessions.workDate, weekEnd),
-          isNotNull(workSessions.clockOutAt),
-          techFilter
-        )
-      );
-
-    // Query 2: Time entries grouped by technician + date
-    // We need to extract date from startAt
+    // Single query: time entries grouped by technician + date (sole payroll source, 2026-04-03)
     const entriesData = await db
       .select({
         technicianId: timeEntries.technicianId,
         technicianName: users.fullName,
         startAt: timeEntries.startAt,
         durationMinutes: timeEntries.durationMinutes,
-        billable: timeEntries.billable,
       })
       .from(timeEntries)
       .leftJoin(users, eq(timeEntries.technicianId, users.id))
@@ -1958,93 +2228,38 @@ export class TimeTrackingRepository extends BaseRepository {
       });
     }
 
-    // Aggregate sessions by tech + date
-    const techDailyWorked = new Map<string, Map<string, number>>();
+    // Aggregate time entries by tech + date (single source of truth, 2026-04-03)
+    const techDailyMinutes = new Map<string, Map<string, number>>();
     const techNames = new Map<string, string | null>();
-
-    for (const s of sessionsData) {
-      techNames.set(s.technicianId, s.technicianName);
-
-      if (!techDailyWorked.has(s.technicianId)) {
-        techDailyWorked.set(s.technicianId, new Map());
-      }
-      const dailyMap = techDailyWorked.get(s.technicianId)!;
-
-      // Calculate worked minutes for this session
-      const clockIn = new Date(s.clockInAt).getTime();
-      const clockOut = new Date(s.clockOutAt!).getTime();
-      const workedMs = clockOut - clockIn;
-      const workedMinutes = Math.round(workedMs / 60000) - (s.breakMinutes ?? 0);
-
-      const current = dailyMap.get(s.workDate) ?? 0;
-      dailyMap.set(s.workDate, current + Math.max(0, workedMinutes));
-    }
-
-    // Aggregate entries by tech + date
-    const techDailyTracked = new Map<string, Map<string, number>>();
-    const techDailyBillable = new Map<string, Map<string, number>>();
 
     for (const e of entriesData) {
       techNames.set(e.technicianId, e.technicianName);
 
-      if (!techDailyTracked.has(e.technicianId)) {
-        techDailyTracked.set(e.technicianId, new Map());
-      }
-      if (!techDailyBillable.has(e.technicianId)) {
-        techDailyBillable.set(e.technicianId, new Map());
+      if (!techDailyMinutes.has(e.technicianId)) {
+        techDailyMinutes.set(e.technicianId, new Map());
       }
 
       const dateStr = e.startAt.toISOString().split("T")[0];
-      const trackedMap = techDailyTracked.get(e.technicianId)!;
-      const billableMap = techDailyBillable.get(e.technicianId)!;
-
+      const dailyMap = techDailyMinutes.get(e.technicianId)!;
       const mins = e.durationMinutes ?? 0;
-      const currentTracked = trackedMap.get(dateStr) ?? 0;
-      trackedMap.set(dateStr, currentTracked + mins);
-
-      if (e.billable) {
-        const currentBillable = billableMap.get(dateStr) ?? 0;
-        billableMap.set(dateStr, currentBillable + mins);
-      }
+      dailyMap.set(dateStr, (dailyMap.get(dateStr) ?? 0) + mins);
     }
 
     // Build result for each technician
-    const allTechIds = new Set([
-      ...Array.from(techDailyWorked.keys()),
-      ...Array.from(techDailyTracked.keys()),
-    ]);
-
     const summaries: TechnicianWeeklySummary[] = [];
 
-    for (const techId of Array.from(allTechIds)) {
-      const workedMap = techDailyWorked.get(techId) ?? new Map<string, number>();
-      const trackedMap = techDailyTracked.get(techId) ?? new Map<string, number>();
-      const billableMap = techDailyBillable.get(techId) ?? new Map<string, number>();
-
+    for (const techId of Array.from(techDailyMinutes.keys())) {
+      const dailyMap = techDailyMinutes.get(techId)!;
       const daily: DailyPayrollBreakdown[] = [];
-      let totalWorked = 0;
-      let totalTracked = 0;
-      let totalBillable = 0;
+      let weekTotal = 0;
 
       for (const day of days) {
-        const worked = workedMap.get(day) ?? 0;
-        const tracked = trackedMap.get(day) ?? 0;
-        const billable = billableMap.get(day) ?? 0;
-
+        const mins = dailyMap.get(day) ?? 0;
         const date = new Date(day + "T00:00:00Z");
         const dayOfWeek = TimeTrackingRepository.DAY_NAMES[date.getUTCDay()];
 
-        daily.push({
-          date: day,
-          dayOfWeek,
-          workedMinutes: worked,
-          trackedMinutes: tracked,
-          billableMinutes: billable,
-        });
-
-        totalWorked += worked;
-        totalTracked += tracked;
-        totalBillable += billable;
+        daily.push({ date: day, dayOfWeek, totalMinutes: mins });
+        weekTotal += mins;
       }
 
       const approval = approvalMap.get(techId);
@@ -2054,12 +2269,7 @@ export class TimeTrackingRepository extends BaseRepository {
         technicianName: techNames.get(techId) ?? null,
         weekStart: normalizedWeekStart,
         weekEnd,
-        totals: {
-          workedMinutes: totalWorked,
-          trackedMinutes: totalTracked,
-          billableMinutes: totalBillable,
-          untrackedMinutesRaw: totalWorked - totalTracked,
-        },
+        totalMinutes: weekTotal,
         daily,
         approved: !!approval,
         approvedAt: approval?.approvedAt ?? null,
@@ -2078,30 +2288,27 @@ export class TimeTrackingRepository extends BaseRepository {
   /**
    * Generate CSV content for weekly payroll export
    */
+  /**
+   * Generate CSV for simplified weekly payroll — time_entries only (2026-04-03)
+   */
   generatePayrollCsv(summaries: TechnicianWeeklySummary[]): string {
-    // Helper to format minutes as decimal hours
     const toHours = (mins: number) => (mins / 60).toFixed(2);
 
-    // Header row
     const headers = [
       "Technician Name",
       "Technician ID",
       "Week Start",
       "Week End",
-      "Worked Hours",
-      "Tracked Hours",
-      "Billable Hours",
-      "Untracked Hours",
-      "Approved",
+      "Mon",
+      "Tue",
+      "Wed",
+      "Thu",
+      "Fri",
+      "Sat",
+      "Sun",
+      "Total Hours",
+      "Status",
     ];
-
-    // Add day columns
-    const dayAbbrevs = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-    for (const day of dayAbbrevs) {
-      headers.push(`${day} Worked`);
-      headers.push(`${day} Tracked`);
-      headers.push(`${day} Billable`);
-    }
 
     const rows: string[] = [headers.join(",")];
 
@@ -2111,21 +2318,10 @@ export class TimeTrackingRepository extends BaseRepository {
         s.technicianId,
         s.weekStart,
         s.weekEnd,
-        toHours(s.totals.workedMinutes),
-        toHours(s.totals.trackedMinutes),
-        toHours(s.totals.billableMinutes),
-        toHours(Math.max(0, s.totals.untrackedMinutesRaw)),
-        s.approved ? "Yes" : "No",
+        ...s.daily.map((d) => toHours(d.totalMinutes)),
+        toHours(s.totalMinutes),
+        s.approved ? "Approved" : "Pending",
       ];
-
-      // Add daily breakdown (Mon-Sun order)
-      // The daily array is already in order Mon-Sun based on how we built it
-      for (const day of s.daily) {
-        row.push(toHours(day.workedMinutes));
-        row.push(toHours(day.trackedMinutes));
-        row.push(toHours(day.billableMinutes));
-      }
-
       rows.push(row.join(","));
     }
 

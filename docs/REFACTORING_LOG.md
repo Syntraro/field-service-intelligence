@@ -4,6 +4,60 @@ This document tracks significant refactoring decisions, architectural changes, a
 
 ---
 
+## 2026-03-25: Labor Unification Final Cleanup
+
+### Problem
+Three residual issues from the labor unification pass: (1) `reopenVisit` still wrote `actualDurationMinutes: null`, mutating historical labor data on workflow reopen; (2) manager check-out silently no-oped when no technician was assigned instead of failing fast; (3) `job_visits.actualDurationMinutes` column still existed in DB schema despite being fully deprecated.
+
+### Solution
+1. **reopenVisit:** Removed `actualDurationMinutes: null` from the reopen update set. Reopening now only resets workflow fields (status, outcome, completedAt, completedByUserId, isFollowUpNeeded, checkedOutAt). Historical duration/labor data is preserved — manual edits are a separate explicit action.
+2. **Check-out guard:** Added `if (!visit.assignedTechnicianId) throw createError(400, ...)` before any write, matching check-in behavior. Validation order: visit exists → tech assigned → checkedInAt set → not already checked out.
+3. **Column drop:** Removed `actualDurationMinutes` from `jobVisits` table definition in `shared/schema.ts` and from `insertJobVisitSchema` omit list. Migration `2026_03_25_drop_job_visits_actual_duration_minutes.sql` drops the column from the DB. Tasks domain column on separate table is untouched.
+
+---
+
+## 2026-03-25: Labor / Time Tracking Cleanup & Hardening
+
+### Problem
+Post-unification residual risks: (1) manager check-out `stopTimeEntry` call was unscoped — could stop a running entry for a different job; (2) dead `checkInJobVisit()` method still existed, setting legacy `status="on_site"`; (3) `actualDurationMinutes` still serialized in visit feed API despite being deprecated; (4) no visit selector in manual time entry modal; (5) no visit badge on labour card entries.
+
+### Solution
+1. **Scoped stop guard:** Check-out handler now finds running entry by `jobId` match before stopping by ID, preventing cross-job mis-stops.
+2. **Dead code removal:** Deleted `checkInJobVisit()` (only place writing `status="on_site"`) and its 3 test cases.
+3. **Surface cleanup:** Removed `actualDurationMinutes` from `VisitFeedItem` type and `toVisitFeedItem()` serializer.
+4. **Visit selector:** Added optional visit dropdown to `AddTimeEntryModal` (only shows when visits exist).
+5. **Visit badge:** Added `V#N` badge to labour card entry rows when `visitNumber` is present.
+
+### Column drop status
+`job_visits.actualDurationMinutes` column **retained in DB** — the `tasks` table uses the same column name (separate domain, still actively written). The column has zero runtime read/write consumers in the visit/labor domain.
+
+---
+
+## 2026-03-25: Labor / Time Tracking Unification
+
+### Problem
+Dual time-tracking system: `time_entries` tracked granular labor segments (billing source of truth), while `job_visits.actualDurationMinutes` independently computed visit-level duration from `checkedInAt/checkedOutAt`. Manager check-in/check-out only wrote visit metadata — no time entries created. Technician mobile flow wrote both. Result: manager-checked-in visits had zero labor tracked, and duration values could diverge between the two systems.
+
+### Solution
+Unified around `time_entries` as the single source of truth for all labor measurement.
+
+**Key changes:**
+1. Added `visitId` (nullable FK) to `time_entries` for visit-level attribution
+2. Manager check-in now calls `lifecycle.startVisit()` + `recordJobStatus("arrived")` — creates on_site time entry with rate snapshots (same path as tech flow)
+3. Manager check-out now calls `stopTimeEntry()` — stops running labor entry (same path as tech flow)
+4. Stopped writing `actualDurationMinutes` across all 5 write locations (check-out route, completeVisit, bulkComplete, rescheduleVisit, scheduling conflict auto-complete)
+5. Removed redundant `actualDurationMinutes` check from `isVisitActioned()` predicate (server + client) — `checkedInAt` check already covers this case
+
+**Architecture preserved:**
+- All billing rules, rate snapshots, invoice locks, approval locks, manager overrides unchanged
+- Job status derivation unchanged (purely visit-driven, no time_entries dependency)
+- Visit predicates (`scheduleEligibleVisitFilter`, `reconciliationActionableVisitFilter`) unchanged — they use negation logic (`NOT IN terminal`), not specific status checks
+- `checkedInAt`/`checkedOutAt` retained as operational metadata on visits
+
+**Migration:** `2026_03_25_add_visit_id_to_time_entries.sql`
+
+---
+
 ## 2026-03-24: Job Expenses — Remove Approval Workflow, Add Edit + Receipt Upload
 
 ### Problem

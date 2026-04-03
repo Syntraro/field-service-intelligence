@@ -1160,6 +1160,28 @@ export class JobRepository extends BaseRepository {
       })
       .returning();
 
+    // Propagate job equipment → visits where equipmentIds has never been set (IS NULL).
+    // Does NOT overwrite [] (user-cleared) or populated arrays (user-edited).
+    const allJobEquip = await db
+      .select({ equipmentId: jobEquipment.equipmentId })
+      .from(jobEquipment)
+      .where(and(eq(jobEquipment.companyId, companyId), eq(jobEquipment.jobId, jobId)));
+    const allIds = allJobEquip.map(r => r.equipmentId);
+
+    if (allIds.length > 0) {
+      await db
+        .update(jobVisits)
+        .set({ equipmentIds: allIds })
+        .where(
+          and(
+            eq(jobVisits.companyId, companyId),
+            eq(jobVisits.jobId, jobId),
+            isNull(jobVisits.equipmentIds),
+            eq(jobVisits.isActive, true),
+          )
+        );
+    }
+
     return rows[0];
   }
 

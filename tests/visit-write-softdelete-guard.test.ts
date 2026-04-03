@@ -220,46 +220,8 @@ describe("Visit Write SQL-Level Soft-Delete Guards", () => {
     expect(row.status).toBe("scheduled");
   });
 
-  // ==========================================================================
-  // checkInJobVisit — archived visit
-  // ==========================================================================
-
-  it("checkInJobVisit does not mutate archived visit", async () => {
-    const jobId = await createJob();
-    const visitId = await createVisit(jobId);
-
-    await archiveVisitDirectly(visitId);
-
-    await expect(
-      jobVisitsRepository.checkInJobVisit(companyId, visitId)
-    ).rejects.toThrow();
-
-    // Verify checkedInAt was NOT set
-    const [row] = await db.select({ checkedInAt: jobVisits.checkedInAt })
-      .from(jobVisits)
-      .where(eq(jobVisits.id, visitId));
-    expect(row.checkedInAt).toBeNull();
-  });
-
-  // ==========================================================================
-  // checkInJobVisit — inactive visit
-  // ==========================================================================
-
-  it("checkInJobVisit does not mutate inactive visit", async () => {
-    const jobId = await createJob();
-    const visitId = await createVisit(jobId);
-
-    await deactivateVisitDirectly(visitId);
-
-    await expect(
-      jobVisitsRepository.checkInJobVisit(companyId, visitId)
-    ).rejects.toThrow();
-
-    const [row] = await db.select({ checkedInAt: jobVisits.checkedInAt })
-      .from(jobVisits)
-      .where(eq(jobVisits.id, visitId));
-    expect(row.checkedInAt).toBeNull();
-  });
+  // Labor unification: checkInJobVisit tests removed — method deleted.
+  // Manager check-in now uses lifecycle.startVisit() + recordJobStatus().
 
   // ==========================================================================
   // Active visits still update normally (positive control)
@@ -287,14 +249,5 @@ describe("Visit Write SQL-Level Soft-Delete Guards", () => {
     expect(updated.status).toBe("dispatched");
   });
 
-  it("checkInJobVisit succeeds for active non-archived visit", async () => {
-    const jobId = await createJob();
-    const visitId = await createVisit(jobId);
-
-    const updated = await jobVisitsRepository.checkInJobVisit(companyId, visitId);
-
-    expect(updated).toBeDefined();
-    expect(updated.checkedInAt).toBeTruthy();
-    expect(updated.status).toBe("on_site");
-  });
+  // Labor unification: checkInJobVisit positive-control test removed — method deleted.
 });

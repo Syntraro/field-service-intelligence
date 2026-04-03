@@ -5,7 +5,8 @@
  */
 
 import { db } from "../db";
-import { eq, and, desc, asc, gte, lte, sql, inArray, isNull, or } from "drizzle-orm";
+import { eq, and, desc, asc, gte, lte, sql, inArray, isNull, or, ne } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import {
   recurringJobTemplates,
   recurringJobInstances,
@@ -61,7 +62,7 @@ export class RecurringJobsRepository extends BaseRepository {
    */
   async getTemplates(
     companyId: string,
-    options?: { activeOnly?: boolean }
+    options?: { activeOnly?: boolean; type?: "pm" | "recurring_job" }
   ): Promise<TemplateWithNames[]> {
     this.assertCompanyId(companyId);
 
@@ -69,11 +70,21 @@ export class RecurringJobsRepository extends BaseRepository {
     if (options?.activeOnly) {
       conditions.push(eq(recurringJobTemplates.isActive, true));
     }
+    // Server-side type filter: pm = maintenance jobType, recurring_job = any non-maintenance jobType
+    if (options?.type === "pm") {
+      conditions.push(eq(recurringJobTemplates.jobType, "maintenance"));
+    } else if (options?.type === "recurring_job") {
+      conditions.push(ne(recurringJobTemplates.jobType, "maintenance"));
+    }
+
+    // Fallback: when template.clientId is null, resolve customer name via location's parentCompanyId
+    const parentCustomer = alias(customerCompanies, "parentCustomer");
 
     const rows = await db
       .select({
         template: recurringJobTemplates,
         clientName: customerCompanies.name,
+        parentCustomerName: parentCustomer.name,
         locationName: clientLocations.companyName,
         locationLabel: clientLocations.location,
         locationAddress: clientLocations.address,
@@ -82,12 +93,14 @@ export class RecurringJobsRepository extends BaseRepository {
       .from(recurringJobTemplates)
       .leftJoin(customerCompanies, eq(recurringJobTemplates.clientId, customerCompanies.id))
       .leftJoin(clientLocations, eq(recurringJobTemplates.locationId, clientLocations.id))
+      .leftJoin(parentCustomer, eq(clientLocations.parentCompanyId, parentCustomer.id))
       .where(and(...conditions))
       .orderBy(desc(recurringJobTemplates.createdAt));
 
     return rows.map((r) => ({
       ...r.template,
-      clientName: r.clientName ?? null,
+      // Prefer direct clientId → customer_companies; fall back to location's parent customer
+      clientName: r.clientName ?? r.parentCustomerName ?? null,
       // Phase 5B: Return location label (site name) separately — avoid repeating company name
       locationName: r.locationLabel || r.locationName || null,
       locationAddress: [r.locationAddress, r.locationCity].filter(Boolean).join(", ") || null,
@@ -116,6 +129,19 @@ export class RecurringJobsRepository extends BaseRepository {
       .limit(1);
 
     return template ?? null;
+  }
+
+  /**
+   * Detect PM-like templates for default service window selection.
+   * Mirrors server/domain/recurrence.ts isPmTemplate() but works on creation
+   * input (before the row exists). PM templates get 14-day after-window;
+   * non-PM recurring jobs get 0-day after-window.
+   * 2026-04-02: Added to prevent recurring jobs from inheriting PM-style windows.
+   */
+  private isPmLikeTemplate(data: { jobType?: string; monthsOfYear?: number[] | null }): boolean {
+    return data.jobType === "maintenance"
+      && Array.isArray(data.monthsOfYear)
+      && data.monthsOfYear.length > 0;
   }
 
   /**
@@ -185,9 +211,12 @@ export class RecurringJobsRepository extends BaseRepository {
         generationMode: data.generationMode ?? "phase",
         generationDayOfMonth: data.generationDayOfMonth ?? null,
         includeLocationPmParts: data.includeLocationPmParts ?? false,
-        // PM Phase 3: Service window defaults
+        // Service window defaults — PM templates keep 7/14, recurring jobs use 7/0.
+        // 2026-04-02: Non-PM recurring jobs default to 0 days after (tight window)
+        // so they don't inherit the PM-style 14-day after-window.
         serviceWindowDaysBefore: data.serviceWindowDaysBefore ?? 7,
-        serviceWindowDaysAfter: data.serviceWindowDaysAfter ?? 14,
+        serviceWindowDaysAfter: data.serviceWindowDaysAfter
+          ?? (this.isPmLikeTemplate(data) ? 14 : 0),
       })
       .returning();
 
@@ -567,6 +596,8 @@ export class RecurringJobsRepository extends BaseRepository {
         templateId: recurringJobTemplates.id,
         templateTitle: recurringJobTemplates.title,
         templateIsActive: recurringJobTemplates.isActive,
+        // Dashboard unification: surface jobType so the dashboard can distinguish PM vs recurring job occurrences
+        templateJobType: recurringJobTemplates.jobType,
         monthsOfYear: recurringJobTemplates.monthsOfYear,
         serviceWindowDaysBefore: recurringJobTemplates.serviceWindowDaysBefore,
         serviceWindowDaysAfter: recurringJobTemplates.serviceWindowDaysAfter,
@@ -720,6 +751,7 @@ export class RecurringJobsRepository extends BaseRepository {
         templateId: r.templateId,
         templateTitle: r.templateTitle,
         templateIsActive: r.templateIsActive,
+        templateJobType: r.templateJobType,
         serviceWindowDaysBefore: windowBefore,
         serviceWindowDaysAfter: windowAfter,
         windowStart: windowStartStr,
@@ -769,6 +801,8 @@ export interface UpcomingQueueItem {
   templateId: string;
   templateTitle: string;
   templateIsActive: boolean;
+  /** Dashboard unification: jobType from template — "maintenance" = PM, anything else = Recurring Job */
+  templateJobType: string;
   serviceWindowDaysBefore: number;
   serviceWindowDaysAfter: number;
   windowStart: string;

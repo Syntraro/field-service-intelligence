@@ -8,6 +8,7 @@
 import { Router } from "express";
 import type { Response } from "express";
 import { getWorkflowSummary, getNeedsAttentionJobs, getFinancialSummary } from "../storage/dashboard";
+import { getTodayVisitSummary } from "../storage/todaySummary";
 import { getQueryCtx } from "../lib/queryCtx";
 import { asyncHandler } from "../middleware/errorHandler";
 import type { AuthedRequest } from "../auth/tenantIsolation";
@@ -53,6 +54,18 @@ router.get("/needs-attention", asyncHandler(async (req: AuthedRequest, res: Resp
 router.get("/financial", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const ctx = getQueryCtx(req);
   const summary = await getFinancialSummary(ctx);
+  res.json(summary);
+}));
+
+/**
+ * GET /api/dashboard/today-summary
+ *
+ * Returns today's visit counts by status for the "Today's Operations" section.
+ * Real-time: scheduled, on route, in progress, remaining, completed.
+ */
+router.get("/today-summary", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const summary = await getTodayVisitSummary(companyId);
   res.json(summary);
 }));
 

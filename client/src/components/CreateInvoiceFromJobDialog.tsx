@@ -47,8 +47,6 @@ export function CreateInvoiceFromJobDialog({
       const response = await apiRequest(`/api/invoices/from-job/${jobId}`, {
         method: "POST",
         body: JSON.stringify({
-          includeLineItems: true,
-          includeNotes: true,
           markJobCompleted,
         })
       });

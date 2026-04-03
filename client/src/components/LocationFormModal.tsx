@@ -267,7 +267,7 @@ export default function LocationFormModal({
             <div className="space-y-3">
               <AddressAutocomplete
                 value={street}
-                onChange={(val) => { setStreet(val); }}
+                onChange={(val) => { setStreet(val); setLat(null); setLng(null); setPlaceId(null); }}
                 onPlaceSelect={(place: PlaceSelectPayload) => {
                   setStreet(place.street);
                   setCity(place.city);
@@ -288,12 +288,12 @@ export default function LocationFormModal({
                 disabled={isResolving}
               />
               <div className="grid grid-cols-2 gap-3">
-                <Input value={city} onChange={(e) => setCity(e.target.value)} placeholder="City" disabled={isResolving} />
-                <Input value={province} onChange={(e) => setProvince(e.target.value)} placeholder="Province/State" disabled={isResolving} />
+                <Input value={city} onChange={(e) => { setCity(e.target.value); setLat(null); setLng(null); setPlaceId(null); }} placeholder="City" disabled={isResolving} />
+                <Input value={province} onChange={(e) => { setProvince(e.target.value); setLat(null); setLng(null); setPlaceId(null); }} placeholder="Province/State" disabled={isResolving} />
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <Input value={postalCode} onChange={(e) => setPostalCode(e.target.value)} placeholder="Postal/ZIP Code" disabled={isResolving} />
-                <Input value={country} onChange={(e) => setCountry(e.target.value)} placeholder="Country" disabled={isResolving} />
+                <Input value={postalCode} onChange={(e) => { setPostalCode(e.target.value); setLat(null); setLng(null); setPlaceId(null); }} placeholder="Postal/ZIP Code" disabled={isResolving} />
+                <Input value={country} onChange={(e) => { setCountry(e.target.value); setLat(null); setLng(null); setPlaceId(null); }} placeholder="Country" disabled={isResolving} />
               </div>
             </div>
           </div>

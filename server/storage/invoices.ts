@@ -28,6 +28,7 @@ export const INVOICE_CREATION_SOURCES = [
   "INVOICE_ROUTE",
   "JOB_CLOSE_ROUTE",
   "PM_BILLING_SERVICE", // PM Billing Phase 2: Contract-period billing events
+  "STANDALONE_ROUTE",   // Standalone invoice creation without job/PM dependency
 ] as const;
 
 /**
@@ -109,6 +110,7 @@ export class InvoiceRepository extends BaseRepository {
       amountPaid: invoices.amountPaid,
       balance: invoices.balance,
       jobId: invoices.jobId,
+      taxGroupId: invoices.taxGroupId,
       sentAt: invoices.sentAt,
       sentByUserId: invoices.sentByUserId,
       viewedAt: invoices.viewedAt,
@@ -234,6 +236,7 @@ export class InvoiceRepository extends BaseRepository {
         amountPaid: invoices.amountPaid,
         balance: invoices.balance,
         jobId: invoices.jobId,
+        taxGroupId: invoices.taxGroupId,
         sentAt: invoices.sentAt,
         sentByUserId: invoices.sentByUserId,
         viewedAt: invoices.viewedAt,
@@ -445,6 +448,15 @@ export class InvoiceRepository extends BaseRepository {
 
     // Use transaction to ensure line + totals are atomic
     return await db.transaction(async (tx) => {
+      // Determine next line_number if not provided
+      if (!lineData.lineNumber) {
+        const [maxRow] = await tx
+          .select({ maxNum: sql<number>`coalesce(max(${invoiceLines.lineNumber}), 0)` })
+          .from(invoiceLines)
+          .where(and(eq(invoiceLines.invoiceId, invoiceId), eq(invoiceLines.companyId, companyId)));
+        lineData.lineNumber = (maxRow?.maxNum ?? 0) + 1;
+      }
+
       const [line] = await tx
         .insert(invoiceLines)
         .values({
@@ -1257,6 +1269,94 @@ export class InvoiceRepository extends BaseRepository {
   }
 
   /**
+   * Canonical shared invoice shell creation — single runtime owner of:
+   * - invoice number generation (counter SELECT FOR UPDATE + increment)
+   * - counter initialization fallback
+   * - issue date / due date computation (uses canonical calculateDueDate)
+   * - base invoice INSERT with default fields
+   *
+   * Source-agnostic: no job/PM/standalone branching.
+   * Callers provide tx handle, resolved fields, and optional overrides.
+   *
+   * 2026-03-29: Extracted from duplicated logic in createInvoiceFromJob + createInvoiceFromBillingEvent.
+   */
+  async createInvoiceShell(
+    companyId: string,
+    params: {
+      locationId: string;
+      customerCompanyId: string | null;
+      jobId: string | null;
+      workDescription: string | null;
+      /** Override subtotal/total/balance (PM sets these to billing amount; job leaves at "0" for later recalc) */
+      initialSubtotal?: string;
+      initialTotal?: string;
+      initialBalance?: string;
+    },
+    tx: any,
+    paymentTermsDays: number
+  ): Promise<{ invoice: any; invoiceNumber: string }> {
+    const { companyCounters } = await import("@shared/schema");
+    const { calculateDueDate } = await import("../services/invoiceCreationService");
+
+    // Counter SELECT FOR UPDATE + increment (atomic invoice number generation)
+    let [counter] = await tx
+      .select()
+      .from(companyCounters)
+      .where(eq(companyCounters.companyId, companyId))
+      .for("update")
+      .limit(1);
+
+    let invoiceNumber = 1001;
+    if (counter) {
+      invoiceNumber = counter.nextInvoiceNumber;
+      await tx
+        .update(companyCounters)
+        .set({ nextInvoiceNumber: invoiceNumber + 1 })
+        .where(eq(companyCounters.companyId, companyId));
+    } else {
+      // Counter initialization fallback
+      await tx.insert(companyCounters).values({
+        companyId,
+        nextJobNumber: 100000,
+        nextInvoiceNumber: 1002,
+      });
+    }
+
+    // Issue date + due date via canonical calculateDueDate()
+    const now = new Date();
+    const issueDate = now.toISOString().split("T")[0];
+    const dueDate = calculateDueDate(now, paymentTermsDays);
+
+    const subtotal = params.initialSubtotal ?? "0";
+    const total = params.initialTotal ?? "0";
+    const balance = params.initialBalance ?? "0";
+
+    // Base invoice INSERT with default fields
+    const [invoice] = await tx
+      .insert(invoices)
+      .values({
+        companyId,
+        locationId: params.locationId,
+        customerCompanyId: params.customerCompanyId,
+        jobId: params.jobId,
+        invoiceNumber: String(invoiceNumber),
+        status: "draft",
+        issueDate,
+        dueDate,
+        paymentTermsDays,
+        subtotal,
+        taxTotal: "0",
+        total,
+        amountPaid: "0",
+        balance,
+        workDescription: params.workDescription,
+      })
+      .returning();
+
+    return { invoice, invoiceNumber: String(invoiceNumber) };
+  }
+
+  /**
    * Create a new invoice from an existing job (IDEMPOTENT)
    *
    * PHASE A SECURITY FIX: Uses SELECT FOR UPDATE to prevent race conditions
@@ -1302,8 +1402,6 @@ export class InvoiceRepository extends BaseRepository {
 
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
-
-    const { companyCounters } = await import("@shared/schema");
 
     // PRE-TRANSACTION VALIDATION: Get job and validate (avoids holding lock during validation)
     const [jobPreCheck] = await db
@@ -1384,59 +1482,18 @@ export class InvoiceRepository extends BaseRepository {
           };
         }
 
-        // Get or create counter and increment (now protected by job lock)
-        let [counter] = await tx
-          .select()
-          .from(companyCounters)
-          .where(eq(companyCounters.companyId, companyId))
-          .for("update") // Also lock counter to prevent race
-          .limit(1);
-
-        let invoiceNumber = 1001;
-        if (counter) {
-          invoiceNumber = counter.nextInvoiceNumber;
-          await tx
-            .update(companyCounters)
-            .set({ nextInvoiceNumber: invoiceNumber + 1 })
-            .where(eq(companyCounters.companyId, companyId));
-        } else {
-          // Create initial counter with 6-digit job numbers
-          await tx.insert(companyCounters).values({
-            companyId,
-            nextJobNumber: 100000,
-            nextInvoiceNumber: 1002,
-          });
-        }
-
-        // Compute issue date and due date
-        const now = new Date();
-        const issueDate = now.toISOString().split("T")[0]; // 'YYYY-MM-DD' format
-        const dueDate = new Date(now.getTime() + paymentTermsDays * 24 * 60 * 60 * 1000)
-          .toISOString()
-          .split("T")[0];
-
-        // Create invoice (unique constraint on companyId+jobId prevents duplicates as extra safety)
-        const [invoice] = await tx
-          .insert(invoices)
-          .values({
-            companyId,
+        // Delegate shell creation to canonical shared method (numbering, defaults, INSERT)
+        const { invoice } = await this.createInvoiceShell(
+          companyId,
+          {
             locationId: job.locationId,
-            customerCompanyId: location.parentCompanyId, // Link to billing entity
+            customerCompanyId: location.parentCompanyId,
             jobId: jobId,
-            invoiceNumber: String(invoiceNumber),
-            status: "draft",
-            issueDate, // 'YYYY-MM-DD' format
-            dueDate,   // Computed from issueDate + paymentTermsDays
-            paymentTermsDays, // From company settings or default
-            subtotal: "0",
-            taxTotal: "0",
-            total: "0",
-            amountPaid: "0",
-            balance: "0",
-            // Copy work description from job for audit trail
             workDescription: job.description || job.summary || null,
-          })
-          .returning();
+          },
+          tx,
+          paymentTermsDays
+        );
 
         // 2026-03-18: Invoice creation ONLY links invoice to job.
         // Lifecycle transition (status → invoiced) is the caller's responsibility
@@ -1498,8 +1555,6 @@ export class InvoiceRepository extends BaseRepository {
     }
     this.assertCompanyId(companyId);
 
-    const { companyCounters } = await import("@shared/schema");
-
     // Get company settings for payment terms
     const [settings] = await db
       .select({ defaultPaymentTermsDays: companySettings.defaultPaymentTermsDays })
@@ -1509,65 +1564,29 @@ export class InvoiceRepository extends BaseRepository {
     const paymentTermsDays = settings?.defaultPaymentTermsDays ?? 30;
 
     return await db.transaction(async (tx) => {
-      // Get or create counter and increment
-      let [counter] = await tx
-        .select()
-        .from(companyCounters)
-        .where(eq(companyCounters.companyId, companyId))
-        .for("update")
-        .limit(1);
-
-      let invoiceNumber = 1001;
-      if (counter) {
-        invoiceNumber = counter.nextInvoiceNumber;
-        await tx
-          .update(companyCounters)
-          .set({ nextInvoiceNumber: invoiceNumber + 1 })
-          .where(eq(companyCounters.companyId, companyId));
-      } else {
-        await tx.insert(companyCounters).values({
-          companyId,
-          nextJobNumber: 100000,
-          nextInvoiceNumber: 1002,
-        });
-      }
-
-      const now = new Date();
-      const issueDate = now.toISOString().split("T")[0];
-      const dueDate = new Date(now.getTime() + paymentTermsDays * 24 * 60 * 60 * 1000)
-        .toISOString()
-        .split("T")[0];
-
-      // Format period description for invoice
+      // PM-specific: format period description and resolve amount
       const periodDesc = params.billingModel === "annual_prepaid"
         ? `Annual Renewal: ${params.periodStart} to ${params.periodEnd}`
         : `Billing period: ${params.periodStart} to ${params.periodEnd}`;
-
       const amount = params.amount || "0";
 
-      // Create the invoice (no jobId — contract billing)
-      const [invoice] = await tx
-        .insert(invoices)
-        .values({
-          companyId,
+      // Delegate shell creation to canonical shared method (numbering, defaults, INSERT)
+      const { invoice, invoiceNumber } = await this.createInvoiceShell(
+        companyId,
+        {
           locationId: params.locationId,
           customerCompanyId: params.customerCompanyId,
-          jobId: null, // Contract billing — not tied to a job
-          invoiceNumber: String(invoiceNumber),
-          status: "draft",
-          issueDate,
-          dueDate,
-          paymentTermsDays,
-          subtotal: amount,
-          taxTotal: "0",
-          total: amount,
-          amountPaid: "0",
-          balance: amount,
+          jobId: null,
           workDescription: `${params.billingLabel} — ${periodDesc}`,
-        })
-        .returning();
+          initialSubtotal: amount,
+          initialTotal: amount,
+          initialBalance: amount,
+        },
+        tx,
+        paymentTermsDays
+      );
 
-      // Create a single line item for the billing event
+      // PM-specific: Create a single line item for the billing event
       await tx
         .insert(invoiceLines)
         .values({
@@ -1585,7 +1604,130 @@ export class InvoiceRepository extends BaseRepository {
           source: "manual",
         });
 
-      return { invoice, invoiceNumber: String(invoiceNumber) };
+      return { invoice, invoiceNumber };
+    });
+  }
+
+  /**
+   * Standalone invoice creation — draft invoice shell with no job/PM dependency.
+   * No line items created. No tax applied. No source linkage.
+   * 2026-03-29: Added as first-class creation path for standalone invoices.
+   */
+  async createStandaloneInvoice(
+    companyId: string,
+    params: {
+      locationId: string;
+      customerCompanyId: string | null;
+      workDescription?: string | null;
+    },
+    creationSource: InvoiceCreationSource
+  ): Promise<{ invoice: any; invoiceNumber: string }> {
+    if (creationSource !== "STANDALONE_ROUTE") {
+      throw new Error("INVOICE_CREATION_GUARD: createStandaloneInvoice() only allowed from STANDALONE_ROUTE");
+    }
+    this.assertCompanyId(companyId);
+
+    // Get company settings for payment terms
+    const [settings] = await db
+      .select({ defaultPaymentTermsDays: companySettings.defaultPaymentTermsDays })
+      .from(companySettings)
+      .where(eq(companySettings.companyId, companyId))
+      .limit(1);
+    const paymentTermsDays = settings?.defaultPaymentTermsDays ?? 30;
+
+    return await db.transaction(async (tx) => {
+      const { invoice, invoiceNumber } = await this.createInvoiceShell(
+        companyId,
+        {
+          locationId: params.locationId,
+          customerCompanyId: params.customerCompanyId,
+          jobId: null,
+          workDescription: params.workDescription ?? null,
+        },
+        tx,
+        paymentTermsDays
+      );
+
+      return { invoice, invoiceNumber };
+    });
+  }
+  /**
+   * Counter-drift guard: bump companyCounters.nextInvoiceNumber if minValue exceeds current counter.
+   * Called when a user manually sets an invoice number to a higher numeric value.
+   * Uses UPDATE ... WHERE nextInvoiceNumber < minValue to avoid race conditions.
+   */
+  async bumpInvoiceCounterIfNeeded(companyId: string, minValue: number): Promise<void> {
+    this.assertCompanyId(companyId);
+    const { companyCounters } = await import("@shared/schema");
+    await db
+      .update(companyCounters)
+      .set({ nextInvoiceNumber: minValue })
+      .where(and(
+        eq(companyCounters.companyId, companyId),
+        sql`${companyCounters.nextInvoiceNumber} < ${minValue}`
+      ));
+  }
+
+  /**
+   * Reorder invoice lines — sets lineNumber for each line atomically.
+   * Validates: no duplicate IDs, all IDs must belong to this invoice, complete coverage.
+   */
+  async reorderInvoiceLines(
+    companyId: string,
+    invoiceId: string,
+    ordering: { id: string; lineNumber: number }[]
+  ): Promise<void> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(invoiceId, "invoiceId");
+
+    // Verify invoice belongs to company
+    const invoice = await this.getInvoice(companyId, invoiceId);
+    if (!invoice) {
+      throw this.notFoundError("Invoice");
+    }
+
+    // Validate: no duplicate IDs in payload
+    const payloadIds = ordering.map(o => o.id);
+    const uniqueIds = new Set(payloadIds);
+    if (uniqueIds.size !== payloadIds.length) {
+      throw new Error("Reorder payload contains duplicate line IDs");
+    }
+
+    // Validate: all IDs must belong to this invoice
+    const existingLines = await db
+      .select({ id: invoiceLines.id })
+      .from(invoiceLines)
+      .where(and(
+        eq(invoiceLines.companyId, companyId),
+        eq(invoiceLines.invoiceId, invoiceId)
+      ));
+    const existingIds = new Set(existingLines.map(l => l.id));
+
+    for (const id of payloadIds) {
+      if (!existingIds.has(id)) {
+        throw new Error(`Line ID ${id} does not belong to this invoice`);
+      }
+    }
+
+    // Validate: payload must cover all active lines (complete reorder)
+    if (uniqueIds.size !== existingIds.size) {
+      throw new Error(
+        `Reorder payload has ${uniqueIds.size} lines but invoice has ${existingIds.size}. ` +
+        `Full reorder required — all line IDs must be included.`
+      );
+    }
+
+    await db.transaction(async (tx) => {
+      for (const item of ordering) {
+        await tx
+          .update(invoiceLines)
+          .set({ lineNumber: item.lineNumber })
+          .where(and(
+            eq(invoiceLines.companyId, companyId),
+            eq(invoiceLines.invoiceId, invoiceId),
+            eq(invoiceLines.id, item.id)
+          ));
+      }
     });
   }
 }

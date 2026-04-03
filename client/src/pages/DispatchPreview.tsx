@@ -1,12 +1,12 @@
 /**
  * DispatchBoard (DispatchPreview.tsx)
- * Primary dispatch board with Day and Week views, drag/drop scheduling,
+ * Primary dispatch board with Day, Week, and Month views, drag/drop scheduling,
  * overlap prevention, task parity, and structured detail panel.
  * Route: /dispatch (primary), /calendar (alias)
  */
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { addDays, subDays, addWeeks, subWeeks, startOfWeek, endOfWeek, eachDayOfInterval, addMinutes, format } from "date-fns";
-import { AlertCircle, Loader2, CalendarPlus, ClipboardList, Truck } from "lucide-react";
+import { addDays, subDays, addWeeks, subWeeks, addMonths, subMonths, startOfWeek, endOfWeek, eachDayOfInterval, addMinutes, format } from "date-fns";
+import { AlertCircle, Loader2, CalendarPlus, ClipboardList, Truck, X as XIcon } from "lucide-react";
 import {
   DndContext,
   DragOverlay,
@@ -14,6 +14,7 @@ import {
   pointerWithin,
   useSensor,
   useSensors,
+  useDraggable,
   type DragStartEvent,
   type DragEndEvent,
   type DragMoveEvent,
@@ -25,8 +26,10 @@ import { VISIT_STATUS_OPTIONS } from "@/lib/visitStatusDisplay";
 import type { DispatchDragData, DispatchDropData } from "@/components/dispatch/dispatchDndTypes";
 import { useDispatchPreviewData } from "@/components/dispatch/useDispatchPreviewData";
 import { useDispatchWeekData } from "@/components/dispatch/useDispatchWeekData";
+import { useDispatchMonthData } from "@/components/dispatch/useDispatchMonthData";
 import { useDispatchPreviewMutations } from "@/components/dispatch/useDispatchPreviewMutations";
-import { getTimelineConfig, HOUR_WIDTH_PX } from "@/components/dispatch/dispatchPreviewUtils";
+import { getTimelineConfig, HOUR_WIDTH_PX, SNAP_MINUTES, DEFAULT_SCHEDULE_HOUR } from "@/components/dispatch/dispatchPreviewUtils";
+import { UNASSIGNED_COLOR } from "@shared/colors";
 // checkOverlap + findNearestValidSlot now accessed via resolvePlacement() shared resolver
 import { useTechnicianWorkingHours, isTechWorkingOnDate, isTechWorkingInRange } from "@/hooks/useTechnicianWorkingHours";
 import {
@@ -46,7 +49,11 @@ import DispatchTimeline, { ANY_TIME_COL_WIDTH } from "@/components/dispatch/Disp
 import DispatchUnscheduledPanel from "@/components/dispatch/DispatchUnscheduledPanel";
 import DispatchDetailPanel from "@/components/dispatch/DispatchDetailPanel";
 // DispatchDragPreview removed — drag preview now rendered inline from shared dragPlacement result
-import WeekDispatchGrid from "@/components/dispatch/WeekDispatchGrid";
+import WeekDispatchGrid, { WEEK_START_HOUR, WEEK_HOUR_HEIGHT_PX } from "@/components/dispatch/WeekDispatchGrid";
+import MonthDispatchGrid from "@/components/dispatch/MonthDispatchGrid";
+import DispatchMapPanel from "@/components/dispatch/DispatchMapPanel";
+import { DispatchHoverContext } from "@/components/dispatch/dispatchHoverContext";
+import { useLiveTechnicians } from "@/hooks/useLiveTechnicians";
 // 2026-03-21: Canonical visit-edit modal — used for lifecycle actions (complete, reopen, delete)
 // instead of duplicating that logic in the dispatch panel. See REFACTORING_LOG.md.
 import { EditVisitModal } from "@/components/visits/EditVisitModal";
@@ -54,12 +61,59 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import { TaskDialog } from "@/components/TaskDialog";
+import { useDispatchStream } from "@/hooks/useDispatchStream";
 
 // Local pxToSnappedMinutes and computeDropTime removed — unified into
 // dispatchPlacementResolver.ts resolvePlacement() (shared by drag + click modes)
 
+/** Focus card — draggable dark-blue card in the Focus bar. Click opens EditVisitModal. */
+function FocusCard({ visit, onRemove, onOpen }: {
+  visit: DispatchVisit;
+  onRemove: (id: string) => void;
+  onOpen: (visit: DispatchVisit) => void;
+}) {
+  const dragData: DispatchDragData = {
+    type: "unscheduled-visit",
+    visitId: visit.visitId ?? undefined,
+    jobId: visit.jobId,
+    jobNumber: visit.jobNumber,
+    technicianId: null,
+    durationMinutes: visit.durationMinutes,
+    version: visit.version,
+    isMultiTech: false,
+    originalStart: null,
+  };
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: `focus-${visit.id}`,
+    data: dragData,
+  });
+  return (
+    <div
+      ref={setNodeRef}
+      {...listeners}
+      {...attributes}
+      onClick={() => onOpen(visit)}
+      className={`relative rounded border border-blue-200 bg-blue-50 px-2 py-1 cursor-grab active:cursor-grabbing hover:bg-blue-100 transition-colors ${isDragging ? "opacity-40" : ""}`}
+    >
+      {/* Remove X button */}
+      <button
+        onClick={(e) => { e.stopPropagation(); onRemove(visit.id); }}
+        className="absolute top-0.5 right-0.5 flex h-4 w-4 items-center justify-center rounded-full hover:bg-blue-200 text-slate-400 hover:text-slate-600 transition-colors"
+        title="Remove from focus"
+      >
+        <XIcon className="h-2.5 w-2.5" />
+      </button>
+      <p className="text-[13px] font-semibold text-slate-900 truncate pr-4 leading-snug">{visit.customerName}</p>
+      <p className="text-[13px] font-normal text-slate-600 truncate leading-snug">{visit.summary}</p>
+    </div>
+  );
+}
+
 export default function DispatchPreview() {
   const { toast } = useToast();
+
+  // SSE-driven cross-tab/cross-user realtime invalidation for dispatch/calendar/tasks
+  useDispatchStream();
 
   // ── View mode ──
   const [activeView, setActiveView] = useState<DispatchView>("day");
@@ -68,6 +122,23 @@ export default function DispatchPreview() {
   const [show24Hour, setShow24Hour] = useState(false);
   const onToggle24Hour = useCallback(() => setShow24Hour(prev => !prev), []);
 
+  // ── Map panel toggle (additive — unscheduled stays visible) ──
+  const [showMap, setShowMap] = useState(false);
+  // ── Unscheduled-on-map toggle (default OFF — only relevant when map visible) ──
+  const [showUnscheduledOnMap, setShowUnscheduledOnMap] = useState(false);
+  // ── Show Routes toggle (default OFF — draws per-technician route polylines on map) ──
+  const [showRoutes, setShowRoutes] = useState(false);
+
+  // ── Live technician GPS — only polls when map panel is visible ──
+  const { data: liveTechnicians } = useLiveTechnicians(showMap);
+
+  // ── Hover linkage between map markers and calendar visit cards ──
+  const [hoveredVisitId, setHoveredVisitId] = useState<string | null>(null);
+  const hoverContextValue = useMemo(() => ({
+    hoveredVisitId,
+    setHoveredVisitId,
+  }), [hoveredVisitId]);
+
   // Item 4: Dynamic timeline config from 24h toggle
   const tlConfig = useMemo(() => getTimelineConfig(show24Hour), [show24Hour]);
 
@@ -75,28 +146,32 @@ export default function DispatchPreview() {
   const [selectedDate, setSelectedDate] = useState(new Date());
 
   const onPrevDay = useCallback(() => {
-    setSelectedDate(d => activeView === "week" ? subWeeks(d, 1) : subDays(d, 1));
+    setSelectedDate(d =>
+      activeView === "month" ? subMonths(d, 1) : activeView === "week" ? subWeeks(d, 1) : subDays(d, 1)
+    );
   }, [activeView]);
   const onNextDay = useCallback(() => {
-    setSelectedDate(d => activeView === "week" ? addWeeks(d, 1) : addDays(d, 1));
+    setSelectedDate(d =>
+      activeView === "month" ? addMonths(d, 1) : activeView === "week" ? addWeeks(d, 1) : addDays(d, 1)
+    );
   }, [activeView]);
   const onToday = useCallback(() => setSelectedDate(new Date()), []);
 
-  // ── Real data from backend (Day view) ──
-  const dayData = useDispatchPreviewData(selectedDate);
-
-  // ── Week data (Week view) ──
-  const weekData = useDispatchWeekData(selectedDate);
+  // ── Real data from backend — only active view fetches ──
+  // All three views follow the same pattern: thin adapter over useDispatchRangeData.
+  const dayData = useDispatchPreviewData(selectedDate, activeView === "day");
+  const weekData = useDispatchWeekData(selectedDate, activeView === "week");
+  const monthData = useDispatchMonthData(selectedDate, activeView === "month");
 
   // ── Working hours for technician on-shift/off-shift grouping ──
   const { scheduleMap } = useTechnicianWorkingHours();
 
   // Enrich technicians with isWorking flag based on current view context
-  const rawTechnicians = activeView === "week" ? weekData.technicians : dayData.technicians;
+  const rawTechnicians = activeView === "month" ? monthData.technicians : activeView === "week" ? weekData.technicians : dayData.technicians;
   const technicians: Technician[] = useMemo(() => {
-    if (activeView === "week") {
-      const ws = startOfWeek(selectedDate, { weekStartsOn: 1 });
-      const we = endOfWeek(selectedDate, { weekStartsOn: 1 });
+    if (activeView === "week" || activeView === "month") {
+      const ws = activeView === "month" ? monthData.gridStart : startOfWeek(selectedDate, { weekStartsOn: 1 });
+      const we = activeView === "month" ? monthData.gridEnd : endOfWeek(selectedDate, { weekStartsOn: 1 });
       const days = eachDayOfInterval({ start: ws, end: we });
       return rawTechnicians.map(t => ({
         ...t,
@@ -107,7 +182,7 @@ export default function DispatchPreview() {
       ...t,
       isWorking: isTechWorkingOnDate(scheduleMap, t.id, selectedDate),
     }));
-  }, [rawTechnicians, scheduleMap, selectedDate, activeView]);
+  }, [rawTechnicians, scheduleMap, selectedDate, activeView, monthData.gridStart, monthData.gridEnd]);
 
   // Sort technicians: working first, then off-shift (stable sort preserves original order within groups)
   const sortedTechnicians = useMemo(() => {
@@ -126,13 +201,80 @@ export default function DispatchPreview() {
     count?: number;
   } | null>(null);
 
-  // Use day or week data depending on active view for shared state
+  // ── 2026-03-30: Multi-day visit confirmation dialog ──
+  // Warns before a drop/resize would cause a visit to cross midnight into the next day.
+  const [multiDayConfirm, setMultiDayConfirm] = useState<{
+    action: () => void;
+  } | null>(null);
+
+  // ── 2026-03-30: DAY-VIEW-ONLY Focus/selection mode ──
+  // Selection = temporary multi-select in the unscheduled panel (checkbox ticks).
+  // Focus = committed working set shown in the Focus bar (populated via "Add to Focus").
+  // Both are UI-only ephemeral state — not persisted, not shared with week view.
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedVisitIdsForFocus, setSelectedVisitIdsForFocus] = useState<Set<string>>(new Set());
+  const [focusedVisitIds, setFocusedVisitIds] = useState<Set<string>>(new Set());
+
+  const handleToggleSelectionMode = useCallback(() => {
+    setIsSelectionMode(prev => {
+      if (prev) { setSelectedVisitIdsForFocus(new Set()); } // exiting clears selection
+      return !prev;
+    });
+  }, []);
+  const handleExitSelectionMode = useCallback(() => {
+    setIsSelectionMode(false);
+    setSelectedVisitIdsForFocus(new Set());
+  }, []);
+  // Toggle selection (checkbox) — does NOT touch focusedVisitIds
+  const handleToggleSelectVisit = useCallback((visitId: string) => {
+    setSelectedVisitIdsForFocus(prev => {
+      const next = new Set(prev);
+      next.has(visitId) ? next.delete(visitId) : next.add(visitId);
+      return next;
+    });
+  }, []);
+  const handleClearSelection = useCallback(() => {
+    setSelectedVisitIdsForFocus(new Set());
+  }, []);
+  // "Add to Focus" — move selected into focus, clear selection, auto-exit selection mode
+  const handleAddToFocus = useCallback(() => {
+    setFocusedVisitIds(prev => {
+      const next = new Set(prev);
+      selectedVisitIdsForFocus.forEach(id => next.add(id));
+      return next;
+    });
+    setSelectedVisitIdsForFocus(new Set());
+    setIsSelectionMode(false); // Auto-exit so unscheduled panel returns to normal drag behavior
+  }, [selectedVisitIdsForFocus]);
+  // Remove single item from focus
+  const handleRemoveFromFocus = useCallback((visitId: string) => {
+    setFocusedVisitIds(prev => {
+      const next = new Set(prev);
+      next.delete(visitId);
+      return next;
+    });
+  }, []);
+  const handleClearFocus = useCallback(() => {
+    setFocusedVisitIds(new Set());
+  }, []);
+
+  // Reset selection mode when switching away from day view
+  useEffect(() => {
+    if (activeView !== "day") {
+      setIsSelectionMode(false);
+      setSelectedVisitIdsForFocus(new Set());
+      // Keep focusedVisitIds — focus persists until explicitly cleared
+    }
+  }, [activeView]);
+
+  // Use active view's data for shared state
   // (technicians already computed above with isWorking enrichment)
-  const scheduledVisits = activeView === "week" ? weekData.scheduledVisits : dayData.scheduledVisits;
-  const unscheduledVisits = activeView === "week" ? weekData.unscheduledVisits : dayData.unscheduledVisits;
-  const scheduledTasks = activeView === "week" ? weekData.scheduledTasks : dayData.scheduledTasks;
-  const isLoading = activeView === "week" ? weekData.isLoading : dayData.isLoading;
-  const error = activeView === "week" ? weekData.error : dayData.error;
+  const activeData = activeView === "month" ? monthData : activeView === "week" ? weekData : dayData;
+  const scheduledVisits = activeData.scheduledVisits;
+  const unscheduledVisits = activeData.unscheduledVisits;
+  const scheduledTasks = activeData.scheduledTasks;
+  const isLoading = activeData.isLoading;
+  const error = activeData.error;
 
   // ── Mutations ──
   // 2026-03-21: reopenVisit, completeVisitWithOutcome, deleteVisit removed — lifecycle
@@ -147,17 +289,19 @@ export default function DispatchPreview() {
   const [activeDragData, setActiveDragData] = useState<DispatchDragData | null>(null);
   const [activeOverTechId, setActiveOverTechId] = useState<string | null>(null);
 
-  // Scroll-sync fix: Live drag pointer is stored in a ref (not state) so that
-  // auto-scroll can bump a tick counter to force placement recomputation in the
-  // same frame — without waiting for the next DragMove event. Previously,
-  // dragPointerX was React state that only updated on pointer movement, causing
-  // a growing offset between the preview position and the cursor during
-  // auto-scroll (old scrollLeft + stale pointer → drift).
+  // Pointer tracking: native pointermove listener gives the real viewport clientX
+  // independent of dnd-kit's scroll-adjusted delta. This prevents double-counting
+  // scroll offset for internal drags (where dnd-kit's scrollAdjustedTranslate
+  // includes the timeline scroll delta, but clientXToRelativePx also adds scrollLeft).
   const dragPointerXRef = useRef<number>(0);
   // Tick counter: incremented after auto-scroll mutates scrollLeft/scrollTop.
   // The dragPlacement useMemo depends on this so it recomputes immediately,
   // reading the live pointer ref + live scrollLeft in the same render frame.
   const [dragTick, setDragTick] = useState(0);
+
+  // Native pointermove handler — updates dragPointerXRef/Y with real viewport position
+  const dragPointerYRef = useRef<number>(0);
+  const nativePointerMoveRef = useRef<((e: PointerEvent) => void) | null>(null);
 
   // Fix 1: Origin lane locking — prevent visit jumping to adjacent lane on drag start
   const originLaneRef = useRef<string | null>(null);
@@ -170,10 +314,14 @@ export default function DispatchPreview() {
   const isExternalDragRef = useRef(false);
   // Managed timer ref for crew-update delay — cleared on unmount to prevent orphaned mutations
   const crewUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Cleanup: cancel crew-update timer on unmount to prevent orphaned mutation calls
+  // Cleanup: cancel crew-update timer and native pointer listener on unmount
   useEffect(() => {
     return () => {
       if (crewUpdateTimerRef.current) clearTimeout(crewUpdateTimerRef.current);
+      if (nativePointerMoveRef.current) {
+        window.removeEventListener("pointermove", nativePointerMoveRef.current);
+        nativePointerMoveRef.current = null;
+      }
     };
   }, []);
   const sensors = useSensors(
@@ -220,31 +368,34 @@ export default function DispatchPreview() {
   const [hideWeekends, setHideWeekends] = useState(false);
   const onToggleHideWeekends = useCallback(() => setHideWeekends(h => !h), []);
 
+  // ── Month view: tech color map ──
+  const monthTechColorMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const t of technicians) m.set(t.id, t.color);
+    return m;
+  }, [technicians]);
+
   // ── Derived data (Day view) ──
   const allVisits = useMemo(() => [...scheduledVisits, ...unscheduledVisits], [scheduledVisits, unscheduledVisits]);
 
-  const unassignedScheduled = useMemo(
-    () => scheduledVisits.filter(v => !v.technicianId && selectedStatuses.has(v.status)),
-    [scheduledVisits, selectedStatuses],
-  );
-
-  // 2026-03-23: hasUnassignedVisits drives the "Unassigned" filter option visibility
-  const hasUnassignedVisits = unassignedScheduled.length > 0;
+  // 2026-03-26: Unassigned lane is persistent (always available) and rendered at top.
+  // No longer conditional on having unassigned visits — it's a first-class drop target.
+  const UNASSIGNED_TECH: Technician = {
+    id: UNASSIGNED_TECH_ID,
+    name: "Unassigned",
+    initials: "??",
+    color: UNASSIGNED_COLOR,
+    status: "off",
+  };
 
   const visibleTechs = useMemo(() => {
     const filtered = sortedTechnicians.filter(t => selectedTechIds.has(t.id));
-    // 2026-03-23: Unassigned lane now respects filter toggle (not auto-appended)
-    if (hasUnassignedVisits && selectedTechIds.has(UNASSIGNED_TECH_ID)) {
-      filtered.push({
-        id: UNASSIGNED_TECH_ID,
-        name: "Unassigned",
-        initials: "??",
-        color: "#94a3b8",
-        status: "off",
-      });
+    // Unassigned lane at top, controlled by filter toggle
+    if (selectedTechIds.has(UNASSIGNED_TECH_ID)) {
+      filtered.unshift(UNASSIGNED_TECH);
     }
     return filtered;
-  }, [sortedTechnicians, selectedTechIds, hasUnassignedVisits]);
+  }, [sortedTechnicians, selectedTechIds]);
 
   /** Multi-tech: place each visit in every assigned technician's lane */
   const visitsByTech = useMemo(() => {
@@ -306,21 +457,49 @@ export default function DispatchPreview() {
     return map;
   }, [weekData.tasksByTechByDay, selectedTechIds]);
 
-  // Week view: include virtual Unassigned lane only when filter is active
-  const hasUnassignedWeekVisits = weekData.visitsByTechByDay.has(UNASSIGNED_TECH_ID);
-  const weekVisibleTechs = useMemo(() => {
-    const filtered = sortedTechnicians.filter(t => selectedTechIds.has(t.id));
-    if (hasUnassignedWeekVisits && selectedTechIds.has(UNASSIGNED_TECH_ID)) {
-      filtered.push({
-        id: UNASSIGNED_TECH_ID,
-        name: "Unassigned",
-        initials: "??",
-        color: "#94a3b8",
-        status: "off",
+  // ── Map visits: flattened from the same tech+status-filtered data the board uses ──
+  // Day view uses visitsByTech; Week view uses filteredWeekVisits. Both already
+  // respect selectedTechIds + selectedStatuses, so the map stays in sync.
+  // 2026-04-02: Completed visits excluded — they add clutter without dispatch value.
+  const mapVisits = useMemo(() => {
+    const seen = new Set<string>();
+    const result: DispatchVisit[] = [];
+    // Flatten from the view-appropriate filtered map (deduplicates multi-tech visits)
+    const source = activeView === "week" ? filteredWeekVisits : visitsByTech;
+    if (activeView === "week") {
+      // Week: Map<techId, Map<dayKey, DispatchVisit[]>>
+      Array.from((source as Map<string, Map<string, DispatchVisit[]>>).values()).forEach(dayMap => {
+        Array.from(dayMap.values()).forEach(visits => {
+          for (const v of visits) {
+            if (!seen.has(v.id) && v.status !== "completed") { seen.add(v.id); result.push(v); }
+          }
+        });
+      });
+    } else {
+      // Day: Map<techId, DispatchVisit[]>
+      Array.from((source as Map<string, DispatchVisit[]>).values()).forEach(visits => {
+        for (const v of visits) {
+          if (!seen.has(v.id) && v.status !== "completed") { seen.add(v.id); result.push(v); }
+        }
       });
     }
+    // Optionally include unscheduled visits on map (never completed by definition)
+    if (showUnscheduledOnMap) {
+      for (const v of unscheduledVisits) {
+        if (!seen.has(v.id)) { seen.add(v.id); result.push(v); }
+      }
+    }
+    return result;
+  }, [activeView, visitsByTech, filteredWeekVisits, showUnscheduledOnMap, unscheduledVisits]);
+
+  // 2026-03-26: Week view — persistent Unassigned lane at top, same as day view
+  const weekVisibleTechs = useMemo(() => {
+    const filtered = sortedTechnicians.filter(t => selectedTechIds.has(t.id));
+    if (selectedTechIds.has(UNASSIGNED_TECH_ID)) {
+      filtered.unshift(UNASSIGNED_TECH);
+    }
     return filtered;
-  }, [sortedTechnicians, selectedTechIds, hasUnassignedWeekVisits]);
+  }, [sortedTechnicians, selectedTechIds]);
 
   // ── Drag placement via shared resolver (overlap detection + preview position) ──
   // Unified: replaces separate dragHasOverlap + DispatchDragPreview inline math.
@@ -410,19 +589,25 @@ export default function DispatchPreview() {
         dragGrabOffsetRef.current = { x: 10, y: 10 };
         dragGrabBlockXRef.current = 0;
       }
+
+      // Attach native pointermove listener to track raw viewport pointer position.
+      // This bypasses dnd-kit's scrollAdjustedTranslate which double-counts scroll
+      // offset for internal drags (source inside the timeline scroll container).
+      if (pointerEvent) dragPointerYRef.current = pointerEvent.clientY;
+      const handler = (e: PointerEvent) => {
+        dragPointerXRef.current = e.clientX;
+        dragPointerYRef.current = e.clientY;
+      };
+      nativePointerMoveRef.current = handler;
+      window.addEventListener("pointermove", handler);
     }
   }, []);
 
   const handleDragMove = useCallback((event: DragMoveEvent) => {
-    const activatorEvent = event.activatorEvent as PointerEvent | undefined;
-    if (activatorEvent) {
-      // Scroll-sync fix: write live pointer to ref (instant, no render delay).
-      // The dragPlacement useMemo reads this ref on every recomputation.
-      dragPointerXRef.current = activatorEvent.clientX + (event.delta?.x ?? 0);
-      // Bump tick to trigger dragPlacement recomputation for this pointer move.
-      // This replaces the old setDragPointerX(state) that was in the useMemo deps.
-      setDragTick(t => t + 1);
-    }
+    // dragPointerXRef is updated by the native pointermove listener (real viewport X).
+    // We only bump the tick here to trigger dragPlacement recomputation.
+    setDragTick(t => t + 1);
+
     const overData = event.over?.data.current as DispatchDropData | undefined;
     // Fix 1: Use detected lane if available, fall back to origin lane
     const detectedLane = overData?.technicianId ?? null;
@@ -430,9 +615,10 @@ export default function DispatchPreview() {
 
     // Auto-scroll timeline when pointer nears edges
     const scrollEl = timelineScrollRef.current;
-    if (!scrollEl || !activatorEvent) return;
-    const pointerX = activatorEvent.clientX + (event.delta?.x ?? 0);
-    const pointerY = activatorEvent.clientY + (event.delta?.y ?? 0);
+    if (!scrollEl) return;
+    // Use native pointer position from refs (not dnd-kit's scroll-adjusted delta)
+    const pointerX = dragPointerXRef.current;
+    const pointerY = dragPointerYRef.current;
     const rect = scrollEl.getBoundingClientRect();
 
     // Pointer-inside-container guards: only scroll when pointer is actually
@@ -490,6 +676,12 @@ export default function DispatchPreview() {
 
   /** Unified drag end handler for both day view (pixel-based) and week view (cell-based) drops */
   const handleDragEnd = useCallback((event: DragEndEvent) => {
+    // Clean up native pointer listener
+    if (nativePointerMoveRef.current) {
+      window.removeEventListener("pointermove", nativePointerMoveRef.current);
+      nativePointerMoveRef.current = null;
+    }
+
     const dragData = activeDragData;
     setActiveDragData(null);
     setActiveOverTechId(null);
@@ -501,56 +693,104 @@ export default function DispatchPreview() {
     if (!over || !dragData) return;
 
     const dropData = over.data.current as DispatchDropData | undefined;
-    if (!dropData?.technicianId || dropData.technicianId === UNASSIGNED_TECH_ID) return;
+    // Day view requires technicianId; week calendar drops provide dayKey only
+    if (!dropData?.technicianId && !dropData?.dayKey) return;
+    // 2026-03-26: Unassigned lane is now a valid drop target — dropping here
+    // keeps the schedule but clears technician assignment.
+    const isDropOnUnassigned = dropData.technicianId === UNASSIGNED_TECH_ID;
 
-    // ── Week view drop (cell-based: dayKey present) ──
-    // ── Week view drop (cell-based: dayKey present) ──
-    // Preserve original time-of-day, change date to target dayKey
+    // ── Week view drop (dayKey present: cell-based or calendar column) ──
+    // 2026-03-31: Derive drop time from pointer Y position in the week grid,
+    // not from the visit's original scheduled time. This ensures dragging a
+    // 12:00 visit to the 2:15 slot actually schedules at 2:15.
+    // Calendar-style week drops may omit technicianId — preserve the drag
+    // source's tech assignment (no tech change). Tech-row week drops still
+    // provide an explicit technicianId for reassignment.
     if (dropData.dayKey) {
-      const originalStart = dragData.originalStart ? new Date(dragData.originalStart) : null;
-      const timeH = originalStart ? originalStart.getHours() : 9;
-      const timeM = originalStart ? originalStart.getMinutes() : 0;
+      // Resolve target time from pointer Y position relative to the week grid column.
+      // Month view drops have no time grid — use DEFAULT_SCHEDULE_HOUR (9 AM) explicitly.
+      const isMonthDrop = activeView === "month";
+      const dayEl = isMonthDrop ? null : document.querySelector(`[data-week-day="${dropData.dayKey}"]`);
       const [y2, m2, d2] = dropData.dayKey.split("-").map(Number);
+      let timeH: number;
+      let timeM: number;
+      if (isMonthDrop) {
+        // Month cells have no time grid — schedule at canonical default time
+        timeH = DEFAULT_SCHEDULE_HOUR;
+        timeM = 0;
+      } else if (dayEl) {
+        const rect = dayEl.getBoundingClientRect();
+        const pointerY = dragPointerYRef.current;
+        const offsetY = pointerY - rect.top; // Y within the grid column (px)
+        // 2026-03-31: Use dynamic week hour range from shared 24h toggle
+        const weekStart = show24Hour ? 0 : WEEK_START_HOUR;
+        const weekEnd = show24Hour ? 24 : 21;
+        const rawMinutes = weekStart * 60 + (offsetY / WEEK_HOUR_HEIGHT_PX) * 60;
+        const snapped = Math.round(rawMinutes / SNAP_MINUTES) * SNAP_MINUTES;
+        const clamped = Math.max(weekStart * 60, Math.min(snapped, weekEnd * 60 - SNAP_MINUTES));
+        timeH = Math.floor(clamped / 60);
+        timeM = clamped % 60;
+      } else {
+        // Week grid element not found (should not happen). Use explicit default
+        // rather than preserving original time, which would mask the bug.
+        timeH = DEFAULT_SCHEDULE_HOUR;
+        timeM = 0;
+      }
       const newDay = new Date(y2, m2 - 1, d2, timeH, timeM, 0, 0);
       const startAt = newDay.toISOString();
-      const endAt = addMinutes(newDay, dragData.durationMinutes).toISOString();
+      const endDt = addMinutes(newDay, dragData.durationMinutes);
+      const endAt = endDt.toISOString();
+
+      // 2026-03-30: Multi-day check — warn if end crosses midnight
+      const crossesMidnight = endDt.getDate() !== newDay.getDate() || endDt.getMonth() !== newDay.getMonth();
+
+      // 2026-03-30: Calendar drops have no technicianId — preserve source tech.
+      // Tech-row drops provide explicit technicianId for reassignment.
+      const hasExplicitTech = !!dropData.technicianId;
+      const effectiveTechId = isDropOnUnassigned ? null : (hasExplicitTech ? dropData.technicianId : undefined);
 
       // Stabilization: version resolved internally by mutations from fresh cache
       const executeMutation = () => {
         if (dragData.type === "scheduled-task") {
+          if (isDropOnUnassigned) return; // Tasks require an assignee
           rescheduleTask({
-            taskId: dragData.visitId,
+            taskId: dragData.visitId!,
             scheduledStartAt: startAt,
             scheduledEndAt: endAt,
-            assignedToUserId: dropData.technicianId,
+            assignedToUserId: hasExplicitTech ? dropData.technicianId : (dragData.technicianId ?? undefined),
           });
         } else if (dragData.type === "unscheduled-visit") {
+          // visitId may be undefined for backlog items without a persisted visit
           scheduleVisit({
             jobId: dragData.jobId,
             visitId: dragData.visitId,
-            technicianUserId: dropData.technicianId,
+            technicianUserId: effectiveTechId ?? null,
             startAt,
             endAt,
           });
         } else if (dragData.type === "scheduled-visit") {
-          if (dragData.isMultiTech) {
-            // Multi-tech: allow time reschedule, block crew reassignment
-            const visit = allVisits.find(v => v.id === dragData.visitId);
-            const assignedIds = visit?.technicianIds ?? [];
-            if (!assignedIds.includes(dropData.technicianId)) {
-              toast({
-                title: "Multi-tech visit",
-                description: "Change crew assignments from the visit detail panel.",
-              });
-              return;
+          // Scheduled visits always have a real persisted visitId
+          const vid = dragData.visitId!;
+          if (dragData.isMultiTech && !isDropOnUnassigned) {
+            // 2026-03-30: Skip tech check for calendar drops (no tech context)
+            if (hasExplicitTech) {
+              const visit = allVisits.find(v => v.id === vid);
+              const assignedIds = visit?.technicianIds ?? [];
+              if (!assignedIds.includes(dropData.technicianId!)) {
+                toast({
+                  title: "Multi-tech visit",
+                  description: "Change crew assignments from the visit detail panel.",
+                });
+                return;
+              }
             }
-            rescheduleVisit({ visitId: dragData.visitId, jobId: dragData.jobId, startAt, endAt });
+            rescheduleVisit({ visitId: vid, jobId: dragData.jobId, startAt, endAt });
           } else {
-            const techChanged = dragData.technicianId !== dropData.technicianId;
+            const techChanged = hasExplicitTech ? (dragData.technicianId !== dropData.technicianId) : false;
             rescheduleVisit({
-              visitId: dragData.visitId,
+              visitId: vid,
               jobId: dragData.jobId,
-              technicianUserId: techChanged ? dropData.technicianId : undefined,
+              technicianUserId: isDropOnUnassigned ? null : (techChanged ? dropData.technicianId : undefined),
               startAt,
               endAt,
             });
@@ -558,36 +798,46 @@ export default function DispatchPreview() {
         }
       };
 
-      // Off-shift check for week view drop target
-      const [y, m, d] = dropData.dayKey.split("-").map(Number);
-      const targetTech = sortedTechnicians.find(t => t.id === dropData.technicianId);
-      const targetDate = new Date(y, m - 1, d);
-      const isOffShiftOnDay = targetTech && !isTechWorkingOnDate(scheduleMap, targetTech.id, targetDate);
-      if (isOffShiftOnDay && targetTech) {
-        setOffShiftConfirm({ action: executeMutation, techName: targetTech.name });
-      } else {
-        executeMutation();
+      // Off-shift check for week view drop target (skip for Unassigned lane and calendar drops)
+      if (!isDropOnUnassigned && hasExplicitTech) {
+        const [y, m, d] = dropData.dayKey.split("-").map(Number);
+        const targetTech = sortedTechnicians.find(t => t.id === dropData.technicianId);
+        const targetDate = new Date(y, m - 1, d);
+        const isOffShiftOnDay = targetTech && !isTechWorkingOnDate(scheduleMap, targetTech.id, targetDate);
+        if (isOffShiftOnDay && targetTech) {
+          setOffShiftConfirm({ action: executeMutation, techName: targetTech.name });
+          return;
+        }
       }
+
+      // 2026-03-30: Multi-day warning — require explicit confirmation before creating
+      if (crossesMidnight) {
+        setMultiDayConfirm({ action: executeMutation });
+        return;
+      }
+
+      executeMutation();
       return;
     }
 
     // ── Day view drop — shared placement resolver (pixel-based, auto-resolve overlap) ──
+    // Day view lanes always provide technicianId — guard ensures type safety
+    if (!dropData.technicianId) return;
+    const dayDropTechId = dropData.technicianId;
     const scrollEl = timelineScrollRef.current;
     if (!scrollEl) return;
 
-    const activatorEvent = event.activatorEvent as PointerEvent | undefined;
-    if (!activatorEvent) return;
-
-    const finalX = activatorEvent.clientX + (event.delta?.x ?? 0);
+    // Use native pointer position (same as dragPlacement preview) for consistency
+    const finalX = dragPointerXRef.current;
     const relativeX = clientXToRelativePx(
       finalX,
       scrollEl.getBoundingClientRect(),
       scrollEl.scrollLeft,
       dragGrabBlockXRef.current,
     ) - ANY_TIME_COL_WIDTH;
-    const laneVisits = visitsByTech.get(dropData.technicianId) ?? [];
-    const laneTasks = tasksByTech.get(dropData.technicianId) ?? [];
-    const placement = resolvePlacement(relativeX, dropData.technicianId, dragData.durationMinutes, {
+    const laneVisits = visitsByTech.get(dayDropTechId) ?? [];
+    const laneTasks = tasksByTech.get(dayDropTechId) ?? [];
+    const placement = resolvePlacement(relativeX, dayDropTechId, dragData.durationMinutes, {
       selectedDate,
       startHour: tlConfig.startHour,
       endHour: tlConfig.endHour,
@@ -603,30 +853,35 @@ export default function DispatchPreview() {
     const startAt = placement.startAt;
     const endAt = placement.endAt;
 
+    // 2026-03-26: Resolve effective technicianUserId — null for Unassigned lane
+    const effectiveTechId = isDropOnUnassigned ? null : dayDropTechId;
+
     // Stabilization: version resolved internally by mutations from fresh cache
     const executeMutation = () => {
       if (dragData.type === "scheduled-task") {
+        if (isDropOnUnassigned) return; // Tasks require an assignee
         rescheduleTask({
-          taskId: dragData.visitId,
+          taskId: dragData.visitId!,
           scheduledStartAt: startAt,
           scheduledEndAt: endAt,
-          assignedToUserId: dropData.technicianId,
+          assignedToUserId: dayDropTechId,
         });
       } else if (dragData.type === "unscheduled-visit") {
+        // visitId may be undefined for backlog items without a persisted visit
         scheduleVisit({
           jobId: dragData.jobId,
           visitId: dragData.visitId,
-          technicianUserId: dropData.technicianId,
+          technicianUserId: effectiveTechId,
           startAt,
           endAt,
         });
       } else if (dragData.type === "scheduled-visit") {
-        if (dragData.isMultiTech) {
-          // Multi-tech: allow time reschedule (all mirrors move together).
-          // Block only if target lane is NOT one of the assigned techs (= crew reassignment attempt).
-          const visit = allVisits.find(v => v.id === dragData.visitId);
+        // Scheduled visits always have a real persisted visitId
+        const vid = dragData.visitId!;
+        if (dragData.isMultiTech && !isDropOnUnassigned) {
+          const visit = allVisits.find(v => v.id === vid);
           const assignedIds = visit?.technicianIds ?? [];
-          const targetIsAssigned = assignedIds.includes(dropData.technicianId);
+          const targetIsAssigned = assignedIds.includes(dayDropTechId);
           if (!targetIsAssigned) {
             toast({
               title: "Multi-tech visit",
@@ -634,19 +889,18 @@ export default function DispatchPreview() {
             });
             return;
           }
-          // Time-only reschedule — no tech change
           rescheduleVisit({
-            visitId: dragData.visitId,
+            visitId: vid,
             jobId: dragData.jobId,
             startAt,
             endAt,
           });
         } else {
-          const techChanged = dragData.technicianId !== dropData.technicianId;
+          const techChanged = dragData.technicianId !== dayDropTechId;
           rescheduleVisit({
-            visitId: dragData.visitId,
+            visitId: vid,
             jobId: dragData.jobId,
-            technicianUserId: techChanged ? dropData.technicianId : undefined,
+            technicianUserId: isDropOnUnassigned ? null : (techChanged ? dayDropTechId : undefined),
             startAt,
             endAt,
           });
@@ -654,13 +908,16 @@ export default function DispatchPreview() {
       }
     };
 
-    const targetTech = sortedTechnicians.find(t => t.id === dropData.technicianId);
-    if (targetTech && targetTech.isWorking === false) {
-      setOffShiftConfirm({ action: executeMutation, techName: targetTech.name });
-    } else {
-      executeMutation();
+    // Off-shift check (skip for Unassigned lane)
+    if (!isDropOnUnassigned) {
+      const targetTech = sortedTechnicians.find(t => t.id === dayDropTechId);
+      if (targetTech && targetTech.isWorking === false) {
+        setOffShiftConfirm({ action: executeMutation, techName: targetTech.name });
+        return;
+      }
     }
-  }, [activeDragData, selectedDate, scheduleVisit, rescheduleVisit, rescheduleTask, visitsByTech, tasksByTech, sortedTechnicians, scheduleMap, tlConfig, allVisits]);
+    executeMutation();
+  }, [activeDragData, selectedDate, activeView, show24Hour, scheduleVisit, rescheduleVisit, rescheduleTask, visitsByTech, tasksByTech, sortedTechnicians, scheduleMap, tlConfig, allVisits]);
 
   // ── Unschedule handler ──
   // Stabilization: version resolved internally by mutation from fresh cache
@@ -671,22 +928,27 @@ export default function DispatchPreview() {
 
   // ── Item 4: Schedule from detail panel (for unscheduled visits) ──
   // Item 2: Supports multi-tech — schedules with primary tech, then updates crew if additional techs
+  // 2026-03-26: Pass real visit.visitId only (undefined for backlog items without a
+  // persisted visit). Never fall back to visit.id which is the job UUID for backlog items.
   const handleScheduleFromPanel = useCallback((visit: DispatchVisit, startAt: string, endAt: string, techId: string, additionalTechIds?: string[]) => {
     scheduleVisit({
       jobId: visit.jobId,
-      visitId: visit.id,
+      visitId: visit.visitId ?? undefined,
       technicianUserId: techId,
       startAt,
       endAt,
     });
     // If additional technicians selected, update crew after a short delay to let schedule complete.
     // Timer tracked in crewUpdateTimerRef so it can be cancelled on unmount.
-    if (additionalTechIds && additionalTechIds.length > 0) {
+    // Note: crew update uses visit.visitId which must be the real persisted UUID.
+    // For backlog items without a visit, the crew update is deferred until after
+    // background invalidation provides the real visit identity.
+    if (additionalTechIds && additionalTechIds.length > 0 && visit.visitId) {
       if (crewUpdateTimerRef.current) clearTimeout(crewUpdateTimerRef.current);
       crewUpdateTimerRef.current = setTimeout(() => {
         crewUpdateTimerRef.current = null;
         updateVisitCrew({
-          visitId: visit.id,
+          visitId: visit.visitId!,
           technicianUserIds: [techId, ...additionalTechIds],
         });
       }, 800);
@@ -721,6 +983,33 @@ export default function DispatchPreview() {
   // ── Resize handlers ──
   const handleResize = useCallback((visit: DispatchVisit, newEndTime: string) => {
     if (visit.kind !== "visit") return; // Guard: backlog items cannot be resized
+    resizeVisit({
+      visitId: visit.id,
+      jobId: visit.jobId,
+      scheduledStart: visit.scheduledStart ?? "",
+      scheduledEnd: visit.scheduledEnd ?? "",
+      newEndTime,
+    });
+  }, [resizeVisit]);
+
+  // 2026-03-30: Week view resize — wraps shared resizeVisit with multi-day check
+  const handleWeekResize = useCallback((visit: DispatchVisit, newEndTime: string) => {
+    if (visit.kind !== "visit") return;
+    const newEnd = new Date(newEndTime);
+    const start = visit.scheduledStart ? new Date(visit.scheduledStart) : null;
+    // Check if resize crosses midnight
+    if (start && (newEnd.getDate() !== start.getDate() || newEnd.getMonth() !== start.getMonth())) {
+      setMultiDayConfirm({
+        action: () => resizeVisit({
+          visitId: visit.id,
+          jobId: visit.jobId,
+          scheduledStart: visit.scheduledStart ?? "",
+          scheduledEnd: visit.scheduledEnd ?? "",
+          newEndTime,
+        }),
+      });
+      return;
+    }
     resizeVisit({
       visitId: visit.id,
       jobId: visit.jobId,
@@ -868,6 +1157,7 @@ export default function DispatchPreview() {
     jobSummary?: string;
     locationName?: string;
     locationAddress?: string;
+    locationId?: string;
   } | null>(null);
 
   // Draggable floating panel: offset from center (user can drag the panel around)
@@ -895,6 +1185,7 @@ export default function DispatchPreview() {
         jobSummary: visit.summary,
         locationName: visit.locationName,
         locationAddress: addressParts.join(", "),
+        locationId: visit.locationId || undefined,
       });
     }
     // Items without a visitId: no-op (schedule the job via drag-to-lane first)
@@ -1017,7 +1308,7 @@ export default function DispatchPreview() {
   // ── Error state ──
   if (error) {
     return (
-      <div className="flex h-full items-center justify-center bg-slate-50">
+      <div className="flex h-full items-center justify-center bg-[#F4F8F4]">
         <div className="text-center">
           <AlertCircle className="mx-auto h-8 w-8 text-red-400 mb-2" />
           <p className="text-sm font-medium text-foreground">Failed to load dispatch data</p>
@@ -1143,6 +1434,7 @@ export default function DispatchPreview() {
       jobSummary={visitEditorState.jobSummary}
       locationName={visitEditorState.locationName}
       locationAddress={visitEditorState.locationAddress}
+      locationId={visitEditorState.locationId}
       onDispatchSchedule={scheduleVisit}
       onDispatchReschedule={rescheduleVisit}
       onDispatchUpdateCrew={updateVisitCrew}
@@ -1162,7 +1454,8 @@ export default function DispatchPreview() {
       onDragMove={handleDragMove}
       onDragEnd={handleDragEnd}
     >
-      <div className="flex h-full flex-col bg-slate-50">
+    <DispatchHoverContext.Provider value={hoverContextValue}>
+      <div className="flex h-full flex-col bg-[#F4F8F4]">
         {/* Header with view toggle */}
         <DispatchBoardHeader
           selectedDate={selectedDate}
@@ -1184,11 +1477,51 @@ export default function DispatchPreview() {
           onTechClearAll={onTechClearAll}
           selectedStatuses={selectedStatuses}
           onStatusToggle={onStatusToggle}
-          includeUnassigned={activeView === "week" ? hasUnassignedWeekVisits : hasUnassignedVisits}
+          includeUnassigned
           showHideWeekends={activeView === "week"}
           hideWeekends={hideWeekends}
           onToggleHideWeekends={onToggleHideWeekends}
+          showMap={showMap}
+          onToggleMap={() => setShowMap(prev => !prev)}
+          showUnscheduledOnMap={showUnscheduledOnMap}
+          onToggleUnscheduledOnMap={() => setShowUnscheduledOnMap(prev => !prev)}
+          showRoutes={showRoutes}
+          onToggleRoutes={() => setShowRoutes(prev => !prev)}
         />
+
+        {/* Focus bar — DAY VIEW ONLY, card grid of focused items */}
+        {activeView === "day" && focusedVisitIds.size > 0 && (() => {
+          const focusedItems = unscheduledVisits.filter(v => focusedVisitIds.has(v.id));
+          // Opportunistic cleanup: remove stale IDs that no longer appear in unscheduled data
+          if (focusedItems.length < focusedVisitIds.size) {
+            const validIds = new Set(focusedItems.map(v => v.id));
+            queueMicrotask(() => setFocusedVisitIds(validIds));
+          }
+          if (focusedItems.length === 0) return null;
+          return (
+            <div className="border-b bg-slate-100 px-3 py-1.5 flex-shrink-0">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-semibold text-slate-800">Focus ({focusedItems.length})</span>
+                <button
+                  onClick={handleClearFocus}
+                  className="text-[11px] text-slate-500 hover:text-slate-800 transition-colors px-1 font-medium"
+                >
+                  Clear all
+                </button>
+              </div>
+              <div className="grid grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-1.5 max-h-[82px] overflow-y-auto">
+                {focusedItems.map(v => (
+                  <FocusCard
+                    key={v.id}
+                    visit={v}
+                    onRemove={handleRemoveFromFocus}
+                    onOpen={handleSelectVisit}
+                  />
+                ))}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Main content area */}
         <div className="flex flex-1 overflow-hidden">
@@ -1224,14 +1557,35 @@ export default function DispatchPreview() {
                 timelineEndHour={tlConfig.endHour}
                 onEmptySlotClick={handleEmptySlotClick}
               />
+              {/* Right region: Unscheduled (always) + Map (additive) — Day view
+                   2026-03-31: Map toggle moved to DispatchFiltersBar. Panels are in-flow siblings. */}
               <DispatchUnscheduledPanel
                 visits={unscheduledVisits}
                 savingIds={savingIds}
                 selectedVisitId={selectedVisitId}
                 onSelectVisit={handleSelectVisit}
+                isSelectionMode={isSelectionMode}
+                selectedVisitIdsForFocus={selectedVisitIdsForFocus}
+                focusedVisitIds={focusedVisitIds}
+                onToggleSelectionMode={handleToggleSelectionMode}
+                onExitSelectionMode={handleExitSelectionMode}
+                onToggleSelectVisit={handleToggleSelectVisit}
+                onClearSelection={handleClearSelection}
+                onAddToFocus={handleAddToFocus}
               />
+              {showMap && (
+                <div className="flex h-full flex-shrink-0 flex-col border-l bg-white" style={{ width: "clamp(700px, 40vw, 50%)" }}>
+                  <DispatchMapPanel
+                    visits={mapVisits}
+                    technicians={technicians}
+                    liveTechnicians={liveTechnicians}
+                    isDragging={!!activeDragData}
+                    showRoutes={showRoutes}
+                  />
+                </div>
+              )}
             </>
-          ) : (
+          ) : activeView === "week" ? (
             /* ── Week View ── */
             <>
               <WeekDispatchGrid
@@ -1240,9 +1594,42 @@ export default function DispatchPreview() {
                 visitsByTechByDay={filteredWeekVisits}
                 tasksByTechByDay={filteredWeekTasks}
                 selectedItemId={selectedVisitId ?? selectedTaskId}
+                savingIds={savingIds}
                 onSelectVisit={handleSelectVisit}
                 onSelectTask={handleSelectTask}
+                onResize={handleWeekResize}
+                show24Hour={show24Hour}
               />
+              {/* Right region: Unscheduled (always) + Map (additive) — Week view */}
+              <DispatchUnscheduledPanel
+                visits={unscheduledVisits}
+                savingIds={savingIds}
+                selectedVisitId={selectedVisitId}
+                onSelectVisit={handleSelectVisit}
+              />
+              {showMap && (
+                <div className="flex h-full flex-shrink-0 flex-col border-l bg-white" style={{ width: "clamp(700px, 40vw, 50%)" }}>
+                  <DispatchMapPanel
+                    visits={mapVisits}
+                    technicians={technicians}
+                    liveTechnicians={liveTechnicians}
+                    isDragging={!!activeDragData}
+                    showRoutes={showRoutes}
+                  />
+                </div>
+              )}
+            </>
+          ) : (
+            /* ── Month View ── */
+            <>
+              <MonthDispatchGrid
+                selectedDate={selectedDate}
+                visitsByDay={monthData.visitsByDay}
+                techColorMap={monthTechColorMap}
+                selectedVisitId={selectedVisitId}
+                onSelectVisit={handleSelectVisit}
+              />
+              {/* Right region: Unscheduled (always) — Month view */}
               <DispatchUnscheduledPanel
                 visits={unscheduledVisits}
                 savingIds={savingIds}
@@ -1265,10 +1652,10 @@ export default function DispatchPreview() {
           Ghost only shows while dragging outside the board or before a lane is detected. */}
       <DragOverlay dropAnimation={null}>
         {!dragPlacement && draggedVisit && (
-          <div className="pointer-events-none rounded border border-blue-300 bg-blue-50 px-2 py-1 shadow-md opacity-70 max-w-[160px]"
+          <div className="pointer-events-none rounded border border-[#76B054] bg-[rgba(118,176,84,0.08)] px-2 py-1 shadow-md opacity-70 max-w-[160px]"
             style={{ transform: `translate(${dragGrabOffsetRef.current.x - 10}px, ${dragGrabOffsetRef.current.y - 10}px)` }}>
-            <p className="text-[10px] font-semibold text-blue-800 truncate">{draggedVisit.customerName}</p>
-            <p className="text-[9px] text-blue-500">#{draggedVisit.jobNumber}</p>
+            <p className="text-[10px] font-semibold text-[#39833A] truncate">{draggedVisit.customerName}</p>
+            <p className="text-[9px] text-[#76B054]">#{draggedVisit.jobNumber}</p>
           </div>
         )}
         {!dragPlacement && draggedTask && (
@@ -1296,6 +1683,27 @@ export default function DispatchPreview() {
               setOffShiftConfirm(null);
             }}>
               Assign anyway
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* 2026-03-30: Multi-day visit confirmation dialog */}
+      <AlertDialog open={!!multiDayConfirm} onOpenChange={(open) => { if (!open) setMultiDayConfirm(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Create multi-day visit?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This change will create a multi-day visit that crosses midnight into the next day. Are you sure?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setMultiDayConfirm(null)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => {
+              multiDayConfirm?.action();
+              setMultiDayConfirm(null);
+            }}>
+              Confirm
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -1411,6 +1819,7 @@ export default function DispatchPreview() {
           queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
         }}
       />
+    </DispatchHoverContext.Provider>
     </DndContext>
   );
 }

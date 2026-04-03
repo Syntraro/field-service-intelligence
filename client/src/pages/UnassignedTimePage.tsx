@@ -114,7 +114,7 @@ export default function UnassignedTimePage() {
   const [selectedDate, setSelectedDate] = useState<string>(
     new Date().toISOString().split("T")[0]
   );
-  const [selectedTechnicianId, setSelectedTechnicianId] = useState<string>("");
+  const [selectedTechnicianId, setSelectedTechnicianId] = useState<string>("__all__");
   const [includeRunning, setIncludeRunning] = useState(false);
 
   // State for link to job dialog
@@ -134,7 +134,7 @@ export default function UnassignedTimePage() {
     queryFn: async () => {
       const params = new URLSearchParams();
       if (selectedDate) params.set("date", selectedDate);
-      if (selectedTechnicianId) params.set("technicianId", selectedTechnicianId);
+      if (selectedTechnicianId && selectedTechnicianId !== "__all__") params.set("technicianId", selectedTechnicianId);
       if (includeRunning) params.set("includeRunning", "true");
 
       const res = await fetch(`/api/time/unassigned?${params.toString()}`, {
@@ -275,7 +275,7 @@ export default function UnassignedTimePage() {
                   <SelectValue placeholder="All Technicians" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">All Technicians</SelectItem>
+                  <SelectItem value="__all__">All Technicians</SelectItem>
                   {technicians.map((tech) => (
                     <SelectItem key={tech.id} value={tech.id}>
                       {tech.fullName || tech.email}

@@ -53,6 +53,7 @@ export interface JobFeedFilters {
   search?: string;
   scheduledOnly?: boolean;
   unscheduledOnly?: boolean;
+  openSubStatus?: string;
   overdue?: boolean;
   dateRange?: { start: string; end: string };
   limit?: number;
@@ -87,22 +88,22 @@ export interface JobFeedItem {
   locationCity: string | null;
   primaryTechnicianId: string | null;
   assignedTechnicianIds: string[] | null;
-  // Hold / action-required fields (needed by Jobs list page)
+  // Hold / action-required fields (needed by Jobs list page and dashboard modal)
   onHoldAt: string | null;
+  holdReason: string | null;
+  holdNotes: string | null;
 }
 
 /** Canonical single-job detail header. Extends feed item with detail-only fields.
  * PERF-02: Fields removed from JobFeedItem are declared here for the detail view. */
 export interface JobHeaderDetail extends JobFeedItem {
-  // PERF-02: Fields removed from feed, required for detail
+  // Fields not in feed but required for detail (holdReason/holdNotes now in JobFeedItem)
   companyId: string;
   description: string | null;
   isActive: boolean;
   version: number;
   createdAt: string;
   updatedAt: string | null;
-  holdReason: string | null;
-  holdNotes: string | null;
   nextActionDate: string | null;
   invoiceId: string | null;
   closedAt: string | null;
@@ -172,21 +173,21 @@ const feedSelectFields = {
   primaryTechnicianId: jobs.primaryTechnicianId,
   assignedTechnicianIds: jobs.assignedTechnicianIds,
   onHoldAt: jobs.onHoldAt,
+  holdReason: jobs.holdReason,
+  holdNotes: jobs.holdNotes,
 };
 
 /** Detail-level select fields (extends feed fields).
  * PERF-02: Re-adds fields removed from feed for the detail view. */
 const detailSelectFields = {
   ...feedSelectFields,
-  // Fields removed from feed but required for detail view
+  // Fields not in feed but required for detail view (holdReason/holdNotes now in feed)
   companyId: jobs.companyId,
   description: jobs.description,
   isActive: jobs.isActive,
   version: jobs.version,
   createdAt: jobs.createdAt,
   updatedAt: jobs.updatedAt,
-  holdReason: jobs.holdReason,
-  holdNotes: jobs.holdNotes,
   nextActionDate: jobs.nextActionDate,
   invoiceId: jobs.invoiceId,
   closedAt: jobs.closedAt,
@@ -257,6 +258,8 @@ function mapFeedRow(row: any): JobFeedItem {
     primaryTechnicianId: row.primaryTechnicianId ?? null,
     assignedTechnicianIds: row.assignedTechnicianIds ?? null,
     onHoldAt: toISOOrNull(row.onHoldAt),
+    holdReason: row.holdReason ?? null,
+    holdNotes: row.holdNotes ?? null,
   };
 }
 
@@ -272,8 +275,7 @@ function mapDetailRow(row: any): JobHeaderDetail {
     version: row.version,
     createdAt: toISOOrNull(row.createdAt) ?? new Date().toISOString(),
     updatedAt: toISOOrNull(row.updatedAt),
-    holdReason: row.holdReason ?? null,
-    holdNotes: row.holdNotes ?? null,
+    // holdReason/holdNotes now mapped in mapFeedRow (promoted to feed layer)
     nextActionDate: row.nextActionDate ?? null,
     invoiceId: row.invoiceId ?? null,
     closedAt: toISOOrNull(row.closedAt),
@@ -390,12 +392,31 @@ export async function getJobsFeed(
     conditions.push(eq(jobs.priority, filters.priority));
   }
 
+  // Open sub-status filter (on_hold, in_progress, on_route)
+  if (filters.openSubStatus) {
+    conditions.push(eq(jobs.openSubStatus, filters.openSubStatus));
+  }
+
+  // Overdue filter: open + scheduled + effective end past due + not actively being worked.
+  // Uses effectiveEndExpr (same as attention system) to match dashboard count exactly.
+  if (filters.overdue) {
+    conditions.push(sql`${jobs.scheduledStart} IS NOT NULL`);
+    conditions.push(sql`${effectiveEndExpr} < NOW()`);
+    conditions.push(
+      sql`(${jobs.openSubStatus} IS NULL OR ${jobs.openSubStatus} NOT IN ('in_progress', 'on_route'))`
+    );
+  }
+
   // Scheduling filters
   if (filters.scheduledOnly) {
     conditions.push(sql`${jobs.scheduledStart} IS NOT NULL`);
   }
   if (filters.unscheduledOnly) {
+    // Aligned with dashboard.ts canonical unscheduled count: excludes on_hold jobs
     conditions.push(isNull(jobs.scheduledStart));
+    conditions.push(
+      sql`(${jobs.openSubStatus} IS NULL OR ${jobs.openSubStatus} != 'on_hold')`
+    );
   }
 
   // Date range

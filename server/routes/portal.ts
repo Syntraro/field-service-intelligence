@@ -17,7 +17,7 @@ import crypto from "crypto";
 import { db } from "../db";
 import { eq, and, isNull, desc, sql, inArray, or } from "drizzle-orm";
 import {
-  clientContacts,
+  contactPersons,
   customerCompanies,
   invoices,
   invoiceLines,
@@ -125,18 +125,18 @@ router.post(
 
     const safeMessage = "If an account exists, we sent a login link.";
 
-    // Look up contact by email
+    // Look up contact person by email (Identity + Assignment model)
     const [contact] = await db
       .select({
-        id: clientContacts.id,
-        companyId: clientContacts.companyId,
-        customerCompanyId: clientContacts.customerCompanyId,
-        firstName: clientContacts.firstName,
-        lastName: clientContacts.lastName,
-        email: clientContacts.email,
+        id: contactPersons.id,
+        companyId: contactPersons.companyId,
+        customerCompanyId: contactPersons.customerCompanyId,
+        firstName: contactPersons.firstName,
+        lastName: contactPersons.lastName,
+        email: contactPersons.email,
       })
-      .from(clientContacts)
-      .where(eq(clientContacts.email, normalizedEmail))
+      .from(contactPersons)
+      .where(eq(contactPersons.email, normalizedEmail))
       .limit(1);
 
     if (!contact) {
@@ -268,13 +268,13 @@ router.get(
     // Fetch contact + customer company
     const [contact] = await db
       .select({
-        id: clientContacts.id,
-        firstName: clientContacts.firstName,
-        lastName: clientContacts.lastName,
-        email: clientContacts.email,
+        id: contactPersons.id,
+        firstName: contactPersons.firstName,
+        lastName: contactPersons.lastName,
+        email: contactPersons.email,
       })
-      .from(clientContacts)
-      .where(eq(clientContacts.id, tokenRow.contactId))
+      .from(contactPersons)
+      .where(eq(contactPersons.id, tokenRow.contactId))
       .limit(1);
 
     const [custCompany] = await db
