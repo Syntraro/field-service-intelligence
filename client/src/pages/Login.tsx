@@ -33,9 +33,13 @@ export default function Login() {
     },
   });
 
-  // Redirect when user becomes authenticated (respects returnTo for session-expired flow)
+  // Redirect when user becomes authenticated (role-aware)
   useEffect(() => {
     if (user) {
+      if (user.role === "technician") {
+        setLocation("/tech/today");
+        return;
+      }
       const params = new URLSearchParams(window.location.search);
       const returnTo = params.get("returnTo");
       setLocation(returnTo && returnTo.startsWith("/") ? returnTo : "/");

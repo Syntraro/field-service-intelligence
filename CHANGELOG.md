@@ -8,6 +8,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### Field UX + Action Safety Pass (2026-04-05)
+
+- **Success feedback for all visit actions.** Start Travel → "En route", Start Job → "On site — job started", Complete → "Visit completed", Add Note → "Note saved". Green inline banner auto-dismisses after 3 seconds. Reuses existing inline feedback pattern (no new notification system).
+- **Success feedback for clock in/out.** "Clocked in" / "Clocked out" banners on Today page, auto-dismiss 3s.
+- **Success feedback for timesheet entry save.** "Entry saved" banner below day selector, auto-dismiss 3s. Sheet closes on save (existing behavior preserved).
+- **Note textarea disabled during save.** `disabled={isPending}` added to NotesSection textarea. Prevents text modification while note is being saved.
+- **No new issues found for:** double-submit protection (all buttons already use `disabled={isPending}`), button state correctness (all actions gated by correct visit status), loading clarity (all actions show Loader2 spinner), error feedback (all mutations surface errors visibly).
+- **Files changed:** `client/src/tech-app/pages/VisitDetailPage.tsx`, `client/src/tech-app/pages/TodayPage.tsx`, `client/src/tech-app/pages/TimesheetPage.tsx`, `client/src/tech-app/hooks/useTimesheetState.ts`, `CHANGELOG.md`
+
+#### Time/Display Consolidation Pass (2026-04-05)
+
+- **Consolidated time formatters.** Created `utils/formatTime.ts` with `formatClockTime` (ISO → "8:00 AM") and `formatDurationMinutes` (minutes → "1h 30m"). Removed duplicate `formatScheduleTime` from `useTodayVisits.ts`, duplicate `formatTime` and `formatDuration` from `TimesheetPage.tsx`. All tech-app surfaces now import from single source.
+- **Updated consumers:** `useTodayVisits.ts`, `useTechVisitDetail.ts`, `TimesheetPage.tsx` — all use shared `formatClockTime`/`formatDurationMinutes`.
+- **No business logic changes.** Helpers are presentation-only — same visible output, single owner.
+- **Files created:** `client/src/tech-app/utils/formatTime.ts`
+- **Files changed:** `client/src/tech-app/hooks/useTodayVisits.ts`, `client/src/tech-app/hooks/useTechVisitDetail.ts`, `client/src/tech-app/pages/TimesheetPage.tsx`, `CHANGELOG.md`
+
+#### Role-Aware Login Redirect + Technician Route Guard (2026-04-05)
+
+- **Login redirect is now role-aware.** Technician users (`role === "technician"`) redirect to `/tech/today` after login instead of `/`. Admin/owner/manager/dispatcher users retain existing behavior (`returnTo` param or `/`).
+- **ProtectedRoute enforces technician routing.** Technicians hitting any admin route (e.g., `/`, `/jobs`, `/invoices`) are redirected to `/tech/today`. This is a hard guard — runs before `requireAdmin` checks, preventing the redirect loop where `/` required admin and redirected back to `/`.
+- **Non-admin, non-technician users redirect to `/login`** instead of `/` when failing `requireAdmin` or `requirePlatformAdmin` checks. Eliminates the previous redirect loop.
+- **Files changed:** `client/src/pages/Login.tsx`, `client/src/components/ProtectedRoute.tsx`, `CHANGELOG.md`
+
+#### Technician App — Integrity Fixes (2026-04-05)
+
+- **Fix 1 (Critical): Visit actions now invalidate time queries.** `invalidateAfterAction` in `useTechVisitDetail.ts` now invalidates `["/api/tech/time/summary"]` and `["/api/tech/time/day"]` in addition to visit queries. Timesheet updates immediately after visit complete/start/en-route instead of waiting for SSE or polling.
+- **Fix 2: Outcome modal Tailwind classes fixed.** Replaced dynamic template-literal classes (`border-${o.color}-400`) with static class strings (`border-emerald-400 bg-emerald-50`). Dynamic Tailwind classes are purged in production builds.
+- **Fix 3: Add-note errors now surfaced.** Replaced silent `catch { /* non-fatal */ }` with proper error handling using existing `actionError` state. Users see failure message when note save fails.
+- **Fix 4: Entry edit inputs disabled during save.** Start time, end time, and notes textarea all disabled while `isSaving` is true. Prevents field modification during in-flight save.
+- **Fix 5: Timesheet day query uses apiRequest.** Replaced raw `fetch()` with `apiRequest()` for consistent session-expired handling and error typing.
+- **Fix 6: FAB role derived from auth.** `userRole` in TodayPage now reads from `useAuth().user.role` instead of hardcoded `"technician"`. FAB action visibility matches actual user role.
+- **Fix 7: Removed misleading pause button.** Pause was UI-only state with no backend concept — timer display paused but backend time continued. Removed `paused` state and Pause/Resume button from visit detail timer strip. Timer now always shows real elapsed time from `checkedInAt`.
+- **Files changed:** `client/src/tech-app/hooks/useTechVisitDetail.ts`, `client/src/tech-app/pages/VisitDetailPage.tsx`, `client/src/tech-app/pages/TimesheetPage.tsx`, `client/src/tech-app/hooks/useTimesheetState.ts`, `client/src/tech-app/pages/TodayPage.tsx`, `CHANGELOG.md`
+
 #### SSE Session-Expired Loop Fix (2026-04-05)
 
 - **Root cause:** `useTechRealtimeSync` opened an EventSource to `/api/dispatch/stream` which requires authentication. When auth wasn't fully resolved or session was absent, the SSE endpoint returned 401. The hook's `onerror` handler retried indefinitely, and if any retry path intersected with `notifySessionExpired`, the Session Expired dialog opened. Additionally, the `notifySessionExpired` function in `queryClient.ts` did not exclude `/api/dispatch/stream` from its 401 → session-expired dispatch.

@@ -25,15 +25,21 @@ export default function ProtectedRoute({ children, requireAdmin = false, require
       return;
     }
     
-    // Platform admin check (most restrictive)
-    if (requirePlatformAdmin && user.role !== "platform_admin") {
-      setLocation("/");
+    // Technician hard guard: always redirect to tech app regardless of route
+    if (user.role === "technician") {
+      setLocation("/tech/today");
       return;
     }
-    
+
+    // Platform admin check (most restrictive)
+    if (requirePlatformAdmin && user.role !== "platform_admin") {
+      setLocation("/login");
+      return;
+    }
+
     // Regular admin check
     if (requireAdmin && user.role !== "owner" && user.role !== "admin" && user.role !== "platform_admin") {
-      setLocation("/");
+      setLocation("/login");
       return;
     }
   }, [user, isLoading, requireAdmin, requirePlatformAdmin, setLocation]);

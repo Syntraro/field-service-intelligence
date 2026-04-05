@@ -21,6 +21,7 @@ import { useTimesheetState, type EntryEditPayload } from "../hooks/useTimesheetS
 import { useElapsedTimer } from "../hooks/useElapsedTimer";
 import { type TimesheetEntry } from "../types/timesheet";
 import { ENTRY_TYPE_LABELS, ENTRY_TYPE_COLORS, DEFAULT_ENTRY_TYPE_COLOR } from "../utils/timesheetDisplay";
+import { formatClockTime, formatDurationMinutes } from "../utils/formatTime";
 import {
   type EntryAccess,
   validateEntryTimes,
@@ -34,18 +35,7 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 
-// ── Helpers ──
-
-function formatTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-}
-
-function formatDuration(minutes: number): string {
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
-  return `${m}m`;
-}
+// ── Helpers (time formatting from shared utils/formatTime.ts) ──
 
 function isSameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
@@ -143,9 +133,9 @@ function ShiftSummaryCard({ clockInAt, clockOutAt, isActive }: {
 }) {
   const { formatted: elapsed } = useElapsedTimer(clockInAt, isActive, 10000);
   const label = isActive
-    ? `On shift — ${formatTime(clockInAt)}`
-    : `Shift — ${formatTime(clockInAt)} – ${clockOutAt ? formatTime(clockOutAt) : ""}`;
-  const duration = isActive ? elapsed : (clockOutAt ? formatDuration(Math.floor((new Date(clockOutAt).getTime() - new Date(clockInAt).getTime()) / 60000)) : "—");
+    ? `On shift — ${formatClockTime(clockInAt)}`
+    : `Shift — ${formatClockTime(clockInAt)} – ${clockOutAt ? formatClockTime(clockOutAt) : ""}`;
+  const duration = isActive ? elapsed : (clockOutAt ? formatDurationMinutes(Math.floor((new Date(clockOutAt).getTime() - new Date(clockInAt).getTime()) / 60000)) : "—");
 
   return (
     <div className="mx-4 rounded-xl bg-white border border-slate-200 shadow-sm px-3 py-2.5 flex items-center justify-between">
@@ -170,13 +160,13 @@ function TimeEntryCard({ entry, onTap }: { entry: TimesheetEntry; onTap: (id: st
 
   const duration = isRunning
     ? runningTime
-    : entry.durationMinutes !== null ? formatDuration(entry.durationMinutes) : "—";
+    : entry.durationMinutes !== null ? formatDurationMinutes(entry.durationMinutes) : "—";
 
   const timeRange = isRunning
-    ? `${formatTime(entry.startAt)} — now`
+    ? `${formatClockTime(entry.startAt)} — now`
     : entry.endAt
-      ? `${formatTime(entry.startAt)} — ${formatTime(entry.endAt)}`
-      : formatTime(entry.startAt);
+      ? `${formatClockTime(entry.startAt)} — ${formatClockTime(entry.endAt)}`
+      : formatClockTime(entry.startAt);
 
   const isLocked = entry.lockedAt !== null;
 
@@ -263,7 +253,7 @@ function EntryEditSheet({
     const [sh, sm] = startInput.split(":").map(Number);
     const [eh, em] = endInput.split(":").map(Number);
     const mins = (eh * 60 + em) - (sh * 60 + sm);
-    return mins > 0 ? formatDuration(mins) : "—";
+    return mins > 0 ? formatDurationMinutes(mins) : "—";
   })();
 
   return (
@@ -297,7 +287,7 @@ function EntryEditSheet({
           <div>
             <label className="text-xs font-medium text-slate-500 block mb-1">Start</label>
             <input type="time" value={startInput} onChange={(e) => setStartInput(e.target.value)}
-              disabled={!access.fields.startTime}
+              disabled={!access.fields.startTime || isSaving}
               className={`w-full text-sm border rounded-lg px-3 py-2 disabled:bg-slate-100 disabled:text-slate-500 ${validation?.errors.startTime ? "border-red-300" : "border-slate-200"}`} />
             {validation?.errors.startTime && <p className="text-[11px] text-red-500 mt-0.5">{validation.errors.startTime}</p>}
           </div>
@@ -306,7 +296,7 @@ function EntryEditSheet({
           <div>
             <label className="text-xs font-medium text-slate-500 block mb-1">End</label>
             <input type="time" value={endInput} onChange={(e) => setEndInput(e.target.value)}
-              disabled={!access.fields.endTime}
+              disabled={!access.fields.endTime || isSaving}
               className={`w-full text-sm border rounded-lg px-3 py-2 disabled:bg-slate-100 disabled:text-slate-500 ${validation?.errors.endTime ? "border-red-300" : "border-slate-200"}`} />
             {validation?.errors.endTime && <p className="text-[11px] text-red-500 mt-0.5">{validation.errors.endTime}</p>}
           </div>
@@ -323,7 +313,7 @@ function EntryEditSheet({
           <div>
             <label className="text-xs font-medium text-slate-500 block mb-1">Notes</label>
             <textarea value={noteInput} onChange={(e) => setNoteInput(e.target.value)}
-              disabled={!access.fields.notes} rows={2}
+              disabled={!access.fields.notes || isSaving} rows={2}
               className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 resize-none disabled:bg-slate-100 disabled:text-slate-500"
               placeholder="Add a note…" />
           </div>
@@ -386,7 +376,7 @@ export default function TimesheetPage() {
     isLoading, isError,
     goToDay, goToToday, goToPrevDay, goToNextDay,
     selectedEntry, selectedEntryAccess, editSheetOpen, openEntry, closeEditSheet,
-    updateEntry, isSaving, saveError,
+    updateEntry, isSaving, saveError, saveSuccess,
   } = useTimesheetState();
 
   return (
@@ -396,6 +386,13 @@ export default function TimesheetPage() {
       </div>
 
       <DaySelector selectedDate={selectedDate} onSelect={goToDay} onPrev={goToPrevDay} onNext={goToNextDay} onToday={goToToday} />
+
+      {saveSuccess && (
+        <div className="mx-4 mt-1 px-3 py-1.5 bg-emerald-50 border border-emerald-100 rounded-lg flex items-center gap-1.5">
+          <Clock className="h-3 w-3 text-emerald-600" />
+          <p className="text-xs font-medium text-emerald-700">Entry saved</p>
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto pb-4 space-y-2">
         {isLoading ? (
@@ -411,7 +408,7 @@ export default function TimesheetPage() {
             {dayEntries.length > 0 && (
               <div className="mx-4 py-1">
                 <span className="text-xs font-semibold text-slate-500">
-                  Tracked: {formatDuration(dayTotalMinutes)}
+                  Tracked: {formatDurationMinutes(dayTotalMinutes)}
                 </span>
               </div>
             )}

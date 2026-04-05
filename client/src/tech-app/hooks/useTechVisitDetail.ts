@@ -16,7 +16,7 @@
  */
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
-import { formatScheduleTime } from "./useTodayVisits";
+import { formatClockTime } from "../utils/formatTime";
 import { UNKNOWN_LOCATION, NO_ADDRESS } from "../utils/visitDisplay";
 
 // ── Backend response shapes ──
@@ -127,8 +127,8 @@ function toDetailVisit(data: VisitDetailResponse): DetailVisit {
     jobDescription: data.job?.description ?? null,
     company: loc?.companyName || UNKNOWN_LOCATION,
     address: locationParts.length > 0 ? locationParts.join(", ") : NO_ADDRESS,
-    scheduledTime: formatScheduleTime(data.visit.scheduledStart),
-    scheduledEnd: formatScheduleTime(data.visit.scheduledEnd),
+    scheduledTime: formatClockTime(data.visit.scheduledStart),
+    scheduledEnd: formatClockTime(data.visit.scheduledEnd),
     checkedInAt: data.visit.checkedInAt,
     outcome: data.visit.outcome,
     outcomeNote: data.visit.outcomeNote,
@@ -158,10 +158,13 @@ export function useTechVisitDetail(visitId: string | undefined) {
 
   const visit: DetailVisit | null = query.data ? toDetailVisit(query.data) : null;
 
-  /** Invalidate both today list and this visit detail after any action */
+  /** Invalidate visit + time queries after any action.
+   * Visit actions create/stop time entries on the backend — both surfaces must refresh. */
   const invalidateAfterAction = () => {
     queryClient.invalidateQueries({ queryKey: ["/api/tech/visits/today"] });
     queryClient.invalidateQueries({ queryKey });
+    queryClient.invalidateQueries({ queryKey: ["/api/tech/time/summary"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/tech/time/day"] });
   };
 
   // Action: Start Travel (scheduled → en_route)

@@ -14,6 +14,7 @@
 
 import { useState } from "react";
 import { MobileShell } from "../components/MobileShell";
+import { useAuth } from "@/lib/auth";
 import { useTodayVisits, type TodayVisit } from "../hooks/useTodayVisits";
 import { useTechShift } from "../hooks/useTechShift";
 import { useElapsedTimer } from "../hooks/useElapsedTimer";
@@ -200,20 +201,22 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
   const { isClockedIn, clockInAt, clockIn, clockOut } = useTechShift();
   const { formatted: elapsed } = useElapsedTimer(clockInAt, isClockedIn, 10_000);
   const [shiftError, setShiftError] = useState<string | null>(null);
+  const [shiftSuccess, setShiftSuccess] = useState<string | null>(null);
+  const { user } = useAuth();
 
-  const [userRole] = useState<UserRole>("technician");
+  const userRole = (user?.role || "technician") as UserRole;
 
   const TERMINAL_STATUSES = ["completed", "on_hold", "cancelled"];
   const nextVisitId = visits.find(v => !TERMINAL_STATUSES.includes(v.status))?.id;
 
   const handleClockIn = async () => {
     setShiftError(null);
-    try { await clockIn.mutateAsync(); } catch (err: any) { setShiftError(err?.message || "Failed to clock in"); }
+    try { await clockIn.mutateAsync(); setShiftSuccess("Clocked in"); setTimeout(() => setShiftSuccess(null), 3000); } catch (err: any) { setShiftError(err?.message || "Failed to clock in"); }
   };
 
   const handleClockOut = async () => {
     setShiftError(null);
-    try { await clockOut.mutateAsync(); } catch (err: any) { setShiftError(err?.message || "Failed to clock out"); }
+    try { await clockOut.mutateAsync(); setShiftSuccess("Clocked out"); setTimeout(() => setShiftSuccess(null), 3000); } catch (err: any) { setShiftError(err?.message || "Failed to clock out"); }
   };
 
   const shiftPending = clockIn.isPending || clockOut.isPending;
@@ -254,6 +257,14 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
             <LogOut className="h-3 w-3" />
             {clockOut.isPending ? "Clocking out…" : "Out"}
           </button>
+        </div>
+      )}
+
+      {/* Shift success */}
+      {shiftSuccess && (
+        <div className="px-3 py-1.5 bg-emerald-50 border-b border-emerald-100 flex items-center gap-1.5">
+          <LogIn className="h-3 w-3 text-emerald-600" />
+          <p className="text-xs font-medium text-emerald-700">{shiftSuccess}</p>
         </div>
       )}
 

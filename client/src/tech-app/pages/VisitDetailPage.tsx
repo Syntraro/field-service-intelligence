@@ -12,7 +12,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useLocation } from "wouter";
 import {
-  ArrowLeft, Navigation, MapPin, Pause, Play,
+  ArrowLeft, Navigation, MapPin,
   StickyNote, AlertCircle, Check,
   Loader2, RefreshCw, Send,
 } from "lucide-react";
@@ -58,9 +58,9 @@ function OutcomeModal({ onSelect, onCancel }: {
   const [note, setNote] = useState("");
 
   const outcomes = [
-    { key: "completed", label: "Completed", desc: "Work finished successfully", border: "border-emerald-400", bg: "bg-emerald-50" },
-    { key: "needs_parts", label: "Needs Parts", desc: "Waiting on parts to continue", border: "border-amber-400", bg: "bg-amber-50" },
-    { key: "needs_followup", label: "Needs Follow-Up", desc: "Additional visit required", border: "border-blue-400", bg: "bg-blue-50" },
+    { key: "completed", label: "Completed", desc: "Work finished successfully", selected: "border-emerald-400 bg-emerald-50" },
+    { key: "needs_parts", label: "Needs Parts", desc: "Waiting on parts to continue", selected: "border-amber-400 bg-amber-50" },
+    { key: "needs_followup", label: "Needs Follow-Up", desc: "Additional visit required", selected: "border-blue-400 bg-blue-50" },
   ];
 
   const needsNote = selected === "needs_parts" || selected === "needs_followup";
@@ -76,7 +76,7 @@ function OutcomeModal({ onSelect, onCancel }: {
               key={o.key}
               onClick={() => setSelected(o.key)}
               className={`w-full text-left p-3 rounded-xl border transition-colors ${
-                selected === o.key ? `${o.border} ${o.bg}` : "border-slate-200"
+                selected === o.key ? o.selected : "border-slate-200"
               }`}
             >
               <div className="text-sm font-semibold text-slate-800">{o.label}</div>
@@ -129,8 +129,9 @@ function NotesSection({ notes, onAddNote, isPending }: {
           <textarea
             value={text}
             onChange={e => setText(e.target.value)}
+            disabled={isPending}
             placeholder="Add a note…"
-            className="flex-1 text-xs border border-slate-200 rounded-lg px-3 py-2 resize-none h-16"
+            className="flex-1 text-xs border border-slate-200 rounded-lg px-3 py-2 resize-none h-16 disabled:bg-slate-50 disabled:text-slate-400"
           />
           <button
             onClick={handleSubmit}
@@ -206,9 +207,9 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
   } = useTechVisitDetail(visitId);
 
   const [showOutcome, setShowOutcome] = useState(false);
-  const [paused, setPaused] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>("Overview");
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
   const onBack = () => setLocation("/tech/today");
 
@@ -220,24 +221,30 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
   const isOnSite = visit.status === "in_progress" || visit.status === "on_site";
   const isScheduled = visit.status === "scheduled" || visit.status === "dispatched";
 
+  const showSuccess = (msg: string) => {
+    setActionSuccess(msg);
+    setTimeout(() => setActionSuccess(null), 3000);
+  };
+
   const handleStartTravel = async () => {
     setActionError(null);
-    try { await startTravel.mutateAsync(); } catch (err: any) { setActionError(err?.message || "Failed to start travel"); }
+    try { await startTravel.mutateAsync(); showSuccess("En route"); } catch (err: any) { setActionError(err?.message || "Failed to start travel"); }
   };
 
   const handleStartJob = async () => {
     setActionError(null);
-    try { await startJob.mutateAsync(); } catch (err: any) { setActionError(err?.message || "Failed to start job"); }
+    try { await startJob.mutateAsync(); showSuccess("On site — job started"); } catch (err: any) { setActionError(err?.message || "Failed to start job"); }
   };
 
   const handleComplete = async (outcome: string, outcomeNote?: string) => {
     setActionError(null);
     setShowOutcome(false);
-    try { await complete.mutateAsync({ outcome, outcomeNote }); } catch (err: any) { setActionError(err?.message || "Failed to complete visit"); }
+    try { await complete.mutateAsync({ outcome, outcomeNote }); showSuccess("Visit completed"); } catch (err: any) { setActionError(err?.message || "Failed to complete visit"); }
   };
 
   const handleAddNote = async (text: string) => {
-    try { await addNote.mutateAsync(text); } catch { /* non-fatal */ }
+    setActionError(null);
+    try { await addNote.mutateAsync(text); showSuccess("Note saved"); } catch (err: any) { setActionError(err?.message || "Failed to save note"); }
   };
 
   const anyPending = startTravel.isPending || startJob.isPending || complete.isPending;
@@ -267,22 +274,15 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
 
       {/* ══════ TIMER STRIP — active states ══════ */}
       {isActive && !isTerminal && (
-        <div className={`px-3 py-1.5 flex items-center gap-2 ${paused ? "bg-amber-50" : "bg-[#22c55e]/10"}`}>
-          <span className={`h-2.5 w-2.5 rounded-full shrink-0 ${paused ? "bg-amber-400" : "bg-[#22c55e] animate-pulse"}`} />
-          <span className={`text-[11px] font-semibold ${paused ? "text-amber-700" : "text-[#22c55e]"}`}>
-            {paused ? "Paused" : (STATUS_LABELS[visit.status] || visit.status)}
+        <div className="px-3 py-1.5 flex items-center gap-2 bg-[#22c55e]/10">
+          <span className="h-2.5 w-2.5 rounded-full shrink-0 bg-[#22c55e] animate-pulse" />
+          <span className="text-[11px] font-semibold text-[#22c55e]">
+            {STATUS_LABELS[visit.status] || visit.status}
           </span>
-          <span className={`text-[14px] font-bold tabular-nums ${paused ? "text-amber-600" : "text-[#22c55e]"}`}>
-            {visit.checkedInAt && !paused ? <LiveTimer startedAt={visit.checkedInAt} /> : "00:00:00"}
+          <span className="text-[14px] font-bold tabular-nums text-[#22c55e]">
+            {visit.checkedInAt ? <LiveTimer startedAt={visit.checkedInAt} /> : "00:00:00"}
           </span>
           <div className="ml-auto flex items-center gap-1.5">
-            <button onClick={() => setPaused(!paused)}
-              className={`h-8 px-2.5 rounded-lg flex items-center gap-1.5 text-[11px] font-semibold transition-all ${
-                paused ? "bg-[#22c55e]/20 text-[#22c55e]" : "bg-white/80 text-slate-600 border border-slate-200"
-              }`}>
-              {paused ? <Play className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />}
-              {paused ? "Resume" : "Pause"}
-            </button>
             {visit.status === "en_route" && (
               <button onClick={handleStartJob} disabled={anyPending}
                 className="h-8 px-3 rounded-lg bg-[#22c55e] text-white text-[11px] font-bold flex items-center gap-1.5 active:scale-[0.97] disabled:opacity-60">
@@ -321,6 +321,14 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
             {startTravel.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
             Start Travel
           </button>
+        </div>
+      )}
+
+      {/* Action success */}
+      {actionSuccess && (
+        <div className="px-3 py-1.5 bg-emerald-50 border-b border-emerald-100 flex items-center gap-1.5">
+          <Check className="h-3 w-3 text-emerald-600" />
+          <p className="text-xs font-medium text-emerald-700">{actionSuccess}</p>
         </div>
       )}
 

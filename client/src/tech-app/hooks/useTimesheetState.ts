@@ -117,9 +117,10 @@ export function useTimesheetState() {
   const selectedDateStr = toDateStr(selectedDate);
   const todaySelected = isToday(selectedDateStr);
 
-  // Edit-sheet state (read-only in Phase 3 — no save wired)
+  // Edit-sheet state
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
   const [editSheetOpen, setEditSheetOpen] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
 
   const permissions = useTimesheetPermissions();
 
@@ -133,16 +134,10 @@ export function useTimesheetState() {
     refetchIntervalInBackground: false,
   });
 
-  // Past day: use the day endpoint
+  // Past day: use the day endpoint (apiRequest handles session-expired + error typing)
   const dayQuery = useQuery<DayResponse>({
     queryKey: ["/api/tech/time/day", selectedDateStr],
-    queryFn: async () => {
-      const res = await fetch(`/api/tech/time/day?date=${selectedDateStr}`, {
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error("Failed to load timesheet data");
-      return res.json();
-    },
+    queryFn: () => apiRequest(`/api/tech/time/day?date=${selectedDateStr}`),
     enabled: !todaySelected,
   });
 
@@ -218,10 +213,11 @@ export function useTimesheetState() {
       });
     },
     onSuccess: () => {
-      // Refetch current day data
       queryClient.invalidateQueries({ queryKey: ["/api/tech/time/summary"] });
       queryClient.invalidateQueries({ queryKey: ["/api/tech/time/day", selectedDateStr] });
       closeEditSheet();
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
     },
   });
 
@@ -272,5 +268,6 @@ export function useTimesheetState() {
     updateEntry,
     isSaving: updateEntryMutation.isPending,
     saveError: updateEntryMutation.error as Error | null,
+    saveSuccess,
   };
 }

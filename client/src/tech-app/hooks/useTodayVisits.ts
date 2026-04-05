@@ -11,6 +11,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { UNKNOWN_LOCATION, NO_ADDRESS } from "../utils/visitDisplay";
+import { formatClockTime } from "../utils/formatTime";
 
 // ── UI visit type (what TodayPage renders) ──
 
@@ -62,15 +63,6 @@ interface TodayResponse {
   count: number;
 }
 
-// ── Shared time formatter ──
-
-/** Format ISO timestamp to "8:00 AM" display string. Shared across Today + Detail. */
-export function formatScheduleTime(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-}
-
 /** Map a single backend visit to the UI shape */
 function toTodayVisit(v: BackendVisit): TodayVisit {
   const locationParts = [v.location?.address, v.location?.city].filter(Boolean);
@@ -79,8 +71,8 @@ function toTodayVisit(v: BackendVisit): TodayVisit {
     company: v.location?.companyName || UNKNOWN_LOCATION,
     jobTitle: v.job.summary || `Job #${v.job.jobNumber}`,
     address: locationParts.length > 0 ? locationParts.join(", ") : NO_ADDRESS,
-    scheduledTime: formatScheduleTime(v.scheduledStart),
-    scheduledEnd: formatScheduleTime(v.scheduledEnd),
+    scheduledTime: formatClockTime(v.scheduledStart),
+    scheduledEnd: formatClockTime(v.scheduledEnd),
     status: v.status,
     jobType: v.job.jobType ?? "",
     jobId: v.jobId,
