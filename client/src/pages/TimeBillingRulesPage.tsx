@@ -10,18 +10,19 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
-  Calculator,
   Clock,
   DollarSign,
   Save,
   RotateCcw,
   Loader2,
-  Info,
   Car,
   Wrench,
   Briefcase,
+  ArrowLeft,
 } from "lucide-react";
+import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -32,15 +33,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Separator } from "@/components/ui/separator";
+import { Card, CardContent } from "@/components/ui/card";
 
 // ============================================================================
 // Types
@@ -228,7 +221,7 @@ export default function TimeBillingRulesPage() {
 
   if (isLoading) {
     return (
-      <div className="container max-w-3xl py-6">
+      <div className="p-4">
         <div className="flex items-center justify-center py-16">
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         </div>
@@ -237,305 +230,137 @@ export default function TimeBillingRulesPage() {
   }
 
   return (
-    <div className="container max-w-3xl py-6 space-y-6">
+    <div className="p-4 space-y-4">
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
-            <Calculator className="h-6 w-6" />
-            Time Billing Rules
-          </h1>
-          <p className="text-muted-foreground mt-1">
-            Configure how time entries are converted to invoice line items
-          </p>
+        <div className="flex items-center gap-3">
+          <Link href="/settings">
+            <Button variant="ghost" size="icon" data-testid="button-back-settings">
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+          </Link>
+          <div>
+            <h1 className="text-xl font-semibold">Time Billing Rules</h1>
+            <p className="text-sm text-muted-foreground">Configure how time entries are converted to invoice line items</p>
+          </div>
         </div>
         {data?.rules?.isDefault && (
-          <Alert className="w-auto">
-            <Info className="h-4 w-4" />
-            <AlertDescription>Using default rules</AlertDescription>
-          </Alert>
+          <Badge variant="secondary" className="text-xs">Using defaults</Badge>
         )}
       </div>
 
-      {/* Rounding Settings */}
+      {/* Rounding & Minimums */}
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Clock className="h-5 w-5" />
-            Rounding &amp; Minimums
-          </CardTitle>
-          <CardDescription>
-            Control how time is rounded and minimum billable increments
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="grid gap-6 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label>Rounding Increment</Label>
-              <Select
-                value={String(roundingIncrement)}
-                onValueChange={(value) => {
-                  setRoundingIncrement(Number(value));
-                  handleChange();
-                }}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
+        <CardContent className="pt-4 space-y-3">
+          <p className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+            <Clock className="h-3.5 w-3.5" /> Rounding & Minimums
+          </p>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="space-y-1.5">
+              <Label className="text-xs">Rounding Increment</Label>
+              <Select value={String(roundingIncrement)} onValueChange={(v) => { setRoundingIncrement(Number(v)); handleChange(); }}>
+                <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {ROUNDING_INCREMENTS.map((inc) => (
-                    <SelectItem key={inc.value} value={String(inc.value)}>
-                      {inc.label}
-                    </SelectItem>
+                    <SelectItem key={inc.value} value={String(inc.value)}>{inc.label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
-
-            <div className="space-y-2">
-              <Label>Rounding Mode</Label>
-              <Select
-                value={roundingMode}
-                onValueChange={(value) => {
-                  setRoundingMode(value as "up" | "nearest" | "down");
-                  handleChange();
-                }}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
+            <div className="space-y-1.5">
+              <Label className="text-xs">Rounding Mode</Label>
+              <Select value={roundingMode} onValueChange={(v) => { setRoundingMode(v as "up" | "nearest" | "down"); handleChange(); }}>
+                <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {ROUNDING_MODES.map((mode) => (
-                    <SelectItem key={mode.value} value={mode.value}>
-                      {mode.label}
-                    </SelectItem>
+                    <SelectItem key={mode.value} value={mode.value}>{mode.label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="minimum" className="text-xs">Minimum Minutes</Label>
+              <Input id="minimum" type="number" min="0" max="120" step="5" value={minimumMinutes} onChange={(e) => { setMinimumMinutes(Number(e.target.value)); handleChange(); }} className="h-8 text-sm w-24" />
+            </div>
           </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="minimum">Minimum Billable Minutes</Label>
-            <Input
-              id="minimum"
-              type="number"
-              min="0"
-              max="120"
-              step="5"
-              value={minimumMinutes}
-              onChange={(e) => {
-                setMinimumMinutes(Number(e.target.value));
-                handleChange();
-              }}
-              className="w-32"
-            />
-            <p className="text-xs text-muted-foreground">
-              Any time entry under this threshold will be billed as this minimum
-            </p>
-          </div>
-
-          <div className="p-3 rounded-lg bg-muted/50 text-sm">
-            <span className="font-medium">Example:</span> {exampleMinutes} minutes worked{" "}
-            <span className="text-muted-foreground">&rarr;</span>{" "}
-            <span className="font-medium">{formatExample(roundedMinutes)}</span> billed
+          <div className="p-2 rounded bg-muted/50 text-xs">
+            <span className="font-medium">Example:</span> {exampleMinutes}m worked &rarr; <span className="font-medium">{formatExample(roundedMinutes)}</span> billed
           </div>
         </CardContent>
       </Card>
 
       {/* Billable Types */}
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Wrench className="h-5 w-5" />
-            Billable Entry Types
-          </CardTitle>
-          <CardDescription>
-            Control which types of time entries are included on invoices
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Car className="h-5 w-5 text-muted-foreground" />
-              <div>
-                <Label>Bill Travel Time</Label>
-                <p className="text-xs text-muted-foreground">Include travel time on invoices</p>
+        <CardContent className="pt-4 space-y-3">
+          <p className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+            <Wrench className="h-3.5 w-3.5" /> Billable Entry Types
+          </p>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between py-1">
+              <div className="flex items-center gap-2">
+                <Car className="h-4 w-4 text-muted-foreground" />
+                <Label className="text-sm">Bill Travel Time</Label>
               </div>
+              <Switch checked={billTravel} onCheckedChange={(c) => { setBillTravel(c); handleChange(); }} />
             </div>
-            <Switch
-              checked={billTravel}
-              onCheckedChange={(checked) => {
-                setBillTravel(checked);
-                handleChange();
-              }}
-            />
-          </div>
-
-          <Separator />
-
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Wrench className="h-5 w-5 text-muted-foreground" />
-              <div>
-                <Label>Bill Supplier Runs</Label>
-                <p className="text-xs text-muted-foreground">Include parts pickup trips</p>
+            <div className="flex items-center justify-between py-1">
+              <div className="flex items-center gap-2">
+                <Wrench className="h-4 w-4 text-muted-foreground" />
+                <Label className="text-sm">Bill Supplier Runs</Label>
               </div>
+              <Switch checked={billSupplierRun} onCheckedChange={(c) => { setBillSupplierRun(c); handleChange(); }} />
             </div>
-            <Switch
-              checked={billSupplierRun}
-              onCheckedChange={(checked) => {
-                setBillSupplierRun(checked);
-                handleChange();
-              }}
-            />
-          </div>
-
-          <Separator />
-
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Briefcase className="h-5 w-5 text-muted-foreground" />
-              <div>
-                <Label>Bill Admin Time</Label>
-                <p className="text-xs text-muted-foreground">Include paperwork and admin tasks</p>
+            <div className="flex items-center justify-between py-1">
+              <div className="flex items-center gap-2">
+                <Briefcase className="h-4 w-4 text-muted-foreground" />
+                <Label className="text-sm">Bill Admin Time</Label>
               </div>
+              <Switch checked={billAdmin} onCheckedChange={(c) => { setBillAdmin(c); handleChange(); }} />
             </div>
-            <Switch
-              checked={billAdmin}
-              onCheckedChange={(checked) => {
-                setBillAdmin(checked);
-                handleChange();
-              }}
-            />
           </div>
         </CardContent>
       </Card>
 
       {/* Rate Multipliers */}
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <DollarSign className="h-5 w-5" />
-            Rate Multipliers
-          </CardTitle>
-          <CardDescription>
-            Adjust billing rates by entry type (1.0 = 100% of base rate)
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="grid gap-6 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="travelMult">Travel Rate Multiplier</Label>
-              <Input
-                id="travelMult"
-                type="text"
-                value={travelMultiplier}
-                onChange={(e) => {
-                  setTravelMultiplier(e.target.value);
-                  handleChange();
-                }}
-                className="w-32"
-                disabled={!billTravel}
-              />
-              <p className="text-xs text-muted-foreground">
-                {parseFloat(travelMultiplier || "1") * 100}% of base hourly rate
-              </p>
+        <CardContent className="pt-4 space-y-3">
+          <p className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+            <DollarSign className="h-3.5 w-3.5" /> Rate Multipliers
+          </p>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="travelMult" className="text-xs">Travel Multiplier</Label>
+              <Input id="travelMult" type="text" value={travelMultiplier} onChange={(e) => { setTravelMultiplier(e.target.value); handleChange(); }} className="h-8 text-sm w-24" disabled={!billTravel} />
+              <p className="text-[11px] text-muted-foreground">{parseFloat(travelMultiplier || "1") * 100}% of base</p>
             </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="onSiteMult">On-Site Rate Multiplier</Label>
-              <Input
-                id="onSiteMult"
-                type="text"
-                value={onSiteMultiplier}
-                onChange={(e) => {
-                  setOnSiteMultiplier(e.target.value);
-                  handleChange();
-                }}
-                className="w-32"
-              />
-              <p className="text-xs text-muted-foreground">
-                {parseFloat(onSiteMultiplier || "1") * 100}% of base hourly rate
-              </p>
+            <div className="space-y-1.5">
+              <Label htmlFor="onSiteMult" className="text-xs">On-Site Multiplier</Label>
+              <Input id="onSiteMult" type="text" value={onSiteMultiplier} onChange={(e) => { setOnSiteMultiplier(e.target.value); handleChange(); }} className="h-8 text-sm w-24" />
+              <p className="text-[11px] text-muted-foreground">{parseFloat(onSiteMultiplier || "1") * 100}% of base</p>
             </div>
-          </div>
-
-          <Separator />
-
-          <div className="space-y-2">
-            <Label htmlFor="maxTravel">Max Travel Minutes Per Job Per Day</Label>
-            <div className="flex items-center gap-4">
-              <Input
-                id="maxTravel"
-                type="number"
-                min="0"
-                max="480"
-                step="15"
-                value={maxTravelMinutes ?? ""}
-                onChange={(e) => {
-                  const val = e.target.value ? Number(e.target.value) : null;
-                  setMaxTravelMinutes(val);
-                  handleChange();
-                }}
-                className="w-32"
-                placeholder="No limit"
-                disabled={!billTravel}
-              />
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setMaxTravelMinutes(null);
-                  handleChange();
-                }}
-                disabled={maxTravelMinutes === null || !billTravel}
-              >
-                Clear
-              </Button>
+            <div className="space-y-1.5">
+              <Label htmlFor="maxTravel" className="text-xs">Max Travel Min/Job/Day</Label>
+              <div className="flex items-center gap-2">
+                <Input id="maxTravel" type="number" min="0" max="480" step="15" value={maxTravelMinutes ?? ""} onChange={(e) => { setMaxTravelMinutes(e.target.value ? Number(e.target.value) : null); handleChange(); }} className="h-8 text-sm w-20" placeholder="None" disabled={!billTravel} />
+                {maxTravelMinutes !== null && billTravel && (
+                  <Button variant="ghost" size="sm" className="h-7 text-xs px-2" onClick={() => { setMaxTravelMinutes(null); handleChange(); }}>Clear</Button>
+                )}
+              </div>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Cap billable travel time per job per day. Leave empty for no limit.
-            </p>
           </div>
         </CardContent>
       </Card>
 
       {/* Action Buttons */}
-      <div className="flex items-center justify-between pt-4">
-        <Button
-          variant="outline"
-          onClick={() => resetMutation.mutate()}
-          disabled={resetMutation.isPending || data?.rules?.isDefault}
-        >
-          {resetMutation.isPending ? (
-            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-          ) : (
-            <RotateCcw className="h-4 w-4 mr-2" />
-          )}
+      <div className="flex items-center justify-between">
+        <Button variant="outline" size="sm" onClick={() => resetMutation.mutate()} disabled={resetMutation.isPending || data?.rules?.isDefault}>
+          {resetMutation.isPending ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <RotateCcw className="h-4 w-4 mr-1.5" />}
           Reset to Defaults
         </Button>
-
-        <Button
-          onClick={handleSave}
-          disabled={!hasChanges || saveMutation.isPending}
-        >
-          {saveMutation.isPending ? (
-            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-          ) : (
-            <Save className="h-4 w-4 mr-2" />
-          )}
+        <Button size="sm" onClick={handleSave} disabled={!hasChanges || saveMutation.isPending}>
+          {saveMutation.isPending ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Save className="h-4 w-4 mr-1.5" />}
           Save Changes
         </Button>
       </div>
-
-      {/* Info Box */}
-      <Alert>
-        <Info className="h-4 w-4" />
-        <AlertDescription>
-          These rules apply when creating invoices from jobs. Existing invoices are not affected.
-          Time entries store a snapshot of the rules used when invoiced for audit purposes.
-        </AlertDescription>
-      </Alert>
     </div>
   );
 }

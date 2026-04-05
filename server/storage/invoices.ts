@@ -1388,7 +1388,8 @@ export class InvoiceRepository extends BaseRepository {
     companyId: string,
     jobId: string,
     options: { markJobCompleted?: boolean; skipValidation?: boolean } | undefined,
-    creationSource: InvoiceCreationSource
+    creationSource: InvoiceCreationSource,
+    txHandle?: any
   ): Promise<CreateInvoiceResult> {
     // PHASE A.1.1 GUARD: Runtime check (complements compile-time enforcement)
     // Protects against dynamic calls or miscompiled code
@@ -1402,9 +1403,10 @@ export class InvoiceRepository extends BaseRepository {
 
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
+    const queryDb = txHandle ?? db;
 
-    // PRE-TRANSACTION VALIDATION: Get job and validate (avoids holding lock during validation)
-    const [jobPreCheck] = await db
+    // PRE-TRANSACTION VALIDATION: Get job and validate
+    const [jobPreCheck] = await queryDb
       .select()
       .from(jobs)
       .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId), activeJobFilter()))
@@ -1414,17 +1416,14 @@ export class InvoiceRepository extends BaseRepository {
       throw this.notFoundError("Job");
     }
 
-    // PRE-INVOICE VALIDATION (unless skipped) - before acquiring lock
     if (!options?.skipValidation) {
-      // P3-04: Pass pre-fetched job to avoid redundant SELECT
       const validation = await this.validateJobForInvoice(companyId, jobId, jobPreCheck);
       if (!validation.valid) {
         throw this.validationError(validation.errors.join("; "));
       }
     }
 
-    // Get client location to resolve customerCompanyId (before transaction)
-    const [location] = await db
+    const [location] = await queryDb
       .select()
       .from(clients)
       .where(and(eq(clients.id, jobPreCheck.locationId), eq(clients.companyId, companyId)))
@@ -1434,16 +1433,16 @@ export class InvoiceRepository extends BaseRepository {
       throw this.validationError("Job has invalid location reference");
     }
 
-    // Get company settings for payment terms defaults
-    const [settings] = await db
+    const [settings] = await queryDb
       .select({ defaultPaymentTermsDays: companySettings.defaultPaymentTermsDays })
       .from(companySettings)
       .where(eq(companySettings.companyId, companyId))
       .limit(1);
     const paymentTermsDays = settings?.defaultPaymentTermsDays ?? 30;
 
-    try {
-      return await db.transaction(async (tx) => {
+    // When txHandle is provided, run directly in the outer transaction.
+    // When not provided, create our own transaction for isolation.
+    const runInTx = async (tx: any) => {
         // PHASE A FIX: Lock the job row with SELECT FOR UPDATE
         // This prevents concurrent invoice creation for the same job
         const [job] = await tx
@@ -1512,13 +1511,17 @@ export class InvoiceRepository extends BaseRepository {
           invoice,
           created: true,
         };
-      });
+    };
+
+    try {
+      // Use provided transaction or create a new one
+      if (txHandle) {
+        return await runInTx(txHandle);
+      }
+      return await db.transaction(runInTx);
     } catch (error: any) {
       // FALLBACK RACE CONDITION HANDLING: Unique constraint violation
-      // This should rarely trigger now with FOR UPDATE, but kept as safety net
-      // PostgreSQL error code 23505 = unique_violation
       if (error.code === "23505" && error.constraint?.includes("invoices_company_job")) {
-        // Re-fetch the invoice that was created by the other request
         const existingInvoice = await this.getInvoiceByJobId(companyId, jobId);
         if (existingInvoice) {
           const existingLines = await this.getInvoiceLines(companyId, existingInvoice.id);

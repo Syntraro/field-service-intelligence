@@ -31,6 +31,7 @@ import {
   approveWeekRequestSchema,
 } from "@shared/schema";
 import { z } from "zod";
+import { emitDispatch } from "../lib/dispatchBus";
 
 // Main time tracking router (mounted at /api/time)
 const timeRouter = Router();
@@ -66,6 +67,7 @@ timeRouter.post(
       }
     );
 
+    emitDispatch(req.companyId!, { scope: "time", entityType: "visit", entityId: session.id, ts: new Date().toISOString() });
     res.status(201).json(session);
   })
 );
@@ -91,6 +93,7 @@ timeRouter.post(
       }
     );
 
+    emitDispatch(req.companyId!, { scope: "time", entityType: "visit", entityId: session.id, ts: new Date().toISOString() });
     res.json(session);
   })
 );
@@ -326,6 +329,7 @@ timeRouter.put(
       { overrideInvoiceLock: isManager }
     );
 
+    emitDispatch(req.companyId!, { scope: "time", entityType: "visit", entityId: req.params.id, ts: new Date().toISOString() });
     res.json(updated);
   })
 );

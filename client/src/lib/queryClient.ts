@@ -54,7 +54,9 @@ export function resetCsrf(): void {
  * Skip the auth-check endpoint itself (it naturally returns 401 when logged out).
  */
 function notifySessionExpired(url: string): void {
+  // Skip endpoints that naturally return 401 during bootstrap or use non-fetch transports
   if (url === "/api/auth/me") return;
+  if (url === "/api/dispatch/stream") return;
   window.dispatchEvent(new CustomEvent("session-expired"));
 }
 

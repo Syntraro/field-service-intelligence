@@ -17,7 +17,7 @@ import { useState, useEffect, useMemo } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { format } from "date-fns";
-import { Clock, Loader2, AlertTriangle, Lock, Trash2 } from "lucide-react";
+import { Clock, Loader2, AlertTriangle, Lock, Trash2, LockKeyhole } from "lucide-react";
 import { useActivityStore } from "@/lib/activityStore";
 import { getMemberDisplayName } from "@/lib/displayName";
 import { Button } from "@/components/ui/button";
@@ -92,6 +92,8 @@ interface TimeEntryModalProps {
   onSuccess?: () => void;
   /** Extra query keys to invalidate on save/delete (e.g. admin timesheet keys) */
   extraInvalidateKeys?: string[][];
+  /** When set, technician is pre-assigned and locked (e.g. payroll tech-specific context) */
+  lockedTechnicianId?: string | null;
 }
 
 // ── Duration helpers ──
@@ -128,6 +130,7 @@ export function TimeEntryModal({
   entry,
   onSuccess,
   extraInvalidateKeys = [],
+  lockedTechnicianId,
 }: TimeEntryModalProps) {
   const { toast } = useToast();
   const { logActivity } = useActivityStore();
@@ -166,7 +169,8 @@ export function TimeEntryModal({
     if (isEdit && entry) {
       setTechnicianId(entry.technicianId);
       // Edit: use costRateSnapshot (employee cost), not billableRateSnapshot
-      setCostPerHour(entry.costRateSnapshot || "");
+      // Nullish check: preserve "0" as a valid stored rate; only fallback when null/undefined
+      setCostPerHour(entry.costRateSnapshot ?? "");
       setCostManuallyEdited(false);
       const start = new Date(entry.startAt);
       setStartDate(format(start, "yyyy-MM-dd"));
@@ -190,7 +194,8 @@ export function TimeEntryModal({
     } else {
       // Create: defaults — don't set cost yet, wait for technicians to load
       const today = format(new Date(), "yyyy-MM-dd");
-      setTechnicianId(assignedTechnicianIds[0] || "");
+      // Locked tech takes priority (payroll tech-specific context), then assigned list
+      setTechnicianId(lockedTechnicianId || assignedTechnicianIds[0] || "");
       setCostPerHour("");
       setCostManuallyEdited(false);
       setStartDate(today);
@@ -204,19 +209,23 @@ export function TimeEntryModal({
     }
     setLastEditSource(null);
     setShowDeleteConfirm(false);
-  }, [open, isEdit, entry, assignedTechnicianIds]);
+  }, [open, isEdit, entry, assignedTechnicianIds, lockedTechnicianId]);
 
-  // ── Load cost rate when technician changes or technicians load (create mode only) ──
+  // ── Load cost rate when technician changes or technicians load ──
+  // Create mode: always use tech default. Edit mode: only fallback if snapshot is missing.
   // This effect intentionally re-runs when `technicians` changes (from [] to loaded data)
   // which fixes the $0.00 bug on initial load caused by the async fetch race condition.
   useEffect(() => {
-    if (isEdit || costManuallyEdited) return;
+    if (costManuallyEdited) return;
+    // In edit mode, only fill if costRateSnapshot was truly absent (null/undefined → empty string)
+    // Preserve "0" or any valid stored rate — only fallback when costPerHour is empty string
+    if (isEdit && costPerHour !== "") return;
     if (!technicianId || technicians.length === 0) return;
     const tech = technicians.find(t => t.id === technicianId);
     if (tech?.laborCostPerHour) {
       setCostPerHour(tech.laborCostPerHour);
     }
-  }, [technicianId, technicians, isEdit, costManuallyEdited]);
+  }, [technicianId, technicians, isEdit, costManuallyEdited, costPerHour]);
 
   // ── Two-way sync: time → duration ──
   useEffect(() => {
@@ -425,9 +434,10 @@ export function TimeEntryModal({
               <div className="grid grid-cols-3 gap-3">
                 <div className="space-y-1">
                   <Label className="text-xs">Technician</Label>
-                  {isEdit ? (
-                    <div className="h-8 flex items-center px-3 rounded-md border border-input bg-muted/50 text-sm truncate">
-                      {techName}
+                  {isEdit || lockedTechnicianId ? (
+                    <div className="h-8 flex items-center gap-1.5 px-3 rounded-md border border-input bg-muted/50 text-sm">
+                      <LockKeyhole className="h-3 w-3 text-muted-foreground shrink-0" />
+                      <span className="truncate">{isEdit ? techName : (selectedTech ? getMemberDisplayName(selectedTech) : "Technician")}</span>
                     </div>
                   ) : (
                     <Select value={technicianId} onValueChange={(v) => { setTechnicianId(v); setCostManuallyEdited(false); }}>

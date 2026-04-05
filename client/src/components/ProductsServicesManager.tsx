@@ -273,6 +273,7 @@ export default function ProductsServicesManager() {
         onCancel={handleCloseDialog}
         isSaving={createMutation.isPending || updateMutation.isPending}
         checkDuplicate={duplicateItem}
+        uniqueCategories={uniqueCategories}
       />
 
       {/* Delete Confirmation */}

@@ -5,7 +5,8 @@
  */
 import { useState, useMemo } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { Tag, Plus, Pencil, Trash2, Check, X } from "lucide-react";
+import { Tag, Plus, Pencil, Trash2, Check, X, ArrowLeft } from "lucide-react";
+import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -29,7 +30,7 @@ import {
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { toast } from "@/hooks/use-toast";
 import { ListSurface } from "@/components/ui/list-surface";
-import { TablePageShell } from "@/components/ui/table-page-shell";
+// TablePageShell replaced with inline layout + back button (2026-04-04)
 import type { ClientTag } from "@shared/schema";
 
 const TAG_COLORS = [
@@ -177,16 +178,32 @@ export default function TagsSettingsPage() {
 
   if (isLoading) {
     return (
-      <TablePageShell title="Manage Tags" data-testid="tags-settings-page">
+      <div className="p-6 space-y-6" data-testid="tags-settings-page">
+        <div className="flex items-center gap-3">
+          <Link href="/settings">
+            <Button variant="ghost" size="icon" data-testid="button-back-settings">
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+          </Link>
+          <h1 className="text-2xl font-semibold">Manage Tags</h1>
+        </div>
         <div className="flex items-center justify-center h-64">
           <div className="text-muted-foreground">Loading tags...</div>
         </div>
-      </TablePageShell>
+      </div>
     );
   }
 
   return (
-    <TablePageShell title="Manage Tags" data-testid="tags-settings-page">
+    <div className="p-6 space-y-6" data-testid="tags-settings-page">
+      <div className="flex items-center gap-3">
+        <Link href="/settings">
+          <Button variant="ghost" size="icon" data-testid="button-back-settings">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        </Link>
+        <h1 className="text-2xl font-semibold">Manage Tags</h1>
+      </div>
       {/* Create new tag form */}
       <div className="flex items-end gap-3 flex-wrap">
         <div className="space-y-1">
@@ -361,6 +378,6 @@ export default function TagsSettingsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </TablePageShell>
+    </div>
   );
 }

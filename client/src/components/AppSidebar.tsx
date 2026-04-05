@@ -6,7 +6,7 @@ import {
   Shield,
   Smartphone,
   ShieldAlert,
-  Settings,
+  Clock,
   Package,
   Receipt,
   Building2,
@@ -146,13 +146,13 @@ export function AppSidebar({ onDashboardClick }: AppSidebarProps) {
       testId: "nav-reports",
       isDivider: true
     });
-    // --- Divider 4 --- Settings, Admin
+    // --- Divider 4 --- Timesheets, Admin
     menuItems.push({
-      title: "Settings",
-      icon: Settings,
-      href: "/settings",
-      isActive: location === "/settings" || location.startsWith("/settings/") || location === "/products" || location === "/manage-technicians" || location.startsWith("/manage-team"),
-      testId: "nav-settings",
+      title: "Timesheets",
+      icon: Clock,
+      href: "/timesheets",
+      isActive: location === "/timesheets" || location.startsWith("/timesheets/"),
+      testId: "nav-timesheets",
       isDivider: true
     });
     

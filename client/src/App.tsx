@@ -1,4 +1,4 @@
-import { Switch, Route, useLocation, Link } from "wouter";
+import { Switch, Route, useLocation, Link, Redirect } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -46,14 +46,14 @@ import JobTemplatesPage from "@/pages/JobTemplatesPage";
 import RecurringJobsPage from "@/pages/RecurringJobsPage";
 import QuoteTemplatesPage from "@/pages/QuoteTemplatesPage";
 import SubscriptionSettings from "@/pages/SubscriptionSettings";
-import UnassignedTimePage from "@/pages/UnassignedTimePage";
+// UnassignedTimePage removed — no longer in settings (2026-04-04)
 import PayrollPage from "@/pages/PayrollPage";
-import DailyTimesheetPage from "@/pages/AdminTimesheetsPage";
-import TimeAnalyticsPage from "@/pages/TimeAnalyticsPage";
+// DailyTimesheetPage (AdminTimesheetsPage) — legacy, replaced by PayrollPage (2026-04-04)
+// TimeAnalyticsPage removed — no longer in settings (2026-04-04)
 import NotificationsPage from "@/pages/NotificationsPage";
-import TimeAlertSettingsPage from "@/pages/TimeAlertSettingsPage";
+// TimeAlertSettingsPage removed — no longer in settings (2026-04-04)
 import TimeBillingRulesPage from "@/pages/TimeBillingRulesPage";
-import RegionalSettingsPage from "@/pages/RegionalSettingsPage";
+// RegionalSettingsPage — now embedded inline in Company section (2026-04-04)
 import BusinessHoursSettingsPage from "@/pages/BusinessHoursSettingsPage";
 import ClientImportPage from "@/pages/ClientImportPage";
 import JobImportPage from "@/pages/JobImportPage";
@@ -77,7 +77,7 @@ import PortalLayout from "@/components/PortalLayout";
 import { PortalAuthProvider, usePortalAuth } from "@/lib/portalAuth";
 import { ActivityProvider } from "@/lib/activityStore";
 // QuickCreateDrawer removed — creation flows use direct modals / dedicated pages
-import { SettingsShell } from "@/components/SettingsShell";
+// SettingsShell no longer wraps routes — kept in codebase but unused (2026-04-04)
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { SubscriptionBanner } from "@/components/SubscriptionBanner";
@@ -114,9 +114,6 @@ import PMTemplateEditorPage from "@/pages/PMTemplateEditorPage";
 import TechApp from "@/tech-app/app/TechApp";
 
 function Router() {
-  const [loc] = useLocation();
-  const isSettingsRoute = loc === "/settings" || loc.startsWith("/settings/");
-
   const routes = (
     <Switch>
       <Route path="/login" component={Login} />
@@ -272,6 +269,12 @@ function Router() {
           <Clients />
         </ProtectedRoute>
       </Route>
+      {/* Timesheets — canonical timesheet page (formerly /settings/payroll) */}
+      <Route path="/timesheets">
+        <ProtectedRoute requireAdmin>
+          <PayrollPage />
+        </ProtectedRoute>
+      </Route>
       <Route path="/settings">
         <ProtectedRoute requireAdmin>
           <SettingsPage />
@@ -338,34 +341,16 @@ function Router() {
           <SubscriptionSettings />
         </ProtectedRoute>
       </Route>
-      <Route path="/settings/unassigned-time">
-        <ProtectedRoute requireAdmin>
-          <UnassignedTimePage />
-        </ProtectedRoute>
-      </Route>
+      {/* Old payroll/timesheets settings routes redirect to canonical /timesheets */}
       <Route path="/settings/payroll">
-        <ProtectedRoute requireAdmin>
-          <PayrollPage />
-        </ProtectedRoute>
+        <Redirect to="/timesheets" />
       </Route>
       <Route path="/settings/timesheets">
-        <ProtectedRoute requireAdmin>
-          <DailyTimesheetPage />
-        </ProtectedRoute>
-      </Route>
-      <Route path="/settings/time-analytics">
-        <ProtectedRoute requireAdmin>
-          <TimeAnalyticsPage />
-        </ProtectedRoute>
+        <Redirect to="/timesheets" />
       </Route>
       <Route path="/notifications">
         <ProtectedRoute requireAdmin>
           <NotificationsPage />
-        </ProtectedRoute>
-      </Route>
-      <Route path="/settings/time-alerts">
-        <ProtectedRoute requireAdmin>
-          <TimeAlertSettingsPage />
         </ProtectedRoute>
       </Route>
       <Route path="/settings/time-billing">
@@ -373,10 +358,9 @@ function Router() {
           <TimeBillingRulesPage />
         </ProtectedRoute>
       </Route>
+      {/* Regional settings now embedded in Company section */}
       <Route path="/settings/regional">
-        <ProtectedRoute requireAdmin>
-          <RegionalSettingsPage />
-        </ProtectedRoute>
+        <Redirect to="/settings" />
       </Route>
       <Route path="/settings/business-hours">
         <ProtectedRoute requireAdmin>
@@ -398,10 +382,9 @@ function Router() {
           <ProductImportPage />
         </ProtectedRoute>
       </Route>
+      {/* /company-settings redirects to the new settings dashboard */}
       <Route path="/company-settings">
-        <ProtectedRoute requireAdmin>
-          <CompanySettingsPage />
-        </ProtectedRoute>
+        <Redirect to="/settings" />
       </Route>
       <Route path="/manage-technicians">
         <ProtectedRoute requireAdmin>
@@ -452,10 +435,7 @@ function Router() {
     </Switch>
   );
 
-  // Settings routes render inside the two-panel SettingsShell layout
-  if (isSettingsRoute) {
-    return <SettingsShell>{routes}</SettingsShell>;
-  }
+  // All routes render full-width — SettingsShell no longer wraps sub-routes
   return routes;
 }
 
@@ -662,7 +642,7 @@ function AppContent() {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" sideOffset={8} className="w-44">
-                  <DropdownMenuItem onClick={() => setLocation("/company-settings")} data-testid="menu-settings">
+                  <DropdownMenuItem onClick={() => setLocation("/settings")} data-testid="menu-settings">
                     <Settings className="h-4 w-4 mr-2" />
                     Settings
                   </DropdownMenuItem>

@@ -661,51 +661,64 @@ router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
   }
 
   // 2026-03-18: Route through canonical lifecycle orchestrator
+  // 2026-04-04: Entire close + invoice flow wrapped in single DB transaction.
+  // All steps share one tx — any failure rolls back everything atomically.
+  // No orphaned invoices, no partial success, no second-attempt required.
 
-  // Build actor for RBAC check
   const actor: TransitionActor = {
     userId: userId || "unknown",
     role: userRole,
   };
 
-  // For invoice_now mode, create invoice BEFORE lifecycle transition.
-  // 2026-03-19: Routes through canonical invoice service so tax application
-  // and tax snapshots match the hardened POST /api/invoices/from-job/:jobId path.
-  let createdInvoice = null;
-  if (mode === "invoice_now") {
-    try {
-      const invoiceResult = await createInvoiceFromJobService(
+  try {
+    const txResult = await db.transaction(async (tx) => {
+      // Step 1: Close/complete the job.
+      // For invoice_now, close as invoice_later first (→ completed),
+      // then create invoice and mark invoiced — all within this tx.
+      const closeMode = mode === "invoice_now" ? "invoice_later" : mode;
+      const result = await lifecycle.forceCloseJob({
+        type: "FORCE_CLOSE_JOB",
         companyId,
         jobId,
-        { markJobCompleted: false },
-        "JOB_CLOSE_ROUTE"
-      );
-      createdInvoice = invoiceResult.invoice;
-    } catch (error: any) {
-      if (error.message?.includes("already has an invoice")) {
-        throw createError(400, "Job already has an invoice linked");
+        version,
+        mode: closeMode,
+        actor,
+        invoiceId: undefined,
+        autoCompleteOpenVisits: uncompletedVisits.length > 0 && autoCompleteOpenVisits,
+      }, tx);
+      let updatedJob = result.job;
+      const autoCompletedVisitCount = result.autoCompletedVisitCount;
+
+      // Step 2: For invoice_now, create invoice inside the same transaction.
+      let createdInvoice = null;
+      if (mode === "invoice_now") {
+        const invoiceResult = await createInvoiceFromJobService(
+          companyId,
+          jobId,
+          { markJobCompleted: false },
+          "JOB_CLOSE_ROUTE",
+          tx
+        );
+        createdInvoice = invoiceResult.invoice;
+
+        // Step 3: Mark the completed job as invoiced via canonical MARK_INVOICED.
+        const invoicedResult = await lifecycle.markInvoiced({
+          type: "MARK_INVOICED",
+          companyId,
+          jobId,
+          version: updatedJob.version,
+          actor,
+          invoiceId: createdInvoice.id,
+        }, tx);
+        updatedJob = invoicedResult.job;
       }
-      throw error;
-    }
-  }
 
-  try {
-    // Execute lifecycle transition via orchestrator
-    // Orchestrator handles: visit bulk-completion, RBAC, version check, audit, schedule clearing
-    const result = await lifecycle.forceCloseJob({
-      type: "FORCE_CLOSE_JOB",
-      companyId,
-      jobId,
-      version,
-      mode,
-      actor,
-      invoiceId: createdInvoice?.id,
-      autoCompleteOpenVisits: uncompletedVisits.length > 0 && autoCompleteOpenVisits,
+      return { updatedJob, createdInvoice, autoCompletedVisitCount };
     });
-    const updatedJob = result.job;
-    const autoCompletedVisitCount = result.autoCompletedVisitCount;
 
-    // Phase 1: Log close event
+    const { updatedJob, createdInvoice, autoCompletedVisitCount } = txResult;
+
+    // Log events (async, outside transaction — non-critical)
     const closeLabel = mode === "archive" ? "Archived" : mode === "invoice_now" ? "Closed & Invoiced" : "Completed (invoice later)";
     logEventAsync(getQueryCtx(req), {
       eventType: mode === "archive" ? "job.archived" : "job.completed",
@@ -726,7 +739,6 @@ router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
       });
     }
     recomputeAttentionForEntity(companyId, "job", jobId).catch(() => {});
-    // Hardening: Emit dispatch signal for job close/archive
     emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: jobId, ts: new Date().toISOString() });
 
     res.json({
@@ -735,14 +747,12 @@ router.post("/:id/close", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
       autoCompletedVisitCount,
     });
   } catch (error: any) {
-    // Handle lifecycle errors
     if (error instanceof LifecycleTransitionError) {
       return res.status(error.statusCode).json({
         error: error.message,
         code: error.code,
       });
     }
-    // Handle version mismatch
     if (error.code === "VERSION_MISMATCH") {
       return res.status(409).json({
         error: error.message,

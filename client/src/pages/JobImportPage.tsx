@@ -56,6 +56,7 @@ import {
   Archive,
   Info,
 } from "lucide-react";
+import { Link } from "wouter";
 import { JOB_IMPORT_FIELD_DEFS } from "@shared/jobImportTypes";
 import type { JobColumnMapping, JobImportRow } from "@shared/jobImportTypes";
 import { parseCSV } from "@shared/csvParser";
@@ -636,11 +637,18 @@ export default function JobImportPage() {
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="text-xl font-bold tracking-tight">Import Jobs</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Import historical jobs from a Jobber CSV export. All imported jobs are created as archived records.
-        </p>
+      <div className="flex items-center gap-3">
+        <Link href="/settings">
+          <Button variant="ghost" size="icon" data-testid="button-back-settings">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        </Link>
+        <div>
+          <h1 className="text-xl font-bold tracking-tight">Import Jobs</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Import historical jobs from a Jobber CSV export. All imported jobs are created as archived records.
+          </p>
+        </div>
       </div>
 
       {/* Step indicator */}

@@ -6,7 +6,399 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+#### SSE Session-Expired Loop Fix (2026-04-05)
+
+- **Root cause:** `useTechRealtimeSync` opened an EventSource to `/api/dispatch/stream` which requires authentication. When auth wasn't fully resolved or session was absent, the SSE endpoint returned 401. The hook's `onerror` handler retried indefinitely, and if any retry path intersected with `notifySessionExpired`, the Session Expired dialog opened. Additionally, the `notifySessionExpired` function in `queryClient.ts` did not exclude `/api/dispatch/stream` from its 401 → session-expired dispatch.
+- **Fix 1: Auth gate.** `useTechRealtimeSync` now waits for both `!isLoading` AND `user` before opening EventSource. Previously only checked `user`, which could be momentarily truthy during auth transitions.
+- **Fix 2: Rapid-fail detection.** If EventSource fails within 2s of opening 3 times consecutively, the hook stops retrying (likely auth rejection). Prevents infinite reconnect loop hammering the server. Resets on successful connection or user state change.
+- **Fix 3: SSE exclusion.** Added `/api/dispatch/stream` to `notifySessionExpired` skip list in `queryClient.ts`. SSE 401s cannot trigger the Session Expired dialog.
+- **Files changed:** `client/src/tech-app/hooks/useTechRealtimeSync.ts`, `client/src/lib/queryClient.ts`, `CHANGELOG.md`
+
+### Added
+
+#### Technician App — Real-Time Sync via SSE (2026-04-04)
+
+- **SSE consumer for tech app.** New `useTechRealtimeSync` hook connects to existing `GET /api/dispatch/stream` SSE endpoint. Maps dispatch signals to targeted tech-app query invalidations. Mounted in `TechApp` — active when authenticated.
+- **Dispatch emissions added to time tracking.** `POST /api/time/clock-in`, `POST /api/time/clock-out`, and `PUT /api/time/entries/:id` now emit `scope: "time"` dispatch signals via `emitDispatch`. Visit actions already emitted `scope: "calendar"` signals through the lifecycle orchestrator.
+- **Event → invalidation mapping:**
+  - `scope: "calendar"` + `entityType: "visit"|"job"` → invalidates `["/api/tech/visits/today"]`, `["/api/tech/visits"]` (visit detail prefix)
+  - `scope: "time"` → invalidates `["/api/tech/time/summary"]`, `["/api/tech/time/day"]` (timesheet prefix)
+- **Safety:** Exponential backoff + jitter on reconnect. 300ms debounce coalesces rapid signals. Catch-up invalidation on reconnect covers missed signals. App works without socket (polling fallback still active on queries).
+- **No over-invalidation.** Only tech-app query keys are targeted. Main app dispatch stream unaffected. No blanket `queryClient.clear()`.
+- **Files created:** `client/src/tech-app/hooks/useTechRealtimeSync.ts`
+- **Files changed:** `server/routes/timeTracking.ts` (added emitDispatch to clock-in, clock-out, entry update), `client/src/tech-app/app/TechApp.tsx` (mount hook), `CHANGELOG.md`
+
+#### Technician App — Shift Clock-In / Clock-Out Wiring (2026-04-04)
+
+- **Real shift state on Today page.** Replaced local `clockedIn`/`onBreak` boolean state and mock `useShiftTimer` with `useTechShift` hook backed by `GET /api/tech/time/summary`. Shift state (clocked in, clock-in time) derived from `today.openSession` in the backend response.
+- **Real clock-in/out mutations.** `POST /api/time/clock-in` (source: "mobile") and `POST /api/time/clock-out` wired from Today page. Controls disable during in-flight requests. Errors displayed inline with dismiss.
+- **Elapsed time from backend timestamp.** `useElapsedTimer` (existing hook) now receives real `clockInAt` from backend session. Ticks every 10s. No local start-time tracking.
+- **Query invalidation.** After clock-in/out: invalidates `["/api/tech/time/summary"]`, `["/api/tech/time/day"]`, `["/api/tech/visits/today"]`. Today page and Timesheet both refresh from backend truth.
+- **Break toggle removed.** Local-only break state was not backed by any backend concept. Removed `onBreak` state and break/resume button. Shift strip now shows "Working" + elapsed time + clock-out button only.
+- **Shared query key.** `useTechShift` and `useTimesheetState` both read from `["/api/tech/time/summary"]` — TanStack Query deduplicates the request. Clock-in/out invalidation refreshes both surfaces.
+- **New hook:** `client/src/tech-app/hooks/useTechShift.ts` — narrow shift state + mutations.
+- **Files created:** `client/src/tech-app/hooks/useTechShift.ts`
+- **Files changed:** `client/src/tech-app/pages/TodayPage.tsx`, `CHANGELOG.md`
+
+### Fixed
+
+#### Timesheet Display Ownership + Redundant Sorting Cleanup (2026-04-04)
+
+- **Moved entry type display maps to `utils/timesheetDisplay.ts`.** `ENTRY_TYPE_LABELS`, `ENTRY_TYPE_COLORS`, `DEFAULT_ENTRY_TYPE_COLOR` removed from `types/timesheet.ts` (now structural types only). `TimesheetPage.tsx` imports from `utils/timesheetDisplay.ts`.
+- **Removed redundant frontend sorting.** Two `.sort()` calls in `useTimesheetState.ts` removed. Backend `orderBy(asc(timeEntries.startAt))` is the canonical order source.
+- **Files created:** `client/src/tech-app/utils/timesheetDisplay.ts`
+- **Files changed:** `client/src/tech-app/types/timesheet.ts`, `client/src/tech-app/pages/TimesheetPage.tsx`, `client/src/tech-app/hooks/useTimesheetState.ts`, `CHANGELOG.md`
+
+### Added
+
+#### Technician App — Phase 3 Fixes + Phase 4: Timesheet Editing (2026-04-04)
+
+**Part A — Phase 3 read-path fixes:**
+- **Job context added to timesheet entries.** Day endpoint (`GET /api/tech/time/day`) now joins `jobs` and `client_locations` to include `jobNumber`, `jobSummary`, and `locationName` per entry. Summary endpoint (`GET /api/tech/time/summary`) enriches today's entries with job context via a batch lookup (single query for all distinct jobIds). Entry cards now show `#jobNumber — jobSummary` when available.
+- **Entry type display centralized.** All 8 backend entry types (`travel_to_job`, `on_site`, `break`, `admin`, etc.) mapped in `types/timesheet.ts` with labels and colors. Single source imported by `TimesheetPage.tsx`. No inline maps.
+- **Sort order confirmed.** Day endpoint already uses `orderBy(asc(timeEntries.startAt))`. Backend guarantees deterministic order.
+- **Day boundary verified.** Both today and day endpoints use UTC midnight (`T00:00:00Z`), consistent with admin `getTimesheetDay`. No timezone drift.
+
+**Part B — Phase 4 editing:**
+- **Real edit save wired.** `PUT /api/time/entries/:id` used for updating time/notes on eligible entries. `useTimesheetState` exposes `updateEntry(id, payload)` mutation via `useMutation`. Payload: `{ startAt, endAt, notes }`.
+- **Access rules enforced.** Active entries (endAt=null) → view-only. Locked entries (lockedAt set) → view-only. Eligible completed entries → editable with start/end/notes fields enabled.
+- **Frontend validation.** Start required, end required, end must be after start. Validation runs on input change. Save disabled when invalid or unchanged.
+- **Backend error surfacing.** Overlap conflicts (409), lock violations (409), permission denied (403) all display the server error message inline in the edit sheet. No swallowed errors.
+- **Query invalidation.** After successful save, both `["/api/tech/time/summary"]` and `["/api/tech/time/day", date]` invalidated. Sheet auto-closes. Day data refreshes.
+- **Job always read-only.** Displayed with "Job can only be changed from the job itself" helper text. Not editable.
+- **Duration always derived.** Computed from start/end inputs in real-time. Not directly editable.
+- **`TimesheetEntry` type** includes `jobNumber`, `jobSummary`, `locationName` (nullable, from server join).
+- **Files changed:** `server/routes/techField.ts`, `client/src/tech-app/pages/TimesheetPage.tsx`, `client/src/tech-app/hooks/useTimesheetState.ts`, `client/src/tech-app/types/timesheet.ts`, `CHANGELOG.md`
+
+#### Technician App — Phase 3: Timesheet Read Wiring (2026-04-04)
+
+- **New backend endpoint: `GET /api/tech/time/day?date=YYYY-MM-DD`.** Returns work session, time entries, and summary for a specific date for the authenticated technician. Uses `requireSchedulable` auth, tenant isolation, reuses canonical `timeTrackingRepository.getWorkSessionsForTechnician` for session query and direct `time_entries` table query for entries. Response shape: `{ date, session, entries, summary: { totalMinutes, entriesCount } }`.
+- **Timesheet reads real backend data.** Today uses `GET /api/tech/time/summary` (polls every 30s, `refetchIntervalInBackground: false`). Past selected days use `GET /api/tech/time/day?date=...`. Day switching triggers correct query via `selectedDateStr` in query key.
+- **`useTimesheetState` rewritten.** Replaced mock data imports with real `useQuery` calls. Today and past-day queries return different response shapes — hook normalizes into consistent `dayEntries: TimesheetEntry[]`, `daySession: TimesheetWorkSession | null`, `dayTotalMinutes: number`. Selected date, navigation, and edit-sheet state preserved.
+- **Types updated to match backend.** `TimesheetEntry` uses backend field names (`startAt`, `endAt`, `lockedAt`, `lockReason`, `type` as backend enum). `TimesheetWorkSession` uses backend fields (`workDate`, `clockInAt`, `clockOutAt`, `breakMinutes`). Entry type display maps cover all 8 backend entry types.
+- **`timesheetAccess.ts` updated.** `getEntryAccess` now operates on `TimesheetEntry` — checks `endAt === null` for active, `lockedAt !== null` for locked. Same access scaffold structure preserved for Phase 4 edit wiring.
+- **Edit sheet is view-only.** `EntryViewSheet` replaces `EntryEditSheet` — shows entry type, time range, duration, notes. No save button. Phase 4 will wire edit mutations.
+- **Loading/empty/error states.** Spinner while query loads, empty state for no entries, error state with retry.
+- **Mock data deleted.** `data/mockTimeEntries.ts` removed. No mock time data remains in active code.
+- **Files created:** None (endpoint added to existing `techField.ts`)
+- **Files changed:** `server/routes/techField.ts`, `client/src/tech-app/pages/TimesheetPage.tsx`, `client/src/tech-app/hooks/useTimesheetState.ts`, `client/src/tech-app/hooks/timesheetAccess.ts`, `client/src/tech-app/types/timesheet.ts`, `CHANGELOG.md`
+- **Files deleted:** `client/src/tech-app/data/mockTimeEntries.ts`
+
+### Fixed
+
+#### Phase 2 Integrity Cleanup (2026-04-04)
+
+- **Removed illegal jobType fallback.** `v.job.jobType || "service"` in `useTodayVisits.ts` replaced with `v.job.jobType ?? ""`. Empty string renders no badge (via truthy check in TodayPage). No silent data normalization.
+- **Consolidated display maps.** Single source of truth for STATUS_LABELS, STATUS_COLORS, JOB_TYPE_LABELS, JOB_TYPE_COLORS, OUTCOME_LABELS, OUTCOME_COLORS in `utils/visitDisplay.ts`. TodayPage and VisitDetailPage import from shared file. No duplicated character-for-character maps.
+- **Consolidated fallback strings.** `UNKNOWN_LOCATION` and `NO_ADDRESS` constants in shared display file. Both adapters (`useTodayVisits`, `useTechVisitDetail`) reference shared constants.
+- **Deleted 6 dead files:** `state/useTechState.ts`, `data/mockVisits.ts`, `types/visit.ts`, `types/index.ts`, `components/OutcomeModal.tsx`, `components/NotesSheet.tsx`. Repurposed `utils/visitDisplay.ts` (dead → canonical shared display file).
+- **Files deleted:** 6 (listed above)
+- **Files changed:** `utils/visitDisplay.ts` (repurposed), `hooks/useTodayVisits.ts`, `hooks/useTechVisitDetail.ts`, `pages/TodayPage.tsx`, `pages/VisitDetailPage.tsx`, `CHANGELOG.md`
+
+#### Atomic Close + Invoice-Now Transaction (2026-04-04)
+
+- **Single-transaction close + invoice flow.** The entire `POST /api/jobs/:id/close` flow (visit completion, job close, invoice creation, mark invoiced) now runs inside a single `db.transaction()`. Any failure at any step rolls back the entire operation atomically.
+- **No orphaned invoices.** Invoice creation can no longer commit independently of job close. If the job lifecycle transition fails (VERSION_MISMATCH, RBAC error, domain validation), no invoice row is created.
+- **No partial success states.** Response is only sent after the transaction commits. No misleading "conflict" followed by stale UI state.
+- **txHandle passthrough added.** Repository/service/orchestrator methods now accept optional `txHandle` parameter to participate in external transactions:
+  - `jobRepository.getJob(companyId, jobId, txHandle?)` — reads within tx for version consistency
+  - `jobRepository.transitionJobStatus(..., txHandle?)` — uses outer tx or creates own
+  - `jobVisitsRepository.syncJobToVisits(companyId, jobId, txHandle?)` — schedule sync within tx
+  - `lifecycle.forceCloseJob(intent, txHandle?)` — orchestrates within tx
+  - `lifecycle.markInvoiced(intent, txHandle?)` — transitions within tx
+  - `bulkCompleteVisitsInternal(companyId, jobId, txHandle?)` — visit completion within tx
+  - `createInvoiceFromJob(companyId, jobId, options, source, txHandle?)` — invoice creation within tx
+  - `storage.createInvoiceFromJob(..., txHandle?)` — shell + locking within tx
+- **Pattern:** All methods follow established codebase pattern `const queryDb = txHandle ?? db` — use provided tx or fall back to standalone. No internal commits when running inside an outer transaction.
+- **Files changed:** `server/routes/jobs.ts`, `server/services/jobLifecycleOrchestrator.ts`, `server/services/invoiceCreationService.ts`, `server/storage/jobs.ts`, `server/storage/jobVisits.ts`, `server/storage/invoices.ts`, `CHANGELOG.md`
+
 ### Changed
+
+#### Technician App — Phase 2: Visit Detail + Core Actions (2026-04-04)
+
+- **Phase 1 corrections applied.** Removed status rewriting in `useTodayVisits` — backend status passed through as-is. Removed fuzzy job-type guessing — uses `job.jobType` directly. Display maps now use string keys with fallbacks for unknown values. Status/job-type badge rendering handles any backend value gracefully.
+- **Visit Detail wired to real backend.** `VisitDetailPage` now receives `visitId` prop and fetches from `GET /api/tech/visits/:visitId` via `useTechVisitDetail` hook. Page renders job title, company, address, schedule, status, description, notes, and equipment count from backend data.
+- **Core technician actions wired.** Start Travel (`POST en-route`), Start Job (`POST start`), Complete (`POST complete`), and Add Note (`POST notes`) all call canonical tech field endpoints. All time-entry side effects handled by backend orchestrator. Loading/disabled states on action buttons. Error display with dismiss.
+- **Completion flow.** OutcomeModal collects outcome (`completed`/`needs_parts`/`needs_followup`) + optional note, sends canonical payload to backend. Note required for non-completed outcomes (matches backend validation).
+- **Notes read + write.** Notes tab shows backend notes (from job_notes via visit detail response). Add note form posts to `POST /api/tech/visits/:visitId/notes`. Query invalidated after add.
+- **Live timer.** `LiveTimer` component derives elapsed time from `checkedInAt` (set by backend on visit start). Ticks every second. Pause is UI-only (pauses display, backend time continues).
+- **Query invalidation.** After any action: invalidates Today visits + current visit detail. UI reflects backend truth.
+- **Mock state removed.** `useTechState` no longer imported by `TechApp`. Visit detail placeholder bridge removed. `TechApp` is now stateless — all data comes from backend queries.
+- **Equipment read-only.** Equipment IDs shown as count in overview. Tech write endpoints for equipment don't exist — add/remove UI removed.
+- **Shared time formatter.** `formatScheduleTime` exported from `useTodayVisits` and reused in visit detail adapter for consistent "8:00 AM" formatting.
+- **Files created:** `client/src/tech-app/hooks/useTechVisitDetail.ts`
+- **Files changed:** `client/src/tech-app/pages/VisitDetailPage.tsx`, `client/src/tech-app/pages/TodayPage.tsx`, `client/src/tech-app/hooks/useTodayVisits.ts`, `client/src/tech-app/app/TechApp.tsx`, `CHANGELOG.md`
+
+### Fixed
+
+#### Dropdown, Job Lifecycle, Invoice Atomicity, and UI Fixes (2026-04-04)
+
+- **Visit modal parts dropdown: portal-based rendering.** Replaced inline `absolute` div (clipped by DialogContent's `overflow-hidden`) with Radix UI `Popover` that renders in a portal. Dropdown now escapes modal overflow constraints, fully scrollable with `max-h-60`, and supports mouse wheel, trackpad, and keyboard navigation. Reuses same Popover pattern already used for team/equipment selectors in the same modal.
+- **Jobs list status display: derived states.** `getDisplayStatus()` in `Jobs.tsx` now matches `getJobStatusDisplay()` in `jobUtils.ts` — shows "Scheduled" (if `scheduledStart` set) and "Assigned" (if `primaryTechnicianId` or `assignedTechnicianIds` present) for open jobs with no `openSubStatus`, instead of collapsing all to "Open".
+- **Complete Job + Archive Job menu icons.** Added `CheckCircle2` icon (green emphasis) to "Complete Job" and `Archive` icon to "Archive Job" in the overflow menu. All menu items now have consistent iconography.
+- **Invoice-now atomicity fix.** Reordered close route: (1) close/complete job via `forceCloseJob` with `invoice_later` mode, (2) create invoice only after job transition succeeds, (3) mark job as invoiced via canonical `lifecycle.markInvoiced`. Prevents orphaned invoices when job transition fails (VERSION_MISMATCH, RBAC, domain error). No partial success state possible — invoice creation is never reached unless job close commits.
+- **Invoice badge moved to header metadata.** Removed invoice link from action bar row. Placed it in the header card metadata line (company · address · Invoice #N) for correct information hierarchy.
+- **Files changed:** `client/src/components/visits/EditVisitModal.tsx`, `client/src/pages/Jobs.tsx`, `client/src/pages/JobDetailPage.tsx`, `server/routes/jobs.ts`, `CHANGELOG.md`
+
+### Changed
+
+#### Technician App — Phase 1: Today Page Backend Wiring (2026-04-04)
+
+- **Today page uses real backend visits.** Replaced mock `INITIAL_VISITS` with `useQuery` fetching `GET /api/tech/visits/today`. Polls every 60s with `refetchIntervalInBackground: false` (performance guardrail).
+- **New `useTodayVisits` hook** (`client/src/tech-app/hooks/useTodayVisits.ts`). Fetches from canonical tech field endpoint, maps `EnrichedVisit` (backend) to `TodayVisit` (UI). Adapter resolves: location/company display, ISO timestamps to "8:00 AM" format, job type normalization, visit status normalization (backend's 8+ statuses → UI's 5-value subset).
+- **Removed Team View.** No real multi-tech query endpoint exists for the technician role. Removed `TeamScheduleView`, `TechColumn`, `MOCK_TECHNICIANS`, `TEAM_VISITS` imports and the My/Team view toggle. Today page is now single-tech, showing only the authenticated technician's assigned visits.
+- **Loading/empty/error states.** Spinner while query loads, clean empty state for no visits, retry button on error.
+- **Visit detail bridge.** When tapping a real backend visit, if mock data doesn't have a matching ID (expected), a `VisitDetailPlaceholder` is shown with "Coming soon (Phase 2)" message. Phase 2 will replace this with real backend-fetched detail.
+- **TodayPage no longer receives `visits` prop.** Fetches its own data. `TechApp` no longer passes mock visits to TodayPage.
+- **FAB role defaulted to "technician"** (was "admin"). Correctly limits FAB actions to tech-level items.
+- **Clock-in/out deferred to Phase 2.** Controls remain visually present as local-only state. Backend endpoints exist (`POST /api/time/clock-in`, `/clock-out`) but wiring them without visit status mutations would create partial state. Will wire alongside visit actions.
+- **Mock visit state retained in `useTechState`** for VisitDetailPage only. Phase 2 will remove it.
+- **Files created:** `client/src/tech-app/hooks/useTodayVisits.ts`
+- **Files changed:** `client/src/tech-app/pages/TodayPage.tsx`, `client/src/tech-app/app/TechApp.tsx`, `CHANGELOG.md`
+
+### Fixed
+
+#### Visit Modal Parts Picker + Job Close/Archive/Reopen Bugs (2026-04-04)
+
+- **Parts picker dropdown scroll.** Increased result limit from 8 to 20 items. Increased dropdown max-height from `max-h-36` (144px) to `max-h-60` (240px). Dropdown retains `overflow-y-auto` so full result list is scrollable. Fixes "labour" search only showing first few matches.
+- **Quick-add row action buttons.** Replaced bare `<button>` elements (10px text entities) with properly sized icon buttons using Lucide `Check`/`X` icons. Each button is now 24×24px with hover states (`hover:bg-emerald-100` / `hover:bg-red-50`). Grid column widened from 28px to 56px to accommodate. Improves click/tap target accessibility.
+- **Close/archive job with incomplete visits.** Root cause: `bulkCompleteVisitsInternal` increments the job version via `syncJobToVisits`, but `transitionJobStatus` was called with the original stale version, causing a `VERSION_MISMATCH` 409 error on first attempt. Fix: after bulk-completing visits, reload the job to get the current version before passing it to `transitionJobStatus`. Now the "complete visits and close" path succeeds on first attempt.
+- **Reopen job restores wrong status.** Client was hardcoding `targetOpenSubStatus: "in_progress"` in the reopen mutation. Changed to `null` so reopened jobs return to "Open" (needs scheduling) instead of "In Progress". Updated toast message to match.
+- **Files changed:** `client/src/components/visits/EditVisitModal.tsx`, `client/src/components/JobHeaderCard.tsx`, `server/services/jobLifecycleOrchestrator.ts`, `CHANGELOG.md`
+
+### Added
+
+#### Technician App — Phase 0: Auth + Query Foundation (2026-04-04)
+
+- **Real backend authentication.** Tech app now uses the canonical `AuthProvider`/`useAuth()` from `client/src/lib/auth.tsx`. Login calls `POST /api/auth/login`, session restores on refresh via `GET /api/auth/me`, logout calls `POST /api/auth/logout`. CSRF token handling via existing `initCSRF()` / `apiRequest()`.
+- **No duplicate auth system.** Tech app was already mounted inside `QueryClientProvider > AuthProvider` in `App.tsx` (line 712). Phase 0 simply wires `useAuth()` where mock `loggedIn` was before.
+- **Session restore on refresh.** `AuthProvider.isLoading` drives a branded loading spinner while `GET /api/auth/me` resolves. No flash of login page.
+- **Real error handling on login.** Server error messages shown inline on the login form. Loading state disables inputs + shows spinner.
+- **Logout accessible from top bar.** `MobileShell` now calls `useAuth()` to display user initials + name/email, with a LogOut icon button. Logout clears session via canonical `logout()` and redirects to `/tech/login`.
+- **Auth guard simplification.** `TechApp.tsx` uses `useAuth().user` as the single auth gate. Unauthenticated → login page. Authenticated → tech routes. Already-authenticated users visiting `/tech/login` redirect to `/tech/today`.
+- **`useTechState` reduced to visit state only.** Removed `loggedIn` boolean and `handleLogin()` mock. Auth is now entirely owned by `AuthProvider`.
+- **RoleDenied component.** Placeholder deny screen for users without tech app access (currently not triggered — backend's `requireSchedulable` middleware is the canonical authority).
+- **Visit data remains mock.** Today page, visit detail, and timesheet continue to use mock data. No backend data wiring in this phase.
+- **Files changed:** `client/src/tech-app/app/TechApp.tsx`, `client/src/tech-app/pages/LoginPage.tsx`, `client/src/tech-app/state/useTechState.ts`, `client/src/tech-app/components/MobileShell.tsx`, `CHANGELOG.md`
+
+#### Technician App — Timesheet Permission-Layer Scaffolding (2026-04-04)
+
+- **New `timesheetAccess.ts`** — centralized access layer for the Timesheet page. Provides `useTimesheetPermissions()` (mock permission source, swap internals later), `getEntryAccess(entry, permissions)` returning `EntryAccess` with mode (`edit`/`view-only`), reason label, and per-field editability flags. Also provides `validateEntryTimes()` for local form validation.
+- **`EntryAccess` type** — resolved once per entry: `canView`, `canOpen`, `mode`, `viewOnlyReason` (`"active"` | `"locked"` | `"no-permission"`), `viewOnlyLabel` (human-readable), `fields` object (`startTime`, `endTime`, `notes` boolean; `job` and `duration` always `false`).
+- **Sheet mode driven by access layer.** `EntryEditSheet` now receives `EntryAccess` instead of a `canEdit` boolean. Title, field disabled states, view-only label, and save button visibility all derive from the access result.
+- **Active entries now open in view-only mode** (previously blocked from opening). Locked entries also open in view-only mode with "View only — entry is locked" label.
+- **Explicit job-lock helper text.** "Job can only be changed from the job itself" shown under the job field in both edit and view-only modes.
+- **Local time validation.** `validateEntryTimes()` checks: start required, end required, end must be after start. Inline red error messages near time fields. Save disabled when validation fails.
+- **`MockTimeEntry` extended** with optional `readOnly?: boolean` and `lockReason?: string` fields. One locked mock entry added to yesterday's data (`te-10`) to exercise the locked access path.
+- **"Locked" pill on entry cards.** Read-only entries show a subtle "Locked" badge next to the type badge in the entry list.
+- **`useTimesheetState` refactored.** Removed `canEditEntry` boolean. Now exposes `selectedEntryAccess: EntryAccess | null`. `openEntry` allows opening any entry (access layer decides mode). `updateEntry` guards with `access.mode !== "edit"`.
+- **No backend changes.** No API calls, no permission endpoints, no auth changes. Frontend scaffolding only.
+- **Files created:** `client/src/tech-app/hooks/timesheetAccess.ts`
+- **Files changed:** `client/src/tech-app/pages/TimesheetPage.tsx`, `client/src/tech-app/hooks/useTimesheetState.ts`, `client/src/tech-app/types/timesheet.ts`, `client/src/tech-app/data/mockTimeEntries.ts`, `CHANGELOG.md`
+
+#### Technician App — Timesheet Edit Sheet + UI Tightening (2026-04-04)
+
+- **Tap-to-edit bottom sheet.** Tapping any completed entry card opens a bottom `Sheet` with editable start time, end time, notes, and a read-only job field. Derived duration shown live. Active (running) entries open in view-only mode. Edits are local-only (mock state update, no API calls).
+- **State extended in `useTimesheetState`.** New state: `selectedEntryId`, `editSheetOpen`, `selectedEntry`, `canEditEntry` placeholder, `openEntry`, `closeEditSheet`, `updateEntry` (local). Entries now stored in React state for local mutation.
+- **Reduced active entry visual weight.** Removed green border and ring from running entry cards. Kept small "Active" pill and green duration text.
+- **Simplified shift card.** Single-line layout: "On shift — 8:02 AM" on left, duration on right. Removed extra labels, icons, and multi-row structure.
+- **Tightened entry cards.** Reduced padding, collapsed layout to: top row (type badge + job # + duration), job name, time range, optional note. Converted `div` to `button` for tap interaction.
+- **Cleaned tracked-time row.** Changed from "Tracked time: 3h 05m+" to "Tracked: 3h 05m" — removed icon and "+" suffix.
+- **Tightened day strip.** Switched from `flex` to `grid grid-cols-7` for equal-width cells. Reduced padding. Stronger selected state (`bg-emerald-600` + `shadow-sm` + `font-bold`).
+- **Permission placeholder.** `canEditEntry = true` isolated in hook for future permission gating (`if (canEditTime) { ... }`).
+- **Files changed:** `client/src/tech-app/pages/TimesheetPage.tsx`, `client/src/tech-app/hooks/useTimesheetState.ts`, `CHANGELOG.md`
+
+#### Technician App — Timesheet Page (Phase 1: UI + Mock Data) (2026-04-04)
+
+- **New route `/tech/timesheet`** registered in `TechApp.tsx`. Tapping the Timesheet bottom-nav tab now opens the new page instead of falling through to Login. Protected by the same `loggedIn` guard as other tech app routes.
+- **New `TimesheetPage.tsx`** — mobile-first timesheet screen with: (A) page header, (B) 7-day horizontal day selector with Today affordance, (C) shift summary card showing clock-in/out status and live elapsed time, (D) daily tracked total, (E) job-linked time entry cards with type badge/job ref/time range/duration/note preview, (F) clean empty state.
+- **New `useTimesheetState.ts` hook** — local state for selected date, derived day entries, day session, daily total minutes, shift active status, and navigation helpers (goToDay, goToToday, goToPrevDay, goToNextDay). Uses mock data only.
+- **New `useElapsedTimer.ts` hook** — reusable timer extracted from inline patterns in TodayPage/VisitDetailPage. Computes live elapsed time from an ISO start timestamp on a configurable interval. Returns formatted string and raw minutes.
+- **New `mockTimeEntries.ts`** — mock work sessions and time entries covering: today (active shift, 4 entries including one running), yesterday (completed shift, 5 entries including one with note), empty day (2 days ago).
+- **New `timesheet.ts` types** — `MockWorkSession`, `MockTimeEntry`, `TimeEntryType` with label/color maps.
+- **No backend integration.** No API calls, queries, mutations, route handlers, services, or storage wiring. No permissions. Phase 1 UI/mock/state only.
+- **Files created:** `client/src/tech-app/pages/TimesheetPage.tsx`, `client/src/tech-app/hooks/useTimesheetState.ts`, `client/src/tech-app/hooks/useElapsedTimer.ts`, `client/src/tech-app/data/mockTimeEntries.ts`, `client/src/tech-app/types/timesheet.ts`
+- **Files modified:** `client/src/tech-app/app/TechApp.tsx`, `CHANGELOG.md`
+
+### Changed
+
+#### Settings Corrective UI Pass #3 (2026-04-04)
+
+- **Company section unified save button.** Removed individual Save buttons from Company Info, Numbering, and Regional cards. Added one "Save All" button at the bottom-right of the Company section that triggers all three save handlers sequentially. Each card registers its save callback via `registerSave` prop pattern. Existing mutations, validation, and error handling preserved. Vertical spacing tightened from `space-y-4` to `space-y-3`.
+- **Team Management back button fixed.** Root cause: prior pass removed the `<Button variant="ghost" size="icon">` wrapper, leaving a bare `<Link>` with a tiny 16px icon in muted color — no padding, no hover target, effectively invisible. Restored canonical pattern: `<Link href="/settings"><Button variant="ghost" size="icon">`. Now matches TaxBillingRulesPage, TagsSettingsPage, and all other settings subpages. Title and invite button share one row via `justify-between`.
+- **Collapsed accordion preview text.** Added `preview` field to `SettingsSection` type. Each section now shows a compact muted sublabel (e.g. "Tax billing, time billing, subscription") inline after the title when collapsed. Uses `group-data-[state=open]:hidden` to auto-hide when expanded. Truncates on narrow screens. No extra header height.
+- **Files changed:** `client/src/pages/SettingsPage.tsx`, `client/src/pages/TechnicianManagementPage.tsx`, `CHANGELOG.md`
+
+#### Settings Corrective UI Pass #2 (2026-04-04)
+
+- **Team Management header standardized.** Replaced oversized `text-3xl font-bold` header + description + ghost icon button with the standard settings subpage pattern: plain `<Link>` with `ArrowLeft` icon + `text-xl font-semibold` title. Title changed from "Technician Management" to "Team Management" for consistency. Invite button separated to its own row.
+- **Edit Item modal layout restructured.** Rows now follow spec exactly: A) Type | SKU, B) Name (full), C) Description (full), D) Cost | Markup | Price, E) Duration | Category, F) Taxable | Active checkboxes. Category uses `uniqueCategories` from hook, optional, defaults to "Uncategorized". No scrollbar — `py-1` + `space-y-3` fits within viewport.
+- **Files changed:** `client/src/pages/TechnicianManagementPage.tsx`, `client/src/components/products-services/ProductServiceFormDialog.tsx`, `CHANGELOG.md`
+
+#### Settings Corrective UI Pass #1 (2026-04-04)
+
+- **Company section two-column layout.** `lg:grid-cols-5` with `col-span-3` (Company Info left) and `col-span-2` (Numbering + Regional stacked right). Reduces vertical footprint. Mobile stacks vertically.
+- **Products & Services duplicate back button removed.** `PartsManagementPage.tsx` page-level back button + title removed; toolbar's canonical header remains.
+- **Edit Item modal: category restored, scrollbar removed.** Category dropdown added using `uniqueCategories` prop. `max-h-[70vh] overflow-y-auto` removed.
+- **Recurring Jobs card removed from Automation settings.** Unused `Repeat` icon import cleaned up.
+- **Files changed:** `client/src/pages/SettingsPage.tsx`, `client/src/pages/PartsManagementPage.tsx`, `client/src/components/products-services/ProductServiceFormDialog.tsx`, `client/src/components/ProductsServicesManager.tsx`, `CHANGELOG.md`
+
+#### Settings Cleanup — Time Tracking Removal, Regional Embed, Back Buttons (2026-04-04)
+
+- **Time Tracking section removed from Settings.** The entire Time Tracking accordion group has been deleted. Three routes removed: `/settings/time-analytics`, `/settings/unassigned-time`, `/settings/time-alerts`. Three page files deleted: `TimeAnalyticsPage.tsx`, `UnassignedTimePage.tsx`, `TimeAlertSettingsPage.tsx`. Imports cleaned from `App.tsx`. Unused icon imports (`BarChart3`, `AlertTriangle`) removed from `SettingsPage.tsx`.
+- **Regional Settings embedded into Company section.** New `RegionalCard` component in `SettingsPage.tsx` renders Timezone, Week Start, Date Format, and Time Format in a compact 2x2 grid alongside Numbering. Uses the same `/api/company-settings` PUT endpoint and optimistic cache update as the standalone page. Regional Settings link card removed from Company section. `/settings/regional` route now redirects to `/settings`. `RegionalSettingsPage.tsx` kept in codebase but no longer routed.
+- **Company section layout updated.** Company Info is now full-width (row 1). Numbering + Regional sit side-by-side in row 2 via `items-start` grid. Business Hours remains as a link card below.
+- **Back button added to Products & Services page** (`PartsManagementPage.tsx`). Was the only settings page missing it.
+- **Files changed:** `client/src/pages/SettingsPage.tsx`, `client/src/App.tsx`, `client/src/pages/PartsManagementPage.tsx`, `CHANGELOG.md`
+- **Files deleted:** `client/src/pages/TimeAnalyticsPage.tsx`, `client/src/pages/UnassignedTimePage.tsx`, `client/src/pages/TimeAlertSettingsPage.tsx`
+
+#### Timesheets Day View — Header Consolidation (2026-04-04)
+
+- **Day view summary merged into technician card.** The redundant lower summary strip (tech name + date + total + entry count) has been removed. All summary info now lives in the single technician card: dropdown (left), tech name + date (inline, left), total hours + entry count (right-aligned). Saves one vertical element (~48px).
+- **Week view was already consolidated** — no changes needed (dropdown + tech name + email + total + approve already in one card from prior pass).
+- **Files affected:** `client/src/pages/PayrollPage.tsx`, `CHANGELOG.md`
+
+#### Settings Billing Pages Compact + State Persistence (2026-04-04)
+
+- **TaxBillingRulesPage compacted**: Payment Terms card collapsed from CardHeader+CardDescription to inline label. Fields placed in 2-column grid (Payment Terms dropdown + custom days input). Tax Rates and Tax Groups cards: removed CardDescription, tightened CardHeader to `pb-2` with smaller title.
+- **TimeBillingRulesPage fixed and compacted**: Added back button (`Link href="/settings"`) — was missing. Changed container from `container max-w-3xl py-6 space-y-6` to `p-4 space-y-4` (matches other settings pages). Three cards collapsed: removed all CardHeader/CardDescription chrome, replaced with inline `text-xs` labels. Rounding section uses 3-column grid (increment + mode + minimum). Billable Types uses compact switch rows without Separator. Rate Multipliers uses 3-column grid. Info alert removed. Action bar uses `size="sm"` buttons.
+- **Settings accordion state persistence**: Switched from uncontrolled `defaultValue` to controlled `value`/`onValueChange`. Open sections persisted to `sessionStorage` via `settings-open-sections` key. Navigating to a subpage and back restores the previously expanded sections. Search mode temporarily overrides with all-matching-sections expanded but doesn't persist to storage.
+- **Files affected:** `client/src/pages/TaxBillingRulesPage.tsx`, `client/src/pages/TimeBillingRulesPage.tsx`, `client/src/pages/SettingsPage.tsx`, `CHANGELOG.md`
+
+#### Timesheets Week View — Reduction Bug Fix + Header Layout (2026-04-04)
+
+- **Week view reduction "Not found" bug**: Root cause identified — the `POST /api/admin/timesheets/reduce` endpoint was added in a prior code change but the running server had not been restarted, so Express returned 404 from its catch-all handler. The endpoint code itself is correct: it uses the actual calendar dates from `weekDates[dayIdx]` (YYYY-MM-DD format), matches entries by `companyId + technicianId + jobId + date range (UTC)`, and processes deletions/trims from most recent first. No code fix needed — the route exists and works after server restart.
+- **Week view header reorganized into 2 rows**: Row 1 now contains the Day/Week toggle + date navigation controls (prev/range picker/next/today) for whichever view is active. Row 2 is a single technician card containing: tech dropdown + selected tech name + email (left side), total hours + approve button (right side). Previously these were split across 3 separate elements (toggle, controls card, tech info strip).
+- **Day view date controls moved to Row 1**: The day date picker (prev/date/next/today) now lives in the shared Row 1 alongside the Day/Week toggle, consistent with Week view. The Day view tech card is simplified to just the tech dropdown.
+- **Files affected:** `client/src/pages/PayrollPage.tsx`, `CHANGELOG.md`
+
+#### Settings Layout Density Pass — Company, Regional, Business Hours (2026-04-04)
+
+- **Company Info card compacted**: Removed `CardHeader` (title + description). Form spacing reduced from `space-y-4` to `space-y-3`. Card now starts directly with form content via `CardContent pt-4`.
+- **Numbering card compacted**: Removed `CardHeader` with `CardDescription`. Replaced with a lightweight inline label (`text-xs` + Hash icon). Spacing reduced from `space-y-4` to `space-y-3`.
+- **Company section grid fixed**: Added `items-start` to the 2-column grid so Numbering card sizes to its own content instead of stretching to match Company Info card height.
+- **Regional Settings collapsed to single card**: Replaced 3 separate cards (Timezone, Date & Time Format, Calendar Week Start) with one card using a 2-column responsive grid. Row 1: Timezone + Week Start. Row 2: Date Format + Time Format. Removed all `CardDescription` text and `CardHeader` chrome. Labels use `text-xs`. Save button right-aligned inside the card. Removed unused `Globe`, `CardDescription`, `CardHeader`, `CardTitle` imports.
+- **Business Hours compacted**: Removed per-row `border rounded-lg bg-card` wrappers. Reduced row padding from `p-3` to `py-1.5 px-3`. Reduced inter-row spacing from `space-y-4` to `space-y-1`. Removed `CardHeader` with `CardDescription`. Removed the bottom info/note card. Save button moved inside the card with a border-top separator. Time selectors reduced to `h-8 text-sm w-[120px]`. Closed days show "—" instead of empty space. Removed unused `Clock`, `CardDescription`, `CardHeader`, `CardTitle` imports.
+- **Files affected:** `client/src/pages/SettingsPage.tsx`, `client/src/pages/RegionalSettingsPage.tsx`, `client/src/pages/BusinessHoursSettingsPage.tsx`, `CHANGELOG.md`
+
+#### Settings UX Cleanup — Accordion State, Contrast, Back Navigation (2026-04-04)
+
+- **All settings sections collapsed by default.** Changed `defaultOpen` from `["company"]` to `[]`. Search auto-expand behavior unchanged.
+- **Section contrast improved.** AccordionItem now uses `bg-card shadow-sm` so section headers read as distinct card surfaces against the page background. AccordionContent strengthened from `bg-muted/30` to `bg-muted/40 rounded-b-lg`.
+- **"Back to Settings" added to all settings-linked pages.** Used the existing pattern (`Link href="/settings" + Button variant="ghost" size="icon" + ArrowLeft`). Added to 9 pages that were missing it:
+  - `TagsSettingsPage.tsx` — replaced TablePageShell with inline layout + back button
+  - `TimeAlertSettingsPage.tsx`
+  - `RecurringJobsPage.tsx` — only shows when not embedded
+  - `TimeAnalyticsPage.tsx`
+  - `UnassignedTimePage.tsx`
+  - `TechnicianManagementPage.tsx`
+  - `ClientImportPage.tsx`
+  - `JobImportPage.tsx`
+  - `ProductImportPage.tsx`
+- **Existing correct back nav preserved:** QBO → `/settings/integrations`, Categories → `/settings/products`, ManageRoles → `/manage-team`.
+- **Files affected:** `client/src/pages/SettingsPage.tsx`, `client/src/pages/TagsSettingsPage.tsx`, `client/src/pages/TimeAlertSettingsPage.tsx`, `client/src/pages/RecurringJobsPage.tsx`, `client/src/pages/TimeAnalyticsPage.tsx`, `client/src/pages/UnassignedTimePage.tsx`, `client/src/pages/TechnicianManagementPage.tsx`, `client/src/pages/ClientImportPage.tsx`, `client/src/pages/JobImportPage.tsx`, `client/src/pages/ProductImportPage.tsx`, `CHANGELOG.md`
+
+#### Timesheets Week View — Hour Reduction Support (2026-04-04)
+
+- **Hour reductions now work in week grid.** Previously, reducing or clearing hours showed "decrease(s) skipped" and did nothing. Root cause: `handleSaveEdits` in `PayrollPage.tsx:418-421` had `if (delta < 0) { skippedDecrease++; continue; }` which intentionally blocked all negative deltas.
+- **New backend endpoint: `POST /api/admin/timesheets/reduce`** accepts `technicianId`, `jobId`, `date`, and `reduceMinutes`. Finds entries for that tech+job+day ordered most recent first. Fully consumed entries are deleted; the last partially-consumed entry is trimmed (endAt shortened, durationMinutes recalculated). Locked/invoiced entries are skipped.
+- **New storage method: `reduceTimeForDay()`** in `server/storage/timeTracking.ts` — handles the delete/trim logic with full audit logging.
+- **Frontend save handler updated**: negative deltas now call `/api/admin/timesheets/reduce` instead of being skipped. Feedback message shows both increases and reductions accurately. No more misleading "saved" while silently ignoring reductions.
+- **Clearing to zero works**: setting a cell to empty or "0" computes the full negative delta and reduces all entries for that job+day.
+- **Mixed edits work**: one cell increased + another reduced in the same save pass both process correctly.
+- **Files affected:** `client/src/pages/PayrollPage.tsx`, `server/routes/adminTimesheets.ts`, `server/storage/timeTracking.ts`, `CHANGELOG.md`
+
+#### Timesheets Day View Row Density Pass (2026-04-04)
+
+- **Row restructured into 3 visual groups**: Group 1 (badge + job # + client), Group 2 (time + description), Group 3 (duration). Groups use explicit `mr-3` margins instead of flex-1 spacers, keeping duration close to the content.
+- **Text bumped one size**: Badge `10px→11px`, job/client `13px→14px` (text-sm), time/description `12px→13px`, duration `13px→14px` (text-sm). Hierarchy preserved: job/client strongest, time medium, description secondary italic, duration bold mono.
+- **Duration no longer pinned to far right edge**: Removed the `flex-1` spacer + fixed-width `w-[48px]` pattern. Duration now uses `ml-auto` on a shrink-0 container so it sits at the natural end of the row content, not floating at the viewport edge. Non-bill label sits inline instead of stacked.
+- **Files affected:** `client/src/pages/PayrollPage.tsx`, `CHANGELOG.md`
+
+#### Settings + Timesheets Architecture Correction (2026-04-04)
+
+- **Settings page width**: Changed `max-w-4xl` (896px) to `max-w-7xl` (1280px) for full-width dashboard feel.
+- **Settings card contrast**: Added `shadow-sm` to all link cards, CompanyInfoCard, and NumberingCard. Added `bg-muted/30 rounded-lg p-4` background to accordion content containers for grouping separation.
+- **SettingsShell removed from routing**: All `/settings/*` sub-routes now render as full-width pages. The `isSettingsRoute` check and `SettingsShell` wrapping in `App.tsx` are removed. `SettingsShell.tsx` kept in codebase but unused.
+- **Timesheets consolidated**: `PayrollPage.tsx` confirmed as the canonical timesheet page. Page title renamed from "Payroll" to "Timesheets". New route `/timesheets` added. `/settings/payroll` and `/settings/timesheets` now redirect to `/timesheets`. Legacy `AdminTimesheetsPage.tsx` no longer navigable (import removed from App.tsx).
+- **Sidebar updated**: Removed "Settings" from main app sidebar. Added "Timesheets" with `Clock` icon, linking to `/timesheets`, positioned after Reports.
+- **Settings dashboard cleaned**: Removed "Payroll" and "Timesheets" cards from the Time Tracking section (they are now top-level sidebar items). Time Analytics, Unassigned Time, and Time Alerts remain in Settings.
+- **Files affected:** `client/src/pages/SettingsPage.tsx`, `client/src/App.tsx`, `client/src/components/AppSidebar.tsx`, `client/src/pages/PayrollPage.tsx`, `CHANGELOG.md`
+
+#### Payroll Day View Refinement Pass (2026-04-04)
+
+- **Date picker made visually prominent**: Day view date button now has stronger styling — `font-semibold`, `shadow-sm`, `border-primary/30`, primary-colored calendar icon. Clearly reads as a clickable control. Clicking opens the existing `Calendar` popover for instant jump to any date. Was already wired but looked like plain text.
+- **Day entry row layout tightened**: Reduced vertical padding from `py-2.5` to `py-1.5`, tightened gaps from `gap-2` to `gap-1.5`, reduced action button sizes from `h-7 w-7` to `h-6 w-6`. Job # is now `font-bold`, client is `font-semibold`, time range uses `text-foreground/60` for medium emphasis, job description is `italic` and lighter. Duration uses `font-bold` for isolation.
+- **Cost/hr hydration hardened**: Changed `entry.costRateSnapshot || ""` to `entry.costRateSnapshot ?? ""` (nullish check) so a stored `"0"` rate is preserved. Fallback effect now checks `costPerHour !== ""` instead of truthiness, so `"0"` is respected as a valid value.
+- **Locked technician UX improved**: Lock icon (`LockKeyhole`) now appears inside the read-only technician field in the modal when technician is locked. Makes it visually clear the field is fixed for this context.
+- **Files affected:** `client/src/pages/PayrollPage.tsx`, `client/src/components/time/TimeEntryModal.tsx`, `CHANGELOG.md`
+
+#### Payroll Week View Cleanup + Navigation (2026-04-04)
+
+- **Removed Team Overview section** from Week view. The chip-strip of all technicians at the bottom has been deleted. Technician switching is done via the dropdown in the header controls.
+- **Added week date picker**: clicking the week range label opens a calendar popover (same pattern as Day view). Selecting any date jumps to the week containing that date. Previous/Next/Today buttons remain alongside.
+- **Replaced redundant second header** with a compact technician info strip. Previously showed tech name + date range (already displayed in the controls card above). Now shows: tech name, email, phone, week total, and approve/approved status — no repeated date range.
+- **General row pinned to top** of the week grid. Previously sorted last. Now always appears first, above all job rows.
+- **Job row labels simplified and linkable**: Week view rows now show `#number — ClientName` only (no job description). The entire label is clickable and navigates to the job detail page.
+- **Backend `getTimesheetUsers` now returns `phone`** field alongside existing email, for the tech info strip.
+- **Files affected:** `client/src/pages/PayrollPage.tsx`, `server/storage/timeTracking.ts`, `CHANGELOG.md`
+
+#### Settings Page Redesign — Accordion Dashboard (2026-04-04)
+
+- **Replaced nested sidebar settings UX with single-page accordion layout.** The `/settings` route now renders a grouped dashboard with 8 collapsible sections: Company, Team, Financials, System, Automation, Time Tracking, Advanced, Data. Company section is expanded by default.
+- **Company Info and Numbering forms inlined.** Extracted from `CompanySettingsPage.tsx` into self-contained card components rendered directly in the Company accordion section. Same mutations, same validation, no duplication.
+- **All other settings are link cards.** Each card shows title, description, icon, and navigates to the existing route on click. No sub-page behavior changed.
+- **Client-side search.** Full-width search input filters sections and cards by title/description. Matching sections auto-expand during search.
+- **Header dropdown updated.** "Settings" menu item now navigates to `/settings` instead of `/company-settings`.
+- **`/company-settings` redirects to `/settings`.** Uses wouter `<Redirect>` to preserve bookmarks/links.
+- **`/settings` no longer renders inside SettingsShell.** Only `/settings/*` sub-routes use the two-panel shell layout. The settings dashboard is standalone.
+- **New component: `client/src/components/ui/accordion.tsx`** — shadcn-style accordion built on `@radix-ui/react-accordion` (package was already installed).
+- **Files affected:** `client/src/pages/SettingsPage.tsx` (full rewrite), `client/src/App.tsx` (routing), `client/src/components/ui/accordion.tsx` (new), `CHANGELOG.md`
+
+#### Payroll Day Entry Layout + Edit Cost/Hr + Technician Locking (2026-04-04)
+
+- **Day view entry rows reworked to horizontal layout**: Left-to-right flow is now `[Type Badge] [Job #] [Client Name] [Time Range] [Job Description] [Duration]`. No more stacked/buried time ranges. Uses available row width properly on desktop, with responsive fallback.
+- **Job # and Client name are now clickable links**: Job number navigates to `/jobs/:id`, client name navigates to `/clients/:locationId`. Backend `getTimesheetDay` now returns `locationId` for client links.
+- **Edit Entry now shows hourly cost correctly (bug fix)**: Root cause — the technician cost-loading effect in `TimeEntryModal` was skipping edit mode entirely. If `costRateSnapshot` was null (e.g., older entries), cost/hr showed blank. Fixed: edit mode now falls back to technician's default `laborCostPerHour` when snapshot is missing.
+- **Technician locked in Add/Edit Entry from Payroll tech context**: When inside a technician-specific Day or Week view, the Add Entry and Edit Entry modals now prefill the technician and display the field as read-only (non-editable). New `lockedTechnicianId` prop on `TimeEntryModal` controls this. Does not affect other modal usages (e.g., from Job Detail).
+- **Files affected:** `client/src/pages/PayrollPage.tsx`, `client/src/components/time/TimeEntryModal.tsx`, `server/storage/timeTracking.ts`, `CHANGELOG.md`
+
+#### Payroll Technician-Centric Week View — Job Grid + Explicit Save (2026-04-04)
+
+- **Week view is now technician-centric**: selecting a technician shows their entire week as a job-row grid (rows = jobs/general, columns = Mon–Sun). Replaces the old multi-technician summary grid as the primary editing surface.
+- **Technician selector** drives the week sheet. All job rows and day columns reflect the selected technician's time entries for the selected week.
+- **General row** for non-job-linked / admin time preserved automatically.
+- **All cells are always-visible inputs**: styled as editable fields (border, background), type directly into any cell. Dirty cells highlighted in amber.
+- **Explicit Save workflow**: pending edits tracked locally. Changed cell count shown. Save button commits all positive deltas as admin time entries. Reset button discards all pending edits.
+- **Team overview strip**: compact clickable chip per technician below the grid showing name + total hours + approved badge. Click to switch technician.
+- **Approval inline**: technician header strip shows approval status + one-click Approve button.
+- **Day view unchanged**: still accessible via Day/Week toggle with calendar picker, entry list, and add/edit/delete.
+- **New backend endpoint**: `GET /api/admin/timesheets/week?userId=X&weekStart=YYYY-MM-DD` returns all entries for a technician across the full week with job/location joins.
+- **New storage method**: `getTimesheetWeek()` in `server/storage/timeTracking.ts` — single query with job/location joins for Mon–Sun range.
+- No changes to approval flow logic, CSV export, or database schema.
+- **Files affected:** `client/src/pages/PayrollPage.tsx`, `server/storage/timeTracking.ts`, `server/routes/adminTimesheets.ts`, `CHANGELOG.md`
+
+#### Payroll Timesheet UI Recovery — Day/Week Toggle + Inline Editing (2026-04-04)
+
+- **Day/Week toggle** added to the Payroll page header as a prominent button group. Both views accessible from `/settings/payroll`.
+- **Day view** embedded inline: technician selector, date navigation, chronological entry list with add/edit/delete via TimeEntryModal. Prominent focused header shows technician name + date + total.
+- **Week view cells are now editable**: single-click enters inline edit mode directly. Cells styled as input fields (border, background) so editability is immediately obvious.
+- **Pencil icon** on cell hover opens the detail panel below the table for granular entry editing.
+- **Inline quick-add**: typing a higher value in a cell creates an admin time entry for the delta. Reducing hours opens the detail panel with a clear explanation.
+- **Files affected:** `client/src/pages/PayrollPage.tsx`, `CHANGELOG.md`
+
+#### Payroll Day View + Time Entry Fixes (2026-04-04)
+
+- **Calendar date picker**: Day view date is now clickable — opens a Popover calendar (react-day-picker) for jumping to any date. Prev/next arrows and Today button preserved alongside it.
+- **Entry row layout restructured**: Job # + client name are now **bold primary info** (left). Time range shown below as secondary. Type badge and total hours right-aligned. Matches Jobber-style scannable hierarchy.
+- **Technician prefill fixed (bug)**: "Add Entry" modal now receives `assignedTechnicianIds` from current context (day view selected tech, or week detail panel tech). Technician dropdown no longer starts blank.
+- **Cost/hr now populates (bug)**: Backend `getTimesheetDay` query now selects `costRateSnapshot` and `billableRateSnapshot`. Edit modal hydrates cost/hr from stored snapshot. Create modal auto-fills from technician profile via existing `useTechniciansDirectory` hook.
+- **Technician dropdown stability (bug)**: Auto-select of first technician moved from render-time setState into `useEffect`, preventing rerender loop.
+- **Edit entry full hydration**: `openEditEntry` now passes `costRateSnapshot` and `billableRateSnapshot` from API response instead of hardcoding null.
+- No changes to approval flow, CSV export, or query structure.
+- **Files affected:** `client/src/pages/PayrollPage.tsx`, `server/storage/timeTracking.ts`, `CHANGELOG.md`
 
 #### Overlap Concurrency Hardening — Transactional FOR UPDATE Locking (2026-04-03)
 

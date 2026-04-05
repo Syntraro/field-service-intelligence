@@ -8,7 +8,7 @@ import ProductsServicesManager from "@/components/ProductsServicesManager";
 export default function PartsManagementPage() {
   return (
     <div className="min-h-screen bg-[#F4F8F4] dark:bg-gray-900">
-      <main className="p-6 space-y-6">
+      <main className="p-6 space-y-4">
         <ProductsServicesManager />
       </main>
     </div>

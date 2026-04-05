@@ -454,11 +454,12 @@ export class JobRepository extends BaseRepository {
   /**
    * Get single job with location data
    */
-  async getJob(companyId: string, jobId: string) {
+  async getJob(companyId: string, jobId: string, txHandle?: any) {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
+    const queryDb = txHandle ?? db;
 
-    const rows = await db
+    const rows = await queryDb
       .select({
         // All job fields
         id: jobs.id,
@@ -1468,13 +1469,14 @@ export class JobRepository extends BaseRepository {
     jobId: string,
     expectedVersion: number,
     intent: LifecycleIntent,
-    actor: TransitionActor
+    actor: TransitionActor,
+    txHandle?: any
   ): Promise<Job> {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
 
-    // All logic is inside the transaction for atomicity
-    return await db.transaction(async (tx) => {
+    // Run inside provided transaction or create a new one
+    const runInTx = async (tx: any) => {
       // Step 1: Load job and verify it exists (exclude deleted)
       const [job] = await tx
         .select()
@@ -1552,7 +1554,13 @@ export class JobRepository extends BaseRepository {
       }
 
       return updatedJob;
-    });
+    };
+
+    // Use provided transaction or create a new one
+    if (txHandle) {
+      return runInTx(txHandle);
+    }
+    return db.transaction(runInTx);
   }
 
   /**

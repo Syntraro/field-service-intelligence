@@ -4,10 +4,10 @@
  */
 import { useState, useEffect } from "react";
 import { Link } from "wouter";
-import { ArrowLeft, Globe, Save } from "lucide-react";
+import { ArrowLeft, Save } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -103,48 +103,45 @@ export default function RegionalSettingsPage() {
         </div>
       </div>
 
-      {/* Timezone */}
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Globe className="h-5 w-5" />
-            Timezone
-          </CardTitle>
-          <CardDescription>
-            Set the timezone used for scheduling and calendar display.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="max-w-md space-y-2">
-            <Label htmlFor="timezone">Company Timezone</Label>
-            <Select value={timezone} onValueChange={setTimezone} disabled={isLoading}>
-              <SelectTrigger id="timezone" data-testid="select-timezone">
-                <SelectValue placeholder="Select timezone" />
-              </SelectTrigger>
-              <SelectContent>
-                {TIMEZONE_OPTIONS.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+        <CardContent className="pt-5 space-y-4">
+          {/* Row 1: Timezone + Week Start */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="timezone" className="text-xs">Timezone</Label>
+              <Select value={timezone} onValueChange={setTimezone} disabled={isLoading}>
+                <SelectTrigger id="timezone" data-testid="select-timezone">
+                  <SelectValue placeholder="Select timezone" />
+                </SelectTrigger>
+                <SelectContent>
+                  {TIMEZONE_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="week-start" className="text-xs">Week Starts On</Label>
+              <Select value={weekStartsOn} onValueChange={setWeekStartsOn} disabled={isLoading}>
+                <SelectTrigger id="week-start" data-testid="select-week-start">
+                  <SelectValue placeholder="Select week start" />
+                </SelectTrigger>
+                <SelectContent>
+                  {WEEK_START_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Date & Time Format */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Date & Time Format</CardTitle>
-          <CardDescription>
-            Choose how dates and times are displayed throughout the application.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 max-w-md">
-            <div className="space-y-2">
-              <Label htmlFor="date-format">Date Format</Label>
+          {/* Row 2: Date Format + Time Format */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="date-format" className="text-xs">Date Format</Label>
               <Select value={dateFormat} onValueChange={setDateFormat} disabled={isLoading}>
                 <SelectTrigger id="date-format" data-testid="select-date-format">
                   <SelectValue placeholder="Select date format" />
@@ -158,9 +155,8 @@ export default function RegionalSettingsPage() {
                 </SelectContent>
               </Select>
             </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="time-format">Time Format</Label>
+            <div className="space-y-1.5">
+              <Label htmlFor="time-format" className="text-xs">Time Format</Label>
               <Select value={timeFormat} onValueChange={setTimeFormat} disabled={isLoading}>
                 <SelectTrigger id="time-format" data-testid="select-time-format">
                   <SelectValue placeholder="Select time format" />
@@ -175,43 +171,15 @@ export default function RegionalSettingsPage() {
               </Select>
             </div>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Week Start */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Calendar Week Start</CardTitle>
-          <CardDescription>
-            Choose which day the calendar week begins on.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="max-w-md space-y-2">
-            <Label htmlFor="week-start">Week Starts On</Label>
-            <Select value={weekStartsOn} onValueChange={setWeekStartsOn} disabled={isLoading}>
-              <SelectTrigger id="week-start" data-testid="select-week-start">
-                <SelectValue placeholder="Select week start" />
-              </SelectTrigger>
-              <SelectContent>
-                {WEEK_START_OPTIONS.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          {/* Save */}
+          <div className="flex justify-end pt-1">
+            <Button size="sm" onClick={handleSave} disabled={updateMutation.isPending} data-testid="button-save-regional">
+              <Save className="h-4 w-4 mr-1.5" />
+              {updateMutation.isPending ? "Saving..." : "Save"}
+            </Button>
           </div>
         </CardContent>
       </Card>
-
-      {/* Save */}
-      <div className="pt-2">
-        <Button onClick={handleSave} disabled={updateMutation.isPending} data-testid="button-save-regional">
-          <Save className="h-4 w-4 mr-2" />
-          {updateMutation.isPending ? "Saving..." : "Save Regional Settings"}
-        </Button>
-      </div>
     </div>
   );
 }

@@ -63,20 +63,19 @@ export async function createInvoiceFromJob(
   companyId: string,
   jobId: string,
   options: CreateFromJobOptions = {},
-  creationSource: InvoiceCreationSource = "INVOICE_ROUTE"
+  creationSource: InvoiceCreationSource = "INVOICE_ROUTE",
+  txHandle?: any
 ): Promise<CreateFromJobResult> {
-  // Step 1: Create invoice (has own SELECT FOR UPDATE transaction internally)
+  // Step 1: Create invoice shell (uses txHandle if provided for atomic close+invoice flow)
   const result = await storage.createInvoiceFromJob(
     companyId,
     jobId,
     { markJobCompleted: options.markJobCompleted ?? false },
-    creationSource
+    creationSource,
+    txHandle
   );
 
   // If idempotent return (already existed), check for incomplete enrichment.
-  // Scenario: Phase A committed (invoice row created) but Phase B failed (lines/tax
-  // rolled back). On retry, Phase A returns created=false with the existing invoice.
-  // If the invoice is still draft with 0 lines, re-run enrichment to complete it.
   if (!result.created) {
     const needsEnrichment =
       result.invoice.status === "draft" &&
@@ -86,20 +85,23 @@ export async function createInvoiceFromJob(
     if (!needsEnrichment) {
       return { invoice: result.invoice, created: false };
     }
-    // Fall through to Phase B enrichment below
   }
 
-  // Steps 2–4: Populate lines, resolve default tax, apply tax — all in one transaction.
-  await db.transaction(async (tx) => {
-    // Step 2: Refresh/populate invoice lines from job parts + labor
+  // Steps 2–4: Populate lines, resolve default tax, apply tax.
+  // When txHandle is provided, run in that transaction. Otherwise create our own.
+  const enrichInTx = async (tx: any) => {
     await storage.refreshInvoiceFromJob(companyId, result.invoice.id, tx);
-
-    // Step 3-4: Resolve default tax group and apply via canonical shared function
     const defaultGroup = await taxRepository.getDefaultTaxGroup(companyId);
     if (defaultGroup && defaultGroup.rates.length > 0) {
       await applyTaxGroupToInvoice(companyId, result.invoice.id, defaultGroup.id, tx);
     }
-  });
+  };
+
+  if (txHandle) {
+    await enrichInTx(txHandle);
+  } else {
+    await db.transaction(enrichInTx);
+  }
 
   return { invoice: result.invoice, created: true };
 }

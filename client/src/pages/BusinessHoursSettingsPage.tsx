@@ -7,10 +7,10 @@
  */
 import { useState, useEffect } from "react";
 import { Link } from "wouter";
-import { ArrowLeft, Clock, Save } from "lucide-react";
+import { ArrowLeft, Save } from "lucide-react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -243,49 +243,39 @@ export default function BusinessHoursSettingsPage() {
 
       {/* Business Hours Card */}
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Clock className="h-5 w-5" />
-            Weekly Schedule
-          </CardTitle>
-          <CardDescription>
-            Configure which days you're open and your operating hours. The calendar Day View will
-            grey out hours outside these times.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
+        <CardContent className="pt-4">
+          <div className="space-y-1">
             {hours.map((day) => (
               <div
                 key={day.dayOfWeek}
-                className="flex items-center gap-4 p-3 rounded-lg border bg-card"
+                className="flex items-center gap-3 py-1.5 px-3"
                 data-testid={`row-day-${day.dayOfWeek}`}
               >
                 {/* Day name */}
-                <div className="w-28 font-medium">{DAY_NAMES[day.dayOfWeek]}</div>
+                <div className="w-24 text-sm font-medium">{DAY_NAMES[day.dayOfWeek]}</div>
 
                 {/* Open/Closed toggle */}
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 w-20">
                   <Switch
                     checked={day.isOpen}
                     onCheckedChange={(checked) => handleToggleOpen(day.dayOfWeek, checked)}
                     disabled={isLoading}
                     data-testid={`switch-open-${day.dayOfWeek}`}
                   />
-                  <Label className={`text-sm ${day.isOpen ? "text-green-600" : "text-muted-foreground"}`}>
+                  <Label className={`text-xs ${day.isOpen ? "text-green-600" : "text-muted-foreground"}`}>
                     {day.isOpen ? "Open" : "Closed"}
                   </Label>
                 </div>
 
                 {/* Time pickers (only shown when open) */}
-                {day.isOpen && (
-                  <div className="flex items-center gap-2 ml-4">
+                {day.isOpen ? (
+                  <div className="flex items-center gap-2">
                     <Select
                       value={day.startMinutes?.toString() ?? ""}
                       onValueChange={(val) => handleStartChange(day.dayOfWeek, parseInt(val))}
                       disabled={isLoading}
                     >
-                      <SelectTrigger className="w-32" data-testid={`select-start-${day.dayOfWeek}`}>
+                      <SelectTrigger className="w-[120px] h-8 text-sm" data-testid={`select-start-${day.dayOfWeek}`}>
                         <SelectValue placeholder="Start" />
                       </SelectTrigger>
                       <SelectContent>
@@ -296,15 +286,13 @@ export default function BusinessHoursSettingsPage() {
                         ))}
                       </SelectContent>
                     </Select>
-
-                    <span className="text-muted-foreground">to</span>
-
+                    <span className="text-xs text-muted-foreground">to</span>
                     <Select
                       value={day.endMinutes?.toString() ?? ""}
                       onValueChange={(val) => handleEndChange(day.dayOfWeek, parseInt(val))}
                       disabled={isLoading}
                     >
-                      <SelectTrigger className="w-32" data-testid={`select-end-${day.dayOfWeek}`}>
+                      <SelectTrigger className="w-[120px] h-8 text-sm" data-testid={`select-end-${day.dayOfWeek}`}>
                         <SelectValue placeholder="End" />
                       </SelectTrigger>
                       <SelectContent>
@@ -315,41 +303,22 @@ export default function BusinessHoursSettingsPage() {
                         ))}
                       </SelectContent>
                     </Select>
-
-                    {/* Display formatted time range */}
-                    <span className="text-sm text-muted-foreground ml-2">
-                      ({minutesToTimeString(day.startMinutes ?? 0)} - {minutesToTimeString(day.endMinutes ?? 0)})
-                    </span>
                   </div>
+                ) : (
+                  <span className="text-xs text-muted-foreground">—</span>
                 )}
               </div>
             ))}
           </div>
+          {/* Save */}
+          <div className="flex justify-end pt-3 mt-2 border-t">
+            <Button size="sm" onClick={handleSave} disabled={updateMutation.isPending || isLoading} data-testid="button-save-business-hours">
+              <Save className="h-4 w-4 mr-1.5" />
+              {updateMutation.isPending ? "Saving..." : "Save"}
+            </Button>
+          </div>
         </CardContent>
       </Card>
-
-      {/* Info Card */}
-      <Card className="bg-muted/50">
-        <CardContent className="pt-4">
-          <p className="text-sm text-muted-foreground">
-            <strong>Note:</strong> Business hours affect the Day View calendar display only. Hours outside
-            business hours will be greyed out but scheduling is still allowed. This helps your team
-            focus on the workday while maintaining flexibility for after-hours jobs.
-          </p>
-        </CardContent>
-      </Card>
-
-      {/* Save Button */}
-      <div className="pt-2">
-        <Button
-          onClick={handleSave}
-          disabled={updateMutation.isPending || isLoading}
-          data-testid="button-save-business-hours"
-        >
-          <Save className="h-4 w-4 mr-2" />
-          {updateMutation.isPending ? "Saving..." : "Save Business Hours"}
-        </Button>
-      </div>
     </div>
   );
 }

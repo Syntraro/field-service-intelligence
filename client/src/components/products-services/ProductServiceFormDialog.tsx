@@ -25,6 +25,8 @@ interface ProductServiceFormDialogProps {
   onCancel: () => void;
   isSaving: boolean;
   checkDuplicate: Part | null | undefined;
+  /** Available category options for the category selector */
+  uniqueCategories?: string[];
 }
 
 export function ProductServiceFormDialog({
@@ -37,6 +39,7 @@ export function ProductServiceFormDialog({
   onCancel,
   isSaving,
   checkDuplicate,
+  uniqueCategories = [],
 }: ProductServiceFormDialogProps) {
   const setFormField = <K extends keyof ProductFormData>(field: K, value: ProductFormData[K]) => {
     onFormDataChange({ ...formData, [field]: value });
@@ -74,9 +77,10 @@ export function ProductServiceFormDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 py-2 max-h-[70vh] overflow-y-auto">
+        <div className="space-y-3 py-1">
+          {/* Row A: Type | SKU */}
           <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label>Type *</Label>
               <Select value={formData.type} onValueChange={(v: "service" | "product") => setFormField("type", v)}>
                 <SelectTrigger data-testid="select-type">
@@ -88,13 +92,14 @@ export function ProductServiceFormDialog({
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label>SKU</Label>
               <Input value={formData.sku} onChange={(e) => setFormField("sku", e.target.value)} placeholder="e.g. HVAC-001" data-testid="input-sku" />
             </div>
           </div>
 
-          <div className="space-y-2">
+          {/* Row B: Name (full width) */}
+          <div className="space-y-1.5">
             <Label>Name *</Label>
             <Input
               value={formData.name}
@@ -108,91 +113,71 @@ export function ProductServiceFormDialog({
             )}
           </div>
 
-          <div className="space-y-2">
+          {/* Row C: Description (full width) */}
+          <div className="space-y-1.5">
             <Label>Description</Label>
             <Textarea value={formData.description} onChange={(e) => setFormField("description", e.target.value)} rows={2} data-testid="input-description" />
           </div>
 
-          <div className="border-t pt-3">
-            <p className="text-sm font-medium mb-3">Pricing</p>
+          {/* Row D: Pricing (3 columns) */}
+          <div className="border-t pt-2">
+            <p className="text-sm font-medium mb-2">Pricing</p>
             <div className="grid grid-cols-3 gap-3">
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 <Label>Cost</Label>
                 <div className="relative">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
-                  <Input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    value={formData.cost}
-                    onChange={handleCostChange}
-                    placeholder="0.00"
-                    className="pl-7"
-                    data-testid="input-cost"
-                  />
+                  <Input type="number" step="0.01" min="0" value={formData.cost} onChange={handleCostChange} placeholder="0.00" className="pl-7" data-testid="input-cost" />
                 </div>
               </div>
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 <Label>Markup</Label>
                 <div className="relative">
-                  <Input
-                    type="number"
-                    step="1"
-                    min="0"
-                    value={formData.markupPercent}
-                    onChange={handleMarkupChange}
-                    placeholder="50"
-                    className="pr-7"
-                    data-testid="input-markup"
-                  />
+                  <Input type="number" step="1" min="0" value={formData.markupPercent} onChange={handleMarkupChange} placeholder="50" className="pr-7" data-testid="input-markup" />
                   <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground">%</span>
                 </div>
               </div>
-              <div className="space-y-2">
+              <div className="space-y-1.5">
                 <Label>Price</Label>
                 <div className="relative">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">$</span>
-                  <Input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    value={formData.unitPrice}
-                    onChange={(e) => setFormField("unitPrice", e.target.value)}
-                    placeholder="0.00"
-                    className="pl-7"
-                    data-testid="input-price"
-                  />
+                  <Input type="number" step="0.01" min="0" value={formData.unitPrice} onChange={(e) => setFormField("unitPrice", e.target.value)} placeholder="0.00" className="pl-7" data-testid="input-price" />
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Duration — most useful for services but available on both */}
-          <div className="space-y-2">
-            <Label>Duration (minutes)</Label>
-            <Input
-              type="number"
-              step="1"
-              min="0"
-              value={formData.estimatedDurationMinutes}
-              onChange={(e) => setFormField("estimatedDurationMinutes", e.target.value)}
-              placeholder="e.g. 60"
-              className="w-32"
-              data-testid="input-duration"
-            />
-            <p className="text-xs text-muted-foreground">Estimated time to complete this service or task.</p>
+          {/* Row E: Duration | Category */}
+          <div className="grid grid-cols-2 gap-3 border-t pt-2">
+            <div className="space-y-1.5">
+              <Label>Duration (minutes)</Label>
+              <Input type="number" step="1" min="0" value={formData.estimatedDurationMinutes} onChange={(e) => setFormField("estimatedDurationMinutes", e.target.value)} placeholder="e.g. 60" data-testid="input-duration" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Category</Label>
+              <Select value={formData.category || "__none__"} onValueChange={(v) => setFormField("category", v === "__none__" ? "" : v)}>
+                <SelectTrigger data-testid="select-category">
+                  <SelectValue placeholder="Uncategorized" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">Uncategorized</SelectItem>
+                  {uniqueCategories.map((cat) => (
+                    <SelectItem key={cat} value={cat}>{cat}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
-          <div className="border-t pt-3">
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2">
-                <Checkbox id="taxable" checked={formData.isTaxable} onCheckedChange={(c) => setFormField("isTaxable", c as boolean)} />
-                <Label htmlFor="taxable" className="font-normal cursor-pointer">Taxable</Label>
-              </div>
-              <div className="flex items-center gap-2">
-                <Checkbox id="active" checked={formData.isActive} onCheckedChange={(c) => setFormField("isActive", c as boolean)} />
-                <Label htmlFor="active" className="font-normal cursor-pointer">Active</Label>
-              </div>
+          {/* Row F: Checkboxes */}
+          <div className="flex items-center gap-4 border-t pt-2">
+            <div className="flex items-center gap-2">
+              <Checkbox id="taxable" checked={formData.isTaxable} onCheckedChange={(c) => setFormField("isTaxable", c as boolean)} />
+              <Label htmlFor="taxable" className="font-normal cursor-pointer">Taxable</Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <Checkbox id="active" checked={formData.isActive} onCheckedChange={(c) => setFormField("isActive", c as boolean)} />
+              <Label htmlFor="active" className="font-normal cursor-pointer">Active</Label>
             </div>
           </div>
         </div>

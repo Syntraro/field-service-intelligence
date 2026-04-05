@@ -11,8 +11,10 @@ import { visitStatusLabel } from "@/lib/visitStatusDisplay";
 import { useToast } from "@/hooks/use-toast";
 import { useActivityStore } from "@/lib/activityStore";
 import {
+  Archive,
   ArrowLeft,
   Check,
+  CheckCircle2,
   Pencil,
   Trash2,
   Loader2,
@@ -856,7 +858,7 @@ export default function JobDetailPage() {
                       {getJobStatusDisplay(job).label}
                     </StatusPill>
                   </div>
-                  {/* Company / address — visual separation from title */}
+                  {/* Company / address / invoice — visual separation from title */}
                   <div className="mt-2 flex items-center gap-2 text-sm text-slate-500">
                     <button
                       type="button"
@@ -873,6 +875,15 @@ export default function JobDetailPage() {
                           <MapPin className="h-3 w-3 shrink-0" />
                           {fullAddress}
                         </span>
+                      </>
+                    )}
+                    {jobInvoice && (
+                      <>
+                        <span className="text-slate-300">·</span>
+                        <Link href={`/invoices/${jobInvoice.id}`} className="text-xs text-primary hover:underline font-medium flex items-center gap-1 shrink-0" data-testid="link-invoice">
+                          <Receipt className="h-3 w-3" />
+                          Invoice #{(jobInvoice as any).invoiceNumber || "—"}
+                        </Link>
                       </>
                     )}
                   </div>
@@ -973,13 +984,6 @@ export default function JobDetailPage() {
                 <Pause className="h-3.5 w-3.5" />
                 Hold
               </Button>
-              {/* Invoice link */}
-              {jobInvoice && (
-                <Link href={`/invoices/${jobInvoice.id}`} className="text-xs text-primary hover:underline font-medium flex items-center gap-1" data-testid="link-invoice">
-                  <Receipt className="h-3 w-3" />
-                  Invoice #{(jobInvoice as any).invoiceNumber || "—"}
-                </Link>
-              )}
               {/* Spacer pushes right group to far right */}
               <div className="flex-1" />
               {/* Right group: primary CTA + overflow */}
@@ -1028,7 +1032,8 @@ export default function JobDetailPage() {
                     Edit Job
                   </DropdownMenuItem>
                   {job.status === "open" && isOfficeUser && (
-                    <DropdownMenuItem onClick={() => setShowCompleteJobConfirm(true)} data-testid="button-complete-job">
+                    <DropdownMenuItem onClick={() => setShowCompleteJobConfirm(true)} className="text-emerald-600 font-medium" data-testid="button-complete-job">
+                      <CheckCircle2 className="h-4 w-4 mr-2" />
                       Complete Job
                     </DropdownMenuItem>
                   )}
@@ -1040,6 +1045,7 @@ export default function JobDetailPage() {
                   )}
                   {job.status === "completed" && isOfficeUser && (
                     <DropdownMenuItem onClick={() => headerCardRef.current?.openCloseJobDialog()} data-testid="button-archive-job">
+                      <Archive className="h-4 w-4 mr-2" />
                       Archive Job
                     </DropdownMenuItem>
                   )}

@@ -1971,6 +1971,7 @@ export class TimeTrackingRepository extends BaseRepository {
       .select({
         id: users.id,
         email: users.email,
+        phone: users.phone,
         fullName: users.fullName,
         firstName: users.firstName,
         lastName: users.lastName,
@@ -2019,6 +2020,9 @@ export class TimeTrackingRepository extends BaseRepository {
       lockedByInvoiceId: string | null;
       lockReason: string | null;
       invoiceId: string | null;
+      costRateSnapshot: string | null;
+      billableRateSnapshot: string | null;
+      locationId: string | null;
     }>;
     totalMinutes: number;
   }> {
@@ -2043,6 +2047,11 @@ export class TimeTrackingRepository extends BaseRepository {
         lockedByInvoiceId: timeEntries.lockedByInvoiceId,
         lockReason: timeEntries.lockReason,
         invoiceId: timeEntries.invoiceId,
+        // 2026-04-04: Include rate snapshots so edit modal can hydrate cost/hr
+        costRateSnapshot: timeEntries.costRateSnapshot,
+        billableRateSnapshot: timeEntries.billableRateSnapshot,
+        // 2026-04-04: Include locationId for client detail links in day view
+        locationId: jobs.locationId,
         jobNumber: jobs.jobNumber,
         jobSummary: jobs.summary,
         jobType: jobs.jobType,
@@ -2086,10 +2095,194 @@ export class TimeTrackingRepository extends BaseRepository {
         lockedByInvoiceId: r.lockedByInvoiceId,
         lockReason: r.lockReason,
         invoiceId: r.invoiceId,
+        costRateSnapshot: r.costRateSnapshot,
+        billableRateSnapshot: r.billableRateSnapshot,
+        locationId: r.locationId,
       };
     });
 
     return { date, userId, entries, totalMinutes };
+  }
+
+  /**
+   * Get all time entries for a technician across a full week (Mon–Sun),
+   * with job + location joins. Used by the payroll week grid (2026-04-04).
+   */
+  async getTimesheetWeek(
+    companyId: string,
+    userId: string,
+    weekStart: string // YYYY-MM-DD (Monday)
+  ): Promise<{
+    weekStart: string;
+    userId: string;
+    entries: Array<{
+      id: string;
+      technicianId: string;
+      jobId: string | null;
+      jobNumber: number | null;
+      jobSummary: string | null;
+      locationName: string | null;
+      type: string;
+      startAt: Date;
+      endAt: Date | null;
+      durationMinutes: number | null;
+      billable: boolean;
+      notes: string | null;
+      date: string; // YYYY-MM-DD derived from startAt
+    }>;
+  }> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(userId, "userId");
+
+    const mondayStart = new Date(`${weekStart}T00:00:00.000Z`);
+    const sundayEnd = new Date(mondayStart.getTime() + 7 * 86400000);
+
+    const rows = await db
+      .select({
+        id: timeEntries.id,
+        technicianId: timeEntries.technicianId,
+        jobId: timeEntries.jobId,
+        type: timeEntries.type,
+        startAt: timeEntries.startAt,
+        endAt: timeEntries.endAt,
+        durationMinutes: timeEntries.durationMinutes,
+        billable: timeEntries.billable,
+        notes: timeEntries.notes,
+        jobNumber: jobs.jobNumber,
+        jobSummary: jobs.summary,
+        locationName: clientLocations.companyName,
+      })
+      .from(timeEntries)
+      .leftJoin(jobs, eq(timeEntries.jobId, jobs.id))
+      .leftJoin(clientLocations, eq(jobs.locationId, clientLocations.id))
+      .where(
+        and(
+          eq(timeEntries.companyId, companyId),
+          eq(timeEntries.technicianId, userId),
+          gte(timeEntries.startAt, mondayStart),
+          lt(timeEntries.startAt, sundayEnd)
+        )
+      )
+      .orderBy(asc(timeEntries.startAt));
+
+    const entries = rows.map((r) => {
+      const startDate = r.startAt instanceof Date ? r.startAt : new Date(r.startAt);
+      return {
+        id: r.id,
+        technicianId: r.technicianId,
+        jobId: r.jobId,
+        jobNumber: r.jobNumber,
+        jobSummary: r.jobSummary,
+        locationName: r.locationName,
+        type: r.type,
+        startAt: r.startAt,
+        endAt: r.endAt,
+        durationMinutes: r.durationMinutes,
+        billable: r.billable,
+        notes: r.notes,
+        // Derive date string from startAt for day bucketing
+        date: `${startDate.getUTCFullYear()}-${String(startDate.getUTCMonth() + 1).padStart(2, "0")}-${String(startDate.getUTCDate()).padStart(2, "0")}`,
+      };
+    });
+
+    return { weekStart, userId, entries };
+  }
+
+  /**
+   * Reduce total hours for a technician+job+day by deleting/trimming entries.
+   * Processes entries from most recent first. Fully consumed entries are deleted;
+   * the last partially-consumed entry is trimmed (endAt moved earlier).
+   * Used by payroll week grid for hour reductions (2026-04-04).
+   */
+  async reduceTimeForDay(
+    companyId: string,
+    technicianId: string,
+    jobId: string | null,
+    date: string,
+    reduceMinutes: number,
+    options: { userId: string }
+  ): Promise<{ deletedCount: number; trimmedCount: number; reducedMinutes: number }> {
+    this.assertCompanyId(companyId);
+    this.validateUUID(technicianId, "technicianId");
+    this.validateUUID(options.userId, "userId");
+
+    const dayStart = new Date(`${date}T00:00:00.000Z`);
+    const nextDay = new Date(dayStart.getTime() + 86400000);
+
+    // Find entries for this tech+job+day, ordered most recent first
+    const jobCondition = jobId
+      ? eq(timeEntries.jobId, jobId)
+      : isNull(timeEntries.jobId);
+
+    const entries = await db
+      .select()
+      .from(timeEntries)
+      .where(
+        and(
+          eq(timeEntries.companyId, companyId),
+          eq(timeEntries.technicianId, technicianId),
+          jobCondition,
+          gte(timeEntries.startAt, dayStart),
+          lt(timeEntries.startAt, nextDay)
+        )
+      )
+      .orderBy(desc(timeEntries.startAt));
+
+    let remaining = reduceMinutes;
+    let deletedCount = 0;
+    let trimmedCount = 0;
+
+    for (const entry of entries) {
+      if (remaining <= 0) break;
+
+      const entryMinutes = entry.durationMinutes ?? 0;
+      if (entryMinutes <= 0) continue;
+
+      // Skip locked/invoiced entries — cannot modify
+      if (entry.lockedAt || entry.lockedByInvoiceId || entry.invoiceId) continue;
+
+      if (entryMinutes <= remaining) {
+        // Delete entire entry
+        await db
+          .delete(timeEntries)
+          .where(and(eq(timeEntries.id, entry.id), eq(timeEntries.companyId, companyId)));
+        remaining -= entryMinutes;
+        deletedCount++;
+      } else {
+        // Trim entry: shorten endAt and recalculate duration
+        const newDuration = entryMinutes - remaining;
+        const startMs = entry.startAt instanceof Date ? entry.startAt.getTime() : new Date(entry.startAt).getTime();
+        const newEndAt = new Date(startMs + newDuration * 60000);
+        await db
+          .update(timeEntries)
+          .set({
+            endAt: newEndAt,
+            durationMinutes: newDuration,
+          })
+          .where(and(eq(timeEntries.id, entry.id), eq(timeEntries.companyId, companyId)));
+        remaining -= (entryMinutes - newDuration);
+        trimmedCount++;
+      }
+    }
+
+    console.log(JSON.stringify({
+      event: "time_reduce_day",
+      companyId,
+      technicianId,
+      jobId,
+      date,
+      requestedMinutes: reduceMinutes,
+      actualMinutes: reduceMinutes - remaining,
+      deletedCount,
+      trimmedCount,
+      skippedLockedMinutes: remaining,
+    }));
+
+    return {
+      deletedCount,
+      trimmedCount,
+      reducedMinutes: reduceMinutes - remaining,
+    };
   }
 
   /**

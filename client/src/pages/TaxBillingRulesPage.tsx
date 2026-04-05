@@ -332,68 +332,38 @@ export default function TaxBillingRulesPage() {
         </div>
       </div>
 
-      {/* Invoice Payment Terms */}
+      {/* Invoice Payment Terms — compact card */}
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Calendar className="h-5 w-5" />
-            Invoice Payment Terms
-          </CardTitle>
-          <CardDescription>
-            Set the default payment terms for new invoices. This determines when invoices are due.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 max-w-md">
-            <div className="space-y-2">
-              <Label htmlFor="payment-terms">Default Payment Terms</Label>
-              <Select
-                value={paymentTermsDays}
-                onValueChange={setPaymentTermsDays}
-                disabled={settingsLoading}
-              >
-                <SelectTrigger id="payment-terms" data-testid="select-payment-terms">
+        <CardContent className="pt-4 space-y-3">
+          <p className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+            <Calendar className="h-3.5 w-3.5" /> Invoice Payment Terms
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
+            <div className="space-y-1.5">
+              <Label htmlFor="payment-terms" className="text-xs">Default Payment Terms</Label>
+              <Select value={paymentTermsDays} onValueChange={setPaymentTermsDays} disabled={settingsLoading}>
+                <SelectTrigger id="payment-terms" className="h-8 text-sm" data-testid="select-payment-terms">
                   <SelectValue placeholder="Select payment terms" />
                 </SelectTrigger>
                 <SelectContent>
                   {PAYMENT_TERMS_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
+                    <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">
-                New invoices will have due dates calculated based on this setting.
-              </p>
             </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="custom-days">Or enter custom days</Label>
+            <div className="space-y-1.5">
+              <Label htmlFor="custom-days" className="text-xs">Or custom days</Label>
               <div className="flex items-center gap-2">
-                <Input
-                  id="custom-days"
-                  type="number"
-                  min="0"
-                  max="365"
-                  value={paymentTermsDays}
-                  onChange={(e) => setPaymentTermsDays(e.target.value)}
-                  className="w-24"
-                  data-testid="input-custom-days"
-                />
-                <span className="text-sm text-muted-foreground">days</span>
+                <Input id="custom-days" type="number" min="0" max="365" value={paymentTermsDays} onChange={(e) => setPaymentTermsDays(e.target.value)} className="w-20 h-8 text-sm" data-testid="input-custom-days" />
+                <span className="text-xs text-muted-foreground">days</span>
               </div>
             </div>
           </div>
-
-          <div className="pt-4 border-t">
-            <Button
-              onClick={handleSavePaymentTerms}
-              disabled={updateSettingsMutation.isPending}
-              data-testid="button-save-payment-terms"
-            >
-              <Save className="h-4 w-4 mr-2" />
-              {updateSettingsMutation.isPending ? "Saving..." : "Save Payment Terms"}
+          <div className="flex justify-end pt-1 border-t">
+            <Button size="sm" onClick={handleSavePaymentTerms} disabled={updateSettingsMutation.isPending} data-testid="button-save-payment-terms">
+              <Save className="h-4 w-4 mr-1.5" />
+              {updateSettingsMutation.isPending ? "Saving..." : "Save"}
             </Button>
           </div>
         </CardContent>
@@ -401,17 +371,12 @@ export default function TaxBillingRulesPage() {
 
       {/* Tax Rates */}
       <Card>
-        <CardHeader>
+        <CardHeader className="pb-2">
           <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="flex items-center gap-2">
-                <Receipt className="h-5 w-5" />
-                Tax Rates
-              </CardTitle>
-              <CardDescription>
-                Individual tax rates (e.g., GST 5%, PST 7%, HST 13%).
-              </CardDescription>
-            </div>
+            <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+              <Receipt className="h-4 w-4 text-muted-foreground" />
+              Tax Rates
+            </CardTitle>
             <Button size="sm" onClick={openAddRate} data-testid="button-add-tax-rate">
               <Plus className="h-4 w-4 mr-1" />
               Add Rate
@@ -461,17 +426,12 @@ export default function TaxBillingRulesPage() {
 
       {/* Tax Groups */}
       <Card>
-        <CardHeader>
+        <CardHeader className="pb-2">
           <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="flex items-center gap-2">
-                <Receipt className="h-5 w-5" />
-                Tax Groups
-              </CardTitle>
-              <CardDescription>
-                Compose multiple rates into groups (e.g., "GST+PST" = 12%). Set one as default for new invoices.
-              </CardDescription>
-            </div>
+            <CardTitle className="text-sm font-medium flex items-center gap-1.5">
+              <Receipt className="h-4 w-4 text-muted-foreground" />
+              Tax Groups
+            </CardTitle>
             <Button size="sm" onClick={openAddGroup} disabled={taxRates.length === 0} data-testid="button-add-tax-group">
               <Plus className="h-4 w-4 mr-1" />
               Add Group

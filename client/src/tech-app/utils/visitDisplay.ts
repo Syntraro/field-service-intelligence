@@ -1,47 +1,66 @@
-/** Technician PWA — Visit display helpers
- *  2026-04-03: Updated action labels for state-driven single primary action. */
+/**
+ * Technician PWA — Shared visit display constants.
+ *
+ * Single source of truth for status/job-type labels, colors,
+ * outcome labels, and display fallback strings used across
+ * TodayPage, VisitDetailPage, and visit adapters.
+ */
 
-import type { VisitStatus, JobType } from "../types";
+// ── Display fallback strings (shared across adapters) ──
 
-export const STATUS_LABELS: Record<VisitStatus, string> = {
-  scheduled: "Scheduled",
+export const UNKNOWN_LOCATION = "Unknown location";
+export const NO_ADDRESS = "No address";
+
+// ── Status display ──
+
+export const STATUS_LABELS: Record<string, string> = {
+  scheduled: "Scheduled", dispatched: "Scheduled",
   en_route: "En Route",
-  in_progress: "On Site",
+  in_progress: "On Site", on_site: "On Site",
   completed: "Completed",
-  on_hold: "On Hold",
+  on_hold: "On Hold", cancelled: "Cancelled",
 };
 
-export const STATUS_COLORS: Record<VisitStatus, string> = {
-  scheduled: "bg-slate-100 text-slate-600",
+export const STATUS_COLORS: Record<string, string> = {
+  scheduled: "bg-slate-100 text-slate-600", dispatched: "bg-slate-100 text-slate-600",
   en_route: "bg-blue-100 text-blue-700",
-  in_progress: "bg-[#22c55e]/10 text-[#22c55e]",
+  in_progress: "bg-[#22c55e]/10 text-[#22c55e]", on_site: "bg-[#22c55e]/10 text-[#22c55e]",
   completed: "bg-emerald-100 text-emerald-700",
-  on_hold: "bg-red-100 text-red-700",
+  on_hold: "bg-red-100 text-red-700", cancelled: "bg-slate-100 text-slate-400",
 };
 
-/** State-driven primary action label */
-export const PRIMARY_ACTION: Partial<Record<VisitStatus, string>> = {
-  scheduled: "Start Travel",
-  en_route: "Start Job",
+export const DEFAULT_STATUS_COLOR = "bg-slate-100 text-slate-600";
+
+// ── Job type display ──
+
+export const JOB_TYPE_LABELS: Record<string, string> = {
+  pm: "PM", service: "Service", urgent: "Urgent", install: "Install",
+  repair: "Repair", inspection: "Inspection", maintenance: "PM",
 };
 
-/** Primary action button styling per status */
-export const ACTION_COLORS: Partial<Record<VisitStatus, string>> = {
-  scheduled: "bg-blue-600 hover:bg-blue-700 text-white",
-  en_route: "bg-[#22c55e] hover:bg-[#1db350] text-white",
-};
-
-/** Job type badge config */
-export const JOB_TYPE_LABELS: Record<JobType, string> = {
-  pm: "PM",
-  service: "Service",
-  urgent: "Urgent",
-  install: "Install",
-};
-
-export const JOB_TYPE_COLORS: Record<JobType, string> = {
+export const JOB_TYPE_COLORS: Record<string, string> = {
   pm: "bg-blue-100 text-blue-700",
+  maintenance: "bg-blue-100 text-blue-700",
   service: "bg-slate-100 text-slate-600",
   urgent: "bg-red-100 text-red-700",
   install: "bg-purple-100 text-purple-700",
+  repair: "bg-amber-100 text-amber-700",
 };
+
+export const DEFAULT_JOB_TYPE_COLOR = "bg-slate-100 text-slate-600";
+
+// ── Outcome display ──
+
+export const OUTCOME_LABELS: Record<string, string> = {
+  completed: "Completed",
+  needs_parts: "Needs Parts",
+  needs_followup: "Needs Follow-Up",
+};
+
+export const OUTCOME_COLORS: Record<string, string> = {
+  completed: "bg-emerald-100 text-emerald-700",
+  needs_parts: "bg-amber-100 text-amber-700",
+  needs_followup: "bg-blue-100 text-blue-700",
+};
+
+export const DEFAULT_OUTCOME_COLOR = "bg-slate-100 text-slate-600";

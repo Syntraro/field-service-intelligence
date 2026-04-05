@@ -449,7 +449,8 @@ export async function completeVisit(
  * with outcome="completed" before the job transition runs.
  */
 export async function forceCloseJob(
-  intent: ForceCloseJobIntent
+  intent: ForceCloseJobIntent,
+  txHandle?: any
 ): Promise<ForceCloseJobResult> {
   const {
     companyId,
@@ -462,11 +463,17 @@ export async function forceCloseJob(
   } = intent;
 
   let autoCompletedVisitCount = 0;
+  let effectiveVersion = version;
 
-  // Step 1: Bulk-complete open visits if requested
+  // Step 1: Bulk-complete open visits if requested.
+  // When running inside a shared transaction, version is consistent within tx.
   if (autoCompleteOpenVisits) {
-    const result = await bulkCompleteVisitsInternal(companyId, jobId);
+    const result = await bulkCompleteVisitsInternal(companyId, jobId, txHandle);
     autoCompletedVisitCount = result.completedCount;
+    if (result.completedCount > 0) {
+      const freshJob = await jobRepository.getJob(companyId, jobId, txHandle);
+      effectiveVersion = freshJob.version;
+    }
   }
 
   // Step 2: Delegate to domain lifecycle engine via storage
@@ -478,9 +485,10 @@ export async function forceCloseJob(
   const job = await jobRepository.transitionJobStatus(
     companyId,
     jobId,
-    version,
+    effectiveVersion,
     lifecycleIntent,
-    actor
+    actor,
+    txHandle
   );
 
   return { job, autoCompletedVisitCount };
@@ -643,7 +651,8 @@ export async function undoCloseJob(
  * Transitions job status to "invoiced" via the domain lifecycle engine.
  */
 export async function markInvoiced(
-  intent: MarkInvoicedIntent
+  intent: MarkInvoicedIntent,
+  txHandle?: any
 ): Promise<MarkInvoicedResult> {
   const { companyId, jobId, version, actor, invoiceId } = intent;
 
@@ -656,7 +665,8 @@ export async function markInvoiced(
     jobId,
     version,
     lifecycleIntent,
-    actor
+    actor,
+    txHandle
   );
 
   return { job };
@@ -1197,7 +1207,8 @@ async function reconcileJobAfterVisitCompletion(input: {
  */
 async function bulkCompleteVisitsInternal(
   companyId: string,
-  jobId: string
+  jobId: string,
+  txHandle?: any
 ): Promise<BulkCompleteVisitsResult> {
   const uncompleted = await jobVisitsRepository.getUncompletedVisits(companyId, jobId);
   if (!uncompleted.length) {
@@ -1207,8 +1218,8 @@ async function bulkCompleteVisitsInternal(
   const now = new Date();
   const completedVisits: JobVisit[] = [];
 
-  // Wrap all visit updates in a single transaction (eliminates N separate implicit transactions)
-  await db.transaction(async (tx) => {
+  // Run visit updates in provided transaction or create a new one
+  const runVisitUpdates = async (tx: any) => {
     for (const visit of uncompleted) {
       const updates: Record<string, unknown> = {
         status: "completed",
@@ -1219,12 +1230,9 @@ async function bulkCompleteVisitsInternal(
         version: visit.version + 1,
       };
 
-      // Auto check-out if checked in but not yet checked out
-      // Labor unification: actualDurationMinutes deprecated — duration derived from time_entries
       if (visit.checkedInAt && !visit.checkedOutAt) {
         updates.checkedOutAt = now;
       } else if (!visit.checkedInAt) {
-        // Never checked in — still set checkedOutAt for audit completeness
         updates.checkedOutAt = now;
       }
 
@@ -1236,10 +1244,16 @@ async function bulkCompleteVisitsInternal(
 
       completedVisits.push(updated);
     }
-  });
+  };
 
-  // Sync job schedule once after all visits are completed (outside transaction — same semantic position)
-  await jobVisitsRepository.syncJobToVisits(companyId, jobId);
+  if (txHandle) {
+    await runVisitUpdates(txHandle);
+  } else {
+    await db.transaction(runVisitUpdates);
+  }
+
+  // Sync job schedule — pass txHandle so it participates in the outer transaction
+  await jobVisitsRepository.syncJobToVisits(companyId, jobId, txHandle);
 
   return { completedCount: completedVisits.length, visits: completedVisits };
 }

@@ -1,67 +1,89 @@
 /**
  * Technician PWA — App Shell
  *
- * Self-contained routing + state management.
- * No backend. No real auth. No office app imports.
- * 2026-04-03: Added handleAddPart to state wiring.
- * 2026-04-03: Added handleReopen for visit reopen flow.
+ * 2026-04-04: Phase 0 — real backend auth via useAuth().
+ * 2026-04-04: Phase 1 — Today page uses real backend visits.
+ * 2026-04-04: Phase 2 — Visit Detail fetches its own data + core actions wired.
+ *   Removed mock visit state (useTechState) — no longer needed.
+ *   VisitDetailPage receives visitId and fetches from backend.
  */
 
+import { useState, useCallback } from "react";
 import { Switch, Route, useLocation } from "wouter";
-import { useTechState } from "../state/useTechState";
+import { useAuth } from "@/lib/auth";
 import { LoginPage } from "../pages/LoginPage";
 import { TodayPage } from "../pages/TodayPage";
 import { VisitDetailPage } from "../pages/VisitDetailPage";
+import TimesheetPage from "../pages/TimesheetPage";
+import { useTechRealtimeSync } from "../hooks/useTechRealtimeSync";
+
+/** Loading spinner shown during session restore */
+function AuthLoading() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-[#0f1a2e]">
+      <div className="flex flex-col items-center gap-3">
+        <div className="w-8 h-8 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+        <p className="text-sm text-slate-400">Loading…</p>
+      </div>
+    </div>
+  );
+}
 
 export default function TechApp() {
   const [, setLocation] = useLocation();
-  const {
-    loggedIn, visits,
-    handleLogin, handleStatusChange, handleOutcome, handleReopen,
-    handleAddNote, handleAddEquipment, handleRemoveEquipment, handleAddPart,
-    handleClearEquipmentWork,
-  } = useTechState();
+  const { user, isLoading: authLoading, login, logout } = useAuth();
+
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [loginPending, setLoginPending] = useState(false);
+
+  const handleLogin = useCallback(async (email: string, password: string) => {
+    setLoginError(null);
+    setLoginPending(true);
+    try {
+      await login(email, password);
+      setLocation("/tech/today");
+    } catch (err: any) {
+      setLoginError(err?.message || "Login failed. Please check your credentials.");
+    } finally {
+      setLoginPending(false);
+    }
+  }, [login, setLocation]);
+
+  // Real-time sync: SSE connection for dispatch + time events (only when authenticated)
+  useTechRealtimeSync();
+
+  if (authLoading) return <AuthLoading />;
+
+  if (!user) {
+    return (
+      <LoginPage
+        onLogin={handleLogin}
+        error={loginError}
+        isLoading={loginPending}
+      />
+    );
+  }
 
   return (
     <Switch>
       <Route path="/tech/login">
-        <LoginPage onLogin={() => { handleLogin(); setLocation("/tech/today"); }} />
+        {() => { setLocation("/tech/today"); return null; }}
       </Route>
 
       <Route path="/tech/today">
-        {loggedIn ? (
-          <TodayPage visits={visits} onVisitTap={(id) => setLocation(`/tech/visit/${id}`)} />
-        ) : (
-          <LoginPage onLogin={() => { handleLogin(); setLocation("/tech/today"); }} />
-        )}
+        <TodayPage onVisitTap={(id) => setLocation(`/tech/visit/${id}`)} />
+      </Route>
+
+      <Route path="/tech/timesheet">
+        <TimesheetPage />
       </Route>
 
       <Route path="/tech/visit/:id">
-        {(params) => {
-          const visit = visits.find(v => v.id === params.id);
-          if (!visit || !loggedIn) {
-            setLocation("/tech/today");
-            return null;
-          }
-          return (
-            <VisitDetailPage
-              visit={visit}
-              onBack={() => setLocation("/tech/today")}
-              onStatusChange={handleStatusChange}
-              onOutcome={handleOutcome}
-              onReopen={handleReopen}
-              onAddNote={handleAddNote}
-              onAddEquipment={handleAddEquipment}
-              onRemoveEquipment={handleRemoveEquipment}
-              onAddPart={handleAddPart}
-              onClearEquipmentWork={handleClearEquipmentWork}
-            />
-          );
-        }}
+        {(params) => <VisitDetailPage visitId={params.id} />}
       </Route>
 
       <Route>
-        <LoginPage onLogin={() => { handleLogin(); setLocation("/tech/today"); }} />
+        {() => { setLocation("/tech/today"); return null; }}
       </Route>
     </Switch>
   );

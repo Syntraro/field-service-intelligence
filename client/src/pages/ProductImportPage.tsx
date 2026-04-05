@@ -28,6 +28,7 @@ import {
   Loader2,
   Download,
 } from "lucide-react";
+import { Link } from "wouter";
 import type {
   ProductColumnMapping,
   ProductImportPreviewResponse,
@@ -269,11 +270,18 @@ export default function ProductImportPage() {
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">Import Products & Services</h1>
-        <p className="text-muted-foreground text-sm mt-1">
-          Upload a CSV file to bulk-import your product and service catalog.
-        </p>
+      <div className="flex items-center gap-3">
+        <Link href="/settings">
+          <Button variant="ghost" size="icon" data-testid="button-back-settings">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        </Link>
+        <div>
+          <h1 className="text-2xl font-bold">Import Products & Services</h1>
+          <p className="text-muted-foreground text-sm mt-1">
+            Upload a CSV file to bulk-import your product and service catalog.
+          </p>
+        </div>
       </div>
 
       {/* Step indicator */}

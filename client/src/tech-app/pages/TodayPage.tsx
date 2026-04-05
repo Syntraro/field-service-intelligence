@@ -1,180 +1,40 @@
-/** Technician PWA — Schedule screen
- *  2026-04-03: Added multi-tech team view, improved job cards with status tags,
- *  prominent clock-in banner, stronger next-job highlight. */
+/**
+ * Technician PWA — Today schedule screen.
+ *
+ * Phase 1 (2026-04-04): Wired to real backend via GET /api/tech/visits/today.
+ *   - Removed mock visit data (INITIAL_VISITS, TEAM_VISITS, MOCK_TECHNICIANS)
+ *   - Removed Team View (no real multi-tech endpoint for technician role)
+ *   - Added loading, empty, and error states
+ *   - Clock-in/out remains local-only (deferred to Phase 2 — tightly coupled
+ *     to visit action flow, wiring it here without visit status mutations
+ *     would create partial state that's hard to reconcile)
+ *   - FAB retained with static permission mock (future: derive from user role)
+ *   - Visit card tap navigates to /tech/visit/:id (detail stays mock until Phase 2)
+ */
 
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import { MobileShell } from "../components/MobileShell";
-import { JOB_TYPE_LABELS, JOB_TYPE_COLORS, STATUS_LABELS, STATUS_COLORS } from "../utils/visitDisplay";
-import { MOCK_TECHNICIANS, TEAM_VISITS } from "../data/mockVisits";
-import type { MockVisit, MockTechnician } from "../types";
+import { useTodayVisits, type TodayVisit } from "../hooks/useTodayVisits";
+import { useTechShift } from "../hooks/useTechShift";
+import { useElapsedTimer } from "../hooks/useElapsedTimer";
 import {
-  CalendarDays, MapPin, ChevronRight, Clock, Coffee,
-  LogIn, LogOut, Users, User, Navigation,
+  JOB_TYPE_LABELS, JOB_TYPE_COLORS, DEFAULT_JOB_TYPE_COLOR,
+  STATUS_LABELS, STATUS_COLORS, DEFAULT_STATUS_COLOR,
+} from "../utils/visitDisplay";
+import {
+  CalendarDays, MapPin, ChevronRight, Clock,
+  LogIn, LogOut, Navigation,
   Plus, X, Briefcase, FileText, Receipt, CheckSquare, UserPlus, Target,
+  Loader2, RefreshCw,
 } from "lucide-react";
 
-/* ------------------------------------------------------------------ */
-/*  Shift timer hook — ticks every 10 s while clocked in              */
-/* ------------------------------------------------------------------ */
-function useShiftTimer(clockedIn: boolean) {
-  const startRef = useRef<number | null>(null);
-  const [elapsed, setElapsed] = useState("");
-  useEffect(() => {
-    if (clockedIn && !startRef.current) startRef.current = Date.now();
-    if (!clockedIn) { startRef.current = null; setElapsed(""); return; }
-    const tick = () => {
-      if (!startRef.current) return;
-      const diff = Math.floor((Date.now() - startRef.current) / 1000);
-      const h = Math.floor(diff / 3600);
-      const m = Math.floor((diff % 3600) / 60);
-      setElapsed(h > 0 ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m`);
-    };
-    tick();
-    const id = setInterval(tick, 10_000);
-    return () => clearInterval(id);
-  }, [clockedIn]);
-  return elapsed;
-}
+// Display maps imported from shared utils/visitDisplay.ts
 
-/* ------------------------------------------------------------------ */
-/*  Team Schedule — time-grid view                                    */
-/* ------------------------------------------------------------------ */
-type ViewRange = "day" | "3day" | "week";
+// ── Job card ──
 
-const HOUR_HEIGHT = 56;
-const START_HOUR = 7;
-const END_HOUR = 18;
-const TOTAL_HOURS = END_HOUR - START_HOUR;
-
-function parseTimeToHours(timeStr: string): number {
-  const match = timeStr.match(/(\d+):(\d+)\s*(AM|PM)/i);
-  if (!match) return 8;
-  let h = parseInt(match[1], 10);
-  const m = parseInt(match[2], 10);
-  const period = match[3].toUpperCase();
-  if (period === "PM" && h !== 12) h += 12;
-  if (period === "AM" && h === 12) h = 0;
-  return h + m / 60;
-}
-
-function TeamScheduleView({ onVisitTap }: { onVisitTap: (id: string) => void }) {
-  const [range, setRange] = useState<ViewRange>("day");
-  const [selectedTechs, setSelectedTechs] = useState<string[]>(MOCK_TECHNICIANS.map(t => t.id));
-
-  const toggleTech = (id: string) => {
-    setSelectedTechs(prev =>
-      prev.includes(id) ? prev.filter(t => t !== id) : [...prev, id]
-    );
-  };
-
-  const visibleTechs = MOCK_TECHNICIANS.filter(t => selectedTechs.includes(t.id));
-  const hours = Array.from({ length: TOTAL_HOURS }, (_, i) => START_HOUR + i);
-
-  return (
-    <div className="flex flex-col flex-1">
-      {/* Controls bar */}
-      <div className="px-3 py-2 bg-white border-b border-slate-200 space-y-2">
-        <div className="flex gap-1">
-          {(["day", "3day", "week"] as ViewRange[]).map(r => (
-            <button
-              key={r}
-              onClick={() => setRange(r)}
-              className={`px-3 py-1 text-[11px] font-semibold rounded-full transition-colors ${
-                range === r ? "bg-[#22c55e] text-white" : "bg-slate-100 text-slate-500"
-              }`}
-            >
-              {r === "day" ? "Day" : r === "3day" ? "3 Day" : "Week"}
-            </button>
-          ))}
-        </div>
-        <div className="flex gap-1.5 overflow-x-auto no-scrollbar">
-          {MOCK_TECHNICIANS.map(tech => (
-            <button
-              key={tech.id}
-              onClick={() => toggleTech(tech.id)}
-              className={`flex items-center gap-1 px-2.5 py-1 text-[10px] font-semibold rounded-full whitespace-nowrap transition-colors ${
-                selectedTechs.includes(tech.id) ? "text-white" : "bg-slate-100 text-slate-400"
-              }`}
-              style={selectedTechs.includes(tech.id) ? { background: tech.color } : undefined}
-            >
-              <div className="w-1.5 h-1.5 rounded-full bg-current opacity-60" />
-              {tech.name.split(" ")[0]}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Time grid */}
-      <div className="flex-1 overflow-auto">
-        <div className="flex" style={{ minWidth: visibleTechs.length * 140 + 44 }}>
-          {/* Time labels */}
-          <div className="w-11 shrink-0 border-r border-slate-200 bg-slate-50">
-            {hours.map(h => (
-              <div key={h} className="flex items-start justify-end pr-1.5 text-[9px] text-slate-400 font-medium" style={{ height: HOUR_HEIGHT }}>
-                {h > 12 ? `${h - 12}p` : h === 12 ? "12p" : `${h}a`}
-              </div>
-            ))}
-          </div>
-          {/* Tech columns */}
-          {visibleTechs.map(tech => (
-            <TechColumn
-              key={tech.id}
-              tech={tech}
-              visits={TEAM_VISITS.filter(v => v.technicianId === tech.id)}
-              hours={hours}
-              onVisitTap={onVisitTap}
-            />
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function TechColumn({ tech, visits, hours, onVisitTap }: {
-  tech: MockTechnician; visits: MockVisit[]; hours: number[]; onVisitTap: (id: string) => void;
-}) {
-  return (
-    <div className="flex-1 min-w-[130px] border-r border-slate-100">
-      <div className="sticky top-0 z-10 px-1.5 py-1 bg-white border-b border-slate-200 text-center">
-        <div className="w-6 h-6 rounded-full mx-auto flex items-center justify-center text-[10px] font-bold text-white" style={{ background: tech.color }}>
-          {tech.name.split(" ").map((n: string) => n[0]).join("")}
-        </div>
-        <div className="text-[9px] font-semibold text-slate-600 mt-0.5 truncate">{tech.name.split(" ")[0]}</div>
-      </div>
-      <div className="relative" style={{ height: TOTAL_HOURS * HOUR_HEIGHT }}>
-        {hours.map((h, i) => (
-          <div key={h} className="absolute w-full border-b border-slate-100" style={{ top: i * HOUR_HEIGHT, height: HOUR_HEIGHT }} />
-        ))}
-        {visits.map(v => {
-          const startH = parseTimeToHours(v.scheduledTime);
-          const endH = parseTimeToHours(v.scheduledEnd);
-          const top = (startH - START_HOUR) * HOUR_HEIGHT;
-          const height = Math.max((endH - startH) * HOUR_HEIGHT - 2, 24);
-          return (
-            <button
-              key={v.id}
-              onClick={() => onVisitTap(v.id)}
-              className="absolute left-1 right-1 rounded-md px-1.5 py-1 text-left overflow-hidden transition-transform active:scale-[0.97]"
-              style={{ top, height, background: `${tech.color}18`, borderLeft: `3px solid ${tech.color}` }}
-            >
-              <div className="text-[9px] font-bold text-slate-700 truncate">{v.jobTitle}</div>
-              <div className="text-[8px] text-slate-500 truncate">{v.company}</div>
-              <div className="text-[8px] text-slate-400">{v.scheduledTime}</div>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Job card for My Schedule list                                     */
-/* ------------------------------------------------------------------ */
-function JobCard({ visit, isNext, onTap }: { visit: MockVisit; isNext: boolean; onTap: () => void }) {
-  const isTerminal = visit.status === "completed" || visit.status === "on_hold";
-  const isActive = visit.status === "en_route" || visit.status === "in_progress";
+function JobCard({ visit, isNext, onTap }: { visit: TodayVisit; isNext: boolean; onTap: () => void }) {
+  const isTerminal = visit.status === "completed" || visit.status === "on_hold" || visit.status === "cancelled";
+  const isActive = visit.status === "en_route" || visit.status === "in_progress" || visit.status === "on_site";
 
   return (
     <button
@@ -197,12 +57,14 @@ function JobCard({ visit, isNext, onTap }: { visit: MockVisit; isNext: boolean; 
             </span>
             <span className="text-[10px] text-slate-400">·</span>
             <span className="text-[11px] text-slate-500 truncate">{visit.company}</span>
-            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${JOB_TYPE_COLORS[visit.jobType]}`}>
-              {JOB_TYPE_LABELS[visit.jobType]}
-            </span>
+            {visit.jobType && (
+              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${JOB_TYPE_COLORS[visit.jobType] || DEFAULT_JOB_TYPE_COLOR}`}>
+                {JOB_TYPE_LABELS[visit.jobType] || visit.jobType}
+              </span>
+            )}
             {(isActive || isTerminal) && (
-              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${STATUS_COLORS[visit.status]}`}>
-                {STATUS_LABELS[visit.status]}
+              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${STATUS_COLORS[visit.status] || DEFAULT_STATUS_COLOR}`}>
+                {STATUS_LABELS[visit.status] || visit.status}
               </span>
             )}
           </div>
@@ -229,12 +91,10 @@ function JobCard({ visit, isNext, onTap }: { visit: MockVisit; isNext: boolean; 
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  FAB action definitions & permission filtering                     */
-/* ------------------------------------------------------------------ */
+// ── FAB ──
+
 type UserRole = "technician" | "dispatcher" | "manager" | "admin" | "owner";
 
-/** Actions available in the FAB bottom sheet */
 const FAB_ACTIONS = [
   { key: "job",     label: "Job",     icon: Briefcase,   minRole: "manager" as UserRole },
   { key: "quote",   label: "Quote",   icon: FileText,    minRole: "manager" as UserRole },
@@ -244,31 +104,23 @@ const FAB_ACTIONS = [
   { key: "lead",    label: "Lead",    icon: Target,      minRole: "manager" as UserRole },
 ] as const;
 
-/** Simple role hierarchy for UI-only permission gating */
 const ROLE_LEVEL: Record<UserRole, number> = {
   technician: 1, dispatcher: 2, manager: 3, admin: 4, owner: 5,
 };
 
 function getVisibleActions(role: UserRole) {
-  const level = ROLE_LEVEL[role];
-  return FAB_ACTIONS.filter(a => level >= ROLE_LEVEL[a.minRole]);
+  return FAB_ACTIONS.filter(a => ROLE_LEVEL[role] >= ROLE_LEVEL[a.minRole]);
 }
 
-/* ------------------------------------------------------------------ */
-/*  FAB + Bottom Sheet                                                 */
-/* ------------------------------------------------------------------ */
 function FloatingActionButton({ role }: { role: UserRole }) {
   const [open, setOpen] = useState(false);
   const actions = getVisibleActions(role);
 
   return (
     <>
-      {/* Backdrop */}
       {open && (
         <div className="fixed inset-0 bg-black/30 z-40 max-w-md mx-auto" onClick={() => setOpen(false)} />
       )}
-
-      {/* Bottom sheet */}
       {open && (
         <div className="fixed bottom-16 left-1/2 -translate-x-1/2 w-full max-w-md z-50 px-3 pb-3 animate-in slide-in-from-bottom-4 duration-200">
           <div className="bg-white rounded-2xl shadow-xl border border-slate-200 p-3">
@@ -277,7 +129,7 @@ function FloatingActionButton({ role }: { role: UserRole }) {
               {actions.map(({ key, label, icon: Icon }) => (
                 <button
                   key={key}
-                  onClick={() => { setOpen(false); /* navigation handled by parent */ }}
+                  onClick={() => setOpen(false)}
                   className="flex flex-col items-center gap-1.5 py-3 px-2 rounded-xl hover:bg-slate-50 active:bg-slate-100 transition-colors"
                 >
                   <div className="h-10 w-10 rounded-full bg-[#22c55e]/10 flex items-center justify-center">
@@ -290,8 +142,6 @@ function FloatingActionButton({ role }: { role: UserRole }) {
           </div>
         </div>
       )}
-
-      {/* FAB button */}
       <button
         onClick={() => setOpen(o => !o)}
         className="fixed bottom-[68px] right-4 z-50 h-12 w-12 rounded-full bg-[#22c55e] shadow-lg shadow-[#22c55e]/30 flex items-center justify-center active:scale-90 transition-transform max-w-md"
@@ -303,111 +153,133 @@ function FloatingActionButton({ role }: { role: UserRole }) {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  TodayPage — main export                                           */
-/* ------------------------------------------------------------------ */
-export function TodayPage({ visits, onVisitTap }: { visits: MockVisit[]; onVisitTap: (id: string) => void }) {
-  const [clockedIn, setClockedIn] = useState(false);
-  const [onBreak, setOnBreak] = useState(false);
-  const elapsed = useShiftTimer(clockedIn);
-  const [isManager] = useState(true);
-  /** Mock permission flag — accept role prop in future */
-  const [userRole] = useState<UserRole>("admin");
-  const [viewMode, setViewMode] = useState<"my" | "team">("my");
-  const nextVisitId = visits.find(v => v.status !== "completed" && v.status !== "on_hold")?.id;
+// ── Loading state ──
+
+function LoadingState() {
+  return (
+    <div className="flex flex-col items-center justify-center py-20 text-slate-400">
+      <Loader2 className="h-8 w-8 animate-spin mb-3 opacity-50" />
+      <p className="text-sm font-medium">Loading today's schedule…</p>
+    </div>
+  );
+}
+
+// ── Error state ──
+
+function ErrorState({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-16 text-slate-400">
+      <CalendarDays className="h-10 w-10 mb-2 opacity-40" />
+      <p className="text-sm font-medium mb-3">Failed to load schedule</p>
+      <button
+        onClick={onRetry}
+        className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-slate-100 text-slate-600 text-xs font-semibold active:bg-slate-200 transition-colors"
+      >
+        <RefreshCw className="h-3 w-3" />
+        Retry
+      </button>
+    </div>
+  );
+}
+
+// ── Empty state ──
+
+function EmptyState() {
+  return (
+    <div className="flex flex-col items-center justify-center py-16 text-slate-400">
+      <CalendarDays className="h-10 w-10 mb-2 opacity-40" />
+      <p className="text-sm font-medium">No jobs scheduled today</p>
+    </div>
+  );
+}
+
+// ── Main page ──
+
+export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) {
+  const { visits, isLoading, isError, refetch } = useTodayVisits();
+  const { isClockedIn, clockInAt, clockIn, clockOut } = useTechShift();
+  const { formatted: elapsed } = useElapsedTimer(clockInAt, isClockedIn, 10_000);
+  const [shiftError, setShiftError] = useState<string | null>(null);
+
+  const [userRole] = useState<UserRole>("technician");
+
+  const TERMINAL_STATUSES = ["completed", "on_hold", "cancelled"];
+  const nextVisitId = visits.find(v => !TERMINAL_STATUSES.includes(v.status))?.id;
+
+  const handleClockIn = async () => {
+    setShiftError(null);
+    try { await clockIn.mutateAsync(); } catch (err: any) { setShiftError(err?.message || "Failed to clock in"); }
+  };
+
+  const handleClockOut = async () => {
+    setShiftError(null);
+    try { await clockOut.mutateAsync(); } catch (err: any) { setShiftError(err?.message || "Failed to clock out"); }
+  };
+
+  const shiftPending = clockIn.isPending || clockOut.isPending;
 
   return (
     <MobileShell showNav>
-      {/* Clock-in banner — neutral strip when not clocked in */}
-      {!clockedIn && (
+      {/* Clock-in banner */}
+      {!isClockedIn && (
         <div className="bg-slate-100 px-3 py-2.5 flex items-center justify-between border-b border-slate-200">
           <div className="flex items-center gap-2">
             <div className="h-2 w-2 rounded-full bg-slate-400" />
             <span className="text-[12px] font-medium text-slate-600">Not Clocked In</span>
           </div>
           <button
-            onClick={() => setClockedIn(true)}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#22c55e] text-white text-[11px] font-bold active:scale-95 transition-transform"
+            onClick={handleClockIn}
+            disabled={shiftPending}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#22c55e] text-white text-[11px] font-bold active:scale-95 transition-transform disabled:opacity-60"
           >
             <LogIn className="h-3 w-3" />
-            Clock In
+            {clockIn.isPending ? "Clocking in…" : "Clock In"}
           </button>
         </div>
       )}
 
       {/* Active shift strip */}
-      {clockedIn && (
-        <div className={`px-3 py-2 flex items-center justify-between ${onBreak ? "bg-amber-50" : "bg-[#22c55e]/5"}`}>
+      {isClockedIn && (
+        <div className="px-3 py-2 flex items-center justify-between bg-[#22c55e]/5">
           <div className="flex items-center gap-2">
-            <div className={`h-2 w-2 rounded-full ${onBreak ? "bg-amber-400" : "bg-[#22c55e] animate-pulse"}`} />
-            <span className={`text-[11px] font-semibold ${onBreak ? "text-amber-700" : "text-[#22c55e]"}`}>
-              {onBreak ? "On Break" : "Working"}
-            </span>
+            <div className="h-2 w-2 rounded-full bg-[#22c55e] animate-pulse" />
+            <span className="text-[11px] font-semibold text-[#22c55e]">Working</span>
             {elapsed && <span className="text-[11px] text-slate-400 ml-1">{elapsed}</span>}
           </div>
-          <div className="flex gap-1.5">
-            <button
-              onClick={() => setOnBreak(!onBreak)}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-[10px] font-semibold transition-colors ${
-                onBreak ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-500"
-              }`}
-            >
-              <Coffee className="h-3 w-3" />
-              {onBreak ? "Resume" : "Break"}
-            </button>
-            <button
-              onClick={() => { setClockedIn(false); setOnBreak(false); }}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 text-slate-500 text-[10px] font-semibold"
-            >
-              <LogOut className="h-3 w-3" />
-              Out
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* View toggle */}
-      {isManager && (
-        <div className="px-3 pt-2 pb-1 flex gap-1">
           <button
-            onClick={() => setViewMode("my")}
-            className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-colors ${
-              viewMode === "my" ? "bg-[#0f1a2e] text-white" : "bg-slate-100 text-slate-500"
-            }`}
+            onClick={handleClockOut}
+            disabled={shiftPending}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-100 text-slate-500 text-[10px] font-semibold disabled:opacity-60"
           >
-            <User className="h-3 w-3" />
-            My Schedule
-          </button>
-          <button
-            onClick={() => setViewMode("team")}
-            className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-semibold transition-colors ${
-              viewMode === "team" ? "bg-[#0f1a2e] text-white" : "bg-slate-100 text-slate-500"
-            }`}
-          >
-            <Users className="h-3 w-3" />
-            Team View
+            <LogOut className="h-3 w-3" />
+            {clockOut.isPending ? "Clocking out…" : "Out"}
           </button>
         </div>
       )}
 
-      {viewMode === "team" ? (
-        <TeamScheduleView onVisitTap={onVisitTap} />
+      {/* Shift error */}
+      {shiftError && (
+        <div className="px-3 py-1.5 bg-red-50 border-b border-red-100">
+          <p className="text-xs text-red-600">{shiftError}</p>
+          <button onClick={() => setShiftError(null)} className="text-[10px] text-red-500 underline">Dismiss</button>
+        </div>
+      )}
+
+      {/* Visit list */}
+      {isLoading ? (
+        <LoadingState />
+      ) : isError ? (
+        <ErrorState onRetry={refetch} />
+      ) : visits.length === 0 ? (
+        <EmptyState />
       ) : (
         <div className="p-2.5 space-y-1.5">
-          {visits.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 text-slate-400">
-              <CalendarDays className="h-10 w-10 mb-2 opacity-40" />
-              <p className="text-sm font-medium">No jobs scheduled today</p>
-            </div>
-          ) : (
-            visits.map(v => (
-              <JobCard key={v.id} visit={v} isNext={v.id === nextVisitId} onTap={() => onVisitTap(v.id)} />
-            ))
-          )}
+          {visits.map(v => (
+            <JobCard key={v.id} visit={v} isNext={v.id === nextVisitId} onTap={() => onVisitTap(v.id)} />
+          ))}
         </div>
       )}
 
-      {/* Floating action button — permission-filtered */}
       <FloatingActionButton role={userRole} />
     </MobileShell>
   );

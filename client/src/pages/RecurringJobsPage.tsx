@@ -40,7 +40,7 @@ import {
 } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Pencil, Trash2, RefreshCw, Calendar, Clock, List, ExternalLink, Ban, SkipForward } from "lucide-react";
+import { Plus, Pencil, Trash2, RefreshCw, Calendar, Clock, List, ExternalLink, Ban, SkipForward, ArrowLeft } from "lucide-react";
 import { Link } from "wouter";
 import { format, parseISO, isPast, isToday } from "date-fns";
 // Shared Quick Create Job dialog — used in recurring mode for new template creation
@@ -431,11 +431,18 @@ export default function RecurringJobsPage({ embedded }: { embedded?: boolean } =
       {/* Header — hidden when embedded as a tab in PM & Recurring Jobs workspace */}
       {!embedded && (
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Recurring Jobs</h1>
-          <p className="text-muted-foreground">
-            Manage recurring job templates and generate backlog jobs automatically.
-          </p>
+        <div className="flex items-center gap-3">
+          <Link href="/settings">
+            <Button variant="ghost" size="icon" data-testid="button-back-settings">
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+          </Link>
+          <div>
+            <h1 className="text-2xl font-bold">Recurring Jobs</h1>
+            <p className="text-muted-foreground">
+              Manage recurring job templates and generate backlog jobs automatically.
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-4">
           {canEdit && previewData && previewData.jobsWouldCreate > 0 && (

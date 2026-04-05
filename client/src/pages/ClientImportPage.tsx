@@ -51,6 +51,7 @@ import {
   Download,
   RotateCcw,
 } from "lucide-react";
+import { Link } from "wouter";
 import type {
   ColumnMapping,
   ValidatedRow,
@@ -666,11 +667,18 @@ export default function ClientImportPage() {
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="text-xl font-bold tracking-tight">Import Clients</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          Import clients from a CSV file. Duplicates are automatically detected and skipped for safe re-imports.
-        </p>
+      <div className="flex items-center gap-3">
+        <Link href="/settings">
+          <Button variant="ghost" size="icon" data-testid="button-back-settings">
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+        </Link>
+        <div>
+          <h1 className="text-xl font-bold tracking-tight">Import Clients</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            Import clients from a CSV file. Duplicates are automatically detected and skipped for safe re-imports.
+          </p>
+        </div>
       </div>
 
       {/* Step indicator */}

@@ -21,7 +21,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  CalendarIcon, CheckCircle2, ChevronDown, Loader2, MapPin, Plus, Trash2, User, X,
+  CalendarIcon, Check, CheckCircle2, ChevronDown, Loader2, MapPin, Plus, Trash2, User, X,
   Wrench, Search,
 } from "lucide-react";
 import { Link } from "wouter";
@@ -248,7 +248,7 @@ export function EditVisitModal({
     ? catalog.filter(p =>
         p.name.toLowerCase().includes(searchTerm) ||
         (p.description && p.description.toLowerCase().includes(searchTerm))
-      ).slice(0, 8)
+      ).slice(0, 20)
     : [];
 
   const handleSelectCatalogItem = (item: typeof catalog[0]) => {
@@ -613,12 +613,16 @@ export function EditVisitModal({
                       {/* Quick Add row — catalog-first search */}
                       {addingItem && (
                         <div className="border-t border-slate-100 bg-emerald-50/15 relative">
-                          <div className="grid grid-cols-[1fr_52px_72px_72px_28px] gap-2 px-4 py-1.5 items-center">
-                            <div className="relative">
-                              <Input value={catalogSearch || newItem.description} onChange={(e) => { const v = e.target.value; setCatalogSearch(v); setNewItem(p => ({ ...p, description: v, productId: "" })); }}
-                                className="h-7 text-xs" placeholder="Search products/services..." autoFocus />
-                              {catalogSearch.length >= 1 && (
-                                <div className="absolute top-full left-0 right-0 z-50 mt-0.5 border border-slate-200 rounded bg-white shadow-lg max-h-36 overflow-y-auto">
+                          <div className="grid grid-cols-[1fr_52px_72px_72px_56px] gap-2 px-4 py-1.5 items-center">
+                            <Popover open={catalogSearch.length >= 1} onOpenChange={() => {}}>
+                              <PopoverTrigger asChild>
+                                <div className="w-full">
+                                  <Input value={catalogSearch || newItem.description} onChange={(e) => { const v = e.target.value; setCatalogSearch(v); setNewItem(p => ({ ...p, description: v, productId: "" })); }}
+                                    className="h-7 text-xs" placeholder="Search products/services..." autoFocus />
+                                </div>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start" sideOffset={2} onOpenAutoFocus={(e) => e.preventDefault()}>
+                                <div className="max-h-60 overflow-y-auto">
                                   {filteredCatalog.map(p => (
                                     <button key={p.id} onClick={() => handleSelectCatalogItem(p)} className="w-full text-left px-3 py-1.5 text-xs hover:bg-emerald-50 flex items-center justify-between">
                                       <span className="truncate text-slate-700">{p.name}</span>
@@ -631,14 +635,18 @@ export function EditVisitModal({
                                     </div>
                                   )}
                                 </div>
-                              )}
-                            </div>
+                              </PopoverContent>
+                            </Popover>
                             <Input value={newItem.quantity} onChange={(e) => setNewItem(p => ({ ...p, quantity: e.target.value }))} className="h-7 text-xs text-right" />
                             <Input value={newItem.unitPrice} onChange={(e) => setNewItem(p => ({ ...p, unitPrice: e.target.value }))} className="h-7 text-xs text-right" placeholder="0.00" />
                             <span className="text-xs text-right text-slate-500">${calcTotal(newItem.quantity, newItem.unitPrice)}</span>
-                            <div className="flex gap-1">
-                              <button onClick={handleSubmitNewItem} disabled={!newItem.description.trim()} className="text-emerald-600 disabled:text-slate-300 text-[10px] font-bold">&#x2713;</button>
-                              <button onClick={cancelAddRow} className="text-slate-400 text-[10px] font-bold">&#x2715;</button>
+                            <div className="flex gap-0.5">
+                              <button onClick={handleSubmitNewItem} disabled={!newItem.description.trim()} className="h-6 w-6 flex items-center justify-center rounded hover:bg-emerald-100 text-emerald-600 disabled:text-slate-300 disabled:hover:bg-transparent transition-colors" title="Save">
+                                <Check className="h-3.5 w-3.5" />
+                              </button>
+                              <button onClick={cancelAddRow} className="h-6 w-6 flex items-center justify-center rounded hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors" title="Cancel">
+                                <X className="h-3.5 w-3.5" />
+                              </button>
                             </div>
                           </div>
                         </div>

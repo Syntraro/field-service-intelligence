@@ -52,6 +52,26 @@ router.get(
 );
 
 // ============================================================================
+// GET /week — All time entries for a technician across a full week (Mon–Sun)
+// Used by the payroll week grid to build job rows (2026-04-04)
+// ============================================================================
+
+const weekQuerySchema = z.object({
+  userId: z.string().uuid(),
+  weekStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD"),
+});
+
+router.get(
+  "/week",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const { userId, weekStart } = validateSchema(weekQuerySchema, req.query);
+    const result = await timeTrackingRepository.getTimesheetWeek(req.companyId!, userId, weekStart);
+    res.json(result);
+  })
+);
+
+// ============================================================================
 // GET /visits-for-reassign — Visits available for reassignment (active jobs only)
 // ============================================================================
 
@@ -194,6 +214,53 @@ router.post(
     }));
 
     res.status(201).json(entry);
+  })
+);
+
+// ============================================================================
+// POST /reduce — Reduce hours for a technician+job+day by trimming/deleting entries
+// Used by the payroll week grid when a manager reduces cell hours.
+// Deletes entries from most recent first; trims the last partially-consumed entry.
+// ============================================================================
+
+const reduceSchema = z.object({
+  technicianId: z.string().uuid(),
+  jobId: z.string().uuid().nullable(),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Must be YYYY-MM-DD"),
+  reduceMinutes: z.number().int().positive("Must be a positive reduction amount"),
+});
+
+router.post(
+  "/reduce",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const adminUserId = req.user!.id;
+    const data = validateSchema(reduceSchema, req.body);
+
+    const result = await timeTrackingRepository.reduceTimeForDay(
+      companyId,
+      data.technicianId,
+      data.jobId,
+      data.date,
+      data.reduceMinutes,
+      { userId: adminUserId }
+    );
+
+    console.log(JSON.stringify({
+      event: "time_entry_admin_reduce",
+      companyId,
+      adminUserId,
+      technicianId: data.technicianId,
+      jobId: data.jobId,
+      date: data.date,
+      reduceMinutes: data.reduceMinutes,
+      deletedCount: result.deletedCount,
+      trimmedCount: result.trimmedCount,
+      timestamp: new Date().toISOString(),
+    }));
+
+    res.json(result);
   })
 );
 

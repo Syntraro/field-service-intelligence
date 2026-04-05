@@ -263,7 +263,7 @@ export const JobHeaderCard = forwardRef<JobHeaderCardHandle, JobHeaderCardProps>
       // Fix: send version for optimistic locking + correct field name targetOpenSubStatus
       const response = await apiRequest(`/api/jobs/${job.id}/reopen`, {
         method: "POST",
-        body: JSON.stringify({ targetOpenSubStatus: "in_progress", version: job.version }),
+        body: JSON.stringify({ targetOpenSubStatus: null, version: job.version }),
       });
       return response as { job: any };
     },
@@ -275,7 +275,7 @@ export const JobHeaderCard = forwardRef<JobHeaderCardHandle, JobHeaderCardProps>
       queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
       // Phase 5 Step B3: canonical dashboard family key
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-      toast({ title: "Job Reopened", description: "Job has been reopened and is now in progress." });
+      toast({ title: "Job Reopened", description: "Job has been reopened and is ready for scheduling." });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message || "Failed to reopen job", variant: "destructive" });

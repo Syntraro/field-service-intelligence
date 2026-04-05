@@ -344,8 +344,8 @@ export class JobVisitsRepository extends BaseRepository {
    * PHASE 4: Public wrapper for syncJobScheduleFromVisits.
    * Called by calendar write endpoints after modifying job_visits.
    */
-  async syncJobToVisits(companyId: string, jobId: string) {
-    return this.syncJobScheduleFromVisits(companyId, jobId);
+  async syncJobToVisits(companyId: string, jobId: string, txHandle?: any) {
+    return this.syncJobScheduleFromVisits(companyId, jobId, txHandle);
   }
 
   /**
@@ -356,13 +356,18 @@ export class JobVisitsRepository extends BaseRepository {
    * - "Next" = earliest future visit if any, else earliest overall
    * - If no active visits: unschedule the job
    */
-  private async syncJobScheduleFromVisits(companyId: string, jobId: string) {
+  private async syncJobScheduleFromVisits(companyId: string, jobId: string, txHandle?: any) {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
+    const queryDb = txHandle ?? db;
 
     // Pull schedule-eligible visits for this job
     // 2026-03-18: Uses canonical predicate from visitPredicates.ts
-    const visitRows = await db
+    const visitRows: Array<{
+      id: string; scheduledStart: Date | null; scheduledEnd: Date | null;
+      isAllDay: boolean; assignedTechnicianId: string | null;
+      assignedTechnicianIds: string[] | null; status: string; isActive: boolean;
+    }> = await queryDb
       .select({
         id: jobVisits.id,
         scheduledStart: jobVisits.scheduledStart,
@@ -379,24 +384,17 @@ export class JobVisitsRepository extends BaseRepository {
 
     if (!visitRows.length) {
       // UNSCHEDULE BRANCH: No eligible visits exist (all cancelled/completed or none created).
-      // 2026-03-18: Guard against clearing schedule fields on completed/on_hold jobs.
-      // When reconciliation has already set the job to a non-backlog state, clearing
-      // schedule fields would cause the job to appear as unscheduled backlog in the
-      // window between sync and reconciliation, or after reconciliation has run.
-      const [currentJob] = await db
+      const [currentJob] = await queryDb
         .select({ status: jobs.status, openSubStatus: jobs.openSubStatus })
         .from(jobs)
         .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
 
       if (currentJob) {
-        // Don't clear schedule for completed/invoiced/archived jobs — they're done
         if (currentJob.status !== "open") return;
-        // Don't clear schedule for on_hold jobs — they're deliberately parked, not backlog
         if (currentJob.openSubStatus === "on_hold") return;
       }
 
-      // Genuine unschedule: job is open with no eligible visits and not on hold
-      await db
+      await queryDb
         .update(jobs)
         .set({
           scheduledStart: null,
@@ -469,7 +467,7 @@ export class JobVisitsRepository extends BaseRepository {
     // to prevent node-pg timezone serialization from violating jobs_all_day_*_check constraints
     sanitizeAllDayTimestamps(jobUpdate, jobId);
 
-    await db
+    await queryDb
       .update(jobs)
       .set(jobUpdate)
       .where(and(eq(jobs.companyId, companyId), eq(jobs.id, jobId)));

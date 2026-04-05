@@ -17,9 +17,9 @@ import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import type { AuthedRequest } from "../auth/tenantIsolation";
 import { db } from "../db";
-import { companySettings } from "@shared/schema";
+import { companySettings, timeEntries, jobs, clients } from "@shared/schema";
 import { jobNotesRepository } from "../storage/jobNotes";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, sql, gte, lt, asc } from "drizzle-orm";
 import { timeTrackingRepository } from "../storage/timeTracking";
 import { jobVisitsRepository } from "../storage/jobVisits";
 // Canonical visit reads — single source of truth (server/storage/visits.ts)
@@ -344,6 +344,27 @@ router.get(
       userId
     );
 
+    // Enrich today's entries with minimal job context (same pattern as day endpoint)
+    const jobIds = Array.from(new Set(todayStatus.todayEntries.map(e => e.jobId).filter((id): id is string => id !== null)));
+    let jobMap: Record<string, { jobNumber: number; summary: string; locationName: string | null }> = {};
+    if (jobIds.length > 0) {
+      const { inArray } = await import("drizzle-orm");
+      const jobRows = await db
+        .select({ id: jobs.id, jobNumber: jobs.jobNumber, summary: jobs.summary, locationName: clients.companyName })
+        .from(jobs)
+        .leftJoin(clients, eq(jobs.locationId, clients.id))
+        .where(inArray(jobs.id, jobIds));
+      for (const j of jobRows) {
+        jobMap[j.id] = { jobNumber: j.jobNumber, summary: j.summary, locationName: j.locationName };
+      }
+    }
+    const enrichedEntries = todayStatus.todayEntries.map(e => ({
+      ...e,
+      jobNumber: e.jobId ? jobMap[e.jobId]?.jobNumber ?? null : null,
+      jobSummary: e.jobId ? jobMap[e.jobId]?.summary ?? null : null,
+      locationName: e.jobId ? jobMap[e.jobId]?.locationName ?? null : null,
+    }));
+
     // Get this week's entries (Monday-Sunday)
     const now = new Date();
     const dayOfWeek = now.getUTCDay(); // 0=Sun, 1=Mon...
@@ -372,12 +393,87 @@ router.get(
     const weekTotalMinutes = Number(weekResult.rows[0]?.total_minutes) || 0;
 
     res.json({
-      today: todayStatus,
+      today: {
+        ...todayStatus,
+        todayEntries: enrichedEntries,
+      },
       week: {
         totalMinutes: weekTotalMinutes,
         totalHours: +(weekTotalMinutes / 60).toFixed(1),
         weekStart,
         weekEnd,
+      },
+    });
+  })
+);
+
+// ============================================================================
+// GET /api/tech/time/day — Time entries + work session for a specific date
+// ============================================================================
+
+const dayQuerySchema = z.object({
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "date must be YYYY-MM-DD"),
+});
+
+router.get(
+  "/time/day",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+
+    const { date } = validateSchema(dayQuerySchema, req.query);
+
+    const dayStart = new Date(`${date}T00:00:00Z`);
+    const nextDayStr = new Date(dayStart.getTime() + 86400000).toISOString().split("T")[0];
+
+    // Work session for this date (getWorkSessionsForTechnician uses gte/lt on workDate)
+    const sessions = await timeTrackingRepository.getWorkSessionsForTechnician(
+      companyId, userId, date, nextDayStr
+    );
+    const session = sessions[0] ?? null;
+
+    // Time entries for this date with minimal job context (left join)
+    const rows = await db
+      .select({
+        id: timeEntries.id,
+        type: timeEntries.type,
+        jobId: timeEntries.jobId,
+        startAt: timeEntries.startAt,
+        endAt: timeEntries.endAt,
+        durationMinutes: timeEntries.durationMinutes,
+        billable: timeEntries.billable,
+        notes: timeEntries.notes,
+        lockedAt: timeEntries.lockedAt,
+        lockedByInvoiceId: timeEntries.lockedByInvoiceId,
+        lockReason: timeEntries.lockReason,
+        // Job context (nullable — entry may have no job)
+        jobNumber: jobs.jobNumber,
+        jobSummary: jobs.summary,
+        locationName: clients.companyName,
+      })
+      .from(timeEntries)
+      .leftJoin(jobs, eq(timeEntries.jobId, jobs.id))
+      .leftJoin(clients, eq(jobs.locationId, clients.id))
+      .where(
+        and(
+          eq(timeEntries.companyId, companyId),
+          eq(timeEntries.technicianId, userId),
+          gte(timeEntries.startAt, dayStart),
+          lt(timeEntries.startAt, new Date(dayStart.getTime() + 86400000))
+        )
+      )
+      .orderBy(asc(timeEntries.startAt));
+
+    const totalMinutes = rows.reduce((sum, e) => sum + (e.durationMinutes ?? 0), 0);
+
+    res.json({
+      date,
+      session,
+      entries: rows,
+      summary: {
+        totalMinutes,
+        entriesCount: rows.length,
       },
     });
   })

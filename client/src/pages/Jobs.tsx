@@ -64,8 +64,9 @@ function formatJobNumber(jobNumber: number): string {
   return `#${jobNumber}`;
 }
 
-/** Single status display: overdue > requires invoicing > archived > invoiced > sub-status > lifecycle */
-function getDisplayStatus(job: { status: string; openSubStatus: string | null; _overdue: boolean }): { label: string; variant: "neutral" | "success" | "warning" | "danger" | "info"; icon?: React.ReactNode } {
+/** Single status display: overdue > requires invoicing > archived > invoiced > sub-status > derived > lifecycle.
+ * Matches jobUtils.ts getJobStatusDisplay logic for consistency between list and detail views. */
+function getDisplayStatus(job: { status: string; openSubStatus: string | null; _overdue: boolean; scheduledStart?: string | null; primaryTechnicianId?: string | null; assignedTechnicianIds?: string[] | null }): { label: string; variant: "neutral" | "success" | "warning" | "danger" | "info"; icon?: React.ReactNode } {
   if (job._overdue) return { label: "Overdue", variant: "danger" };
   if (job.status === "completed") return { label: "Requires invoicing", variant: "warning" };
   if (job.status === "archived") return { label: "Archived", variant: "neutral" };
@@ -74,7 +75,14 @@ function getDisplayStatus(job: { status: string; openSubStatus: string | null; _
     const subLabels: Record<string, string> = { in_progress: "In Progress", on_hold: "On Hold", on_route: "On Route" };
     return { label: subLabels[job.openSubStatus] || job.openSubStatus, variant: statusToVariant(job.openSubStatus) };
   }
-  return { label: job.status === "open" ? "Open" : job.status, variant: statusToVariant(job.status) };
+  if (job.status === "open") {
+    // Derived display states matching jobUtils.ts — Scheduled > Assigned > Open
+    if (job.scheduledStart != null) return { label: "Scheduled", variant: "info" };
+    const assigned = job.primaryTechnicianId != null || (Array.isArray(job.assignedTechnicianIds) && job.assignedTechnicianIds.length > 0);
+    if (assigned) return { label: "Assigned", variant: "info" };
+    return { label: "Open", variant: statusToVariant(job.status) };
+  }
+  return { label: job.status, variant: statusToVariant(job.status) };
 }
 
 function formatCurrency(amount: number): string {

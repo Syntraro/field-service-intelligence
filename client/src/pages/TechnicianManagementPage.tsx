@@ -10,7 +10,8 @@ import { Label } from "@/components/ui/label";
 import { useForm } from "react-hook-form";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
-import { Trash2, Copy, RotateCcw, Plus, UserCheck } from "lucide-react";
+import { Trash2, Copy, RotateCcw, Plus, UserCheck, ArrowLeft } from "lucide-react";
+import { Link } from "wouter";
 import { EmptyState } from "@/components/ui/empty-state";
 
 export default function TechnicianManagementPage() {
@@ -76,10 +77,14 @@ export default function TechnicianManagementPage() {
   return (
     <div className="min-h-screen bg-background p-4">
       <div className="max-w-5xl mx-auto">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-3xl font-bold" data-testid="text-technician-management-title">Technician Management</h1>
-            <p className="text-muted-foreground mt-1">Manage your team of technicians and their access</p>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <Link href="/settings">
+              <Button variant="ghost" size="icon" data-testid="button-back-settings">
+                <ArrowLeft className="h-4 w-4" />
+              </Button>
+            </Link>
+            <h1 className="text-xl font-semibold" data-testid="text-technician-management-title">Team Management</h1>
           </div>
           <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
             <DialogTrigger asChild>
