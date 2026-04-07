@@ -614,6 +614,10 @@ router.post("/:id/status", requireAuth, asyncHandler(async (req: AuthedRequest, 
   });
   recomputeAttentionForEntity(companyId, "job", req.params.id).catch(() => {});
 
+  // 2026-04-05: Emit dispatch SSE so office surfaces refresh after status changes
+  // (completion, hold, resume, substatus). Matches convention used by /close and /reopen.
+  emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: req.params.id, ts: new Date().toISOString() });
+
   res.json({ ...updated, autoCompletedVisitCount });
 }));
 
@@ -1311,7 +1315,7 @@ router.post("/:jobId/notes", requireRole(MANAGER_ROLES), asyncHandler(async (req
   const companyId = req.companyId;
   const userId = req.user!.id;
 
-  const { noteText, attachmentFileIds } = req.body;
+  const { noteText, attachmentFileIds, equipmentId } = req.body;
 
   if (!noteText || typeof noteText !== 'string' || noteText.trim().length === 0) {
     throw createError(400, "noteText is required and must be a non-empty string");
@@ -1321,7 +1325,8 @@ router.post("/:jobId/notes", requireRole(MANAGER_ROLES), asyncHandler(async (req
     companyId,
     req.params.jobId,
     userId,
-    noteText.trim()
+    noteText.trim(),
+    equipmentId ?? null,
   );
 
   // Attach files if provided

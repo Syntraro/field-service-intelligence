@@ -92,6 +92,8 @@ export interface IStorage {
   createLocationEquipment: typeof clientRepository.createLocationEquipment;
   updateLocationEquipment: typeof clientRepository.updateLocationEquipment;
   deleteLocationEquipment: typeof clientRepository.deleteLocationEquipment;
+  getArchivedLocationEquipment: typeof clientRepository.getArchivedLocationEquipment;
+  restoreLocationEquipment: typeof clientRepository.restoreLocationEquipment;
 
   // Job operations
   getJobs: typeof jobRepository.getJobs;
@@ -294,6 +296,8 @@ export const storage: IStorage = {
   createLocationEquipment: clientRepository.createLocationEquipment.bind(clientRepository),
   updateLocationEquipment: clientRepository.updateLocationEquipment.bind(clientRepository),
   deleteLocationEquipment: clientRepository.deleteLocationEquipment.bind(clientRepository),
+  getArchivedLocationEquipment: clientRepository.getArchivedLocationEquipment.bind(clientRepository),
+  restoreLocationEquipment: clientRepository.restoreLocationEquipment.bind(clientRepository),
 
   // Job operations
   getJobs: jobRepository.getJobs.bind(jobRepository),

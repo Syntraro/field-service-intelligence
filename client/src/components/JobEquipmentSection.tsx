@@ -14,6 +14,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import type { LocationEquipment, JobEquipment } from "@shared/schema";
 import { format } from "date-fns";
 import EquipmentCatalogItemsSection from "./EquipmentCatalogItemsSection";
+import { EquipmentDetailModal } from "./EquipmentDetailModal";
 
 interface JobEquipmentWithDetails extends JobEquipment {
   equipment: LocationEquipment;
@@ -64,6 +65,7 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
   };
   const [selectedEquipmentId, setSelectedEquipmentId] = useState<string>("");
   const [notes, setNotes] = useState("");
+  const [detailEquipment, setDetailEquipment] = useState<LocationEquipment | null>(null);
 
   const { data: jobEquipment = [], isLoading: jobEquipmentLoading } = useQuery<JobEquipmentWithDetails[]>({
     queryKey: ["/api/jobs", jobId, "equipment"],
@@ -214,7 +216,8 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
                 {jobEquipment.map(je => {
                   const eq = je.equipment;
                   return (
-                    <div key={je.id} className="rounded-md border p-3" data-testid={`row-job-equipment-${je.id}`}>
+                    <div key={je.id} className="rounded-md border p-3 cursor-pointer hover:bg-muted/30 transition-colors" data-testid={`row-job-equipment-${je.id}`}
+                      onClick={() => eq && setDetailEquipment(eq)}>
                       {/* Primary row: name + type badge + remove */}
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 min-w-0">
@@ -230,7 +233,7 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
                           variant="ghost"
                           size="icon"
                           className="h-6 w-6 shrink-0"
-                          onClick={() => removeMutation.mutate(je.id)}
+                          onClick={(e) => { e.stopPropagation(); removeMutation.mutate(je.id); }}
                           disabled={removeMutation.isPending}
                           data-testid={`button-remove-job-equipment-${je.id}`}
                         >
@@ -313,6 +316,14 @@ export default function JobEquipmentSection({ jobId, locationId, defaultOpen = f
         </DialogContent>
       </Dialog>
     </Collapsible>
+
+      {/* Equipment Detail Modal */}
+      <EquipmentDetailModal
+        open={!!detailEquipment}
+        onOpenChange={(open) => { if (!open) setDetailEquipment(null); }}
+        equipment={detailEquipment}
+        jobId={jobId}
+      />
     </div>
   );
 }

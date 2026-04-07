@@ -1236,6 +1236,33 @@ router.delete("/:locationId/equipment/:equipmentId", requireRole(MANAGER_ROLES),
   res.json({ success: true });
 }));
 
+// GET /api/clients/:locationId/equipment/archived - List archived equipment for restore UI
+router.get("/:locationId/equipment/archived", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const { locationId } = req.params;
+
+  const location = await storage.getClient(companyId, locationId);
+  if (!location) throw createError(404, "Location not found");
+
+  const archived = await storage.getArchivedLocationEquipment(companyId, locationId);
+  res.json(archived);
+}));
+
+// POST /api/clients/:locationId/equipment/:equipmentId/restore - Restore archived equipment
+router.post("/:locationId/equipment/:equipmentId/restore", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const { locationId, equipmentId } = req.params;
+
+  const location = await storage.getClient(companyId, locationId);
+  if (!location) throw createError(404, "Location not found");
+
+  const restored = await storage.restoreLocationEquipment(companyId, equipmentId);
+  if (!restored) throw createError(404, "Archived equipment not found");
+  if (restored.locationId !== locationId) throw createError(404, "Equipment does not belong to this location");
+
+  res.json(restored);
+}));
+
 // =========================================================================
 // Equipment Nameplate Photo + OCR (2026-03-06)
 // Upload a nameplate image, persist it to files table, attempt OCR extraction.

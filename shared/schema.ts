@@ -976,6 +976,9 @@ export const jobNotes = pgTable("job_notes", {
   companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   jobId: varchar("job_id").notNull().references(() => jobs.id, { onDelete: "cascade" }),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  // Optional link to specific equipment — enables equipment-scoped notes for future
+  // equipment history reporting. Null = general job note, non-null = equipment-linked note.
+  equipmentId: varchar("equipment_id").references(() => locationEquipment.id, { onDelete: "set null" }),
   noteText: text("note_text").notNull(),
   imageUrl: text("image_url"),
   createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -1729,7 +1732,7 @@ export const jobs = pgTable("jobs", {
   openSubStatus: text("open_sub_status"),
   holdReason: text("hold_reason"), // Required when openSubStatus = "on_hold" (parts, customer, access, approval, weather, other)
   priority: text("priority").notNull().default("medium"),
-  jobType: text("job_type").notNull().default("maintenance"),
+  jobType: text("job_type").default("maintenance"), // Nullable: tech-created jobs may omit type
   // Job details
   summary: text("summary").notNull(),
   description: text("description"),
@@ -1836,7 +1839,7 @@ export const insertJobSchema = createInsertSchema(jobs).omit({
   status: z.enum(jobStatusEnum).default("open"),
   holdReason: z.enum(holdReasonEnum).nullable().optional(),
   priority: z.enum(jobPriorityEnum).default("medium"),
-  jobType: z.enum(jobTypeEnum).default("maintenance"),
+  jobType: z.enum(jobTypeEnum).nullable().optional(), // Nullable: tech-created jobs may omit type
   // Scheduling fields
   scheduledStart: z.string().nullable().optional(), // Accept ISO string
   scheduledEnd: z.string().nullable().optional(),

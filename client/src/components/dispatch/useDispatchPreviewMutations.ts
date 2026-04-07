@@ -383,14 +383,19 @@ function optimisticUnschedule(
     },
   );
 
-  // Add to unscheduled cache
+  // Add to unscheduled cache — use jobId as the identity (matches server response
+  // from GET /api/calendar/unscheduled which returns job-level items with id=jobId).
+  // Transfer all available fields from the calendar event to prevent missing-field
+  // rendering issues before the background refetch arrives.
   if (eventData) {
     const unscheduledJob: UnscheduledJobDto = {
-      id: visitId,
+      id: eventData.jobId,
       jobId: eventData.jobId,
       jobNumber: eventData.jobNumber,
       summary: eventData.summary,
-      status: "open",
+      status: eventData.status ?? "open",
+      openSubStatus: eventData.openSubStatus ?? null,
+      holdReason: eventData.holdReason ?? null,
       jobType: eventData.jobType,
       locationId: eventData.locationId,
       locationName: eventData.locationName,
@@ -400,7 +405,13 @@ function optimisticUnschedule(
       primaryTechnicianId: null,
       assignedTechnicianIds: [],
       technicians: [],
-      // 2026-03-22: Preserve real visit identity so unscheduled card remains clickable
+      durationMinutes: eventData.durationMinutes,
+      locationAddress: eventData.locationAddress ?? null,
+      locationCity: eventData.locationCity ?? null,
+      locationProvinceState: eventData.locationProvinceState ?? null,
+      locationPostalCode: eventData.locationPostalCode ?? null,
+      lat: eventData.lat ?? null,
+      lng: eventData.lng ?? null,
       activeVisitId: eventData.visitId ?? visitId,
     };
 
@@ -408,6 +419,9 @@ function optimisticUnschedule(
       { queryKey: ["/api/calendar/unscheduled"] },
       (old) => {
         if (!old) return [unscheduledJob];
+        // Deduplicate: if this job is already in unscheduled (e.g. multi-visit job),
+        // don't add a duplicate entry.
+        if (old.some(j => j.jobId === eventData.jobId || j.id === eventData.jobId)) return old;
         return [...old, unscheduledJob];
       },
     );
@@ -621,6 +635,9 @@ export function useDispatchPreviewMutations() {
       queryClient.invalidateQueries({ queryKey: ["visits"] });
       // 2026-03-23: Invalidate visit-detail so modal reflects completion state
       queryClient.invalidateQueries({ queryKey: ["visit-detail"] });
+      // 2026-04-05: Invalidate job detail time/notes queries so Labour Summary refreshes
+      // after visit completion without waiting for SSE round-trip
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
     }, 200);
   }, [queryClient]);
 

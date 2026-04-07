@@ -622,6 +622,39 @@ export class ClientRepository extends BaseRepository {
       .orderBy(desc(locationEquipment.createdAt));
   }
 
+  /** Get archived (soft-deleted) location equipment — for restore UI only */
+  async getArchivedLocationEquipment(companyId: string, locationId: string) {
+    this.assertCompanyId(companyId);
+    return await db
+      .select()
+      .from(locationEquipment)
+      .where(
+        and(
+          eq(locationEquipment.companyId, companyId),
+          eq(locationEquipment.locationId, locationId),
+          eq(locationEquipment.isActive, false)
+        )
+      )
+      .orderBy(desc(locationEquipment.updatedAt));
+  }
+
+  /** Restore soft-deleted equipment: set isActive=true, deletedAt=null */
+  async restoreLocationEquipment(companyId: string, equipmentId: string) {
+    this.assertCompanyId(companyId);
+    const rows = await db
+      .update(locationEquipment)
+      .set({ isActive: true, deletedAt: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(locationEquipment.companyId, companyId),
+          eq(locationEquipment.id, equipmentId),
+          eq(locationEquipment.isActive, false),
+        )
+      )
+      .returning();
+    return rows[0] ?? null;
+  }
+
   /**
    * Get single location equipment item
    */
@@ -633,7 +666,8 @@ export class ClientRepository extends BaseRepository {
       .where(
         and(
           eq(locationEquipment.companyId, companyId),
-          eq(locationEquipment.id, equipmentId)
+          eq(locationEquipment.id, equipmentId),
+          eq(locationEquipment.isActive, true),
         )
       )
       .limit(1);
@@ -685,7 +719,7 @@ export class ClientRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     const rows = await db
       .update(locationEquipment)
-      .set({ isActive: false, updatedAt: new Date() })
+      .set({ isActive: false, deletedAt: new Date(), updatedAt: new Date() })
       .where(
         and(
           eq(locationEquipment.companyId, companyId),

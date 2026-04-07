@@ -6,14 +6,13 @@
  */
 
 import { useLocation } from "wouter";
-import { CalendarDays, Clock, Search, MoreHorizontal, LogOut } from "lucide-react";
+import { CalendarDays, Clock, LogOut } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 
+// Only include nav items that resolve to real implemented routes
 const NAV_ITEMS = [
   { label: "Today", icon: CalendarDays, path: "/tech/today" },
   { label: "Timesheet", icon: Clock, path: "/tech/timesheet" },
-  { label: "Search", icon: Search, path: "/tech/search" },
-  { label: "More", icon: MoreHorizontal, path: "/tech/more" },
 ] as const;
 
 export function MobileShell({ children, showNav, hideTopBar }: {
@@ -47,11 +46,11 @@ export function MobileShell({ children, showNav, hideTopBar }: {
         <div className="flex items-center justify-between px-4 h-10 bg-[#0f1a2e] shrink-0">
           <div className="flex items-center gap-1.5">
             <div className="h-6 w-6 rounded-full bg-gradient-to-br from-[#22c55e] to-[#16a34a] flex items-center justify-center shadow-sm">
-              <span className="text-[10px] font-bold text-white leading-none">{initials}</span>
+              <span className="text-xs font-bold text-white leading-none">{initials}</span>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-[11px] text-slate-500 truncate max-w-[180px]">
+            <span className="text-sm text-slate-500 truncate max-w-[180px]">
               {user?.firstName ? `${user.firstName} ${user.lastName ?? ""}`.trim() : user?.email}
             </span>
             <button
@@ -75,7 +74,7 @@ export function MobileShell({ children, showNav, hideTopBar }: {
               <button
                 key={path}
                 onClick={() => setLocation(path)}
-                className={`flex-1 flex flex-col items-center justify-center gap-0.5 text-[10px] font-semibold transition-colors ${
+                className={`flex-1 flex flex-col items-center justify-center gap-0.5 text-xs font-semibold transition-colors ${
                   isActive ? "text-[#22c55e]" : "text-slate-400"
                 }`}
               >

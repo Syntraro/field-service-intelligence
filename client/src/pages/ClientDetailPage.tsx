@@ -28,7 +28,7 @@ import {
 import {
   ArrowLeft, Plus, Briefcase, FileText, MapPin, MoreHorizontal, Search,
   Wrench, Receipt, Phone, Mail, Star, Trash2, Pencil,
-  Clock, Package, StickyNote, Tag, Building2, AlertTriangle, Archive, PanelRightClose, PanelRightOpen,
+  Clock, Package, StickyNote, Tag, Building2, AlertTriangle, Archive, PanelRightClose, PanelRightOpen, Loader2,
 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -45,6 +45,7 @@ import { AssignContactDialog } from "@/components/AssignContactDialog";
 import { EditAssignmentRolesDialog } from "@/components/EditAssignmentRolesDialog";
 import { EditCompanyDialog } from "@/components/EditCompanyDialog";
 import { AddEquipmentDialog } from "@/components/AddEquipmentDialog";
+import { EquipmentDetailModal } from "@/components/EquipmentDetailModal";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { format } from "date-fns";
@@ -903,6 +904,7 @@ export default function ClientDetailPage() {
                 {workspaceTab === "equipment" && (
                   <LocEquipmentTab
                     equipment={locationEquipment}
+                    locationId={selectedLocationId!}
                     onAdd={() => setEquipmentModalOpen(true)}
                     onDelete={(eqId) => deleteEquipmentMutation.mutate(eqId)}
                   />
@@ -1680,12 +1682,42 @@ function LocQuotesTab({ quotes, onNavigate }: { quotes: EnrichedQuote[]; onNavig
 }
 
 function LocEquipmentTab({
-  equipment, onAdd, onDelete,
+  equipment, locationId, onAdd, onDelete,
 }: {
   equipment: LocationEquipment[];
+  locationId: string;
   onAdd: () => void;
   onDelete: (id: string) => void;
 }) {
+  const { toast } = useToast();
+  const [detailEquipment, setDetailEquipment] = useState<LocationEquipment | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
+  const [confirmRestoreId, setConfirmRestoreId] = useState<string | null>(null);
+  const confirmTarget = confirmDeleteId ? equipment.find(e => e.id === confirmDeleteId) : null;
+
+  // Fetch archived equipment only when toggle is on
+  const archivedQuery = useQuery<LocationEquipment[]>({
+    queryKey: ["/api/clients", locationId, "equipment", "archived"],
+    queryFn: () => apiRequest(`/api/clients/${locationId}/equipment/archived`),
+    enabled: showArchived,
+  });
+
+  const restoreMutation = useMutation({
+    mutationFn: (equipmentId: string) =>
+      apiRequest(`/api/clients/${locationId}/equipment/${equipmentId}/restore`, { method: "POST" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "equipment"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/clients", locationId, "equipment", "archived"] });
+      toast({ title: "Equipment restored" });
+      setConfirmRestoreId(null);
+    },
+    onError: () => toast({ title: "Error", description: "Failed to restore equipment.", variant: "destructive" }),
+  });
+
+  const archivedList = archivedQuery.data ?? [];
+  const restoreTarget = confirmRestoreId ? archivedList.find(e => e.id === confirmRestoreId) : null;
+
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
@@ -1697,19 +1729,20 @@ function LocEquipmentTab({
           </Button>
         </div>
       </div>
-      {equipment.length === 0 ? (
+      {equipment.length === 0 && !showArchived ? (
         <p className="text-xs text-slate-400 py-4 text-center">No equipment registered</p>
       ) : (
         <div className="border border-slate-200 rounded bg-white divide-y divide-slate-100">
           {equipment.map(eq => (
-            <div key={eq.id} className="px-3 py-2 text-xs">
+            <div key={eq.id} className="px-3 py-2 text-xs cursor-pointer hover:bg-slate-50 transition-colors"
+              onClick={() => setDetailEquipment(eq)}>
               <div className="flex items-center justify-between">
                 <div>
                   <div className="font-medium text-slate-700">{eq.name}</div>
                   <div className="text-slate-400 text-[10px]">{eq.equipmentType || "—"}</div>
                 </div>
                 <Button variant="ghost" size="icon" className="h-6 w-6 text-slate-400 hover:text-destructive"
-                  onClick={() => onDelete(eq.id)}>
+                  onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(eq.id); }}>
                   <Trash2 className="h-3 w-3" />
                 </Button>
               </div>
@@ -1720,6 +1753,88 @@ function LocEquipmentTab({
           ))}
         </div>
       )}
+
+      {/* Show archived toggle */}
+      <button onClick={() => setShowArchived(v => !v)}
+        className="mt-2 text-[10px] font-medium text-slate-400 hover:text-slate-600 transition-colors">
+        {showArchived ? "Hide archived" : "Show archived"}
+      </button>
+
+      {/* Archived equipment list */}
+      {showArchived && archivedList.length > 0 && (
+        <div className="mt-1.5 border border-slate-200 rounded bg-slate-50 divide-y divide-slate-100">
+          {archivedList.map(eq => (
+            <div key={eq.id} className="px-3 py-2 text-xs opacity-60">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="font-medium text-slate-500">{eq.name}</div>
+                  <div className="text-slate-400 text-[10px]">{eq.equipmentType || "—"}</div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Badge variant="secondary" className="text-[9px] px-1 py-0">Archived</Badge>
+                  <Button variant="outline" size="sm" className="h-5 text-[10px] px-2"
+                    onClick={() => setConfirmRestoreId(eq.id)}>
+                    Restore
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {showArchived && archivedList.length === 0 && !archivedQuery.isLoading && (
+        <p className="text-[10px] text-slate-400 mt-1">No archived equipment</p>
+      )}
+
+      {/* Delete confirmation dialog */}
+      {confirmTarget && (
+        <Dialog open={!!confirmDeleteId} onOpenChange={(open) => { if (!open) setConfirmDeleteId(null); }}>
+          <DialogContent className="sm:max-w-[400px]">
+            <DialogHeader>
+              <DialogTitle>Delete this equipment?</DialogTitle>
+              <DialogDescription>
+                This will remove <span className="font-medium text-foreground">{confirmTarget.name}</span> from
+                the active equipment list for this location. Service history and related notes will be preserved.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter className="gap-2 sm:gap-0">
+              <Button variant="outline" onClick={() => setConfirmDeleteId(null)}>Cancel</Button>
+              <Button variant="destructive" onClick={() => { onDelete(confirmDeleteId!); setConfirmDeleteId(null); }}>
+                Delete
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Restore confirmation dialog */}
+      {restoreTarget && (
+        <Dialog open={!!confirmRestoreId} onOpenChange={(open) => { if (!open) setConfirmRestoreId(null); }}>
+          <DialogContent className="sm:max-w-[400px]">
+            <DialogHeader>
+              <DialogTitle>Restore this equipment?</DialogTitle>
+              <DialogDescription>
+                This will make <span className="font-medium text-foreground">{restoreTarget.name}</span> active
+                again and return it to the active equipment list.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter className="gap-2 sm:gap-0">
+              <Button variant="outline" onClick={() => setConfirmRestoreId(null)}>Cancel</Button>
+              <Button onClick={() => restoreMutation.mutate(confirmRestoreId!)}
+                disabled={restoreMutation.isPending}>
+                {restoreMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                Restore
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      <EquipmentDetailModal
+        open={!!detailEquipment}
+        onOpenChange={(open) => { if (!open) setDetailEquipment(null); }}
+        equipment={detailEquipment}
+      />
     </div>
   );
 }

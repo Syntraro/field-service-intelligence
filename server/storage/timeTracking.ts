@@ -144,13 +144,31 @@ export class TimeTrackingRepository extends BaseRepository {
       actingUserId: options?.actingUserId,
     });
 
-    // Check for existing open session
+    // Check for existing open session — auto-close stale prior-day sessions
     const existingOpen = await this.getAnyOpenWorkSession(companyId, technicianId);
     if (existingOpen) {
-      throw this.conflictError(
-        `Technician already has an open session from ${existingOpen.workDate}. ` +
-          `Please clock out first.`
-      );
+      if (existingOpen.workDate === workDate) {
+        // Same-day open session → genuine duplicate clock-in, block it
+        throw this.conflictError(
+          `Technician already has an open session from ${existingOpen.workDate}. ` +
+            `Please clock out first.`
+        );
+      }
+      // Prior-day open session → auto-close at midnight of that day
+      // This handles the common case where a tech forgot to clock out
+      const priorDayMidnight = new Date(existingOpen.workDate + "T23:59:59.000Z");
+      await db
+        .update(workSessions)
+        .set({
+          clockOutAt: priorDayMidnight,
+          notes: existingOpen.notes
+            ? `${existingOpen.notes} [auto-closed: prior-day session]`
+            : "[auto-closed: prior-day session]",
+          updatedAt: new Date(),
+        })
+        .where(eq(workSessions.id, existingOpen.id));
+      // Also stop any running time entries from the stale session
+      await this.stopRunningTimeEntry(companyId, technicianId, { at: priorDayMidnight });
     }
 
     const [session] = await db

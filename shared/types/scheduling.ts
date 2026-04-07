@@ -74,7 +74,7 @@ export interface CalendarEventDto {
   /** Client location longitude (from client_locations, numeric 10,7) */
   lng?: string | null;
   /** Job type (e.g., "PM", "Repair", "Install") */
-  jobType: string;
+  jobType: string | null;
   /** Job summary/description */
   summary: string;
   /** Job status (open, completed, invoiced, archived) */
@@ -162,7 +162,7 @@ export interface UnscheduledJobDto {
   /** Human-readable job number */
   jobNumber: number;
   /** Job type */
-  jobType: string;
+  jobType: string | null;
   /** Job summary */
   summary: string;
   /** Job status (always 'open' for backlog) */

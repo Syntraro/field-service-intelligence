@@ -5,3 +5,10 @@ server/public
 vite.config.ts.*
 *.tar.gz
 uploads/
+.env
+.env.*
+.local/
+logs/
+*.log
+dev.log
+ralph-loop.log

@@ -46,10 +46,11 @@ export const VisitCardContent = memo(function VisitCardContent({
   visit,
   variant,
 }: VisitCardContentProps) {
-  // A visit looks "done" only when the PARENT JOB is closed (completed/invoiced/archived).
-  // A completed visit on an active job should NOT appear grayed-out.
-  const jobClosed = visit.jobStatus === "completed" || visit.jobStatus === "invoiced" || visit.jobStatus === "archived";
-  const isCompleted = isCompletedStatus(visit.status) && jobClosed;
+  // A completed visit renders with completion styling regardless of parent job state.
+  // A visit completed with follow-up required keeps the job "open" for the next visit,
+  // but the completed visit itself must show as done. Follow-up actionability surfaces
+  // through dashboard/action queues, not by visually pretending the visit is active.
+  const isCompleted = isCompletedStatus(visit.status);
   const isTeamVisit = visit.technicianIds.length > 1;
   const nameStrike = isCompleted ? "line-through" : "";
 

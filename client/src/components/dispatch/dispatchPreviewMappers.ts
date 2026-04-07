@@ -59,7 +59,7 @@ export function mapEventToDispatchVisit(event: CalendarEventDto): DispatchVisit 
     kind: "visit",
     // 2026-03-22: Explicit visit identity — always use this for EditVisitModal
     visitId: resolvedVisitId,
-    jobType: event.jobType,
+    jobType: event.jobType ?? undefined,
     locationId: event.locationId,
     customerCompanyId: event.customerCompanyId,
     description: event.description,
@@ -105,7 +105,7 @@ export function mapUnscheduledToDispatchVisit(job: UnscheduledJobDto): DispatchV
     // 2026-03-22: Real visit ID from server — enables canonical EditVisitModal opening.
     // Null if no active visit exists (scheduleJob will create one on first schedule).
     visitId: job.activeVisitId ?? null,
-    jobType: job.jobType,
+    jobType: job.jobType ?? undefined,
     locationId: job.locationId,
     customerCompanyId: job.customerCompanyId,
     technicianNames: job.technicians.map(t => t.name),

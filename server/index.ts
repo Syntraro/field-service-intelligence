@@ -1,3 +1,11 @@
+// UTC-safe scheduling: belt-and-suspenders TZ pin.
+// The PRIMARY pin is TZ=UTC in the package.json launch scripts (dev/start),
+// which sets the environment variable BEFORE Node.js starts — ensuring the pg
+// driver parses timestamp-without-timezone values in UTC from the very first
+// import. This in-code assignment is a fallback for non-script launches; in ESM
+// it runs AFTER imports due to hoisting, so it cannot be the sole mechanism.
+process.env.TZ = "UTC";
+
 import express, { type Request, type Response, type NextFunction } from "express";
 import session from "express-session";
 import ConnectPgSimple from "connect-pg-simple";

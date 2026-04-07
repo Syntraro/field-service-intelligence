@@ -8,6 +8,460 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### Backfill + Restore Archived Equipment (2026-04-06)
+
+- **Legacy backfill**: 1 legacy `location_equipment` record with `is_active=false, deleted_at=NULL` updated to set `deleted_at=NOW()`. 0 remaining inconsistent records. 7 active records untouched.
+- **Restore route**: `POST /api/clients/:locationId/equipment/:equipmentId/restore` — sets `isActive=true, deletedAt=null`. Requires MANAGER_ROLES.
+- **Archived equipment query**: `GET /api/clients/:locationId/equipment/archived` — returns soft-deleted equipment for restore UI. Requires MANAGER_ROLES.
+- **Storage methods**: `getArchivedLocationEquipment()` and `restoreLocationEquipment()` added to `clients.ts` and exported via `storage/index.ts`.
+- **Location Detail UI**: "Show archived" toggle below active equipment list. Archived rows show muted styling + "Archived" badge + "Restore" button. Restore confirmation dialog: "Restore this equipment? This will make [name] active again and return it to the active equipment list."
+- **Query invalidation**: Restore invalidates both active and archived equipment queries.
+
+**Files changed:**
+- `server/storage/clients.ts` — `getArchivedLocationEquipment()`, `restoreLocationEquipment()`
+- `server/storage/index.ts` — exported new methods
+- `server/routes/clients.ts` — `GET .../equipment/archived`, `POST .../equipment/:id/restore`
+- `client/src/pages/ClientDetailPage.tsx` — `LocEquipmentTab`: archived toggle, restore mutation, restore confirmation dialog, `locationId` prop
+
+#### Fix: Soft-deleted equipment leakage into active surfaces (2026-04-06)
+
+- **Aligned soft-delete write**: `deleteLocationEquipment()` now sets both `isActive: false` AND `deletedAt: new Date()`, matching the dual-column convention used by job parts.
+- **Job Detail equipment list**: `getJobEquipment()` now filters `locationEquipment.isActive = true` on the join, preventing soft-deleted equipment from appearing.
+- **Tech visit detail equipment list**: `getVisitDetailForUser()` equipment query now filters `locationEquipment.isActive = true`.
+- **Office equipment selectors**: `getLocationEquipmentItem()` now filters `isActive = true`, preventing soft-deleted equipment from being linked to new jobs.
+- **Location equipment lookup**: `getLocationEquipmentById()` now filters `isActive = true` for active-context lookups.
+- **Tech add-existing-equipment**: Changed from `isNull(deletedAt)` (unreliable — deletedAt was not always set) to `eq(isActive, true)` for consistent filtering.
+- **Equipment history preserved**: `getEquipmentOrThrow()` remains unfiltered for read-only history endpoints (timeline, notes, history, catalog-items GET). New `getActiveEquipmentOrThrow()` created for write endpoints (POST/PATCH/DELETE catalog-items).
+
+**Files changed:**
+- `server/storage/clients.ts` — `deleteLocationEquipment()`: set `deletedAt`; `getLocationEquipmentById()`: add `isActive` filter
+- `server/storage/jobs.ts` — `getJobEquipment()`: add `isActive` filter on join; `getLocationEquipmentItem()`: add `isActive` filter
+- `server/storage/jobVisits.ts` — `getVisitDetailForUser()` equipment query: add `isActive` filter
+- `server/routes/techField.ts` — tech add-equipment: `isNull(deletedAt)` → `eq(isActive, true)`
+- `server/routes/equipment.routes.ts` — new `getActiveEquipmentOrThrow()` for write endpoints; 4 write endpoints switched
+
+#### Office App: Location equipment delete confirmation dialog (2026-04-06)
+
+- **Confirmation dialog**: Trash icon on location equipment now opens a confirmation dialog instead of immediately deleting. Title: "Delete this equipment?" Body: "This will remove [name] from the active equipment list for this location. Service history and related notes will be preserved." Cancel/Delete buttons. Equipment name shown in bold.
+- **No backend changes**: Same soft-delete route (`DELETE /api/clients/:locationId/equipment/:equipmentId` → `isActive = false`).
+
+**Files changed:**
+- `client/src/pages/ClientDetailPage.tsx` — `LocEquipmentTab`: `confirmDeleteId` state, Dialog with confirmation copy, trash button opens dialog instead of calling onDelete directly
+
+#### Office App: Hide note edit/delete for non-managers (2026-04-06)
+
+- **Permission-gated actions**: Edit/delete icons on equipment notes only render for users with `MANAGER_ROLES` (`owner`, `admin`, `manager`, `dispatcher`). Non-managers see notes read-only. Backend enforcement (`requireRole(MANAGER_ROLES)`) preserved as defense-in-depth.
+
+**Files changed:**
+- `client/src/components/EquipmentDetailModal.tsx` — added `useAuth`, `MANAGER_ROLES` constant, `canEditNotes` check wrapping edit/delete icons
+
+#### Office App: Note Edit/Delete in Equipment Detail Modal (2026-04-06)
+
+- **Edit note inline**: Each note row shows a pencil icon on hover. Clicking opens inline textarea with Save/Cancel. Uses canonical `PATCH /api/jobs/:jobId/notes/:noteId` (requires MANAGER_ROLES). History refreshes immediately on save.
+- **Delete note with confirmation**: Trash icon on hover shows inline confirmation dialog ("Delete this note? This will permanently remove this note from the equipment history.") with Cancel/Delete. Uses canonical `DELETE /api/jobs/:jobId/notes/:noteId`. Note disappears immediately on success.
+- **One note editable at a time**: Starting an edit or delete cancels any other in-progress edit/delete.
+- **No backend changes**: Reuses existing canonical routes (`PATCH /api/jobs/:jobId/notes/:noteId`, `DELETE /api/jobs/:jobId/notes/:noteId`).
+- **Shared across both surfaces**: Same modal works from Job Detail and Location Detail.
+
+**Files changed:**
+- `client/src/components/EquipmentDetailModal.tsx` — edit/delete state, mutations, inline edit form, delete confirmation, hover actions
+
+#### Office App: Equipment History Modal on Location Detail (2026-04-06)
+
+- **Location equipment cards clickable**: Equipment cards in Location Detail → Equipment tab now open the same `EquipmentDetailModal` used on Job Detail. Same modal, same history endpoint, same query pattern — no duplication.
+- **`jobId` prop made optional**: Modal no longer requires `jobId` (it was unused after Add Note removal). Both Job Detail and Location Detail can open the modal.
+- **Delete icon isolated**: `stopPropagation()` on Trash2 button prevents modal from opening when deleting equipment.
+
+**Files changed:**
+- `client/src/pages/ClientDetailPage.tsx` — `LocEquipmentTab`: added click handler, modal state, `EquipmentDetailModal` import + render; delete button uses `stopPropagation`
+- `client/src/components/EquipmentDetailModal.tsx` — `jobId` prop changed to optional
+
+#### Office App: Simplify Equipment History Modal (2026-04-06)
+
+- **Removed Add Note button**: Modal is view-only for equipment info + service history. Note creation belongs on the job detail page.
+- **Removed Open Job icon button**: Replaced with clickable job number link (green, `text-emerald-600`, underline on hover). Only the job number text is clickable — no conflict with expand/collapse.
+- **Improved contrast**: Header uses `bg-muted/30` with `border-b`; equipment info section separated by `border-b`; history section heading is uppercase tracking-wide; job group cards use `bg-muted/50` headers with `border-t` on notes area; `bg-background` on card body.
+- **Removed unused imports**: `useMutation`, `Button`, `Textarea`, `Plus`, `ExternalLink`, `queryClient` — all related to the removed Add Note flow.
+
+**Files changed:**
+- `client/src/components/EquipmentDetailModal.tsx` — simplified to view-only; green linkable job numbers; improved visual separation
+
+#### Office App: Jump to Job from Equipment History Modal (2026-04-06)
+
+- **Open Job button**: Each job group header in the Equipment Detail Modal now has an `ExternalLink` icon button on the right. Clicking it closes the modal and navigates to `/jobs/:jobId`. Collapse/expand toggle remains on the left side of the header — no interaction conflict.
+
+**Files changed:**
+- `client/src/components/EquipmentDetailModal.tsx` — split job header into collapse toggle + open job button; added `useLocation`, `ExternalLink` import
+
+#### Tech App: Equipment note binding enforcement (2026-04-06)
+
+- **Locked equipment context**: When navigating from Equipment Detail → Add Note, the equipment selector is now locked (shows equipment name as a label, not a changeable dropdown). This prevents accidental deselection of equipmentId, ensuring the note is always bound to the correct equipment.
+- **Equipment history invalidation**: After adding a note with equipmentId, the tech app now invalidates equipment history queries (`/api/equipment/:id/notes`, `/api/equipment/:id/timeline`, `equipment-history`) so notes appear immediately in equipment detail screens.
+- **NoteInput `lockedEquipment` prop**: New optional prop that enforces equipment binding when set. Shows emerald badge with equipment name instead of dropdown.
+
+**Files changed:**
+- `client/src/tech-app/pages/VisitDetailPage.tsx` — NoteInput: `lockedEquipment` prop + locked display; handleAddNote: equipment history invalidation; added `queryClient` import
+
+#### Office App: Equipment Modal — Add Note + SSoT Audit (2026-04-06)
+
+- **SSoT audit confirmed**: `job_notes` table with `equipment_id` column is the single canonical source for equipment-linked notes. Both tech app (`POST /api/tech/visits/:visitId/notes`) and office app (`POST /api/jobs/:jobId/notes`) write to the same table. Both read paths (`GET /api/equipment/:id/history` and `GET /api/equipment/:id/notes`) query from the same table. No dual systems exist.
+- **Add Note in Equipment Modal**: Added "Add Note" button in modal header. Opens inline form (textarea + save/cancel). Uses canonical `POST /api/jobs/:jobId/notes` with `equipmentId` bound to current equipment. On success, invalidates `equipment-history` and job notes queries. Note appears immediately in modal history.
+- **jobId passed to modal**: `JobEquipmentSection` now passes `jobId` prop to `EquipmentDetailModal` for canonical note creation.
+
+**Files changed:**
+- `client/src/components/EquipmentDetailModal.tsx` — Add Note button, inline form, mutation, query invalidation
+- `client/src/components/JobEquipmentSection.tsx` — passes `jobId` to modal
+
+#### Office App: Equipment Detail Modal — Layering + Attribution Fix (2026-04-06)
+
+- **Route → Service → Storage layering**: Extracted inline query + grouping from route handler into `server/services/equipmentHistory.ts`. Storage: `fetchEquipmentHistoryRows()` (flat DB query). Service: `groupHistoryByJob()` (groups by jobId, resolves date, maps per-note author). Route: thin handler (validation + response only).
+- **Per-note technician attribution**: Removed job-level `technicianName`. Each note now carries its own `author` field. UI renders `"• note text — Author Name"` per note. Missing author shows `"Unknown technician"`.
+- **Removed LIMIT 200**: Silent truncation removed. Query returns all equipment-scoped notes.
+- **Canonical job date**: Explicit `scheduledStart ?? createdAt` precedence computed in service layer, delivered as single resolved `jobDate`.
+
+**Files created:**
+- `server/services/equipmentHistory.ts` — storage query + service transform
+
+**Files changed:**
+- `server/routes/equipment.routes.ts` — `/history` handler thinned to Route-only (3 lines)
+- `client/src/components/EquipmentDetailModal.tsx` — removed `technicianName` from DTO, per-note author rendering
+
+#### Office App: Equipment Detail Modal with Job-Grouped History (2026-04-06)
+
+- **New endpoint `GET /api/equipment/:equipmentId/history`**: Returns equipment-scoped notes from `job_notes` joined to `jobs` + `users`, grouped by jobId server-side. Each group includes: jobId, jobNumber, jobDate, technicianName (from note author), and nested notes array with text, createdAt, author.
+- **New `EquipmentDetailModal` component**: shadcn Dialog showing equipment info (Make, Model, Serial) + service history grouped by job. Each job group is collapsible (first expanded by default). Notes displayed as bulleted list with technician attribution. Empty state: "No service history for this equipment".
+- **Equipment card click handler**: Clicking an equipment card in `JobEquipmentSection` (Job Detail right sidebar) opens the detail modal. Delete icon uses `stopPropagation` to avoid conflict.
+
+**Files created:**
+- `client/src/components/EquipmentDetailModal.tsx` — modal component
+
+**Files changed:**
+- `server/routes/equipment.routes.ts` — new `/history` endpoint (Route → inline service transform → storage query)
+- `client/src/components/JobEquipmentSection.tsx` — equipment card click handler, modal state, import
+
+#### Tech App: Equipment detail mobile refinement + job-grouped history (2026-04-06)
+
+- **Mobile-first layout**: Compact header (name + type/manufacturer on one line), tighter info grid (`grid-cols-2 gap-x-3 gap-y-1.5`), smaller action buttons (h-9, text-xs), `bg-slate-50` background for visual separation.
+- **Job-grouped history**: Replaced separate "Service History" timeline + "Equipment Notes" sections with unified job-grouped cards. `buildJobHistory()` merges timeline entries + equipment notes by `jobId`, showing: job number, date, visit status/outcome/technician, and nested notes with left border accent. Most recent jobs first.
+- **Removed**: Generic "Service History" / "Equipment Notes" section headings. Removed redundant vertical spacing.
+
+**Files changed:**
+- `client/src/tech-app/pages/VisitDetailPage.tsx` — rewrote `EquipmentDetailScreen` layout + `buildJobHistory()` merge function
+
+#### Tech App: Equipment detail screen unification (2026-04-06)
+
+- **Removed equipment popup modal**: `EquipmentSheet` component deleted. Equipment card tap now opens the full Equipment Detail screen directly — no intermediate modal.
+- **Unified detail screen**: Replaced tabbed `EquipmentHistorySheet` (Info/Timeline/Notes/Parts) with single-scroll `EquipmentDetailScreen` showing: info grid → action buttons (Add Note / Remove) → service history → equipment notes. No tabs, no extra navigation.
+- **Removed "Add Part" from equipment context**: Parts are job-level (job_parts SSoT), not equipment-level. Removed the incorrect "Add Part" button and equipment-scoped part association.
+- **Removed "Parts" tab from equipment history**: Equipment Parts tab fetched from `/api/equipment/:id/parts` which is a cross-job view — not appropriate for the tech field flow.
+- **Removed "View History" button**: History loads automatically on the detail screen, eliminating the extra navigation step.
+
+**Files changed:**
+- `client/src/tech-app/pages/VisitDetailPage.tsx` — deleted `EquipmentSheet`, replaced `EquipmentHistorySheet` with `EquipmentDetailScreen`, removed `sheetEquipment` state, rewired equipment card taps + Overview equipment taps
+
+#### Tech App: Equipment create UX fix (2026-04-06)
+
+- **Create New Equipment always visible**: The "+ Create new equipment" button in AddEquipmentSheet was only shown when search yielded zero results (`filtered.length === 0 && search.length > 0`), making it effectively unreachable in normal usage. Moved to an always-visible dashed button below search results.
+- **Model field added**: Equipment create form now includes Name, Type, Model, Serial (was missing Model). Backend route already supported `modelNumber` — only the UI payload was missing it.
+
+**Files changed:**
+- `client/src/tech-app/pages/VisitDetailPage.tsx` — AddEquipmentSheet: always-visible create button, added Model field + `newModel` state, sends `modelNumber` in API payload
+
+#### Tech App: Part delete bug + edit permissions + creation audit (2026-04-06)
+
+- **Part delete stale UI bug**: `deleteJobPart()` in `server/storage/jobs.ts` set `isActive = false` (legacy column) but the read query in `server/storage/jobVisits.ts` filtered on `deletedAt IS NULL` (canonical column). Fixed by setting both `isActive: false` AND `deletedAt: new Date()` on delete, aligning with both legacy and canonical consumers.
+- **Office-owned field edit permissions**: Removed tech edit access for `visitNotes` (visit instructions), `description` (job description), and `accessInstructions` (site instructions). These fields are now read-only in the tech app. Removed "Add Visit Instructions" CTA. Removed fields from `techUpdateVisitSchema` and `techUpdateJobSchema`. Tech can still set initial description during job creation.
+- **Equipment + part creation audit**: Both create-new flows already exist and work correctly — `POST /api/tech/visits/:visitId/location-equipment` (AddEquipmentSheet) and `POST /api/tech/items` (AddPartSheet). No changes needed.
+
+**Files changed:**
+- `server/storage/jobs.ts` — `deleteJobPart()`: set `deletedAt` alongside `isActive`
+- `server/routes/techField.ts` — removed `visitNotes` from visit PATCH schema, removed `description`/`accessInstructions` from job PATCH schema
+- `client/src/tech-app/pages/VisitDetailPage.tsx` — office-owned fields now read-only; removed EditableField for those 3 fields; removed "Add Visit Instructions" CTA; cleaned up saveEdit
+- `client/src/tech-app/hooks/useTechVisitDetail.ts` — narrowed mutation types to match backend schemas
+
+#### Tech App: jobType ownership fix (2026-04-06)
+
+- **DB migration**: `jobs.job_type` column changed from `NOT NULL DEFAULT 'maintenance'` to nullable with default. Tech-created jobs store `null` when type is unselected. Office/PM flows still set jobType explicitly.
+- **Tech route default removed**: `techCreateJobSchema.jobType` changed from `.default("repair")` to `.nullable().optional()`. Storage call fallback changed from `?? "repair"` to `?? null`.
+- **Today card type pill removed**: JobCard in TodayPage no longer renders jobType badge (PM/Repair pills). Status badges (completed, en_route, etc.) preserved.
+- **Type safety**: Updated `VisitJobInfo.jobType`, `ScheduledJobWithDetails.jobType`, `CalendarEventDto.jobType`, `UnscheduledJobDto.jobType` to `string | null`. Dispatch preview mappers coerce null → undefined for optional fields.
+
+**Files changed:**
+- `migrations/2026_04_06_jobs_job_type_nullable.sql` — `ALTER TABLE jobs ALTER COLUMN job_type DROP NOT NULL`
+- `shared/schema.ts` — jobs table `jobType` column: removed `.notNull()`; insert schema: `.nullable().optional()`
+- `shared/types/scheduling.ts` — `CalendarEventDto.jobType` and `UnscheduledJobDto.jobType`: `string` → `string | null`
+- `server/routes/techField.ts` — tech create job schema/storage: removed "repair" default
+- `server/storage/jobVisits.ts` — `VisitJobInfo.jobType`: `string` → `string | null`
+- `server/storage/visits.ts` — `toEnrichedVisit` parameter: `jobType: string` → `string | null`
+- `server/storage/scheduling.ts` — `ScheduledJobWithDetails.jobType`: `string` → `string | null`
+- `client/src/tech-app/pages/TodayPage.tsx` — removed jobType pill rendering + unused imports
+- `client/src/components/dispatch/dispatchPreviewMappers.ts` — null coercion for jobType
+
+### Added
+
+#### Tech App: Create Action Chooser + Create Client + Job Form Cleanup (2026-04-06)
+
+- **Plus button action chooser**: FAB in TodayPage now opens a bottom-sheet chooser with "Create Job" and "Create Client" options, instead of navigating directly to Create Job. Uses existing custom modal pattern (OutcomeModal/EquipmentSheet style).
+- **Create Client page**: New `/tech/create-client` page with fields: first name, last name, company name, phone, email, address (city, province, postal code). Calls `POST /api/tech/clients` which uses canonical `customerCompanyRepository.findOrCreateCustomerCompany()` + `storage.createClient()`. Supports return-to-create-job flow via sessionStorage.
+- **POST /api/tech/clients endpoint**: Thin tech route using `requireSchedulable` auth. Creates customer company (find-or-create by name, dedup) + primary location atomically. Sets `needsDetails=true` when address is missing. Logs `client.created` event.
+- **Create Job form cleanup**: Removed Job Type and Priority sections from CreateJobPage. Backend defaults handle these (`repair` and `medium`). Remaining fields slide up cleanly.
+- **Location picker enhancement**: "Create new client" button appears at the bottom of location search results. Navigates to `/tech/create-client?from=create-job`. After client creation, returns to Create Job with new location auto-selected via sessionStorage.
+- **Pre-fill from sessionStorage**: CreateJobPage checks `tech_new_location` in sessionStorage on mount and auto-selects the newly created location.
+
+**Files changed:**
+- `server/routes/techField.ts` — new `POST /api/tech/clients` endpoint (canonical storage, event logging)
+- `client/src/tech-app/pages/TodayPage.tsx` — FAB opens action chooser bottom-sheet (Create Job / Create Client)
+- `client/src/tech-app/pages/CreateJobPage.tsx` — removed Type/Priority; added "Create new client" in location picker; sessionStorage pre-fill
+- `client/src/tech-app/pages/CreateClientPage.tsx` — new page (canonical client creation)
+- `client/src/tech-app/app/TechApp.tsx` — added `/tech/create-client` route
+
+### Fixed
+
+#### Scheduling Ownership Fix + Tech App Stabilization (2026-04-06)
+
+- **Scheduling ownership**: Tech route `POST /api/tech/jobs` Schedule Now path was bypassing canonical scheduling by passing `scheduledStart/scheduledEnd` directly into `storage.createJob()`. Refactored to two-step pattern: (1) create job unscheduled, (2) call `schedulingRepository.scheduleJob()` for Schedule Now. This ensures terminal status guards, version locking, `syncJobScheduleFromVisits`, visit archival, `openSubStatus` clearing, audit logging, event logging, and attention recomputation all fire through the single canonical scheduling owner.
+- **Redirect after job creation**: Tech create-job now returns `visitId` in response and navigates to `/tech/visit/:visitId` instead of `/tech/today`.
+- **Equipment removal UI**: Added visible mobile-friendly delete button (Trash2 icon) per equipment item directly in the equipment list, not just inside the EquipmentSheet modal. Hidden on terminal visits.
+- **Version conflict handling**: All tech app mutations (edit fields, lifecycle transitions, equipment/part ops) now detect 409 VERSION_MISMATCH and show inline message: "This record was updated elsewhere. Refresh and try again."
+- **Inline feedback**: CreateJobPage shows inline success banner on job creation before navigating to visit detail.
+- **Location search endpoint**: CreateJobPage was querying `GET /api/clients?q=` (paginated list, reads `search` param — `q` was ignored). Fixed to use canonical `GET /api/clients/search-locations?q=` with snake_case→camelCase mapping.
+
+**Files changed:**
+- `server/routes/techField.ts` — POST /api/tech/jobs refactored to two-step create-then-schedule; added imports for `schedulingRepository`, `normalizeScheduleTimes`, `logEventAsync`, `recomputeAttentionForEntity`, `getQueryCtx`; response now includes `visitId`
+- `client/src/tech-app/pages/CreateJobPage.tsx` — success banner; redirect to visit detail; location search uses `/api/clients/search-locations`
+- `client/src/tech-app/pages/VisitDetailPage.tsx` — `showError` helper with VERSION_MISMATCH detection; visible equipment delete buttons; all mutation error handlers unified
+
+#### Tech App 5-Bug Fix + Backend Capability Audit (2026-04-06)
+
+- **Bug 1 — Edit Visit equipment not syncing to job_equipment**: `updateJobVisit()` now auto-creates `job_equipment` junction records for any `equipmentIds` not already linked. Previously, Edit Visit modal wrote to `job_visits.equipmentIds` (denormalized array) but never created the canonical `job_equipment` records, so equipment didn't appear on the job detail page.
+- **Bug 2 — No Add Equipment in tech app**: Added `AddEquipmentSheet` component with location equipment search + create-new flow. Uses existing `POST /api/tech/visits/:visitId/equipment` and new `POST /api/tech/visits/:visitId/location-equipment` endpoint.
+- **Bug 3 — Parts tab empty**: Visit detail endpoint (`getVisitDetailForUser`) now returns `parts[]` from `job_parts`. Frontend adapter includes `DetailPart` type. Parts tab renders saved parts with description, quantity, price, date.
+- **Bug 4 — Remove equipment-part association UI**: Removed Add Part / Add Note shortcut buttons from overview equipment cards. Parts are added from the Parts tab only. Backend equipment-part linkage preserved for future use.
+- **Bug 5 — No create-item flow**: Added `POST /api/tech/items` endpoint (tech-scoped, uses canonical `storage.createItem`). `AddPartSheet` now shows "Create" action when search yields no results, with type and price fields.
+
+**Files changed:**
+- `server/storage/jobVisits.ts` — `updateJobVisit()` syncs equipmentIds to `job_equipment`; `getVisitDetailForUser()` returns parts; added `jobParts`, `items` imports
+- `server/routes/techField.ts` — new `POST /visits/:visitId/location-equipment` (create + attach equipment), new `POST /items` (create catalog item)
+- `client/src/tech-app/hooks/useTechVisitDetail.ts` — added `BackendPart`, `DetailPart` types; `parts` in `DetailVisit` + adapter; `addEquipment` mutation
+- `client/src/tech-app/pages/VisitDetailPage.tsx` — Parts tab renders real data; Equipment tab has Add button + `AddEquipmentSheet`; `AddPartSheet` has create-new-item flow; equipment card shortcuts removed
+
+#### Frontend/Backend Contract Mismatches (2026-04-06)
+
+- **Product search query param**: Frontend was sending `search=` but backend reads `q=`. Fixed frontend to use `q=` and normalize response (backend returns array or `{data,meta}` depending on pagination — frontend now handles both).
+- **Add equipment tech endpoint**: New `POST /api/tech/visits/:visitId/equipment` — adds existing location equipment to job via canonical `jobRepository.createJobEquipment`. Validates equipment exists, not already linked, tech is assigned. Auto-propagates to visits with null equipmentIds.
+- **addEquipment mutation**: Added to `useTechVisitDetail` hook alongside existing `addPart`/`removeEquipment`.
+- **BackendNote.equipmentId typed**: Added `equipmentId: string | null` to `BackendNote` interface, removed `as any` cast in adapter.
+- **Defensive array guards**: `data.notes ?? []` guard added in adapter (equipment already guarded).
+
+**Files changed:**
+- `server/routes/techField.ts` — new `POST /visits/:visitId/equipment` endpoint, `locationEquipment` import added
+- `client/src/tech-app/hooks/useTechVisitDetail.ts` — `BackendNote.equipmentId` typed, `addEquipment` mutation, defensive `notes ?? []` guard
+- `client/src/tech-app/pages/VisitDetailPage.tsx` — product search uses `q=` param, normalizes array/paginated response
+
+### Added
+
+#### Tech App — UI Cleanup + Equipment History (Phase 4) (2026-04-06)
+
+**Cleanup (Part A):**
+- **Add Part uses canonical mutation**: `AddPartSheet` now receives the `addPart` mutation from `useTechVisitDetail` instead of direct `apiRequest`. Loading/disabled states match `addNote`/`removeEquipment` pattern. No inline API write logic remains.
+- **Remove-equipment confirmation**: Equipment sheet shows inline "Remove this equipment from the job?" confirmation before calling delete. Lightweight — no new modal system.
+- **Event propagation fixed**: Equipment card Add Part / Add Note buttons use `e.stopPropagation()` (already present from Phase 3, verified).
+- **Empty states**: All tabs show appropriate empty-state messages (no notes/equipment/parts).
+- **Removed unused import**: `useMemo` removed from VisitDetailPage.
+
+**Equipment History (Part B):**
+- **Equipment history view**: Full-screen sheet with 4 tabs — Info, Timeline, Notes, Parts.
+- **Info tab**: Shows name, type, manufacturer, model, serial, tag from hydrated equipment data.
+- **Timeline tab**: Fetches from existing `GET /api/equipment/:id/timeline` (no auth restriction — accessible to techs). Shows visit history: title, job number, status, outcome, technician, date.
+- **Notes tab**: Fetches from new `GET /api/equipment/:id/notes`. Shows equipment-linked notes with author, date, content.
+- **Parts tab**: Fetches from new `GET /api/equipment/:id/parts`. Shows equipment-linked parts with description, quantity, date.
+- **Lazy loading**: History data fetched only when the corresponding tab is active (per-tab `enabled` flag on useQuery). No prefetch for every card.
+- **Access from**: Equipment sheet "View History" button → opens full-screen history view.
+
+**Backend (Phase 4):**
+- `GET /api/equipment/:equipmentId/notes` — returns job_notes where equipmentId matches. No role guard (matches timeline pattern). Max 50, newest first.
+- `GET /api/equipment/:equipmentId/parts` — returns job_parts where equipmentId matches and not soft-deleted. No role guard. Max 50, newest first.
+
+**Files changed:**
+- `client/src/tech-app/pages/VisitDetailPage.tsx` — cleanup fixes + EquipmentHistorySheet component
+- `client/src/tech-app/hooks/useTechVisitDetail.ts` — (no changes in this pass)
+- `server/routes/equipmentCatalogItems.routes.ts` — added notes + parts read endpoints
+
+#### Tech App Job Detail UI — Phase 3 (2026-04-06)
+
+- **4-tab layout**: Overview | Notes | Equipment | Parts. Tabs render from single `useTechVisitDetail` query.
+- **Overview tab**: Visit Instructions → Job Description → Site Instructions → Equipment to Service cards. Equipment cards show name/type with stacked Add Part / Add Note buttons.
+- **Equipment cards**: Entire card clickable → opens detail sheet showing name, type, manufacturer, model, serial, tag. Sheet has Add Note, Add Part, Remove from Job actions.
+- **Notes tab**: Quick-add input with optional equipment dropdown. Notes grouped by equipment (labeled headers) then general. Uses `POST /api/tech/visits/:visitId/notes` with optional `equipmentId`.
+- **Equipment tab**: Full equipment list with click-to-detail. Empty state when no equipment linked.
+- **Parts tab**: Add Part button → product search sheet → quantity input → `POST /api/tech/visits/:visitId/parts`. Product search reuses `GET /api/items`.
+- **Add Part sheet**: Search products, select, set quantity, confirm. Supports pre-filled `equipmentId` from equipment card.
+- **Remove Equipment**: From equipment detail sheet → `DELETE /api/tech/visits/:visitId/equipment/:jobEquipmentId`. Blocked on completed/cancelled visits.
+
+**Files changed:**
+- `client/src/tech-app/hooks/useTechVisitDetail.ts` — added `BackendEquipment`, `DetailEquipment`, `DetailNote.equipmentId`; new mutations `addPart`, `removeEquipment`; `addNote` now accepts `{ text, equipmentId? }`; adapter maps hydrated equipment
+- `client/src/tech-app/pages/VisitDetailPage.tsx` — full rewrite: 4-tab layout, EquipmentSheet, AddPartSheet, NoteInput with equipment selector, NoteCard, equipment grouping
+
+#### Tech App API — Phase 2 Endpoint Readiness (2026-04-06)
+
+- **Equipment hydration**: `GET /api/tech/visits/:visitId` now returns `equipment[]` with full objects (id, name, equipmentType, manufacturer, modelNumber, serialNumber, tagNumber, locationId, jobEquipmentId) via `job_equipment → location_equipment` join. Single query, no N+1.
+- **Add Part endpoint**: `POST /api/tech/visits/:visitId/parts` creates `job_parts` row. Accepts `{ productId, quantity, equipmentId? }`. Validates product exists, equipment belongs to job. Tech assignment enforced.
+- **Remove Equipment endpoint**: `DELETE /api/tech/visits/:visitId/equipment/:jobEquipmentId` removes from `job_equipment` (via canonical `jobRepository.deleteJobEquipment`), updates `job_visits.equipmentIds` to reflect remaining equipment. Blocks on completed/cancelled visits. Respects invoice lock guard.
+- **Product search**: Confirmed `GET /api/items` is already accessible to tech roles (no `requireRole` guard on GET). No changes needed.
+- **Notes**: Confirmed `POST /api/tech/visits/:visitId/notes` already supports `equipmentId` from Phase 1. Note responses include `equipmentId` for future grouping.
+
+**Files changed:**
+- `server/storage/jobVisits.ts` — `getVisitDetailForUser()` adds equipment hydration query + returns `equipment[]`
+- `server/routes/techField.ts` — new `POST /visits/:visitId/parts` + `DELETE /visits/:visitId/equipment/:jobEquipmentId` endpoints
+
+#### Equipment-Linked Notes — Phase 1 Data Layer (2026-04-06)
+
+- **Schema**: Added nullable `equipment_id` FK column to `job_notes` → `location_equipment(id)` ON DELETE SET NULL. Partial index `idx_job_notes_equipment_id` on non-null values.
+- **Storage**: `JobNotesRepository.createJobNote()` accepts optional `equipmentId`. Validates equipmentId belongs to the job via `job_equipment` junction table. Returns `equipmentId` in list and create responses.
+- **Service**: `jobNotes.service.ts` `createJobNote()` passes `equipmentId` through to repository.
+- **Routes**: `POST /api/jobs/:jobId/notes` and `POST /api/tech/visits/:visitId/notes` accept optional `equipmentId` in request body.
+- **Read path**: `getVisitDetailForUser()` and `listJobNotes()` include `equipmentId` in note response. Tech app detail endpoint returns equipment linkage.
+- **Migration**: `migrations/2026_04_06_job_notes_equipment_id.sql`
+
+**Files changed:**
+- `migrations/2026_04_06_job_notes_equipment_id.sql` — new migration
+- `shared/schema.ts` — `jobNotes.equipmentId` column added
+- `server/storage/jobNotes.ts` — `createJobNote` accepts + validates equipmentId; `listJobNotes` returns it
+- `server/storage/jobVisits.ts` — `getVisitDetailForUser` notes query includes equipmentId
+- `server/services/jobNotes.service.ts` — passes equipmentId through
+- `server/routes/jobs.ts` — POST notes accepts equipmentId
+- `server/routes/techField.ts` — POST tech notes accepts equipmentId
+
+### Fixed
+
+#### Tech App & Dispatch Board — 4 Issue Fix (2026-04-06)
+
+- **Stale clock-in session auto-close**: `clockIn()` in `server/storage/timeTracking.ts` now auto-closes prior-day open sessions at midnight (23:59:59Z of the session's workDate) before creating the new day's session. Same-day duplicate clock-in still blocked. Running time entries from the stale session are also stopped.
+- **Visit instructions save race fix**: `EditVisitModal.tsx` dispatch path was splitting `equipmentIds` and `visitNotes` across two concurrent mutations (direct PATCH + calendar reschedule), causing a 409 VERSION_MISMATCH race that silently dropped `visitNotes`. Fix: `visitNotes` now included in the direct PATCH payload alongside equipment, avoiding the version conflict.
+- **Tech app visit instructions display**: Added `visitNotes` to `DetailVisit` interface and adapter in `useTechVisitDetail.ts`. Rendered as the first card on the Overview tab in `VisitDetailPage.tsx`, above job description and site instructions.
+- **Completed + follow-up dispatch card styling**: `VisitCardContent.tsx` completion styling (strikethrough, checkmark icon) now uses visit status alone, not `visit.status === "completed" && jobClosed`. A completed visit with follow-up required now correctly renders as completed. Follow-up actionability surfaces through dashboard/action queues, not card styling.
+
+**Files changed:**
+- `server/storage/timeTracking.ts` — auto-close prior-day stale sessions in `clockIn()`
+- `client/src/components/visits/EditVisitModal.tsx` — include `visitNotes` in `equipmentPayload`
+- `client/src/tech-app/hooks/useTechVisitDetail.ts` — add `visitNotes` to `DetailVisit` + adapter
+- `client/src/tech-app/pages/VisitDetailPage.tsx` — render visit instructions card on Overview tab
+- `client/src/components/dispatch/VisitCardContent.tsx` — visit-level completion styling
+
+#### CSRF Token Race Condition Fix — Team Management Add Member (2026-04-06)
+
+- **Root cause**: After Passport login, session regeneration destroys the old CSRF secret. `initCSRF()` was called non-blocking in `onSuccess` but did NOT clear the stale in-memory `csrfToken` first. A POST request firing before the refresh completed would send the stale token → `EBADCSRFTOKEN`. The auto-retry (`refreshCSRF`) handled this but introduced latency, and concurrent `initCSRF` calls could race and overwrite each other.
+- **Fix**: `initCSRF()` now clears `csrfToken` immediately on entry (before fetching), and uses a promise lock (`csrfInitPromise`) to serialize concurrent callers. Any `getCSRFToken()` call during an in-flight refresh awaits the same promise instead of returning a stale value or starting a parallel fetch.
+
+**Files changed:**
+- `client/src/lib/queryClient.ts` — `initCSRF()` clears token first + promise serialization; `refreshCSRF()` delegates to `initCSRF()`; `getCSRFToken()` unchanged but now benefits from serialization
+
+#### Process-Level TZ=UTC Pin — AntiGravity +4h Dispatch Drift Fix (2026-04-05)
+
+- **Root cause proven**: `process.env.TZ = "UTC"` in `server/index.ts` runs AFTER ESM imports due to hoisting (`"type": "module"`). During `db.ts` module initialization, process TZ defaults to `America/Toronto` (local machine). The pg driver's timestamp parser uses the process TZ to construct Date objects — creating a +4 hour shift on non-UTC hosts. Replit worked because its OS default TZ is UTC.
+- **Fix**: Added `TZ=UTC` to `cross-env` in package.json `dev` and `start` scripts. This sets the TZ environment variable BEFORE Node.js starts, ensuring the pg driver sees UTC from the first import. The in-code `process.env.TZ = "UTC"` retained as belt-and-suspenders fallback.
+- **Diagnostic proof**: Before fix, `db.ts` load showed `Intl TZ = America/Toronto`, `new Date(2026,3,5,13,0,0).toISOString() = T17:00Z` (+4h). After fix: `Intl TZ = UTC`, same Date = `T13:00Z` (correct).
+
+**Files changed:**
+- `package.json` — `TZ=UTC` added to `dev` and `start` scripts via cross-env
+- `server/index.ts` — comment updated to reflect launcher pin is primary mechanism
+- `server/db.ts` — audit diagnostics removed
+- `server/storage/scheduling.ts` — audit diagnostics removed
+- `server/routes/scheduling.ts` — audit diagnostics removed
+- `client/src/components/dispatch/dispatchPreviewUtils.ts` — audit diagnostics removed
+
+#### UTC-Safe Scheduling Read Path + Unschedule Orphan Fix (2026-04-05)
+
+- **Fix — UTC-safe scheduling READ path**: The prior write-path fix (`forceUTCTimestamp`) stores correct UTC hours in `timestamp without time zone` columns, but the read path still used `new Date(row.scheduled_start)` which interprets values in process-local timezone. Added `parseTimestampAsUTC()` — extracts raw hour/minute/second components from the pg driver's Date and reconstructs as UTC via `Date.UTC()`. Applied to the canonical calendar query and `syncJobScheduleFromVisits` in the storage layer. Used `getUTCFullYear/Month/Date` in `transformToDto` for date string extraction. This makes the read path deterministic regardless of `process.env.TZ` and ESM import hoisting.
+- **Fix — Unschedule no longer creates orphan visits**: Removed guards in `syncJobScheduleFromVisits` UNSCHEDULE BRANCH that prevented clearing `jobs.scheduledStart` when job status was not "open" or when sub-status was "on_hold". These guards caused unscheduled visits to disappear from both the scheduled board (visit-level: `scheduledStart IS NULL`) and the unscheduled panel (job-level: `scheduledStart IS NOT NULL`). The job schedule mirror now always reflects the actual visit state.
+- **Fix — Optimistic unschedule cache patch improved**: The `optimisticUnschedule()` function now uses `jobId` as identity (matching the server's `GET /api/calendar/unscheduled` response), transfers all available display fields (`durationMinutes`, `locationAddress`, `lat`, `lng`, etc.) from the calendar event, and deduplicates to prevent double entries for multi-visit jobs.
+
+**Files changed:**
+- `server/utils/allDaySanitizer.ts` — added `parseTimestampAsUTC()` canonical read helper
+- `server/storage/scheduling.ts` — applied `parseTimestampAsUTC()` to calendar query date parsing
+- `server/storage/jobVisits.ts` — applied `parseTimestampAsUTC()` to `syncJobScheduleFromVisits` date parsing; removed orphan-creating guards from UNSCHEDULE BRANCH
+- `server/routes/scheduling.ts` — `transformToDto()` now uses UTC accessors (`getUTCFullYear/Month/Date`)
+- `client/src/components/dispatch/useDispatchPreviewMutations.ts` — `optimisticUnschedule()` uses correct identity and complete field transfer
+
+#### UTC-Safe Scheduling — Dispatch Board Visual Drift Fix (2026-04-05)
+
+- **Root cause**: `timestamp without time zone` columns + node-pg Date serialization. The pg driver serializes Date objects using process-local time methods (`getHours()`, `getMinutes()`, etc.), not UTC. When the server process timezone is not UTC, timed scheduling timestamps are stored with a timezone-dependent offset. On refetch, the round-trip produces shifted values — e.g., a 2 PM visit renders at 6 PM (4-hour drift matching EDT UTC-4). The all-day variant of this bug was fixed previously in `allDaySanitizer.ts`; the timed scheduling path was never fixed.
+- **Fix — UTC-safe scheduling writes**: Extended the `forceUTCTimestamp()` pattern (previously all-day only) to ALL scheduling timestamp writes. New `sanitizeSchedulingTimestamps()` function replaces Date objects with `sql\`${date.toISOString()}::timestamp\`` expressions in all job, job_visit, and task write paths, bypassing the driver's timezone-sensitive serialization.
+- **Fix — Process timezone pinning**: Added `process.env.TZ = 'UTC'` at server startup (before any Date operations) so the pg driver's type parsing is deterministic. Added `SET timezone = 'UTC'` on every pool connection for defense-in-depth.
+- **Coverage**: All scheduling write paths are now UTC-safe — `createJobVisit`, `updateJobVisit`, `syncJobScheduleFromVisits`, `createJob`, `updateJob`, `transitionJobStatus`, lifecycle transitions, job import, `createTask`, `updateTask`.
+
+**Files changed:**
+- `server/index.ts` — `process.env.TZ = 'UTC'` pinned at top before all imports
+- `server/db.ts` — `SET timezone = 'UTC'` on every pool connection
+- `server/utils/allDaySanitizer.ts` — new `sanitizeSchedulingTimestamps()` covering all scheduling fields (jobs, job_visits, tasks); `sanitizeAllDayTimestamps()` retained as alias
+- `server/storage/jobVisits.ts` — `sanitizeSchedulingTimestamps()` applied to `createJobVisit`, `updateJobVisit`, `syncJobScheduleFromVisits`
+- `server/storage/jobs.ts` — `sanitizeSchedulingTimestamps()` applied to `createJob` (visit insert), `createJobWithExplicitNumber`, `transitionJobStatus`, lifecycle transition
+- `server/storage/tasks.ts` — `sanitizeSchedulingTimestamps()` applied to `createTask`, `updateTask`
+
+#### Job Completion Lifecycle / Time Tracking / Cross-Surface Freshness (2026-04-05)
+
+- **Canonical time-stop on visit completion.** Moved active time entry stop into `jobLifecycleOrchestrator.completeVisit()` so ALL completion paths (tech, office visit complete, force-close with auto-complete) stop running time entries. Previously only `techField.ts` stopped entries — office paths left them running, causing Labour Summary to show "Technician on site" after job completion. Removed duplicate stop from `techField.ts`.
+- **Bulk-complete now stops running time entries.** `bulkCompleteVisitsInternal()` in the orchestrator now stops running time entries for each assigned technician when force-closing a job with `autoCompleteOpenVisits`. Previously time entries were orphaned as running.
+- **All tech field routes now emit dispatch SSE.** Added `emitDispatch()` to en_route, start, and complete handlers in `techField.ts` so office surfaces (Job Detail, dispatch board, dashboard) refresh when technicians change visit state. Previously none of these routes emitted SSE.
+- **Job status route now emits dispatch SSE.** Added `emitDispatch()` to `POST /api/jobs/:id/status` (covers completion, hold, resume, substatus transitions). Previously this route changed job state without notifying office SSE consumers.
+- **Office close/undo mutations invalidate full Job Detail query families.** `closeJobMutation` and `undoCloseMutation` in `JobHeaderCard.tsx` now invalidate `["/api/jobs"]` prefix in addition to `["jobs"]`. The two prefixes are separate TanStack Query families — `["jobs"]` covers job header/detail, `["/api/jobs"]` covers time-summary, time-entries, expenses, notes.
+
+**Files changed:**
+- `server/services/jobLifecycleOrchestrator.ts` — canonical time-stop in `completeVisit()` and `bulkCompleteVisitsInternal()`
+- `server/routes/techField.ts` — added `emitDispatch()` to en_route/start/complete, removed duplicate time-stop (now in orchestrator)
+- `server/routes/jobs.ts` — added `emitDispatch()` to `POST /:id/status`
+- `client/src/components/JobHeaderCard.tsx` — added `["/api/jobs"]` invalidation to close and undo-close mutations
+
+#### Cross-Surface Sync & visitNotes Data Integrity (2026-04-05)
+
+- **Office/admin surfaces now update in realtime when technicians change visit state.** Extended SSE invalidation in `useDispatchStream.ts` to include `["jobs"]`, `["visits"]`, and `["/api/jobs"]` query families. Job detail page, visit lists, notes, and time summaries now refresh without manual page reload when techs trigger en_route, in_progress, or completed transitions. Dispatch board behavior unchanged.
+- **Removed legacy [OUTCOME: ...] / [COMPLETED_BY: ...] tag append from visitNotes.** Completion flow in `jobLifecycleOrchestrator.ts` now writes `outcomeNote` to its structured column only. `visitNotes` remains a clean user-facing instructions field. Edit Visit modal no longer displays machine-generated metadata tags. Historical data with existing tags is not modified — fix is forward-only.
+- **Labour Summary now refreshes on visit completion from dispatch.** Added `["/api/jobs"]` prefix invalidation to `invalidateAfterCompletion` in `useDispatchPreviewMutations.ts`. Previously the direct mutation path only invalidated `["jobs"]` (job header) but missed `["/api/jobs"]` (time-summary, time-entries). SSE path already covered this; now both paths are aligned.
+- **Job detail page now shows hold reason next to status.** When a job is on hold, the canonical `holdReason` field (e.g. "Waiting for Parts") is displayed as a badge next to the "On Hold" status pill. Uses existing `getHoldReasonLabel()` from shared schema — no notes parsing, no new fields.
+- **Job detail card defaults adjusted.** Job Summary minimized by default (profit line still visible when collapsed). Labour Summary and Notes open by default so dispatchers see critical info immediately.
+
+**Files changed:**
+- `client/src/hooks/useDispatchStream.ts` — added job/visit detail query families to SSE invalidation
+- `client/src/components/dispatch/useDispatchPreviewMutations.ts` — added `["/api/jobs"]` prefix to `invalidateAfterCompletion`
+- `client/src/pages/JobDetailPage.tsx` — added hold reason badge, fixed card default states
+- `server/services/jobLifecycleOrchestrator.ts` — removed legacy tag append, added outcomeNote to structured column write
+
+#### Tech App — Correctness, Dead UI Removal, Typography (2026-04-05)
+
+**PASS 1 — Core System Correctness**
+
+- **En Route timer now works.** Timer reads from canonical `time_entries.startAt` (SSoT) instead of `visit.checkedInAt`. Backend en-route/start/complete endpoints now return `activeTimeEntry` with the running entry's `startAt`. Visit detail endpoint also returns the running time entry for the current job. Removed frontend dependency on `checkedInAt` for timer display.
+- **Timer stops immediately on completion.** Mutation `onSuccess` handlers now apply backend-returned visit state directly to query cache via `setQueryData` before triggering background invalidation. Eliminates stale timer/status display between mutation response and refetch. Applied to all three action mutations (startTravel, startJob, complete).
+- **Site instructions now visible.** Added `accessInstructions` to job field selection in `getVisitDetailForUser()`. Mapped through hook to `DetailVisit.accessInstructions`. Rendered in Visit Detail Overview tab with existing section styling.
+- **Removed duplicate status card.** Overview tab no longer shows a separate "Status" card — status is already displayed in the timer strip.
+
+**PASS 2 — Dead UI Removal**
+
+- **Removed FAB entirely.** All 6 action buttons (Job, Quote, Invoice, Task, Client, Lead) had empty `onClick` handlers. No backend endpoints, routes, or pages existed. Removed `FloatingActionButton` component and all supporting code (FAB_ACTIONS, ROLE_LEVEL, getVisibleActions).
+- **Removed broken nav items.** Removed "Search" and "More" from bottom nav — no `/tech/search` or `/tech/more` routes/pages exist. Bottom nav now shows only "Today" and "Timesheet" (both resolve to real routes).
+
+**PASS 3 — Typography Normalization**
+
+- **Replaced all arbitrary pixel text sizes** (`text-[9px]` through `text-[14px]`) with standard Tailwind classes across all tech-app files. Mapping: 9-10px → `text-xs`, 11-12px → `text-sm`, 13-14px → `text-base`. All text visibly larger and consistent with the design system.
+- **Files affected:** `VisitDetailPage.tsx`, `TodayPage.tsx`, `TimesheetPage.tsx`, `MobileShell.tsx`, `LoginPage.tsx`
+
+**Backend files changed:**
+- `server/routes/techField.ts` — en-route/start/complete endpoints return `activeTimeEntry`; visit detail endpoint returns running time entry
+- `server/storage/jobVisits.ts` — `VisitJobInfo` type and `getVisitDetailForUser()` query include `accessInstructions`
+
+**Frontend files changed:**
+- `client/src/tech-app/hooks/useTechVisitDetail.ts` — `DetailVisit` type: replaced `checkedInAt` with `timerStartedAt`, added `accessInstructions`; adapter reads from `activeTimeEntry`; mutations use `setQueryData` for immediate cache update
+- `client/src/tech-app/pages/VisitDetailPage.tsx` — timer uses `timerStartedAt`; site instructions rendered; duplicate status card removed; all typography normalized
+- `client/src/tech-app/pages/TodayPage.tsx` — FAB removed; all typography normalized
+- `client/src/tech-app/components/MobileShell.tsx` — Search/More nav items removed; typography normalized
+- `client/src/tech-app/pages/TimesheetPage.tsx` — typography normalized
+- `client/src/tech-app/pages/LoginPage.tsx` — typography normalized
+
+**HOLD (not implemented):**
+- Job number visibility — no verified product direction for UI placement
+- My Team View — not in bug-fix scope
+- Add Equipment / Add Part / Add Photo — not in bug-fix scope
+
 #### Field UX + Action Safety Pass (2026-04-05)
 
 - **Success feedback for all visit actions.** Start Travel → "En route", Start Job → "On site — job started", Complete → "Visit completed", Add Note → "Note saved". Green inline banner auto-dismisses after 3 seconds. Reuses existing inline feedback pattern (no new notification system).

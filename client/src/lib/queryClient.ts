@@ -62,36 +62,69 @@ function notifySessionExpired(url: string): void {
 
 
 /**
- * Initialize CSRF token - call this when app mounts
+ * In-flight CSRF initialization promise — serializes concurrent callers so only
+ * one fetch is active at a time. Without this, login-triggered initCSRF() and
+ * a simultaneous apiRequest→getCSRFToken()→initCSRF() would race and could
+ * overwrite each other with tokens from different sessions.
+ */
+let csrfInitPromise: Promise<void> | null = null;
+
+/**
+ * Initialize CSRF token — fetches a fresh token from the server.
+ *
+ * Always clears the in-memory token FIRST so that any concurrent
+ * getCSRFToken() caller awaits the fresh fetch instead of returning
+ * a stale pre-login token. This closes the race window where:
+ *   1. User logs in → Passport regenerates session → old CSRF secret gone
+ *   2. onSuccess fires initCSRF() (non-blocking)
+ *   3. User clicks "Add Member" before fetch completes
+ *   4. getCSRFToken() returns stale token → EBADCSRFTOKEN
  */
 export async function initCSRF(): Promise<void> {
-  try {
-    const response = await fetch('/api/csrf-token', {
-      credentials: 'include'
-    });
+  // Clear immediately so concurrent getCSRFToken() callers will await this fetch
+  csrfToken = null;
 
-    if (!response.ok) {
-      throw new Error(`Failed to fetch CSRF token: ${response.status}`);
-    }
-
-    const data = await response.json();
-    csrfToken = data.csrfToken;
-  } catch (error) {
-    console.error('[CSRF] Failed to fetch CSRF token:', error);
-    throw error; // Re-throw so app knows initialization failed
+  // Serialize: if a fetch is already in-flight, piggyback on it
+  if (csrfInitPromise) {
+    return csrfInitPromise;
   }
+
+  csrfInitPromise = (async () => {
+    try {
+      const response = await fetch('/api/csrf-token', {
+        credentials: 'include'
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch CSRF token: ${response.status}`);
+      }
+
+      const data = await response.json();
+      csrfToken = data.csrfToken;
+    } catch (error) {
+      console.error('[CSRF] Failed to fetch CSRF token:', error);
+      throw error;
+    } finally {
+      csrfInitPromise = null;
+    }
+  })();
+
+  return csrfInitPromise;
 }
 
 /**
- * Refresh CSRF token (called automatically on CSRF errors)
+ * Refresh CSRF token (called automatically on CSRF errors).
+ * Clears the old token and fetches fresh — same as initCSRF() now
+ * that initCSRF() always clears first.
  */
 async function refreshCSRF(): Promise<void> {
-  csrfToken = null; // Clear old token first
   await initCSRF();
 }
 
 /**
- * Get current CSRF token, initializing if needed
+ * Get current CSRF token, initializing if needed.
+ * If initCSRF() is in-flight (e.g., from post-login refresh),
+ * this awaits the same promise instead of starting a second fetch.
  */
 export async function getCSRFToken(): Promise<string> {
   if (!csrfToken) {

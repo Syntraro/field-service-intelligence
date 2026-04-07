@@ -495,11 +495,11 @@ export default function JobDetailPage() {
   const [billingExpanded, setBillingExpanded] = useState(true);
   // Notes count for display
   const [notesCount, setNotesCount] = useState(0);
-  // Notes card collapse/expand — expanded by default
-  const [notesExpanded, setNotesExpanded] = useState(false);
-  // Job Summary collapse/expand — collapsed by default (Phase: layout refactor)
-  const [jobSummaryExpanded, setJobSummaryExpanded] = useState(true);
-  // Labour Summary collapse/expand — collapsed by default (Phase: layout refactor)
+  // Notes card collapse/expand — open by default (2026-04-05: dispatcher needs notes visible immediately)
+  const [notesExpanded, setNotesExpanded] = useState(true);
+  // Job Summary collapse/expand — minimized by default (2026-04-05: profit line visible when collapsed)
+  const [jobSummaryExpanded, setJobSummaryExpanded] = useState(false);
+  // Labour Summary collapse/expand — open by default (2026-04-05: dispatcher needs labour visible immediately)
   const [labourSummaryExpanded, setLabourSummaryExpanded] = useState(true);
   // Rail-level "Add Note" dialog (single source — Notes card's internal button is hidden)
   const [showAddNoteDialog, setShowAddNoteDialog] = useState(false);
@@ -857,6 +857,12 @@ export default function JobDetailPage() {
                     >
                       {getJobStatusDisplay(job).label}
                     </StatusPill>
+                    {/* Hold reason badge — surfaces WHY the job is on hold (e.g. "Waiting for Parts") */}
+                    {job.openSubStatus === "on_hold" && job.holdReason && (
+                      <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-orange-300 text-orange-700 bg-orange-50" data-testid="hold-reason-badge">
+                        {getHoldReasonLabel(job.holdReason)}
+                      </Badge>
+                    )}
                   </div>
                   {/* Company / address / invoice — visual separation from title */}
                   <div className="mt-2 flex items-center gap-2 text-sm text-slate-500">
@@ -1334,7 +1340,7 @@ export default function JobDetailPage() {
             ════════════════════════════════════════════════════════════════ */}
         <aside className="space-y-3 min-h-0 overflow-y-auto h-full">
 
-          {/* 1. JOB SUMMARY — collapsible, collapsed by default, profit visible when collapsed */}
+          {/* 1. JOB SUMMARY — collapsible, minimized by default, profit visible when collapsed */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden" data-testid="section-job-summary">
             <Collapsible open={jobSummaryExpanded} onOpenChange={setJobSummaryExpanded}>
               <CollapsibleTrigger asChild>
@@ -1415,7 +1421,7 @@ export default function JobDetailPage() {
             </Collapsible>
           </div>
 
-          {/* 2. LABOUR SUMMARY — collapsible, collapsed by default */}
+          {/* 2. LABOUR SUMMARY — collapsible, open by default */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden" data-testid="section-labour">
             <Collapsible open={labourSummaryExpanded} onOpenChange={setLabourSummaryExpanded}>
               <CollapsibleTrigger asChild>

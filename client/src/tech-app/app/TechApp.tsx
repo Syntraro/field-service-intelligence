@@ -14,6 +14,8 @@ import { useAuth } from "@/lib/auth";
 import { LoginPage } from "../pages/LoginPage";
 import { TodayPage } from "../pages/TodayPage";
 import { VisitDetailPage } from "../pages/VisitDetailPage";
+import { CreateJobPage } from "../pages/CreateJobPage";
+import { CreateClientPage } from "../pages/CreateClientPage";
 import TimesheetPage from "../pages/TimesheetPage";
 import { useTechRealtimeSync } from "../hooks/useTechRealtimeSync";
 
@@ -76,6 +78,14 @@ export default function TechApp() {
 
       <Route path="/tech/timesheet">
         <TimesheetPage />
+      </Route>
+
+      <Route path="/tech/create-job">
+        <CreateJobPage />
+      </Route>
+
+      <Route path="/tech/create-client">
+        <CreateClientPage />
       </Route>
 
       <Route path="/tech/visit/:id">

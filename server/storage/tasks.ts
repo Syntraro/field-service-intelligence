@@ -2,6 +2,7 @@ import { db } from "../db";
 import { and, eq, isNull, gte, lte, desc } from "drizzle-orm";
 import { tasks, supplierVisitDetails, suppliers, supplierLocations } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset } from "./base";
+import { sanitizeSchedulingTimestamps } from "../utils/allDaySanitizer";
 
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 50;
@@ -132,6 +133,9 @@ export class TaskRepository extends BaseRepository {
 
     // Phase 2: Quote assessment link
     if (input.quoteId !== undefined) values.quoteId = input.quoteId;
+
+    // UTC-safe scheduling fix: replace Date objects with SQL expressions
+    sanitizeSchedulingTimestamps(values, "new-task");
 
     const [task] = await db.insert(tasks).values(values).returning();
 
@@ -441,6 +445,9 @@ export class TaskRepository extends BaseRepository {
         }
       }
     }
+
+    // UTC-safe scheduling fix: replace Date objects with SQL expressions
+    sanitizeSchedulingTimestamps(updates, taskId);
 
     const [updated] = await db
       .update(tasks)

@@ -72,8 +72,8 @@ import telemetryRouter from "./telemetry";
 import dispatchStreamRouter from "./dispatch-stream";
 // Phase 5: Visit intelligence signals
 import intelligenceRouter from "./intelligence";
-// Equipment catalog item associations (reference-only)
-import equipmentCatalogItemsRouter from "./equipmentCatalogItems.routes";
+// Equipment: catalog items, timeline, notes history, parts history
+import equipmentRouter from "./equipment.routes";
 // Client CSV import (v1)
 import clientImportRouter from "./clientImport";
 // Job CSV import (Jobber historical jobs)
@@ -199,7 +199,7 @@ export function registerRoutes(app: Express): Server {
   console.log("[ROUTES] ✓ Mounted /api/team (canonical team router)");
   app.use("/api/calendar", calendarRouter);
   app.use("/api/clients", clientsRouter);
-  app.use("/api/equipment", equipmentCatalogItemsRouter);
+  app.use("/api/equipment", equipmentRouter);
   app.use("/api/technicians", techniciansRouter);
   app.use("/api/job-templates", jobTemplatesRouter);
   app.use("/api/invitations", invitationsRouter);

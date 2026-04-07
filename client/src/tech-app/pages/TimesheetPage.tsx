@@ -97,7 +97,7 @@ function DaySelector({
             {selectedDate.toLocaleDateString([], { month: "long", year: "numeric" })}
           </span>
           {showTodayButton && (
-            <button onClick={onToday} className="text-[11px] font-medium text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full active:bg-emerald-100">
+            <button onClick={onToday} className="text-sm font-medium text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full active:bg-emerald-100">
               Today
             </button>
           )}
@@ -115,7 +115,7 @@ function DaySelector({
               className={`flex flex-col items-center py-1 rounded-lg transition-colors ${
                 selected ? "bg-emerald-600 text-white shadow-sm" : "text-slate-600 active:bg-slate-100"
               }`}>
-              <span className={`text-[10px] font-medium ${selected ? "text-emerald-100" : "text-slate-400"}`}>{weekdayShort(d)}</span>
+              <span className={`text-xs font-medium ${selected ? "text-emerald-100" : "text-slate-400"}`}>{weekdayShort(d)}</span>
               <span className={`text-sm font-bold leading-tight ${selected ? "text-white" : ""}`}>{dayNum(d)}</span>
               {todayMark && !selected && <div className="w-1 h-1 rounded-full bg-emerald-500 mt-0.5" />}
             </button>
@@ -175,14 +175,14 @@ function TimeEntryCard({ entry, onTap }: { entry: TimesheetEntry; onTap: (id: st
       className="w-full text-left bg-white rounded-xl border border-slate-200 shadow-sm p-2.5 active:bg-slate-50 transition-colors">
       <div className="flex items-center justify-between mb-0.5">
         <div className="flex items-center gap-1.5">
-          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${ENTRY_TYPE_COLORS[entry.type] || DEFAULT_ENTRY_TYPE_COLOR}`}>
+          <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${ENTRY_TYPE_COLORS[entry.type] || DEFAULT_ENTRY_TYPE_COLOR}`}>
             {ENTRY_TYPE_LABELS[entry.type] || entry.type}
           </span>
           {isRunning && (
-            <span className="text-[10px] font-medium text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-full">Active</span>
+            <span className="text-xs font-medium text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-full">Active</span>
           )}
           {isLocked && !isRunning && (
-            <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-full">Locked</span>
+            <span className="text-xs font-medium text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded-full">Locked</span>
           )}
         </div>
         <span className={`text-sm font-semibold ${isRunning ? "text-emerald-600" : "text-slate-700"}`}>{duration}</span>
@@ -279,7 +279,7 @@ function EntryEditSheet({
               <div className="text-sm text-slate-800 bg-slate-100 rounded-lg px-3 py-2">
                 #{entry.jobNumber}{entry.jobSummary ? ` — ${entry.jobSummary}` : ""}
               </div>
-              <p className="text-[11px] text-slate-400 mt-1">Job can only be changed from the job itself</p>
+              <p className="text-sm text-slate-400 mt-1">Job can only be changed from the job itself</p>
             </div>
           )}
 
@@ -289,7 +289,7 @@ function EntryEditSheet({
             <input type="time" value={startInput} onChange={(e) => setStartInput(e.target.value)}
               disabled={!access.fields.startTime || isSaving}
               className={`w-full text-sm border rounded-lg px-3 py-2 disabled:bg-slate-100 disabled:text-slate-500 ${validation?.errors.startTime ? "border-red-300" : "border-slate-200"}`} />
-            {validation?.errors.startTime && <p className="text-[11px] text-red-500 mt-0.5">{validation.errors.startTime}</p>}
+            {validation?.errors.startTime && <p className="text-sm text-red-500 mt-0.5">{validation.errors.startTime}</p>}
           </div>
 
           {/* End time */}
@@ -298,7 +298,7 @@ function EntryEditSheet({
             <input type="time" value={endInput} onChange={(e) => setEndInput(e.target.value)}
               disabled={!access.fields.endTime || isSaving}
               className={`w-full text-sm border rounded-lg px-3 py-2 disabled:bg-slate-100 disabled:text-slate-500 ${validation?.errors.endTime ? "border-red-300" : "border-slate-200"}`} />
-            {validation?.errors.endTime && <p className="text-[11px] text-red-500 mt-0.5">{validation.errors.endTime}</p>}
+            {validation?.errors.endTime && <p className="text-sm text-red-500 mt-0.5">{validation.errors.endTime}</p>}
           </div>
 
           {/* Duration (derived) */}

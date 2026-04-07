@@ -22,7 +22,7 @@ import {
 import type { InsertJob, Job, InsertJobPart, JobPart, InsertJobStatusEvent, JobStatusEvent } from "@shared/schema";
 import { BaseRepository } from "./base";
 import { locationDisplayNameExpr } from "../lib/queryHelpers";
-import { sanitizeAllDayTimestamps } from "../utils/allDaySanitizer";
+import { sanitizeAllDayTimestamps, sanitizeSchedulingTimestamps } from "../utils/allDaySanitizer";
 import { IS_DEV } from "../utils/devFlags";
 import { resolveTechnicianName } from "../lib/resolveTechnicianName";
 import { encodeCursor, decodeCursor } from "../utils/cursor";
@@ -223,10 +223,13 @@ export class JobRepository extends BaseRepository {
   ): Promise<any> {
     this.assertCompanyId(companyId);
     const conn = txHandle ?? db;
+    // UTC-safe scheduling fix: sanitize any scheduling timestamps in imported job data
+    const sanitizedData = { ...jobData } as any;
+    sanitizeSchedulingTimestamps(sanitizedData, `import-${jobNumber}`);
     const [createdJob] = await conn
       .insert(jobs)
       .values({
-        ...jobData,
+        ...sanitizedData,
         companyId,
         jobNumber,
         status: "archived",
@@ -593,7 +596,8 @@ export class JobRepository extends BaseRepository {
         (normalizedData as any).assignedTechnicianIds ??
         (assignedTechnicianId ? [assignedTechnicianId] : null);
 
-      await tx.insert(jobVisits).values({
+      // UTC-safe scheduling fix: sanitize visit timestamps before direct insert
+      const visitValues: any = {
         companyId,
         jobId: createdJob.id,
         scheduledDate: visitStart,          // legacy required field
@@ -605,7 +609,10 @@ export class JobRepository extends BaseRepository {
         assignedTechnicianIds,
         status: "scheduled",
         visitNumber: 1,
-      });
+      };
+      sanitizeSchedulingTimestamps(visitValues, createdJob.id);
+
+      await tx.insert(jobVisits).values(visitValues);
 
       if (IS_DEV) {
         console.log(
@@ -946,10 +953,10 @@ export class JobRepository extends BaseRepository {
     // POST-INVOICE GUARD: Check if job is invoiced
     await this.assertJobNotInvoiced(companyId, existingPart.jobId, options);
 
-    // Direct tenant isolation via companyId column
+    // Canonical soft-delete via deletedAt (read queries filter on deletedAt IS NULL)
     const rows = await db
       .update(jobParts)
-      .set({ isActive: false, updatedAt: new Date() })
+      .set({ isActive: false, deletedAt: new Date(), updatedAt: new Date() })
       .where(and(
         eq(jobParts.companyId, companyId), // Tenant isolation
         eq(jobParts.id, partId)
@@ -1123,7 +1130,8 @@ export class JobRepository extends BaseRepository {
       .innerJoin(locationEquipment, eq(jobEquipment.equipmentId, locationEquipment.id))
       .where(and(
         eq(jobEquipment.companyId, companyId),
-        eq(jobEquipment.jobId, jobId)
+        eq(jobEquipment.jobId, jobId),
+        eq(locationEquipment.isActive, true),
       ));
 
     return rows;
@@ -1279,13 +1287,14 @@ export class JobRepository extends BaseRepository {
     this.assertCompanyId(companyId);
     this.validateUUID(equipmentId, "equipmentId");
 
-    // Direct tenant isolation via companyId column
+    // Active equipment only — prevents linking soft-deleted equipment to jobs
     const rows = await db
       .select()
       .from(locationEquipment)
       .where(and(
-        eq(locationEquipment.companyId, companyId), // Tenant isolation
-        eq(locationEquipment.id, equipmentId)
+        eq(locationEquipment.companyId, companyId),
+        eq(locationEquipment.id, equipmentId),
+        eq(locationEquipment.isActive, true),
       ))
       .limit(1);
 
@@ -1385,8 +1394,9 @@ export class JobRepository extends BaseRepository {
         ...additionalUpdates,
       };
 
-      // Normalize date fields if any
+      // Normalize date fields if any, then apply UTC-safe scheduling fix
       const normalizedPayload = this.normalizeDateFields(updatePayload);
+      sanitizeSchedulingTimestamps(normalizedPayload, jobId);
 
       const [updatedJob] = await tx
         .update(jobs)
@@ -1525,6 +1535,7 @@ export class JobRepository extends BaseRepository {
 
       // Step 4: Update job with patch (includes version increment)
       const normalizedPatch = this.normalizeDateFields(patch);
+      sanitizeSchedulingTimestamps(normalizedPatch, jobId);
 
       const [updatedJob] = await tx
         .update(jobs)

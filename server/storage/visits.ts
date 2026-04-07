@@ -58,7 +58,7 @@ function toEnrichedVisit(r: {
   jobId: string;
   jobNumber: number;
   jobSummary: string;
-  jobType: string;
+  jobType: string | null;
   jobDescription: string | null;
   jobPriority: string | null;
   locationId: string | null;

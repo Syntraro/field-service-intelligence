@@ -22,12 +22,13 @@ export async function createJobNote(
   companyId: string,
   jobId: string,
   userId: string,
-  noteText: string
+  noteText: string,
+  equipmentId?: string | null,
 ) {
   if (!companyId || !jobId || !userId) {
     throw new Error("companyId, jobId, and userId are required");
   }
-  return jobNotesRepository.createJobNote(companyId, jobId, userId, noteText);
+  return jobNotesRepository.createJobNote(companyId, jobId, userId, noteText, equipmentId);
 }
 
 /**

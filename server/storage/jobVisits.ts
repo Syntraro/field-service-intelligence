@@ -1,9 +1,9 @@
 import { db } from "../db";
 import { and, eq, desc, gte, lte, asc, sql, notInArray, isNull, isNotNull, or } from "drizzle-orm";
 import { activeJobFilter } from "./jobFilters";
-import { jobVisits, jobs, jobNotes, users, clientLocations, jobEquipment } from "@shared/schema";
+import { jobVisits, jobs, jobNotes, users, clientLocations, jobEquipment, locationEquipment, jobParts, items } from "@shared/schema";
 import { BaseRepository, clampLimit } from "./base";
-import { sanitizeAllDayTimestamps } from "../utils/allDaySanitizer";
+import { sanitizeAllDayTimestamps, sanitizeSchedulingTimestamps, parseTimestampAsUTC } from "../utils/allDaySanitizer";
 import {
   activeVisitGuard,
   scheduleEligibleVisitFilter,
@@ -19,9 +19,10 @@ export interface VisitJobInfo {
   id: string;
   jobNumber: number;
   summary: string;
-  jobType: string;
+  jobType: string | null;
   description: string | null;
   priority: string | null;
+  accessInstructions?: string | null;
 }
 
 /** Location metadata attached to an enriched visit. */
@@ -231,7 +232,7 @@ export class JobVisitsRepository extends BaseRepository {
     companyId: string,
     userId: string,
     visitId: string
-  ): Promise<{ visit: any; job: VisitJobInfo | null; location: VisitLocationInfo | null; notes: any[] } | null> {
+  ): Promise<{ visit: any; job: VisitJobInfo | null; location: VisitLocationInfo | null; equipment: any[]; notes: any[]; parts: any[] } | null> {
     this.assertCompanyId(companyId);
     this.validateUUID(visitId, "visitId");
 
@@ -256,6 +257,7 @@ export class JobVisitsRepository extends BaseRepository {
     if (!isAssigned) return null;
 
     // Fetch job
+    // Phase 2 fix: include accessInstructions for tech field display
     const [job] = await db
       .select({
         id: jobs.id,
@@ -264,6 +266,8 @@ export class JobVisitsRepository extends BaseRepository {
         jobType: jobs.jobType,
         description: jobs.description,
         priority: jobs.priority,
+        accessInstructions: jobs.accessInstructions,
+        version: jobs.version,
       })
       .from(jobs)
       .where(and(eq(jobs.id, visit.jobId), eq(jobs.companyId, companyId), activeJobFilter()));
@@ -288,12 +292,36 @@ export class JobVisitsRepository extends BaseRepository {
       location = loc ?? null;
     }
 
-    // Fetch job notes
+    // Fetch hydrated equipment for this job (via job_equipment → location_equipment)
+    const equipment = await db
+      .select({
+        jobEquipmentId: jobEquipment.id,
+        id: locationEquipment.id,
+        name: locationEquipment.name,
+        equipmentType: locationEquipment.equipmentType,
+        manufacturer: locationEquipment.manufacturer,
+        modelNumber: locationEquipment.modelNumber,
+        serialNumber: locationEquipment.serialNumber,
+        tagNumber: locationEquipment.tagNumber,
+        locationId: locationEquipment.locationId,
+      })
+      .from(jobEquipment)
+      .innerJoin(locationEquipment, eq(jobEquipment.equipmentId, locationEquipment.id))
+      .where(
+        and(
+          eq(jobEquipment.companyId, companyId),
+          eq(jobEquipment.jobId, visit.jobId),
+          eq(locationEquipment.isActive, true),
+        )
+      );
+
+    // Fetch job notes (includes optional equipmentId for equipment-linked notes)
     const notes = await db
       .select({
         id: jobNotes.id,
         noteText: jobNotes.noteText,
         imageUrl: jobNotes.imageUrl,
+        equipmentId: jobNotes.equipmentId,
         createdAt: jobNotes.createdAt,
         userId: jobNotes.userId,
         userName: users.fullName,
@@ -304,11 +332,28 @@ export class JobVisitsRepository extends BaseRepository {
       .where(and(eq(jobNotes.companyId, companyId), eq(jobNotes.jobId, visit.jobId)))
       .orderBy(desc(jobNotes.createdAt));
 
+    // Fetch job parts (canonical billing line items for this job)
+    const parts = await db
+      .select({
+        id: jobParts.id,
+        description: jobParts.description,
+        quantity: jobParts.quantity,
+        unitPrice: jobParts.unitPrice,
+        equipmentId: jobParts.equipmentId,
+        productId: jobParts.productId,
+        createdAt: jobParts.createdAt,
+      })
+      .from(jobParts)
+      .where(and(eq(jobParts.companyId, companyId), eq(jobParts.jobId, visit.jobId), isNull(jobParts.deletedAt)))
+      .orderBy(desc(jobParts.createdAt));
+
     return {
       visit,
       job: job ?? null,
       location,
+      equipment,
       notes,
+      parts,
     };
   }
 
@@ -383,17 +428,13 @@ export class JobVisitsRepository extends BaseRepository {
       .orderBy(asc(jobVisits.scheduledStart));
 
     if (!visitRows.length) {
-      // UNSCHEDULE BRANCH: No eligible visits exist (all cancelled/completed or none created).
-      const [currentJob] = await queryDb
-        .select({ status: jobs.status, openSubStatus: jobs.openSubStatus })
-        .from(jobs)
-        .where(and(eq(jobs.id, jobId), eq(jobs.companyId, companyId)));
-
-      if (currentJob) {
-        if (currentJob.status !== "open") return;
-        if (currentJob.openSubStatus === "on_hold") return;
-      }
-
+      // UNSCHEDULE BRANCH: No schedule-eligible visits exist.
+      // Clear the job's scheduling mirror unconditionally so the job returns
+      // to the unscheduled backlog. Previous guards (status !== "open",
+      // openSubStatus === "on_hold") created an orphan state where the visit
+      // was unscheduled but the job-level scheduledStart remained set, making
+      // the visit invisible on both the scheduled board and unscheduled panel.
+      // The job-level schedule must always reflect the actual visit state.
       await queryDb
         .update(jobs)
         .set({
@@ -414,7 +455,7 @@ export class JobVisitsRepository extends BaseRepository {
     const now = new Date();
 
     const nextFuture = visitRows.find(v => {
-      const s = v.scheduledStart ? new Date(v.scheduledStart as any) : null;
+      const s = parseTimestampAsUTC(v.scheduledStart as Date | string | null);
       return !!s && s.getTime() >= now.getTime();
     });
 
@@ -423,20 +464,21 @@ export class JobVisitsRepository extends BaseRepository {
     if (!chosen) {
       const past = visitRows
         .filter(v => {
-          const s = v.scheduledStart ? new Date(v.scheduledStart as any) : null;
+          const s = parseTimestampAsUTC(v.scheduledStart as Date | string | null);
           return !!s && s.getTime() < now.getTime();
         })
         .sort((a, b) => {
-          const sa = new Date(a.scheduledStart as any).getTime();
-          const sb = new Date(b.scheduledStart as any).getTime();
+          const sa = parseTimestampAsUTC(a.scheduledStart as Date | string | null)!.getTime();
+          const sb = parseTimestampAsUTC(b.scheduledStart as Date | string | null)!.getTime();
           return sb - sa; // latest first
         });
 
       chosen = past[0] ?? visitRows[0];
     }
 
-    const scheduledStart = chosen.scheduledStart ? new Date(chosen.scheduledStart as any) : null;
-    const scheduledEnd = chosen.scheduledEnd ? new Date(chosen.scheduledEnd as any) : null;
+    // UTC-safe read: parse timestamp-without-timezone from Drizzle as UTC
+    const scheduledStart = parseTimestampAsUTC(chosen.scheduledStart as Date | string | null);
+    const scheduledEnd = parseTimestampAsUTC(chosen.scheduledEnd as Date | string | null);
     const isAllDay = Boolean(chosen.isAllDay);
 
     // durationMinutes mirror:
@@ -463,9 +505,11 @@ export class JobVisitsRepository extends BaseRepository {
       version: sql`${jobs.version} + 1`,
     };
 
-    // Sanitize all-day timestamps: replaces Date objects with UTC-safe SQL expressions
-    // to prevent node-pg timezone serialization from violating jobs_all_day_*_check constraints
-    sanitizeAllDayTimestamps(jobUpdate, jobId);
+    // UTC-safe scheduling fix: replaces Date objects with UTC-safe SQL expressions
+    // for both timed and all-day timestamps. Prevents node-pg timezone-sensitive
+    // serialization from producing shifted values (timed) or violating CHECK
+    // constraints (all-day).
+    sanitizeSchedulingTimestamps(jobUpdate, jobId);
 
     await queryDb
       .update(jobs)
@@ -554,23 +598,29 @@ export class JobVisitsRepository extends BaseRepository {
       }
     }
 
+    // UTC-safe scheduling fix: replace Date objects with SQL expressions that
+    // bypass node-pg's timezone-sensitive serialization. Covers both timed and
+    // all-day events in one pass.
+    const visitValues: any = {
+      companyId,
+      jobId,
+      scheduledDate,
+      scheduledStart,
+      scheduledEnd,
+      isAllDay,
+      estimatedDurationMinutes,
+      assignedTechnicianId: input.assignedTechnicianId ?? null,
+      assignedTechnicianIds,
+      status: input.status ?? "scheduled",
+      visitNumber,
+      visitNotes: input.visitNotes ?? null,
+      equipmentIds,
+    };
+    sanitizeSchedulingTimestamps(visitValues, jobId);
+
     const [visit] = await db
       .insert(jobVisits)
-      .values({
-        companyId,
-        jobId,
-        scheduledDate,
-        scheduledStart,
-        scheduledEnd,
-        isAllDay,
-        estimatedDurationMinutes,
-        assignedTechnicianId: input.assignedTechnicianId ?? null,
-        assignedTechnicianIds,
-        status: input.status ?? "scheduled",
-        visitNumber,
-        visitNotes: input.visitNotes ?? null,
-        equipmentIds,
-      })
+      .values(visitValues)
       .returning();
 
     // Step 2.4: Sync job schedule from visits after create
@@ -655,7 +705,9 @@ export class JobVisitsRepository extends BaseRepository {
     if ("isAllDay" in input) updates.isAllDay = input.isAllDay;
     if ("visitNumber" in input) updates.visitNumber = input.visitNumber;
     if ("assignedTechnicianIds" in input) updates.assignedTechnicianIds = input.assignedTechnicianIds;
-    if ("equipmentIds" in input) updates.equipmentIds = input.equipmentIds;
+    // equipmentIds intentionally NOT written here. Equipment mutations go through
+    // canonical job_equipment service (jobRepository.createJobEquipment / deleteJobEquipment).
+    // job_visits.equipmentIds is a read-only snapshot set at visit creation only.
 
     // 4) Compute scheduledEnd when we have a start but no explicit end yet
     // Skip if scheduledStart was explicitly cleared (unschedule path already handled above)
@@ -674,6 +726,9 @@ export class JobVisitsRepository extends BaseRepository {
         updates.scheduledEnd = new Date(startMs + Number(duration) * 60_000);
       }
     }
+
+    // UTC-safe scheduling fix: replace Date objects with SQL expressions
+    sanitizeSchedulingTimestamps(updates, visitId);
 
     const [updated] = await db
       .update(jobVisits)

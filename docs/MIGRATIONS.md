@@ -66,6 +66,19 @@ psql "$DATABASE_URL" -f migrations/2026_04_01_add_job_priority.sql
 After manual application, the file won't be in `schema_migrations` yet.
 Run `npm run db:migrate` to mark all existing files as applied.
 
+## Pre-Test Checklist (Schema Features)
+
+Before testing any feature that involves a schema change:
+
+1. **Apply migration** — `npm run db:migrate` (or `db:migrate:one` for a specific file)
+2. **Restart server** — kill the running process and `npm run dev` fresh (`tsx` does not hot-reload schema changes)
+3. **Verify columns exist** — `npm run db:check` or check server startup for `[Schema Guard] All required columns verified`
+4. **Then test UI** — only after steps 1–3 confirm the database and server are in sync
+
+> Skipping this sequence is the #1 cause of phantom "Failed to load" errors after schema work.
+> The Drizzle schema compiles fine (`tsc`), but if the column doesn't exist in the live database,
+> every query that selects it returns a PostgreSQL 500 at runtime.
+
 ## How to Verify
 
 1. **Schema drift check:** `npm run db:check` — compares live DB to Drizzle schema

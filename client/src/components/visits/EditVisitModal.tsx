@@ -310,27 +310,29 @@ export function EditVisitModal({
     const wasUnscheduled = !visit?.scheduledStart;
     const techId = schedule.assignedTechnicianIds[0] || null;
 
-    // Equipment selection is always included in payload
-    const equipmentPayload = { equipmentIds: selectedEquipmentIds };
+    // visitNotes saved via the direct PATCH endpoint. Equipment mutations go through
+    // canonical job_equipment routes (POST/DELETE /api/jobs/:jobId/equipment), NOT
+    // through the visit PATCH. job_equipment is the single source of truth.
+    const visitPayload = { visitNotes: visitNotes || null };
 
     if (startAt && endAt) {
       if (wasUnscheduled && onDispatchSchedule && techId) {
         // Save equipment via separate PATCH since dispatch callbacks don't include it
-        editMutation.mutate(equipmentPayload);
+        editMutation.mutate(visitPayload);
         onDispatchSchedule({ jobId, visitId, technicianUserId: techId, startAt, endAt, visitNotes: visitNotes || null });
         if (onDispatchUpdateCrew && schedule.assignedTechnicianIds.length > 1) onDispatchUpdateCrew({ visitId, technicianUserIds: schedule.assignedTechnicianIds });
         if (!pendingConflictRef.current) onOpenChange(false); else { pendingConflictRef.current = false; setShowConflictAlert(true); }
         return;
       }
       if (!wasUnscheduled && onDispatchReschedule) {
-        editMutation.mutate(equipmentPayload);
+        editMutation.mutate(visitPayload);
         onDispatchReschedule({ visitId, jobId, technicianUserId: techId, startAt, endAt, visitNotes: visitNotes || null });
         if (onDispatchUpdateCrew && schedule.assignedTechnicianIds.length > 1) onDispatchUpdateCrew({ visitId, technicianUserIds: schedule.assignedTechnicianIds });
         if (!pendingConflictRef.current) onOpenChange(false); else { pendingConflictRef.current = false; setShowConflictAlert(true); }
         return;
       }
     }
-    const payload: Record<string, unknown> = { ...equipmentPayload };
+    const payload: Record<string, unknown> = { ...visitPayload };
     if (!isScheduled) { payload.scheduledStart = null; payload.scheduledEnd = null; payload.isAllDay = false; payload.estimatedDurationMinutes = null; }
     else if (startAt && endAt) { payload.scheduledStart = startAt; payload.scheduledEnd = endAt; payload.isAllDay = false; payload.estimatedDurationMinutes = timeDiffMinutes(schedule.startTime, schedule.endTime || addMinutesToTime(schedule.startTime, 60)); }
     payload.assignedTechnicianId = techId;

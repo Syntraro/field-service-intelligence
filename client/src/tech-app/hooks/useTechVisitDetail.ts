@@ -21,11 +21,36 @@ import { UNKNOWN_LOCATION, NO_ADDRESS } from "../utils/visitDisplay";
 
 // ── Backend response shapes ──
 
+export interface BackendEquipment {
+  jobEquipmentId: string;
+  id: string;
+  name: string;
+  equipmentType: string | null;
+  manufacturer: string | null;
+  modelNumber: string | null;
+  serialNumber: string | null;
+  tagNumber: string | null;
+  locationId: string;
+}
+
+export interface BackendPart {
+  id: string;
+  description: string;
+  quantity: string;
+  unitPrice: string | null;
+  equipmentId: string | null;
+  productId: string | null;
+  createdAt: string;
+}
+
 export interface VisitDetailResponse {
   visit: BackendVisit;
   job: BackendJob | null;
   location: BackendLocation | null;
+  equipment: BackendEquipment[];
   notes: BackendNote[];
+  parts: BackendPart[];
+  activeTimeEntry: { id: string; type: string; startAt: string } | null;
 }
 
 interface BackendVisit {
@@ -64,6 +89,8 @@ interface BackendJob {
   jobType: string;
   description: string | null;
   priority: string | null;
+  accessInstructions: string | null;
+  version: number;
 }
 
 interface BackendLocation {
@@ -81,6 +108,7 @@ export interface BackendNote {
   id: string;
   noteText: string;
   imageUrl: string | null;
+  equipmentId: string | null;
   createdAt: string;
   userId: string;
   userName: string | null;
@@ -89,22 +117,43 @@ export interface BackendNote {
 
 // ── UI visit type (what VisitDetailPage renders) ──
 
+export interface DetailEquipment {
+  jobEquipmentId: string;
+  id: string;
+  name: string;
+  type: string | null;
+  manufacturer: string | null;
+  model: string | null;
+  serial: string | null;
+  tag: string | null;
+}
+
 export interface DetailVisit {
   id: string;
   jobId: string;
   status: string;
   jobTitle: string;
   jobDescription: string | null;
+  accessInstructions: string | null;
+  /** Visit-level instructions from dispatch/office (job_visits.visit_notes) */
+  visitNotes: string | null;
   company: string;
   address: string;
   scheduledTime: string;
   scheduledEnd: string;
-  checkedInAt: string | null;
+  /** Canonical timer start from running time_entry (SSoT for timer display) */
+  timerStartedAt: string | null;
   outcome: string | null;
   outcomeNote: string | null;
-  equipmentIds: string[] | null;
+  /** Hydrated equipment objects from Phase 2 endpoint */
+  equipment: DetailEquipment[];
   visitNumber: number | null;
+  /** Raw visit version for optimistic locking on PATCH */
+  visitVersion: number;
+  /** Raw job version for optimistic locking on PATCH */
+  jobVersion: number | null;
   notes: DetailNote[];
+  parts: DetailPart[];
 }
 
 export interface DetailNote {
@@ -112,6 +161,16 @@ export interface DetailNote {
   text: string;
   timestamp: string;
   author: string;
+  equipmentId: string | null;
+}
+
+export interface DetailPart {
+  id: string;
+  description: string;
+  quantity: string;
+  unitPrice: string | null;
+  equipmentId: string | null;
+  createdAt: string;
 }
 
 // ── Adapter ──
@@ -125,20 +184,42 @@ function toDetailVisit(data: VisitDetailResponse): DetailVisit {
     status: data.visit.status,
     jobTitle: data.job?.summary || `Job #${data.job?.jobNumber ?? "?"}`,
     jobDescription: data.job?.description ?? null,
+    accessInstructions: data.job?.accessInstructions ?? null,
+    visitNotes: data.visit.visitNotes ?? null,
     company: loc?.companyName || UNKNOWN_LOCATION,
     address: locationParts.length > 0 ? locationParts.join(", ") : NO_ADDRESS,
     scheduledTime: formatClockTime(data.visit.scheduledStart),
     scheduledEnd: formatClockTime(data.visit.scheduledEnd),
-    checkedInAt: data.visit.checkedInAt,
+    timerStartedAt: data.activeTimeEntry?.startAt ?? null,
     outcome: data.visit.outcome,
     outcomeNote: data.visit.outcomeNote,
-    equipmentIds: data.visit.equipmentIds,
+    equipment: (data.equipment ?? []).map(e => ({
+      jobEquipmentId: e.jobEquipmentId,
+      id: e.id,
+      name: e.name,
+      type: e.equipmentType,
+      manufacturer: e.manufacturer,
+      model: e.modelNumber,
+      serial: e.serialNumber,
+      tag: e.tagNumber,
+    })),
     visitNumber: data.visit.visitNumber,
-    notes: data.notes.map(n => ({
+    visitVersion: data.visit.version,
+    jobVersion: data.job?.version ?? null,
+    notes: (data.notes ?? []).map(n => ({
       id: n.id,
       text: n.noteText,
       timestamp: n.createdAt,
       author: n.userFirstName || n.userName || "Technician",
+      equipmentId: n.equipmentId ?? null,
+    })),
+    parts: (data.parts ?? []).map(p => ({
+      id: p.id,
+      description: p.description,
+      quantity: p.quantity,
+      unitPrice: p.unitPrice,
+      equipmentId: p.equipmentId,
+      createdAt: p.createdAt,
     })),
   };
 }
@@ -167,13 +248,30 @@ export function useTechVisitDetail(visitId: string | undefined) {
     queryClient.invalidateQueries({ queryKey: ["/api/tech/time/day"] });
   };
 
+  /**
+   * Apply backend-returned visit state to query cache immediately.
+   * Prevents stale timer/status display between mutation response and refetch.
+   * Merges returned visit fields + activeTimeEntry into existing cached data.
+   */
+  const applyVisitUpdate = (returned: any) => {
+    queryClient.setQueryData<VisitDetailResponse>(queryKey, (old) => {
+      if (!old) return old;
+      return {
+        ...old,
+        visit: { ...old.visit, ...returned },
+        activeTimeEntry: returned.activeTimeEntry ?? null,
+      };
+    });
+    invalidateAfterAction();
+  };
+
   // Action: Start Travel (scheduled → en_route)
   const startTravelMutation = useMutation({
     mutationFn: () => apiRequest(`/api/tech/visits/${visitId}/en-route`, {
       method: "POST",
       body: JSON.stringify({}),
     }),
-    onSuccess: invalidateAfterAction,
+    onSuccess: applyVisitUpdate,
   });
 
   // Action: Start Job / Check In (en_route → in_progress)
@@ -182,7 +280,7 @@ export function useTechVisitDetail(visitId: string | undefined) {
       method: "POST",
       body: JSON.stringify({}),
     }),
-    onSuccess: invalidateAfterAction,
+    onSuccess: applyVisitUpdate,
   });
 
   // Action: Complete visit with outcome
@@ -192,15 +290,85 @@ export function useTechVisitDetail(visitId: string | undefined) {
         method: "POST",
         body: JSON.stringify(payload),
       }),
+    onSuccess: (returned) => {
+      // Complete returns { visit, outcome, activeTimeEntry: null }
+      queryClient.setQueryData<VisitDetailResponse>(queryKey, (old) => {
+        if (!old) return old;
+        return {
+          ...old,
+          visit: { ...old.visit, ...returned.visit },
+          activeTimeEntry: null,
+        };
+      });
+      invalidateAfterAction();
+    },
+  });
+
+  // Action: Add note to visit's job (with optional equipment linkage)
+  const addNoteMutation = useMutation({
+    mutationFn: (params: { text: string; equipmentId?: string | null }) =>
+      apiRequest(`/api/tech/visits/${visitId}/notes`, {
+        method: "POST",
+        body: JSON.stringify({ text: params.text, equipmentId: params.equipmentId ?? null }),
+      }),
     onSuccess: invalidateAfterAction,
   });
 
-  // Action: Add note to visit's job
-  const addNoteMutation = useMutation({
-    mutationFn: (text: string) => apiRequest(`/api/tech/visits/${visitId}/notes`, {
-      method: "POST",
-      body: JSON.stringify({ text }),
-    }),
+  // Action: Add part to visit's job (with optional equipment linkage)
+  const addPartMutation = useMutation({
+    mutationFn: (params: { productId: string; quantity: string; equipmentId?: string | null }) =>
+      apiRequest(`/api/tech/visits/${visitId}/parts`, {
+        method: "POST",
+        body: JSON.stringify(params),
+      }),
+    onSuccess: invalidateAfterAction,
+  });
+
+  // Action: Delete part from job
+  const deletePartMutation = useMutation({
+    mutationFn: (partId: string) =>
+      apiRequest(`/api/tech/visits/${visitId}/parts/${partId}`, {
+        method: "DELETE",
+      }),
+    onSuccess: invalidateAfterAction,
+  });
+
+  // Action: Remove equipment from job
+  const removeEquipmentMutation = useMutation({
+    mutationFn: (jobEquipmentId: string) =>
+      apiRequest(`/api/tech/visits/${visitId}/equipment/${jobEquipmentId}`, {
+        method: "DELETE",
+      }),
+    onSuccess: invalidateAfterAction,
+  });
+
+  // Action: Add existing equipment to job
+  const addEquipmentMutation = useMutation({
+    mutationFn: (equipmentId: string) =>
+      apiRequest(`/api/tech/visits/${visitId}/equipment`, {
+        method: "POST",
+        body: JSON.stringify({ equipmentId }),
+      }),
+    onSuccess: invalidateAfterAction,
+  });
+
+  // Action: Update visit (version-only — visitNotes is office-owned post-create)
+  const updateVisitNotesMutation = useMutation({
+    mutationFn: (params: { version: number }) =>
+      apiRequest(`/api/tech/visits/${visitId}`, {
+        method: "PATCH",
+        body: JSON.stringify(params),
+      }),
+    onSuccess: invalidateAfterAction,
+  });
+
+  // Action: Update job fields (summary, priority — description/accessInstructions are office-owned)
+  const updateJobMutation = useMutation({
+    mutationFn: (params: { version: number; summary?: string; priority?: string }) =>
+      apiRequest(`/api/tech/jobs/${query.data?.visit?.jobId}`, {
+        method: "PATCH",
+        body: JSON.stringify(params),
+      }),
     onSuccess: invalidateAfterAction,
   });
 
@@ -215,5 +383,11 @@ export function useTechVisitDetail(visitId: string | undefined) {
     startJob: startJobMutation,
     complete: completeMutation,
     addNote: addNoteMutation,
+    addPart: addPartMutation,
+    deletePart: deletePartMutation,
+    removeEquipment: removeEquipmentMutation,
+    addEquipment: addEquipmentMutation,
+    updateVisitNotes: updateVisitNotesMutation,
+    updateJob: updateJobMutation,
   };
 }

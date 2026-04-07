@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { and, eq, desc, inArray } from "drizzle-orm";
-import { jobNotes, jobs, users, jobNoteAttachments, files } from "@shared/schema";
+import { jobNotes, jobs, users, jobNoteAttachments, files, jobEquipment } from "@shared/schema";
 import { BaseRepository, clampLimit } from "./base";
 import { resolveTechnicianName } from "../lib/resolveTechnicianName";
 import { activeJobFilter } from "./jobFilters";
@@ -33,6 +33,7 @@ export class JobNotesRepository extends BaseRepository {
       .select({
         id: jobNotes.id,
         jobId: jobNotes.jobId,
+        equipmentId: jobNotes.equipmentId,
         noteText: jobNotes.noteText,
         createdAt: jobNotes.createdAt,
         updatedAt: jobNotes.updatedAt,
@@ -87,13 +88,16 @@ export class JobNotesRepository extends BaseRepository {
   }
 
   /**
-   * Create a job note
+   * Create a job note with optional equipment linkage.
+   * If equipmentId is provided, it is validated against the job's equipment
+   * (via job_equipment junction) to prevent cross-job equipment linking.
    */
   async createJobNote(
     companyId: string,
     jobId: string,
     userId: string,
-    noteText: string
+    noteText: string,
+    equipmentId?: string | null,
   ) {
     this.assertCompanyId(companyId);
     this.validateUUID(jobId, "jobId");
@@ -109,6 +113,25 @@ export class JobNotesRepository extends BaseRepository {
       throw this.notFoundError("Job");
     }
 
+    // Validate equipmentId belongs to this job (via job_equipment junction)
+    if (equipmentId) {
+      this.validateUUID(equipmentId, "equipmentId");
+      const [linked] = await db
+        .select({ id: jobEquipment.id })
+        .from(jobEquipment)
+        .where(
+          and(
+            eq(jobEquipment.companyId, companyId),
+            eq(jobEquipment.jobId, jobId),
+            eq(jobEquipment.equipmentId, equipmentId),
+          )
+        )
+        .limit(1);
+      if (!linked) {
+        throw this.validationError("Equipment is not linked to this job");
+      }
+    }
+
     const [note] = await db
       .insert(jobNotes)
       .values({
@@ -116,6 +139,7 @@ export class JobNotesRepository extends BaseRepository {
         jobId,
         userId,
         noteText,
+        equipmentId: equipmentId ?? null,
       })
       .returning();
 
@@ -124,6 +148,7 @@ export class JobNotesRepository extends BaseRepository {
       .select({
         id: jobNotes.id,
         jobId: jobNotes.jobId,
+        equipmentId: jobNotes.equipmentId,
         noteText: jobNotes.noteText,
         createdAt: jobNotes.createdAt,
         updatedAt: jobNotes.updatedAt,

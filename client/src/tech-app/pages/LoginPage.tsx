@@ -102,7 +102,7 @@ export function LoginPage({ onLogin, error, isLoading }: LoginPageProps) {
           </button>
         </div>
 
-        <p className="text-[11px] text-center text-slate-400 mt-8">Syntraro Field Service Platform</p>
+        <p className="text-sm text-center text-slate-400 mt-8">Syntraro Field Service Platform</p>
       </div>
     </div>
   );

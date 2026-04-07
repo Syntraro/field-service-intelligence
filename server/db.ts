@@ -99,9 +99,17 @@ pool.on('error', (err, client) => {
 });
 
 pool.on('connect', (client) => {
+  // UTC-safe scheduling fix: Pin every connection's session timezone to UTC.
+  // This ensures the pg driver's timestamp serialization/parsing is
+  // deterministic regardless of server host timezone. Belt-and-suspenders
+  // alongside process.env.TZ = 'UTC' in server/index.ts.
+  client.query("SET timezone = 'UTC'").catch((err: Error) => {
+    console.error('[Neon Pool] Failed to set session timezone:', err);
+  });
+
   const poolSize = pool.totalCount;
   const idleCount = pool.idleCount;
-  
+
   if (!IS_PROD) {
     console.log(`[Neon Pool] Connected. Total: ${poolSize}, Idle: ${idleCount}`);
   }

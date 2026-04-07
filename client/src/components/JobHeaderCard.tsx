@@ -140,6 +140,8 @@ export const JobHeaderCard = forwardRef<JobHeaderCardHandle, JobHeaderCardProps>
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      // 2026-04-05: Invalidate ["/api/jobs"] family for Job Detail sub-resource freshness
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       // Phase 5.1: undoing a close moves job back to a different status bucket
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       toast({ title: "Undo Successful", description: "Job close has been undone." });
@@ -164,6 +166,10 @@ export const JobHeaderCard = forwardRef<JobHeaderCardHandle, JobHeaderCardProps>
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       queryClient.invalidateQueries({ queryKey: ["visits"] });
+      // 2026-04-05: Invalidate ["/api/jobs"] family so Job Detail sub-resources
+      // (time-summary, time-entries, expenses, notes) refresh after close.
+      // The ["jobs"] prefix does NOT match ["/api/jobs", ...] — separate family.
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
       // Phase 5.1: closing a job removes it from active/on-hold dashboard counts
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       setShowCloseJobDialog(false);

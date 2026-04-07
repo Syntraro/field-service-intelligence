@@ -70,7 +70,7 @@ import {
   VersionNotInitializedError,
   TerminalJobImmutableError,
 } from "../domain/scheduling";
-import { sanitizeAllDayTimestamps } from "../utils/allDaySanitizer";
+import { sanitizeAllDayTimestamps, parseTimestampAsUTC } from "../utils/allDaySanitizer";
 import { IS_DEV } from "../utils/devFlags";
 
 // ============================================================================
@@ -123,7 +123,7 @@ export interface ScheduledJobWithDetails {
   companyId: string;
   jobId: string;
   jobNumber: number;
-  jobType: string;
+  jobType: string | null;
   summary: string;
   /** Job-level status (open, completed, invoiced, archived) */
   status: string;
@@ -401,13 +401,11 @@ export class SchedulingRepository extends BaseRepository {
         .map((id) => technicianMap.get(id))
         .filter((t): t is { id: string; name: string; color: string | null } => t !== undefined);
 
-      // Parse dates (may be strings from raw SQL)
-      const scheduledStart = row.scheduled_start
-        ? (row.scheduled_start instanceof Date ? row.scheduled_start : new Date(row.scheduled_start))
-        : null;
-      const scheduledEnd = row.scheduled_end
-        ? (row.scheduled_end instanceof Date ? row.scheduled_end : new Date(row.scheduled_end))
-        : null;
+      // UTC-safe read: parse timestamp-without-timezone values as UTC regardless
+      // of server process timezone. Companion to the UTC-safe write path
+      // (forceUTCTimestamp / sanitizeSchedulingTimestamps).
+      const scheduledStart = parseTimestampAsUTC(row.scheduled_start as Date | string | null);
+      const scheduledEnd = parseTimestampAsUTC(row.scheduled_end as Date | string | null);
 
       // Compute duration from visit data
       let durationMinutes: number | null = null;

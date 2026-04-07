@@ -1,11 +1,9 @@
 /**
- * useDispatchStream — SSE consumer for dispatch/calendar/task realtime invalidation.
+ * useDispatchStream — SSE consumer for office/admin realtime invalidation.
  *
  * Connects to GET /api/dispatch/stream and maps incoming signals to targeted
  * TanStack Query invalidations. Provides cross-tab and cross-user freshness
- * for dispatch board, unscheduled queue, and task surfaces.
- *
- * Scope: dispatch/calendar + tasks only. Does not invalidate unrelated domains.
+ * for dispatch board, unscheduled queue, task surfaces, and job/visit detail pages.
  *
  * Safety features:
  * - Exponential backoff + jitter on reconnect
@@ -16,6 +14,8 @@
  *
  * 2026-03-31: Initial implementation — wired to existing server SSE infrastructure.
  * 2026-03-31: Tightened signal→key mapping to minimum necessary per mounted surface.
+ * 2026-04-05: Extended invalidation to job/visit detail surfaces so office users
+ *             see tech status changes (en_route, in_progress, completed) without refresh.
  */
 
 import { useEffect, useRef } from "react";
@@ -31,15 +31,16 @@ interface DispatchSignal {
 }
 
 // ── Signal → invalidation mapping ──
-// Trimmed to only keys actively consumed by the two mounted surfaces:
+// Keys actively consumed by office/admin surfaces:
 //   DispatchPreview: /api/calendar, /api/calendar/unscheduled, /api/tasks (dispatch*), visit-detail
 //   Dashboard: dashboard (workflow, today-summary), attention (summary),
 //              dashboard-action, /api/tasks* (URL-style key)
+//   JobDetailPage: ["jobs", "detail", jobId], ["visits", jobId, "all"],
+//                  ["/api/jobs", jobId, "notes"|"time-summary"|"time-entries"|"expenses"|"parts"]
+//   Jobs list: ["jobs", ...]
 //
-// Removed from prior version (not consumed by either surface via SSE):
-//   ["visits"]       — only consumed by JobDetail page, not dispatch/dashboard
-//   ["jobs"]         — only consumed by Jobs list page, not dispatch/dashboard
-//   ["/api/team/technicians/working-hours"] — static config, not changed by mutations
+// Not invalidated (static config, not changed by mutations):
+//   ["/api/team/technicians/working-hours"]
 
 /** Prefix-matched query keys for visit/job dispatch signals */
 const VISIT_JOB_KEYS: readonly (readonly string[])[] = [
@@ -50,6 +51,10 @@ const VISIT_JOB_KEYS: readonly (readonly string[])[] = [
   ["dashboard"],
   ["attention"],
   ["dashboard-action"],
+  // 2026-04-05: Job/visit detail surfaces — tech status changes must propagate to office
+  ["jobs"],          // prefix-matches ["jobs", "detail", jobId] and ["jobs", ...] list queries
+  ["visits"],        // prefix-matches ["visits", jobId, "all"] visit list on job detail
+  ["/api/jobs"],     // prefix-matches ["/api/jobs", jobId, "notes"|"time-summary"|"time-entries"|...]
 ];
 
 /** Prefix-matched query keys for task signals */

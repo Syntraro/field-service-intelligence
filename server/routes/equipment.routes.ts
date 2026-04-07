@@ -1,5 +1,8 @@
 /**
- * Equipment routes — catalog item associations + service timeline.
+ * Equipment routes — canonical owner for all /api/equipment/* endpoints.
+ *
+ * Includes: catalog item associations, service timeline, equipment-linked
+ * notes history, equipment-linked parts history.
  *
  * Mounted at /api/equipment (see routes/index.ts)
  */
@@ -11,13 +14,14 @@ import { db } from "../db";
 import {
   equipmentCatalogItems, locationEquipment, items,
   updateEquipmentCatalogItemSchema,
-  jobEquipment, jobs, jobVisits, users,
+  jobEquipment, jobs, jobVisits, users, jobNotes, jobParts,
 } from "../../shared/schema";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
+import { fetchEquipmentHistoryRows, groupHistoryByJob } from "../services/equipmentHistory";
 
 const router = Router();
 
@@ -25,12 +29,23 @@ const router = Router();
 // Helpers
 // ========================================
 
-/** Verify equipment exists and belongs to company */
+/** Verify equipment exists and belongs to company (allows soft-deleted for read-only history) */
 async function getEquipmentOrThrow(companyId: string, equipmentId: string) {
   const rows = await db
     .select()
     .from(locationEquipment)
     .where(and(eq(locationEquipment.companyId, companyId), eq(locationEquipment.id, equipmentId)))
+    .limit(1);
+  if (!rows[0]) throw createError(404, "Equipment not found");
+  return rows[0];
+}
+
+/** Verify equipment exists, belongs to company, AND is active (for write operations) */
+async function getActiveEquipmentOrThrow(companyId: string, equipmentId: string) {
+  const rows = await db
+    .select()
+    .from(locationEquipment)
+    .where(and(eq(locationEquipment.companyId, companyId), eq(locationEquipment.id, equipmentId), eq(locationEquipment.isActive, true)))
     .limit(1);
   if (!rows[0]) throw createError(404, "Equipment not found");
   return rows[0];
@@ -108,7 +123,7 @@ router.post("/:equipmentId/catalog-items", requireRole(MANAGER_ROLES), asyncHand
   const companyId = req.companyId!;
   const { equipmentId } = req.params;
 
-  await getEquipmentOrThrow(companyId, equipmentId);
+  await getActiveEquipmentOrThrow(companyId, equipmentId);
 
   const data = validateSchema(addCatalogItemSchema, req.body);
 
@@ -153,7 +168,7 @@ router.patch("/:equipmentId/catalog-items/:associationId", requireRole(MANAGER_R
   const companyId = req.companyId!;
   const { equipmentId, associationId } = req.params;
 
-  await getEquipmentOrThrow(companyId, equipmentId);
+  await getActiveEquipmentOrThrow(companyId, equipmentId);
 
   const data = validateSchema(updateEquipmentCatalogItemSchema, req.body);
 
@@ -184,7 +199,7 @@ router.delete("/:equipmentId/catalog-items/:associationId", requireRole(MANAGER_
   const companyId = req.companyId!;
   const { equipmentId, associationId } = req.params;
 
-  await getEquipmentOrThrow(companyId, equipmentId);
+  await getActiveEquipmentOrThrow(companyId, equipmentId);
 
   const rows = await db
     .select({ id: equipmentCatalogItems.id })
@@ -218,7 +233,7 @@ router.post("/:equipmentId/catalog-items/reorder", requireRole(MANAGER_ROLES), a
   const companyId = req.companyId!;
   const { equipmentId } = req.params;
 
-  await getEquipmentOrThrow(companyId, equipmentId);
+  await getActiveEquipmentOrThrow(companyId, equipmentId);
 
   const data = validateSchema(reorderSchema, req.body);
 
@@ -341,5 +356,102 @@ function mapJobTypeToEntryType(jobType: string | null): string {
       return "service";
   }
 }
+
+// ========================================
+// GET /api/equipment/:equipmentId/notes
+// Notes linked to this equipment (via job_notes.equipment_id)
+// ========================================
+
+router.get("/:equipmentId/notes", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const { equipmentId } = req.params;
+
+  await getEquipmentOrThrow(companyId, equipmentId);
+
+  const rows = await db
+    .select({
+      id: jobNotes.id,
+      noteText: jobNotes.noteText,
+      createdAt: jobNotes.createdAt,
+      jobId: jobNotes.jobId,
+      userName: users.fullName,
+      userFirstName: users.firstName,
+    })
+    .from(jobNotes)
+    .leftJoin(users, eq(jobNotes.userId, users.id))
+    .where(
+      and(
+        eq(jobNotes.companyId, companyId),
+        eq(jobNotes.equipmentId, equipmentId),
+      )
+    )
+    .orderBy(desc(jobNotes.createdAt))
+    .limit(50);
+
+  res.json(rows.map(r => ({
+    id: r.id,
+    text: r.noteText,
+    author: r.userFirstName || r.userName || "Unknown",
+    date: r.createdAt?.toISOString() || null,
+    jobId: r.jobId,
+  })));
+}));
+
+// ========================================
+// GET /api/equipment/:equipmentId/parts
+// Parts linked to this equipment (via job_parts.equipment_id)
+// ========================================
+
+router.get("/:equipmentId/parts", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const { equipmentId } = req.params;
+
+  await getEquipmentOrThrow(companyId, equipmentId);
+
+  const rows = await db
+    .select({
+      id: jobParts.id,
+      description: jobParts.description,
+      quantity: jobParts.quantity,
+      createdAt: jobParts.createdAt,
+      jobId: jobParts.jobId,
+    })
+    .from(jobParts)
+    .where(
+      and(
+        eq(jobParts.companyId, companyId),
+        eq(jobParts.equipmentId, equipmentId),
+        isNull(jobParts.deletedAt),
+      )
+    )
+    .orderBy(desc(jobParts.createdAt))
+    .limit(50);
+
+  res.json(rows.map(r => ({
+    id: r.id,
+    description: r.description,
+    quantity: r.quantity,
+    date: r.createdAt?.toISOString() || null,
+    jobId: r.jobId,
+  })));
+}));
+
+// ========================================
+// GET /api/equipment/:equipmentId/history
+// Equipment service history: notes grouped by job with per-note author attribution.
+// Route → Service → Storage layering via equipmentHistory.ts
+// ========================================
+
+router.get("/:equipmentId/history", asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId!;
+  const { equipmentId } = req.params;
+
+  await getEquipmentOrThrow(companyId, equipmentId);
+
+  const rows = await fetchEquipmentHistoryRows(companyId, equipmentId);
+  const history = groupHistoryByJob(rows);
+
+  res.json(history);
+}));
 
 export default router;

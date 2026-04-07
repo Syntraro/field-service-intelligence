@@ -44,6 +44,7 @@ import { jobRepository } from "../storage/jobs";
 import { jobVisitsRepository, isVisitActioned } from "../storage/jobVisits";
 import { schedulingRepository, DEFAULT_VISIT_DURATION_MINUTES } from "../storage/scheduling";
 import { reconciliationActionableVisitFilter } from "../lib/visitPredicates";
+import { timeTrackingRepository } from "../storage/timeTracking";
 
 // ============================================================================
 // Intent Types
@@ -61,8 +62,8 @@ export interface CompleteVisitIntent {
   holdNotes?: string | null;
   completedByUserId: string;
   isFollowUpNeeded?: boolean;
-  /** Optional free-text note from the tech. When provided, the orchestrator
-   *  appends it to visitNotes and auto-creates a job note documenting the outcome. */
+  /** Optional free-text note from the tech. Stored in structured outcomeNote column
+   *  and auto-creates a job note documenting the outcome. */
   outcomeNote?: string | null;
   /** Visit number for the auto-generated job note label (e.g., "Visit #2"). */
   visitNumber?: number | null;
@@ -361,6 +362,9 @@ export async function completeVisit(
     const visitUpdates: Record<string, unknown> = {
       status: "completed",
       outcome,
+      // 2026-04-05: outcomeNote stored in structured column only — no longer appended
+      // to visitNotes as legacy [OUTCOME: ...] / [COMPLETED_BY: ...] tags.
+      outcomeNote: trimmedNote,
       completedAt: now,
       completedByUserId,
       isFollowUpNeeded: isFollowUpNeeded ?? (outcome !== "completed"),
@@ -372,15 +376,6 @@ export async function completeVisit(
     // Labor unification: actualDurationMinutes deprecated — duration derived from time_entries
     if (existing.checkedInAt && !existing.checkedOutAt) {
       visitUpdates.checkedOutAt = now;
-    }
-
-    // Include outcome note in visitNotes if provided
-    if (trimmedNote) {
-      visitUpdates.visitNotes = [
-        existing.visitNotes,
-        `[OUTCOME: ${outcome}] ${trimmedNote}`,
-        `[COMPLETED_BY: ${completedByUserId}]`,
-      ].filter(Boolean).join("\n");
     }
 
     const [visit] = await tx
@@ -411,7 +406,25 @@ export async function completeVisit(
     return visit;
   });
 
-  // Step 3: Reconcile parent job AFTER visit transaction commits.
+  // Step 3: Stop active time entry for the visit's assigned technician.
+  // 2026-04-05: Moved into orchestrator so ALL completion paths (tech, office,
+  // bulk-complete) stop running time entries canonically. Previously only the
+  // techField.ts route stopped entries — office paths left them running.
+  if (existing.assignedTechnicianId) {
+    try {
+      const running = await timeTrackingRepository.getRunningTimeEntry(companyId, existing.assignedTechnicianId);
+      if (running && running.jobId === jobId) {
+        await timeTrackingRepository.stopTimeEntry(companyId, existing.assignedTechnicianId, {
+          timeEntryId: running.id,
+          at: now,
+        });
+      }
+    } catch {
+      // Non-fatal: entry may not exist or already stopped
+    }
+  }
+
+  // Step 4: Reconcile parent job AFTER visit transaction commits.
   // 2026-03-20 BUG FIX: Previously this ran INSIDE the visit transaction,
   // but reconcileJobAfterVisitCompletion() queries via `db` (pool), not `tx`.
   // Under READ COMMITTED isolation the uncommitted visit status update was
@@ -430,7 +443,7 @@ export async function completeVisit(
     completedByUserId,
   });
 
-  // Step 4: Sync job schedule from visits AFTER transaction commits.
+  // Step 5: Sync job schedule from visits AFTER transaction commits.
   // This is a denormalization sync that reads committed state — intentionally
   // outside the transaction to avoid holding locks during the schedule query.
   await jobVisitsRepository.syncJobToVisits(companyId, jobId);
@@ -1250,6 +1263,27 @@ async function bulkCompleteVisitsInternal(
     await runVisitUpdates(txHandle);
   } else {
     await db.transaction(runVisitUpdates);
+  }
+
+  // 2026-04-05: Stop running time entries for all assigned technicians on completed visits.
+  // Runs AFTER visit transaction commits so time entry reads are consistent.
+  // Collected unique technician IDs to avoid duplicate stop attempts.
+  const techIds = new Set<string>();
+  for (const v of uncompleted) {
+    if (v.assignedTechnicianId) techIds.add(v.assignedTechnicianId);
+  }
+  for (const techId of Array.from(techIds)) {
+    try {
+      const running = await timeTrackingRepository.getRunningTimeEntry(companyId, techId);
+      if (running && running.jobId === jobId) {
+        await timeTrackingRepository.stopTimeEntry(companyId, techId, {
+          timeEntryId: running.id,
+          at: now,
+        });
+      }
+    } catch {
+      // Non-fatal: entry may not exist or already stopped
+    }
   }
 
   // Sync job schedule — pass txHandle so it participates in the outer transaction

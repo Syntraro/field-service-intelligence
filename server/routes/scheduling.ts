@@ -78,13 +78,15 @@ function filterJobsByRole(
 function transformToDto(job: ScheduledJobWithDetails): CalendarEventDto {
   const isAllDay = job.isAllDay ?? false;
 
+  // UTC-safe: use UTC accessors for date extraction since scheduledStart is now
+  // always a UTC-normalized Date (via parseTimestampAsUTC in the storage layer).
   let dateStr: string;
   if (job.scheduledStart) {
     const d = job.scheduledStart;
-    dateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    dateStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
   } else {
     const today = new Date();
-    dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    dateStr = `${today.getUTCFullYear()}-${String(today.getUTCMonth() + 1).padStart(2, '0')}-${String(today.getUTCDate()).padStart(2, '0')}`;
   }
 
   // Canonical durationMinutes computation:

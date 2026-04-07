@@ -17,14 +17,21 @@ import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import type { AuthedRequest } from "../auth/tenantIsolation";
 import { db } from "../db";
-import { companySettings, timeEntries, jobs, clients } from "@shared/schema";
+import { companySettings, timeEntries, jobs, clients, jobParts, items, jobEquipment, jobVisits, locationEquipment } from "@shared/schema";
 import { jobNotesRepository } from "../storage/jobNotes";
-import { and, eq, sql, gte, lt, asc } from "drizzle-orm";
+import { jobRepository } from "../storage/jobs";
+import { and, eq, sql, gte, lt, asc, isNull } from "drizzle-orm";
 import { timeTrackingRepository } from "../storage/timeTracking";
 import { jobVisitsRepository } from "../storage/jobVisits";
 // Canonical visit reads — single source of truth (server/storage/visits.ts)
 import { getVisitsForUserInRange } from "../storage/visits";
 import * as lifecycle from "../services/jobLifecycleOrchestrator";
+import { emitDispatch } from "../lib/dispatchBus";
+import { schedulingRepository } from "../storage/scheduling";
+import { normalizeScheduleTimes } from "../domain/scheduling";
+import { logEventAsync } from "../lib/events";
+import { recomputeAttentionForEntity } from "../lib/attentionRules";
+import { getQueryCtx } from "../lib/queryCtx";
 
 const router = Router();
 
@@ -78,6 +85,42 @@ async function getTenantTimezone(companyId: string): Promise<string> {
     .where(eq(companySettings.companyId, companyId))
     .limit(1);
   return row?.timezone || "America/Toronto";
+}
+
+// ============================================================================
+// ASSIGNMENT GUARDS — shared by all tech mutation routes
+// ============================================================================
+
+/** Assert tech is assigned to a visit. Throws 404 if not found or not assigned. */
+async function assertTechAssignedToVisit(companyId: string, userId: string, visitId: string) {
+  const visit = await jobVisitsRepository.getAssignedVisit(companyId, visitId, userId);
+  if (!visit) throw createError(404, "Visit not found or not assigned to you");
+  return visit;
+}
+
+/** Assert tech is assigned to at least one active visit on this job. Throws 403 if not. */
+async function assertTechAssignedToJob(companyId: string, userId: string, jobId: string) {
+  const visits = await db
+    .select({
+      assignedTechnicianId: jobVisits.assignedTechnicianId,
+      assignedTechnicianIds: jobVisits.assignedTechnicianIds,
+    })
+    .from(jobVisits)
+    .where(
+      and(
+        eq(jobVisits.companyId, companyId),
+        eq(jobVisits.jobId, jobId),
+        eq(jobVisits.isActive, true),
+        isNull(jobVisits.archivedAt),
+      )
+    );
+
+  const assigned = visits.some(v =>
+    v.assignedTechnicianId === userId ||
+    (v.assignedTechnicianIds && v.assignedTechnicianIds.includes(userId))
+  );
+
+  if (!assigned) throw createError(403, "Not assigned to this job");
 }
 
 // ============================================================================
@@ -140,7 +183,13 @@ router.get(
       throw createError(404, "Visit not found or not assigned to you");
     }
 
-    res.json(detail);
+    // Include running time entry so frontend timer reads from canonical time_entries truth
+    const runningEntry = await timeTrackingRepository.getRunningTimeEntry(companyId, userId);
+    const activeTimeEntry = runningEntry && runningEntry.jobId === detail.visit.jobId
+      ? { id: runningEntry.id, type: runningEntry.type, startAt: runningEntry.startAt }
+      : null;
+
+    res.json({ ...detail, activeTimeEntry });
   })
 );
 
@@ -177,18 +226,25 @@ router.post(
     });
 
     // Tech-field-specific side effect: start travel time entry
+    let activeTimeEntry: { id: string; type: string; startAt: Date } | null = null;
     try {
-      await timeTrackingRepository.recordJobStatus(companyId, userId, visit.jobId, {
+      const { timeEntry } = await timeTrackingRepository.recordJobStatus(companyId, userId, visit.jobId, {
         status: "en_route",
         at: now,
         notes: `Visit #${visit.visitNumber} — en route`,
         source: "mobile",
       });
+      if (timeEntry) {
+        activeTimeEntry = { id: timeEntry.id, type: timeEntry.type, startAt: timeEntry.startAt };
+      }
     } catch {
       // Non-fatal: entry may already be running
     }
 
-    res.json(result.visit);
+    // 2026-04-05: Emit dispatch SSE so office surfaces refresh when tech goes en route
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visit.id, ts: new Date().toISOString() });
+
+    res.json({ ...result.visit, activeTimeEntry });
   })
 );
 
@@ -221,18 +277,25 @@ router.post(
     });
 
     // Tech-field-specific side effect: stop travel entry + start on_site entry
+    let activeTimeEntry: { id: string; type: string; startAt: Date } | null = null;
     try {
-      await timeTrackingRepository.recordJobStatus(companyId, userId, visit.jobId, {
+      const { timeEntry } = await timeTrackingRepository.recordJobStatus(companyId, userId, visit.jobId, {
         status: "arrived",
         at: now,
         notes: `Visit #${visit.visitNumber} — on site`,
         source: "mobile",
       });
+      if (timeEntry) {
+        activeTimeEntry = { id: timeEntry.id, type: timeEntry.type, startAt: timeEntry.startAt };
+      }
     } catch {
       // Non-fatal: time entry may already be running
     }
 
-    res.json(result.visit);
+    // 2026-04-05: Emit dispatch SSE so office surfaces refresh when tech starts visit
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visit.id, ts: new Date().toISOString() });
+
+    res.json({ ...result.visit, activeTimeEntry });
   })
 );
 
@@ -270,7 +333,8 @@ router.post(
     const now = at ? new Date(at) : new Date();
 
     // Delegate to canonical lifecycle orchestrator (handles visit update,
-    // visitNotes, auto job note, reconciliation, and job schedule sync)
+    // visitNotes, auto job note, reconciliation, job schedule sync,
+    // and stopping active time entries — 2026-04-05)
     const result = await lifecycle.completeVisit({
       type: "COMPLETE_VISIT",
       companyId,
@@ -284,19 +348,11 @@ router.post(
       visitNumber: visit.visitNumber ?? null,
     });
 
-    // Stop on_site time entry via canonical state machine
-    try {
-      await timeTrackingRepository.recordJobStatus(companyId, userId, visit.jobId, {
-        status: "completed",
-        at: now,
-        notes: `Visit #${visit.visitNumber} — completed (${outcome})`,
-        source: "mobile",
-      });
-    } catch {
-      // Non-fatal
-    }
+    // 2026-04-05: Emit dispatch SSE so office surfaces refresh after tech completion
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visit.id, ts: new Date().toISOString() });
 
-    res.json({ visit: result.visit, outcome });
+    // activeTimeEntry: null signals timer must stop immediately
+    res.json({ visit: result.visit, outcome, activeTimeEntry: null });
   })
 );
 
@@ -306,7 +362,8 @@ router.post(
 
 const addNoteSchema = z.object({
   text: z.string().min(1).max(2000),
-}).strict();
+  equipmentId: z.string().uuid().nullable().optional(),
+});
 
 router.post(
   "/visits/:visitId/notes",
@@ -318,10 +375,10 @@ router.post(
 
     if (!visit) throw createError(404, "Visit not found or not assigned to you");
 
-    const { text } = validateSchema(addNoteSchema, req.body);
+    const { text, equipmentId } = validateSchema(addNoteSchema, req.body);
 
-    // 2026-03-20 Phase 4B: Route through canonical storage method
-    const note = await jobNotesRepository.createJobNote(companyId, visit.jobId, userId, text.trim());
+    // Route through canonical storage method — equipmentId validated against job in repository
+    const note = await jobNotesRepository.createJobNote(companyId, visit.jobId, userId, text.trim(), equipmentId ?? null);
 
     res.status(201).json(note);
   })
@@ -475,6 +532,509 @@ router.get(
         totalMinutes,
         entriesCount: rows.length,
       },
+    });
+  })
+);
+
+// ============================================================================
+// POST /api/tech/visits/:visitId/parts — Add a part to the visit's job
+// ============================================================================
+
+const addPartSchema = z.object({
+  productId: z.string().uuid(),
+  quantity: z.string().min(1).default("1"),
+  equipmentId: z.string().uuid().nullable().optional(),
+});
+
+router.post(
+  "/visits/:visitId/parts",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+    const visit = await jobVisitsRepository.getAssignedVisit(companyId, req.params.visitId, userId);
+    if (!visit) throw createError(404, "Visit not found or not assigned to you");
+
+    const { productId, quantity, equipmentId } = validateSchema(addPartSchema, req.body);
+
+    // Validate product exists and belongs to company
+    const [product] = await db
+      .select({ id: items.id, name: items.name, unitPrice: items.unitPrice })
+      .from(items)
+      .where(and(eq(items.id, productId), eq(items.companyId, companyId), isNull(items.deletedAt)))
+      .limit(1);
+    if (!product) throw createError(400, "Product not found");
+
+    // Validate equipmentId belongs to this job (via job_equipment)
+    if (equipmentId) {
+      const [linked] = await db
+        .select({ id: jobEquipment.id })
+        .from(jobEquipment)
+        .where(and(
+          eq(jobEquipment.companyId, companyId),
+          eq(jobEquipment.jobId, visit.jobId),
+          eq(jobEquipment.equipmentId, equipmentId),
+        ))
+        .limit(1);
+      if (!linked) throw createError(400, "Equipment is not linked to this job");
+    }
+
+    // Write to canonical job_parts table
+    const values: Record<string, unknown> = {
+      companyId,
+      jobId: visit.jobId,
+      productId,
+      equipmentId: equipmentId ?? null,
+      description: product.name,
+      quantity,
+    };
+    if (product.unitPrice != null) values.unitPrice = product.unitPrice;
+
+    const [part] = await db
+      .insert(jobParts)
+      .values(values as any)
+      .returning();
+
+    res.status(201).json(part);
+  })
+);
+
+// ============================================================================
+// DELETE /api/tech/visits/:visitId/parts/:partId — Remove part from job
+// ============================================================================
+
+router.delete(
+  "/visits/:visitId/parts/:partId",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+    const { visitId, partId } = req.params;
+
+    const visit = await jobVisitsRepository.getAssignedVisit(companyId, visitId, userId);
+    if (!visit) throw createError(404, "Visit not found or not assigned to you");
+
+    // Use canonical storage — delegates to jobRepository.deleteJobPart
+    const { storage } = await import("../storage/index");
+    const deleted = await storage.deleteJobPart(companyId, partId);
+    if (!deleted) throw createError(404, "Part not found");
+
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visitId, ts: new Date().toISOString() });
+
+    res.json({ success: true });
+  })
+);
+
+// ============================================================================
+// DELETE /api/tech/visits/:visitId/equipment/:jobEquipmentId — Remove equipment from job
+// ============================================================================
+
+router.delete(
+  "/visits/:visitId/equipment/:jobEquipmentId",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+    const { visitId, jobEquipmentId } = req.params;
+
+    const visit = await jobVisitsRepository.getAssignedVisit(companyId, visitId, userId);
+    if (!visit) throw createError(404, "Visit not found or not assigned to you");
+
+    // Block removal on completed/cancelled visits
+    const terminalStatuses = ["completed", "cancelled"];
+    if (terminalStatuses.includes(visit.status)) {
+      throw createError(400, "Cannot modify equipment on a completed or cancelled visit");
+    }
+
+    // Use canonical job repository to delete (includes invoice lock guard)
+    const deleted = await jobRepository.deleteJobEquipment(companyId, jobEquipmentId);
+    if (!deleted) throw createError(404, "Equipment link not found");
+
+    // No visit.equipmentIds update — job_equipment is the SSoT.
+    // Visit detail endpoint reads equipment via job_equipment join, not the denormalized array.
+
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: visitId, ts: new Date().toISOString() });
+
+    res.json({ success: true });
+  })
+);
+
+// ============================================================================
+// POST /api/tech/visits/:visitId/equipment — Add existing equipment to job
+// ============================================================================
+
+const addEquipmentSchema = z.object({
+  equipmentId: z.string().uuid(),
+});
+
+router.post(
+  "/visits/:visitId/equipment",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+    const visit = await jobVisitsRepository.getAssignedVisit(companyId, req.params.visitId, userId);
+    if (!visit) throw createError(404, "Visit not found or not assigned to you");
+
+    const { equipmentId } = validateSchema(addEquipmentSchema, req.body);
+
+    // Verify equipment exists and belongs to company
+    const [equip] = await db
+      .select({ id: locationEquipment.id })
+      .from(locationEquipment)
+      .where(and(eq(locationEquipment.id, equipmentId), eq(locationEquipment.companyId, companyId), eq(locationEquipment.isActive, true)))
+      .limit(1);
+    if (!equip) throw createError(404, "Equipment not found");
+
+    // Check if already linked to this job
+    const [existing] = await db
+      .select({ id: jobEquipment.id })
+      .from(jobEquipment)
+      .where(and(eq(jobEquipment.companyId, companyId), eq(jobEquipment.jobId, visit.jobId), eq(jobEquipment.equipmentId, equipmentId)))
+      .limit(1);
+    if (existing) throw createError(409, "Equipment already linked to this job");
+
+    // Use canonical repository — auto-propagates to visits with null equipmentIds
+    const result = await jobRepository.createJobEquipment(companyId, visit.jobId, { equipmentId });
+
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: req.params.visitId, ts: new Date().toISOString() });
+
+    res.status(201).json(result);
+  })
+);
+
+// ============================================================================
+// POST /api/tech/visits/:visitId/location-equipment — Create new location equipment + attach to job
+// ============================================================================
+
+const createLocationEquipmentSchema = z.object({
+  name: z.string().min(1).max(255),
+  equipmentType: z.string().max(100).nullable().optional(),
+  manufacturer: z.string().max(255).nullable().optional(),
+  modelNumber: z.string().max(255).nullable().optional(),
+  serialNumber: z.string().max(255).nullable().optional(),
+});
+
+router.post(
+  "/visits/:visitId/location-equipment",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+    const visit = await jobVisitsRepository.getAssignedVisit(companyId, req.params.visitId, userId);
+    if (!visit) throw createError(404, "Visit not found or not assigned to you");
+
+    const data = validateSchema(createLocationEquipmentSchema, req.body);
+
+    // Get the job's locationId
+    const [job] = await db
+      .select({ locationId: jobs.locationId })
+      .from(jobs)
+      .where(and(eq(jobs.id, visit.jobId), eq(jobs.companyId, companyId)))
+      .limit(1);
+    if (!job?.locationId) throw createError(400, "Job has no location");
+
+    // Create location equipment via canonical storage
+    const { storage } = await import("../storage/index");
+    const created = await storage.createLocationEquipment(companyId, job.locationId, data);
+
+    // Attach to job via canonical flow
+    await jobRepository.createJobEquipment(companyId, visit.jobId, { equipmentId: created.id });
+
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: req.params.visitId, ts: new Date().toISOString() });
+
+    res.status(201).json(created);
+  })
+);
+
+// ============================================================================
+// POST /api/tech/items — Create a new catalog item (tech-scoped)
+// Reuses canonical storage.createItem. Minimal fields only.
+// ============================================================================
+
+const techCreateItemSchema = z.object({
+  name: z.string().min(1).max(255),
+  type: z.enum(["product", "service"]).default("product"),
+  unitPrice: z.string().or(z.number()).nullable().optional(),
+});
+
+router.post(
+  "/items",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+
+    const data = validateSchema(techCreateItemSchema, req.body);
+
+    const { storage } = await import("../storage/index");
+    const created = await storage.createItem(companyId, userId, {
+      name: data.name,
+      type: data.type,
+      unitPrice: data.unitPrice != null ? String(data.unitPrice) : null,
+    });
+
+    res.status(201).json(created);
+  })
+);
+
+// ============================================================================
+// PATCH /api/tech/visits/:visitId — Update visit instructions (visitNotes only)
+// ============================================================================
+
+// visitNotes (visit instructions) is office-owned — tech cannot edit post-create
+const techUpdateVisitSchema = z.object({
+  version: z.number().int(),
+});
+
+router.patch(
+  "/visits/:visitId",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+
+    const visit = await assertTechAssignedToVisit(companyId, userId, req.params.visitId);
+    const { version } = validateSchema(techUpdateVisitSchema, req.body);
+
+    // No writable fields currently — route preserved for version-based operations
+    const updated = await jobVisitsRepository.updateJobVisit(
+      companyId, req.params.visitId, version, {}
+    );
+
+    if (!updated) throw createError(404, "Visit not found");
+
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: req.params.visitId, ts: new Date().toISOString() });
+    res.json(updated);
+  })
+);
+
+// ============================================================================
+// PATCH /api/tech/jobs/:jobId — Update limited job fields from field
+// ============================================================================
+
+// description + accessInstructions are office-owned — tech cannot edit post-create
+const techUpdateJobSchema = z.object({
+  summary: z.string().max(500).optional(),
+  priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
+  version: z.number().int(),
+});
+
+router.patch(
+  "/jobs/:jobId",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+    const { jobId } = req.params;
+
+    await assertTechAssignedToJob(companyId, userId, jobId);
+
+    const { version, ...patch } = validateSchema(techUpdateJobSchema, req.body);
+
+    if (Object.keys(patch).length === 0) {
+      throw createError(400, "No fields to update");
+    }
+
+    const { storage } = await import("../storage/index");
+    const updated = await storage.updateJob(companyId, jobId, version, patch);
+
+    if (!updated) throw createError(404, "Job not found");
+
+    emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: jobId, ts: new Date().toISOString() });
+    res.json(updated);
+  })
+);
+
+// ============================================================================
+// POST /api/tech/jobs — Create a job from the field
+// ============================================================================
+
+const techCreateJobSchema = z.object({
+  locationId: z.string().uuid(),
+  jobType: z.enum(["maintenance", "repair", "inspection", "installation", "emergency"]).nullable().optional(),
+  summary: z.string().min(1).max(500),
+  description: z.string().max(5000).nullable().optional(),
+  priority: z.enum(["low", "medium", "high", "urgent"]).default("medium"),
+  // Optional technician override — defaults to creating user
+  assignedTechnicianId: z.string().uuid().nullable().optional(),
+  // Scheduling — omit for "schedule later", provide for "schedule now"
+  scheduledStart: z.string().datetime().optional(),
+  scheduledEnd: z.string().datetime().optional(),
+  durationMinutes: z.number().int().min(15).optional(),
+});
+
+router.post(
+  "/jobs",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+
+    const data = validateSchema(techCreateJobSchema, req.body);
+
+    // Default assignment to creating tech if not specified
+    const techId = data.assignedTechnicianId ?? userId;
+
+    // Step 1: Always create job UNSCHEDULED — scheduling ownership belongs
+    // to schedulingRepository.scheduleJob(), not storage.createJob().
+    const { storage } = await import("../storage/index");
+    const job = await storage.createJob(companyId, {
+      locationId: data.locationId,
+      jobType: data.jobType ?? null,
+      summary: data.summary,
+      description: data.description ?? null,
+      priority: data.priority ?? "medium",
+      status: "open",
+      primaryTechnicianId: techId,
+      assignedTechnicianIds: [techId],
+      // No scheduledStart/scheduledEnd — visit created as unscheduled placeholder
+    } as any);
+
+    let visitId: string | undefined;
+
+    // Step 2: If Schedule Now, route through canonical scheduling path.
+    // This ensures terminal checks, version locking, syncJobScheduleFromVisits,
+    // visit archival, openSubStatus clearing, and audit logging all fire.
+    if (data.scheduledStart) {
+      const startAt = new Date(data.scheduledStart);
+      const dur = data.durationMinutes ?? 60;
+      const endAt = data.scheduledEnd
+        ? new Date(data.scheduledEnd)
+        : new Date(startAt.getTime() + dur * 60_000);
+
+      const normalized = normalizeScheduleTimes({
+        allDay: false,
+        startAt,
+        endAt,
+      });
+
+      const scheduleResult = await schedulingRepository.scheduleJob(companyId, {
+        jobId: job.id,
+        technicianUserId: techId,
+        startAt: normalized.scheduledStart!,
+        endAt: normalized.scheduledEnd!,
+        allDay: false,
+        expectedVersion: job.version ?? 0,
+      });
+
+      visitId = scheduleResult?.visit?.id;
+
+      // Canonical side effects: event logging, attention, dispatch
+      logEventAsync(getQueryCtx(req), {
+        eventType: "job.scheduled",
+        entityType: "job",
+        entityId: job.id,
+        summary: `Scheduled Job #${job.jobNumber} (tech create)`,
+        meta: { jobNumber: job.jobNumber, technicianUserId: techId },
+      });
+      recomputeAttentionForEntity(companyId, "job", job.id).catch(() => {});
+    }
+
+    // For Schedule Later, find the initial visit ID from the unscheduled placeholder
+    if (!visitId) {
+      const [initialVisit] = await db
+        .select({ id: jobVisits.id })
+        .from(jobVisits)
+        .where(and(eq(jobVisits.jobId, job.id), eq(jobVisits.companyId, companyId)))
+        .orderBy(asc(jobVisits.visitNumber))
+        .limit(1);
+      visitId = initialVisit?.id;
+    }
+
+    emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: job.id, ts: new Date().toISOString() });
+    res.status(201).json({ ...job, visitId });
+  })
+);
+
+// ============================================================================
+// POST /api/tech/clients — Create a client + location from the field
+// Uses canonical customerCompanyRepository.findOrCreateCustomerCompany +
+// storage.createClient (same ownership as POST /api/clients/full-create).
+// ============================================================================
+
+const techCreateClientSchema = z.object({
+  firstName: z.string().max(100).optional(),
+  lastName: z.string().max(100).optional(),
+  companyName: z.string().max(300).optional(),
+  phone: z.string().max(50).optional(),
+  email: z.string().email().max(200).optional(),
+  address: z.string().max(500).optional(),
+  city: z.string().max(200).optional(),
+  province: z.string().max(100).optional(),
+  postalCode: z.string().max(20).optional(),
+}).refine(
+  (d) => (d.companyName?.trim() || (d.firstName?.trim() && d.lastName?.trim())),
+  { message: "Company name or first + last name is required" }
+);
+
+router.post(
+  "/clients",
+  requireSchedulable,
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    const userId = req.user!.id;
+
+    const data = validateSchema(techCreateClientSchema, req.body);
+
+    // Derive display name: company name takes priority, else "First Last"
+    const personName = [data.firstName?.trim(), data.lastName?.trim()].filter(Boolean).join(" ");
+    const displayName = data.companyName?.trim() || personName;
+    const nameSource = data.companyName?.trim() ? "company" : "person";
+    const contactName = personName || null;
+
+    // Subscription limit check (canonical)
+    const { storage } = await import("../storage/index");
+    const limitCheck = await storage.canAddLocation(companyId);
+    if (!limitCheck.allowed) {
+      throw createError(403, limitCheck.reason || "Subscription limit reached");
+    }
+
+    // Step 1: Find or create customer company (canonical, dedup by name)
+    const { customerCompanyRepository } = await import("../storage/index");
+    const customerCompany = await customerCompanyRepository.findOrCreateCustomerCompany(
+      companyId,
+      {
+        name: displayName,
+        phone: data.phone?.trim() || null,
+        email: data.email?.trim() || null,
+        nameSource,
+      }
+    );
+
+    // Step 2: Create primary location under customer company (canonical)
+    const sentinelNextDue = new Date("9999-12-31").toISOString();
+    const location = await storage.createClient(companyId, userId, {
+      parentCompanyId: customerCompany.id,
+      companyName: displayName,
+      contactName,
+      email: data.email?.trim() || null,
+      phone: data.phone?.trim() || null,
+      address: data.address?.trim() || null,
+      city: data.city?.trim() || null,
+      province: data.province?.trim() || null,
+      postalCode: data.postalCode?.trim() || null,
+      selectedMonths: [],
+      inactive: false,
+      isPrimary: true,
+      needsDetails: !data.address?.trim(),
+      nextDue: sentinelNextDue,
+    } as any);
+
+    logEventAsync(getQueryCtx(req), {
+      eventType: "client.created",
+      entityType: "client",
+      entityId: location.id,
+      summary: `Created client "${displayName}" (tech field)`,
+      meta: { customerCompanyId: customerCompany.id },
+    });
+
+    res.status(201).json({
+      locationId: location.id,
+      companyName: location.companyName,
+      address: location.address,
+      city: location.city,
+      customerCompanyId: customerCompany.id,
     });
   })
 );
