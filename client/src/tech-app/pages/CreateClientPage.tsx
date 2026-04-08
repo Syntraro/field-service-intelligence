@@ -3,8 +3,7 @@
  * Creates a canonical customer company + primary location via POST /api/tech/clients.
  * Supports two entry paths:
  *   1. Standalone (from action chooser) → navigates to /tech/today on success
- *   2. From Create Job (from=create-job) → stores new location in sessionStorage,
- *      navigates back to /tech/create-job where it is auto-selected
+ *   2. From Create Job (from=create-job) → navigates to /tech/create-job?locationId=X
  */
 import { useState } from "react";
 import { useLocation } from "wouter";
@@ -12,7 +11,7 @@ import { ArrowLeft, Loader2, Check } from "lucide-react";
 import { MobileShell } from "../components/MobileShell";
 import { apiRequest } from "@/lib/queryClient";
 
-const SESSION_KEY = "tech_new_location";
+// Navigation uses query params (no sessionStorage)
 
 export function CreateClientPage() {
   const [location, setLocation] = useLocation();
@@ -57,18 +56,12 @@ export function CreateClientPage() {
 
       setSuccess("Client created");
 
-      // If coming from Create Job, store location for auto-select
-      if (fromCreateJob && result?.locationId) {
-        sessionStorage.setItem(SESSION_KEY, JSON.stringify({
-          id: result.locationId,
-          companyName: result.companyName,
-          address: result.address,
-          city: result.city,
-        }));
-      }
-
       setTimeout(() => {
-        setLocation(fromCreateJob ? "/tech/create-job" : "/tech/today");
+        if (fromCreateJob && result?.locationId) {
+          setLocation(`/tech/create-job?locationId=${result.locationId}`);
+        } else {
+          setLocation("/tech/today");
+        }
       }, 600);
     } catch (err: any) {
       setError(err?.message || "Failed to create client");

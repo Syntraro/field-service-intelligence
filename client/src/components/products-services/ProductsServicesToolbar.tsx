@@ -1,10 +1,13 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, Plus, Download, Upload, FolderOpen, ArrowLeft, Trash2, Archive, Sprout } from "lucide-react";
+import { Search, Plus, Download, Upload, FolderOpen, ArrowLeft, Trash2, Archive } from "lucide-react";
 import { Link } from "wouter";
 import { StatusFilter, TypeFilter } from "./types";
 
+// 2026-04-08: P5 — Removed `onSeedClick` / `seedPending` props. The Seed
+// Parts button called a non-existent /api/items/seed endpoint and has been
+// removed from the toolbar.
 interface ProductsServicesToolbarProps {
   searchQuery: string;
   onSearchChange: (value: string) => void;
@@ -19,9 +22,6 @@ interface ProductsServicesToolbarProps {
   onImportClick: () => void;
   onExportClick: () => void;
   onAddClick: () => void;
-  // Seed parts action
-  onSeedClick?: () => void;
-  seedPending?: boolean;
   // Bulk actions
   selectedCount: number;
   onBulkCategoryClick: () => void;
@@ -45,8 +45,6 @@ export function ProductsServicesToolbar({
   onImportClick,
   onExportClick,
   onAddClick,
-  onSeedClick,
-  seedPending,
   selectedCount,
   onBulkCategoryClick,
   onBulkExportClick,
@@ -68,11 +66,6 @@ export function ProductsServicesToolbar({
           <p className="text-sm text-muted-foreground">Manage your product and service catalog.</p>
         </div>
         <div className="flex items-center gap-2">
-          {onSeedClick && (
-            <Button size="sm" variant="outline" onClick={onSeedClick} disabled={seedPending} data-testid="button-seed-parts" title="Seed 244 standard filters and belts (sizes 18-70)">
-              <Sprout className="h-4 w-4 mr-1" /> {seedPending ? "Seeding..." : "Seed Parts"}
-            </Button>
-          )}
           <Link href="/settings/categories">
             <Button size="sm" variant="outline" data-testid="button-manage-categories">
               <FolderOpen className="h-4 w-4 mr-1" /> Categories

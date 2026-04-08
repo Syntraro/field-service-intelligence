@@ -5,23 +5,21 @@
  * notes history, equipment-linked parts history.
  *
  * Mounted at /api/equipment (see routes/index.ts)
+ *
+ * 2026-04-08: DB access delegated to storage/equipmentCatalog.ts and storage/clients.ts.
  */
 
 import { Router, Response } from "express";
 import { z } from "zod";
-import { eq, and, asc, desc, isNull } from "drizzle-orm";
-import { db } from "../db";
-import {
-  equipmentCatalogItems, locationEquipment, items,
-  updateEquipmentCatalogItemSchema,
-  jobEquipment, jobs, jobVisits, users, jobNotes, jobParts,
-} from "../../shared/schema";
+import { updateEquipmentCatalogItemSchema } from "../../shared/schema";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { fetchEquipmentHistoryRows, groupHistoryByJob } from "../services/equipmentHistory";
+import { clientRepository } from "../storage/clients";
+import { equipmentCatalogRepository } from "../storage/equipmentCatalog";
 
 const router = Router();
 
@@ -31,72 +29,16 @@ const router = Router();
 
 /** Verify equipment exists and belongs to company (allows soft-deleted for read-only history) */
 async function getEquipmentOrThrow(companyId: string, equipmentId: string) {
-  const rows = await db
-    .select()
-    .from(locationEquipment)
-    .where(and(eq(locationEquipment.companyId, companyId), eq(locationEquipment.id, equipmentId)))
-    .limit(1);
-  if (!rows[0]) throw createError(404, "Equipment not found");
-  return rows[0];
+  const eq = await clientRepository.getLocationEquipmentAny(companyId, equipmentId);
+  if (!eq) throw createError(404, "Equipment not found");
+  return eq;
 }
 
 /** Verify equipment exists, belongs to company, AND is active (for write operations) */
 async function getActiveEquipmentOrThrow(companyId: string, equipmentId: string) {
-  const rows = await db
-    .select()
-    .from(locationEquipment)
-    .where(and(eq(locationEquipment.companyId, companyId), eq(locationEquipment.id, equipmentId), eq(locationEquipment.isActive, true)))
-    .limit(1);
-  if (!rows[0]) throw createError(404, "Equipment not found");
-  return rows[0];
-}
-
-/** Fetch associations with joined catalog item data */
-async function fetchAssociationsWithItems(companyId: string, equipmentId: string) {
-  const rows = await db
-    .select({
-      id: equipmentCatalogItems.id,
-      equipmentId: equipmentCatalogItems.equipmentId,
-      catalogItemId: equipmentCatalogItems.catalogItemId,
-      quantity: equipmentCatalogItems.quantity,
-      notes: equipmentCatalogItems.notes,
-      sortOrder: equipmentCatalogItems.sortOrder,
-      createdAt: equipmentCatalogItems.createdAt,
-      updatedAt: equipmentCatalogItems.updatedAt,
-      catalogItemName: items.name,
-      catalogItemSku: items.sku,
-      catalogItemType: items.type,
-      catalogItemDescription: items.description,
-      catalogItemUnitPrice: items.unitPrice,
-    })
-    .from(equipmentCatalogItems)
-    .innerJoin(items, eq(equipmentCatalogItems.catalogItemId, items.id))
-    .where(
-      and(
-        eq(equipmentCatalogItems.companyId, companyId),
-        eq(equipmentCatalogItems.equipmentId, equipmentId),
-      )
-    )
-    .orderBy(asc(equipmentCatalogItems.sortOrder), asc(equipmentCatalogItems.createdAt));
-
-  return rows.map(r => ({
-    id: r.id,
-    equipmentId: r.equipmentId,
-    catalogItemId: r.catalogItemId,
-    quantity: r.quantity,
-    notes: r.notes,
-    sortOrder: r.sortOrder,
-    createdAt: r.createdAt,
-    updatedAt: r.updatedAt,
-    catalogItem: {
-      id: r.catalogItemId,
-      name: r.catalogItemName,
-      code: r.catalogItemSku,
-      type: r.catalogItemType,
-      description: r.catalogItemDescription,
-      unitPrice: r.catalogItemUnitPrice,
-    },
-  }));
+  const eq = await clientRepository.getLocationEquipmentById(companyId, equipmentId);
+  if (!eq) throw createError(404, "Equipment not found");
+  return eq;
 }
 
 // ========================================
@@ -107,7 +49,7 @@ async function fetchAssociationsWithItems(companyId: string, equipmentId: string
 router.get("/:equipmentId/catalog-items", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
   await getEquipmentOrThrow(companyId, req.params.equipmentId);
-  const result = await fetchAssociationsWithItems(companyId, req.params.equipmentId);
+  const result = await equipmentCatalogRepository.getAssociationsWithItems(companyId, req.params.equipmentId);
   res.json(result);
 }));
 
@@ -128,38 +70,24 @@ router.post("/:equipmentId/catalog-items", requireRole(MANAGER_ROLES), asyncHand
   const data = validateSchema(addCatalogItemSchema, req.body);
 
   // Verify catalog item belongs to company
-  const itemRows = await db
-    .select({ id: items.id })
-    .from(items)
-    .where(and(eq(items.companyId, companyId), eq(items.id, data.catalogItemId)))
-    .limit(1);
-  if (!itemRows[0]) throw createError(404, "Catalog item not found");
+  const item = await equipmentCatalogRepository.verifyCatalogItemOwnership(companyId, data.catalogItemId);
+  if (!item) throw createError(404, "Catalog item not found");
 
   // Check for duplicate
-  const existing = await db
-    .select({ id: equipmentCatalogItems.id })
-    .from(equipmentCatalogItems)
-    .where(
-      and(
-        eq(equipmentCatalogItems.companyId, companyId),
-        eq(equipmentCatalogItems.equipmentId, equipmentId),
-        eq(equipmentCatalogItems.catalogItemId, data.catalogItemId),
-      )
-    )
-    .limit(1);
-  if (existing[0]) throw createError(409, "This catalog item is already associated with this equipment");
+  const existing = await equipmentCatalogRepository.findExistingAssociation(companyId, equipmentId, data.catalogItemId);
+  if (existing) throw createError(409, "This catalog item is already associated with this equipment");
 
-  await db.insert(equipmentCatalogItems).values({
+  await equipmentCatalogRepository.addAssociation({
     companyId,
     equipmentId,
     catalogItemId: data.catalogItemId,
-    quantity: data.quantity,
+    quantity: data.quantity ?? 1,
     notes: data.notes ?? null,
-    sortOrder: data.sortOrder,
+    sortOrder: data.sortOrder ?? 0,
   });
 
   // Return full list with joined data
-  const result = await fetchAssociationsWithItems(companyId, equipmentId);
+  const result = await equipmentCatalogRepository.getAssociationsWithItems(companyId, equipmentId);
   res.status(201).json(result);
 }));
 
@@ -172,25 +100,12 @@ router.patch("/:equipmentId/catalog-items/:associationId", requireRole(MANAGER_R
 
   const data = validateSchema(updateEquipmentCatalogItemSchema, req.body);
 
-  const rows = await db
-    .select({ id: equipmentCatalogItems.id })
-    .from(equipmentCatalogItems)
-    .where(
-      and(
-        eq(equipmentCatalogItems.companyId, companyId),
-        eq(equipmentCatalogItems.id, associationId),
-        eq(equipmentCatalogItems.equipmentId, equipmentId),
-      )
-    )
-    .limit(1);
-  if (!rows[0]) throw createError(404, "Association not found");
+  const row = await equipmentCatalogRepository.getAssociation(companyId, equipmentId, associationId);
+  if (!row) throw createError(404, "Association not found");
 
-  await db
-    .update(equipmentCatalogItems)
-    .set({ ...data, updatedAt: new Date() })
-    .where(eq(equipmentCatalogItems.id, associationId));
+  await equipmentCatalogRepository.updateAssociation(associationId, data);
 
-  const result = await fetchAssociationsWithItems(companyId, equipmentId);
+  const result = await equipmentCatalogRepository.getAssociationsWithItems(companyId, equipmentId);
   res.json(result);
 }));
 
@@ -201,22 +116,10 @@ router.delete("/:equipmentId/catalog-items/:associationId", requireRole(MANAGER_
 
   await getActiveEquipmentOrThrow(companyId, equipmentId);
 
-  const rows = await db
-    .select({ id: equipmentCatalogItems.id })
-    .from(equipmentCatalogItems)
-    .where(
-      and(
-        eq(equipmentCatalogItems.companyId, companyId),
-        eq(equipmentCatalogItems.id, associationId),
-        eq(equipmentCatalogItems.equipmentId, equipmentId),
-      )
-    )
-    .limit(1);
-  if (!rows[0]) throw createError(404, "Association not found");
+  const row = await equipmentCatalogRepository.getAssociation(companyId, equipmentId, associationId);
+  if (!row) throw createError(404, "Association not found");
 
-  await db
-    .delete(equipmentCatalogItems)
-    .where(eq(equipmentCatalogItems.id, associationId));
+  await equipmentCatalogRepository.deleteAssociation(associationId);
 
   res.json({ success: true });
 }));
@@ -237,31 +140,28 @@ router.post("/:equipmentId/catalog-items/reorder", requireRole(MANAGER_ROLES), a
 
   const data = validateSchema(reorderSchema, req.body);
 
-  // Update sort orders in batch
-  await Promise.all(
-    data.items.map(item =>
-      db
-        .update(equipmentCatalogItems)
-        .set({ sortOrder: item.sortOrder, updatedAt: new Date() })
-        .where(
-          and(
-            eq(equipmentCatalogItems.companyId, companyId),
-            eq(equipmentCatalogItems.id, item.id),
-            eq(equipmentCatalogItems.equipmentId, equipmentId),
-          )
-        )
-    )
-  );
+  await equipmentCatalogRepository.reorderAssociations(companyId, equipmentId, data.items);
 
-  const result = await fetchAssociationsWithItems(companyId, equipmentId);
+  const result = await equipmentCatalogRepository.getAssociationsWithItems(companyId, equipmentId);
   res.json(result);
 }));
 
 // ========================================
 // Equipment Service Timeline (2026-03-06)
-// Aggregates visit-level history for a specific equipment record.
-// Join path: location_equipment → job_equipment → jobs → job_visits → users
 // ========================================
+
+/** Map job.jobType to a timeline entry type */
+function mapJobTypeToEntryType(jobType: string | null): string {
+  switch (jobType) {
+    case "maintenance": return "pm";
+    case "inspection": return "inspection";
+    case "installation": return "install";
+    case "repair":
+    case "emergency":
+    default:
+      return "service";
+  }
+}
 
 /**
  * GET /api/equipment/:equipmentId/timeline
@@ -273,42 +173,7 @@ router.get("/:equipmentId/timeline", asyncHandler(async (req: AuthedRequest, res
 
   await getEquipmentOrThrow(companyId, equipmentId);
 
-  // Join: job_equipment → jobs → job_visits, with optional tech user join
-  const rows = await db
-    .select({
-      visitId: jobVisits.id,
-      jobId: jobs.id,
-      jobNumber: jobs.jobNumber,
-      jobType: jobs.jobType,
-      jobSummary: jobs.summary,
-      visitDate: jobVisits.scheduledStart,
-      visitDateFallback: jobVisits.scheduledDate,
-      visitStatus: jobVisits.status,
-      visitNotes: jobVisits.visitNotes,
-      outcome: jobVisits.outcome,
-      outcomeNote: jobVisits.outcomeNote,
-      completedAt: jobVisits.completedAt,
-      equipmentNotes: jobEquipment.notes,
-      techFirstName: users.firstName,
-      techLastName: users.lastName,
-      techFullName: users.fullName,
-    })
-    .from(jobEquipment)
-    .innerJoin(jobs, eq(jobEquipment.jobId, jobs.id))
-    .innerJoin(jobVisits, and(
-      eq(jobVisits.jobId, jobs.id),
-      eq(jobVisits.isActive, true),
-      isNull(jobVisits.archivedAt),
-    ))
-    .leftJoin(users, eq(jobVisits.assignedTechnicianId, users.id))
-    .where(
-      and(
-        eq(jobEquipment.companyId, companyId),
-        eq(jobEquipment.equipmentId, equipmentId),
-      )
-    )
-    .orderBy(desc(jobVisits.scheduledStart), desc(jobVisits.scheduledDate))
-    .limit(50);
+  const rows = await equipmentCatalogRepository.getTimeline(companyId, equipmentId);
 
   // Map to display-ready shape
   const timeline = rows.map(r => {
@@ -319,7 +184,6 @@ router.get("/:equipmentId/timeline", asyncHandler(async (req: AuthedRequest, res
       : entryType === "install" ? "Installation"
       : "Service Visit";
 
-    // Build summary: prefer visit notes/outcome, fall back to job summary
     const summary = r.visitNotes || r.outcomeNote || r.equipmentNotes || r.jobSummary || null;
 
     const techName = r.techFullName
@@ -344,22 +208,8 @@ router.get("/:equipmentId/timeline", asyncHandler(async (req: AuthedRequest, res
   res.json(timeline);
 }));
 
-/** Map job.jobType to a timeline entry type */
-function mapJobTypeToEntryType(jobType: string | null): string {
-  switch (jobType) {
-    case "maintenance": return "pm";
-    case "inspection": return "inspection";
-    case "installation": return "install";
-    case "repair":
-    case "emergency":
-    default:
-      return "service";
-  }
-}
-
 // ========================================
 // GET /api/equipment/:equipmentId/notes
-// Notes linked to this equipment (via job_notes.equipment_id)
 // ========================================
 
 router.get("/:equipmentId/notes", asyncHandler(async (req: AuthedRequest, res: Response) => {
@@ -368,25 +218,7 @@ router.get("/:equipmentId/notes", asyncHandler(async (req: AuthedRequest, res: R
 
   await getEquipmentOrThrow(companyId, equipmentId);
 
-  const rows = await db
-    .select({
-      id: jobNotes.id,
-      noteText: jobNotes.noteText,
-      createdAt: jobNotes.createdAt,
-      jobId: jobNotes.jobId,
-      userName: users.fullName,
-      userFirstName: users.firstName,
-    })
-    .from(jobNotes)
-    .leftJoin(users, eq(jobNotes.userId, users.id))
-    .where(
-      and(
-        eq(jobNotes.companyId, companyId),
-        eq(jobNotes.equipmentId, equipmentId),
-      )
-    )
-    .orderBy(desc(jobNotes.createdAt))
-    .limit(50);
+  const rows = await equipmentCatalogRepository.getNotes(companyId, equipmentId);
 
   res.json(rows.map(r => ({
     id: r.id,
@@ -399,7 +231,6 @@ router.get("/:equipmentId/notes", asyncHandler(async (req: AuthedRequest, res: R
 
 // ========================================
 // GET /api/equipment/:equipmentId/parts
-// Parts linked to this equipment (via job_parts.equipment_id)
 // ========================================
 
 router.get("/:equipmentId/parts", asyncHandler(async (req: AuthedRequest, res: Response) => {
@@ -408,24 +239,7 @@ router.get("/:equipmentId/parts", asyncHandler(async (req: AuthedRequest, res: R
 
   await getEquipmentOrThrow(companyId, equipmentId);
 
-  const rows = await db
-    .select({
-      id: jobParts.id,
-      description: jobParts.description,
-      quantity: jobParts.quantity,
-      createdAt: jobParts.createdAt,
-      jobId: jobParts.jobId,
-    })
-    .from(jobParts)
-    .where(
-      and(
-        eq(jobParts.companyId, companyId),
-        eq(jobParts.equipmentId, equipmentId),
-        isNull(jobParts.deletedAt),
-      )
-    )
-    .orderBy(desc(jobParts.createdAt))
-    .limit(50);
+  const rows = await equipmentCatalogRepository.getParts(companyId, equipmentId);
 
   res.json(rows.map(r => ({
     id: r.id,
@@ -438,8 +252,6 @@ router.get("/:equipmentId/parts", asyncHandler(async (req: AuthedRequest, res: R
 
 // ========================================
 // GET /api/equipment/:equipmentId/history
-// Equipment service history: notes grouped by job with per-note author attribution.
-// Route → Service → Storage layering via equipmentHistory.ts
 // ========================================
 
 router.get("/:equipmentId/history", asyncHandler(async (req: AuthedRequest, res: Response) => {

@@ -1094,14 +1094,8 @@ export class SchedulingRepository extends BaseRepository {
     };
   }
 
-  // REMOVED (2026-03-06): rescheduleJob() — legacy job-centric method.
-  // All callers migrated to rescheduleVisit(). See CHANGELOG.
-
-  // REMOVED (2026-03-06): unscheduleJob() — legacy job-centric method.
-  // All callers migrated to unscheduleVisit(). See CHANGELOG.
-
   // ============================================================================
-  // PHASE 4 DISPATCH REFACTOR: Visit-Centric Write Methods
+  // Visit-Centric Write Methods
   // ============================================================================
   // These methods operate directly on a visitId, skipping the "find eligible visit"
   // lookup. Used by client for existing scheduled visit mutations.
@@ -1452,8 +1446,6 @@ export class SchedulingRepository extends BaseRepository {
     };
   }
 
-  // REMOVED (2026-03-06): rescheduleJobBypassWorkingHours() — legacy job-centric method.
-  // No remaining callers after visit-centric migration. See CHANGELOG.
 }
 
 export const schedulingRepository = new SchedulingRepository();

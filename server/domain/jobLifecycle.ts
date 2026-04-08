@@ -77,12 +77,21 @@ export const ACTIVE_STATUSES: JobStatus[] = ["open"];
 /**
  * Invoice Status Flow — valid transitions between invoice statuses.
  * Terminal states: paid, voided.
+ *
+ * Notes:
+ * - "sent" is a legacy alias for "awaiting_payment". New code should write
+ *   "awaiting_payment". The "sent" entries below exist solely so existing
+ *   persisted rows continue to behave correctly during transition.
+ * - awaiting_payment ↔ draft: also allowed via "undo sent" path for unpaid
+ *   issued invoices (enforced by route + amountPaid===0 guard).
+ * - partial_paid → awaiting_payment: legal when the last payment is deleted
+ *   and amountPaid drops to 0. Used by payment recalc rollback.
  */
 export const INVOICE_STATUS_FLOW: Record<InvoiceStatus, InvoiceStatus[]> = {
   draft: ["awaiting_payment", "sent", "voided"],
-  awaiting_payment: ["partial_paid", "paid", "voided"],
-  sent: ["partial_paid", "paid", "voided"],
-  partial_paid: ["paid", "voided"],
+  awaiting_payment: ["draft", "partial_paid", "paid", "voided"],
+  sent: ["draft", "partial_paid", "paid", "voided", "awaiting_payment"],
+  partial_paid: ["awaiting_payment", "paid", "voided"],
   paid: [],
   voided: [],
 };

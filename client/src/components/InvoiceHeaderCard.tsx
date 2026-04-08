@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { Link } from "wouter";
 import type { Invoice, Client, CustomerCompany, Job } from "@shared/schema";
+import { formatCurrency } from "@/lib/formatters";
 
 /** Structured address from the details DTO */
 interface StructuredAddress {
@@ -92,11 +93,6 @@ export interface InvoiceHeaderCardProps {
   paymentTermsPending?: boolean;
   onUpdateIssueDate?: (issueDate: string) => void;
   issueDatePending?: boolean;
-}
-
-function formatCurrency(amount: string | number): string {
-  const num = typeof amount === "string" ? parseFloat(amount) : amount;
-  return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(num);
 }
 
 /** Format a structured address into a display string */

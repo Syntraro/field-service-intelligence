@@ -10,6 +10,7 @@ import { eq, and, sql, desc } from "drizzle-orm";
 import { payments, invoices } from "@shared/schema";
 import { BaseRepository } from "./base";
 import type { InvoiceStatus } from "@shared/schema";
+import { canAcceptInvoicePayment, isInvoiceVoided } from "../lib/invoicePredicates";
 
 export class PaymentRepository extends BaseRepository {
   /**
@@ -58,10 +59,11 @@ export class PaymentRepository extends BaseRepository {
         throw this.notFoundError("Invoice");
       }
 
-      // Only allow payments on sent or partial_paid invoices
-      if (!["sent", "partial_paid"].includes(invoice.status)) {
+      // Only allow payments on issued invoices: awaiting_payment (canonical),
+      // sent (legacy alias), or partial_paid. Uses canonical predicate to avoid drift.
+      if (!canAcceptInvoicePayment(invoice.status)) {
         throw this.validationError(
-          `Cannot add payment to invoice with status "${invoice.status}". Invoice must be sent first.`
+          `Cannot add payment to invoice with status "${invoice.status}". Invoice must be issued first.`
         );
       }
 
@@ -168,7 +170,7 @@ export class PaymentRepository extends BaseRepository {
         )
         .limit(1);
 
-      if (invoice && invoice.status === "voided") {
+      if (invoice && isInvoiceVoided(invoice.status)) {
         throw this.validationError("Cannot delete payments from a voided invoice");
       }
 
@@ -218,15 +220,19 @@ export class PaymentRepository extends BaseRepository {
     // Determine new status based on payment state
     let newStatus: InvoiceStatus = invoice.status as InvoiceStatus;
 
-    // Only change status if invoice is in a payable state
-    if (["sent", "partial_paid", "paid"].includes(invoice.status)) {
+    // Only recalc status if invoice is in an issued/payable state.
+    // Includes legacy "sent" alias for backward compatibility with existing rows;
+    // modern flows write the canonical "awaiting_payment".
+    if (["awaiting_payment", "sent", "partial_paid", "paid"].includes(invoice.status)) {
       if (balance <= 0 && amountPaid > 0) {
         newStatus = "paid";
       } else if (amountPaid > 0 && balance > 0) {
         newStatus = "partial_paid";
       } else if (amountPaid === 0) {
-        // If all payments removed, go back to sent
-        newStatus = "sent";
+        // All payments removed → return to canonical issued state.
+        // 2026-04-08: Write "awaiting_payment" (canonical) instead of legacy "sent"
+        // to stop perpetuating the legacy alias.
+        newStatus = "awaiting_payment";
       }
     }
 

@@ -83,6 +83,7 @@ import {
 import RecurringJobsPage from "@/pages/RecurringJobsPage";
 // Shared Quick Create Job dialog — used in recurring mode for "New Recurring Job" header action
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
+import { MetaRow } from "@/components/ui/meta-row";
 
 // ============================================================================
 // Types
@@ -833,8 +834,8 @@ function GenerateConfirmModal({
         </DialogHeader>
         {/* Simplified: removed earliest/latest due date fields to keep modal actionable */}
         <div className="space-y-2 text-sm py-2">
-          <div className="flex justify-between"><span className="text-muted-foreground">Customers:</span><span className="font-medium">{customerCount}</span></div>
-          <div className="flex justify-between"><span className="text-muted-foreground">Locations:</span><span className="font-medium">{locationCount}</span></div>
+          <MetaRow label="Customers:" value={String(customerCount)} />
+          <MetaRow label="Locations:" value={String(locationCount)} />
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={isPending}>Cancel</Button>

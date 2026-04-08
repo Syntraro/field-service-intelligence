@@ -8,6 +8,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { formatCurrency } from "@/lib/formatters";
 
 interface ConfirmSendModalProps {
   open: boolean;
@@ -17,11 +18,6 @@ interface ConfirmSendModalProps {
   total: string;
   onConfirm: () => void;
   isPending?: boolean;
-}
-
-function formatCurrency(amount: string | number): string {
-  const num = typeof amount === "string" ? parseFloat(amount) : amount;
-  return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(num);
 }
 
 export function ConfirmSendModal({

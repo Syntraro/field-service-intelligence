@@ -151,6 +151,7 @@ export default function LocationFormModal({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/clients/search-locations"] });
       if (parentCompanyId) {
         queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", parentCompanyId, "locations"] });
         queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", parentCompanyId, "overview"] });
@@ -176,6 +177,7 @@ export default function LocationFormModal({
     onSuccess: () => {
       const targetId = activeLocation?.id || locationId;
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/clients/search-locations"] });
       if (targetId) queryClient.invalidateQueries({ queryKey: ["/api/clients", targetId] });
       if (parentCompanyId) {
         queryClient.invalidateQueries({ queryKey: ["/api/customer-companies", parentCompanyId, "locations"] });

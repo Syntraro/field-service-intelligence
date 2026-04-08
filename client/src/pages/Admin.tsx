@@ -60,6 +60,7 @@ export default function Admin() {
 
   const { data: companySettings } = useQuery<{ calendarStartHour?: number }>({
     queryKey: ["/api/company-settings"],
+    staleTime: 5 * 60_000,
   });
 
   // Update state when company settings load

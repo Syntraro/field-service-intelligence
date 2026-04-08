@@ -1,8 +1,8 @@
 import express, { Request, Response } from "express";
 import { requireRole } from "../auth/requireRole";
 import { canAssignRole, type Role } from "../auth/roles";
-import { createInvitation, acceptInvitation, resendInvitation } from "../services/invitations";
-import { writeAuditLog } from "../services/audit";
+import { invitationRepository } from "../storage/invitations";
+import { logInvitationCreated, logInvitationResent } from "../services/auditService";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { z } from "zod";
@@ -43,15 +43,9 @@ router.post("/", requireRole(["admin", "dispatcher"]), asyncHandler(async (req: 
     throw createError(403, `Insufficient permissions to assign role: ${role}`);
   }
 
-  const { token, expiresAt } = await createInvitation(companyId, email, role);
+  const { token, expiresAt } = await invitationRepository.createInvitation(companyId, email, role);
 
-  await writeAuditLog({
-    companyId,
-    userId: req.user!.id,
-    action: "invitation_created",
-    entity: "invitation",
-    metadata: { email, role, expiresAt },
-  });
+  await logInvitationCreated(req, companyId, req.user!.id, { email, role, expiresAt: expiresAt.toISOString() });
 
   res.json({ token, expiresAt });
 }));
@@ -59,16 +53,9 @@ router.post("/", requireRole(["admin", "dispatcher"]), asyncHandler(async (req: 
 // Resend invite (pending only) - validates invitation belongs to company
 router.post("/:id/resend", requireRole(["admin", "dispatcher"]), asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId!;
-  const { token, expiresAt } = await resendInvitation(companyId, req.params.id);
+  const { token, expiresAt } = await invitationRepository.resendInvitation(companyId, req.params.id);
 
-  await writeAuditLog({
-    companyId,
-    userId: req.user!.id,
-    action: "invitation_resent",
-    entity: "invitation",
-    entityId: req.params.id,
-    metadata: { expiresAt },
-  });
+  await logInvitationResent(req, companyId, req.user!.id, { invitationId: req.params.id, expiresAt: expiresAt.toISOString() });
 
   res.json({ token, expiresAt });
 }));
@@ -81,7 +68,7 @@ router.post("/accept", asyncHandler(async (req: Request, res: Response) => {
   }
 
   const { token, password, passwordHash } = validation.data;
-  const user = await acceptInvitation(token, password ?? passwordHash!);
+  const user = await invitationRepository.acceptInvitation(token, password ?? passwordHash!);
 
   res.json({ success: true, user });
 }));

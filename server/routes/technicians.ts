@@ -1,5 +1,5 @@
 import express, { Response } from "express";
-import { createTechnician } from "../services/technicians";
+import { technicianRepository } from "../storage/technicians";
 import { z } from "zod";
 import { requireRole } from "../auth/requireRole";
 import { RESTRICTED_MANAGER_ROLES } from "../auth/roles";
@@ -30,7 +30,7 @@ router.post("/", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequ
 
   const { name, userId } = validation.data;
   const companyId = req.companyId!;
-  const tech = await createTechnician(companyId, name, userId);
+  const tech = await technicianRepository.createTechnician(companyId, name, userId);
   res.json(tech);
 }));
 

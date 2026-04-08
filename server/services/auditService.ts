@@ -143,3 +143,33 @@ export async function logUserDisabled(
     req,
   });
 }
+
+export async function logInvitationCreated(
+  req: Request,
+  companyId: string,
+  actorUserId: string,
+  metadata: { email: string; role: string; expiresAt?: string | Date }
+): Promise<void> {
+  await logAuditEvent({
+    companyId,
+    actorUserId,
+    action: "INVITATION_CREATED",
+    metadata,
+    req,
+  });
+}
+
+export async function logInvitationResent(
+  req: Request,
+  companyId: string,
+  actorUserId: string,
+  metadata: { invitationId: string; expiresAt?: string | Date }
+): Promise<void> {
+  await logAuditEvent({
+    companyId,
+    actorUserId,
+    action: "INVITATION_RESENT",
+    metadata,
+    req,
+  });
+}

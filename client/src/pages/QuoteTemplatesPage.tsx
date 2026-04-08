@@ -64,7 +64,7 @@ export default function QuoteTemplatesPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/quote-templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/quote-templates/list"] });
       toast({ title: "Default updated", description: "Template is now the default." });
     },
     onError: (error: Error) => {
@@ -80,7 +80,7 @@ export default function QuoteTemplatesPage() {
       });
     },
     onSuccess: (_, { isActive }) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/quote-templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/quote-templates/list"] });
       toast({
         title: isActive ? "Template activated" : "Template deactivated",
         description: isActive
@@ -100,7 +100,7 @@ export default function QuoteTemplatesPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/quote-templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/quote-templates/list"] });
       toast({ title: "Template duplicated", description: "A copy of the template has been created." });
     },
     onError: (error: Error) => {
@@ -115,7 +115,7 @@ export default function QuoteTemplatesPage() {
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/quote-templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/quote-templates/list"] });
       toast({ title: "Template deleted", description: "The template has been removed." });
       setDeleteConfirmOpen(false);
       setTemplateToDelete(null);

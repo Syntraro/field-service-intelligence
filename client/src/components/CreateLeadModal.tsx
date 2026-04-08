@@ -1,15 +1,15 @@
 /**
  * CreateLeadModal — Create a new lead from the office app.
- * Follows the same pattern as NewQuoteModal (location selector + fields).
+ * Uses shared CreateOrSelectField for client/location selection + creation.
  */
 import { useState } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
-import { Search, Loader2 } from "lucide-react";
+import { useAuth } from "@/lib/auth";
+import { Loader2 } from "lucide-react";
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +18,10 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
+import { useLocationSearch, type LocationResult } from "@/hooks/useLocationSearch";
+
+// ── Component ──
 
 interface CreateLeadModalProps {
   open: boolean;
@@ -27,42 +31,85 @@ interface CreateLeadModalProps {
 export function CreateLeadModal({ open, onOpenChange }: CreateLeadModalProps) {
   const { user } = useAuth();
   const { toast } = useToast();
+
+  // Location search/select state
   const [locationSearch, setLocationSearch] = useState("");
-  const [selectedLocationId, setSelectedLocationId] = useState("");
+  const [selectedLocation, setSelectedLocation] = useState<LocationResult | null>(null);
+  const { data: searchResults = [], isLoading: searchLoading } = useLocationSearch(locationSearch);
+
+  // Inline create client state
+  const [showCreateClient, setShowCreateClient] = useState(false);
+  const [newCompanyName, setNewCompanyName] = useState("");
+  const [newPhone, setNewPhone] = useState("");
+  const [newEmail, setNewEmail] = useState("");
+  const [newAddress, setNewAddress] = useState("");
+  const [newCity, setNewCity] = useState("");
+
+  // Lead form state
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState("medium");
   const [estimatedValue, setEstimatedValue] = useState("");
+  const [capturedByUserId, setCapturedByUserId] = useState(user?.id ?? "");
 
-  // Location search — reuses existing search endpoint
-  const { data: locations = [] } = useQuery<{ id: string; companyName: string; location?: string }[]>({
-    queryKey: ["/api/clients/search-locations", locationSearch],
+  // Team members for "Captured By" selector
+  const { data: teamMembers } = useQuery<{ id: string; fullName: string }[]>({
+    queryKey: ["/api/team/technicians"],
     queryFn: async () => {
-      if (locationSearch.length < 2) return [];
-      const res = await fetch(`/api/clients/search-locations?q=${encodeURIComponent(locationSearch)}`, { credentials: "include" });
-      if (!res.ok) return [];
-      return res.json();
+      const resp = await apiRequest<any>("/api/team/technicians");
+      const list = Array.isArray(resp) ? resp : (resp?.data ?? resp?.schedulable ?? []);
+      return list.map((t: any) => ({ id: t.id, fullName: t.fullName || t.displayName || t.email || "Team Member" }));
     },
-    enabled: locationSearch.length >= 2,
+    enabled: open,
   });
 
-  const createMutation = useMutation({
-    mutationFn: async () => {
-      return apiRequest("/api/leads", {
+  // Create client mutation — canonical full-create
+  const createClientMutation = useMutation({
+    mutationFn: () =>
+      apiRequest<any>("/api/clients/full-create", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          locationId: selectedLocationId,
+          company: { name: newCompanyName.trim(), phone: newPhone.trim() || null, email: newEmail.trim() || null },
+          primaryLocation: { serviceAddress: { street: newAddress.trim() || null, city: newCity.trim() || null } },
+        }),
+      }),
+    onSuccess: (data) => {
+      const loc = data.client || data.locations?.[0];
+      if (loc?.id) {
+        setSelectedLocation({
+          id: loc.id,
+          companyName: loc.companyName ?? newCompanyName.trim(),
+          address: loc.address ?? newAddress.trim(),
+          city: loc.city ?? newCity.trim(),
+        });
+      }
+      setShowCreateClient(false);
+      setNewCompanyName(""); setNewPhone(""); setNewEmail(""); setNewAddress(""); setNewCity("");
+      toast({ title: "Client created" });
+      queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message || "Failed to create client", variant: "destructive" });
+    },
+  });
+
+  // Create lead mutation
+  const createMutation = useMutation({
+    mutationFn: () =>
+      apiRequest("/api/leads", {
+        method: "POST",
+        body: JSON.stringify({
+          locationId: selectedLocation?.id,
+          originTechnicianId: capturedByUserId || null,
           title,
           description: description || null,
           priority,
           estimatedValue: estimatedValue || null,
           sourceType: "office",
         }),
-      });
-    },
+      }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/leads"] });
+      queryClient.invalidateQueries({ queryKey: ["leads"] });
       toast({ title: "Lead created" });
       resetForm();
       onOpenChange(false);
@@ -73,62 +120,63 @@ export function CreateLeadModal({ open, onOpenChange }: CreateLeadModalProps) {
   });
 
   const resetForm = () => {
-    setLocationSearch("");
-    setSelectedLocationId("");
-    setTitle("");
-    setDescription("");
-    setPriority("medium");
-    setEstimatedValue("");
+    setLocationSearch(""); setSelectedLocation(null);
+    setTitle(""); setDescription(""); setPriority("medium"); setEstimatedValue("");
+    setCapturedByUserId(user?.id ?? "");
+    setShowCreateClient(false);
+    setNewCompanyName(""); setNewPhone(""); setNewEmail(""); setNewAddress(""); setNewCity("");
   };
 
-  const canSubmit = selectedLocationId && title.trim().length > 0 && !createMutation.isPending;
+  const canSubmit = selectedLocation?.id && title.trim().length > 0 && !createMutation.isPending;
+  const canCreateClient = newCompanyName.trim().length > 0 && !createClientMutation.isPending;
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) resetForm(); onOpenChange(v); }}>
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>Create Lead</DialogTitle>
+          <DialogDescription className="sr-only">Create a new lead opportunity</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
-          {/* Location search */}
-          <div className="space-y-1.5">
-            <Label>Client / Location</Label>
-            {selectedLocationId ? (
-              <div className="flex items-center justify-between px-3 py-2 bg-white border border-[#CBD5E1] rounded-md">
-                <span className="text-sm">{locations.find(l => l.id === selectedLocationId)?.companyName || "Selected"}</span>
-                <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => { setSelectedLocationId(""); setLocationSearch(""); }}>
-                  Change
-                </Button>
-              </div>
-            ) : (
-              <div className="space-y-1">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[#94A3B8]" />
-                  <Input
-                    placeholder="Search clients..."
-                    value={locationSearch}
-                    onChange={(e) => setLocationSearch(e.target.value)}
-                    className="pl-9"
-                  />
+          {/* Client / Location selection via shared component */}
+          {!showCreateClient ? (
+            <CreateOrSelectField<LocationResult>
+              label="Client / Location"
+              value={selectedLocation}
+              onChange={setSelectedLocation}
+              searchResults={searchResults}
+              searchLoading={searchLoading}
+              searchText={locationSearch}
+              onSearchTextChange={setLocationSearch}
+              minSearchLength={2}
+              getKey={(l) => l.id}
+              getLabel={(l) => l.companyName}
+              getDescription={(l) => [l.location, l.address, l.city].filter(Boolean).join(", ") || undefined}
+              createLabel="Create new client"
+              onCreateNew={(text) => { setShowCreateClient(true); setNewCompanyName(text); setLocationSearch(""); }}
+              placeholder="Search clients..."
+            />
+          ) : (
+            /* Inline create client form */
+            <div className="space-y-1.5">
+              <Label>New Client</Label>
+              <div className="border border-slate-200 rounded-md p-3 space-y-2 bg-slate-50/50">
+                <Input placeholder="Company name *" value={newCompanyName} onChange={e => setNewCompanyName(e.target.value)} />
+                <Input placeholder="Phone" value={newPhone} onChange={e => setNewPhone(e.target.value)} />
+                <Input placeholder="Email" type="email" value={newEmail} onChange={e => setNewEmail(e.target.value)} />
+                <Input placeholder="Address" value={newAddress} onChange={e => setNewAddress(e.target.value)} />
+                <Input placeholder="City" value={newCity} onChange={e => setNewCity(e.target.value)} />
+                <div className="flex gap-2 pt-1">
+                  <Button variant="outline" size="sm" className="text-xs" onClick={() => setShowCreateClient(false)}>Cancel</Button>
+                  <Button size="sm" className="text-xs" onClick={() => createClientMutation.mutate()} disabled={!canCreateClient}>
+                    {createClientMutation.isPending && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
+                    Create Client
+                  </Button>
                 </div>
-                {locations.length > 0 && (
-                  <div className="border border-[#E2E8F0] rounded-md max-h-40 overflow-y-auto">
-                    {locations.map((loc) => (
-                      <button
-                        key={loc.id}
-                        className="w-full text-left px-3 py-2 text-sm hover:bg-[#f8fafc] border-b border-[#E2E8F0] last:border-b-0"
-                        onClick={() => { setSelectedLocationId(loc.id); setLocationSearch(loc.companyName); }}
-                      >
-                        <div className="font-medium text-slate-800">{loc.companyName}</div>
-                        {loc.location && <div className="text-xs text-slate-500">{loc.location}</div>}
-                      </button>
-                    ))}
-                  </div>
-                )}
               </div>
-            )}
-          </div>
+            </div>
+          )}
 
           {/* Title */}
           <div className="space-y-1.5">
@@ -140,6 +188,19 @@ export function CreateLeadModal({ open, onOpenChange }: CreateLeadModalProps) {
           <div className="space-y-1.5">
             <Label>Description</Label>
             <Textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Details about the opportunity..." rows={3} maxLength={2000} />
+          </div>
+
+          {/* Captured By */}
+          <div className="space-y-1.5">
+            <Label>Captured By</Label>
+            <Select value={capturedByUserId} onValueChange={setCapturedByUserId}>
+              <SelectTrigger><SelectValue placeholder="Select..." /></SelectTrigger>
+              <SelectContent>
+                {(teamMembers ?? []).map(t => (
+                  <SelectItem key={t.id} value={t.id}>{t.fullName}{t.id === user?.id ? " (me)" : ""}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           {/* Priority */}

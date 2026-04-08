@@ -117,9 +117,11 @@ export function TaskDialog({ open, onOpenChange, taskId, onChanged, initialData 
 
   const { teamMembers, isLoading: isLoadingTeam } = useTechniciansDirectory();
 
+  // Job picker: load only active (open) jobs, capped at 100, sorted by most recent.
+  // This is an optional "Link to Job" dropdown — full job history is not needed here.
   const { data: jobsData } = useQuery<{ data?: Job[]; items?: Job[] }>({
-    queryKey: ["jobs"],
-    queryFn: () => apiRequest("/api/jobs"),
+    queryKey: ["jobs", "picker"],
+    queryFn: () => apiRequest("/api/jobs?status=open&limit=100&sortBy=jobNumber&sortOrder=desc"),
     staleTime: 2 * 60 * 1000,
   });
   const jobs = jobsData?.data ?? jobsData?.items ?? [];

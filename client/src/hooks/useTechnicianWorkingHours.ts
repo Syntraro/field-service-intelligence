@@ -32,8 +32,6 @@ export function useTechnicianWorkingHours() {
     queryKey: ["/api/team/technicians/working-hours"],
     // Item 5: Reduced from 5min to 2min for faster availability sync after schedule changes
     staleTime: 2 * 60 * 1000,
-    // Item 2: Always refetch on window focus to pick up working-hours edits from settings page
-    refetchOnWindowFocus: "always",
   });
 
   const scheduleMap: TechScheduleMap = useMemo(() => {

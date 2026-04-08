@@ -89,12 +89,21 @@ const pool = new Pool({
 // POOL EVENT HANDLERS
 // ========================================
 
-pool.on('error', (err, client) => {
+pool.on('error', (err, _client) => {
   console.error('[Neon Pool] Unexpected error on idle client:', err);
-  
-  // Check if it's a Neon-specific error
-  if (err.message?.includes('connection closed') || err.message?.includes('ECONNRESET')) {
-    console.warn('[Neon Pool] Connection dropped - Neon may have scaled down. This is normal.');
+
+  // Recognize benign Neon disconnect cases. These are expected when Neon
+  // scales the compute to zero and force-terminates idle connections.
+  // 2026-04-08: Added "administrator command" + "terminating connection"
+  // after a long-uptime dev session crashed on Neon idle terminate.
+  const msg = err?.message ?? "";
+  if (
+    msg.includes("connection closed") ||
+    msg.includes("ECONNRESET") ||
+    msg.includes("administrator command") ||
+    msg.includes("terminating connection")
+  ) {
+    console.warn('[Neon Pool] Connection dropped — Neon may have scaled down. Pool will reconnect on next query.');
   }
 });
 
@@ -105,6 +114,21 @@ pool.on('connect', (client) => {
   // alongside process.env.TZ = 'UTC' in server/index.ts.
   client.query("SET timezone = 'UTC'").catch((err: Error) => {
     console.error('[Neon Pool] Failed to set session timezone:', err);
+  });
+
+  // 2026-04-08: Per-client error listener.
+  // The Neon serverless driver wraps WebSockets; when a WebSocket dies
+  // (admin terminate, idle scale-down, ETIMEDOUT), the underlying pg Client
+  // emits an `error` event directly. Without a client-level listener, Node's
+  // EventEmitter rules treat unhandled `error` events as uncaught exceptions
+  // and exit the process. `pool.on('error')` only catches errors that bubble
+  // through the pool's idle-client path, not events emitted directly on a
+  // checked-out / connecting client. This listener is the missing piece that
+  // prevents Node from crashing on Neon disconnects.
+  client.on('error', (err: Error) => {
+    console.error('[Neon Pool] Client-level error (non-fatal):', err.message);
+    // Do NOT rethrow. Letting the event return normally lets the pool
+    // discard the dead client and re-acquire on the next query.
   });
 
   const poolSize = pool.totalCount;

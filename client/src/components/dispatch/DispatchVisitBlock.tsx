@@ -3,11 +3,11 @@
  * Positioned absolutely by the parent lane row.
  * Includes unschedule action button and right-edge resize handle.
  */
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, memo } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import type { DispatchVisit, DispatchTask } from "./dispatchPreviewTypes";
 import type { DispatchDragData } from "./dispatchDndTypes";
-import { useDispatchHover } from "./dispatchHoverContext";
+import { useHoverSetter, useIsVisitHovered } from "./dispatchHoverContext";
 import {
   priorityIndicator, formatDuration, isCompletedStatus, jobStateColor,
   HOUR_WIDTH_PX, SNAP_MINUTES, MIN_DURATION_MINUTES, PX_PER_MINUTE,
@@ -40,9 +40,11 @@ type Props = {
   timelineEndHour?: number;
 };
 
-export default function DispatchVisitBlock({ visit, left, width, techColor, isSaving, isSelected, hasConflict, onSelect, onUnschedule, onResize, laneVisits = [], laneTasks = [], laneTechId, timelineEndHour: teHour = TIMELINE_END_HOUR }: Props) {
-  const { hoveredVisitId, setHoveredVisitId } = useDispatchHover();
-  const isMapHovered = hoveredVisitId === visit.id;
+function DispatchVisitBlockImpl({ visit, left, width, techColor, isSaving, isSelected, hasConflict, onSelect, onUnschedule, onResize, laneVisits = [], laneTasks = [], laneTechId, timelineEndHour: teHour = TIMELINE_END_HOUR }: Props) {
+  // Per-id hover subscription: this block only re-renders when ITS hover state flips,
+  // not when any sibling visit is hovered. setHoveredVisitId is a stable module-level fn.
+  const setHoveredVisitId = useHoverSetter();
+  const isMapHovered = useIsVisitHovered(visit.id);
   const isTeamVisit = visit.technicianIds.length > 1;
   const isCompleted = isCompletedStatus(visit.status);
   const dragData: DispatchDragData = {
@@ -234,3 +236,6 @@ export default function DispatchVisitBlock({ visit, left, width, techColor, isSa
     </div>
   );
 }
+
+const DispatchVisitBlock = memo(DispatchVisitBlockImpl);
+export default DispatchVisitBlock;

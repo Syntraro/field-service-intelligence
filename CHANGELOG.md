@@ -8,6 +8,366 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+#### Invoice lifecycle status normalization (2026-04-08)
+
+Surgical normalization of invoice status lifecycle to enforce canonical persisted statuses, eliminate phantom values, and consolidate predicate usage. No schema changes; legacy "sent" rows preserved for backward compatibility.
+
+**Canonical persisted lifecycle statuses:**
+- `draft` — not issued, structurally editable, never synced to QBO
+- `awaiting_payment` — issued, payments accepted, balance > 0
+- `partial_paid` — issued, payments recorded but balance > 0
+- `paid` — terminal, balance == 0
+- `voided` — terminal, cancelled
+
+**Legacy compatibility:** existing rows with `status = "sent"` continue to render and behave as `awaiting_payment`. Modern flows now write the canonical value. No data migration in this pass.
+
+**Derived (NOT persisted):** `overdue` — computed from issued status + balance > 0 + dueDate < today.
+
+**Backend changes:**
+- `server/lib/invoicePredicates.ts` — Removed phantom `"overdue"` from `ISSUED_INVOICE_STATUSES`. Added `isInvoiceAwaitingPayment()`, `isInvoicePartialPaid()`, `canAcceptInvoicePayment()` canonical helpers.
+- `server/routes/invoices.ts` — `PATCH /api/invoices/:id` now calls `assertInvoiceStatusTransition()` when patch body contains a status field. Blocks illegal jumps (e.g. draft → paid via PATCH). `requireEditableStatus()` and `requireInvoiceEditable()` middleware now use `isInvoiceTerminal()` predicate instead of inline string array. Renamed `isSentInvoice` → `isIssuedInvoice` for clarity.
+- `server/storage/payments.ts` — Payment create guard now uses `canAcceptInvoicePayment()` predicate (accepts `awaiting_payment` canonical, `sent` legacy alias, and `partial_paid`). Payment recalculation rollback now writes canonical `"awaiting_payment"` instead of legacy `"sent"`. Recalc allowlist extended to include `"awaiting_payment"`.
+- `server/domain/jobLifecycle.ts` — `INVOICE_STATUS_FLOW` extended with explicit recalc rollback edges: `awaiting_payment ↔ draft` (for undo-sent path) and `partial_paid → awaiting_payment` (for payment-deletion rollback). Documents legacy `"sent"` alias semantics.
+
+**Frontend changes:**
+- `client/src/lib/statusBadges.ts` — Removed phantom `"viewed"` case from `getInvoiceStatusBadge()`. Legacy `"sent"` now renders as "Awaiting Payment" to match canonical lifecycle.
+- `client/src/pages/InvoicesListPage.tsx` — Removed `"viewed"` and `"sent"` from `InvoiceStatusFilter` type union and URL allowlist. The visible filter buttons (`["all", "draft", "awaiting_payment", "partial_paid", "paid", "overdue", "voided"]`) were already correct; the `"awaiting_payment"` filter predicate continues to match legacy `"sent"` rows for backward compatibility.
+
+**Untouched (intentionally):**
+- `InvoiceHeaderCard.tsx` action gating already correctly treats `awaiting_payment` and `sent` as equivalent. No drift introduced.
+- `POST /api/invoices/:id/send` and `/void` already use `assertInvoiceStatusTransition()`.
+- Schema enum unchanged; no migration. Existing `"sent"` rows still readable.
+- Tax/line item/PDF/reorder/payment-create/draft-delete flows all unaffected.
+
+**Verification:** Typecheck clean. No remaining `"viewed"` references in server code. No remaining `newStatus = "sent"` writes. `ISSUED_INVOICE_STATUSES` no longer contains `"overdue"`.
+
+#### QuoteDetailPage: Product search in Add Line Item dialog (2026-04-07)
+
+- **Product search added**: Add Line Item dialog now uses `CreateOrSelectField` (standard mode, not compact — it's a dialog, not a table cell) + `productEntity` for product/service search. Selecting a product auto-fills description + unit price. Manual entry still works. `productId` now persisted in line creation payload.
+- **No compact mode needed**: Dialog layout uses standard `CreateOrSelectField` with label — different from invoice/template inline table-cell usage.
+
+**Selector system status — all product selection surfaces now canonical:**
+| Surface | Mode | Status |
+|---------|------|--------|
+| QuoteTemplateModal | compact (table cell) | Canonical |
+| InvoiceDetailPage | compact (table cell) | Canonical |
+| QuoteDetailPage | standard (dialog) | **Canonical (NEW)** |
+
+**Files changed:**
+- `client/src/pages/QuoteDetailPage.tsx` — product search in add-line dialog, productId in mutation, imports added
+
+#### Tech App Hardening: sessionStorage removal + location detail improvements (2026-04-07)
+
+- **sessionStorage removed from lead flow**: CreateLeadPage now reads prefill from URL query params (`?locationId=&name=&jobId=&visitId=&jobSummary=`). VisitDetailPage "Create Lead from Visit" button passes context via query params. No sessionStorage read/write for leads.
+- **Lead form context UI**: When prefilled, shows amber banner "Creating lead for [Location Name]" with job summary if from visit. Description field auto-focuses when prefilled.
+- **Location detail History tab**: New "History" tab showing last 10 jobs for the location via `GET /api/jobs?locationId=...`. Each job shows number, summary, status badge, date.
+- **Location detail contacts**: Overview tab now shows contact name, phone, email in a structured card.
+- **Location "Create Lead" uses query params**: No sessionStorage — direct URL navigation.
+- **Permission audit**: `GET /api/clients/:id` is tenant-scoped, returns location-appropriate fields. No sensitive billing/QBO data exposed. No changes needed.
+- **CreateJobPage sessionStorage**: Retained for now (separate flow, would need CreateJobPage rewrite). Noted for future pass.
+
+**sessionStorage removals:**
+- `CreateLeadPage.tsx`: Removed `SESSION_KEY`, `sessionStorage.getItem/removeItem`, `Prefill` interface
+- `VisitDetailPage.tsx`: Removed `sessionStorage.setItem("tech_lead_prefill", ...)` → replaced with query params
+- `LocationDetailPage.tsx`: Lead navigation uses query params (Create Job still uses sessionStorage for compatibility)
+
+**Files changed:**
+- `client/src/tech-app/pages/CreateLeadPage.tsx` — full rewrite: query params, context banner, auto-focus
+- `client/src/tech-app/pages/LocationDetailPage.tsx` — added History tab, improved contacts card, query param navigation
+- `client/src/tech-app/pages/VisitDetailPage.tsx` — "Create Lead" button uses query params
+
+#### Invoice line items: Migrated to canonical product selector (2026-04-07)
+
+- **Invoice AddLineItemRow migrated**: Replaced custom bulk-load dropdown (fetched ALL 500 items via `/api/items?limit=500`, filtered client-side) with `CreateOrSelectField` in compact mode + canonical `useProductSearch` (server-side async search). Removed ~70 lines of custom selector logic.
+- **Compact prop retained**: Both quote template and invoice line items use `compact` mode — justified for inline table-cell usage without label/spacing. No additional variants needed.
+- **Dead code removed**: `CatalogItem` interface (replaced by `ProductOption` from productEntity), bulk-load query, `filteredItems` useMemo, `showProducts` state, custom dropdown JSX with blur timeout.
+- **Preserved**: description fill, price fill, manual override, productId/cost persistence, submit behavior.
+
+**Selector system status after this pass:**
+| Surface | Selector | Entity | Status |
+|---------|----------|--------|--------|
+| CreateLeadModal | CreateOrSelectField | locationEntity | Canonical |
+| NewQuoteModal | CreateOrSelectField | locationEntity | Canonical |
+| NewInvoicePage | CreateOrSelectField | locationEntity | Canonical |
+| QuickAddJobDialog | CreateOrSelectField | locationEntity | Canonical |
+| QuoteTemplateModal | CreateOrSelectField compact | productEntity | Canonical |
+| InvoiceDetailPage | CreateOrSelectField compact | productEntity | **Canonical (NEW)** |
+| PartsSelectorModal | Custom multi-row | /api/items | Deferred |
+| QuoteDetailPage | Manual text only | N/A | Deferred |
+
+**Files changed:**
+- `client/src/pages/InvoiceDetailPage.tsx` — replaced custom product selector with CreateOrSelectField, removed CatalogItem, added productEntity imports
+
+#### Tech App: Lead creation + Location detail + Search navigation fix (2026-04-07)
+
+- **Create Lead from + menu**: Added "Create Lead" (amber accent) to the global + button action chooser. Navigates to `/tech/create-lead`. Uses canonical `POST /api/leads` with `sourceType: "tech"` + `originTechnicianId: currentUser`.
+- **Create Lead from visit context**: "Create Lead from Visit" button added to visit detail Overview tab (non-terminal visits only). Prefills locationId, companyName, jobId, visitId via sessionStorage. Lead links to source job via `sourceRefType: "job"` + `sourceRefId`.
+- **Location Detail page**: New `/tech/location/:id` route. Shows client/location header (name, address, phone, email), contact, notes. Equipment tab. Action buttons: Create Job, Create Lead. Uses canonical `GET /api/clients/:id` + `GET /api/clients/:id/equipment`.
+- **Search click fixed**: Tapping a search result now navigates to `/tech/location/:id` instead of `/tech/create-job`. Technician can browse location details, then choose to create a job or lead from there.
+- **`locationId` added to DetailVisit**: Visit detail now exposes `locationId` from the location data for downstream use.
+
+**Files created:**
+- `client/src/tech-app/pages/CreateLeadPage.tsx` — tech lead creation form
+- `client/src/tech-app/pages/LocationDetailPage.tsx` — tech location detail page
+
+**Files changed:**
+- `client/src/tech-app/app/TechApp.tsx` — added `/tech/create-lead` + `/tech/location/:id` routes
+- `client/src/tech-app/pages/TodayPage.tsx` — added Create Lead to + menu, added FileText import
+- `client/src/tech-app/pages/SearchPage.tsx` — search click → `/tech/location/:id` (was `/tech/create-job`)
+- `client/src/tech-app/pages/VisitDetailPage.tsx` — added "Create Lead from Visit" button, FileText import
+- `client/src/tech-app/hooks/useTechVisitDetail.ts` — added `locationId` to DetailVisit interface + adapter
+
+#### Unified Product Selection: Quote templates use canonical CreateOrSelectField (2026-04-07)
+
+- **Quote template product selector unified**: Replaced custom `LineItemDescriptionCell` (inline focused search dropdown, 44 lines) with `LineItemProductCell` using canonical `CreateOrSelectField` in `compact` mode + `productEntity`. Same behavior: search products, auto-fill description + price, persist `productId`, manual description fallback.
+- **CreateOrSelectField compact mode**: Added `compact` prop — skips label, removes vertical spacing. Designed for inline/table-cell usage without creating a second selector component.
+- **Old custom dropdown removed**: Deleted `LineItemDescriptionCell` with its local `focused` state, manual dropdown rendering, blur timeout, and `Search` icon overlay.
+
+**Remaining item-selection systems audit:**
+| System | File | Pattern | Migrate Now? |
+|--------|------|---------|-------------|
+| Invoice AddLineItemRow | InvoiceDetailPage.tsx | Custom dropdown, bulk-load /api/items?limit=500 | **YES** — high value, 70 lines replaceable |
+| Job PartsSelectorModal | PartsSelectorModal.tsx | Multi-row async search, inline create | **Later** — structurally different (multi-row) |
+| Quote Detail add line | QuoteDetailPage.tsx | Manual text only, no search | **Later** — needs product search added first |
+
+**Files changed:**
+- `client/src/components/shared/CreateOrSelectField.tsx` — added `compact` prop
+- `client/src/components/QuoteTemplateModal.tsx` — replaced `LineItemDescriptionCell` with `LineItemProductCell` using canonical selector
+
+#### Quote Templates: Fix visibility bug + product search in line items (2026-04-07)
+
+- **Template visibility bug fixed**: Mutations invalidated `["/api/quote-templates"]` but list queries used `["/api/quote-templates/list", ...]`. TanStack Query's prefix matching compares array elements, not string prefixes — these never matched. Fixed all 5 invalidation points to use `["/api/quote-templates/list"]`.
+- **Canonical product entity created**: `client/src/lib/entities/productEntity.ts` — owns search, normalization, option formatting for Products & Services. Uses `GET /api/items?q=...`.
+- **Product search in template line items**: Description field now searches Products & Services as you type. Selecting a product auto-fills description + unit price. Manual text input still supported (custom descriptions without product link). `productId` now persisted to backend (was in schema but never set by UI).
+- **`LineItemDescriptionCell` component**: Inline product search dropdown on focus, dismisses on blur, shows product name + price.
+
+**Root cause of visibility bug**: Query key mismatch — `["/api/quote-templates"]` does NOT prefix-match `["/api/quote-templates/list"]` in TanStack Query (array element comparison, not string prefix).
+
+**Files created:**
+- `client/src/lib/entities/productEntity.ts` — canonical product/service entity
+
+**Files changed:**
+- `client/src/components/QuoteTemplateModal.tsx` — product search in line items, productId in draft/payload, fixed invalidation key
+- `client/src/pages/QuoteTemplatesPage.tsx` — fixed 4 invalidation keys
+
+#### Lead Detail: Visual consistency rebuild matching Job/Invoice family (2026-04-07)
+
+- **Outer wrapper**: `bg-[#f1f5f9] h-full flex flex-col` — matches Job Detail background/layout
+- **Header card**: `bg-white rounded-2xl border border-slate-200 shadow-sm` — matches Job Detail header card. Contains: title, status badge, priority badge, source, client/company name, contact, address, phone, email, estimated value.
+- **Grid layout**: `grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4` — matches Job Detail 360px right rail
+- **Left column cards**: `bg-white rounded-2xl border border-slate-200 shadow-sm` with section headers `px-5 py-3 bg-[#f8fafc] border-b border-slate-100` — matches Job Detail section cards
+- **Right rail**: Actions card + Details card with `px-4 py-2.5 bg-[#f8fafc]` headers, `text-sm font-semibold text-[#0f172a]` heading style, metadata rows as `flex justify-between` — all matching Job Detail conventions
+- **Notes section**: Integrated section card with add note input + notes list — no longer floating awkwardly
+- **Quote section**: Dedicated card showing conversion state or "Convert to Quote" CTA
+- **MetaRow component**: Simplified to match Job Detail's key-value pair pattern
+
+**Files changed:**
+- `client/src/pages/LeadDetailPage.tsx` — full visual rebuild
+
+#### QuickAddJobDialog: Migrated to canonical location selector (2026-04-07)
+
+- **Location selector replaced**: Removed ~130 lines of Command+Popover location selector (including debounce, snake_case interface, search query, resolution query, inline quick-create UI). Replaced with `CreateOrSelectField` + `locationEntity`.
+- **Pre-selection preserved**: `useLocationById(formData.locationId)` resolves pre-selected location for edit/prefill flows.
+- **Quick-create preserved**: "Add New Client..." action in canonical selector triggers existing `quickCreateClientMutation` → `POST /api/clients/quick-create`. Auto-selects created client.
+- **Equipment reset preserved**: Location change still clears `selectedEquipmentIds`.
+- **Form binding preserved**: `onChange` callback updates `formData.locationId` + `selectedLocationOption`.
+- **Needs-details reminder**: Preserved via `quickCreateClientMutation.isSuccess` check instead of removed `needs_details` field.
+
+**Files changed:**
+- `client/src/components/QuickAddJobDialog.tsx` — replaced location selector, removed old state/queries/JSX, removed `LocationSearchResult` interface, removed `CommandSeparator` import
+- `client/src/lib/entities/locationEntity.ts` — added `useLocationById()` for pre-selection resolution
+
+#### Lead Detail Page: Full redesign + notes + conversion + archive (2026-04-07)
+
+- **Two-column layout**: Rebuilt LeadDetailPage to match Job/Invoice detail patterns. Left column: description card, converted quote link, notes section. Right rail: actions card (Convert to Quote, Mark Contacted, Mark Lost, Archive), metadata card (value, captured by, created by, assigned to, dates).
+- **Client/location summary header**: Shows customer company name, contact person, full address, phone, email — all from enriched backend response.
+- **Lead notes**: New `lead_notes` table (migration: `2026_04_07_lead_notes.sql`). CRUD routes: `GET/POST /api/leads/:id/notes`, `DELETE /api/leads/:id/notes/:noteId`. Notes section on detail page with add form + newest-first list.
+- **Convert to Quote**: "Convert to Quote" action uses canonical `POST /api/quotes` with `leadId`. On success navigates to quote. Lead status auto-updated to "quoted" by backend.
+- **Archive lead**: `DELETE /api/leads/:id` soft-archives via `isActive=false`. Confirmation dialog. Navigates to leads list.
+- **Restore lead**: `POST /api/leads/:id/restore` re-activates archived leads.
+- **Enriched API**: `GET /api/leads/:id` now returns contact info (contactName, phone, email), customer company name, full address, and all user names.
+
+**Schema changes:**
+- New `lead_notes` table: id, companyId, leadId, userId, noteText, createdAt, updatedAt
+
+**Files created:**
+- `migrations/2026_04_07_lead_notes.sql` — create lead_notes table
+
+**Files changed:**
+- `shared/schema.ts` — added `leadNotes` table definition + `LeadNote` type
+- `server/routes/leads.ts` — added notes CRUD, archive/restore, enriched detail response with contact/company info
+- `client/src/pages/LeadDetailPage.tsx` — full redesign: two-column layout, notes, conversion, archive, metadata rail
+
+#### Entity Selector Standardization: Location selection centralized (2026-04-07)
+
+- **Canonical location entity**: Created `client/src/lib/entities/locationEntity.ts` — owns search, normalization, option mapping, label formatting. Single source of truth for location search across all office flows.
+- **useLocationSearch re-export**: Existing `hooks/useLocationSearch.ts` now re-exports from `locationEntity` — backward-compatible, no duplicate public paths.
+- **NewQuoteModal migrated**: Removed ~95 lines of Command+Popover+debounce location selector. Replaced with `CreateOrSelectField` + `locationEntity`. Removed imports: Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, Popover, PopoverContent, PopoverTrigger, Search, Check, cn.
+- **NewInvoicePage migrated**: Removed ~75 lines of Command+Popover location selector + manual debounce. Replaced with `CreateOrSelectField` + `locationEntity`. Preserved CreateClientModal integration for inline client creation.
+- **QuickAddJobDialog**: NOT migrated in this pass — has pre-selection, formData binding, and specialized resolution logic that doesn't fit the simple CreateOrSelectField pattern. Deferred to Pass 2 with a form-integrated variant.
+- **Locations page**: NOT migrated — page-level list filter, not an entity selector. Correctly excluded.
+
+**Surfaces migrated to canonical selector:**
+| Surface | Previous | After | Lines Removed |
+|---------|----------|-------|---------------|
+| CreateLeadModal | Already canonical | Unchanged | — |
+| NewQuoteModal | Command+Popover | CreateOrSelectField | ~95 |
+| NewInvoicePage | Command+Popover+manual debounce | CreateOrSelectField | ~75 |
+
+**Files created:**
+- `client/src/lib/entities/locationEntity.ts` — canonical location entity module
+
+**Files changed:**
+- `client/src/hooks/useLocationSearch.ts` — re-exports from locationEntity
+- `client/src/components/NewQuoteModal.tsx` — full migration to canonical selector
+- `client/src/pages/NewInvoicePage.tsx` — full migration to canonical selector
+
+#### Fix: Lead navigation 404 + detail page + "Captured By" attribution (2026-04-07)
+
+- **Lead Detail Page created**: New `LeadDetailPage.tsx` with status badges, info grid (location, value, captured by, assigned to, created date), description, status actions (Mark Contacted, Mark Lost).
+- **Route registered**: Added `/leads/:id` route in App.tsx with `ProtectedRoute requireAdmin`.
+- **Backend enriched**: `GET /api/leads/:id` now returns joined user names (`createdByName`, `originTechnicianName`, `assignedToName`) and location info (`companyName`, `address`, `city`).
+- **"Captured By" field**: Added to CreateLeadModal using existing `originTechnicianId` schema field (immutable after creation, semantically correct for attribution). Defaults to current user. Selectable from team members list.
+- **No schema changes**: `originTechnicianId` already exists in the leads table — just exposed in the UI.
+
+**Root cause of 404**: LeadsPage navigated to `/leads/:id` but no route was registered and no detail page existed.
+
+**Files created:**
+- `client/src/pages/LeadDetailPage.tsx` — canonical lead detail page
+
+**Files changed:**
+- `client/src/App.tsx` — added `/leads/:id` route + LeadDetailPage import
+- `server/routes/leads.ts` — enriched GET /:id with user names + location joins
+- `client/src/components/CreateLeadModal.tsx` — added "Captured By" selector (originTechnicianId), useAuth, team query
+
+#### Audit Cleanup Pass 1: Centralize constants, shared hooks, dead code removal (2026-04-07)
+
+- **MANAGER_ROLES centralized**: Created `client/src/lib/roles.ts` with canonical `MANAGER_ROLES` constant + `isManagerRole()` helper. Replaced 5 duplicate definitions across AdminTimesheetsPage, JobDetailPage, PayrollPage, EquipmentDetailModal, TimezoneSetupDialog. Fixed TimezoneSetupDialog which was missing "dispatcher" role.
+- **useLocationSearch extracted**: Created `client/src/hooks/useLocationSearch.ts` — shared hook with canonical endpoint + snake_case→camelCase mapping. Migrated CreateLeadModal, SearchPage, CreateJobPage. Remaining consumers (NewQuoteModal, QuickAddJobDialog, NewInvoicePage, Locations) can migrate incrementally.
+- **Dead code removed**: Deleted `SettingsShell.tsx` (explicitly unused, no imports). Removed 5 REMOVED comment blocks from scheduling routes and storage (legacy job-centric methods removed 2026-03-06).
+
+**Files created:**
+- `client/src/lib/roles.ts` — shared MANAGER_ROLES constant
+- `client/src/hooks/useLocationSearch.ts` — shared location search hook
+
+**Files deleted:**
+- `client/src/components/SettingsShell.tsx` — unused component
+
+**Files changed:**
+- `client/src/pages/AdminTimesheetsPage.tsx` — import MANAGER_ROLES from shared
+- `client/src/pages/JobDetailPage.tsx` — import MANAGER_ROLES from shared
+- `client/src/pages/PayrollPage.tsx` — import MANAGER_ROLES from shared
+- `client/src/components/EquipmentDetailModal.tsx` — import MANAGER_ROLES from shared
+- `client/src/components/TimezoneSetupDialog.tsx` — import MANAGER_ROLES from shared (fixed missing "dispatcher")
+- `client/src/components/CreateLeadModal.tsx` — use shared useLocationSearch
+- `client/src/tech-app/pages/SearchPage.tsx` — use shared useLocationSearch
+- `client/src/tech-app/pages/CreateJobPage.tsx` — use shared useLocationSearch
+- `server/routes/scheduling.ts` — removed 3 REMOVED comment blocks
+- `server/storage/scheduling.ts` — removed 3 REMOVED comment blocks
+
+#### Shared CreateOrSelectField component + CreateLeadModal migration (2026-04-07)
+
+- **New shared component**: `client/src/components/shared/CreateOrSelectField.tsx` — generic search + select + create-new field. Entity-agnostic via adapter props (`getKey`, `getLabel`, `getDescription`, `onCreateNew`). Handles: async search with min length, selected state with Change button, loading/empty/no-result states, "Create new" action at bottom of results. Safe null/undefined guards throughout.
+- **CreateLeadModal migrated**: Location selector now uses `CreateOrSelectField<LocationResult>` with `useLocationSearch` adapter. Eliminated duplicate search/select/create plumbing. Inline create client form preserved (opens when "Create new client" selected).
+- **Reusability proof**: Component contract supports any entity type via generics. Candidate next migrations: NewQuoteModal (location search, no create-new yet), QuickAddJobDialog (location search), PartsSelectorModal (product search + create).
+
+**Files created:**
+- `client/src/components/shared/CreateOrSelectField.tsx` — canonical reusable search/select/create component
+
+**Files changed:**
+- `client/src/components/CreateLeadModal.tsx` — migrated to use CreateOrSelectField + useLocationSearch adapter
+
+#### Fix: Edit Visit "Conflict / Refreshing..." false toast (2026-04-07)
+
+- **Root cause**: On the dispatch board, clicking Save in Edit Visit fired TWO simultaneous mutations to the same visit: `editMutation.mutate({ visitNotes })` (PATCH visit) AND `onDispatchReschedule(...)` (PATCH reschedule). Both sent `version: N`. Whichever lost the race got 409 VERSION_MISMATCH → false "Conflict" toast even though data saved correctly.
+- **Fix**: Removed the redundant `editMutation.mutate(visitPayload)` from both dispatch callback paths (lines 321, 328). The dispatch schedule/reschedule callbacks already carry `visitNotes` through to the backend. Now only one PATCH fires per Save click.
+- **Non-dispatch path unchanged**: When Edit Visit is opened from Job Detail (no dispatch callbacks), the single `editMutation.mutate(payload)` on line 341 still fires as before.
+
+**Files changed:**
+- `client/src/components/visits/EditVisitModal.tsx` — removed redundant `editMutation.mutate` from dispatch callback save paths
+
+#### Fix: CreateLeadModal crash + add create-new-client flow (2026-04-07)
+
+- **Crash fix**: `locationSearch.length` accessed when state could be undefined during edge-case renders. Fixed with `(locationSearch?.length ?? 0)` guard. Also fixed `selectedLocationId` string-only state → replaced with full `selectedLocation` object for reliable display.
+- **Snake_case mapping**: Search results from `/api/clients/search-locations` return `company_name` (snake_case). Added mapping to `companyName` (camelCase) in queryFn — was causing `undefined` display text.
+- **Create new client flow**: Added inline "Create new client" option at bottom of search dropdown. Opens compact inline form (company name, phone, email, address, city). Uses canonical `POST /api/clients/full-create`. After success, new client auto-selected in lead form.
+- **`apiRequest` for search**: Switched from raw `fetch` to `apiRequest` for consistent CSRF/error handling.
+- **DialogDescription**: Added sr-only description for accessibility compliance.
+
+**Files changed:**
+- `client/src/components/CreateLeadModal.tsx` — full rewrite: crash fix, snake_case mapping, create-new-client inline form, selectedLocation as object
+
+#### Payroll Approval Realignment Verification (2026-04-06)
+
+- **Approval model verified**: `timeApprovals` table already governs technician+week periods (not individual time_entries). No structural change needed.
+- **Lock enforcement verified**: `enforceApprovalLock()` already guards all `work_sessions` mutations (clockIn, clockOut) and all `time_entries` mutations in approved periods. 9 call sites confirmed.
+- **Comments realigned**: `DailyPayrollBreakdown` and `TechnicianWeeklySummary` comments updated from "time_entries" to "work_sessions source of truth". Lock error message updated.
+- **No schema changes**: `timeApprovals` table structure is already correct for work_sessions-based payroll.
+
+**Files changed:**
+- `shared/schema.ts` — updated payroll type comments to reference work_sessions
+- `server/storage/timeTracking.ts` — updated lock error message
+
+#### Timesheet/Payroll Realignment: work_sessions as source of truth (2026-04-06)
+
+- **Canonical session duration helper**: Added `sessionDurationMinutes()` and `sumSessionMinutes()` exported from `server/storage/timeTracking.ts`. Formula: `(clockOut - clockIn) - breaks`, clamped to 0, open sessions = 0.
+- **Location #1**: `getTechnicianTodayStatus()` — `totalMinutes` now from `work_sessions` for today (was `time_entries.durationMinutes`). `billableMinutes` remains from `time_entries` (labor classification).
+- **Location #2**: `GET /api/tech/time/day` — `summary.totalMinutes` now from `sumSessionMinutes(sessions)` (was `rows.reduce(durationMinutes)`).
+- **Location #3**: `GET /api/tech/time/summary` week strip — `week.totalMinutes` now from `getWorkSessionsForTechnician()` + `sumSessionMinutes()` (was raw SQL `SUM(time_entries.duration_minutes)`).
+- **Location #4**: `getTimesheetDay()` — `totalMinutes` now from `getWorkSessionsForTechnician()` + `sumSessionMinutes()` (was time_entries accumulation).
+- **Location #6**: `getWeeklyPayrollSummary()` — queries `work_sessions` (completed only, `clockOutAt IS NOT NULL`) instead of `time_entries`. Groups by `workDate`. Uses `sessionDurationMinutes()` per session.
+- **Location #7**: `generatePayrollCsv()` — no query change (formats summaries from #6). Comment updated.
+- **Location #5**: `getTimesheetWeek()` — unchanged (returns time_entries for labor breakdown grid; totals derived from #6 at the caller level).
+- **Preserved**: `time_entries` for job costing, invoicing, labor classification, utilization. No write paths changed. No schema changes.
+
+**Files changed:**
+- `server/storage/timeTracking.ts` — `sessionDurationMinutes()`, `sumSessionMinutes()` helpers; `getTechnicianTodayStatus` realigned; `getTimesheetDay` realigned; `getWeeklyPayrollSummary` realigned; CSV comment
+- `server/routes/techField.ts` — `/time/day` and `/time/summary` week strip realigned to work_sessions
+
+#### Dashboard: Bulk Unschedule Hardening Pass (2026-04-06)
+
+- **Version passing fixed**: Bulk unschedule now passes `visit.version` to canonical `unscheduleVisit()`, preserving optimistic locking. Previously skipped version check.
+- **Structured response**: Backend returns `{ succeeded[], skipped[], failed[], successCount, skippedCount, failedCount, totalCount }` instead of flat results array.
+- **Partial success messaging**: Frontend shows truthful toast: all-success → green; some skipped/failed → counts shown; failures → destructive variant.
+- **Loading safety**: During bulk mutation, all checkboxes (per-row + Select All) and bulk action button are disabled. Prevents double-submission.
+- **Select All scope label**: Changed from "Select all" / "Deselect all" to "Select all N shown" / "X of N shown selected" — clarifies scope is loaded rows only.
+
+**Files changed:**
+- `server/routes/scheduling.ts` — bulk-unschedule: passes `visit.version`, structured response with succeeded/skipped/failed arrays
+- `client/src/components/DashboardActionModal.tsx` — `BulkUnscheduleResponse` type, partial success toast, checkboxes disabled during pending, scope label
+
+#### Tech App: Date Navigation + Search Tab + Timezone Fixes (2026-04-06)
+
+- **Today screen date navigation**: Added shared `DaySelector` component (7-day strip with prev/next/today). Today page now supports navigating to past and future days. Backend `GET /api/tech/visits/today` extended with optional `?date=YYYY-MM-DD` param — defaults to tenant timezone today. Query key includes selected date. Empty state reflects selected date ("No jobs scheduled for Apr 8").
+- **Search tab**: Added "Search" to bottom nav (3rd tab). New `/tech/search` route + `SearchPage` component using canonical `GET /api/clients/search-locations` endpoint. Debounced search, tenant-safe, mobile-first. No new backend endpoint.
+- **Timezone fix for timesheet day boundaries**: `getTechnicianTodayStatus()` now accepts tenant timezone bounds instead of using UTC date splitting. `GET /api/tech/time/summary` passes `todayInTimezone(tz)` + `dayBoundsInTz()` to the storage method. `GET /api/tech/time/day` also uses tenant timezone bounds. Fixes entries appearing on wrong day in late evening/early morning local time.
+- **Shared DaySelector**: Extracted from TimesheetPage into `client/src/tech-app/components/DaySelector.tsx`. Used by both TodayPage and TimesheetPage.
+
+**Files created:**
+- `client/src/tech-app/components/DaySelector.tsx` — shared date navigation component
+- `client/src/tech-app/pages/SearchPage.tsx` — client/location search page
+
+**Files changed:**
+- `server/routes/techField.ts` — visits/today: added `?date` param; time/summary: tenant TZ bounds; time/day: tenant TZ bounds
+- `server/storage/timeTracking.ts` — `getTechnicianTodayStatus()`: added optional TZ-aware params
+- `client/src/tech-app/pages/TodayPage.tsx` — date state, DaySelector, date-aware empty state
+- `client/src/tech-app/pages/TimesheetPage.tsx` — uses shared DaySelector, removed local helpers
+- `client/src/tech-app/hooks/useTodayVisits.ts` — accepts optional `dateStr` param, includes in query key
+- `client/src/tech-app/components/MobileShell.tsx` — added Search to NAV_ITEMS
+- `client/src/tech-app/app/TechApp.tsx` — added `/tech/search` route + SearchPage import
+
+#### Dashboard: Bulk Unschedule Past-Due Jobs (2026-04-06)
+
+- **New endpoint `POST /api/calendar/bulk-unschedule`**: Accepts `{ jobIds: string[] }` (max 100). For each job, resolves active eligible visit via `getCurrentEligibleVisit()`, then calls canonical `schedulingRepository.unscheduleVisit()`. Returns per-job results. Recomputes attention per job. Emits single dispatch signal. Logs `job.bulk_unscheduled` event.
+- **Selection UI in overdue modal**: Per-row checkboxes + "Select all" control in `DashboardActionModal` (overdue mode only). "Move N to Unscheduled" button appears when items selected. Disabled when none selected.
+- **Confirmation dialog**: "Move N jobs to Unscheduled?" with clear copy: "The scheduled date and time will be removed... They will appear in the Unscheduled queue... This does not delete any jobs." Cancel/Confirm Move buttons.
+- **Query invalidation**: After success, invalidates: `dashboard-action`, `dashboard`, `attention`, `/api/calendar`, `/api/calendar/unscheduled`, `jobs`.
+- **Canonical reuse**: Bulk endpoint internally calls the same `unscheduleVisit()` storage method used by `POST /api/calendar/visit/:visitId/unschedule`. No duplicate scheduling logic.
+
+**Files changed:**
+- `server/routes/scheduling.ts` — new `POST /api/calendar/bulk-unschedule` endpoint + `jobVisitsRepository` import
+- `client/src/components/DashboardActionModal.tsx` — selection state, checkboxes, bulk action button, confirmation dialog, bulk mutation
+
 #### Backfill + Restore Archived Equipment (2026-04-06)
 
 - **Legacy backfill**: 1 legacy `location_equipment` record with `is_active=false, deleted_at=NULL` updated to set `deleted_at=NOW()`. 0 remaining inconsistent records. 7 active records untouched.

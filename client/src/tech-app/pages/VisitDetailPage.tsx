@@ -11,9 +11,10 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft, Navigation, MapPin, StickyNote, AlertCircle, Check,
   Loader2, RefreshCw, Send, Plus, Wrench, Package, Trash2,
-  ChevronRight, Search, X,
+  ChevronRight, Search, X, FileText,
 } from "lucide-react";
 import { MobileShell } from "../components/MobileShell";
+import { EmptyState } from "@/components/ui/empty-state";
 import {
   useTechVisitDetail,
   type DetailNote, type DetailEquipment,
@@ -108,10 +109,11 @@ function OutcomeModal({ onSelect, onCancel }: {
 
 // ── Product search for Add Part ──
 
-function AddPartSheet({ equipmentId, onClose, addPart }: {
+function AddPartSheet({ equipmentId, onClose, addPart, onError }: {
   equipmentId: string | null;
   onClose: () => void;
   addPart: { mutateAsync: (p: { productId: string; quantity: string; equipmentId?: string | null }) => Promise<any>; isPending: boolean };
+  onError: (err: any) => void;
 }) {
   const [search, setSearch] = useState("");
   const [qty, setQty] = useState("1");
@@ -131,7 +133,7 @@ function AddPartSheet({ equipmentId, onClose, addPart }: {
       });
       setSelected(created);
       setCreating(false);
-    } catch { /* error handled by UI */ }
+    } catch (err: any) { onError(err); }
     finally { setCreatePending(false); }
   };
 
@@ -150,7 +152,7 @@ function AddPartSheet({ equipmentId, onClose, addPart }: {
     try {
       await addPart.mutateAsync({ productId: selected.id, quantity: qty, equipmentId });
       onClose();
-    } catch { /* mutation error handled via hook's invalidation */ }
+    } catch (err: any) { onError(err); }
   };
 
   return (
@@ -237,10 +239,11 @@ function AddPartSheet({ equipmentId, onClose, addPart }: {
 
 // ── Add Equipment Sheet ──
 
-function AddEquipmentSheet({ visitId, onClose, addEquipment }: {
+function AddEquipmentSheet({ visitId, onClose, addEquipment, onError }: {
   visitId: string;
   onClose: () => void;
   addEquipment: { mutateAsync: (equipmentId: string) => Promise<any>; isPending: boolean };
+  onError: (err: any) => void;
 }) {
   const [search, setSearch] = useState("");
   const [creating, setCreating] = useState(false);
@@ -273,7 +276,7 @@ function AddEquipmentSheet({ visitId, onClose, addEquipment }: {
     try {
       await addEquipment.mutateAsync(equipmentId);
       onClose();
-    } catch { /* 409 = already linked, handled by toast */ }
+    } catch (err: any) { onError(err); }
   };
 
   const handleCreate = async () => {
@@ -285,7 +288,7 @@ function AddEquipmentSheet({ visitId, onClose, addEquipment }: {
         body: JSON.stringify({ name: newName.trim(), equipmentType: newType || null, modelNumber: newModel || null, serialNumber: newSerial || null }),
       });
       if (created?.id) onClose(); // Auto-attached by the endpoint
-    } catch { /* error */ }
+    } catch (err: any) { onError(err); }
     finally { setCreatePending(false); }
   };
 
@@ -855,9 +858,18 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
               </div>
             )}
             {visit.equipment.length === 0 && !visit.visitNotes && !visit.jobDescription && !visit.accessInstructions && (
-              <div className="text-center py-8 text-slate-400">
-                <p className="text-xs font-medium">No overview information</p>
-              </div>
+              <EmptyState message="No overview information" className="py-8" />
+            )}
+            {/* Create Lead from visit context */}
+            {!isTerminal && (
+              <button
+                onClick={() => {
+                  setLocation(`/tech/create-lead?locationId=${visit.locationId}&visitId=${visitId}`);
+                }}
+                className="w-full h-9 rounded-xl border border-dashed border-amber-200 text-xs font-semibold text-amber-600 flex items-center justify-center gap-1.5 hover:border-amber-300 hover:bg-amber-50/50 transition-colors mt-2"
+              >
+                <FileText className="h-3.5 w-3.5" />Create Lead from Visit
+              </button>
             )}
           </div>
         )}
@@ -897,10 +909,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
               </div>
             )}
             {visit.notes.length === 0 && (
-              <div className="text-center py-8 text-slate-400">
-                <StickyNote className="h-8 w-8 mx-auto mb-2 opacity-40" />
-                <p className="text-xs font-medium">No notes yet</p>
-              </div>
+              <EmptyState icon={StickyNote} message="No notes yet" className="py-8" />
             )}
           </div>
         )}
@@ -938,10 +947,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
               </div>
             ))}
             {visit.equipment.length === 0 && (
-              <div className="text-center py-8 text-slate-400">
-                <Wrench className="h-8 w-8 mx-auto mb-2 opacity-40" />
-                <p className="text-xs font-medium">No equipment linked</p>
-              </div>
+              <EmptyState icon={Wrench} message="No equipment linked" className="py-8" />
             )}
           </div>
         )}
@@ -965,7 +971,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 <div className="flex items-center gap-2 shrink-0 ml-2">
                   <span className="text-xs font-semibold text-slate-500">×{p.quantity}</span>
                   {!isTerminal && (
-                    <button onClick={() => deletePart.mutateAsync(p.id).then(() => showSuccess("Part removed")).catch(() => {})}
+                    <button onClick={() => deletePart.mutateAsync(p.id).then(() => showSuccess("Part removed")).catch((err: any) => showError(err))}
                       disabled={deletePart.isPending}
                       className="p-1 rounded hover:bg-red-50 text-slate-300 hover:text-red-500 transition-colors">
                       <Trash2 className="h-3.5 w-3.5" />
@@ -974,10 +980,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
                 </div>
               </div>
             )) : (
-              <div className="text-center py-6 text-slate-400">
-                <Package className="h-8 w-8 mx-auto mb-2 opacity-40" />
-                <p className="text-xs font-medium">No parts added</p>
-              </div>
+              <EmptyState icon={Package} message="No parts added" className="py-6" />
             )}
           </div>
         )}
@@ -991,6 +994,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
           equipmentId={addPartForEquipment}
           onClose={() => { setAddPartForEquipment(undefined); showSuccess("Part added"); }}
           addPart={addPart}
+          onError={showError}
         />
       )}
       {showAddEquipment && (
@@ -998,6 +1002,7 @@ export function VisitDetailPage({ visitId }: { visitId: string }) {
           visitId={visitId}
           onClose={() => { setShowAddEquipment(false); showSuccess("Equipment added"); }}
           addEquipment={addEquipment}
+          onError={showError}
         />
       )}
       {historyEquipmentId && (

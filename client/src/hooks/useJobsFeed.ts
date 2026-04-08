@@ -6,7 +6,7 @@
  *
  * Phase 4 Steps C1 + A4: Types mirror server JobFeedItem/JobHeaderDetail.
  */
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 
 // ---------------------------------------------------------------------------
 // Canonical types — mirror server/storage/jobsFeed.ts
@@ -210,6 +210,9 @@ export function useJobsFeed(
       return res.json();
     },
     enabled: options?.enabled ?? true,
+    // Preserve previous results during filter/search/pagination changes to prevent
+    // empty-state flash. Same pattern as Clients.tsx.
+    placeholderData: keepPreviousData,
   });
 
   return {
@@ -237,5 +240,7 @@ export function useJobHeader(jobId: string | undefined) {
       return res.json();
     },
     enabled: !!jobId,
+    // Preserve previous job header during navigation between jobs to prevent flash
+    placeholderData: keepPreviousData,
   });
 }

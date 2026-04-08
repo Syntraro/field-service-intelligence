@@ -9,7 +9,6 @@ import clientsRouter from "./clients";
 import techniciansRouter from "./technicians";
 import jobTemplatesRouter from "./jobTemplates";
 import invitationsRouter from "./invitations";
-import invitationsResendRouter from "./invitations_resend";
 import usersAdminRouter from "./users_admin";
 import itemsRouter from "./items";
 import clientPartsRouter from "./clientParts";
@@ -32,9 +31,7 @@ import tasksRoutes from "./tasks.routes";
 import suppliersRouter from "./suppliers";
 import jobVisitsRoutes from "./jobVisits.routes";
 import jobExpensesRouter from "./jobExpenses";
-import clientNotesRouter from "./client-notes";
 import locationNotesRouter from "./location-notes";
-import companyNotesRouter from "./company-notes";
 import customerCompanyNotesRouter from "./customer-company-notes";
 import noteAttachmentsRouter from "./note-attachments";
 import uploadsRouter from "./uploads";
@@ -203,7 +200,6 @@ export function registerRoutes(app: Express): Server {
   app.use("/api/technicians", techniciansRouter);
   app.use("/api/job-templates", jobTemplatesRouter);
   app.use("/api/invitations", invitationsRouter);
-  app.use("/api/invitations-resend", invitationsResendRouter);
   app.use("/api/users-admin", usersAdminRouter);
   app.use("/api/items", itemsRouter);
   app.use("/api/client-parts", clientPartsRouter);
@@ -253,13 +249,9 @@ export function registerRoutes(app: Express): Server {
   // Location tag assignments: /api/locations/:locationId/tags
   app.use("/api/locations", locationTagRouter);
 
-  // Notes endpoints — new canonical routes + legacy back-compat
+  // Notes endpoints
   app.use("/api/locations", locationNotesRouter);
-  app.use("/api/companies", companyNotesRouter);
   app.use("/api/notes", noteAttachmentsRouter);
-  // ⚠️ Legacy: /api/clients/:clientId/notes — TODO: remove once frontend migrated
-  app.use("/api", clientNotesRouter);
-
   // File uploads & secure streaming
   app.use("/api/uploads", uploadsRouter);
   app.use("/api/files", filesRouter);

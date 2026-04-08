@@ -8,7 +8,7 @@
  * When isSelectionMode is true: click toggles selection, drag is disabled.
  * When isSelectionMode is false/absent: existing behavior is unchanged.
  */
-import { useCallback } from "react";
+import { useCallback, memo } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import type { DispatchVisit } from "./dispatchPreviewTypes";
 import type { DispatchDragData } from "./dispatchDndTypes";
@@ -30,7 +30,7 @@ type Props = {
   onToggleSelect?: (visitId: string) => void;
 };
 
-export default function DispatchUnscheduledCard({ visit, isSaving, isSelected, onSelect, isSelectionMode, isChecked, isFocused, onToggleSelect }: Props) {
+function DispatchUnscheduledCardImpl({ visit, isSaving, isSelected, onSelect, isSelectionMode, isChecked, isFocused, onToggleSelect }: Props) {
   const dragData: DispatchDragData = {
     type: "unscheduled-visit",
     visitId: visit.visitId ?? undefined,
@@ -105,3 +105,6 @@ export default function DispatchUnscheduledCard({ visit, isSaving, isSelected, o
     </div>
   );
 }
+
+const DispatchUnscheduledCard = memo(DispatchUnscheduledCardImpl);
+export default DispatchUnscheduledCard;

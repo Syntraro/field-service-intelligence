@@ -68,7 +68,7 @@ import { cn } from "@/lib/utils";
 import { TimeEntryModal, type TimeEntryForModal } from "@/components/time";
 import type { TechnicianWeeklySummary, TimeEntryType } from "@shared/schema";
 
-const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"];
+import { MANAGER_ROLES } from "@/lib/roles";
 const DAY_ABBREVS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 const GENERAL_KEY = "__general__";
 
@@ -269,7 +269,7 @@ export default function PayrollPage() {
   }, [weekStart]);
 
   const weekEnd = weekDates[6];
-  const isManager = !!(user && MANAGER_ROLES.includes(user.role));
+  const isManager = !!(user && (MANAGER_ROLES as readonly string[]).includes(user.role));
 
   // ── Queries ──
 
@@ -282,6 +282,8 @@ export default function PayrollPage() {
       return res.json();
     },
     enabled: isManager,
+    // Admin reference; not affected by clock-in/out events
+    staleTime: 120_000,
   });
 
   // Weekly payroll summary (for overview strip + approval)
@@ -293,6 +295,8 @@ export default function PayrollPage() {
       return res.json();
     },
     enabled: isManager,
+    // Operational summary; covered by realtime time-scope invalidation + explicit mutation invalidation
+    staleTime: 60_000,
   });
 
   // Week entries for selected technician (job grid data)
@@ -307,6 +311,8 @@ export default function PayrollPage() {
       return res.json();
     },
     enabled: isManager && !!weekTechId,
+    // Operational; covered by realtime + mutation invalidation
+    staleTime: 60_000,
   });
 
   // Day entries for day view
@@ -324,6 +330,8 @@ export default function PayrollPage() {
       return res.json();
     },
     enabled: isManager && !!dayParams,
+    // Operational; covered by realtime + mutation invalidation
+    staleTime: 60_000,
   });
 
   // Auto-select first technician

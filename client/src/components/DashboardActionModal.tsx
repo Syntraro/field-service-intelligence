@@ -2,24 +2,26 @@
  * DashboardActionModal — Reusable modal for triaging dashboard job action rows.
  *
  * One shared modal shell configured by `mode` prop. Supports:
- * - overdue: Jobs past due — reschedule
- * - on_hold: Jobs on hold ��� schedule (clears hold server-side)
+ * - overdue: Jobs past due — reschedule or bulk unschedule
+ * - on_hold: Jobs on hold — schedule (clears hold server-side)
  * - unscheduled: Jobs needing scheduling — schedule
  * - ready_to_invoice: Completed jobs — create invoice
  *
- * All write actions use existing canonical flows (applyJobSchedule, /api/invoices/from-job).
+ * All write actions use existing canonical flows (applyJobSchedule, /api/invoices/from-job,
+ * /api/calendar/bulk-unschedule).
  * No parallel scheduling or invoice logic introduced.
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Calendar, ChevronRight, Loader2, X, ExternalLink, Receipt, ArrowUpRight,
@@ -39,11 +41,8 @@ export type DashboardActionMode = "overdue" | "on_hold" | "unscheduled" | "ready
 
 interface ModeConfig {
   title: string;
-  /** Query params for GET /api/jobs to fetch matching jobs */
   fetchParams: string;
-  /** Label for the primary row action button */
   actionLabel: string;
-  /** Dashboard nav action for "View all" footer link */
   viewAllAction: DashboardAction;
 }
 
@@ -112,6 +111,10 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
   const [scheduleValue, setScheduleValue] = useState<JobScheduleValue>(createDefaultScheduleValue({ unscheduled: false }));
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
+  // Selection state (overdue mode only)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [showBulkConfirm, setShowBulkConfirm] = useState(false);
+
   // Fetch jobs for this action mode
   const { data, isLoading, isError, refetch } = useQuery<{ data: JobItem[] }>({
     queryKey: ["dashboard-action", mode],
@@ -126,11 +129,31 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
 
   const jobs: JobItem[] = data?.data ?? [];
 
-  // Reset expanded state when modal opens/closes or mode changes
+  // Selection helpers
+  const allSelected = jobs.length > 0 && selectedIds.size === jobs.length;
+  const someSelected = selectedIds.size > 0;
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const toggleSelectAll = () => {
+    if (allSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(jobs.map(j => j.id)));
+    }
+  };
+
+  // Reset state when modal opens/closes or mode changes
   const handleOpenChange = useCallback((v: boolean) => {
     if (!v) {
       setExpandedJobId(null);
       setScheduleValue(createDefaultScheduleValue({ unscheduled: false }));
+      setSelectedIds(new Set());
+      setShowBulkConfirm(false);
     }
     onOpenChange(v);
   }, [onOpenChange]);
@@ -144,7 +167,6 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
         toast({ title: "Scheduled", description: `Job scheduled successfully.` });
         setExpandedJobId(null);
         setScheduleValue(createDefaultScheduleValue({ unscheduled: false }));
-        // Refresh modal list + dashboard counts
         refetch();
         queryClient.invalidateQueries({ queryKey: ["dashboard"] });
         queryClient.invalidateQueries({ queryKey: ["attention"] });
@@ -167,7 +189,6 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
         body: JSON.stringify({ markJobCompleted: false }),
       });
       toast({ title: "Invoice Created", description: `Invoice #${result.invoiceNumber || ""} created.` });
-      // Refresh modal list + dashboard counts
       refetch();
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["invoices"] });
@@ -179,6 +200,47 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
       setActionLoading(null);
     }
   }, [toast, refetch]);
+
+  // ── Bulk unschedule mutation (overdue mode) ──
+  interface BulkUnscheduleResponse {
+    totalCount: number;
+    successCount: number;
+    skippedCount: number;
+    failedCount: number;
+    succeeded: string[];
+    skipped: { jobId: string; reason: string }[];
+    failed: { jobId: string; reason: string }[];
+  }
+
+  const bulkUnscheduleMutation = useMutation({
+    mutationFn: (jobIds: string[]) =>
+      apiRequest<BulkUnscheduleResponse>(
+        "/api/calendar/bulk-unschedule",
+        { method: "POST", body: JSON.stringify({ jobIds }) }
+      ),
+    onSuccess: (data) => {
+      // Truthful messaging based on actual results
+      if (data.failedCount === 0 && data.skippedCount === 0) {
+        toast({ title: "Jobs Moved to Unscheduled", description: `${data.successCount} jobs moved to the unscheduled queue.` });
+      } else {
+        const parts: string[] = [`${data.successCount} moved`];
+        if (data.skippedCount > 0) parts.push(`${data.skippedCount} skipped`);
+        if (data.failedCount > 0) parts.push(`${data.failedCount} failed`);
+        toast({ title: "Bulk Unschedule Complete", description: parts.join(", ") + ".", variant: data.failedCount > 0 ? "destructive" : undefined });
+      }
+      setSelectedIds(new Set());
+      setShowBulkConfirm(false);
+      refetch();
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["attention"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/calendar/unscheduled"] });
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+    },
+    onError: (err: any) => {
+      toast({ title: "Error", description: err.message || "Bulk unschedule failed", variant: "destructive" });
+    },
+  });
 
   // Toggle inline scheduler for a row
   const toggleExpand = useCallback((jobId: string) => {
@@ -193,6 +255,7 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
 
   const isScheduleMode = mode !== "ready_to_invoice" && mode !== "on_hold";
   const isOnHoldMode = mode === "on_hold";
+  const isOverdueMode = mode === "overdue";
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -207,6 +270,33 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
               </span>
             )}
           </DialogTitle>
+          {/* Bulk controls for overdue mode */}
+          {isOverdueMode && jobs.length > 0 && !isLoading && (
+            <div className="flex items-center justify-between mt-2">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <Checkbox
+                  checked={allSelected}
+                  onCheckedChange={toggleSelectAll}
+                  disabled={bulkUnscheduleMutation.isPending}
+                  className="h-3.5 w-3.5"
+                />
+                <span className="text-xs text-[#4b5563]">
+                  {someSelected ? `${selectedIds.size} of ${jobs.length} shown selected` : `Select all ${jobs.length} shown`}
+                </span>
+              </label>
+              {someSelected && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs gap-1"
+                  onClick={() => setShowBulkConfirm(true)}
+                  disabled={bulkUnscheduleMutation.isPending}
+                >
+                  Move {selectedIds.size} to Unscheduled
+                </Button>
+              )}
+            </div>
+          )}
         </DialogHeader>
 
         {/* Scrollable body */}
@@ -231,6 +321,17 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
                   <div key={job.id} className={`${i < jobs.length - 1 ? "border-b border-[#e5e7eb]" : ""}`}>
                     {/* Job row */}
                     <div className="flex items-center justify-between px-5 py-3 hover:bg-[#f8fafc] transition-colors">
+                      {/* Checkbox (overdue mode only) */}
+                      {isOverdueMode && (
+                        <div className="mr-3 shrink-0">
+                          <Checkbox
+                            checked={selectedIds.has(job.id)}
+                            onCheckedChange={() => toggleSelect(job.id)}
+                            disabled={bulkUnscheduleMutation.isPending}
+                            className="h-3.5 w-3.5"
+                          />
+                        </div>
+                      )}
                       <div className="min-w-0 flex-1 mr-3">
                         <div className="flex items-center gap-2">
                           <span className="text-xs font-bold text-[#4b5563] tabular-nums">#{job.jobNumber}</span>
@@ -240,7 +341,6 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
                           {location}{city}
                           {job.holdReason && <span className="ml-2 text-orange-600">· Hold: {job.holdReason.replace(/_/g, " ")}</span>}
                         </div>
-                        {/* On-hold context: show hold notes when present */}
                         {isOnHoldMode && job.holdNotes && (
                           <div className="text-xs text-[#4b5563] mt-1 line-clamp-2 italic">
                             {job.holdNotes}
@@ -259,7 +359,6 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
                             {isExpanded ? "Cancel" : config.actionLabel}
                           </Button>
                         ) : isOnHoldMode ? (
-                          /* On-hold primary action: Open Job for triage (hold reasons vary) */
                           <Button
                             size="sm"
                             onClick={() => { handleOpenChange(false); setLocation(`/jobs/${job.id}`); }}
@@ -347,6 +446,32 @@ export function DashboardActionModal({ open, onOpenChange, mode }: DashboardActi
           </Button>
         </div>
       </DialogContent>
+
+      {/* Bulk unschedule confirmation dialog */}
+      {showBulkConfirm && (
+        <Dialog open={showBulkConfirm} onOpenChange={(v) => { if (!v) setShowBulkConfirm(false); }}>
+          <DialogContent className="sm:max-w-[440px]">
+            <DialogHeader>
+              <DialogTitle>Move {selectedIds.size} jobs to Unscheduled?</DialogTitle>
+              <DialogDescription>
+                The scheduled date and time will be removed from {selectedIds.size === 1 ? "this job" : `these ${selectedIds.size} jobs`}.
+                They will appear in the Unscheduled queue for future scheduling.
+                This does not delete any jobs.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter className="gap-2 sm:gap-0">
+              <Button variant="outline" onClick={() => setShowBulkConfirm(false)}>Cancel</Button>
+              <Button
+                onClick={() => bulkUnscheduleMutation.mutate(Array.from(selectedIds))}
+                disabled={bulkUnscheduleMutation.isPending}
+              >
+                {bulkUnscheduleMutation.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" />}
+                Confirm Move
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </Dialog>
   );
 }

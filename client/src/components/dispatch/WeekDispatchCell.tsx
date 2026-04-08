@@ -18,7 +18,7 @@ import { UNASSIGNED_COLOR } from "@shared/colors";
 import { clampResizeEnd } from "./dispatchOverlapUtils";
 import { VisitCardContent } from "./VisitCardContent";
 import { ClipboardList, Truck, User } from "lucide-react";
-import { useDispatchHover } from "./dispatchHoverContext";
+import { useHoverSetter, useIsVisitHovered } from "./dispatchHoverContext";
 
 type Props = {
   dayKey: string;
@@ -144,8 +144,9 @@ function WeekCalendarVisitBlock({ visit, top, height, left, width, isSelected, i
   /** 2026-03-31: Assigned technician color for left accent */
   techColor?: string;
 }) {
-  const { hoveredVisitId, setHoveredVisitId } = useDispatchHover();
-  const isMapHovered = hoveredVisitId === visit.id;
+  // Per-id hover subscription: this cell only re-renders when ITS hover state flips.
+  const setHoveredVisitId = useHoverSetter();
+  const isMapHovered = useIsVisitHovered(visit.id);
   const isCompleted = isCompletedStatus(visit.status);
   const isUnassigned = !visit.technicianId && visit.technicianIds.length === 0;
   const dragData: DispatchDragData = {

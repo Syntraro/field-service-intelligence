@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { DollarSign, Clock, FileText, AlertTriangle } from "lucide-react";
+import { formatCurrency } from "@/lib/formatters";
 
 interface ARAgingInvoice {
   id: string;
@@ -55,14 +56,6 @@ const BUCKET_COLORS: Record<string, string> = {
   "61-90": "bg-orange-500",
   "90+": "bg-red-500",
 };
-
-function formatCurrency(value: string | number): string {
-  const num = typeof value === "string" ? parseFloat(value) : value;
-  return new Intl.NumberFormat("en-CA", {
-    style: "currency",
-    currency: "CAD",
-  }).format(num);
-}
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return "-";

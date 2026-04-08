@@ -12,8 +12,9 @@
  *   - Visit card tap navigates to /tech/visit/:id (detail stays mock until Phase 2)
  */
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { MobileShell } from "../components/MobileShell";
+import { DaySelector, toDateStr } from "../components/DaySelector";
 import { useTodayVisits, type TodayVisit } from "../hooks/useTodayVisits";
 import { useTechShift } from "../hooks/useTechShift";
 import { useElapsedTimer } from "../hooks/useElapsedTimer";
@@ -23,7 +24,7 @@ import {
 import {
   CalendarDays, MapPin, ChevronRight, Clock,
   LogIn, LogOut, Navigation,
-  Loader2, RefreshCw, Plus, Briefcase, UserPlus, X,
+  Loader2, RefreshCw, Plus, Briefcase, UserPlus, FileText, X,
 } from "lucide-react";
 import { useLocation } from "wouter";
 
@@ -116,11 +117,11 @@ function ErrorState({ onRetry }: { onRetry: () => void }) {
 
 // ── Empty state ──
 
-function EmptyState() {
+function EmptyState({ dateLabel }: { dateLabel?: string }) {
   return (
     <div className="flex flex-col items-center justify-center py-16 text-slate-400">
       <CalendarDays className="h-10 w-10 mb-2 opacity-40" />
-      <p className="text-sm font-medium">No jobs scheduled today</p>
+      <p className="text-sm font-medium">No jobs scheduled{dateLabel ? ` for ${dateLabel}` : ""}</p>
     </div>
   );
 }
@@ -129,7 +130,17 @@ function EmptyState() {
 
 export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) {
   const [, setLocation] = useLocation();
-  const { visits, isLoading, isError, refetch } = useTodayVisits();
+
+  // Date navigation state
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const isSelectedToday = toDateStr(selectedDate) === toDateStr(new Date());
+  const dateParam = isSelectedToday ? undefined : toDateStr(selectedDate);
+
+  const goToPrevDay = useCallback(() => setSelectedDate(d => { const n = new Date(d); n.setDate(n.getDate() - 1); return n; }), []);
+  const goToNextDay = useCallback(() => setSelectedDate(d => { const n = new Date(d); n.setDate(n.getDate() + 1); return n; }), []);
+  const goToToday = useCallback(() => setSelectedDate(new Date()), []);
+
+  const { visits, isLoading, isError, refetch } = useTodayVisits(dateParam);
   const { isClockedIn, clockInAt, clockIn, clockOut } = useTechShift();
   const { formatted: elapsed } = useElapsedTimer(clockInAt, isClockedIn, 10_000);
   const [shiftError, setShiftError] = useState<string | null>(null);
@@ -153,6 +164,9 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
 
   return (
     <MobileShell showNav>
+      {/* Date navigation */}
+      <DaySelector selectedDate={selectedDate} onSelect={setSelectedDate} onPrev={goToPrevDay} onNext={goToNextDay} onToday={goToToday} />
+
       {/* Clock-in banner */}
       {!isClockedIn && (
         <div className="bg-slate-100 px-3 py-2.5 flex items-center justify-between border-b border-slate-200">
@@ -212,7 +226,7 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
       ) : isError ? (
         <ErrorState onRetry={refetch} />
       ) : visits.length === 0 ? (
-        <EmptyState />
+        <EmptyState dateLabel={isSelectedToday ? undefined : selectedDate.toLocaleDateString([], { month: "short", day: "numeric" })} />
       ) : (
         <div className="p-2.5 space-y-1.5">
           {visits.map(v => (
@@ -247,6 +261,18 @@ export function TodayPage({ onVisitTap }: { onVisitTap: (id: string) => void }) 
               <div className="text-left">
                 <p className="text-sm font-semibold text-slate-800">Create Job</p>
                 <p className="text-xs text-slate-400">New work order with scheduling</p>
+              </div>
+            </button>
+            <button
+              onClick={() => { setShowCreateMenu(false); setLocation("/tech/create-lead"); }}
+              className="w-full flex items-center gap-3 px-3 py-3 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 active:bg-slate-100 transition-colors"
+            >
+              <div className="h-9 w-9 rounded-lg bg-amber-50 flex items-center justify-center shrink-0">
+                <FileText className="h-4.5 w-4.5 text-amber-600" style={{ width: 18, height: 18 }} />
+              </div>
+              <div className="text-left">
+                <p className="text-sm font-semibold text-slate-800">Create Lead</p>
+                <p className="text-xs text-slate-400">Report an opportunity to the office</p>
               </div>
             </button>
             <button

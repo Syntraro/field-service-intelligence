@@ -242,6 +242,8 @@ export const auditActionEnum = [
   "ROLE_CHANGED",
   "USER_ENABLED",
   "USER_DISABLED",
+  "INVITATION_CREATED",
+  "INVITATION_RESENT",
 ] as const;
 export type AuditAction = typeof auditActionEnum[number];
 
@@ -3879,20 +3881,20 @@ export const approveWeekRequestSchema = z.object({
 });
 export type ApproveWeekRequest = z.infer<typeof approveWeekRequestSchema>;
 
-// Daily payroll breakdown — simplified to time_entries only (2026-04-03)
+// Daily payroll breakdown — work_sessions source of truth (realigned 2026-04-06)
 export interface DailyPayrollBreakdown {
   date: string; // YYYY-MM-DD
   dayOfWeek: string; // Mon, Tue, etc.
-  totalMinutes: number; // Sum of completed time_entries.durationMinutes
+  totalMinutes: number; // Sum of completed work_sessions duration (clockOut - clockIn - breaks)
 }
 
-// Technician weekly payroll summary — time_entries as sole source of truth (2026-04-03)
+// Technician weekly payroll summary — work_sessions source of truth (realigned 2026-04-06)
 export interface TechnicianWeeklySummary {
   technicianId: string;
   technicianName: string | null;
   weekStart: string;
   weekEnd: string;
-  totalMinutes: number; // Weekly total from time_entries
+  totalMinutes: number; // Weekly total from work_sessions
   daily: DailyPayrollBreakdown[];
   approved: boolean;
   approvedAt: Date | null;
@@ -4817,3 +4819,16 @@ export const updateLeadSchema = z.object({
 export type InsertLead = z.infer<typeof insertLeadSchema>;
 export type UpdateLead = z.infer<typeof updateLeadSchema>;
 export type Lead = typeof leads.$inferSelect;
+
+// ── Lead Notes ──
+export const leadNotes = pgTable("lead_notes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  companyId: varchar("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  leadId: varchar("lead_id").notNull().references(() => leads.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  noteText: text("note_text").notNull(),
+  createdAt: timestamp("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: timestamp("updated_at"),
+});
+
+export type LeadNote = typeof leadNotes.$inferSelect;

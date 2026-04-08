@@ -78,15 +78,21 @@ export default function ManageRoles() {
 
   const { data: roles = [], isLoading } = useQuery<Role[]>({
     queryKey: ["/api/roles"],
+    // Admin reference data; rarely changes; mutations invalidate explicitly
+    staleTime: 10 * 60_000,
   });
 
   const { data: permissions = [] } = useQuery<Permission[]>({
     queryKey: ["/api/permissions"],
+    // Static reference data; effectively constant
+    staleTime: 10 * 60_000,
   });
 
   const { data: teamMembers = [] } = useQuery<Array<{ roleId?: string }>>({
-  queryKey: ["/api/team"],
-});
+    queryKey: ["/api/team"],
+    // Slow-changing admin reference; mutations to team explicitly invalidate
+    staleTime: 10 * 60_000,
+  });
 
 
   const roleId = selectedRole?.id;
@@ -94,6 +100,8 @@ export default function ManageRoles() {
 const { data: currentRolePermissions = [] } = useQuery<string[]>({
   queryKey: roleId ? [`/api/roles/${roleId}/permissions`] : [],
   enabled: !!roleId,
+  // Same admin reference class as roles/permissions
+  staleTime: 10 * 60_000,
 });
 
 

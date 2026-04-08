@@ -95,7 +95,7 @@ function isSupplierType(type: string): boolean {
   return type === "SUPPLIER_VISIT" || type === "supplier_run";
 }
 
-const DURATION_OPTIONS = [15, 30, 45, 60, 90, 120, 150, 180, 240, 300, 360, 480];
+import { DURATION_MINUTES as DURATION_OPTIONS } from "@/lib/schedulingConstants";
 
 // ============================================================================
 // Shared sub-components

@@ -17,7 +17,7 @@ import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import type { AuthedRequest } from "../auth/tenantIsolation";
 import { db } from "../db";
-import { companySettings, timeEntries, jobs, clients, jobParts, items, jobEquipment, jobVisits, locationEquipment } from "@shared/schema";
+import { timeEntries, jobs, clients, jobParts, items, jobEquipment, jobVisits, locationEquipment } from "@shared/schema";
 import { jobNotesRepository } from "../storage/jobNotes";
 import { jobRepository } from "../storage/jobs";
 import { and, eq, sql, gte, lt, asc, isNull } from "drizzle-orm";
@@ -28,6 +28,7 @@ import { getVisitsForUserInRange } from "../storage/visits";
 import * as lifecycle from "../services/jobLifecycleOrchestrator";
 import { emitDispatch } from "../lib/dispatchBus";
 import { schedulingRepository } from "../storage/scheduling";
+import { companyRepository } from "../storage/company";
 import { normalizeScheduleTimes } from "../domain/scheduling";
 import { logEventAsync } from "../lib/events";
 import { recomputeAttentionForEntity } from "../lib/attentionRules";
@@ -77,15 +78,14 @@ function dayBoundsInTz(dateStr: string, tz: string) {
   return { start, end, dateStr };
 }
 
-/** Fetch the tenant timezone from company_settings, defaulting to America/Toronto. */
-async function getTenantTimezone(companyId: string): Promise<string> {
-  const [row] = await db
-    .select({ timezone: companySettings.timezone })
-    .from(companySettings)
-    .where(eq(companySettings.companyId, companyId))
-    .limit(1);
-  return row?.timezone || "America/Toronto";
-}
+/**
+ * Fetch the tenant timezone via the canonical companyRepository helper.
+ * 2026-04-08: Replaced inline db query with companyRepository.getCompanyTimezone()
+ * which adds caching (30 min) and timezone validation. Same fallback semantics
+ * (America/Toronto) — see server/domain/scheduling.ts:DEFAULT_TIMEZONE.
+ */
+const getTenantTimezone = (companyId: string): Promise<string> =>
+  companyRepository.getCompanyTimezone(companyId);
 
 // ============================================================================
 // ASSIGNMENT GUARDS — shared by all tech mutation routes
@@ -135,10 +135,11 @@ router.get(
     const userId = req.user!.id;
     const user = req.user as any;
 
-    // Use tenant timezone for "today" calculation
+    // Use tenant timezone for date calculation; optional ?date=YYYY-MM-DD param
     const tz = await getTenantTimezone(companyId);
-    const todayStr = todayInTimezone(tz);
-    const { start, end } = dayBoundsInTz(todayStr, tz);
+    const dateParam = req.query.date as string | undefined;
+    const dateStr = dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : todayInTimezone(tz);
+    const { start, end } = dayBoundsInTz(dateStr, tz);
 
     // Canonical visit query from shared module — joins job + location, filters by assignment
     const visits = await getVisitsForUserInRange(companyId, userId, start, end);
@@ -153,7 +154,7 @@ router.get(
         isSchedulable: user.isSchedulable,
         companyId,
         timezone: tz,
-        todayStr,
+        dateStr,
         dayBoundsUTC: { start: start.toISOString(), end: end.toISOString() },
         visitsReturned: visits.length,
       }));
@@ -380,6 +381,9 @@ router.post(
     // Route through canonical storage method — equipmentId validated against job in repository
     const note = await jobNotesRepository.createJobNote(companyId, visit.jobId, userId, text.trim(), equipmentId ?? null);
 
+    // Realtime: notify office surfaces (Job Detail notes panel) about new note
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: req.params.visitId, ts: new Date().toISOString() });
+
     res.status(201).json(note);
   })
 );
@@ -395,10 +399,12 @@ router.get(
     const companyId = req.companyId!;
     const userId = req.user!.id;
 
-    // Get today's status (includes clock in/out + entries)
+    // Get today's status using tenant timezone for correct day boundary
+    const tz = await getTenantTimezone(companyId);
+    const todayStr = todayInTimezone(tz);
+    const { start: tzStart, end: tzEnd } = dayBoundsInTz(todayStr, tz);
     const todayStatus = await timeTrackingRepository.getTechnicianTodayStatus(
-      companyId,
-      userId
+      companyId, userId, todayStr, tzStart, tzEnd
     );
 
     // Enrich today's entries with minimal job context (same pattern as day endpoint)
@@ -436,18 +442,14 @@ router.get(
     const weekStart = monday.toISOString().split("T")[0];
     const weekEnd = sunday.toISOString().split("T")[0];
 
-    // Query week's total from time entries
-    const weekResult = await db.execute(sql`
-      SELECT COALESCE(SUM(duration_minutes), 0) AS total_minutes
-      FROM time_entries
-      WHERE company_id = ${companyId}
-        AND technician_id = ${userId}
-        AND start_at >= ${monday}
-        AND start_at <= ${sunday}
-        AND duration_minutes IS NOT NULL
-    `);
-
-    const weekTotalMinutes = Number(weekResult.rows[0]?.total_minutes) || 0;
+    // Week total from work_sessions (payroll source of truth)
+    const mondayStr = monday.toISOString().split("T")[0];
+    const sundayStr = new Date(sunday.getTime() + 86400000).toISOString().split("T")[0];
+    const weekSessions = await timeTrackingRepository.getWorkSessionsForTechnician(
+      companyId, userId, mondayStr, sundayStr
+    );
+    const { sumSessionMinutes: sumSessions } = await import("../storage/timeTracking");
+    const weekTotalMinutes = sumSessions(weekSessions);
 
     res.json({
       today: {
@@ -481,7 +483,9 @@ router.get(
 
     const { date } = validateSchema(dayQuerySchema, req.query);
 
-    const dayStart = new Date(`${date}T00:00:00Z`);
+    // Use tenant timezone for day boundaries (not UTC midnight)
+    const tz = await getTenantTimezone(companyId);
+    const { start: dayStart, end: dayEnd } = dayBoundsInTz(date, tz);
     const nextDayStr = new Date(dayStart.getTime() + 86400000).toISOString().split("T")[0];
 
     // Work session for this date (getWorkSessionsForTechnician uses gte/lt on workDate)
@@ -517,19 +521,21 @@ router.get(
           eq(timeEntries.companyId, companyId),
           eq(timeEntries.technicianId, userId),
           gte(timeEntries.startAt, dayStart),
-          lt(timeEntries.startAt, new Date(dayStart.getTime() + 86400000))
+          lt(timeEntries.startAt, dayEnd)
         )
       )
       .orderBy(asc(timeEntries.startAt));
 
-    const totalMinutes = rows.reduce((sum, e) => sum + (e.durationMinutes ?? 0), 0);
+    // Worked hours from work_sessions (payroll source of truth); time_entries remain as breakdown
+    const { sumSessionMinutes } = await import("../storage/timeTracking");
+    const workedMinutes = sumSessionMinutes(sessions);
 
     res.json({
       date,
       session,
       entries: rows,
       summary: {
-        totalMinutes,
+        totalMinutes: workedMinutes,
         entriesCount: rows.length,
       },
     });
@@ -558,8 +564,12 @@ router.post(
     const { productId, quantity, equipmentId } = validateSchema(addPartSchema, req.body);
 
     // Validate product exists and belongs to company
+    // 2026-04-08: P8 — Now also fetches `cost` so we can hydrate JobPart.unitCost
+    // from the catalog. Previously this select omitted `cost` and tech-added
+    // parts always had unitCost = NULL → broken profit margin calculations
+    // downstream in PartsBillingCard.
     const [product] = await db
-      .select({ id: items.id, name: items.name, unitPrice: items.unitPrice })
+      .select({ id: items.id, name: items.name, unitPrice: items.unitPrice, cost: items.cost })
       .from(items)
       .where(and(eq(items.id, productId), eq(items.companyId, companyId), isNull(items.deletedAt)))
       .limit(1);
@@ -579,7 +589,9 @@ router.post(
       if (!linked) throw createError(400, "Equipment is not linked to this job");
     }
 
-    // Write to canonical job_parts table
+    // Write to canonical job_parts table.
+    // 2026-04-08: P8 — Hydrates `unitCost` from `product.cost` so tech-added
+    // parts carry their cost basis. Previously omitted, leaving unitCost NULL.
     const values: Record<string, unknown> = {
       companyId,
       jobId: visit.jobId,
@@ -589,11 +601,15 @@ router.post(
       quantity,
     };
     if (product.unitPrice != null) values.unitPrice = product.unitPrice;
+    if (product.cost != null) values.unitCost = product.cost;
 
     const [part] = await db
       .insert(jobParts)
       .values(values as any)
       .returning();
+
+    // Realtime: notify office surfaces (Parts panel on Job Detail) about new part
+    emitDispatch(companyId, { scope: "calendar", entityType: "visit", entityId: req.params.visitId, ts: new Date().toISOString() });
 
     res.status(201).json(part);
   })
@@ -749,7 +765,17 @@ router.post(
 
 // ============================================================================
 // POST /api/tech/items — Create a new catalog item (tech-scoped)
-// Reuses canonical storage.createItem. Minimal fields only.
+// ----------------------------------------------------------------------------
+// This is NOT a parallel item-store; it is an auth-scoped shim that funnels
+// straight into the canonical `storage.createItem` (ItemRepository) below.
+// The reason it exists separately from `POST /api/items` is purely the auth
+// gate: technicians cannot satisfy MANAGER_ROLES on the canonical route, so
+// we accept a reduced field set under `requireSchedulable`. Both routes write
+// to the same `items` table via the same repository.
+//
+// 2026-04-08: P6 — Verified intentional. PartRepository was deleted in P4;
+// there is no shadow code path. Tech-created items appear in the office
+// catalog immediately because both routes use ItemRepository.
 // ============================================================================
 
 const techCreateItemSchema = z.object({

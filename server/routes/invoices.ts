@@ -25,12 +25,18 @@ import {
   isBillingImpactingPatch,
 } from "../utils/qboInvoiceLock";
 import { generateInvoicePdf } from "../services/invoicePdfService";
+import {
+  isInvoiceTerminal, isInvoiceDraft, canMarkInvoiceSent, canUndoInvoiceSent,
+  isInvoiceAwaitingPayment, isInvoicePartialPaid,
+} from "../lib/invoicePredicates";
 // Phase 1 Architecture: Event Log
 import { logEventAsync } from "../lib/events";
 import * as lifecycle from "../services/jobLifecycleOrchestrator";
 // Phase 5 Step A4: canonical invoice feed builders
 import { getQueryCtx } from "../lib/queryCtx";
 import { getInvoicesFeed, getInvoiceStats as getCanonicalInvoiceStats, UNPAID_INVOICE_STATUSES } from "../storage/invoicesFeed";
+// 2026-04-08: P7 — Canonical line-item input schema (shared with quotes/jobs)
+import { canonicalLineItemInput } from "@shared/lineItem";
 
 const router = Router();
 
@@ -47,19 +53,13 @@ const qboOverrideSchema = z.object({
   overrideReason: z.string().min(10).max(500).optional(),
 }).strict();
 
-const createInvoiceLineSchema = z.object({
-  description: z.string().min(1).max(500),
-  quantity: z.string().regex(/^\d+(\.\d{1,2})?$/).optional().default("1"),
-  unitPrice: z.number().min(0).max(999999.99),
-  lineSubtotal: z.number().min(0).max(999999.99),
-  taxRate: z.number().min(0).max(1).optional().default(0),
-  taxAmount: z.number().min(0).max(999999.99).optional().default(0),
-  lineTotal: z.number().min(0).max(999999.99),
+// 2026-04-08: P7 — Migrated to canonical line-item input.
+// All money fields are now strings post-validation (canonicalLineItemInput
+// transforms number → string for transitional clients still sending numbers).
+// The route's tax-application math at the POST handler below now uses
+// parseFloat()/String() to coerce in/out of the canonical string shape.
+const createInvoiceLineSchema = canonicalLineItemInput.extend({
   lineNumber: z.number().int().positive().optional(),
-  source: z.enum(["manual", "job"]).optional().default("manual"),
-  productId: z.string().uuid().nullable().optional(), // Link to items (Products & Services)
-  unitCost: z.number().min(0).max(999999.99).optional(), // Cost from product/service
-  // QBO override options
   overrideQboLock: z.boolean().optional(),
   overrideReason: z.string().min(10).max(500).optional(),
 }).strict();
@@ -119,8 +119,7 @@ function requireEditableStatus() {
       throw createError(404, "Invoice not found");
     }
 
-    const terminalStates = ["paid", "voided"];
-    if (terminalStates.includes(invoice.status)) {
+    if (isInvoiceTerminal(invoice.status)) {
       throw createError(409, `Invoice is ${invoice.status} and cannot be modified`);
     }
 
@@ -132,7 +131,7 @@ function requireEditableStatus() {
 
 /**
  * Middleware: Invoice must exist and not be in terminal state
- * Use for: notes-only updates on sent invoices
+ * Use for: notes-only updates on issued invoices
  */
 function requireInvoiceEditable() {
   return asyncHandler(async (req: AuthedRequest, res: Response, next: any) => {
@@ -142,8 +141,7 @@ function requireInvoiceEditable() {
       throw createError(404, "Invoice not found");
     }
 
-    const terminalStates = ["paid", "voided"];
-    if (terminalStates.includes(invoice.status)) {
+    if (isInvoiceTerminal(invoice.status)) {
       throw createError(409, `Invoice is ${invoice.status} and cannot be modified`);
     }
 
@@ -402,16 +400,22 @@ router.post("/:id/lines", requireRole(MANAGER_ROLES), requireEditableStatus(), a
   // Check lock (throws 409 if locked without override)
   checkQboLineItemLock(invoice, 'add', { overrideQboLock, overrideReason });
 
-  // If invoice has an active tax group and line doesn't specify tax, apply the group's rate
-  if (invoice.taxGroupId && (lineData.taxRate === undefined || lineData.taxRate === 0)) {
+  // If invoice has an active tax group and line doesn't specify tax, apply the group's rate.
+  // 2026-04-08: P7 — Canonical line-item input has money fields as strings; this
+  // block parses them to numbers for the math, then writes back as strings.
+  const incomingTaxRateNum = parseFloat(lineData.taxRate ?? "0");
+  if (invoice.taxGroupId && (!lineData.taxRate || incomingTaxRateNum === 0)) {
     const { taxRepository } = await import("../storage/tax");
     const group = await taxRepository.getTaxGroup(req.companyId!, invoice.taxGroupId);
     if (group && group.rates.length > 0) {
       const combinedRate = group.rates.reduce((s: number, r: any) => s + parseFloat(r.rate || "0"), 0);
       const taxRateDecimal = combinedRate / 100;
-      lineData.taxRate = taxRateDecimal;
-      lineData.taxAmount = Math.round(lineData.lineSubtotal * taxRateDecimal * 100) / 100;
-      lineData.lineTotal = Math.round((lineData.lineSubtotal + lineData.taxAmount) * 100) / 100;
+      const subtotalNum = parseFloat(lineData.lineSubtotal ?? "0");
+      const taxAmountNum = Math.round(subtotalNum * taxRateDecimal * 100) / 100;
+      const lineTotalNum = Math.round((subtotalNum + taxAmountNum) * 100) / 100;
+      lineData.taxRate = String(taxRateDecimal);
+      lineData.taxAmount = taxAmountNum.toFixed(2);
+      lineData.lineTotal = lineTotalNum.toFixed(2);
     }
   }
 
@@ -659,8 +663,21 @@ router.patch("/:id", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async
   const validated = validateSchema(updateInvoiceSchema, req.body);
   const { version, overrideQboLock, overrideReason, ...patch } = validated;
 
-  // Phase 11: Track if editing a sent invoice (for warning in response)
-  const isSentInvoice = invoice.status === "sent" || invoice.status === "partial_paid";
+  // 2026-04-08: Enforce canonical lifecycle transition rules when patch body
+  // contains a status field. Prevents illegal jumps (e.g. draft → paid via PATCH).
+  // Routes /send, /void, /sent toggle remain the canonical transition entry points;
+  // status in PATCH /:id is allowed only as a no-op (same status) or a legal transition.
+  if (patch.status !== undefined && patch.status !== invoice.status) {
+    try {
+      assertInvoiceStatusTransition(invoice.status as any, patch.status as any);
+    } catch (err: any) {
+      throw createError(409, err?.message || `Invalid status transition: ${invoice.status} → ${patch.status}`);
+    }
+  }
+
+  // Phase 11: Track if editing an issued invoice (for warning in response).
+  // Treats canonical "awaiting_payment" and legacy "sent" equivalently.
+  const isIssuedInvoice = isInvoiceAwaitingPayment(invoice.status) || isInvoicePartialPaid(invoice.status);
   const hasBillingChanges = isBillingImpactingPatch(patch);
 
   if (hasBillingChanges) {
@@ -730,9 +747,9 @@ router.patch("/:id", requireRole(MANAGER_ROLES), requireInvoiceEditable(), async
     if (warning) {
       response._qboWarning = warning;
     }
-    // Phase 11: Warn about editing sent invoice (not a hard error)
-    if (isSentInvoice && hasBillingChanges) {
-      response._sentInvoiceWarning = "This invoice has been sent to the client. You should re-send an updated invoice.";
+    // Phase 11: Warn about editing an issued invoice (not a hard error)
+    if (isIssuedInvoice && hasBillingChanges) {
+      response._sentInvoiceWarning = "This invoice has been issued to the client. You should re-send an updated invoice.";
     }
     response._qboLockInfo = getQboLockInfo(updated);
 
@@ -908,32 +925,34 @@ router.get("/:id/pdf", asyncHandler(async (req: AuthedRequest, res: Response) =>
   const companyId = req.companyId!;
   const invoiceId = req.params.id;
 
-  // Get invoice details
+  // Get invoice details first (needed to resolve dependent fetches)
   const invoice = await storage.getInvoice(companyId, invoiceId);
   if (!invoice) {
     throw createError(404, "Invoice not found");
   }
 
-  // Get invoice lines
-  const lines = await storage.getInvoiceLines(companyId, invoiceId);
+  // 2026-04-08: Parallelize independent reads — invoice lines, location, and
+  // company branding don't depend on each other. Reduces PDF latency by waiting
+  // only for the slowest of the three instead of summing all three.
+  const [lines, location, company] = await Promise.all([
+    storage.getInvoiceLines(companyId, invoiceId),
+    storage.getClient(companyId, invoice.locationId),
+    storage.getCompanyById(companyId),
+  ]);
 
-  // Get location
-  const location = await storage.getClient(companyId, invoice.locationId);
   if (!location) {
     throw createError(400, "Invoice has invalid location reference");
   }
+  if (!company) {
+    throw createError(500, "Company not found");
+  }
 
-  // Get customer company (if exists)
+  // Get customer company (if exists) — depends on location.parentCompanyId,
+  // so must run after location resolves.
   let customerCompany = null;
   const customerCompanyId = invoice.customerCompanyId || location.parentCompanyId;
   if (customerCompanyId) {
     customerCompany = await storage.getCustomerCompany(companyId, customerCompanyId);
-  }
-
-  // Get company info for branding
-  const company = await storage.getCompanyById(companyId);
-  if (!company) {
-    throw createError(500, "Company not found");
   }
 
   // Generate PDF
@@ -973,7 +992,7 @@ router.patch("/:id/sent", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
   const isSent = req.body?.isSent === true;
 
   // Terminal states cannot be modified
-  if (invoice.status === "paid" || invoice.status === "voided") {
+  if (isInvoiceTerminal(invoice.status)) {
     throw createError(409, `Cannot modify sent status on ${invoice.status} invoice`);
   }
 
@@ -982,7 +1001,7 @@ router.patch("/:id/sent", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
 
   if (isSent) {
     // Mark as sent: draft -> awaiting_payment
-    if (invoice.status !== "draft") {
+    if (!canMarkInvoiceSent(invoice.status)) {
       throw createError(400, "Only draft invoices can be marked as sent");
     }
 
@@ -1006,7 +1025,7 @@ router.patch("/:id/sent", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
     }
   } else {
     // Undo sent: awaiting_payment -> draft (only if no payments)
-    if (invoice.status !== "awaiting_payment" && invoice.status !== "sent") {
+    if (!canUndoInvoiceSent(invoice.status)) {
       throw createError(400, "Can only undo sent on invoices with sent/awaiting_payment status");
     }
 
@@ -1041,7 +1060,7 @@ router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authe
     throw createError(404, "Invoice not found");
   }
 
-  if (invoice.status !== "draft") {
+  if (!isInvoiceDraft(invoice.status)) {
     throw createError(409, "Only draft invoices can be deleted. Void the invoice instead.");
   }
 

@@ -1,6 +1,6 @@
 import { db } from "../db";
 import { eq, and, inArray, sql, or, ilike, gte, lte, isNull, isNotNull, desc } from "drizzle-orm";
-import { clients, clientParts, jobs, locationEquipment } from "@shared/schema";
+import { clients, clientParts, jobs, locationEquipment, items } from "@shared/schema";
 import type { InsertClient, Client, InsertLocationEquipment, UpdateLocationEquipment } from "@shared/schema";
 import { BaseRepository, clampLimit, clampOffset, escapeLike } from "./base";
 import { activeJobFilter } from "./jobFilters";
@@ -560,6 +560,34 @@ export class ClientRepository extends BaseRepository {
   }
 
   /**
+   * Validate that all location IDs belong to this company.
+   * Returns { valid, invalid } sets for IDOR prevention on bulk operations.
+   */
+  async validateLocationOwnership(companyId: string, locationIds: string[]): Promise<{ valid: Set<string>; invalid: string[] }> {
+    this.assertCompanyId(companyId);
+    if (locationIds.length === 0) return { valid: new Set(), invalid: [] };
+    const rows = await db.select({ id: clients.id }).from(clients)
+      .where(and(eq(clients.companyId, companyId), sql`${clients.id} = ANY(${locationIds})`));
+    const valid = new Set(rows.map(r => r.id));
+    const invalid = locationIds.filter(id => !valid.has(id));
+    return { valid, invalid };
+  }
+
+  /**
+   * Validate that all item/part IDs belong to this company.
+   * Returns { valid, invalid } sets for IDOR prevention on bulk operations.
+   */
+  async validateItemOwnership(companyId: string, itemIds: string[]): Promise<{ valid: Set<string>; invalid: string[] }> {
+    this.assertCompanyId(companyId);
+    if (itemIds.length === 0) return { valid: new Set(), invalid: [] };
+    const rows = await db.select({ id: items.id }).from(items)
+      .where(and(eq(items.companyId, companyId), sql`${items.id} = ANY(${itemIds})`));
+    const valid = new Set(rows.map(r => r.id));
+    const invalid = itemIds.filter(id => !valid.has(id));
+    return { valid, invalid };
+  }
+
+  /**
    * Bulk upsert location parts - OPTIMIZED (50x faster)
    * Uses locationId as the canonical reference
    */
@@ -656,7 +684,26 @@ export class ClientRepository extends BaseRepository {
   }
 
   /**
-   * Get single location equipment item
+   * Get single location equipment item (includes soft-deleted, for read-only history lookups).
+   * Use getLocationEquipmentById() for write operations that require isActive = true.
+   */
+  async getLocationEquipmentAny(companyId: string, equipmentId: string) {
+    this.assertCompanyId(companyId);
+    const rows = await db
+      .select()
+      .from(locationEquipment)
+      .where(
+        and(
+          eq(locationEquipment.companyId, companyId),
+          eq(locationEquipment.id, equipmentId),
+        )
+      )
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Get single active location equipment item (for write operations).
    */
   async getLocationEquipmentById(companyId: string, equipmentId: string) {
     this.assertCompanyId(companyId);

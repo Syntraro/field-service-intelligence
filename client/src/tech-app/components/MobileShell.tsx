@@ -6,13 +6,14 @@
  */
 
 import { useLocation } from "wouter";
-import { CalendarDays, Clock, LogOut } from "lucide-react";
+import { CalendarDays, Clock, Search, LogOut } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 
 // Only include nav items that resolve to real implemented routes
 const NAV_ITEMS = [
   { label: "Today", icon: CalendarDays, path: "/tech/today" },
   { label: "Timesheet", icon: Clock, path: "/tech/timesheet" },
+  { label: "Search", icon: Search, path: "/tech/search" },
 ] as const;
 
 export function MobileShell({ children, showNav, hideTopBar }: {

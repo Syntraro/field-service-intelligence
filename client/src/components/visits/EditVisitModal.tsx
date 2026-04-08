@@ -310,22 +310,21 @@ export function EditVisitModal({
     const wasUnscheduled = !visit?.scheduledStart;
     const techId = schedule.assignedTechnicianIds[0] || null;
 
-    // visitNotes saved via the direct PATCH endpoint. Equipment mutations go through
-    // canonical job_equipment routes (POST/DELETE /api/jobs/:jobId/equipment), NOT
-    // through the visit PATCH. job_equipment is the single source of truth.
+    // visitNotes flows through dispatch callbacks (visitNotes param → backend notes field).
+    // Equipment mutations go through canonical job_equipment routes, NOT the visit PATCH.
     const visitPayload = { visitNotes: visitNotes || null };
 
     if (startAt && endAt) {
       if (wasUnscheduled && onDispatchSchedule && techId) {
-        // Save equipment via separate PATCH since dispatch callbacks don't include it
-        editMutation.mutate(visitPayload);
+        // Single write: dispatch schedule callback carries visitNotes — no separate editMutation
+        // (dual-mutation caused version race → false "Conflict" toast)
         onDispatchSchedule({ jobId, visitId, technicianUserId: techId, startAt, endAt, visitNotes: visitNotes || null });
         if (onDispatchUpdateCrew && schedule.assignedTechnicianIds.length > 1) onDispatchUpdateCrew({ visitId, technicianUserIds: schedule.assignedTechnicianIds });
         if (!pendingConflictRef.current) onOpenChange(false); else { pendingConflictRef.current = false; setShowConflictAlert(true); }
         return;
       }
       if (!wasUnscheduled && onDispatchReschedule) {
-        editMutation.mutate(visitPayload);
+        // Single write: dispatch reschedule callback carries visitNotes — no separate editMutation
         onDispatchReschedule({ visitId, jobId, technicianUserId: techId, startAt, endAt, visitNotes: visitNotes || null });
         if (onDispatchUpdateCrew && schedule.assignedTechnicianIds.length > 1) onDispatchUpdateCrew({ visitId, technicianUserIds: schedule.assignedTechnicianIds });
         if (!pendingConflictRef.current) onOpenChange(false); else { pendingConflictRef.current = false; setShowConflictAlert(true); }
@@ -643,7 +642,7 @@ export function EditVisitModal({
                             <Input value={newItem.unitPrice} onChange={(e) => setNewItem(p => ({ ...p, unitPrice: e.target.value }))} className="h-7 text-xs text-right" placeholder="0.00" />
                             <span className="text-xs text-right text-slate-500">${calcTotal(newItem.quantity, newItem.unitPrice)}</span>
                             <div className="flex gap-0.5">
-                              <button onClick={handleSubmitNewItem} disabled={!newItem.description.trim()} className="h-6 w-6 flex items-center justify-center rounded hover:bg-emerald-100 text-emerald-600 disabled:text-slate-300 disabled:hover:bg-transparent transition-colors" title="Save">
+                              <button onClick={handleSubmitNewItem} disabled={!newItem.description.trim() || addLineItemMutation.isPending} className="h-6 w-6 flex items-center justify-center rounded hover:bg-emerald-100 text-emerald-600 disabled:text-slate-300 disabled:hover:bg-transparent transition-colors" title="Save">
                                 <Check className="h-3.5 w-3.5" />
                               </button>
                               <button onClick={cancelAddRow} className="h-6 w-6 flex items-center justify-center rounded hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors" title="Cancel">

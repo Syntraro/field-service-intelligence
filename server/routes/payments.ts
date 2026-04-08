@@ -14,6 +14,7 @@ import { validateSchema } from "../utils/validationHelpers";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { paymentRepository } from "../storage/payments";
 import { invoiceRepository } from "../storage/invoices";
+import { isInvoicePaid } from "../lib/invoicePredicates";
 import { paymentMethodEnum } from "@shared/schema";
 import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
@@ -76,7 +77,7 @@ router.post(
 
       // 2026-03-20 Phase 4A: Emit invoice.paid event if payment caused fully-paid status
       const postPaymentInvoice = await invoiceRepository.getInvoice(req.companyId!, req.params.invoiceId);
-      if (postPaymentInvoice?.status === "paid") {
+      if (postPaymentInvoice && isInvoicePaid(postPaymentInvoice.status)) {
         logEventAsync(getQueryCtx(req), {
           eventType: "invoice.paid",
           entityType: "invoice",

@@ -22,10 +22,13 @@ import type { QuoteStatus } from "@shared/schema";
 import { tasks } from "@shared/schema";
 import { eq, and, notInArray } from "drizzle-orm";
 import { db } from "../db";
-import * as taskService from "../services/tasks.service";
+import { taskRepository } from "../storage/tasks";
+import { isQuoteDraft, isQuoteSent, isQuoteApproved } from "../lib/quotePredicates";
 // Phase 1 Architecture: Event Log
 import { logEventAsync } from "../lib/events";
 import { getQueryCtx } from "../lib/queryCtx";
+// 2026-04-08: P7 — Canonical line-item input schema (shared with invoices/jobs)
+import { canonicalLineItemInput } from "@shared/lineItem";
 
 const router = Router();
 
@@ -76,17 +79,10 @@ const updateQuoteSchema = z.object({
   assessmentStatus: z.enum(["required"]).nullable().optional(),
 }).strict();
 
-const createQuoteLineSchema = z.object({
-  description: z.string().min(1).max(500),
-  quantity: z.string().regex(/^\d+(\.\d{1,2})?$/).optional().default("1"),
-  unitPrice: z.string().regex(/^\d+(\.\d{1,2})?$/).optional().default("0.00"),
-  lineSubtotal: z.string().regex(/^\d+(\.\d{1,2})?$/).optional().default("0.00"),
-  taxRate: z.string().regex(/^\d+(\.\d{1,4})?$/).optional().default("0.0000"),
-  taxAmount: z.string().regex(/^\d+(\.\d{1,2})?$/).optional().default("0.00"),
-  lineTotal: z.string().regex(/^\d+(\.\d{1,2})?$/).optional().default("0.00"),
-  lineItemType: z.enum(["service", "material", "fee", "discount"]).optional().default("service"),
-  productId: z.string().nullable().optional(),
-}).strict();
+// 2026-04-08: P7 — Migrated to canonical line-item input. The previous schema
+// was already string-based and matches canonical 1:1; the migration reduces it
+// to a single shared base. No route-specific extension fields needed for quotes.
+const createQuoteLineSchema = canonicalLineItemInput.strict();
 
 // ========================================
 // ROUTES
@@ -223,7 +219,7 @@ router.patch("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authed
   }
 
   // Only allow editing draft quotes
-  if (existing.status !== "draft") {
+  if (!isQuoteDraft(existing.status)) {
     throw createError(409, "Only draft quotes can be edited");
   }
 
@@ -259,7 +255,7 @@ router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authe
   }
 
   // Only allow deleting draft quotes
-  if (quote.status !== "draft") {
+  if (!isQuoteDraft(quote.status)) {
     throw createError(409, "Only draft quotes can be deleted");
   }
 
@@ -281,7 +277,7 @@ router.post("/:id/lines", requireRole(MANAGER_ROLES), asyncHandler(async (req: A
   if (!quote) {
     throw createError(404, "Quote not found");
   }
-  if (quote.status !== "draft") {
+  if (!isQuoteDraft(quote.status)) {
     throw createError(409, "Cannot add lines to non-draft quotes");
   }
 
@@ -301,7 +297,7 @@ router.patch("/:id/lines/:lineId", requireRole(MANAGER_ROLES), asyncHandler(asyn
   if (!quote) {
     throw createError(404, "Quote not found");
   }
-  if (quote.status !== "draft") {
+  if (!isQuoteDraft(quote.status)) {
     throw createError(409, "Cannot edit lines on non-draft quotes");
   }
 
@@ -325,7 +321,7 @@ router.delete("/:id/lines/:lineId", requireRole(MANAGER_ROLES), asyncHandler(asy
   if (!quote) {
     throw createError(404, "Quote not found");
   }
-  if (quote.status !== "draft") {
+  if (!isQuoteDraft(quote.status)) {
     throw createError(409, "Cannot remove lines from non-draft quotes");
   }
 
@@ -475,7 +471,7 @@ router.post("/:id/send", requireRole(MANAGER_ROLES), asyncHandler(async (req: Au
     throw createError(404, "Quote not found");
   }
 
-  if (quote.status !== "draft") {
+  if (!isQuoteDraft(quote.status)) {
     throw createError(400, "Only draft quotes can be sent");
   }
 
@@ -509,7 +505,7 @@ router.post("/:id/approve", requireRole(MANAGER_ROLES), asyncHandler(async (req:
 
   const quote = quoteDetails.quote;
 
-  if (quote.status !== "sent") {
+  if (!isQuoteSent(quote.status)) {
     throw createError(400, "Only sent quotes can be approved");
   }
 
@@ -548,7 +544,7 @@ router.post("/:id/decline", requireRole(MANAGER_ROLES), asyncHandler(async (req:
 
   const quote = quoteDetails.quote;
 
-  if (quote.status !== "sent") {
+  if (!isQuoteSent(quote.status)) {
     throw createError(400, "Only sent quotes can be declined");
   }
 
@@ -601,7 +597,7 @@ router.post("/:id/convert-to-job", requireRole(MANAGER_ROLES), asyncHandler(asyn
   const { quote, lines, location } = quoteDetails;
 
   // Only approved quotes can be converted
-  if (quote.status !== "approved") {
+  if (!isQuoteApproved(quote.status)) {
     throw createError(400, "Only approved quotes can be converted to jobs");
   }
 
@@ -725,7 +721,7 @@ router.post("/:id/assessment/schedule", requireRole(MANAGER_ROLES), asyncHandler
   const validated = validateSchema(scheduleAssessmentSchema, req.body);
 
   // Create the QUOTE_ASSESSMENT task via canonical task service
-  const task = await taskService.createTask(companyId, {
+  const task = await taskRepository.createTask(companyId, {
     createdByUserId: req.user!.id,
     type: "QUOTE_ASSESSMENT",
     title: `Quote Assessment — ${quote.quoteNumber || "Draft"}`,
@@ -762,7 +758,7 @@ router.post("/:id/assessment/complete", requireRole(MANAGER_ROLES), asyncHandler
   }
 
   // Complete the task via canonical task service
-  await taskService.closeTask(companyId, activeTask.id, req.user!.id);
+  await taskRepository.closeTask(companyId, activeTask.id, req.user!.id);
 
   // Update quote assessment status — orchestration ownership stays here
   await quoteRepository.updateQuote(companyId, quoteId, {

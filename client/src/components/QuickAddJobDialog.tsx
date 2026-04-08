@@ -44,7 +44,6 @@ import {
   CommandInput,
   CommandItem,
   CommandList,
-  CommandSeparator,
 } from "@/components/ui/command";
 import {
   Popover,
@@ -64,18 +63,11 @@ import { cn } from "@/lib/utils";
 import type { Job, InsertJob } from "@shared/schema";
 import { EquipmentPicker } from "@/components/EquipmentPicker";
 
-/** Shape returned by GET /api/clients/search-locations */
-interface LocationSearchResult {
-  id: string;
-  company_name: string;
-  location: string | null;
-  address: string | null;
-  city: string | null;
-  parent_company_id: string | null;
-  parent_company_name: string | null;
-  needs_details: boolean;
-  match_rank?: number;
-}
+import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
+import {
+  useLocationSearch, useLocationById, getLocationKey, getLocationLabel, getLocationDescription,
+  type LocationOption,
+} from "@/lib/entities/locationEntity";
 import {
   type JobScheduleValue,
   createDefaultScheduleValue,
@@ -88,28 +80,7 @@ import { getMemberDisplayName } from "@/lib/displayName";
 // Duration options (static) — time uses native input, no option list needed
 // ============================================================================
 
-const DURATION_OPTIONS = [
-  { value: 15, label: "15m" },
-  { value: 30, label: "30m" },
-  { value: 45, label: "45m" },
-  { value: 60, label: "1h" },
-  { value: 90, label: "1.5h" },
-  { value: 120, label: "2h" },
-  { value: 180, label: "3h" },
-  { value: 240, label: "4h" },
-  { value: 480, label: "8h" },
-];
-
-// Day-of-week labels for recurring job weekly schedule
-const DAYS_OF_WEEK = [
-  { value: 0, label: "Sun" },
-  { value: 1, label: "Mon" },
-  { value: 2, label: "Tue" },
-  { value: 3, label: "Wed" },
-  { value: 4, label: "Thu" },
-  { value: 5, label: "Fri" },
-  { value: 6, label: "Sat" },
-];
+import { DURATION_OPTIONS_SHORT as DURATION_OPTIONS, DAYS_OF_WEEK_SHORT as DAYS_OF_WEEK } from "@/lib/schedulingConstants";
 
 // ============================================================================
 // TechnicianMultiSelect — searchable popover with checkboxes
@@ -271,9 +242,9 @@ interface QuickAddJobDialogProps {
 export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, editJob, onSuccess, initialSchedule, mode = "standard" }: QuickAddJobDialogProps) {
   const { toast } = useToast();
   const { logActivity } = useActivityStore();
-  const [locationOpen, setLocationOpen] = useState(false);
-  const [quickCreateName, setQuickCreateName] = useState("");
-  const [showQuickCreate, setShowQuickCreate] = useState(false);
+  // Location selector state (canonical)
+  const [locationSearch, setLocationSearchText] = useState("");
+  const [selectedLocationOption, setSelectedLocationOption] = useState<LocationOption | null>(null);
   const isEditMode = !!editJob;
 
   const getDefaultFormData = () => ({
@@ -336,11 +307,8 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     if (!open) {
       setFormData(getDefaultFormData());
       setScheduleValue(createDefaultScheduleValue({ unscheduled: true }));
-      setLocationSearch("");
-      setDebouncedSearch("");
-      setLocationOpen(false);
-      setShowQuickCreate(false);
-      setQuickCreateName("");
+      setLocationSearchText("");
+      setSelectedLocationOption(null);
       setShowConflictAlert(false);
       setSelectedEquipmentIds([]);
       // Reset recurring state on close — recurring mode defaults ON
@@ -355,58 +323,12 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
     }
   }, [open, isRecurringMode]);
 
-  // ── Data queries ──
-  // Server-backed location search with surface-managed debounce.
-  // All ephemeral search state is local; query cache is cleaned on close.
-  const [locationSearch, setLocationSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
+  // ── Location search + resolution (canonical entity) ──
+  const { data: locationResults = [], isLoading: locationSearchLoading } = useLocationSearch(locationSearch, { enabled: open });
+  const { data: resolvedLocation } = useLocationById(formData.locationId && !selectedLocationOption ? formData.locationId : null);
 
-  // Debounce via surface controller — auto-cancelled on close/unmount
-  useEffect(() => {
-    surface.debounce("location-search", () => setDebouncedSearch(locationSearch), 300);
-  }, [locationSearch, surface]);
-
-  // Server search query — uses surface.signal to abort on close
-  const { data: searchResults = [], isFetching: isSearching } = useQuery<LocationSearchResult[]>({
-    queryKey: ["/api/clients/search-locations", debouncedSearch],
-    queryFn: async ({ signal }) => {
-      const q = encodeURIComponent(debouncedSearch);
-      const res = await fetch(`/api/clients/search-locations?q=${q}&limit=30`, { signal });
-      if (!res.ok) throw new Error("Search failed");
-      return res.json();
-    },
-    enabled: open,
-    staleTime: 10_000,
-  });
-
-  // Fetch selected location by ID if not already in search results
-  // (e.g., when editing a job or preselecting a location)
-  const { data: selectedLocationData } = useQuery<LocationSearchResult[]>({
-    queryKey: ["/api/clients/search-locations", "selected", formData.locationId],
-    queryFn: async ({ signal }) => {
-      const res = await fetch(`/api/clients/${formData.locationId}`, { signal });
-      if (!res.ok) return [];
-      const client = await res.json();
-      return [{
-        id: client.id,
-        company_name: client.companyName,
-        location: client.location,
-        address: client.address,
-        city: client.city,
-        parent_company_id: client.parentCompanyId,
-        parent_company_name: null,
-        needs_details: client.needsDetails,
-      }];
-    },
-    enabled: open && !!formData.locationId && !searchResults.some(r => r.id === formData.locationId),
-    staleTime: 30_000,
-  });
-
-  const selectedLocation = useMemo(() => {
-    const fromSearch = searchResults.find(r => r.id === formData.locationId);
-    if (fromSearch) return fromSearch;
-    return selectedLocationData?.[0] ?? null;
-  }, [searchResults, selectedLocationData, formData.locationId]);
+  // Derive effective selected location: user selection > resolved from ID > null
+  const selectedLocation = selectedLocationOption ?? resolvedLocation ?? null;
 
   // ── Schedule helpers ──
 
@@ -489,7 +411,7 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
         entityType: "job",
         entityId: job?.id || "",
         label: `Created Job${job?.jobNumber ? ` #${job.jobNumber}` : ""}`,
-        meta: selectedLocation?.company_name || formData.summary || undefined,
+        meta: selectedLocation?.companyName || formData.summary || undefined,
       });
 
       toast({
@@ -498,9 +420,9 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
           ? "Job has been added to the backlog."
           : "Job has been created and scheduled.",
       });
-      if (selectedLocation?.needs_details) {
-        // Use surface.timeout so this is auto-cancelled if dialog unmounts
-        const name = selectedLocation.company_name;
+      if (quickCreateClientMutation.isSuccess) {
+        // Reminder for quick-created clients that may need details completed
+        const name = selectedLocation?.companyName;
         surface.timeout("needs-details-reminder", () => {
           toast({
             title: "Reminder",
@@ -548,38 +470,27 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
 
   const quickCreateClientMutation = useMutation({
     mutationFn: async (companyName: string) => {
-      return await apiRequest<{ client: { id: string } }>("/api/clients/quick-create", {
+      return await apiRequest<{ client: { id: string; companyName?: string } }>("/api/clients/quick-create", {
         method: "POST",
         body: JSON.stringify({ companyName }),
       });
     },
-    onSuccess: (result) => {
+    onSuccess: (result, companyName) => {
       queryClient.invalidateQueries({ queryKey: ["/api/clients"] });
       queryClient.invalidateQueries({ queryKey: ["/api/clients/search-locations"] });
       if (result.client?.id) {
+        const loc: LocationOption = { id: result.client.id, companyName: result.client.companyName ?? companyName };
         setFormData(prev => ({ ...prev, locationId: result.client.id }));
-        logActivity({
-          type: "created",
-          entityType: "client",
-          entityId: result.client.id,
-          label: "Created Client",
-          meta: quickCreateName,
-        });
+        setSelectedLocationOption(loc);
+        setSelectedEquipmentIds([]);
+        logActivity({ type: "created", entityType: "client", entityId: result.client.id, label: "Created Client", meta: companyName });
       }
-      setShowQuickCreate(false);
-      setQuickCreateName("");
-      setLocationOpen(false);
       toast({ title: "Client Created", description: "Client has been quick-created. Remember to fill in details later!" });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message || "Failed to create client", variant: "destructive" });
     },
   });
-
-  const handleQuickCreateClient = () => {
-    if (!quickCreateName.trim()) return;
-    quickCreateClientMutation.mutate(quickCreateName.trim());
-  };
 
   // Apply recurrence preset — auto-configures kind/interval from preset selection
   const handlePresetChange = useCallback((preset: RecurrencePreset) => {
@@ -696,134 +607,27 @@ export function QuickAddJobDialog({ open, onOpenChange, preselectedLocationId, e
 
         <form onSubmit={handleSubmit} className="space-y-3">
           {/* ── Location ── */}
-          <div>
-            <Label htmlFor="location" className="text-xs font-medium mb-1 block">Location *</Label>
-            <Popover open={locationOpen} onOpenChange={setLocationOpen}>
-              <PopoverTrigger asChild>
-                <Button
-                  variant="outline"
-                  role="combobox"
-                  aria-expanded={locationOpen}
-                  className="w-full justify-between h-9 text-sm"
-                  data-testid="button-select-location"
-                >
-                  {selectedLocation ? (
-                    <span className="truncate">
-                      {selectedLocation.company_name}
-                      {selectedLocation.location && (
-                        <span className="text-muted-foreground ml-1">— {selectedLocation.location}</span>
-                      )}
-                    </span>
-                  ) : (
-                    <span className="text-muted-foreground">Select location...</span>
-                  )}
-                  <ChevronsUpDown className="ml-2 h-3.5 w-3.5 shrink-0 opacity-50" />
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
-                <Command shouldFilter={false}>
-                  <CommandInput
-                    placeholder="Search locations..."
-                    data-testid="input-search-locations"
-                    value={locationSearch}
-                    onValueChange={setLocationSearch}
-                  />
-                  <CommandList>
-                    <CommandEmpty>
-                      {isSearching ? "Searching..." : "No locations found."}
-                    </CommandEmpty>
-                    <CommandGroup>
-                      <CommandItem
-                        onSelect={() => setShowQuickCreate(true)}
-                        data-testid="option-quick-create-client"
-                        className="text-primary"
-                      >
-                        <Plus className="mr-2 h-4 w-4" />
-                        Add New Client...
-                      </CommandItem>
-                    </CommandGroup>
-                    <CommandSeparator />
-                    <CommandGroup heading="Locations">
-                      {searchResults.map(location => (
-                        <CommandItem
-                          key={location.id}
-                          value={location.id}
-                          onSelect={() => {
-                            setFormData(prev => ({ ...prev, locationId: location.id }));
-                            setSelectedEquipmentIds([]); // Reset equipment on location change
-                            setLocationOpen(false);
-                          }}
-                          data-testid={`option-location-${location.id}`}
-                        >
-                          <Check
-                            className={cn(
-                              "mr-2 h-3.5 w-3.5 shrink-0",
-                              formData.locationId === location.id ? "opacity-100" : "opacity-0"
-                            )}
-                          />
-                          <div className="flex flex-col min-w-0">
-                            <span className="truncate text-sm">
-                              {location.company_name}
-                              {location.location && location.location !== location.company_name && (
-                                <span className="text-muted-foreground font-normal"> — {location.location}</span>
-                              )}
-                            </span>
-                            {location.parent_company_name && location.parent_company_name !== location.company_name && (
-                              <span className="text-[10px] text-blue-600/70 truncate">{location.parent_company_name}</span>
-                            )}
-                            {location.address && (
-                              <span className="text-xs text-muted-foreground truncate">
-                                {[location.address, location.city].filter(Boolean).join(", ")}
-                              </span>
-                            )}
-                          </div>
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
-                  </CommandList>
-                </Command>
-                {showQuickCreate && (
-                  <div className="p-2 border-t">
-                    <div className="flex gap-2">
-                      <Input
-                        value={quickCreateName}
-                        onChange={(e) => setQuickCreateName(e.target.value)}
-                        placeholder="Enter client name..."
-                        className="h-8 text-sm"
-                        data-testid="input-quick-create-name"
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            handleQuickCreateClient();
-                          }
-                        }}
-                      />
-                      <Button
-                        type="button"
-                        size="sm"
-                        className="h-8"
-                        onClick={handleQuickCreateClient}
-                        disabled={!quickCreateName.trim() || quickCreateClientMutation.isPending}
-                        data-testid="btn-quick-create-submit"
-                      >
-                        {quickCreateClientMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : "Add"}
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        className="h-8"
-                        onClick={() => { setShowQuickCreate(false); setQuickCreateName(""); }}
-                        data-testid="btn-quick-create-cancel"
-                      >
-                        Cancel
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </PopoverContent>
-            </Popover>
-          </div>
+          {/* Canonical location selector */}
+          <CreateOrSelectField<LocationOption>
+            label="Location *"
+            value={selectedLocation}
+            onChange={(loc) => {
+              setSelectedLocationOption(loc);
+              setFormData(prev => ({ ...prev, locationId: loc?.id ?? "" }));
+              setSelectedEquipmentIds([]); // Reset equipment on location change
+            }}
+            searchResults={locationResults}
+            searchLoading={locationSearchLoading}
+            searchText={locationSearch}
+            onSearchTextChange={setLocationSearchText}
+            getKey={getLocationKey}
+            getLabel={getLocationLabel}
+            getDescription={getLocationDescription}
+            createLabel="Add New Client..."
+            onCreateNew={(text) => quickCreateClientMutation.mutate(text)}
+            placeholder="Search locations..."
+            disabled={isPending}
+          />
 
           {/* ── Equipment (optional) ── */}
           {!isEditMode && (

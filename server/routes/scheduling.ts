@@ -3,7 +3,6 @@ import { z } from "zod";
 import { sql } from "drizzle-orm";
 import { JOB_ACTIVE_SQL_J } from "../storage/jobFilters";
 import { requireRole } from "../auth/requireRole";
-import { db } from "../db";
 import { requireFeature } from "../auth/requireFeature";
 import { MANAGER_ROLES } from "../auth/roles";
 import { notificationService } from "../services/notificationService";
@@ -11,6 +10,7 @@ import { asyncHandler, createError } from "../middleware/errorHandler";
 import { validateSchema } from "../utils/validationHelpers";
 import { schedulingRepository, DEFAULT_CALENDAR_START_HOUR, DEFAULT_CALENDAR_END_HOUR, getDaySummary } from "../storage/scheduling";
 import { jobRepository } from "../storage/jobs"; // Needed for notification client name lookup
+import { jobVisitsRepository } from "../storage/jobVisits";
 import { companyRepository } from "../storage/company";
 import { teamRepository } from "../storage/team";
 // 2026-01-30: Removed validateSchedule import - conflict checking removed for performance
@@ -506,16 +506,6 @@ router.post(
 );
 
 // ============================================================================
-// REMOVED (2026-03-06): PATCH /api/calendar/schedule/:jobId
-// All callers migrated to PATCH /api/calendar/visit/:visitId/reschedule
-// ============================================================================
-
-// ============================================================================
-// REMOVED (2026-03-06): POST /api/calendar/unschedule/:jobId
-// All callers migrated to POST /api/calendar/visit/:visitId/unschedule
-// ============================================================================
-
-// ============================================================================
 // GET /api/calendar/unscheduled - Backlog Jobs
 // ============================================================================
 
@@ -653,11 +643,6 @@ router.get(
     });
   })
 );
-
-// ============================================================================
-// REMOVED (2026-03-06): POST /api/calendar/resize
-// All callers migrated to POST /api/calendar/visit/:visitId/resize
-// ============================================================================
 
 // ============================================================================
 // Phase 4: Visit-Centric Write Endpoints
@@ -801,6 +786,73 @@ router.post(
       // Return visit version (not job version) — calendar query returns visit_version
       version: result.visitVersion ?? result.version,
       status: result.status,
+    });
+  })
+);
+
+// ============================================================================
+// POST /api/calendar/bulk-unschedule - Bulk unschedule jobs by moving visits to backlog
+// Resolves active visit per job, calls canonical unscheduleVisit per visit.
+// ============================================================================
+
+const bulkUnscheduleSchema = z.object({
+  jobIds: z.array(z.string().uuid()).min(1).max(100),
+});
+
+router.post(
+  "/bulk-unschedule",
+  requireRole(MANAGER_ROLES),
+  asyncHandler(async (req: AuthedRequest, res: Response) => {
+    const companyId = req.companyId!;
+    assertCanEditSchedule(req.user);
+
+    const { jobIds } = validateSchema(bulkUnscheduleSchema, req.body);
+
+    const succeeded: string[] = [];
+    const skipped: { jobId: string; reason: string }[] = [];
+    const failed: { jobId: string; reason: string }[] = [];
+
+    for (const jobId of jobIds) {
+      try {
+        // Resolve active non-terminal visit for this job
+        const visit = await jobVisitsRepository.getCurrentEligibleVisit(companyId, jobId);
+        if (!visit) {
+          skipped.push({ jobId, reason: "No eligible visit found" });
+          continue;
+        }
+
+        // Call canonical unschedule with version for optimistic locking
+        await schedulingRepository.unscheduleVisit(companyId, visit.id, visit.version);
+
+        // Recompute attention for this job
+        recomputeAttentionForEntity(companyId, "job", jobId).catch(() => {});
+
+        succeeded.push(jobId);
+      } catch (err: any) {
+        failed.push({ jobId, reason: err.message || "Failed" });
+      }
+    }
+
+    // Emit dispatch signal once for the batch
+    emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: jobIds[0], ts: new Date().toISOString() });
+
+    // Log batch event
+    logEventAsync(getQueryCtx(req), {
+      eventType: "job.bulk_unscheduled",
+      entityType: "job",
+      entityId: jobIds[0],
+      summary: `Bulk unscheduled ${succeeded.length}/${jobIds.length} jobs (${skipped.length} skipped, ${failed.length} failed)`,
+      meta: { succeeded, skipped, failed },
+    });
+
+    res.json({
+      totalCount: jobIds.length,
+      successCount: succeeded.length,
+      skippedCount: skipped.length,
+      failedCount: failed.length,
+      succeeded,
+      skipped,
+      failed,
     });
   })
 );

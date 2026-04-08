@@ -131,6 +131,7 @@ export interface DetailEquipment {
 export interface DetailVisit {
   id: string;
   jobId: string;
+  locationId: string;
   status: string;
   jobTitle: string;
   jobDescription: string | null;
@@ -181,6 +182,7 @@ function toDetailVisit(data: VisitDetailResponse): DetailVisit {
   return {
     id: data.visit.id,
     jobId: data.visit.jobId,
+    locationId: data.location?.id ?? "",
     status: data.visit.status,
     jobTitle: data.job?.summary || `Job #${data.job?.jobNumber ?? "?"}`,
     jobDescription: data.job?.description ?? null,
@@ -265,111 +267,93 @@ export function useTechVisitDetail(visitId: string | undefined) {
     invalidateAfterAction();
   };
 
+  // Shared error handler for mutation failures — prevents silent errors
+  const handleMutationError = (err: any) => {
+    console.error("[TechVisitDetail] Mutation failed:", err?.message || err);
+  };
+
   // Action: Start Travel (scheduled → en_route)
   const startTravelMutation = useMutation({
-    mutationFn: () => apiRequest(`/api/tech/visits/${visitId}/en-route`, {
-      method: "POST",
-      body: JSON.stringify({}),
-    }),
+    mutationFn: () => apiRequest(`/api/tech/visits/${visitId}/en-route`, { method: "POST", body: JSON.stringify({}) }),
     onSuccess: applyVisitUpdate,
+    onError: handleMutationError,
   });
 
   // Action: Start Job / Check In (en_route → in_progress)
   const startJobMutation = useMutation({
-    mutationFn: () => apiRequest(`/api/tech/visits/${visitId}/start`, {
-      method: "POST",
-      body: JSON.stringify({}),
-    }),
+    mutationFn: () => apiRequest(`/api/tech/visits/${visitId}/start`, { method: "POST", body: JSON.stringify({}) }),
     onSuccess: applyVisitUpdate,
+    onError: handleMutationError,
   });
 
   // Action: Complete visit with outcome
   const completeMutation = useMutation({
     mutationFn: (payload: { outcome: string; outcomeNote?: string }) =>
-      apiRequest(`/api/tech/visits/${visitId}/complete`, {
-        method: "POST",
-        body: JSON.stringify(payload),
-      }),
+      apiRequest(`/api/tech/visits/${visitId}/complete`, { method: "POST", body: JSON.stringify(payload) }),
     onSuccess: (returned) => {
-      // Complete returns { visit, outcome, activeTimeEntry: null }
       queryClient.setQueryData<VisitDetailResponse>(queryKey, (old) => {
         if (!old) return old;
-        return {
-          ...old,
-          visit: { ...old.visit, ...returned.visit },
-          activeTimeEntry: null,
-        };
+        return { ...old, visit: { ...old.visit, ...returned.visit }, activeTimeEntry: null };
       });
       invalidateAfterAction();
     },
+    onError: handleMutationError,
   });
 
   // Action: Add note to visit's job (with optional equipment linkage)
   const addNoteMutation = useMutation({
     mutationFn: (params: { text: string; equipmentId?: string | null }) =>
-      apiRequest(`/api/tech/visits/${visitId}/notes`, {
-        method: "POST",
-        body: JSON.stringify({ text: params.text, equipmentId: params.equipmentId ?? null }),
-      }),
+      apiRequest(`/api/tech/visits/${visitId}/notes`, { method: "POST", body: JSON.stringify({ text: params.text, equipmentId: params.equipmentId ?? null }) }),
     onSuccess: invalidateAfterAction,
+    onError: handleMutationError,
   });
 
   // Action: Add part to visit's job (with optional equipment linkage)
   const addPartMutation = useMutation({
     mutationFn: (params: { productId: string; quantity: string; equipmentId?: string | null }) =>
-      apiRequest(`/api/tech/visits/${visitId}/parts`, {
-        method: "POST",
-        body: JSON.stringify(params),
-      }),
+      apiRequest(`/api/tech/visits/${visitId}/parts`, { method: "POST", body: JSON.stringify(params) }),
     onSuccess: invalidateAfterAction,
+    onError: handleMutationError,
   });
 
   // Action: Delete part from job
   const deletePartMutation = useMutation({
     mutationFn: (partId: string) =>
-      apiRequest(`/api/tech/visits/${visitId}/parts/${partId}`, {
-        method: "DELETE",
-      }),
+      apiRequest(`/api/tech/visits/${visitId}/parts/${partId}`, { method: "DELETE" }),
     onSuccess: invalidateAfterAction,
+    onError: handleMutationError,
   });
 
   // Action: Remove equipment from job
   const removeEquipmentMutation = useMutation({
     mutationFn: (jobEquipmentId: string) =>
-      apiRequest(`/api/tech/visits/${visitId}/equipment/${jobEquipmentId}`, {
-        method: "DELETE",
-      }),
+      apiRequest(`/api/tech/visits/${visitId}/equipment/${jobEquipmentId}`, { method: "DELETE" }),
     onSuccess: invalidateAfterAction,
+    onError: handleMutationError,
   });
 
   // Action: Add existing equipment to job
   const addEquipmentMutation = useMutation({
     mutationFn: (equipmentId: string) =>
-      apiRequest(`/api/tech/visits/${visitId}/equipment`, {
-        method: "POST",
-        body: JSON.stringify({ equipmentId }),
-      }),
+      apiRequest(`/api/tech/visits/${visitId}/equipment`, { method: "POST", body: JSON.stringify({ equipmentId }) }),
     onSuccess: invalidateAfterAction,
+    onError: handleMutationError,
   });
 
   // Action: Update visit (version-only — visitNotes is office-owned post-create)
   const updateVisitNotesMutation = useMutation({
     mutationFn: (params: { version: number }) =>
-      apiRequest(`/api/tech/visits/${visitId}`, {
-        method: "PATCH",
-        body: JSON.stringify(params),
-      }),
+      apiRequest(`/api/tech/visits/${visitId}`, { method: "PATCH", body: JSON.stringify(params) }),
     onSuccess: invalidateAfterAction,
+    onError: handleMutationError,
   });
 
   // Action: Update job fields (summary, priority — description/accessInstructions are office-owned)
   const updateJobMutation = useMutation({
     mutationFn: (params: { version: number; summary?: string; priority?: string }) =>
-      apiRequest(`/api/tech/jobs/${query.data?.visit?.jobId}`, {
-        method: "PATCH",
-        body: JSON.stringify(params),
-      }),
+      apiRequest(`/api/tech/jobs/${query.data?.visit?.jobId}`, { method: "PATCH", body: JSON.stringify(params) }),
     onSuccess: invalidateAfterAction,
+    onError: handleMutationError,
   });
 
   return {

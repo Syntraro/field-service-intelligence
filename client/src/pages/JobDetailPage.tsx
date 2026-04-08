@@ -88,6 +88,7 @@ import {
 import { cn } from "@/lib/utils";
 import { isVisitActioned, isVisitEmpty } from "@/lib/visitUtils";
 import { useAuth } from "@/lib/auth";
+import { MetaRow } from "@/components/ui/meta-row";
 import type { Job, Client, CustomerCompany, User as UserType, RecurringJobSeries, Invoice, JobTimeSummary, TimeEntryType } from "@shared/schema";
 import { useJobHeader } from "@/hooks/useJobsFeed";
 import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
@@ -95,9 +96,7 @@ import type { JobHeaderDetail } from "@/hooks/useJobsFeed";
 // ============================================================================
 // PERMISSION HELPERS - Role-based action availability
 // ============================================================================
-// Manager roles can perform all office actions
-// Technicians have limited permissions (view only for most office actions)
-const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"] as const;
+import { MANAGER_ROLES } from "@/lib/roles";
 
 // ============================================================================
 // OFFICE ACTIONS STRIP - Jobber-style attention banner
@@ -305,19 +304,16 @@ function LabourCardContent({
       return res.json();
     },
     enabled: !!jobId,
+    // Semi-live summary; realtime SSE invalidates ["/api/jobs"] family on visit/time events.
+    // Short cache prevents redundant fetches on mount/focus when timer is idle.
+    staleTime: 30_000,
+    // Poll every 60s while a timer is actively running (foreground only)
+    refetchInterval: (query) => (query.state.data as any)?.isRunning ? 60_000 : false,
+    refetchIntervalInBackground: false,
   });
   const timeSummary = timeSummaryQuery.data;
   const isLoading = timeSummaryQuery.isLoading;
   const error = timeSummaryQuery.error;
-
-  // Labor unification: conditional polling when a timer is running (60s, foreground only)
-  useQuery({
-    queryKey: ["/api/jobs", jobId, "time-summary", "poll"],
-    queryFn: () => timeSummaryQuery.refetch(),
-    enabled: !!jobId && !!timeSummary?.isRunning,
-    refetchInterval: 60_000,
-    refetchIntervalInBackground: false,
-  });
 
   const { data: timeEntries = [] } = useQuery<TimeEntryDisplay[]>({
     queryKey: ["/api/jobs", jobId, "time-entries"],
@@ -327,6 +323,7 @@ function LabourCardContent({
       return res.json();
     },
     enabled: !!jobId,
+    staleTime: 2 * 60_000,
   });
 
   if (isLoading) {
@@ -432,7 +429,15 @@ function LabourCardContent({
 
 // ============================================================================
 // VISIT STATUS DISPLAY — Labels from canonical visitStatusDisplay.ts
-// Colors kept local (component-specific dark mode styling)
+//
+// Colors are intentionally LOCAL and distinct from both visitStatusColor()
+// (dispatch board palette, subtle 50-series) and visitStatusColorTech()
+// (tech app palette, bold 100-series). The Job Detail page uses its own
+// palette that emphasizes contrast against the white card background and
+// includes dark mode variants.
+//
+// Audit note 2026-04-08: Verified intentional design separation. Do not
+// replace with canonical helpers — they use materially different colors.
 // ============================================================================
 const VISIT_STATUS_COLORS: Record<string, string> = {
   scheduled: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
@@ -454,6 +459,8 @@ export default function JobDetailPage() {
   const searchParams = useSearch();
   const { toast } = useToast();
   const { logActivity } = useActivityStore();
+
+  // 2026-04-08: useDispatchStream() now mounted once at App.tsx root for all office surfaces.
 
   // Deep link support: ?section=visits opens visits section automatically
   // This is triggered from calendar event cards via history icon
@@ -527,6 +534,7 @@ export default function JobDetailPage() {
       return res.json();
     },
     enabled: !!jobId,
+    staleTime: 5 * 60_000,
   });
   const expenseTotalAmount = useMemo(
     () => expensesRaw.reduce((sum, e) => sum + parseFloat(e.amount || "0"), 0),
@@ -541,6 +549,8 @@ export default function JobDetailPage() {
       return res.json();
     },
     enabled: !!jobId,
+    // Same key as LabourCardContent — keep staleTime aligned for consistency
+    staleTime: 30_000,
   });
 
   // Labour cost — derived from time entry cost rates via the time-summary endpoint.
@@ -554,14 +564,12 @@ export default function JobDetailPage() {
   const { visits: allVisits, isLoading: visitsLoading, activeVisit, completedVisits } = useJobVisits(jobId || "", { enabled: !!jobId });
 
   // Sort visits: active first, then by scheduledStart descending (newest first)
-  const sortedVisits = [...allVisits].sort((a, b) => {
-    // Active visits before inactive
+  const sortedVisits = useMemo(() => [...allVisits].sort((a, b) => {
     if (a.isActive !== b.isActive) return a.isActive ? -1 : 1;
-    // Then by scheduledStart descending
     const aStart = a.scheduledStart ? new Date(a.scheduledStart).getTime() : 0;
     const bStart = b.scheduledStart ? new Date(b.scheduledStart).getTime() : 0;
     return bStart - aStart;
-  });
+  }), [allVisits]);
 
   // Inline visit date formatter — compact single-line
   const formatVisitDate = (visit: import("@shared/schema").JobVisit) => {
@@ -613,6 +621,7 @@ export default function JobDetailPage() {
       return res.json();
     },
     enabled: !!jobId,
+    staleTime: 10 * 60_000,
   });
 
   // 2026-03-24: updateStatusMutation and clearHoldMutation REMOVED.
@@ -1147,20 +1156,14 @@ export default function JobDetailPage() {
                 </h3>
                 <div className="space-y-2 text-sm">
                   {job.pmBillingLabel && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Contract</span>
-                      <span className="font-medium">{job.pmBillingLabel}</span>
-                    </div>
+                    <MetaRow label="Contract" value={job.pmBillingLabel} />
                   )}
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Billing model</span>
-                    <span className="font-medium">
-                      {job.pmBillingModel === "per_visit" ? "Per Visit" :
-                       job.pmBillingModel === "monthly_fixed" ? "Monthly Fixed" :
-                       job.pmBillingModel === "annual_prepaid" ? "Annual Prepaid" :
-                       job.pmBillingModel === "do_not_bill" ? "Do Not Bill" : "Not set"}
-                    </span>
-                  </div>
+                  <MetaRow label="Billing model" value={
+                    job.pmBillingModel === "per_visit" ? "Per Visit" :
+                    job.pmBillingModel === "monthly_fixed" ? "Monthly Fixed" :
+                    job.pmBillingModel === "annual_prepaid" ? "Annual Prepaid" :
+                    job.pmBillingModel === "do_not_bill" ? "Do Not Bill" : "Not set"
+                  } />
                   <div className="flex justify-between items-center">
                     <span className="text-muted-foreground">Job billing action</span>
                     <Badge variant="outline" className={cn(

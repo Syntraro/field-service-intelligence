@@ -82,9 +82,15 @@ function toTodayVisit(v: BackendVisit): TodayVisit {
 
 // ── Hook ──
 
-export function useTodayVisits() {
+export function useTodayVisits(dateStr?: string) {
+  const url = dateStr ? `/api/tech/visits/today?date=${dateStr}` : "/api/tech/visits/today";
   const query = useQuery<TodayResponse>({
-    queryKey: ["/api/tech/visits/today"],
+    queryKey: ["/api/tech/visits/today", dateStr ?? "today"],
+    queryFn: async () => {
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch");
+      return res.json();
+    },
     refetchInterval: 60_000,
     refetchIntervalInBackground: false,
   });

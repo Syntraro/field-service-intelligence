@@ -5,27 +5,33 @@
  * Calls POST /api/tech/jobs → canonical storage.createJob + schedulingRepository.
  *
  * Location picker: search existing locations or create new client inline.
- * On mount, checks sessionStorage for a pre-filled location from CreateClientPage.
+ * Supports prefill via query param: ?locationId=X (data fetched from server).
  */
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useLocation } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Loader2, MapPin, Clock, Calendar, Check, UserPlus } from "lucide-react";
 import { MobileShell } from "../components/MobileShell";
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
+import { useLocationSearch, useLocationById, type LocationResult } from "@/hooks/useLocationSearch";
 
-interface LocationItem { id: string; companyName: string | null; address: string | null; city: string | null; }
+type LocationItem = LocationResult;
 interface TechMember { id: string; fullName: string; }
-
-const SESSION_KEY = "tech_new_location";
 
 export function CreateJobPage() {
   const [, setLocation] = useLocation();
   const { user } = useAuth();
+  const queryClient = useQueryClient();
+
+  // Read locationId from query params
+  const prefillLocationId = new URLSearchParams(window.location.search).get("locationId") || "";
+
+  // Resolve prefilled location from server
+  const { data: resolvedLocation } = useLocationById(prefillLocationId || null);
 
   // Form state
-  const [locationId, setLocationId] = useState("");
+  const [locationId, setLocationId] = useState(prefillLocationId);
   const [locationLabel, setLocationLabel] = useState<LocationItem | null>(null);
   const [locationSearch, setLocationSearch] = useState("");
   const [summary, setSummary] = useState("");
@@ -39,37 +45,8 @@ export function CreateJobPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  // On mount: check sessionStorage for pre-filled location from CreateClientPage
-  useEffect(() => {
-    const stored = sessionStorage.getItem(SESSION_KEY);
-    if (stored) {
-      sessionStorage.removeItem(SESSION_KEY);
-      try {
-        const loc = JSON.parse(stored) as LocationItem;
-        if (loc.id) {
-          setLocationId(loc.id);
-          setLocationLabel(loc);
-        }
-      } catch { /* ignore invalid data */ }
-    }
-  }, []);
-
-  // Location search — uses canonical /api/clients/search-locations endpoint
-  const { data: locations } = useQuery<LocationItem[]>({
-    queryKey: ["/api/clients/search-locations", locationSearch],
-    queryFn: async () => {
-      const resp = await apiRequest<any>(`/api/clients/search-locations?q=${encodeURIComponent(locationSearch)}&limit=20`);
-      const rows = Array.isArray(resp) ? resp : (resp?.data ?? []);
-      // Map snake_case from raw SQL to camelCase interface
-      return rows.map((r: any) => ({
-        id: r.id,
-        companyName: r.company_name ?? r.companyName ?? null,
-        address: r.address ?? null,
-        city: r.city ?? null,
-      }));
-    },
-    enabled: locationSearch.length >= 2,
-  });
+  // Location search — shared hook with canonical endpoint + snake_case mapping
+  const { data: locations } = useLocationSearch(locationSearch);
 
   // Team members for assignment
   const { data: techMembers } = useQuery<TechMember[]>({
@@ -82,7 +59,7 @@ export function CreateJobPage() {
   });
 
   // Resolve selected location display from search results or pre-fill
-  const selectedLocation = locationLabel ?? (locations ?? []).find(l => l.id === locationId) ?? null;
+  const selectedLocation = locationLabel ?? resolvedLocation ?? (locations ?? []).find(l => l.id === locationId) ?? null;
 
   const handleSubmit = async () => {
     if (!locationId || !summary.trim() || submitting) return;
@@ -110,6 +87,13 @@ export function CreateJobPage() {
         method: "POST",
         body: JSON.stringify(payload),
       });
+
+      // Local invalidation: ensure TodayPage / visit detail show fresh data
+      // immediately on navigation, without waiting for the SSE round-trip.
+      // The backend POST /api/tech/jobs already emits a dispatch event, so other
+      // sessions will receive it via realtime; this is for the initiating user.
+      queryClient.invalidateQueries({ queryKey: ["/api/tech/visits/today"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/tech/visits"] });
 
       setSuccess("Job created");
       // Navigate to visit detail if visitId returned, otherwise today view

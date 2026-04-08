@@ -17,19 +17,11 @@
  * Reruns will not create duplicate notifications.
  */
 
-import { db } from "../db";
-import { eq, and, sql, isNull, lt, gte, isNotNull, desc, lte } from "drizzle-orm";
-import {
-  timeEntries,
-  workSessions,
-  users,
-  companies,
-  notifications,
-  type NotificationType,
-} from "@shared/schema";
+import type { NotificationType } from "@shared/schema";
 import { notificationRepository } from "../storage/notifications";
 import { timeAlertSettingsRepository, type TimeAlertSettingsWithDefaults } from "../storage/timeAlertSettings";
 import { notificationSnoozesRepository } from "../storage/notificationSnoozes";
+import { timeAlertQueryRepository } from "../storage/timeAlertQueries";
 import { RESTRICTED_MANAGER_ROLES } from "../auth/roles";
 
 // ============================================================================
@@ -130,27 +122,7 @@ async function checkEscalation(
   technicianId: string,
   daysToCheck: number
 ): Promise<number> {
-  // Look for notifications of same type for same technician in the past N days
-  const cutoffDate = new Date();
-  cutoffDate.setDate(cutoffDate.getDate() - daysToCheck);
-
-  // Query notifications with dedupe keys that match the pattern
-  const pattern = `${type}:${technicianId}:%`;
-
-  const priorNotifications = await db
-    .select({ dedupeKey: notifications.dedupeKey })
-    .from(notifications)
-    .where(
-      and(
-        eq(notifications.companyId, companyId),
-        eq(notifications.type, type),
-        gte(notifications.createdAt, cutoffDate),
-        sql`${notifications.dedupeKey} LIKE ${pattern}`
-      )
-    )
-    .orderBy(desc(notifications.createdAt));
-
-  return priorNotifications.length;
+  return timeAlertQueryRepository.countRecentAlerts(companyId, type, technicianId, daysToCheck);
 }
 
 /**
@@ -215,28 +187,8 @@ async function checkUnassignedTime(
   settings: TimeAlertSettingsWithDefaults,
   result: TimeAlertsWorkerResult
 ): Promise<void> {
-  const startOfDay = new Date(dateStr + "T00:00:00Z");
-  const endOfDay = new Date(dateStr + "T23:59:59.999Z");
-
   // Aggregate unassigned time by technician for the date
-  const unassignedByTech = await db
-    .select({
-      technicianId: timeEntries.technicianId,
-      technicianName: users.fullName,
-      totalMinutes: sql<number>`COALESCE(SUM(${timeEntries.durationMinutes}), 0)`.as("total_minutes"),
-    })
-    .from(timeEntries)
-    .leftJoin(users, eq(timeEntries.technicianId, users.id))
-    .where(
-      and(
-        eq(timeEntries.companyId, companyId),
-        isNull(timeEntries.jobId), // Unassigned entries
-        isNotNull(timeEntries.endAt), // Only completed entries
-        gte(timeEntries.startAt, startOfDay),
-        lt(timeEntries.startAt, endOfDay)
-      )
-    )
-    .groupBy(timeEntries.technicianId, users.fullName);
+  const unassignedByTech = await timeAlertQueryRepository.getUnassignedTimeByTechnician(companyId, dateStr);
 
   result.processed.unassignedTimeChecks += unassignedByTech.length;
 
@@ -304,44 +256,11 @@ async function checkUntrackedTime(
   settings: TimeAlertSettingsWithDefaults,
   result: TimeAlertsWorkerResult
 ): Promise<void> {
-  const startOfDay = new Date(dateStr + "T00:00:00Z");
-  const endOfDay = new Date(dateStr + "T23:59:59.999Z");
-
   // Get worked minutes from work sessions (closed only)
-  const workedByTech = await db
-    .select({
-      technicianId: workSessions.technicianId,
-      technicianName: users.fullName,
-      clockInAt: workSessions.clockInAt,
-      clockOutAt: workSessions.clockOutAt,
-      breakMinutes: workSessions.breakMinutes,
-    })
-    .from(workSessions)
-    .leftJoin(users, eq(workSessions.technicianId, users.id))
-    .where(
-      and(
-        eq(workSessions.companyId, companyId),
-        eq(workSessions.workDate, dateStr),
-        isNotNull(workSessions.clockOutAt)
-      )
-    );
+  const workedByTech = await timeAlertQueryRepository.getClosedSessionsByDate(companyId, dateStr);
 
   // Get tracked minutes from time entries
-  const trackedByTech = await db
-    .select({
-      technicianId: timeEntries.technicianId,
-      totalMinutes: sql<number>`COALESCE(SUM(${timeEntries.durationMinutes}), 0)`.as("total_minutes"),
-    })
-    .from(timeEntries)
-    .where(
-      and(
-        eq(timeEntries.companyId, companyId),
-        isNotNull(timeEntries.endAt),
-        gte(timeEntries.startAt, startOfDay),
-        lt(timeEntries.startAt, endOfDay)
-      )
-    )
-    .groupBy(timeEntries.technicianId);
+  const trackedByTech = await timeAlertQueryRepository.getTrackedTimeByTechnician(companyId, dateStr);
 
   const trackedMap = new Map<string, number>();
   for (const t of trackedByTech) {
@@ -432,23 +351,7 @@ async function checkLongRunningEntries(
   const cutoff = new Date();
   cutoff.setMinutes(cutoff.getMinutes() - settings.longRunningThresholdMinutes);
 
-  const longRunning = await db
-    .select({
-      id: timeEntries.id,
-      technicianId: timeEntries.technicianId,
-      technicianName: users.fullName,
-      type: timeEntries.type,
-      startAt: timeEntries.startAt,
-    })
-    .from(timeEntries)
-    .leftJoin(users, eq(timeEntries.technicianId, users.id))
-    .where(
-      and(
-        eq(timeEntries.companyId, companyId),
-        isNull(timeEntries.endAt),
-        lt(timeEntries.startAt, cutoff)
-      )
-    );
+  const longRunning = await timeAlertQueryRepository.getLongRunningEntries(companyId, cutoff);
 
   result.processed.longRunningChecks += longRunning.length;
 
@@ -497,23 +400,7 @@ async function checkMissingClockOut(
   const cutoff = new Date();
   cutoff.setMinutes(cutoff.getMinutes() - settings.missingClockOutThresholdMinutes);
 
-  const openSessions = await db
-    .select({
-      id: workSessions.id,
-      technicianId: workSessions.technicianId,
-      technicianName: users.fullName,
-      workDate: workSessions.workDate,
-      clockInAt: workSessions.clockInAt,
-    })
-    .from(workSessions)
-    .leftJoin(users, eq(workSessions.technicianId, users.id))
-    .where(
-      and(
-        eq(workSessions.companyId, companyId),
-        isNull(workSessions.clockOutAt),
-        lt(workSessions.clockInAt, cutoff)
-      )
-    );
+  const openSessions = await timeAlertQueryRepository.getOpenSessions(companyId, cutoff);
 
   result.processed.missingClockOutChecks += openSessions.length;
 
@@ -579,60 +466,19 @@ async function getWeeklyDigestMetrics(
   const prevWeekEnd = weekStartDate;
 
   // Current week work sessions
-  const currentWeekSessions = await db
-    .select({
-      technicianId: workSessions.technicianId,
-      technicianName: users.fullName,
-      clockInAt: workSessions.clockInAt,
-      clockOutAt: workSessions.clockOutAt,
-      breakMinutes: workSessions.breakMinutes,
-    })
-    .from(workSessions)
-    .leftJoin(users, eq(workSessions.technicianId, users.id))
-    .where(
-      and(
-        eq(workSessions.companyId, companyId),
-        gte(workSessions.workDate, weekStart),
-        lt(workSessions.workDate, weekEndDate.toISOString().split("T")[0]),
-        isNotNull(workSessions.clockOutAt)
-      )
-    );
+  const currentWeekSessions = await timeAlertQueryRepository.getWeekSessions(
+    companyId, weekStart, weekEndDate.toISOString().split("T")[0]
+  );
 
   // Current week time entries
-  const currentWeekEntries = await db
-    .select({
-      technicianId: timeEntries.technicianId,
-      technicianName: users.fullName,
-      durationMinutes: timeEntries.durationMinutes,
-      billable: timeEntries.billable,
-      jobId: timeEntries.jobId,
-    })
-    .from(timeEntries)
-    .leftJoin(users, eq(timeEntries.technicianId, users.id))
-    .where(
-      and(
-        eq(timeEntries.companyId, companyId),
-        gte(timeEntries.startAt, weekStartDate),
-        lt(timeEntries.startAt, weekEndDate),
-        isNotNull(timeEntries.endAt)
-      )
-    );
+  const currentWeekEntries = await timeAlertQueryRepository.getWeekTimeEntries(
+    companyId, weekStartDate, weekEndDate
+  );
 
   // Previous week time entries for billable comparison
-  const prevWeekEntries = await db
-    .select({
-      durationMinutes: timeEntries.durationMinutes,
-      billable: timeEntries.billable,
-    })
-    .from(timeEntries)
-    .where(
-      and(
-        eq(timeEntries.companyId, companyId),
-        gte(timeEntries.startAt, prevWeekStart),
-        lt(timeEntries.startAt, prevWeekEnd),
-        isNotNull(timeEntries.endAt)
-      )
-    );
+  const prevWeekEntries = await timeAlertQueryRepository.getTimeEntriesForRange(
+    companyId, prevWeekStart, prevWeekEnd
+  );
 
   // Calculate worked minutes by technician
   const workedByTech = new Map<string, { name: string; minutes: number }>();
@@ -889,9 +735,7 @@ export async function runTimeAlertsWorker(
   console.log("[TimeAlertsWorker] Starting daily time alerts processing...");
   const startTime = Date.now();
 
-  const allCompanies = await db
-    .select({ id: companies.id, name: companies.name })
-    .from(companies);
+  const allCompanies = await timeAlertQueryRepository.getAllCompanies();
 
   let companiesProcessed = 0;
   let totalNotifications = 0;
@@ -949,9 +793,7 @@ export async function runWeeklyDigestWorker(): Promise<WeeklyDigestResult> {
   const weekStart = getLastWeekMonday();
   const today = new Date().getDay(); // 0 = Sunday, 1 = Monday, etc.
 
-  const allCompanies = await db
-    .select({ id: companies.id })
-    .from(companies);
+  const allCompanies = await timeAlertQueryRepository.getAllCompanyIds();
 
   let sent = 0;
   let skipped = 0;

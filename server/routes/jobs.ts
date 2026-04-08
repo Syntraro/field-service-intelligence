@@ -48,6 +48,8 @@ import { getQueryCtx } from "../lib/queryCtx";
 import { emitDispatch } from "../lib/dispatchBus";
 import { getJobsFeed, getJobHeader, getJobCounts } from "../storage/jobsFeed";
 import type { JobFeedFilters } from "../storage/jobsFeed";
+// 2026-04-08: P7 — Canonical line-item input schema (shared with invoices/quotes)
+import { canonicalLineItemInput } from "@shared/lineItem";
 
 const router = Router();
 
@@ -1079,14 +1081,12 @@ router.get("/:jobId/parts", asyncHandler(async (req: AuthedRequest, res: Respons
   res.json(paginatedCompat(items, meta, explicit));
 }));
 
-const createJobPartSchema = z.object({
-  description: z.string().min(1),
-  quantity: z.string().or(z.number()),
-  unitCost: z.string().or(z.number()).optional(),
-  unitPrice: z.string().or(z.number()).optional(),
-  productId: z.string().nullable().optional(),
-  source: z.string().optional(), // Frontend tracking field (not persisted)
-});
+// 2026-04-08: P7 — Migrated to canonical line-item input.
+// JobPart table only persists description/quantity/unitCost/unitPrice/productId;
+// canonical extras (taxRate, taxAmount, lineSubtotal, lineTotal, lineItemType,
+// source) are accepted by the schema for shape uniformity but the route
+// handler explicitly destructures only the fields the storage layer writes.
+const createJobPartSchema = canonicalLineItemInput.strict();
 
 // POST /api/jobs/:jobId/parts - Add part to job
 router.post("/:jobId/parts", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
@@ -1110,14 +1110,8 @@ router.post("/:jobId/parts", requireRole(MANAGER_ROLES), asyncHandler(async (req
   res.status(201).json(jobPart);
 }));
 
-const updateJobPartSchema = z.object({
-  description: z.string().min(1).optional(),
-  quantity: z.string().or(z.number()).optional(),
-  unitCost: z.string().or(z.number()).optional(),
-  unitPrice: z.string().or(z.number()).optional(),
-  productId: z.string().nullable().optional(),
-  source: z.string().optional(), // Frontend tracking field (not persisted)
-});
+// 2026-04-08: P7 — Migrated to canonical line-item input (partial for PATCH).
+const updateJobPartSchema = canonicalLineItemInput.partial().strict();
 
 // PUT /api/jobs/:jobId/parts/:id - Update job part
 router.put("/:jobId/parts/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
@@ -1300,13 +1294,12 @@ router.post("/:id/reconcile-invoice-links", requireRole(MANAGER_ROLES), asyncHan
  * ----------------------------
  */
 
-import * as jobNotesService from "../services/jobNotes.service.js";
+import { jobNotesRepository } from "../storage/jobNotes";
 
 // GET /api/jobs/:jobId/notes - List job notes
 router.get("/:jobId/notes", asyncHandler(async (req: AuthedRequest, res: Response) => {
   const companyId = req.companyId;
-
-  const notes = await jobNotesService.listJobNotes(companyId, req.params.jobId);
+  const notes = await jobNotesRepository.listJobNotes(companyId, req.params.jobId);
   res.json(notes);
 }));
 
@@ -1321,13 +1314,7 @@ router.post("/:jobId/notes", requireRole(MANAGER_ROLES), asyncHandler(async (req
     throw createError(400, "noteText is required and must be a non-empty string");
   }
 
-  const note = await jobNotesService.createJobNote(
-    companyId,
-    req.params.jobId,
-    userId,
-    noteText.trim(),
-    equipmentId ?? null,
-  );
+  const note = await jobNotesRepository.createJobNote(companyId, req.params.jobId, userId, noteText.trim(), equipmentId ?? null);
 
   // Attach files if provided
   if (Array.isArray(attachmentFileIds) && attachmentFileIds.length > 0 && note) {
@@ -1338,6 +1325,9 @@ router.post("/:jobId/notes", requireRole(MANAGER_ROLES), asyncHandler(async (req
       }
     }
   }
+
+  // Realtime: notify tech app + cross-tab office sessions about new note on this job
+  emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: req.params.jobId, ts: new Date().toISOString() });
 
   res.status(201).json(note);
 }));
@@ -1353,12 +1343,10 @@ router.patch("/:jobId/notes/:noteId", requireRole(MANAGER_ROLES), asyncHandler(a
     throw createError(400, "noteText is required and must be a non-empty string");
   }
 
-  const note = await jobNotesService.updateJobNote(
-    companyId,
-    req.params.noteId,
-    userId,
-    noteText.trim()
-  );
+  const note = await jobNotesRepository.updateJobNote(companyId, req.params.noteId, userId, noteText.trim());
+
+  // Realtime: notify tech app + cross-tab office about edited note
+  emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: req.params.jobId, ts: new Date().toISOString() });
 
   res.json(note);
 }));
@@ -1368,7 +1356,11 @@ router.delete("/:jobId/notes/:noteId", requireRole(MANAGER_ROLES), asyncHandler(
   const companyId = req.companyId;
   const userId = req.user!.id;
 
-  const result = await jobNotesService.deleteJobNote(companyId, req.params.noteId, userId);
+  const result = await jobNotesRepository.deleteJobNote(companyId, req.params.noteId, userId);
+
+  // Realtime: notify tech app + cross-tab office about deleted note
+  emitDispatch(companyId, { scope: "calendar", entityType: "job", entityId: req.params.jobId, ts: new Date().toISOString() });
+
   res.json(result);
 }));
 

@@ -142,6 +142,8 @@ export default function Jobs() {
   const [, setLocation] = useLocation();
   const searchString = useSearch();
 
+  // 2026-04-08: useDispatchStream() now mounted once at App.tsx root for all office surfaces.
+
   // Parse URL query params for contextual navigation from dashboard links
   const urlParams = useMemo(() => new URLSearchParams(searchString), [searchString]);
   const schedulingParam = urlParams.get("scheduling");
@@ -215,7 +217,6 @@ export default function Jobs() {
     queryKey: ["visits", "summary-week", weekStart, weekEnd],
     queryFn: () => apiRequest(`/api/visits?from=${encodeURIComponent(weekStart)}&to=${encodeURIComponent(weekEnd)}&excludeStatuses=cancelled`),
     staleTime: 60_000,
-    refetchOnWindowFocus: true,
   });
 
   // Visits this month — non-cancelled visits with scheduledStart in current month
@@ -223,7 +224,6 @@ export default function Jobs() {
     queryKey: ["visits", "summary-month", monthStart, monthEnd],
     queryFn: () => apiRequest(`/api/visits?from=${encodeURIComponent(monthStart)}&to=${encodeURIComponent(monthEnd)}&excludeStatuses=cancelled`),
     staleTime: 60_000,
-    refetchOnWindowFocus: true,
   });
 
   // Scheduled — future non-terminal visits only (from=now, exclude cancelled+completed)
@@ -231,7 +231,6 @@ export default function Jobs() {
     queryKey: ["visits", "summary-scheduled", nowIso],
     queryFn: () => apiRequest(`/api/visits?from=${encodeURIComponent(nowIso)}&excludeStatuses=cancelled,completed`),
     staleTime: 60_000,
-    refetchOnWindowFocus: true,
   });
 
   // Revenue — from canonical financial endpoint
@@ -239,7 +238,6 @@ export default function Jobs() {
     queryKey: ["dashboard", "financial"],
     queryFn: () => apiRequest("/api/dashboard/financial"),
     staleTime: 60_000,
-    refetchOnWindowFocus: true,
   });
 
   const visitsThisWeek = weekVisits?.count ?? 0;

@@ -668,15 +668,17 @@ router.post("/import", requireRole(MANAGER_ROLES), asyncHandler(async (req: Auth
   }
 
   // Create parts and link to clients (reduced from N*M queries to N+M)
+  // 2026-04-08: Migrated from storage.createPart (legacy PartRepository) to
+  // storage.createItem. The previous payload sent {type:'other', filterType,
+  // beltType, size} — fields that do not exist on the items table; they were
+  // silently swallowed by PartRepository's `any` typing. Now sends valid
+  // items-schema fields only.
   const partIdByName = new Map<string, string>();
   for (const [name] of Array.from(uniquePartNames.entries())) {
     try {
-      const part = await storage.createPart(req.companyId!, req.user!.id, {
-        type: 'other',
+      const part = await storage.createItem(req.companyId!, req.user!.id, {
+        type: 'product',
         name,
-        filterType: null,
-        beltType: null,
-        size: null,
         description: null,
       });
       partIdByName.set(name, part.id);

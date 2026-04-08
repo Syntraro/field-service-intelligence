@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { FiltersButton, FilterSection } from "@/components/filters/FiltersButton";
 import { cn } from "@/lib/utils";
+import { formatCurrency } from "@/lib/formatters";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -42,12 +43,18 @@ interface InvoiceStats {
   overdue: { amount: number; count: number };
 }
 
-type InvoiceStatusFilter = "all" | "draft" | "awaiting_payment" | "sent" | "viewed" | "partial_paid" | "paid" | "voided" | "overdue" | "qbo_synced" | "qbo_out_of_sync";
-
-function formatCurrency(amount: string | number): string {
-  const num = typeof amount === "string" ? parseFloat(amount) : amount;
-  return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(num);
-}
+/**
+ * Invoice list filters.
+ *
+ * Real lifecycle statuses: draft, awaiting_payment, partial_paid, paid, voided.
+ * Derived state: overdue (computed from isPastDue, never persisted).
+ * QBO sync flags: qbo_synced, qbo_out_of_sync (independent of lifecycle).
+ *
+ * Legacy "sent" rows are matched by the "awaiting_payment" filter (see filter
+ * predicate below) and do not appear as a distinct user-facing option.
+ * "viewed" was never a real lifecycle status — removed 2026-04-08.
+ */
+type InvoiceStatusFilter = "all" | "draft" | "awaiting_payment" | "partial_paid" | "paid" | "voided" | "overdue" | "qbo_synced" | "qbo_out_of_sync";
 
 const INVOICES_GRID_COLS = "minmax(260px, 1.8fr) 1.2fr 0.8fr 0.8fr 0.9fr 0.7fr 0.7fr 50px";
 
@@ -79,7 +86,7 @@ export default function InvoicesListPage() {
   useEffect(() => {
     const params = new URLSearchParams(search);
     const filterParam = params.get("filter");
-    const validFilters: InvoiceStatusFilter[] = ["all", "draft", "awaiting_payment", "sent", "viewed", "partial_paid", "paid", "voided", "overdue", "qbo_synced", "qbo_out_of_sync"];
+    const validFilters: InvoiceStatusFilter[] = ["all", "draft", "awaiting_payment", "partial_paid", "paid", "voided", "overdue", "qbo_synced", "qbo_out_of_sync"];
     if (filterParam && validFilters.includes(filterParam as InvoiceStatusFilter)) {
       setActiveFilter(filterParam as InvoiceStatusFilter);
     }

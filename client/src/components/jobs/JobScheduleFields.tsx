@@ -182,17 +182,7 @@ function generateTimeOptions() {
 
 const TIME_OPTIONS = generateTimeOptions();
 
-const DURATION_OPTIONS = [
-  { value: 15, label: "15 min" },
-  { value: 30, label: "30 min" },
-  { value: 45, label: "45 min" },
-  { value: 60, label: "1 hour" },
-  { value: 90, label: "1.5 hours" },
-  { value: 120, label: "2 hours" },
-  { value: 180, label: "3 hours" },
-  { value: 240, label: "4 hours" },
-  { value: 480, label: "8 hours" },
-];
+import { DURATION_OPTIONS_LONG as DURATION_OPTIONS } from "@/lib/schedulingConstants";
 
 // ============================================================================
 // Component

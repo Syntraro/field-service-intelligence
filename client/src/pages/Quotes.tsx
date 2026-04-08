@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/table";
 import type { Quote } from "@shared/schema";
 import { NewQuoteModal } from "@/components/NewQuoteModal";
+import { formatCurrency } from "@/lib/formatters";
 
 interface EnrichedQuote extends Quote {
   location?: { id: string; companyName: string };
@@ -33,11 +34,6 @@ interface EnrichedQuote extends Quote {
 }
 
 type QuoteStatusFilter = "all" | "draft" | "sent" | "approved" | "declined" | "expired" | "converted";
-
-function formatCurrency(amount: string | number): string {
-  const num = typeof amount === "string" ? parseFloat(amount) : amount;
-  return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(num);
-}
 
 // Summary card with optional small icon accent — matches Jobs/Invoices hierarchy
 function SummaryCard({ label, value, note, icon: Icon, iconColor, iconBg }: {

@@ -59,7 +59,7 @@ export default function LeadsPage() {
   const [createModalOpen, setCreateModalOpen] = useState(false);
 
   const { data: leadsResponse, isLoading } = useQuery<{ data: Lead[] }>({
-    queryKey: ["/api/leads"],
+    queryKey: ["leads"],
     queryFn: () => apiRequest("/api/leads"),
   });
 

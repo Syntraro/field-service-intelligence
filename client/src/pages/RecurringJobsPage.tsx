@@ -109,16 +109,7 @@ interface InstanceWithJob {
   } | null;
 }
 
-// Day of week labels
-const DAYS_OF_WEEK = [
-  { value: 0, label: "Sun" },
-  { value: 1, label: "Mon" },
-  { value: 2, label: "Tue" },
-  { value: 3, label: "Wed" },
-  { value: 4, label: "Thu" },
-  { value: 5, label: "Fri" },
-  { value: 6, label: "Sat" },
-];
+import { DAYS_OF_WEEK_SHORT as DAYS_OF_WEEK } from "@/lib/schedulingConstants";
 
 /** @param embedded - When true, hides page-level container/header for embedding as a tab in PM workspace */
 export default function RecurringJobsPage({ embedded }: { embedded?: boolean } = {}) {

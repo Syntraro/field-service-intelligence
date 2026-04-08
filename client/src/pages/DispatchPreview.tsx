@@ -52,7 +52,6 @@ import DispatchDetailPanel from "@/components/dispatch/DispatchDetailPanel";
 import WeekDispatchGrid, { WEEK_START_HOUR, WEEK_HOUR_HEIGHT_PX } from "@/components/dispatch/WeekDispatchGrid";
 import MonthDispatchGrid from "@/components/dispatch/MonthDispatchGrid";
 import DispatchMapPanel from "@/components/dispatch/DispatchMapPanel";
-import { DispatchHoverContext } from "@/components/dispatch/dispatchHoverContext";
 import { useLiveTechnicians } from "@/hooks/useLiveTechnicians";
 // 2026-03-21: Canonical visit-edit modal — used for lifecycle actions (complete, reopen, delete)
 // instead of duplicating that logic in the dispatch panel. See REFACTORING_LOG.md.
@@ -61,7 +60,6 @@ import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { QuickAddJobDialog } from "@/components/QuickAddJobDialog";
 import { TaskDialog } from "@/components/TaskDialog";
-import { useDispatchStream } from "@/hooks/useDispatchStream";
 
 // Local pxToSnappedMinutes and computeDropTime removed — unified into
 // dispatchPlacementResolver.ts resolvePlacement() (shared by drag + click modes)
@@ -112,8 +110,7 @@ function FocusCard({ visit, onRemove, onOpen }: {
 export default function DispatchPreview() {
   const { toast } = useToast();
 
-  // SSE-driven cross-tab/cross-user realtime invalidation for dispatch/calendar/tasks
-  useDispatchStream();
+  // 2026-04-08: useDispatchStream() now mounted once at App.tsx root for all office surfaces.
 
   // ── View mode ──
   const [activeView, setActiveView] = useState<DispatchView>("day");
@@ -133,11 +130,10 @@ export default function DispatchPreview() {
   const { data: liveTechnicians } = useLiveTechnicians(showMap);
 
   // ── Hover linkage between map markers and calendar visit cards ──
-  const [hoveredVisitId, setHoveredVisitId] = useState<string | null>(null);
-  const hoverContextValue = useMemo(() => ({
-    hoveredVisitId,
-    setHoveredVisitId,
-  }), [hoveredVisitId]);
+  // 2026-04-08: Hover state moved to module-scoped external store in
+  // dispatchHoverContext.ts. The previous useState in this component caused
+  // every hover to re-render the entire DispatchPreview tree. Now consumers
+  // subscribe via useHoverSetter / useIsVisitHovered with per-id granularity.
 
   // Item 4: Dynamic timeline config from 24h toggle
   const tlConfig = useMemo(() => getTimelineConfig(show24Hour), [show24Hour]);
@@ -1454,7 +1450,6 @@ export default function DispatchPreview() {
       onDragMove={handleDragMove}
       onDragEnd={handleDragEnd}
     >
-    <DispatchHoverContext.Provider value={hoverContextValue}>
       <div className="flex h-full flex-col bg-[#F4F8F4]">
         {/* Header with view toggle */}
         <DispatchBoardHeader
@@ -1819,7 +1814,6 @@ export default function DispatchPreview() {
           queryClient.invalidateQueries({ queryKey: ["/api/tasks"] });
         }}
       />
-    </DispatchHoverContext.Provider>
     </DndContext>
   );
 }

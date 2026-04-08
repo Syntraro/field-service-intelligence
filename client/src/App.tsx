@@ -1,10 +1,12 @@
 import { Switch, Route, useLocation, Link, Redirect } from "wouter";
+import { Suspense, lazy } from "react";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { useToast } from "@/hooks/use-toast";
+import { useDispatchStream } from "@/hooks/useDispatchStream";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import Dashboard from "@/pages/Dashboard";
 import Jobs from "@/pages/Jobs";
@@ -14,23 +16,25 @@ import InvoiceDetailPage from "@/pages/InvoiceDetailPage";
 import NewInvoicePage from "@/pages/NewInvoicePage";
 import Quotes from "@/pages/Quotes";
 import LeadsPage from "@/pages/LeadsPage";
+import LeadDetailPage from "@/pages/LeadDetailPage";
 import QuoteDetailPage from "@/pages/QuoteDetailPage";
 import Reports from "@/pages/Reports";
 import AccountsReceivablePage from "@/pages/AccountsReceivablePage";
 import FinancialDashboard from "@/pages/FinancialDashboard";
 import Admin from "@/pages/Admin";
-import AdminTenants from "@/pages/AdminTenants";
-import AdminTenantDetail from "@/pages/AdminTenantDetail";
-import AdminQboOverview from "@/pages/AdminQboOverview";
-import AdminQboRuns from "@/pages/AdminQboRuns";
-import AdminQboRunDetail from "@/pages/AdminQboRunDetail";
-import AdminQboQueue from "@/pages/AdminQboQueue";
-import SupportConsole from "@/pages/SupportConsole";
+// PERF-008 (2026-04-08): Lazy-load rarely visited platform-admin / QBO / one-time
+// import pages to shrink the initial main bundle for normal users.
+const AdminTenants = lazy(() => import("@/pages/AdminTenants"));
+const AdminTenantDetail = lazy(() => import("@/pages/AdminTenantDetail"));
+const AdminQboOverview = lazy(() => import("@/pages/AdminQboOverview"));
+const AdminQboRuns = lazy(() => import("@/pages/AdminQboRuns"));
+const AdminQboRunDetail = lazy(() => import("@/pages/AdminQboRunDetail"));
+const AdminQboQueue = lazy(() => import("@/pages/AdminQboQueue"));
+const SupportConsole = lazy(() => import("@/pages/SupportConsole"));
 // 2026-03-21: AddClientPage and NewClientPage removed — replaced by canonical CreateClientModal
 import Clients from "@/pages/Clients";
 import ClientDetailPage from "@/pages/ClientDetailPage";
 import PartsManagementPage from "@/pages/PartsManagementPage";
-import CompanySettingsPage from "@/pages/CompanySettingsPage";
 import TechnicianManagementPage from "@/pages/TechnicianManagementPage";
 import ManageTeam from "@/pages/ManageTeam";
 import ManageRoles from "@/pages/ManageRoles";
@@ -40,7 +44,7 @@ import SettingsPage from "@/pages/SettingsPage";
 import CustomFieldsPage from "@/pages/CustomFieldsPage";
 import TaxBillingRulesPage from "@/pages/TaxBillingRulesPage";
 import IntegrationsPage from "@/pages/IntegrationsPage";
-import QboConsolePage from "@/pages/QboConsolePage";
+const QboConsolePage = lazy(() => import("@/pages/QboConsolePage"));
 import CategoryManagementPage from "@/pages/CategoryManagementPage";
 import JobTemplatesPage from "@/pages/JobTemplatesPage";
 import RecurringJobsPage from "@/pages/RecurringJobsPage";
@@ -55,9 +59,9 @@ import NotificationsPage from "@/pages/NotificationsPage";
 import TimeBillingRulesPage from "@/pages/TimeBillingRulesPage";
 // RegionalSettingsPage — now embedded inline in Company section (2026-04-04)
 import BusinessHoursSettingsPage from "@/pages/BusinessHoursSettingsPage";
-import ClientImportPage from "@/pages/ClientImportPage";
-import JobImportPage from "@/pages/JobImportPage";
-import ProductImportPage from "@/pages/ProductImportPage";
+const ClientImportPage = lazy(() => import("@/pages/ClientImportPage"));
+const JobImportPage = lazy(() => import("@/pages/JobImportPage"));
+const ProductImportPage = lazy(() => import("@/pages/ProductImportPage"));
 import TagsSettingsPage from "@/pages/TagsSettingsPage";
 import { TimezoneSetupBanner } from "@/components/TimezoneSetupBanner";
 import { TimezoneSetupDialog } from "@/components/TimezoneSetupDialog";
@@ -113,8 +117,23 @@ import PMTemplateEditorPage from "@/pages/PMTemplateEditorPage";
 // Technician PWA preview — self-contained mock prototype (no backend)
 import TechApp from "@/tech-app/app/TechApp";
 
+/**
+ * PERF-008 (2026-04-08): Minimal Suspense fallback for lazy-loaded routes.
+ * Reuses the same spinner shape as PortalProtected for visual consistency.
+ * Eager routes never trigger this fallback — Suspense only activates when a
+ * descendant lazy component suspends.
+ */
+function RouteFallback() {
+  return (
+    <div className="flex items-center justify-center min-h-[40vh]">
+      <div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full" />
+    </div>
+  );
+}
+
 function Router() {
   const routes = (
+    <Suspense fallback={<RouteFallback />}>
     <Switch>
       <Route path="/login" component={Login} />
       <Route path="/signup" component={Signup} />
@@ -206,6 +225,13 @@ function Router() {
         <ProtectedRoute requireAdmin>
           <LeadsPage />
         </ProtectedRoute>
+      </Route>
+      <Route path="/leads/:id">
+        {(params) => (
+          <ProtectedRoute requireAdmin>
+            <LeadDetailPage />
+          </ProtectedRoute>
+        )}
       </Route>
       <Route path="/reports">
         <ProtectedRoute requireAdmin>
@@ -433,6 +459,7 @@ function Router() {
       </Route>
       <Route component={NotFound} />
     </Switch>
+    </Suspense>
   );
 
   // All routes render full-width — SettingsShell no longer wraps sub-routes
@@ -504,6 +531,12 @@ function AppContent() {
   const [quoteChooserOpen, setQuoteChooserOpen] = useState(false);
   const [newQuoteModalOpen, setNewQuoteModalOpen] = useState(false);
   const [selectedQuoteTemplateId, setSelectedQuoteTemplateId] = useState<string | null>(null);
+
+  // Realtime: single SSE subscription for the entire authenticated office app.
+  // Internally guarded on user state — won't connect on portal/auth/tech routes.
+  // 2026-04-08: Mounted once at app shell instead of per-page to give all office
+  // surfaces (Payroll, Invoices, Leads, Clients, etc.) realtime cross-tab freshness.
+  useDispatchStream();
 
   // Company settings for header display — shared query key, TanStack deduplicates
   // Architecture rule: app shell must NOT fetch dispatch/calendar/scheduling data.

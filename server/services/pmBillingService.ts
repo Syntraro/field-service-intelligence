@@ -10,17 +10,13 @@
  * - Observable: all events logged and traceable
  *
  * Schedule: runs alongside PM auto-generation (startup + every 6 hours)
+ *
+ * 2026-04-08: DB access delegated to storage/pmBilling.ts (Route→Service→Storage).
  */
 
-import { db } from "../db";
-import { eq, and, sql, isNull } from "drizzle-orm";
-import {
-  recurringJobTemplates,
-  pmBillingEvents,
-  clients,
-  type RecurringJobTemplate,
-} from "@shared/schema";
+import type { RecurringJobTemplate } from "@shared/schema";
 import { invoiceRepository } from "../storage/invoices";
+import { pmBillingRepository } from "../storage/pmBilling";
 
 // ============================================================================
 // Types
@@ -115,35 +111,24 @@ async function processContractBilling(
   }
 
   // Check if event already exists for this period (idempotency via query before insert)
-  const [existing] = await db
-    .select({ id: pmBillingEvents.id })
-    .from(pmBillingEvents)
-    .where(and(
-      eq(pmBillingEvents.pmContractId, contract.id),
-      eq(pmBillingEvents.periodStart, period.periodStart),
-    ))
-    .limit(1);
-
+  const existing = await pmBillingRepository.findEventByContractPeriod(contract.id, period.periodStart);
   if (existing) {
     return result; // Event already exists — idempotent skip
   }
 
   // Create the billing event
   try {
-    const [event] = await db
-      .insert(pmBillingEvents)
-      .values({
-        companyId: contract.companyId,
-        pmContractId: contract.id,
-        billingModelSnapshot: contract.pmBillingModel,
-        periodStart: period.periodStart,
-        periodEnd: period.periodEnd,
-        billingDate: period.billingDate,
-        status: "pending",
-        amountSnapshot: contract.pmContractAmount ?? null,
-        billingLabelSnapshot: contract.pmBillingLabel ?? contract.title,
-      })
-      .returning();
+    const event = await pmBillingRepository.createEvent({
+      companyId: contract.companyId,
+      pmContractId: contract.id,
+      billingModelSnapshot: contract.pmBillingModel,
+      periodStart: period.periodStart,
+      periodEnd: period.periodEnd,
+      billingDate: period.billingDate,
+      status: "pending",
+      amountSnapshot: contract.pmContractAmount ?? null,
+      billingLabelSnapshot: contract.pmBillingLabel ?? contract.title,
+    });
 
     result.eventsCreated++;
     console.log(
@@ -161,20 +146,16 @@ async function processContractBilling(
       } catch (err: any) {
         result.errors.push(`Invoice creation failed for event ${event.id}: ${err.message}`);
         // Mark event as billing_exception
-        await db
-          .update(pmBillingEvents)
-          .set({ status: "billing_exception", notes: `Invoice creation failed: ${err.message}`, updatedAt: new Date() })
-          .where(eq(pmBillingEvents.id, event.id));
+        await pmBillingRepository.updateEventStatus(event.id, "billing_exception", {
+          notes: `Invoice creation failed: ${err.message}`,
+        });
       }
     } else {
       // No location or amount — mark as exception
       const reason = !contract.locationId
         ? "Contract missing location — cannot create invoice"
         : "Contract missing billing amount";
-      await db
-        .update(pmBillingEvents)
-        .set({ status: "billing_exception", notes: reason, updatedAt: new Date() })
-        .where(eq(pmBillingEvents.id, event.id));
+      await pmBillingRepository.updateEventStatus(event.id, "billing_exception", { notes: reason });
       result.errors.push(`Event ${event.id}: ${reason}`);
     }
   } catch (err: any) {
@@ -197,23 +178,13 @@ async function createInvoiceForEvent(
   contract: RecurringJobTemplate
 ): Promise<boolean> {
   // Re-read event to ensure it's still pending
-  const [event] = await db
-    .select()
-    .from(pmBillingEvents)
-    .where(and(eq(pmBillingEvents.id, eventId), eq(pmBillingEvents.status, "pending")))
-    .limit(1);
-
+  const event = await pmBillingRepository.getPendingEvent(eventId);
   if (!event) return false; // Already processed
 
   // Resolve customer company from location
   let customerCompanyId: string | null = null;
   if (contract.locationId) {
-    const [location] = await db
-      .select({ parentCompanyId: clients.parentCompanyId })
-      .from(clients)
-      .where(eq(clients.id, contract.locationId))
-      .limit(1);
-    customerCompanyId = location?.parentCompanyId ?? null;
+    customerCompanyId = await pmBillingRepository.resolveLocationCustomerCompany(contract.locationId);
   }
 
   // Create invoice via authorized path
@@ -232,14 +203,7 @@ async function createInvoiceForEvent(
   );
 
   // Link invoice to billing event
-  await db
-    .update(pmBillingEvents)
-    .set({
-      status: "invoiced",
-      invoiceId: invoice.id,
-      updatedAt: new Date(),
-    })
-    .where(eq(pmBillingEvents.id, eventId));
+  await pmBillingRepository.updateEventStatus(eventId, "invoiced", { invoiceId: invoice.id });
 
   console.log(
     `[PM-Billing] Created invoice #${invoice.invoiceNumber} for billing event ${eventId} ` +
@@ -265,13 +229,7 @@ export async function runBillingForAllTenants(): Promise<BillingRunResult> {
 
   try {
     // Find all active contracts with contract-based billing models
-    const contracts = await db
-      .select()
-      .from(recurringJobTemplates)
-      .where(and(
-        eq(recurringJobTemplates.isActive, true),
-        sql`${recurringJobTemplates.pmBillingModel} IN ('monthly_fixed', 'annual_prepaid')`,
-      ));
+    const contracts = await pmBillingRepository.getActiveContractBilledTemplates();
 
     const companies = new Set(contracts.map((c) => c.companyId));
     console.log(`[PM-Billing] Found ${contracts.length} contract-billed PM contracts across ${companies.size} companies`);
@@ -312,14 +270,7 @@ export async function runBillingForAllTenants(): Promise<BillingRunResult> {
 export async function runBillingForCompany(companyId: string): Promise<ContractBillingResult> {
   const result: ContractBillingResult = { eventsCreated: 0, invoicesCreated: 0, errors: [] };
 
-  const contracts = await db
-    .select()
-    .from(recurringJobTemplates)
-    .where(and(
-      eq(recurringJobTemplates.companyId, companyId),
-      eq(recurringJobTemplates.isActive, true),
-      sql`${recurringJobTemplates.pmBillingModel} IN ('monthly_fixed', 'annual_prepaid')`,
-    ));
+  const contracts = await pmBillingRepository.getActiveContractBilledTemplates(companyId);
 
   for (const contract of contracts) {
     try {
@@ -339,18 +290,7 @@ export async function runBillingForCompany(companyId: string): Promise<ContractB
  * Skip a pending billing event (e.g., contract on hold, client dispute).
  */
 export async function skipBillingEvent(eventId: string, companyId: string, reason?: string): Promise<void> {
-  await db
-    .update(pmBillingEvents)
-    .set({
-      status: "skipped",
-      notes: reason ?? "Manually skipped",
-      updatedAt: new Date(),
-    })
-    .where(and(
-      eq(pmBillingEvents.id, eventId),
-      eq(pmBillingEvents.companyId, companyId),
-      eq(pmBillingEvents.status, "pending"),
-    ));
+  await pmBillingRepository.skipEvent(eventId, companyId, reason);
 }
 
 /**
@@ -360,29 +300,12 @@ export async function getBillingEventsForContract(
   companyId: string,
   contractId: string
 ): Promise<any[]> {
-  return db
-    .select()
-    .from(pmBillingEvents)
-    .where(and(
-      eq(pmBillingEvents.companyId, companyId),
-      eq(pmBillingEvents.pmContractId, contractId),
-    ))
-    .orderBy(sql`${pmBillingEvents.periodStart} DESC`);
+  return pmBillingRepository.getEventsForContract(companyId, contractId);
 }
 
 /**
  * Get all billing events for a company (for PM Billing oversight tab).
  */
 export async function getBillingEventsForCompany(companyId: string): Promise<any[]> {
-  return db
-    .select({
-      event: pmBillingEvents,
-      contractTitle: recurringJobTemplates.title,
-      contractLocationId: recurringJobTemplates.locationId,
-      contractClientId: recurringJobTemplates.clientId,
-    })
-    .from(pmBillingEvents)
-    .leftJoin(recurringJobTemplates, eq(pmBillingEvents.pmContractId, recurringJobTemplates.id))
-    .where(eq(pmBillingEvents.companyId, companyId))
-    .orderBy(sql`${pmBillingEvents.periodStart} DESC`);
+  return pmBillingRepository.getEventsForCompany(companyId);
 }

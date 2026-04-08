@@ -6,13 +6,11 @@
  *   Past day: GET /api/tech/time/day?date=YYYY-MM-DD
  *   Edit sheet is view-only in this phase (save not wired).
  */
-import { useMemo, useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import {
   Clock,
   LogIn,
   Timer,
-  ChevronLeft,
-  ChevronRight,
   Loader2,
   RefreshCw,
 } from "lucide-react";
@@ -37,31 +35,7 @@ import {
 
 // ── Helpers (time formatting from shared utils/formatTime.ts) ──
 
-function isSameDay(a: Date, b: Date): boolean {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-}
-
-function isToday(d: Date): boolean {
-  return isSameDay(d, new Date());
-}
-
-function weekdayShort(d: Date): string {
-  return d.toLocaleDateString([], { weekday: "short" });
-}
-
-function dayNum(d: Date): string {
-  return d.getDate().toString();
-}
-
-function buildDayStrip(center: Date): Date[] {
-  const days: Date[] = [];
-  for (let i = -3; i <= 3; i++) {
-    const d = new Date(center);
-    d.setDate(center.getDate() + i);
-    days.push(d);
-  }
-  return days;
-}
+// Date helpers moved to shared DaySelector component
 
 function isoToTimeInput(iso: string): string {
   const d = new Date(iso);
@@ -77,54 +51,8 @@ function timeInputToIso(originalIso: string, timeVal: string): string {
 
 // ── Day selector ──
 
-function DaySelector({
-  selectedDate, onSelect, onPrev, onNext, onToday,
-}: {
-  selectedDate: Date; onSelect: (d: Date) => void; onPrev: () => void; onNext: () => void; onToday: () => void;
-}) {
-  const days = useMemo(() => buildDayStrip(selectedDate), [selectedDate]);
-  const todayDate = new Date();
-  const showTodayButton = !isToday(selectedDate);
-
-  return (
-    <div className="px-4 pt-2 pb-1">
-      <div className="flex items-center justify-between mb-1.5">
-        <button onClick={onPrev} className="p-1 rounded-md active:bg-slate-100">
-          <ChevronLeft className="h-4.5 w-4.5 text-slate-500" />
-        </button>
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-semibold text-slate-800">
-            {selectedDate.toLocaleDateString([], { month: "long", year: "numeric" })}
-          </span>
-          {showTodayButton && (
-            <button onClick={onToday} className="text-sm font-medium text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full active:bg-emerald-100">
-              Today
-            </button>
-          )}
-        </div>
-        <button onClick={onNext} className="p-1 rounded-md active:bg-slate-100">
-          <ChevronRight className="h-4.5 w-4.5 text-slate-500" />
-        </button>
-      </div>
-      <div className="grid grid-cols-7 gap-0.5">
-        {days.map((d) => {
-          const selected = isSameDay(d, selectedDate);
-          const todayMark = isSameDay(d, todayDate);
-          return (
-            <button key={d.toISOString()} onClick={() => onSelect(d)}
-              className={`flex flex-col items-center py-1 rounded-lg transition-colors ${
-                selected ? "bg-emerald-600 text-white shadow-sm" : "text-slate-600 active:bg-slate-100"
-              }`}>
-              <span className={`text-xs font-medium ${selected ? "text-emerald-100" : "text-slate-400"}`}>{weekdayShort(d)}</span>
-              <span className={`text-sm font-bold leading-tight ${selected ? "text-white" : ""}`}>{dayNum(d)}</span>
-              {todayMark && !selected && <div className="w-1 h-1 rounded-full bg-emerald-500 mt-0.5" />}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
+// DaySelector imported from shared component
+import { DaySelector } from "../components/DaySelector";
 
 // ── Shift summary card ──
 
@@ -405,16 +333,24 @@ export default function TimesheetPage() {
               <ShiftSummaryCard clockInAt={daySession.clockInAt} clockOutAt={daySession.clockOutAt} isActive={isShiftActive} />
             )}
 
-            {dayEntries.length > 0 && (
+            {/* Worked hours from work_sessions — always visible when shift exists */}
+            {(dayTotalMinutes > 0 || isShiftActive) && (
               <div className="mx-4 py-1">
                 <span className="text-xs font-semibold text-slate-500">
-                  Tracked: {formatDurationMinutes(dayTotalMinutes)}
+                  Worked: {formatDurationMinutes(dayTotalMinutes)}{isShiftActive ? " (shift active)" : ""}
                 </span>
               </div>
             )}
 
             {dayEntries.length === 0 ? (
-              <EmptyState />
+              daySession ? (
+                <div className="text-center py-6 text-slate-400">
+                  <p className="text-xs font-medium">No job activity tracked</p>
+                  <p className="text-[10px] mt-0.5">Start a job to log time entries</p>
+                </div>
+              ) : (
+                <EmptyState />
+              )
             ) : (
               <div className="mx-4 space-y-1.5">
                 {dayEntries.map((entry) => (

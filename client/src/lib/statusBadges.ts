@@ -8,6 +8,12 @@
  * Get display badge for an invoice status.
  * Uses server-computed isPastDue flag — canonical overdue rule:
  * status IN (awaiting_payment, sent, partial_paid) + balance > 0 + dueDate < today.
+ *
+ * Lifecycle statuses: draft, awaiting_payment, partial_paid, paid, voided.
+ * Legacy alias: "sent" — existing rows render as "Awaiting Payment" to match
+ * the canonical lifecycle. New code should never write "sent".
+ *
+ * Past Due is a derived state, not a persisted status.
  */
 export function getInvoiceStatusBadge(
   status: string,
@@ -23,8 +29,7 @@ export function getInvoiceStatusBadge(
   switch (status) {
     case "draft":            return { label: "Draft", variant: "outline" };
     case "awaiting_payment": return { label: "Awaiting Payment", variant: "default" };
-    case "sent":             return { label: "Sent", variant: "default" };
-    case "viewed":           return { label: "Viewed", variant: "secondary" };
+    case "sent":             return { label: "Awaiting Payment", variant: "default" }; // legacy alias
     case "partial_paid":     return { label: "Partial", variant: "secondary" };
     case "paid":             return { label: "Paid", variant: "default" };
     case "voided":           return { label: "Voided", variant: "outline" };

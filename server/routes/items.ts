@@ -33,6 +33,12 @@ const createItemSchema = z.object({
 
 const updateItemSchema = createItemSchema.partial().strict();
 
+// 2026-04-08: P5 — bulk delete schema. Implements the previously-missing
+// POST /api/items/bulk-delete that the client was calling 404.
+const bulkDeleteItemsSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(500),
+}).strict();
+
 // Convert numeric fields to strings for DB storage
 function toDbNumericString(value: string | number | null | undefined): string | null | undefined {
   if (value === null) return null;
@@ -100,6 +106,30 @@ router.delete("/:id", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authe
 
   const result = await storage.deleteItem(companyId, req.params.id);
   res.json(result);
+}));
+
+// POST /api/items/bulk-delete - Soft-delete multiple items in one request
+// 2026-04-08: P5 — implements the previously-missing endpoint that
+// useProductsServices.bulkDeleteMutation was calling 404.
+router.post("/bulk-delete", requireRole(MANAGER_ROLES), asyncHandler(async (req: AuthedRequest, res: Response) => {
+  const companyId = req.companyId;
+  if (!companyId) throw createError(401, "Unauthorized");
+
+  const { ids } = validateSchema(bulkDeleteItemsSchema, req.body);
+
+  // Per-id soft delete via canonical itemRepository.deleteItem path.
+  // Counts successes; partial failures do not abort the batch.
+  let deletedCount = 0;
+  for (const id of ids) {
+    try {
+      const result = await storage.deleteItem(companyId, id);
+      if (result.success) deletedCount++;
+    } catch {
+      // Skip failed deletes; client surfaces success count.
+    }
+  }
+
+  res.json({ deletedCount });
 }));
 
 export default router;

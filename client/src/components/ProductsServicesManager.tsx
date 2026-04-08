@@ -1,7 +1,5 @@
-import { useState, useRef, useMemo, useCallback } from "react";
-import { useMutation } from "@tanstack/react-query";
-import { queryClient, apiRequest } from "@/lib/queryClient";
-import { useToast } from "@/hooks/use-toast";
+import { useState, useMemo, useCallback } from "react";
+import { useLocation } from "wouter";
 import { useProductsServices } from "@/hooks/useProductsServices";
 import { ProductsServicesToolbar } from "@/components/products-services/ProductsServicesToolbar";
 import { ProductsServicesTable } from "@/components/products-services/ProductsServicesTable";
@@ -11,33 +9,17 @@ import {
   ArchiveConfirmDialog,
   BulkDeleteDialog,
   BulkCategoryDialog,
-  ImportDialog,
 } from "@/components/products-services/ProductServiceDeleteDialog";
 import { Part, ProductFormData, defaultFormData } from "@/components/products-services/types";
 
 export default function ProductsServicesManager() {
-  const { toast: seedToast } = useToast();
+  // 2026-04-08: P5 — Removed `seedPartsMutation` (called non-existent
+  // POST /api/items/seed). Removed in-page Import dialog (called non-existent
+  // POST /api/items/import). The toolbar Import button now navigates to the
+  // canonical /settings/import-products page which uses the implemented
+  // /api/product-import/* flow.
 
-  // Seed parts mutation - seeds 244 standard filters and belts
-  const seedPartsMutation = useMutation({
-    mutationFn: async () => {
-      return await apiRequest("/api/items/seed", { method: "POST" });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/items"] });
-      seedToast({
-        title: "Success",
-        description: "Standard parts seeded successfully. Missing parts have been restored (244 filters and belts available).",
-      });
-    },
-    onError: () => {
-      seedToast({
-        title: "Error",
-        description: "Failed to seed standard parts.",
-        variant: "destructive",
-      });
-    },
-  });
+  const [, setLocation] = useLocation();
 
   // Dialog state
   const [productDialogOpen, setProductDialogOpen] = useState(false);
@@ -50,12 +32,6 @@ export default function ProductsServicesManager() {
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
   const [bulkCategoryDialogOpen, setBulkCategoryDialogOpen] = useState(false);
   const [bulkCategoryValue, setBulkCategoryValue] = useState("");
-  const [importDialogOpen, setImportDialogOpen] = useState(false);
-  const [importFileContent, setImportFileContent] = useState("");
-  const [importFileName, setImportFileName] = useState("");
-  const [importUpdateExisting, setImportUpdateExisting] = useState(false);
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Close dialog callback for the hook
   const handleCloseDialog = useCallback(() => {
@@ -98,7 +74,6 @@ export default function ProductsServicesManager() {
     bulkDeleteMutation,
     bulkArchiveMutation,
     bulkCategoryMutation,
-    importMutation,
     handleExport,
     handleExportSelected,
     handleSaveProduct,
@@ -179,42 +154,8 @@ export default function ProductsServicesManager() {
     setBulkCategoryValue("");
   };
 
-  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    if (!file.name.endsWith(".csv")) {
-      toast({ title: "Invalid File", description: "Please select a CSV file.", variant: "destructive" });
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      setImportFileContent(e.target?.result as string);
-      setImportFileName(file.name);
-      setImportDialogOpen(true);
-    };
-    reader.readAsText(file);
-    if (event.target) event.target.value = "";
-  };
-
-  const handleImport = () => {
-    importMutation.mutate({ csvData: importFileContent, updateExisting: importUpdateExisting });
-    setImportDialogOpen(false);
-    setImportFileContent("");
-    setImportFileName("");
-    setImportUpdateExisting(false);
-  };
-
-  const handleImportCancel = () => {
-    setImportDialogOpen(false);
-    setImportFileContent("");
-    setImportFileName("");
-  };
-
   return (
     <div className="space-y-4" data-testid="products-services-manager">
-      {/* Hidden file input */}
-      <input type="file" ref={fileInputRef} onChange={handleFileSelect} accept=".csv" className="hidden" />
-
       {/* Toolbar */}
       <ProductsServicesToolbar
         searchQuery={searchQuery}
@@ -227,11 +168,9 @@ export default function ProductsServicesManager() {
         onStatusFilterChange={setStatusFilter}
         uniqueCategories={uniqueCategories}
         itemCount={filteredAndSortedParts.length}
-        onImportClick={() => fileInputRef.current?.click()}
+        onImportClick={() => setLocation("/settings/import-products")}
         onExportClick={handleExport}
         onAddClick={handleOpenAddDialog}
-        onSeedClick={() => seedPartsMutation.mutate()}
-        seedPending={seedPartsMutation.isPending}
         selectedCount={selectedIds.size}
         onBulkCategoryClick={() => setBulkCategoryDialogOpen(true)}
         onBulkExportClick={handleExportSelected}
@@ -312,18 +251,6 @@ export default function ProductsServicesManager() {
         isPending={bulkCategoryMutation.isPending}
       />
 
-      {/* Import Dialog */}
-      <ImportDialog
-        open={importDialogOpen}
-        onOpenChange={setImportDialogOpen}
-        fileName={importFileName}
-        fileContent={importFileContent}
-        updateExisting={importUpdateExisting}
-        onUpdateExistingChange={setImportUpdateExisting}
-        onImport={handleImport}
-        onCancel={handleImportCancel}
-        isPending={importMutation.isPending}
-      />
     </div>
   );
 }

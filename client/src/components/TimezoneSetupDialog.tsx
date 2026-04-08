@@ -35,8 +35,7 @@ interface CompanySettingsTimezone {
   timezoneConfirmed?: boolean;
 }
 
-/** Roles that can configure company settings */
-const MANAGER_ROLES = ["owner", "admin", "manager"];
+import { MANAGER_ROLES } from "@/lib/roles";
 
 /** Best-guess timezone from the browser */
 function getBrowserTimezone(): string {
@@ -101,7 +100,7 @@ export function TimezoneSetupDialog() {
 
   // Only show for manager+ roles when timezone is not confirmed.
   // justConfirmed guard prevents re-showing during the save → refetch window.
-  const isManager = user?.role && MANAGER_ROLES.includes(user.role);
+  const isManager = user?.role && (MANAGER_ROLES as readonly string[]).includes(user.role);
   const shouldShow = !justConfirmed && !isLoading && settings && !settings.timezoneConfirmed && isManager;
 
   if (!shouldShow) return null;

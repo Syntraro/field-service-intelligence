@@ -29,6 +29,7 @@ import {
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { getResendClient } from "../resendClient";
 import { rateLimitPerTenant } from "../auth/tenantIsolation";
+import { isInvoiceDraft, isInvoiceVoided } from "../lib/invoicePredicates";
 
 // ============================================================================
 // Types
@@ -438,7 +439,7 @@ router.get(
     }
 
     // Don't expose draft or voided invoices to customers
-    if (invoice.status === "draft" || invoice.status === "voided") {
+    if (isInvoiceDraft(invoice.status) || isInvoiceVoided(invoice.status)) {
       throw createError(404, "Invoice not found");
     }
 

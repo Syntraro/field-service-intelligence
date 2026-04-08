@@ -36,7 +36,21 @@ import { db } from "../db";
 /** Workflow summary for the Dashboard strip. */
 export interface WorkflowSummary {
   quotes: { approvedCount: number; draftCount: number };
-  jobs: { requiresInvoicingCount: number; activeCount: number; onHoldCount: number; unscheduledCount: number };
+  jobs: {
+    requiresInvoicingCount: number;
+    activeCount: number;
+    onHoldCount: number;
+    unscheduledCount: number;
+    /**
+     * 2026-04-08: Live overdue count.
+     * Replaces the dashboard's previous read of attention_items["job.overdue"],
+     * which was materialized and had no time-based refresher → silently stale.
+     * Computed from the canonical jobs table using the same effectiveEndExpr +
+     * openSubStatus exclusion the modal already uses, so dashboard count and
+     * modal list stay in lockstep by construction.
+     */
+    overdueCount: number;
+  };
   invoices: { outstandingCount: number; pastDueCount: number };
   pm: { awaitingGenerationCount: number; overdueCount: number; comingDueCount: number; upcomingCount: number };
   fourth: null;
@@ -110,16 +124,30 @@ async function getJobCounts(ctx: QueryCtx) {
           AND ${jobs.scheduledStart} IS NULL
           AND (${jobs.openSubStatus} IS NULL OR ${jobs.openSubStatus} != 'on_hold'))
       `.as("unscheduled_count"),
+      // 2026-04-08: Live overdue count — single SoT with the modal.
+      // Predicates byte-equivalent to:
+      //   server/lib/attentionRules.ts (job.overdue rule, lines 112-120)
+      //   server/storage/dashboard.ts getNeedsAttentionJobs overdue branch (lines 295-303)
+      //   server/storage/jobsFeed.ts overdue filter (lines 402-408)
+      // Reuses the same effectiveEndExpr SQL helper so any future change to
+      // the overdue definition propagates to all four call sites in one place.
+      overdueCount: sql<number>`
+        COUNT(*) FILTER (WHERE ${jobs.status} = 'open'
+          AND ${jobs.scheduledStart} IS NOT NULL
+          AND ${effectiveEndExpr} < NOW()
+          AND (${jobs.openSubStatus} IS NULL OR ${jobs.openSubStatus} NOT IN ('in_progress', 'on_route')))
+      `.as("overdue_count"),
     })
     .from(jobs)
     .where(and(eq(jobs.companyId, ctx.tenantId), activeJobFilter()));
 
-  const c = result[0] || { requiresInvoicingCount: 0, activeCount: 0, onHoldCount: 0, unscheduledCount: 0 };
+  const c = result[0] || { requiresInvoicingCount: 0, activeCount: 0, onHoldCount: 0, unscheduledCount: 0, overdueCount: 0 };
   return {
     requiresInvoicingCount: Number(c.requiresInvoicingCount) || 0,
     activeCount: Number(c.activeCount) || 0,
     onHoldCount: Number(c.onHoldCount) || 0,
     unscheduledCount: Number(c.unscheduledCount) || 0,
+    overdueCount: Number(c.overdueCount) || 0,
   };
 }
 

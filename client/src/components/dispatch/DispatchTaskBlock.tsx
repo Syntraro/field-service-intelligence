@@ -4,7 +4,7 @@
  * Parity with DispatchVisitBlock: click, drag, resize all supported.
  * Backend: PATCH /api/tasks/:id accepts scheduledStartAt and scheduledEndAt.
  */
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, memo } from "react";
 import { useDraggable } from "@dnd-kit/core";
 import { addMinutes } from "date-fns";
 import type { DispatchTask } from "./dispatchPreviewTypes";
@@ -69,7 +69,7 @@ export function getTaskPosition(task: DispatchTask, timelineStartHour = TIMELINE
   return { left, width };
 }
 
-export default function DispatchTaskBlock({ task, isSaving, isSelected, hasConflict, onSelect, onResize, laneVisits = [], laneTasks = [], timelineStartHour: tsHour = TIMELINE_START_HOUR, timelineEndHour: teHour = TIMELINE_END_HOUR }: Props) {
+function DispatchTaskBlockImpl({ task, isSaving, isSelected, hasConflict, onSelect, onResize, laneVisits = [], laneTasks = [], timelineStartHour: tsHour = TIMELINE_START_HOUR, timelineEndHour: teHour = TIMELINE_END_HOUR }: Props) {
   const pos = getTaskPosition(task, tsHour);
   if (!pos) return null;
 
@@ -253,3 +253,6 @@ export default function DispatchTaskBlock({ task, isSaving, isSelected, hasConfl
     </div>
   );
 }
+
+const DispatchTaskBlock = memo(DispatchTaskBlockImpl);
+export default DispatchTaskBlock;

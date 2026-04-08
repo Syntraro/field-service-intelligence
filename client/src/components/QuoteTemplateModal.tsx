@@ -25,6 +25,11 @@ import {
 } from "@/components/ui/table";
 import { Plus, Trash2, Loader2, GripVertical } from "lucide-react";
 import type { QuoteTemplate } from "@shared/schema";
+import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
+import {
+  useProductSearch, getProductKey, getProductLabel, getProductDescription,
+  type ProductOption,
+} from "@/lib/entities/productEntity";
 
 interface QuoteTemplateModalProps {
   open: boolean;
@@ -34,6 +39,7 @@ interface QuoteTemplateModalProps {
 
 interface LineItemDraft {
   id: string;
+  productId: string | null;
   description: string;
   quantity: string;
   unitPrice: string;
@@ -76,6 +82,7 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
           setLineItems(
             (templateDetails.lines || []).map((line: any, index: number) => ({
               id: line.id || `line_${index}`,
+              productId: line.productId || null,
               description: line.description || "",
               quantity: String(line.quantity || "1"),
               unitPrice: String(line.unitPrice || "0.00"),
@@ -111,7 +118,7 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/quote-templates"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/quote-templates/list"] });
       toast({
         title: isEditing ? "Template updated" : "Template created",
         description: isEditing
@@ -131,6 +138,7 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
       ...prev,
       {
         id: newId,
+        productId: null,
         description: "",
         quantity: "1",
         unitPrice: "0.00",
@@ -179,6 +187,7 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
       description: description.trim() || null,
       isDefault,
       lines: validLineItems.map((li, index) => ({
+        productId: li.productId || null,
         description: li.description.trim(),
         quantity: li.quantity,
         unitPrice: li.unitPrice || "0.00",
@@ -311,14 +320,19 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
                             <GripVertical className="h-4 w-4" />
                           </TableCell>
                           <TableCell>
-                            <Input
-                              value={item.description}
-                              onChange={(e) =>
-                                handleLineItemChange(item.id, "description", e.target.value)
-                              }
-                              placeholder="Line item description"
-                              className="text-sm"
-                              data-testid={`input-description-${index}`}
+                            <LineItemProductCell
+                              item={item}
+                              onSelect={(product) => {
+                                setLineItems(prev => prev.map(li =>
+                                  li.id === item.id ? { ...li, productId: product.id, description: product.name, unitPrice: product.unitPrice || li.unitPrice } : li
+                                ));
+                              }}
+                              onClear={() => {
+                                setLineItems(prev => prev.map(li =>
+                                  li.id === item.id ? { ...li, productId: null } : li
+                                ));
+                              }}
+                              onDescriptionChange={(value) => handleLineItemChange(item.id, "description", value)}
                             />
                           </TableCell>
                           <TableCell>
@@ -397,5 +411,50 @@ export function QuoteTemplateModal({ open, onClose, template }: QuoteTemplateMod
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ── Line item product cell using canonical selector ──
+function LineItemProductCell({ item, onSelect, onClear, onDescriptionChange }: {
+  item: LineItemDraft;
+  onSelect: (product: ProductOption) => void;
+  onClear: () => void;
+  onDescriptionChange: (value: string) => void;
+}) {
+  const [searchText, setSearchText] = useState("");
+  const { data: results = [], isLoading } = useProductSearch(searchText);
+
+  // If product is selected, show as selected state; otherwise show search
+  const selectedValue: ProductOption | null = item.productId
+    ? { id: item.productId, name: item.description, type: "product", unitPrice: item.unitPrice, cost: null }
+    : null;
+
+  return (
+    <CreateOrSelectField<ProductOption>
+      label=""
+      compact
+      value={selectedValue}
+      onChange={(product) => {
+        if (product) {
+          onSelect(product);
+          setSearchText("");
+        } else {
+          onClear();
+          onDescriptionChange("");
+        }
+      }}
+      searchResults={results}
+      searchLoading={isLoading}
+      searchText={searchText || (selectedValue ? "" : item.description)}
+      onSearchTextChange={(text) => {
+        setSearchText(text);
+        // Also update description for manual-entry fallback
+        if (!item.productId) onDescriptionChange(text);
+      }}
+      getKey={getProductKey}
+      getLabel={getProductLabel}
+      getDescription={getProductDescription}
+      placeholder="Search products or type description"
+    />
   );
 }

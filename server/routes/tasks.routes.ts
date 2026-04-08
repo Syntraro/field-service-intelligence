@@ -1,5 +1,5 @@
 import { Router, Response } from "express";
-import * as service from "../services/tasks.service.ts";
+import { taskRepository as service } from "../storage/tasks";
 import { z } from "zod";
 import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";

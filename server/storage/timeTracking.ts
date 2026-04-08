@@ -58,6 +58,31 @@ const BILLABLE_DEFAULTS: Record<TimeEntryType, boolean> = {
   other: false,
 };
 
+/**
+ * Canonical duration helper for work sessions (payroll/timesheet source of truth).
+ * Returns worked minutes = (clockOut - clockIn) - breaks.
+ * Open sessions (no clockOut) return 0 for server-side totals.
+ * Never returns negative.
+ */
+export function sessionDurationMinutes(session: {
+  clockInAt: Date | string;
+  clockOutAt: Date | string | null;
+  breakMinutes: number | null;
+}): number {
+  if (!session.clockOutAt) return 0;
+  const start = session.clockInAt instanceof Date ? session.clockInAt.getTime() : new Date(session.clockInAt).getTime();
+  const end = session.clockOutAt instanceof Date ? session.clockOutAt.getTime() : new Date(session.clockOutAt).getTime();
+  const raw = Math.round((end - start) / 60000) - (session.breakMinutes ?? 0);
+  return Math.max(0, raw);
+}
+
+/**
+ * Sum duration of multiple work sessions for a day/range.
+ */
+export function sumSessionMinutes(sessions: Array<{ clockInAt: Date | string; clockOutAt: Date | string | null; breakMinutes: number | null }>): number {
+  return sessions.reduce((sum, s) => sum + sessionDurationMinutes(s), 0);
+}
+
 export class TimeTrackingRepository extends BaseRepository {
   // ============================================================================
   // WORK SESSIONS
@@ -259,13 +284,14 @@ export class TimeTrackingRepository extends BaseRepository {
   /**
    * Get today's status for a technician (session + running entry + entries summary)
    */
-  async getTechnicianTodayStatus(companyId: string, technicianId: string) {
+  async getTechnicianTodayStatus(companyId: string, technicianId: string, todayDateStr?: string, tzDayStart?: Date, tzDayEnd?: Date) {
     this.assertCompanyId(companyId);
     this.validateUUID(technicianId, "technicianId");
 
-    const today = new Date().toISOString().split("T")[0];
-    const startOfToday = new Date(today + "T00:00:00Z");
-    const endOfToday = new Date(today + "T23:59:59Z");
+    // Use tenant-timezone-aware bounds if provided, otherwise fall back to UTC
+    const today = todayDateStr ?? new Date().toISOString().split("T")[0];
+    const startOfToday = tzDayStart ?? new Date(today + "T00:00:00Z");
+    const endOfToday = tzDayEnd ?? new Date(today + "T23:59:59Z");
 
     // Get open session
     const openSession = await this.getOpenWorkSession(companyId, technicianId, today);
@@ -287,8 +313,20 @@ export class TimeTrackingRepository extends BaseRepository {
       )
       .orderBy(desc(timeEntries.startAt));
 
-    // Calculate totals
-    const totalMinutes = todayEntries.reduce((sum, e) => sum + (e.durationMinutes ?? 0), 0);
+    // Payroll/timesheet totals: worked hours from work_sessions (not time_entries)
+    const todaySessions = await db
+      .select()
+      .from(workSessions)
+      .where(
+        and(
+          eq(workSessions.companyId, companyId),
+          eq(workSessions.technicianId, technicianId),
+          eq(workSessions.workDate, today),
+        )
+      );
+    const totalMinutes = sumSessionMinutes(todaySessions);
+
+    // Billable minutes remain from time_entries (labor classification, not payroll)
     const billableMinutes = todayEntries
       .filter((e) => e.billable)
       .reduce((sum, e) => sum + (e.durationMinutes ?? 0), 0);
@@ -1971,7 +2009,7 @@ export class TimeTrackingRepository extends BaseRepository {
       }
 
       throw this.conflictError(
-        `Week ${weekStart} is approved and locked. Cannot modify time entries or work sessions.`
+        `Week ${weekStart} is approved and locked. Cannot modify payroll sessions or labor entries in an approved period.`
       );
     }
   }
@@ -2090,9 +2128,12 @@ export class TimeTrackingRepository extends BaseRepository {
       )
       .orderBy(asc(timeEntries.startAt));
 
-    let totalMinutes = 0;
+    // Worked hours from work_sessions (payroll source of truth)
+    const nextDateStr = nextDay.toISOString().split("T")[0];
+    const daySessions = await this.getWorkSessionsForTechnician(companyId, userId, date, nextDateStr);
+    const totalMinutes = sumSessionMinutes(daySessions);
+
     const entries = rows.map((r) => {
-      totalMinutes += r.durationMinutes ?? 0;
       return {
         id: r.id,
         technicianId: r.technicianId,
@@ -2387,27 +2428,29 @@ export class TimeTrackingRepository extends BaseRepository {
     const normalizedWeekStart = this.normalizeToMonday(weekStart);
     const { weekEnd, days } = this.getWeekRange(normalizedWeekStart);
 
-    const techFilterEntries = options?.technicianId
-      ? eq(timeEntries.technicianId, options.technicianId)
+    const techFilterSessions = options?.technicianId
+      ? eq(workSessions.technicianId, options.technicianId)
       : sql`1=1`;
 
-    // Single query: time entries grouped by technician + date (sole payroll source, 2026-04-03)
-    const entriesData = await db
+    // Payroll source of truth: work_sessions (clock-in/out attendance)
+    const sessionsData = await db
       .select({
-        technicianId: timeEntries.technicianId,
+        technicianId: workSessions.technicianId,
         technicianName: users.fullName,
-        startAt: timeEntries.startAt,
-        durationMinutes: timeEntries.durationMinutes,
+        workDate: workSessions.workDate,
+        clockInAt: workSessions.clockInAt,
+        clockOutAt: workSessions.clockOutAt,
+        breakMinutes: workSessions.breakMinutes,
       })
-      .from(timeEntries)
-      .leftJoin(users, eq(timeEntries.technicianId, users.id))
+      .from(workSessions)
+      .leftJoin(users, eq(workSessions.technicianId, users.id))
       .where(
         and(
-          eq(timeEntries.companyId, companyId),
-          gte(timeEntries.startAt, new Date(normalizedWeekStart + "T00:00:00Z")),
-          lt(timeEntries.startAt, new Date(weekEnd + "T23:59:59.999Z")),
-          isNotNull(timeEntries.endAt), // Only completed entries
-          techFilterEntries
+          eq(workSessions.companyId, companyId),
+          gte(workSessions.workDate, normalizedWeekStart),
+          lte(workSessions.workDate, weekEnd),
+          isNotNull(workSessions.clockOutAt), // Only completed sessions
+          techFilterSessions
         )
       );
 
@@ -2439,21 +2482,20 @@ export class TimeTrackingRepository extends BaseRepository {
       });
     }
 
-    // Aggregate time entries by tech + date (single source of truth, 2026-04-03)
+    // Aggregate work sessions by tech + date (payroll source of truth)
     const techDailyMinutes = new Map<string, Map<string, number>>();
     const techNames = new Map<string, string | null>();
 
-    for (const e of entriesData) {
-      techNames.set(e.technicianId, e.technicianName);
+    for (const s of sessionsData) {
+      techNames.set(s.technicianId, s.technicianName);
 
-      if (!techDailyMinutes.has(e.technicianId)) {
-        techDailyMinutes.set(e.technicianId, new Map());
+      if (!techDailyMinutes.has(s.technicianId)) {
+        techDailyMinutes.set(s.technicianId, new Map());
       }
 
-      const dateStr = e.startAt.toISOString().split("T")[0];
-      const dailyMap = techDailyMinutes.get(e.technicianId)!;
-      const mins = e.durationMinutes ?? 0;
-      dailyMap.set(dateStr, (dailyMap.get(dateStr) ?? 0) + mins);
+      const dailyMap = techDailyMinutes.get(s.technicianId)!;
+      const mins = sessionDurationMinutes(s);
+      dailyMap.set(s.workDate, (dailyMap.get(s.workDate) ?? 0) + mins);
     }
 
     // Build result for each technician
@@ -2500,7 +2542,7 @@ export class TimeTrackingRepository extends BaseRepository {
    * Generate CSV content for weekly payroll export
    */
   /**
-   * Generate CSV for simplified weekly payroll — time_entries only (2026-04-03)
+   * Generate CSV for weekly payroll — work_sessions source of truth (realigned 2026-04-06)
    */
   generatePayrollCsv(summaries: TechnicianWeeklySummary[]): string {
     const toHours = (mins: number) => (mins / 60).toFixed(2);

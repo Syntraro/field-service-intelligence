@@ -24,7 +24,8 @@ import { templateRepository } from "./templates";
 import { maintenanceRepository } from "./maintenance";
 import { subscriptionRepository } from "./subscriptions";
 import { companyRepository } from "./company";
-import { partRepository } from "./parts";
+// 2026-04-08: Removed `partRepository` import — PartRepository deleted as
+// part of P4 catalog consolidation. All callers route through itemRepository.
 import { customerCompanyRepository } from "./customerCompanies";
 import { clientContactRepository } from "./clientContacts";
 import { taskRepository } from "./tasks";
@@ -85,9 +86,12 @@ export interface IStorage {
   getClientParts: typeof clientRepository.getClientParts;
   addClientPart: typeof clientRepository.addClientPart;
   deleteAllClientParts: typeof clientRepository.deleteAllClientParts;
+  validateLocationOwnership: typeof clientRepository.validateLocationOwnership;
+  validateItemOwnership: typeof clientRepository.validateItemOwnership;
   upsertClientPartsBulk: typeof clientRepository.upsertClientPartsBulk;
   cleanupInvalidCalendarAssignments: typeof clientRepository.cleanupInvalidCalendarAssignments;
   getLocationEquipment: typeof clientRepository.getLocationEquipment;
+  getLocationEquipmentAny: typeof clientRepository.getLocationEquipmentAny;
   getLocationEquipmentById: typeof clientRepository.getLocationEquipmentById;
   createLocationEquipment: typeof clientRepository.createLocationEquipment;
   updateLocationEquipment: typeof clientRepository.updateLocationEquipment;
@@ -152,12 +156,9 @@ export interface IStorage {
   deleteItem: typeof itemRepository.deleteItem;
   restoreItem: typeof itemRepository.restoreItem;
 
-  // Parts operations (legacy parts table)
-  getParts: typeof partRepository.getParts;
-  getPart: typeof partRepository.getPart;
-  createPart: (companyId: string, userId: string, partData: any) => Promise<any>;
-  updatePart: typeof partRepository.updatePart;
-  deletePart: typeof partRepository.deletePart;
+  // 2026-04-08: Removed legacy `parts` operations from the storage façade.
+  // PartRepository was a duplicate wrapper around the same `items` table; all
+  // callers now use itemRepository directly via the items operations above.
 
   // Team operations
   createTeamMember: typeof teamRepository.createTeamMember;
@@ -289,9 +290,12 @@ export const storage: IStorage = {
   getClientParts: clientRepository.getClientParts.bind(clientRepository),
   addClientPart: clientRepository.addClientPart.bind(clientRepository),
   deleteAllClientParts: clientRepository.deleteAllClientParts.bind(clientRepository),
+  validateLocationOwnership: clientRepository.validateLocationOwnership.bind(clientRepository),
+  validateItemOwnership: clientRepository.validateItemOwnership.bind(clientRepository),
   upsertClientPartsBulk: clientRepository.upsertClientPartsBulk.bind(clientRepository),
   cleanupInvalidCalendarAssignments: clientRepository.cleanupInvalidCalendarAssignments.bind(clientRepository),
   getLocationEquipment: clientRepository.getLocationEquipment.bind(clientRepository),
+  getLocationEquipmentAny: clientRepository.getLocationEquipmentAny.bind(clientRepository),
   getLocationEquipmentById: clientRepository.getLocationEquipmentById.bind(clientRepository),
   createLocationEquipment: clientRepository.createLocationEquipment.bind(clientRepository),
   updateLocationEquipment: clientRepository.updateLocationEquipment.bind(clientRepository),
@@ -353,12 +357,9 @@ export const storage: IStorage = {
   deleteItem: itemRepository.deleteItem.bind(itemRepository),
   restoreItem: itemRepository.restoreItem.bind(itemRepository),
 
-  // Parts operations (legacy parts table)
-  getParts: partRepository.getParts.bind(partRepository),
-  getPart: partRepository.getPart.bind(partRepository),
-  createPart: partRepository.createPart.bind(partRepository),
-  updatePart: partRepository.updatePart.bind(partRepository),
-  deletePart: partRepository.deletePart.bind(partRepository),
+  // 2026-04-08: Legacy parts operations removed from storage façade.
+  // PartRepository was a duplicate of ItemRepository on the same `items` table.
+  // All call sites now use the items operations above.
 
   // Team operations
   createTeamMember: teamRepository.createTeamMember.bind(teamRepository),
@@ -481,7 +482,6 @@ export {
   jobRepository,
   invoiceRepository,
   itemRepository,
-  partRepository,
   teamRepository,
   templateRepository,
   maintenanceRepository,

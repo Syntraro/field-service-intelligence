@@ -17,6 +17,9 @@ import { VisitDetailPage } from "../pages/VisitDetailPage";
 import { CreateJobPage } from "../pages/CreateJobPage";
 import { CreateClientPage } from "../pages/CreateClientPage";
 import TimesheetPage from "../pages/TimesheetPage";
+import { SearchPage } from "../pages/SearchPage";
+import { CreateLeadPage } from "../pages/CreateLeadPage";
+import { LocationDetailPage } from "../pages/LocationDetailPage";
 import { useTechRealtimeSync } from "../hooks/useTechRealtimeSync";
 
 /** Loading spinner shown during session restore */
@@ -86,6 +89,18 @@ export default function TechApp() {
 
       <Route path="/tech/create-client">
         <CreateClientPage />
+      </Route>
+
+      <Route path="/tech/search">
+        <SearchPage />
+      </Route>
+
+      <Route path="/tech/create-lead">
+        <CreateLeadPage />
+      </Route>
+
+      <Route path="/tech/location/:id">
+        {(params) => <LocationDetailPage />}
       </Route>
 
       <Route path="/tech/visit/:id">

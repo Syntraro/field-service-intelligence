@@ -60,11 +60,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { Invoice, InvoiceLine, Payment, Client, CustomerCompany, Job } from "@shared/schema";
+import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
+import { useProductSearch, getProductKey, getProductLabel, getProductDescription, type ProductOption } from "@/lib/entities/productEntity";
 import { InvoiceHeaderCard } from "@/components/InvoiceHeaderCard";
 import { ConfirmSendModal } from "@/components/invoice/ConfirmSendModal";
 import { ConfirmVoidModal } from "@/components/invoice/ConfirmVoidModal";
 import { QboSyncBanner, isQboSynced, isBillingLocked } from "@/components/invoice/QboSyncBanner";
 import { QboOverrideModal, useQboOverride } from "@/components/invoice/QboOverrideModal";
+import { formatCurrency } from "@/lib/formatters";
 
 interface JobNote {
   id: string;
@@ -108,11 +111,6 @@ interface InvoiceDetails {
   primaryContact?: PrimaryContact | null;
 }
 
-function formatCurrency(amount: string | number): string {
-  const num = typeof amount === "string" ? parseFloat(amount) : amount;
-  return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(num);
-}
-
 // 2026-03-20: Local getInvoiceStatusBadge() removed — canonical owner is lib/statusBadges.ts:getInvoiceStatusBadge()
 
 function getBalanceColor(balance: string, isPastDue: boolean): string {
@@ -123,16 +121,7 @@ function getBalanceColor(balance: string, isPastDue: boolean): string {
 }
 
 
-// Add Line Item — compact inline form
-// Product/service item for search results
-interface CatalogItem {
-  id: string;
-  name: string;
-  type: string;
-  unitPrice: string;
-  cost?: string;
-  description?: string | null;
-}
+// Add Line Item — compact inline form using canonical product selector
 
 // Add Line Item — table-row-based editor matching PartsBillingCard add-row pattern
 function AddLineItemRow({ onAdd, isPending, onCancel }: {
@@ -147,42 +136,24 @@ function AddLineItemRow({ onAdd, isPending, onCancel }: {
   const [desc, setDesc] = useState("");
   const [qty, setQty] = useState("1");
   const [price, setPrice] = useState("");
-  const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
+  const [selectedProduct, setSelectedProduct] = useState<ProductOption | null>(null);
   const [productCost, setProductCost] = useState<number>(0);
   const [productSearch, setProductSearch] = useState("");
-  const [showProducts, setShowProducts] = useState(false);
 
-  // Fetch products/services catalog for search
-  const { data: catalogItems = [] } = useQuery<CatalogItem[]>({
-    queryKey: ["/api/items", "invoice-line-picker"],
-    queryFn: async () => {
-      const res = await fetch("/api/items?limit=500", { credentials: "include" });
-      if (!res.ok) return [];
-      const json = await res.json();
-      return Array.isArray(json) ? json : (Array.isArray(json?.data) ? json.data : []);
-    },
-    staleTime: 5 * 60 * 1000,
-  });
+  // Canonical product search via productEntity
+  const { data: searchResults = [], isLoading: searchLoading } = useProductSearch(productSearch);
 
-  // Filter catalog by search text
-  const filteredItems = useMemo(() => {
-    const items = Array.isArray(catalogItems) ? catalogItems : [];
-    if (!productSearch.trim()) return items.slice(0, 10);
-    const q = productSearch.toLowerCase();
-    return items.filter(i =>
-      i.name.toLowerCase().includes(q) ||
-      (i.description && i.description.toLowerCase().includes(q))
-    ).slice(0, 10);
-  }, [catalogItems, productSearch]);
-
-  const handleSelectProduct = (item: CatalogItem) => {
-    // Use item.description (detailed invoice text) when available, fall back to item.name
-    setDesc(item.description || item.name);
-    setPrice(item.unitPrice || "0");
-    setSelectedProductId(item.id);
-    setProductCost(parseFloat(item.cost || "0") || 0);
-    setShowProducts(false);
-    setProductSearch("");
+  const handleSelectProduct = (product: ProductOption | null) => {
+    if (product) {
+      setDesc(product.name);
+      setPrice(product.unitPrice || "0");
+      setSelectedProduct(product);
+      setProductCost(parseFloat(product.cost || "0") || 0);
+      setProductSearch("");
+    } else {
+      setSelectedProduct(null);
+      setProductCost(0);
+    }
   };
 
   const handleSubmit = () => {
@@ -193,9 +164,9 @@ function AddLineItemRow({ onAdd, isPending, onCancel }: {
     onAdd({
       description: desc.trim(), quantity: String(q), unitPrice: p,
       lineSubtotal: subtotal, lineTotal: subtotal,
-      productId: selectedProductId, unitCost: productCost || undefined,
+      productId: selectedProduct?.id || null, unitCost: productCost || undefined,
     });
-    setDesc(""); setQty("1"); setPrice(""); setSelectedProductId(null); setProductCost(0);
+    setDesc(""); setQty("1"); setPrice(""); setSelectedProduct(null); setProductCost(0);
   };
 
   const lineTotal = (parseFloat(qty) || 0) * (parseFloat(price) || 0);
@@ -205,47 +176,21 @@ function AddLineItemRow({ onAdd, isPending, onCancel }: {
     <tr className="border-b border-border/50 bg-primary/5" data-testid="add-line-item-form">
       <td className="py-2.5 pr-2 align-top w-8" />
       <td className="py-2.5 pr-3 align-top">
-        {/* Product/service search — matches PartsBillingCard product search */}
-        <div className="relative">
-          <Input
-            className="text-xs"
-            placeholder="Search product / service..."
-            value={showProducts ? productSearch : (selectedProductId ? desc : productSearch)}
-            onChange={(e) => { setProductSearch(e.target.value); setShowProducts(true); setSelectedProductId(null); }}
-            onFocus={() => setShowProducts(true)}
-            onBlur={() => setTimeout(() => setShowProducts(false), 150)}
-            data-testid="input-product-search"
-          />
-          {showProducts && (
-            <div className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md border bg-popover shadow-lg">
-              {filteredItems.length === 0 ? (
-                <div className="px-2.5 py-1.5 text-xs text-muted-foreground">No matching products</div>
-              ) : (
-                filteredItems.map(item => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => handleSelectProduct(item)}
-                    className="flex w-full flex-col items-start px-2.5 py-1.5 text-left hover:bg-muted"
-                    data-testid={`product-option-${item.id}`}
-                  >
-                    <span className="text-xs">{item.name}</span>
-                  </button>
-                ))
-              )}
-              <div className="border-t" />
-              <button
-                type="button"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => { setShowProducts(false); setProductSearch(""); }}
-                className="flex w-full items-center px-2.5 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted"
-              >
-                Skip — enter manually
-              </button>
-            </div>
-          )}
-        </div>
+        {/* Product/service search — canonical selector */}
+        <CreateOrSelectField<ProductOption>
+          label=""
+          compact
+          value={selectedProduct}
+          onChange={handleSelectProduct}
+          searchResults={searchResults}
+          searchLoading={searchLoading}
+          searchText={productSearch}
+          onSearchTextChange={setProductSearch}
+          getKey={getProductKey}
+          getLabel={getProductLabel}
+          getDescription={getProductDescription}
+          placeholder="Search product / service..."
+        />
 
         {/* Description / notes — matches PartsBillingCard notes textarea placement */}
         <Textarea
@@ -491,6 +436,8 @@ export default function InvoiceDetailPage() {
       return res.json();
     },
     enabled: !!invoiceId,
+    // Stable transactional detail; mutations invalidate ["invoices"] family explicitly
+    staleTime: 5 * 60_000,
   });
 
   const { data: payments = [] } = useQuery<Payment[]>({
@@ -501,6 +448,8 @@ export default function InvoiceDetailPage() {
       return res.json();
     },
     enabled: !!invoiceId,
+    // Same family as invoice detail; payment mutations invalidate explicitly
+    staleTime: 5 * 60_000,
   });
 
   const jobId = details?.job?.id;
@@ -512,6 +461,8 @@ export default function InvoiceDetailPage() {
       return res.json();
     },
     enabled: !!jobId,
+    // Note CRUD now emits SSE events; office useDispatchStream invalidates ["jobs"] / ["/api/jobs"] family
+    staleTime: 5 * 60_000,
   });
 
   const { data: companySettings } = useQuery<{ taxName?: string; defaultTaxRate?: string }>({

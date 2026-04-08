@@ -100,15 +100,7 @@ interface Permission {
   category: string;
 }
 
-const DAYS_OF_WEEK = [
-  { value: 0, label: "Sunday" },
-  { value: 1, label: "Monday" },
-  { value: 2, label: "Tuesday" },
-  { value: 3, label: "Wednesday" },
-  { value: 4, label: "Thursday" },
-  { value: 5, label: "Friday" },
-  { value: 6, label: "Saturday" },
-];
+import { DAYS_OF_WEEK_FULL as DAYS_OF_WEEK } from "@/lib/schedulingConstants";
 
 const DEFAULT_HOURS = DAYS_OF_WEEK.map((day) => ({
   dayOfWeek: day.value,

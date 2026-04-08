@@ -6,9 +6,6 @@ import { requireRole } from "../auth/requireRole";
 import { MANAGER_ROLES } from "../auth/roles";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { AuthedRequest } from "../auth/tenantIsolation";
-import { db } from "../db";
-import { clientLocations, items } from "@shared/schema";
-import { eq, and, sql } from "drizzle-orm";
 
 const router = Router();
 
@@ -59,39 +56,17 @@ router.post("/bulk", requireRole(MANAGER_ROLES), asyncHandler(async (req: Authed
   const uniqueClientIds = Array.from(new Set(itemsList.map(i => i.clientId)));
   const uniquePartIds = Array.from(new Set(itemsList.map(i => i.partId)));
 
-  // Validate all clientIds belong to this company
+  // Validate all clientIds belong to this company (storage-delegated IDOR prevention)
   if (uniqueClientIds.length > 0) {
-    const validClients = await db
-      .select({ id: clientLocations.id })
-      .from(clientLocations)
-      .where(
-        and(
-          eq(clientLocations.companyId, companyId),
-          sql`${clientLocations.id} = ANY(${uniqueClientIds})`
-        )
-      );
-    const validClientIdSet = new Set(validClients.map(c => c.id));
-    const invalidClientIds = uniqueClientIds.filter(id => !validClientIdSet.has(id));
-
+    const { invalid: invalidClientIds } = await storage.validateLocationOwnership(companyId, uniqueClientIds);
     if (invalidClientIds.length > 0) {
       throw createError(400, `Invalid or unauthorized client IDs: ${invalidClientIds.slice(0, 5).join(", ")}${invalidClientIds.length > 5 ? "..." : ""}`);
     }
   }
 
-  // Validate all partIds belong to this company
+  // Validate all partIds belong to this company (storage-delegated IDOR prevention)
   if (uniquePartIds.length > 0) {
-    const validParts = await db
-      .select({ id: items.id })
-      .from(items)
-      .where(
-        and(
-          eq(items.companyId, companyId),
-          sql`${items.id} = ANY(${uniquePartIds})`
-        )
-      );
-    const validPartIdSet = new Set(validParts.map(p => p.id));
-    const invalidPartIds = uniquePartIds.filter(id => !validPartIdSet.has(id));
-
+    const { invalid: invalidPartIds } = await storage.validateItemOwnership(companyId, uniquePartIds);
     if (invalidPartIds.length > 0) {
       throw createError(400, `Invalid or unauthorized part IDs: ${invalidPartIds.slice(0, 5).join(", ")}${invalidPartIds.length > 5 ? "..." : ""}`);
     }

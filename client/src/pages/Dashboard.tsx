@@ -20,7 +20,7 @@ import {
   FileText, DollarSign, Briefcase, ChevronRight,
   PanelRightClose, PanelRightOpen, Plus, ClipboardList, CheckSquare, Square,
   Clock, Calendar, Activity, CheckCircle2,
-  Wrench, ExternalLink, Route,
+  Wrench, ExternalLink,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -33,7 +33,6 @@ import { useTechniciansDirectory } from "@/hooks/useTechnicians";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TaskDialog } from "@/components/TaskDialog";
 import { DashboardActionModal, type DashboardActionMode } from "@/components/DashboardActionModal";
-import { useDispatchStream } from "@/hooks/useDispatchStream";
 import type { Job as SchemaJob, Invoice as SchemaInvoice } from "@shared/schema";
 
 // ============================================================================
@@ -47,7 +46,16 @@ interface Invoice extends Pick<SchemaInvoice, "id" | "invoiceNumber" | "total" |
 
 interface WorkflowSummary {
   quotes: { approvedCount: number; draftCount: number };
-  jobs: { requiresInvoicingCount: number; activeCount: number; onHoldCount: number; unscheduledCount: number };
+  jobs: {
+    requiresInvoicingCount: number;
+    activeCount: number;
+    onHoldCount: number;
+    unscheduledCount: number;
+    // 2026-04-08: Live overdue count from /api/dashboard/workflow.
+    // Replaces the previous attention_items["job.overdue"] read which was
+    // materialized + had no time-based refresher → silently stale.
+    overdueCount: number;
+  };
   invoices: { outstandingCount: number; pastDueCount: number };
   pm: { awaitingGenerationCount: number; overdueCount: number; comingDueCount: number; upcomingCount: number };
   fourth: null;
@@ -63,11 +71,10 @@ type Task = {
   scheduledStartAt?: string | null;
 };
 
-type AttentionSummary = Record<string, number>;
-
 interface TodayVisitSummary {
   scheduled: number;
-  onRoute: number;
+  // 2026-04-08: "On Route" KPI removed from dashboard surface; backend still returns
+  // the field but the dashboard no longer renders it.
   inProgress: number;
   remaining: number;
   completed: number;
@@ -92,49 +99,61 @@ function DashCard({ children, className = "", elevated }: { children: React.Reac
 
 // ============================================================================
 // Today's Operations (command center top — strongest visual anchor)
+// ----------------------------------------------------------------------------
+// 2026-04-08: Split into TodaysOperationsHeader + TodaysOperationsKPIs so the
+// parent can place the heading and the KPI cards in different CSS Grid cells.
+// This is the structural fix that lets the Tasks panel align with the KPI row
+// instead of the heading.
 // ============================================================================
 
-function TodaysOperations({ today, isLoading }: {
+function TodaysOperationsHeader() {
+  return (
+    <div
+      className="flex items-center justify-between gap-3 mb-2"
+      style={{ borderBottom: '1px solid #e5e7eb', paddingBottom: '8px' }}
+    >
+      <h3 className="text-lg font-semibold text-[#111827] dark:text-gray-100 tracking-tight">
+        Today's Operations
+      </h3>
+    </div>
+  );
+}
+
+function TodaysOperationsKPIs({ today, isLoading }: {
   today?: TodayVisitSummary;
   isLoading: boolean;
 }) {
   const [, setLocation] = useLocation();
   const todayFlow: { label: string; value: number; icon: React.ElementType; action?: DashboardAction; primary?: boolean }[] = [
     { label: "Scheduled Today", value: today?.scheduled ?? 0, icon: Calendar, action: "ops.activeJobs", primary: true },
-    { label: "On Route", value: today?.onRoute ?? 0, icon: Route, action: "ops.activeJobs" },
     { label: "In Progress", value: today?.inProgress ?? 0, icon: Activity, action: "ops.activeJobs" },
     { label: "Remaining", value: today?.remaining ?? 0, icon: Clock, action: "ops.activeJobs" },
     { label: "Completed Today", value: today?.completed ?? 0, icon: CheckCircle2 },
   ];
 
-  return (
-    <div>
-      <div className="flex items-center justify-between gap-3 mb-2" style={{ borderBottom: '1px solid #e5e7eb', paddingBottom: '8px' }}>
-        <h3 className="text-lg font-semibold text-[#111827] dark:text-gray-100 tracking-tight">Today's Operations</h3>
+  if (isLoading) {
+    return (
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+        {[1,2,3,4].map(i => <Skeleton key={i} className="h-[66px]" />)}
       </div>
-      {/* KPI cards floating on page background */}
-      {isLoading ? (
-        <div className="grid grid-cols-3 lg:grid-cols-5 gap-2">
-          {[1,2,3,4,5].map(i => <Skeleton key={i} className="h-[66px]" />)}
-        </div>
-      ) : (
-        <div className="grid grid-cols-3 lg:grid-cols-5 gap-2">
-          {todayFlow.map((stat) => (
-            <button
-              key={stat.label}
-              onClick={stat.action ? () => setLocation(resolveDashboardNav(stat.action!)) : undefined}
-              className={`rounded-lg px-3 py-4 text-left transition-colors bg-[#ffffff] border border-[#e2e8f0] hover:bg-[#F0F5F0] ${stat.action ? "cursor-pointer" : "cursor-default"}`}
-              style={{ boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}
-            >
-              <div className="flex items-center gap-1.5 mb-0.5">
-                <stat.icon className="h-3 w-3 text-[#4b5563]" />
-                <span className="text-[12px] text-[#4b5563] font-medium leading-tight">{stat.label}</span>
-              </div>
-              <p className={`font-bold tabular-nums ${stat.primary ? "text-3xl text-[#111827]" : "text-2xl text-[#111827]"}`}>{stat.value}</p>
-            </button>
-          ))}
-        </div>
-      )}
+    );
+  }
+  return (
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+      {todayFlow.map((stat) => (
+        <button
+          key={stat.label}
+          onClick={stat.action ? () => setLocation(resolveDashboardNav(stat.action!)) : undefined}
+          className={`rounded-lg px-3 py-4 text-left transition-colors bg-[#ffffff] border border-[#e2e8f0] hover:bg-[#F0F5F0] ${stat.action ? "cursor-pointer" : "cursor-default"}`}
+          style={{ boxShadow: '0 1px 2px rgba(0,0,0,0.04)' }}
+        >
+          <div className="flex items-center gap-1.5 mb-0.5">
+            <stat.icon className="h-3 w-3 text-[#4b5563]" />
+            <span className="text-[12px] text-[#4b5563] font-medium leading-tight">{stat.label}</span>
+          </div>
+          <p className={`font-bold tabular-nums ${stat.primary ? "text-3xl text-[#111827]" : "text-2xl text-[#111827]"}`}>{stat.value}</p>
+        </button>
+      ))}
     </div>
   );
 }
@@ -248,7 +267,14 @@ function TasksPanel({ collapsed, onToggleCollapsed }: { collapsed: boolean; onTo
   const [typeFilter, setTypeFilter] = useState<string>("all");
 
   const tasksUrl = `/api/tasks?offset=0&limit=50`;
-  const { data, isLoading, error } = useQuery({ queryKey: [tasksUrl], enabled: !collapsed });
+  const { data, isLoading, error } = useQuery({
+    queryKey: [tasksUrl],
+    enabled: !collapsed,
+    // 2026-04-08 freshness tier B: short cache, no polling, focus refetch
+    // (SSE invalidation is the primary refresh path; staleTime is fallback).
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+  });
 
   const allTasks: Task[] = useMemo(() => {
     if (!data) return [];
@@ -393,8 +419,7 @@ function TasksPanel({ collapsed, onToggleCollapsed }: { collapsed: boolean; onTo
 // ============================================================================
 
 export default function Dashboard() {
-  // SSE-driven cross-tab/cross-user realtime invalidation for dispatch/task data shown on dashboard
-  useDispatchStream();
+  // 2026-04-08: useDispatchStream() now mounted once at App.tsx root for all office surfaces.
 
   const TASKS_COLLAPSE_KEY = "dashboardTasksCollapsed";
   const [tasksCollapsed, setTasksCollapsed] = useState<boolean>(() => {
@@ -410,11 +435,16 @@ export default function Dashboard() {
     try { localStorage.setItem(TASKS_COLLAPSE_KEY, tasksCollapsed ? "1" : "0"); } catch {}
   }, [tasksCollapsed]);
 
+  // 2026-04-08 freshness tier:
+  // Workflow now carries the live overdueCount alongside on-hold/unscheduled/
+  // ready-to-invoice. SSE (`useDispatchStream`) is the primary refresh path on
+  // any visit/job/scheduling mutation; the 30s staleTime is the fallback for
+  // signals lost during reconnect, and refetchOnWindowFocus catches tab returns.
   const { data: workflowData, isLoading: workflowLoading } = useQuery<WorkflowSummary>({
     queryKey: ["dashboard", "workflow"],
     queryFn: () => apiRequest(`/api/dashboard/workflow`),
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
   });
 
   const { data: dashboardInvoicesResponse } = useQuery<{ data: Invoice[] }>({
@@ -424,40 +454,49 @@ export default function Dashboard() {
     refetchOnWindowFocus: false,
   });
 
-  const { data: attentionData } = useQuery<AttentionSummary>({
-    queryKey: ["attention", "summary"],
-    queryFn: () => apiRequest(`/api/attention/summary`),
-    staleTime: 60_000,
-    refetchOnWindowFocus: true,
-  });
+  // 2026-04-08: Removed `attention.summary` query — Jobs widget overdue count
+  // now reads `workflowData.jobs.overdueCount` (live SQL) instead of the
+  // materialized attention_items["job.overdue"] which had no time-based
+  // refresher and silently went stale. The /api/attention/* endpoints remain
+  // for other consumers; only the dashboard read path is migrated.
 
-  // Today's visit summary — real-time visit counts by status
+  // Today's visit summary — operational live data.
+  // Tier A (live): 15s fallback + window-focus refetch + SSE invalidation.
   const { data: todaySummary, isLoading: todayLoading } = useQuery<TodayVisitSummary>({
     queryKey: ["dashboard", "today-summary"],
     queryFn: () => apiRequest(`/api/dashboard/today-summary`),
-    staleTime: 60_000,
+    staleTime: 15_000,
     refetchOnWindowFocus: true,
   });
 
   const invoices = dashboardInvoicesResponse?.data || [];
-  const draftInvoiceCount = invoices.filter(i => i.status === "draft").length;
-  const outstandingTotal = invoices.reduce((sum, inv) => sum + parseFloat(inv.balance || "0"), 0);
-  const pastDueInvoices = invoices.filter(i => i.isPastDue);
-  const pastDueTotal = pastDueInvoices.reduce((sum, inv) => sum + parseFloat(inv.balance || "0"), 0);
+  const { draftInvoiceCount, outstandingTotal, pastDueInvoices, pastDueTotal } = useMemo(() => {
+    const draft = invoices.filter(i => i.status === "draft").length;
+    const outstanding = invoices.reduce((sum, inv) => sum + parseFloat(inv.balance || "0"), 0);
+    const pastDue = invoices.filter(i => i.isPastDue);
+    const pastDueSum = pastDue.reduce((sum, inv) => sum + parseFloat(inv.balance || "0"), 0);
+    return { draftInvoiceCount: draft, outstandingTotal: outstanding, pastDueInvoices: pastDue, pastDueTotal: pastDueSum };
+  }, [invoices]);
   const pastDueCount = workflowData?.invoices.pastDueCount ?? pastDueInvoices.length;
 
   return (
     <div className="min-h-screen bg-[#F4F8F4]">
-      <main className="mx-auto px-4 sm:px-5 lg:px-6 py-4 space-y-3">
-        {/* KPI row — full width above everything */}
-        <TodaysOperations
-          today={todaySummary}
-          isLoading={todayLoading}
-        />
+      <main className="mx-auto px-4 sm:px-5 lg:px-6 py-4">
+        {/* 2026-04-08: CSS Grid 2-col × 2-row.
+            - Row 1 (col 1 only): "Today's Operations" heading
+            - Row 2 col 1: KPI cards + dashboard cards
+            - Row 2 col 2: Tasks panel — naturally aligns with KPI row
+            On <lg the grid collapses to a single column and Tasks stacks below. */}
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_auto] lg:grid-rows-[auto_1fr] gap-x-4 gap-y-2">
+          {/* Row 1, col 1: heading */}
+          <div className="lg:col-start-1 lg:row-start-1">
+            <TodaysOperationsHeader />
+          </div>
 
-        {/* Cards grid + Tasks panel — aligned horizontally below KPI row */}
-        <div className="flex gap-4">
-          <div className="flex-1 min-w-0 space-y-4">
+          {/* Row 2, col 1: KPI cards + dashboard content */}
+          <div className="lg:col-start-1 lg:row-start-2 min-w-0 space-y-3">
+            <TodaysOperationsKPIs today={todaySummary} isLoading={todayLoading} />
+
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
               <WorklistCard
                 title="Jobs"
@@ -468,7 +507,7 @@ export default function Dashboard() {
                 elevated
                 isLoading={workflowLoading}
                 rows={[
-                  { label: "Jobs past due date — need rescheduling", value: attentionData?.["job.overdue"] ?? 0, action: "alerts.overdueJobs", warn: true, urgentBg: true, onClick: () => openActionModal("overdue") },
+                  { label: "Jobs past due date — need rescheduling", value: workflowData?.jobs.overdueCount ?? 0, action: "alerts.overdueJobs", warn: true, urgentBg: true, onClick: () => openActionModal("overdue") },
                   { label: "Jobs on hold — needs action", value: workflowData?.jobs.onHoldCount ?? 0, action: "ops.onHold", warn: true, onClick: () => openActionModal("on_hold") },
                   { label: "Jobs needing scheduling", value: workflowData?.jobs.unscheduledCount ?? 0, action: "jobs.unscheduled", onClick: () => openActionModal("unscheduled") },
                   { label: "Jobs completed — ready for invoice", value: workflowData?.jobs.requiresInvoicingCount ?? 0, action: "jobs.needsInvoicing", onClick: () => openActionModal("ready_to_invoice") },
@@ -520,8 +559,12 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Tasks panel — aligned with top of cards, not KPI row */}
-          <div className="sticky top-16 self-start" style={{ maxHeight: 'calc(100vh - 8rem)' }}>
+          {/* Row 2, col 2: Tasks panel — top edge aligns with KPI cards (NOT the heading)
+              because it lives in row 2 of the grid, same as the cards. No margin hacks. */}
+          <div
+            className="lg:col-start-2 lg:row-start-2 lg:sticky lg:top-16 self-start"
+            style={{ maxHeight: 'calc(100vh - 8rem)' }}
+          >
             <TasksPanel collapsed={tasksCollapsed} onToggleCollapsed={() => setTasksCollapsed((v) => !v)} />
           </div>
         </div>

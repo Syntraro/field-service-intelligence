@@ -1,7 +1,7 @@
 import express, { Response } from "express";
 import { requireRole } from "../auth/requireRole";
 import { canAssignRole, type Role } from "../auth/roles";
-import { writeAuditLog } from "../services/audit";
+import { logRoleChanged, logUserDisabled } from "../services/auditService";
 import { asyncHandler, createError } from "../middleware/errorHandler";
 import { AuthedRequest } from "../auth/tenantIsolation";
 import { z } from "zod";
@@ -38,14 +38,7 @@ router.patch(
 
     await userRepository.updateUserRole(companyId, req.params.id, role);
 
-    await writeAuditLog({
-      companyId,
-      userId: req.user!.id,
-      action: "user_role_changed",
-      entity: "user",
-      entityId: req.params.id,
-      metadata: { role },
-    });
+    await logRoleChanged(req, companyId, req.user!.id, req.params.id, { newRole: role });
 
     res.json({ success: true });
   })
@@ -59,13 +52,7 @@ router.post(
 
     await userRepository.disableUser(companyId, req.params.id);
 
-    await writeAuditLog({
-      companyId,
-      userId: req.user!.id,
-      action: "user_disabled",
-      entity: "user",
-      entityId: req.params.id,
-    });
+    await logUserDisabled(req, companyId, req.user!.id, req.params.id);
 
     res.json({ success: true });
   })

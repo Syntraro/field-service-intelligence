@@ -16,6 +16,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { formatCurrency } from "@/lib/formatters";
 import {
   Table,
   TableBody,
@@ -46,7 +47,10 @@ import {
 } from "@/components/ui/tooltip";
 import type { Quote, QuoteLine, Client, CustomerCompany } from "@shared/schema";
 import { ApplyQuoteTemplateModal } from "@/components/ApplyQuoteTemplateModal";
+import { CreateOrSelectField } from "@/components/shared/CreateOrSelectField";
+import { useProductSearch, getProductKey, getProductLabel, getProductDescription, type ProductOption } from "@/lib/entities/productEntity";
 import { Briefcase as BriefcaseIcon, FileSearch, CalendarCheck } from "lucide-react";
+import { MetaRow } from "@/components/ui/meta-row";
 
 interface QuoteDetails {
   quote: Quote;
@@ -54,11 +58,6 @@ interface QuoteDetails {
   location: Client;
   customerCompany?: CustomerCompany;
   isExpired?: boolean;
-}
-
-function formatCurrency(amount: string | number): string {
-  const num = typeof amount === "string" ? parseFloat(amount) : amount;
-  return new Intl.NumberFormat("en-CA", { style: "currency", currency: "CAD" }).format(num);
 }
 
 function safeFormatDate(value: unknown): string {
@@ -83,6 +82,12 @@ export default function QuoteDetailPage() {
   const [newLineDescription, setNewLineDescription] = useState("");
   const [newLineQuantity, setNewLineQuantity] = useState("1");
   const [newLinePrice, setNewLinePrice] = useState("");
+  const [newLineProductId, setNewLineProductId] = useState<string | null>(null);
+  const [productSearch, setProductSearch] = useState("");
+  const [selectedProduct, setSelectedProduct] = useState<ProductOption | null>(null);
+
+  // Product search for add line dialog
+  const { data: productResults = [], isLoading: productSearchLoading } = useProductSearch(productSearch, { enabled: showAddLineDialog });
 
   // Send quote modal state
   const [sendRecipients, setSendRecipients] = useState("");
@@ -172,7 +177,7 @@ export default function QuoteDetailPage() {
   });
 
   const addLineMutation = useMutation({
-    mutationFn: (data: { description: string; quantity: string; unitPrice: string }) => {
+    mutationFn: (data: { description: string; quantity: string; unitPrice: string; productId?: string | null }) => {
       const qty = parseFloat(data.quantity) || 1;
       const price = parseFloat(data.unitPrice) || 0;
       const subtotal = (qty * price).toFixed(2);
@@ -184,6 +189,7 @@ export default function QuoteDetailPage() {
           unitPrice: data.unitPrice,
           lineSubtotal: subtotal,
           lineTotal: subtotal,
+          productId: data.productId || null,
         }),
       });
     },
@@ -193,6 +199,9 @@ export default function QuoteDetailPage() {
       setNewLineDescription("");
       setNewLineQuantity("1");
       setNewLinePrice("");
+      setNewLineProductId(null);
+      setSelectedProduct(null);
+      setProductSearch("");
       toast({ title: "Line item added" });
     },
     onError: (error: Error) => {
@@ -644,36 +653,12 @@ export default function QuoteDetailPage() {
                   <CardTitle className="text-sm font-medium">Quote Details</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Issue Date</span>
-                    <span>{safeFormatDate(quote.issueDate)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Expiry Date</span>
-                    <span>{safeFormatDate(quote.expiryDate)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Created</span>
-                    <span>{safeFormatDate(quote.createdAt)}</span>
-                  </div>
-                  {quote.sentAt && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Sent</span>
-                      <span>{safeFormatDate(quote.sentAt)}</span>
-                    </div>
-                  )}
-                  {quote.approvedAt && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Approved</span>
-                      <span>{safeFormatDate(quote.approvedAt)}</span>
-                    </div>
-                  )}
-                  {quote.declinedAt && (
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Declined</span>
-                      <span>{safeFormatDate(quote.declinedAt)}</span>
-                    </div>
-                  )}
+                  <MetaRow label="Issue Date" value={safeFormatDate(quote.issueDate)} />
+                  <MetaRow label="Expiry Date" value={safeFormatDate(quote.expiryDate)} />
+                  <MetaRow label="Created" value={safeFormatDate(quote.createdAt)} />
+                  {quote.sentAt && <MetaRow label="Sent" value={safeFormatDate(quote.sentAt)} />}
+                  {quote.approvedAt && <MetaRow label="Approved" value={safeFormatDate(quote.approvedAt)} />}
+                  {quote.declinedAt && <MetaRow label="Declined" value={safeFormatDate(quote.declinedAt)} />}
 
                   {/* Phase 2: Quote owner */}
                   <div className="pt-2 border-t">
@@ -903,39 +888,56 @@ export default function QuoteDetailPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            <div>
-              <Label htmlFor="line-description">Description</Label>
-              <Input
-                id="line-description"
-                placeholder="Enter description..."
-                value={newLineDescription}
-                onChange={(e) => setNewLineDescription(e.target.value)}
-                data-testid="input-line-description"
-              />
-            </div>
+            {/* Product search / description */}
+            <CreateOrSelectField<ProductOption>
+              label="Product / Service"
+              value={selectedProduct}
+              onChange={(product) => {
+                if (product) {
+                  setSelectedProduct(product);
+                  setNewLineProductId(product.id);
+                  setNewLineDescription(product.name);
+                  if (product.unitPrice) setNewLinePrice(product.unitPrice);
+                  setProductSearch("");
+                } else {
+                  setSelectedProduct(null);
+                  setNewLineProductId(null);
+                }
+              }}
+              searchResults={productResults}
+              searchLoading={productSearchLoading}
+              searchText={productSearch}
+              onSearchTextChange={(text) => {
+                setProductSearch(text);
+                if (!selectedProduct) setNewLineDescription(text);
+              }}
+              getKey={getProductKey}
+              getLabel={getProductLabel}
+              getDescription={getProductDescription}
+              placeholder="Search products or type description..."
+            />
+            {/* Manual description override */}
+            {selectedProduct && (
+              <div>
+                <Label htmlFor="line-description">Description</Label>
+                <Input
+                  id="line-description"
+                  value={newLineDescription}
+                  onChange={(e) => setNewLineDescription(e.target.value)}
+                  data-testid="input-line-description"
+                />
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label htmlFor="line-quantity">Quantity</Label>
-                <Input
-                  id="line-quantity"
-                  type="number"
-                  min="1"
-                  value={newLineQuantity}
-                  onChange={(e) => setNewLineQuantity(e.target.value)}
-                  data-testid="input-line-quantity"
-                />
+                <Input id="line-quantity" type="number" min="1" value={newLineQuantity}
+                  onChange={(e) => setNewLineQuantity(e.target.value)} data-testid="input-line-quantity" />
               </div>
               <div>
                 <Label htmlFor="line-price">Unit Price</Label>
-                <Input
-                  id="line-price"
-                  type="number"
-                  step="0.01"
-                  placeholder="0.00"
-                  value={newLinePrice}
-                  onChange={(e) => setNewLinePrice(e.target.value)}
-                  data-testid="input-line-price"
-                />
+                <Input id="line-price" type="number" step="0.01" placeholder="0.00" value={newLinePrice}
+                  onChange={(e) => setNewLinePrice(e.target.value)} data-testid="input-line-price" />
               </div>
             </div>
           </div>
@@ -946,6 +948,7 @@ export default function QuoteDetailPage() {
                 description: newLineDescription,
                 quantity: newLineQuantity,
                 unitPrice: newLinePrice,
+                productId: newLineProductId,
               })}
               disabled={!newLineDescription || addLineMutation.isPending}
               data-testid="button-save-line"

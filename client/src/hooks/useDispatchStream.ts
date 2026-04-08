@@ -33,24 +33,37 @@ interface DispatchSignal {
 // ── Signal → invalidation mapping ──
 // Keys actively consumed by office/admin surfaces:
 //   DispatchPreview: /api/calendar, /api/calendar/unscheduled, /api/tasks (dispatch*), visit-detail
-//   Dashboard: dashboard (workflow, today-summary), attention (summary),
-//              dashboard-action, /api/tasks* (URL-style key)
+//   Dashboard:
+//     - ["dashboard","workflow"]      Jobs widget (incl. live overdueCount), invoices/quotes/PM
+//     - ["dashboard","today-summary"] Today's Operations live counts
+//     - ["dashboard-action"]          Modal action lists (overdue/on_hold/unscheduled/ready_to_invoice)
+//     - /api/tasks* (URL-style key)   Tasks panel (predicate-matched, see below)
 //   JobDetailPage: ["jobs", "detail", jobId], ["visits", jobId, "all"],
 //                  ["/api/jobs", jobId, "notes"|"time-summary"|"time-entries"|"expenses"|"parts"]
 //   Jobs list: ["jobs", ...]
 //
 // Not invalidated (static config, not changed by mutations):
 //   ["/api/team/technicians/working-hours"]
+//
+// 2026-04-08: Dashboard "attention" query is no longer used by Dashboard.tsx —
+// the Jobs widget now reads ["dashboard","workflow"].jobs.overdueCount (live SQL).
+// The ["attention"] prefix is still listed for non-dashboard consumers.
 
 /** Prefix-matched query keys for visit/job dispatch signals */
 const VISIT_JOB_KEYS: readonly (readonly string[])[] = [
   ["/api/calendar"],
   ["/api/calendar/unscheduled"],
   ["visit-detail"],
-  // Dashboard keys dependent on dispatch state
-  ["dashboard"],
-  ["attention"],
+  // 2026-04-08: Narrowed from broad ["dashboard"] prefix to the two specific
+  // operational dashboard query keys. Both are now driven by live SQL, so SSE
+  // invalidation is the primary refresh path; the staleTime values on the
+  // dashboard queries are fallbacks only.
+  ["dashboard", "workflow"],         // Jobs widget + invoices/quotes/PM bundled
+  ["dashboard", "today-summary"],    // Today's Operations cards
+  // Modal action lists still keyed broadly (modal opens on demand)
   ["dashboard-action"],
+  // Attention API stays for non-dashboard consumers (per-entity badges, etc.)
+  ["attention"],
   // 2026-04-05: Job/visit detail surfaces — tech status changes must propagate to office
   ["jobs"],          // prefix-matches ["jobs", "detail", jobId] and ["jobs", ...] list queries
   ["visits"],        // prefix-matches ["visits", jobId, "all"] visit list on job detail
@@ -59,10 +72,31 @@ const VISIT_JOB_KEYS: readonly (readonly string[])[] = [
 
 /** Prefix-matched query keys for task signals */
 const TASK_KEYS: readonly (readonly string[])[] = [
-  // Dashboard keys that reflect task counts
-  ["dashboard"],
-  ["attention"],
+  // Tasks don't drive operational dashboard counts; the dashboard's only
+  // task-affected surface is the Tasks panel, which is invalidated via the
+  // TASKS_PREDICATE below. No dashboard-workflow / today-summary invalidation
+  // needed for task signals.
   ["dashboard-action"],
+  ["attention"],
+];
+
+/**
+ * Prefix-matched query keys for time/payroll signals.
+ * Consumed by PayrollPage, AdminTimesheets, and any office surface that displays
+ * tech check-in/clock-out state.
+ * 2026-04-08: Added so office sees realtime tech time-tracking changes.
+ * 2026-04-08: Also refresh operational dashboard counts on time-scope events
+ * — clock-in/out can drive visit transitions which the operational widgets
+ * surface. Calendar-scope events from the same techField mutations cover the
+ * common path; this is belt-and-suspenders for time-only signals.
+ */
+const TIME_KEYS: readonly (readonly string[])[] = [
+  ["/api/payroll"],            // PayrollPage QK_WEEKLY (/api/payroll/weekly)
+  ["/api/admin/timesheets"],   // PayrollPage QK_DAY/QK_WEEK_ENTRIES/QK_USERS
+  ["/api/time"],               // any office /api/time queries (e.g., team time summaries)
+  ["/api/jobs"],               // Job Detail time-summary/time-entries (sub-resources)
+  ["dashboard", "workflow"],       // Jobs widget — operational counts
+  ["dashboard", "today-summary"],  // Today's Operations cards
 ];
 
 // Task queries need predicate-based invalidation because:
@@ -82,19 +116,27 @@ const DEBOUNCE_MS = 300;
 // Bit flags for pending invalidation categories (avoids Set<string> serialization overhead)
 const FLAG_VISIT_JOB = 1;
 const FLAG_TASK = 2;
+const FLAG_TIME = 4;
 
 function applySignalFlags(signal: DispatchSignal): number {
-  if (signal.scope !== "calendar") return 0;
-  switch (signal.entityType) {
-    case "visit":
-    case "job":
-      // Visit/job dispatch changes affect calendar + dashboard + tasks (task may share time slots)
-      return FLAG_VISIT_JOB | FLAG_TASK;
-    case "task":
-      return FLAG_TASK;
-    default:
-      return 0;
+  if (signal.scope === "calendar") {
+    switch (signal.entityType) {
+      case "visit":
+      case "job":
+        // Visit/job dispatch changes affect calendar + dashboard + tasks (task may share time slots)
+        return FLAG_VISIT_JOB | FLAG_TASK;
+      case "task":
+        return FLAG_TASK;
+      default:
+        return 0;
+    }
   }
+  if (signal.scope === "time") {
+    // Tech clock-in/out/time-entry updates → refresh office payroll/timesheet surfaces.
+    // Also covers Job Detail time-summary because TIME_KEYS includes ["/api/jobs"].
+    return FLAG_TIME;
+  }
+  return 0;
 }
 
 function flushFlags(flags: number, qc: QueryClient) {
@@ -111,6 +153,11 @@ function flushFlags(flags: number, qc: QueryClient) {
       for (let i = 0; i < TASK_KEYS.length; i++) {
         qc.invalidateQueries({ queryKey: TASK_KEYS[i] as string[] });
       }
+    }
+  }
+  if (flags & FLAG_TIME) {
+    for (let i = 0; i < TIME_KEYS.length; i++) {
+      qc.invalidateQueries({ queryKey: TIME_KEYS[i] as string[] });
     }
   }
 }
@@ -155,7 +202,7 @@ export function useDispatchStream() {
 
     /** Full catch-up invalidation after reconnect to cover missed signals */
     function catchUpInvalidation() {
-      pendingFlagsRef.current |= FLAG_VISIT_JOB | FLAG_TASK;
+      pendingFlagsRef.current |= FLAG_VISIT_JOB | FLAG_TASK | FLAG_TIME;
       scheduleFlush();
     }
 

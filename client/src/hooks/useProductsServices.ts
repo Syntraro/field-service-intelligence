@@ -226,48 +226,35 @@ export function useProductsServices(options: UseProductsServicesOptions = {}) {
     },
   });
 
-  const importMutation = useMutation({
-    mutationFn: async ({ csvData, updateExisting }: { csvData: string; updateExisting: boolean }) => {
-      return await apiRequest("/api/items/import", { method: "POST", body: JSON.stringify({ csvData, skipDuplicates: !updateExisting, updateExisting }) });
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/items"], exact: false });
-      const { imported, skipped, updated, errors } = data;
-      let description = `Imported ${imported} item(s).`;
-      if (updated > 0) description += ` Updated ${updated}.`;
-      if (skipped > 0) description += ` Skipped ${skipped}.`;
-      if (errors?.length > 0) description += ` ${errors.length} error(s).`;
-      toast({ title: "Import Complete", description });
-    },
-    onError: () => {
-      toast({ title: "Error", description: "Failed to import.", variant: "destructive" });
-    },
-  });
+  // 2026-04-08: P5 — Removed broken `importMutation` (called non-existent
+  // POST /api/items/import). The canonical CSV import flow lives at the
+  // dedicated /settings/import-products page (server: /api/product-import/*).
+  // The toolbar Import button now navigates there instead of opening an
+  // in-page dialog.
 
-  // Export handler
-  const handleExport = useCallback(async () => {
-    try {
-      const params = new URLSearchParams();
-      if (typeFilter !== "all") params.set("category", typeFilter === "product" ? "products" : "services");
-      if (debouncedSearch) params.set("search", debouncedSearch);
+  // Export handler — client-side CSV over the currently filtered rows.
+  // 2026-04-08: P5 — Replaced broken server-side `/api/items/export` (which
+  // never existed) with the same client-side CSV pattern that
+  // `handleExportSelected` already uses. No server endpoint needed.
+  const handleExport = useCallback(() => {
+    const csvHeader = "name,type,sku,description,cost,unit_price,category,is_active\n";
+    const csvRows = filteredAndSortedParts
+      .map((p) =>
+        `"${p.name || ""}","${p.type}","${p.sku || ""}","${(p.description || "").replace(/"/g, '""')}","${p.cost || ""}","${p.unitPrice || ""}","${p.category || ""}","${p.isActive !== false}"`,
+      )
+      .join("\n");
 
-      const response = await fetch(`/api/items/export?${params}`, { credentials: "include" });
-      if (!response.ok) throw new Error("Export failed");
-
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `products_services_${new Date().toISOString().split("T")[0]}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
-      toast({ title: "Exported", description: "Data exported successfully." });
-    } catch {
-      toast({ title: "Error", description: "Failed to export.", variant: "destructive" });
-    }
-  }, [toast, typeFilter, debouncedSearch]);
+    const blob = new Blob([csvHeader + csvRows], { type: "text/csv" });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `products_services_${new Date().toISOString().split("T")[0]}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+    toast({ title: "Exported", description: `Exported ${filteredAndSortedParts.length} item(s).` });
+  }, [filteredAndSortedParts, toast]);
 
   const handleExportSelected = useCallback(() => {
     const selectedParts = filteredAndSortedParts.filter((p) => selectedIds.has(p.id));
@@ -439,7 +426,6 @@ export function useProductsServices(options: UseProductsServicesOptions = {}) {
     bulkDeleteMutation,
     bulkArchiveMutation,
     bulkCategoryMutation,
-    importMutation,
 
     // Handlers
     handleExport,

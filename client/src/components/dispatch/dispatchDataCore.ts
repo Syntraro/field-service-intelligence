@@ -10,7 +10,7 @@
  * Uses shared mappers from dispatchPreviewMappers.ts.
  */
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import type { CalendarRangeResponseDto, UnscheduledJobDto } from "@shared/types/scheduling";
 import type { DispatchVisit, DispatchTask, Technician } from "./dispatchPreviewTypes";
 import {
@@ -78,6 +78,8 @@ export function useDispatchRangeData(
       ),
     staleTime: 30_000,
     enabled,
+    // Keep previous date range visible while navigating to a new date — prevents empty flash
+    placeholderData: keepPreviousData,
   });
 
   const unscheduledQuery = useQuery<UnscheduledJobDto[]>({
@@ -95,6 +97,8 @@ export function useDispatchRangeData(
       ),
     staleTime: 30_000,
     enabled,
+    // Keep previous range tasks visible while navigating dates — prevents empty flash
+    placeholderData: keepPreviousData,
   });
 
   const { teamMembers, isLoading: techLoading, error: techError } = useTechniciansDirectory();

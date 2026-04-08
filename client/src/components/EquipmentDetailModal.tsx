@@ -23,7 +23,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useAuth } from "@/lib/auth";
 import type { LocationEquipment } from "@shared/schema";
 
-const MANAGER_ROLES = ["owner", "admin", "manager", "dispatcher"] as const;
+import { MANAGER_ROLES } from "@/lib/roles";
 
 interface HistoryNote {
   id: string;
@@ -72,8 +72,10 @@ export function EquipmentDetailModal({ open, onOpenChange, equipment }: Equipmen
     enabled: open,
   });
 
-  const invalidateHistory = () => {
+  const invalidateHistory = (jobId?: string) => {
     queryClient.invalidateQueries({ queryKey: ["equipment-history", eq.id] });
+    // Keep job notes section in sync when notes are edited/deleted here
+    if (jobId) queryClient.invalidateQueries({ queryKey: ["/api/jobs", jobId, "notes"] });
   };
 
   // Edit mutation: PATCH /api/jobs/:jobId/notes/:noteId
@@ -83,8 +85,8 @@ export function EquipmentDetailModal({ open, onOpenChange, equipment }: Equipmen
         method: "PATCH",
         body: JSON.stringify({ noteText }),
       }),
-    onSuccess: () => {
-      invalidateHistory();
+    onSuccess: (_data, { jobId }) => {
+      invalidateHistory(jobId);
       setEditingNoteId(null);
       setEditText("");
     },
@@ -94,8 +96,8 @@ export function EquipmentDetailModal({ open, onOpenChange, equipment }: Equipmen
   const deleteMutation = useMutation({
     mutationFn: ({ jobId, noteId }: { jobId: string; noteId: string }) =>
       apiRequest(`/api/jobs/${jobId}/notes/${noteId}`, { method: "DELETE" }),
-    onSuccess: () => {
-      invalidateHistory();
+    onSuccess: (_data, { jobId }) => {
+      invalidateHistory(jobId);
       setConfirmDeleteNoteId(null);
       setDeleteJobId(null);
     },
